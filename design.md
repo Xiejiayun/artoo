@@ -26,6 +26,7 @@ artoo 的起点是把这些碎片统一成一个开源控制平面：用户不�
 | Personal computer-use assistant | OpenClaw、Clawith、Bytebot | 本地 agent 或 remote desktop agent，连接电脑环境，提供 Web/Telegram/Chat UI，执行桌面或浏览器任务 | Computer node、桌面控制、用户授权、本地优先体验 | 不能停留在单人单机助手，需要扩展到多 Computer、多 runtime、多实例和团队协作 |
 | Agent gateway/data access | Hermes Agent | Agentic gateway、数据访问、tool gateway、结构化资源连接 | 把本地数据、外部工具和结构化资源纳入 skill/tool 层 | Hermes 更像能力网关，不是完整 team operating system，artoo 需要把 gateway 能力接入任务、IM、权限和调度 |
 | Agent collaboration workspace | Slock | 频道、DM、状态、用户和 AI Agent 共处的协作空间概念 | Agent-native IM、Agent presence、Agent-Agent 和 User-Agent 协作体验 | 公开开源基座有限，artoo 应做成真正可自托管、可连接 Computer fleet 的开源实现 |
+| Human-in-the-loop multi-agent UI | HiClaw、AgentScope 生态 | 多 Agent 可视化、人机协作界面、agent workflow 观察和干预 | 借鉴多 Agent 编排 UI、人工介入点、运行态可视化 | artoo 不能只做多 Agent UI，还必须管理多 Computer、多 runtime、多实例、IM、Scrum、Skill 和权限 |
 | Coding agent | OpenHands、SWE-agent、Codex CLI、Gemini CLI、Cline、Roo Code、aider | Workspace + Agent loop + tool execution + patch/test/review + event stream | 把这些 agent 接成 runtime adapter，统一任务分配、日志、产物和审批 | 不重新造“最聪明的 coding agent”，避免和成熟工具正面重复 |
 | Browser/desktop automation | browser-use、Agent-S、Cua、Open Interpreter | 浏览器或 GUI action abstraction，agent 根据观察结果执行动作 | 把 browser/desktop capability 建模为 Computer capability 和 Skill capability | 不让单个 automation engine 绑死系统架构 |
 | Multi-agent framework | AutoGen、LangGraph、CrewAI、CAMEL、Agno、Mastra、VoltAgent | 角色、graph、workflow、状态机、agent runtime、tool/memory/eval | 借鉴 agent role、delegation、stateful workflow 和 observability | 不把协作隐藏在代码内部，关键决策必须进入 task room 和 event store |
@@ -174,11 +175,14 @@ flowchart TB
 | Client | External Bridges | Slack/Matrix/Mattermost/GitHub 等外部入口的桥接 |
 | Collaboration | IM Service | Actor、Room、Message、Presence、Mention、Notification、Task room |
 | Work Management | Task and Scrum Service | Project、Epic、Sprint、Task、Board、Acceptance criteria、Assignment、Artifact |
+| Work Management | Task DAG Orchestrator | 任务拆解、依赖图、可并行节点识别、阻塞传播、子任务验收聚合 |
 | Control Plane | Computer Registry | Computer 注册、心跳、能力发现、资源上报、健康状态 |
 | Control Plane | Agent Runtime Registry | runtime 类型、adapter、版本、安装状态、兼容能力 |
 | Execution | `artood` Node Agent | 本机常驻服务，负责启动 agent、回传事件、执行本地安全边界 |
 | Execution | Runtime Adapter | 统一 CLI/Web/Desktop/server agent 的生命周期接口 |
 | Intelligence | Scheduler | 根据 capability、资源、队列、权限、成本、历史表现分配任务 |
+| Intelligence | Concurrency Controller | 文件 lease、branch/worktree 分配、并发上限、冲突预算、integration queue |
+| Intelligence | Memory Service | Run/Task/Project/Code/Org 分层记忆、上下文检索、记忆治理、context pack 生成 |
 | Capability | Skill Registry | skill manifest、版本、兼容性、权限、评测、安装和启停 |
 | Security | Policy and Secrets | RBAC/ABAC、approval policy、secret injection、sandbox policy |
 | Platform | Event Store | 所有业务事实事件的统一写入、订阅、回放 |
@@ -261,6 +265,28 @@ MVP 数据模型应包含 `organization_id`，但第一版产品可以只支持�
 | IM build/reuse | artoo-native minimal IM core + bridge | Agent/task/run/approval 需要原生表达 |
 | 指标采集 | 第一版采集 token/cost/latency/resource 的基础字段 | 为后续 scheduler 和评测打基础 |
 
+### 2.9 v0.1 MVP hard contract
+
+为了把设计变成可以稳定实施的规格，v0.1 采用以下硬边界。凡是不在本节的能力，即使在后文出现，也只作为 schema 预留或 Beta 方向，不进入 v0.1 完成定义。
+
+| Area | v0.1 必须实现 | v0.1 明确不做 |
+| --- | --- | --- |
+| Client | Web dashboard 完整闭环；iOS 只冻结 API 和 push/inbox contract，可用 Web 模拟移动端审批 | 原生 iOS App 全功能、离线同步 |
+| Organization | 单组织单租户，保留 `organization_id` | 多租户 billing、企业组织树 |
+| Computer | 一套 Server 管理多台 `artood`；开发模式允许本机启动 node | HA control plane、自动 node installer、远程桌面全功能 |
+| Runtime | 一个真实 process-based coding adapter + 一个 mock adapter | 同时深度支持 Codex/Claude/OpenHands/browser-use/OpenClaw |
+| Model/Effort | AgentInstance 可配置 model profile 和 effort profile；Scheduler 可按任务风险/复杂度选择实例 | 自动学习型模型路由、跨 provider 成本优化 |
+| Task DAG | 手动拆 child tasks；支持 `blocks` 和 `artifact_required`；自动 ready 解锁 | 自动复杂任务拆解、DAG 优化、hedged execution |
+| Memory | Task summary、Project notes、静态 ContextPack | 自动长期记忆治理、向量检索、stale memory detection |
+| Concurrency | 路径级 write file lease；branch/worktree per task；手动 merge owner | 自动冲突解决、复杂代码 ownership 推断 |
+| IM | task room、project room、message、system message、approval message、presence snapshot | E2EE、federation、完整 Slack 替代 |
+| Approval | command/git/external action 三类风险审批 | 任意 tool 的细粒度策略语言 |
+| Skill | `skill.yaml` schema validate、permission summary、capability matching | Skill marketplace、eval 平台、复杂 MCP marketplace |
+| Scheduler | Rule-based single-run assignment | 成本学习、历史成功率模型、自动多 agent decomposition |
+| Observability | Run timeline、event log、artifact pointer、basic audit | 完整 replay debugger、SIEM/WORM storage |
+
+v0.1 的“100% 可实施”定义是：工程师不需要再问产品范围问题，只需要根据本节、核心 schema、API contract、node protocol、adapter contract 和验收测试实现。后续章节若与本节冲突，以本节为准。
+
 ## 3. 核心领域模型、状态机与事件基础
 
 ### 3.1 模块解决的问题
@@ -279,15 +305,23 @@ artoo 的复杂度来自多个系统共享同一组事实：谁创建了任务�
 | Computer | 可连接和调度的计算节点 | 运行 `artood`，承载 runtime 和 agent instance |
 | AgentRuntime | 某类 agent 的运行时定义 | 如 codex、claude-code、openhands、aider、browser-use |
 | AgentInstance | 某台 Computer 上的具体 agent 实例 | 有状态、队列、workspace、runtime config |
+| ModelProfile | AgentInstance 使用的模型配置 | provider、model、context window、cost tier、capability tags |
+| EffortProfile | AgentInstance 使用的推理/执行强度配置 | low/medium/high/max、预算、超时、适用任务类型 |
 | Project | 任务和协作的项目空间 | 拥有 sprint、task、room、skill policy |
 | Sprint | Scrum 时间盒 | 包含 task 和 board 状态 |
 | Task | 可分配、可执行、可验收的工作单元 | 关联 room、run、artifact、approval |
+| TaskDAG | 一组有依赖关系的任务图 | 定义 child task、依赖边、并行层、聚合验收 |
+| TaskDependency | task 之间的依赖边 | 决定 ready 条件、阻塞传播和并发边界 |
 | Room | IM 协作空间 | 可绑定 project、sprint、task 或 actor |
 | Message | 房间中的消息或系统事件呈现 | 关联 actor、task、run、approval、artifact |
 | Skill | 可治理能力包 | 绑定 capability、permission、runtime compatibility |
 | Run | 一次 agent 执行过程 | 关联 task、agent instance、computer、events、artifacts |
 | Artifact | 任务产物 | patch、PR、截图、报告、日志、文件、链接 |
 | Approval | 人类或 policy 对某个 action 的批准结果 | 关联 task、run、skill action、message |
+| Memory | 可治理的共享记忆条目 | 关联来源事件、作用域、置信度、TTL、访问策略 |
+| ContextPack | 为某次 run 生成的上下文包 | 聚合 task brief、相关记忆、代码索引、依赖任务和权限 |
+| FileLease | 文件或目录的并发写入租约 | 防止多个 agent 同时修改同一冲突热点 |
+| IntegrationJob | 多个 artifact 的合并和验证任务 | 关联 integration queue、merge owner、CI 结果 |
 | Event | 业务事实 | 由所有模块写入和订阅 |
 
 ### 3.3 Task 状态机
@@ -359,21 +393,21 @@ Run 必须记录：
 
 ```json
 {
-  "id": "evt_01h...",
+  "id": "evt_01J0ARTOO000000000000001",
   "type": "run.event",
   "schema_version": "2026-06-11",
-  "organization_id": "org_...",
-  "project_id": "proj_...",
-  "task_id": "task_...",
-  "room_id": "room_...",
-  "run_id": "run_...",
+  "organization_id": "org_default",
+  "project_id": "proj_artoo",
+  "task_id": "task_approval_inbox",
+  "room_id": "room_task_approval_inbox",
+  "run_id": "run_approval_inbox_001",
   "actor": {
     "type": "agent",
-    "id": "agent_..."
+    "id": "agent_coder_001"
   },
   "occurred_at": "2026-06-11T06:30:00Z",
   "visibility": "project",
-  "correlation_id": "corr_...",
+  "correlation_id": "corr_approval_inbox_001",
   "payload": {}
 }
 ```
@@ -384,6 +418,9 @@ Run 必须记录：
 | --- | --- | --- |
 | `task.created` | Task Service | IM、Dashboard、Scheduler |
 | `task.updated` | Task Service | Dashboard、Audit |
+| `task.decomposed` | Task DAG Orchestrator | Scheduler、IM、Dashboard |
+| `dag.node.ready` | Task DAG Orchestrator | Scheduler、Concurrency Controller |
+| `dag.node.blocked` | Task DAG Orchestrator | IM、Dashboard、Scheduler |
 | `task.assigned` | Scheduler | Task、IM、Control Plane |
 | `room.created` | IM Service | Dashboard、Notification |
 | `message.created` | IM Service | Web、iOS、Agent adapter |
@@ -395,8 +432,15 @@ Run 必须记录：
 | `approval.requested` | Policy/Adapter | IM、iOS、Dashboard |
 | `approval.resolved` | User/Policy | Adapter、Task |
 | `artifact.created` | Adapter | Task、Dashboard、Audit |
+| `file_lease.acquired` | Concurrency Controller | Scheduler、Audit、Dashboard |
+| `file_lease.released` | Concurrency Controller | Scheduler、Audit、Dashboard |
+| `integration.queued` | Concurrency Controller | Integrator Agent、Dashboard |
+| `integration.completed` | Integrator Agent/CI | Task DAG、Dashboard、Audit |
 | `handoff.requested` | Agent/User | Scheduler、IM |
 | `skill.invoked` | Adapter/Tool Layer | Policy、Audit |
+| `memory.proposed` | Agent/User | Memory Service、Memory Curator |
+| `memory.accepted` | Memory Service | Context Builder、Audit |
+| `context_pack.created` | Memory Service | Runtime Adapter、Audit |
 
 ### 3.6 存储设计
 
@@ -416,6 +460,345 @@ Postgres 建议分 schema：
 - 写入核心业务表时，同事务写入 event。
 - 大型日志、截图、文件和 replay bundle 放入 object storage，event 只保存 pointer。
 - Redis 只保存可丢弃状态，例如 presence、typing、queue lease、短期 fanout。
+
+### 3.7 v0.1 core database schema
+
+v0.1 只需要能支撑单组织、多 Computer、一个真实 runtime、Task DAG、task room、approval、artifact、ContextPack 和 file lease。下面字段是 migration 的最小合同，后续可以加列，但不能破坏这些主键、外键和状态枚举。
+
+#### identity
+
+```sql
+organizations(
+  id text primary key,
+  name text not null,
+  created_at timestamptz not null
+)
+
+users(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  email text not null unique,
+  display_name text not null,
+  role text not null check (role in ('owner','admin','member')),
+  created_at timestamptz not null
+)
+
+agents(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  display_name text not null,
+  kind text not null check (kind in ('coding','reviewer','planner','integrator','qa','memory_curator','mock')),
+  status text not null check (status in ('offline','idle','queued','running','awaiting_approval','blocked','failed')),
+  capabilities jsonb not null default '[]',
+  created_at timestamptz not null
+)
+```
+
+#### work
+
+```sql
+projects(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  name text not null,
+  default_workspace text,
+  created_at timestamptz not null
+)
+
+tasks(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  project_id text not null references projects(id),
+  parent_task_id text references tasks(id),
+  room_id text,
+  title text not null,
+  description text not null default '',
+  status text not null check (status in ('backlog','ready','assigned','running','awaiting_approval','blocked','review','done','cancelled')),
+  priority text not null default 'p2',
+  assignee_type text check (assignee_type in ('user','agent','agent_team')),
+  assignee_id text,
+  required_capabilities jsonb not null default '[]',
+  preferred_model_profile_id text,
+  preferred_effort text check (preferred_effort in ('low','medium','high','max')),
+  acceptance_criteria jsonb not null default '[]',
+  created_by_type text not null check (created_by_type in ('user','agent','system')),
+  created_by_id text not null,
+  created_at timestamptz not null,
+  updated_at timestamptz not null
+)
+
+task_dependencies(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  from_task_id text not null references tasks(id),
+  to_task_id text not null references tasks(id),
+  type text not null check (type in ('blocks','artifact_required')),
+  created_at timestamptz not null,
+  unique(from_task_id, to_task_id, type)
+)
+
+runs(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  task_id text not null references tasks(id),
+  computer_id text not null,
+  agent_instance_id text not null,
+  runtime_id text not null,
+  scheduler_decision_id text,
+  model_profile_id text references model_profiles(id),
+  effort_profile_id text references effort_profiles(id),
+  status text not null check (status in ('queued','starting','running','awaiting_input','paused','completed','failed','cancelled')),
+  context_pack_id text,
+  started_at timestamptz,
+  ended_at timestamptz,
+  failure_reason text,
+  sequence bigint not null default 0,
+  created_at timestamptz not null
+)
+
+scheduler_decisions(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  task_id text not null references tasks(id),
+  selected_computer_id text not null,
+  selected_agent_instance_id text not null,
+  selected_model_profile_id text references model_profiles(id),
+  selected_effort_profile_id text references effort_profiles(id),
+  mode text not null check (mode in ('auto','manual')),
+  score integer not null,
+  reason text not null,
+  candidates jsonb not null default '[]',
+  created_at timestamptz not null
+)
+
+artifacts(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  task_id text not null references tasks(id),
+  run_id text references runs(id),
+  type text not null check (type in ('patch','pull_request','file','screenshot','report','log_bundle','url','test_result')),
+  uri text not null,
+  metadata jsonb not null default '{}',
+  checksum text,
+  created_at timestamptz not null
+)
+```
+
+#### collab
+
+```sql
+rooms(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  project_id text references projects(id),
+  task_id text references tasks(id),
+  type text not null check (type in ('dm','project','sprint','task','agent_team','incident')),
+  name text not null,
+  created_at timestamptz not null
+)
+
+messages(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  room_id text not null references rooms(id),
+  task_id text references tasks(id),
+  run_id text references runs(id),
+  actor_type text not null check (actor_type in ('user','agent','system','bridge')),
+  actor_id text not null,
+  kind text not null,
+  body text not null default '',
+  payload jsonb not null default '{}',
+  created_at timestamptz not null
+)
+
+approvals(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  task_id text not null references tasks(id),
+  run_id text references runs(id),
+  requested_by_type text not null check (requested_by_type in ('agent','system')),
+  requested_by_id text not null,
+  action text not null,
+  risk text not null check (risk in ('low','medium','high')),
+  summary text not null,
+  payload_ref text,
+  status text not null check (status in ('pending','approved','rejected','needs_more_info','expired')),
+  resolved_by text,
+  resolved_at timestamptz,
+  expires_at timestamptz,
+  created_at timestamptz not null
+)
+```
+
+#### fleet and execution
+
+```sql
+computers(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  display_name text not null,
+  hostname text not null,
+  os text not null,
+  arch text not null,
+  status text not null check (status in ('enrolling','online','offline','disabled')),
+  last_heartbeat_at timestamptz,
+  resources jsonb not null default '{}',
+  capabilities jsonb not null default '[]',
+  created_at timestamptz not null
+)
+
+agent_runtimes(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  computer_id text not null references computers(id),
+  runtime text not null,
+  version text,
+  status text not null check (status in ('detected','available','missing','disabled')),
+  metadata jsonb not null default '{}',
+  unique(computer_id, runtime)
+)
+
+model_profiles(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  name text not null,
+  provider text not null,
+  model text not null,
+  context_window integer,
+  cost_tier text not null check (cost_tier in ('low','medium','high','premium')),
+  latency_tier text not null check (latency_tier in ('fast','normal','slow')),
+  capability_tags jsonb not null default '[]',
+  config jsonb not null default '{}',
+  enabled boolean not null default true,
+  created_at timestamptz not null,
+  unique(organization_id, name)
+)
+
+effort_profiles(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  name text not null,
+  effort text not null check (effort in ('low','medium','high','max')),
+  max_runtime_minutes integer not null,
+  max_cost_usd numeric(10,2),
+  max_tool_calls integer,
+  retry_budget integer not null default 0,
+  description text not null default '',
+  config jsonb not null default '{}',
+  enabled boolean not null default true,
+  created_at timestamptz not null,
+  unique(organization_id, name)
+)
+
+agent_instances(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  computer_id text not null references computers(id),
+  agent_id text not null references agents(id),
+  runtime text not null,
+  model_profile_id text references model_profiles(id),
+  effort_profile_id text references effort_profiles(id),
+  status text not null check (status in ('idle','queued','running','stopping','failed','disabled')),
+  workspace_root text,
+  config jsonb not null default '{}',
+  created_at timestamptz not null
+)
+```
+
+#### memory and concurrency
+
+```sql
+memories(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  project_id text references projects(id),
+  scope_type text not null check (scope_type in ('run','task','project','code','org')),
+  scope_id text,
+  kind text not null,
+  title text not null,
+  content text not null,
+  source_event_id text,
+  confidence text not null check (confidence in ('low','medium','high')),
+  status text not null check (status in ('proposed','active','rejected','deprecated')),
+  tags jsonb not null default '[]',
+  created_at timestamptz not null
+)
+
+context_packs(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  task_id text not null references tasks(id),
+  run_id text,
+  payload jsonb not null,
+  source_memory_ids jsonb not null default '[]',
+  created_at timestamptz not null
+)
+
+file_leases(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  project_id text not null references projects(id),
+  task_id text not null references tasks(id),
+  run_id text references runs(id),
+  holder_type text not null check (holder_type in ('agent','user')),
+  holder_id text not null,
+  path_globs jsonb not null,
+  mode text not null check (mode in ('read','write')),
+  status text not null check (status in ('active','released','expired')),
+  expires_at timestamptz not null,
+  created_at timestamptz not null
+)
+
+integration_jobs(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  root_task_id text not null references tasks(id),
+  status text not null check (status in ('queued','running','completed','failed','blocked')),
+  artifact_ids jsonb not null default '[]',
+  merge_owner_type text check (merge_owner_type in ('user','agent')),
+  merge_owner_id text,
+  result_artifact_id text,
+  created_at timestamptz not null
+)
+```
+
+#### event
+
+```sql
+event_log(
+  id text primary key,
+  organization_id text not null references organizations(id),
+  type text not null,
+  schema_version text not null,
+  actor_type text not null,
+  actor_id text not null,
+  task_id text,
+  room_id text,
+  run_id text,
+  correlation_id text not null,
+  idempotency_key text,
+  sequence bigint,
+  payload jsonb not null default '{}',
+  occurred_at timestamptz not null
+)
+```
+
+v0.1 必须建立的索引：
+
+- `tasks(project_id, status, updated_at)`
+- `tasks(parent_task_id)`
+- `task_dependencies(to_task_id)`
+- `runs(task_id, status, created_at)`
+- `messages(room_id, created_at)`
+- `approvals(status, expires_at)`
+- `computers(status, last_heartbeat_at)`
+- `model_profiles(organization_id, enabled, cost_tier)`
+- `effort_profiles(organization_id, enabled, effort)`
+- `agent_instances(status, computer_id)`
+- `agent_instances(model_profile_id, effort_profile_id, status)`
+- `event_log(correlation_id, occurred_at)`
+- `event_log(task_id, occurred_at)`
+- `file_leases(project_id, status, expires_at)`
 
 ## 4. Control Plane 与 Computer Node 设计
 
@@ -493,25 +876,167 @@ Command envelope：
 
 ```json
 {
-  "id": "cmd_...",
+  "id": "cmd_start_run_001",
   "type": "agent_instance.start",
-  "target_node_id": "node_...",
+  "target_node_id": "computer_workstation_001",
   "issued_at": "2026-06-11T06:40:00Z",
   "deadline_at": "2026-06-11T06:41:00Z",
   "payload": {
     "runtime": "codex",
-    "task_id": "task_...",
+    "task_id": "task_approval_inbox",
     "workspace": {
       "type": "git",
       "repo": "https://github.com/org/repo",
       "branch": "artoo/task-123"
     },
-    "policy_snapshot_id": "polsnap_..."
+    "policy_snapshot_id": "polsnap_approval_inbox_001"
   }
 }
 ```
 
-### 4.6 安全边界
+### 4.6 v0.1 node protocol contract
+
+v0.1 的 `artood` 协议只实现下面这些消息。所有消息都走同一个 WebSocket 连接，所有 command 都必须 ack，所有 event 都必须带 `sequence`。
+
+#### Node -> Server
+
+```json
+{
+  "kind": "node.hello",
+  "node_id": "computer_123",
+  "protocol_version": "2026-06-11",
+  "artood_version": "0.1.0",
+  "machine": {
+    "hostname": "workstation",
+    "os": "windows",
+    "arch": "x64"
+  }
+}
+```
+
+```json
+{
+  "kind": "node.heartbeat",
+  "node_id": "computer_123",
+  "sequence": 42,
+  "resources": {
+    "cpu_load": 0.31,
+    "memory_used_pct": 62,
+    "disk_free_gb": 180
+  },
+  "runtimes": [
+    {"runtime": "codex", "status": "available", "version": "unknown"},
+    {"runtime": "mock", "status": "available", "version": "0.1.0"}
+  ],
+  "running_instances": []
+}
+```
+
+```json
+{
+  "kind": "run.event",
+  "node_id": "computer_123",
+  "run_id": "run_123",
+  "sequence": 7,
+  "event": {
+    "type": "run.output",
+    "payload": {
+      "stream": "stdout",
+      "text": "tests passed"
+    }
+  }
+}
+```
+
+```json
+{
+  "kind": "command.ack",
+  "node_id": "computer_123",
+  "command_id": "cmd_123",
+  "status": "accepted",
+  "message": null
+}
+```
+
+#### Server -> Node
+
+```json
+{
+  "kind": "command",
+  "id": "cmd_start_run_123",
+  "idempotency_key": "run_123:start",
+  "type": "run.start",
+  "deadline_at": "2026-06-11T08:00:00Z",
+  "payload": {
+    "run_id": "run_123",
+    "task_id": "task_123",
+    "agent_instance_id": "agent_instance_123",
+    "runtime": "mock",
+    "workspace": {
+      "root": "C:/workspace/artoo",
+      "branch": "artoo/task-123"
+    },
+    "context_pack": {
+      "id": "ctx_123",
+      "uri": "inline",
+      "payload": {}
+    },
+    "policy_snapshot": {
+      "filesystem_write_scope": ["C:/workspace/artoo"],
+      "requires_approval": ["git.push", "external.post"]
+    }
+  }
+}
+```
+
+```json
+{
+  "kind": "command",
+  "id": "cmd_stop_run_123",
+  "idempotency_key": "run_123:stop",
+  "type": "run.stop",
+  "payload": {
+    "run_id": "run_123",
+    "reason": "user_cancelled"
+  }
+}
+```
+
+```json
+{
+  "kind": "command",
+  "id": "cmd_collect_artifacts_123",
+  "idempotency_key": "run_123:collect_artifacts",
+  "type": "artifact.collect",
+  "payload": {
+    "run_id": "run_123",
+    "paths": ["artifacts/**", "*.patch", "test-results/**"]
+  }
+}
+```
+
+#### Error contract
+
+Node command errors must use one of these codes:
+
+- `runtime_missing`
+- `workspace_missing`
+- `permission_denied`
+- `process_start_failed`
+- `process_exited`
+- `artifact_not_found`
+- `timeout`
+- `internal_error`
+
+Server 处理规则：
+
+- `runtime_missing`、`workspace_missing`：task 回到 `Ready`，Scheduler 尝试其他 Computer。
+- `permission_denied`：task 进入 `Blocked`，并创建 system message。
+- `process_start_failed`、`process_exited`：run `failed`，允许一次 retry。
+- `artifact_not_found`：run 可完成但 artifact 标记 missing。
+- `timeout`：run `failed`，释放 file lease。
+
+### 4.7 安全边界
 
 第一版必须具备：
 
@@ -533,7 +1058,7 @@ Command envelope：
 - Git push、PR merge、release、deploy。
 - 桌面点击涉及支付、删除、发布或账号安全。
 
-### 4.7 MVP 边界
+### 4.8 MVP 边界
 
 MVP 只需要支持：
 
@@ -592,8 +1117,17 @@ agent_id: agent_coding_01
 display_name: Codex on workstation
 workspace_root: C:/workspace
 model:
+  profile_id: model_gpt5_codex_high
   provider: openai
   name: gpt-5-codex
+  context_window: 200000
+  cost_tier: premium
+effort:
+  profile_id: effort_high_coding
+  level: high
+  max_runtime_minutes: 120
+  max_tool_calls: 200
+  max_cost_usd: 20
 limits:
   max_parallel_runs: 2
   max_runtime_minutes: 120
@@ -608,7 +1142,71 @@ skills:
 status: idle
 ```
 
-### 5.4 Run input 规范
+### 5.4 ModelProfile 与 EffortProfile
+
+不同 Agent 应该可以使用不同模型和不同 effort，这样 artoo 能把简单任务交给便宜、快速的 Agent，把复杂架构、关键 review、高风险修改交给更强模型和更高 effort 的 Agent。
+
+`ModelProfile` 描述“用哪个模型”：
+
+```yaml
+id: model_fast_coder
+name: Fast Coder
+provider: openai
+model: gpt-5-mini-codex
+context_window: 64000
+cost_tier: low
+latency_tier: fast
+capability_tags:
+  - code.modify
+  - small_task
+config:
+  temperature: 0.2
+```
+
+`EffortProfile` 描述“花多少推理和执行预算”：
+
+```yaml
+id: effort_high_review
+name: High Effort Review
+effort: high
+max_runtime_minutes: 90
+max_cost_usd: 15
+max_tool_calls: 150
+retry_budget: 1
+description: Used for security-sensitive or architecture-sensitive reviews.
+config:
+  reasoning_effort: high
+  require_plan_before_changes: true
+```
+
+建议内置 profiles：
+
+| Profile | 用途 | Model tier | Effort |
+| --- | --- | --- | --- |
+| `fast_fix` | 小 bug、小文案、小配置 | low/fast | low |
+| `standard_coding` | 普通功能开发 | medium | medium |
+| `deep_architect` | 架构、接口、数据模型 | premium | high |
+| `strict_reviewer` | 安全、权限、核心代码 review | premium | high/max |
+| `cheap_research` | 低风险资料整理 | low/medium | low |
+| `qa_runner` | 测试、截图、验收 | medium/fast | medium |
+
+AgentInstance 绑定默认 model/effort，但 task 可以声明偏好：
+
+- `preferred_model_profile_id`：用户或模板指定模型偏好。
+- `preferred_effort`：用户指定 low/medium/high/max。
+- `risk` 或 `priority`：Scheduler 可提升 effort。
+- `required_capabilities`：过滤不支持对应能力的 model profile。
+
+优先级规则：
+
+1. 用户显式指定 model/effort 时优先。
+2. Task template 指定时次之。
+3. Scheduler 根据任务类型、风险、复杂度、成本预算自动选择。
+4. Project policy 可以限制最高 cost tier 或最低 required effort。
+
+v0.1 不做自动学习型模型路由，只做规则选择和手动 override。
+
+### 5.5 Run input 规范
 
 Agent 接收的任务输入应包含：
 
@@ -641,6 +1239,18 @@ Agent 接收的任务输入应包含：
     "room_id": "room_task_123",
     "workspace": "C:/workspace/artoo"
   },
+  "model": {
+    "profile_id": "model_fast_coder",
+    "provider": "openai",
+    "model": "gpt-5-mini-codex",
+    "cost_tier": "low"
+  },
+  "effort": {
+    "profile_id": "effort_medium_coding",
+    "level": "medium",
+    "max_runtime_minutes": 60,
+    "max_tool_calls": 100
+  },
   "policy": {
     "requires_approval": ["git.push", "external.post"],
     "filesystem_write_scope": ["workspace"]
@@ -648,7 +1258,7 @@ Agent 接收的任务输入应包含：
 }
 ```
 
-### 5.5 RunEvent 规范
+### 5.6 RunEvent 规范
 
 Runtime adapter 产出的事件分为几类：
 
@@ -663,7 +1273,7 @@ Runtime adapter 产出的事件分为几类：
 
 每个事件都要能映射到 IM 和 run timeline。不是所有事件都要显示成聊天消息，但关键事件必须能在 task room 中可读。
 
-### 5.6 首批 adapter 策略
+### 5.7 首批 adapter 策略
 
 | Runtime | 优先级 | 集成方式 | MVP 目标 |
 | --- | --- | --- | --- |
@@ -674,13 +1284,67 @@ Runtime adapter 产出的事件分为几类：
 | OpenHands | P1 | API/server adapter | 完整 software agent platform |
 | OpenClaw | P1 | Local computer-use adapter | 本地 assistant 和 desktop control |
 
-### 5.7 Agent 开发原则
+### 5.8 Agent 开发原则
 
 - Agent 不直接修改 artoo 数据库，只通过 protocol/API 交互。
 - Agent 的计划、阻塞、审批和产物必须事件化。
 - Agent 之间的 delegation 必须留下 handoff event。
 - Agent 需要能够接收 user feedback，并把 feedback 纳入当前 run。
 - Agent 不能绕过 policy guard 调用本地高风险能力。
+
+### 5.9 v0.1 adapter implementation contract
+
+v0.1 不要求所有 runtime 原生支持完整生命周期。Adapter 必须实现统一外观，但可以按能力降级。
+
+| Capability | v0.1 要求 | 不支持时的降级 |
+| --- | --- | --- |
+| `detect` | 必须实现 | 返回 `missing` 并提供 install hint |
+| `start` | 必须实现 | 失败时返回 `process_start_failed` |
+| `send` | 必须支持初始 task input | 不要求 run 中途多轮输入；需要输入时进入 `awaiting_input` |
+| `streamEvents` | 必须至少支持 stdout/stderr line stream | 无结构化事件时包装为 `run.output` |
+| `pause` | 可选 | 不支持时映射为 `stop` 或返回 `unsupported` |
+| `resume` | 可选 | 不支持时创建新 run retry |
+| `stop` | 必须实现 | 先 graceful stop，再 kill process |
+| `collectArtifacts` | 必须实现 | 没有 artifact 时返回空数组并写入 `artifact_missing` warning |
+
+v0.1 首个真实 adapter 推荐选择 `mock` 之外的一个 process-based coding runtime。选择标准：
+
+- 可以从命令行启动。
+- 可以指定 workspace。
+- 可以通过 prompt file 或 stdin 注入任务。
+- stdout/stderr 可被捕获。
+- 产物可以通过 workspace diff、patch 文件或报告文件收集。
+
+Process adapter 的最小运行模型：
+
+```text
+prepare workspace
+write context_pack.md
+start process with command template
+stream stdout/stderr as run.output
+watch process exit
+collect git diff and artifacts
+emit run.completed or run.failed
+```
+
+Command template 示例：
+
+```yaml
+runtime: mock-coder
+command:
+  - artoo-mock-agent
+  - --context
+  - "{{context_pack_path}}"
+  - --workspace
+  - "{{workspace_root}}"
+artifacts:
+  - "*.patch"
+  - "artifacts/**"
+success_exit_codes:
+  - 0
+```
+
+真实 runtime 的深度能力，例如 tool-call trace、native approval callback、多轮 input、browser screenshot stream，全部进入 v0.2。
 
 ## 6. Scheduler 与资源分配设计
 
@@ -695,6 +1359,8 @@ Runtime adapter 产出的事件分为几类：
 - Project preferred computers。
 - Available skills。
 - Agent runtime compatibility。
+- Model profile compatibility。
+- Effort profile and budget。
 - Computer health and resource。
 - Agent instance queue depth。
 - User priority and deadline。
@@ -736,6 +1402,8 @@ score =
   + computer_healthy * 30
   + data_locality * 20
   + user_preference * 20
+  + model_fit * 20
+  + effort_fit * 15
   + idle_bonus * 15
   - queue_depth * 10
   - permission_risk * 20
@@ -749,9 +1417,45 @@ score =
 - Runtime 不可用。
 - Policy 不允许。
 - 缺 required secret。
+- ModelProfile 不满足 required capability 或 project policy。
+- EffortProfile 超出 task/project cost budget。
 - 资源低于最低要求。
 
-### 6.5 调度流程
+### 6.5 Model/Effort routing
+
+Scheduler 需要同时选择 `AgentInstance + Computer + ModelProfile + EffortProfile`。在 v0.1 中，Model/Effort 已经绑定在 AgentInstance 上，Scheduler 只需要在候选 AgentInstance 中选择；v0.2 可以允许同一个 AgentInstance 动态切换 model/effort。
+
+任务复杂度建议：
+
+| Task signal | 推荐 model/effort |
+| --- | --- |
+| 文案、简单配置、低风险小改动 | low-cost model + low effort |
+| 普通功能开发、常规 bugfix | medium model + medium effort |
+| 架构设计、数据模型、跨模块接口 | premium model + high effort |
+| 权限、安全、支付、发布、生产操作 | premium model + high/max effort + approval |
+| 大规模 refactor 或高冲突任务 | premium model + high effort + reviewer/integrator |
+| 测试、截图、格式化、重复执行 | fast model + medium effort |
+
+路由规则：
+
+```text
+if user_specified_model_or_effort:
+  filter candidates by explicit preference
+else:
+  infer complexity from task type, priority, risk, dependencies, file scope
+  select lowest-cost profile that satisfies required capability and minimum effort
+
+if task.risk == high:
+  minimum_effort = high
+  require_reviewer = true
+
+if task.priority == p0 and deadline is near:
+  prefer latency_tier = fast unless risk is high
+```
+
+Model/Effort 的选择必须写入 `scheduler_decision` 和 `run`，这样后续能分析成本、速度和成功率。
+
+### 6.6 调度流程
 
 ```mermaid
 sequenceDiagram
@@ -773,7 +1477,7 @@ sequenceDiagram
   Control-->>Task: task.running
 ```
 
-### 6.6 失败和重试
+### 6.7 失败和重试
 
 失败分类：
 
@@ -794,20 +1498,404 @@ sequenceDiagram
 - 若失败原因是 permission/approval，进入 `Blocked`，不自动绕过。
 - 每次重试都创建新的 Run，并关联同一个 Task。
 
-### 6.7 多 Agent 协作调度
+### 6.8 多 Computer Agent 协作的核心模型
 
-第一版不需要自动复杂拆解，但协议要预留：
+多 Computer 协作的目标不是简单地“同时启动更多 Agent”，而是把一个大目标拆成可并行、可验证、可合并、可审计的工作单元。artoo 应采用 **Task DAG + Agent Team + Shared Memory + Integration Queue** 的组合。
 
-- `agent_team`：多个 agent 的组合，例如 implementer + reviewer。
-- `task.decomposed`：一个任务拆成多个 child tasks。
-- `handoff`：一个 agent 把任务转交给另一个 agent。
-- `review`：一个 agent 请求另一个 agent 审查 artifact。
+核心原则：
 
-MVP 可先实现固定模式：
+- **DAG 驱动并发**：只有依赖满足的 task 才进入 `Ready`，Scheduler 只调度 ready nodes。
+- **Contract-first**：先定义接口、数据模型、文件边界和验收标准，再并行实现。
+- **Artifact-based collaboration**：Agent 之间通过 artifact、contract、review result 和 handoff 协作，而不是只靠自由聊天。
+- **Memory is curated**：长期共享记忆必须经过提议、筛选、结构化和作用域控制。
+- **Integration is explicit**：并行产物进入 integration queue，由 Integrator Agent 或人类负责合并和回归。
 
-- coding task 默认由 implementer agent 执行。
-- 高风险或高优先级 task 可配置 reviewer agent。
-- reviewer 只读 artifact 和 diff，输出 review result。
+### 6.9 Task DAG 设计
+
+Task DAG 是任务有向无环图。它描述任务之间的依赖关系，告诉系统哪些任务可以并发执行，哪些任务必须等待前置任务完成。
+
+示例：
+
+```text
+T0: Define API contract
+  ├── T1: Implement backend endpoint
+  ├── T2: Implement Web approval inbox
+  ├── T3: Implement iOS approval inbox
+  └── T4: Add policy tests
+        ↓
+T5: Integrate frontend/backend/iOS contracts
+        ↓
+T6: Run end-to-end acceptance
+```
+
+在这个 DAG 中，`T1`、`T2`、`T3`、`T4` 可以并发，但它们都依赖 `T0`。`T5` 必须等待并行任务完成，`T6` 又依赖 `T5`。
+
+Task DAG 数据结构建议：
+
+```yaml
+id: dag_approval_inbox
+root_task_id: task_100
+strategy: contract_first_parallel
+nodes:
+  - task_id: task_api_contract
+    role: architect
+    outputs:
+      - api_contract
+      - data_model
+  - task_id: task_backend
+    role: implementer
+    depends_on:
+      - task_api_contract
+    required_capabilities:
+      - code.modify
+      - test.run
+    file_scope:
+      - server/approvals/**
+  - task_id: task_web
+    role: implementer
+    depends_on:
+      - task_api_contract
+    file_scope:
+      - web/src/approvals/**
+  - task_id: task_integration
+    role: integrator
+    depends_on:
+      - task_backend
+      - task_web
+edges:
+  - from: task_api_contract
+    to: task_backend
+    type: blocks
+  - from: task_backend
+    to: task_integration
+    type: artifact_required
+```
+
+Task DAG node 状态：
+
+- `planned`
+- `ready`
+- `leased`
+- `running`
+- `awaiting_approval`
+- `review`
+- `done`
+- `blocked`
+- `cancelled`
+
+依赖边类型：
+
+| Edge type | 含义 |
+| --- | --- |
+| `blocks` | 前置任务完成后后置任务才能开始 |
+| `artifact_required` | 后置任务需要前置任务产物 |
+| `contract_required` | 后置任务依赖前置任务输出的接口/数据契约 |
+| `review_required` | 后置任务需要前置任务通过 review |
+| `soft_context` | 可开始，但应读取前置任务上下文 |
+
+### 6.10 Agent Team 角色
+
+多 Computer 并发时，Agent 角色应固定，避免所有 Agent 都做同一种事情。
+
+| Role | 主要职责 | 典型产物 |
+| --- | --- | --- |
+| Planner | 把目标拆成 Task DAG，识别依赖和并行层 | DAG、task brief、risk list |
+| Architect | 先定义模块边界、API、数据模型、文件 ownership | contract、ADR、schema |
+| Implementer | 在独立分支/worktree 中实现单个 DAG node | patch、test、notes |
+| Reviewer | 审查实现、测试、权限风险和 contract 遵守情况 | review result、change request |
+| Integrator | 合并多个 artifact，解决冲突，跑集成测试 | merged branch、integration report |
+| QA Agent | 执行端到端测试、截图 QA、验收标准检查 | test report、screenshots |
+| Memory Curator | 选择哪些发现进入长期共享记忆 | memory entries、obsolete markers |
+| Release Agent | 整理 changelog、PR、发布说明 | PR、release notes |
+
+推荐默认团队：
+
+- 小任务：`Implementer + Reviewer`。
+- 中等功能：`Planner + Architect + Implementer N + Reviewer + Integrator`。
+- 跨端功能：`Planner + Architect + Backend Implementer + Web Implementer + iOS Implementer + Integrator + QA`。
+
+### 6.11 共享记忆设计
+
+共享记忆不能等同于共享全部聊天记录。artoo 应把记忆分层治理：
+
+| Memory layer | 内容 | 生命周期 | 读者 |
+| --- | --- | --- | --- |
+| Run memory | 单次 run 的 scratchpad、临时判断、工具结果 | run 结束后压缩或归档 | 当前 Agent、Reviewer |
+| Task memory | 任务计划、关键决策、阻塞原因、产物摘要、验收结果 | task 完成后长期保留摘要 | 同 task/DAG 内 Agent |
+| Project memory | 架构决策、代码规范、模块边界、API contract、常见坑 | 长期，需治理 | 项目内所有 Agent |
+| Code memory | repo map、symbol index、文件 ownership、测试入口、依赖图 | 随代码变更更新 | Coding Agent、Scheduler |
+| Org memory | 用户偏好、团队流程、安全策略、默认审批规则 | 长期，严格权限 | 组织内授权 Agent |
+
+Memory entry schema：
+
+```yaml
+id: mem_123
+scope:
+  type: project
+  id: proj_artoo
+kind: architecture_decision
+title: Approval actions must go through Policy Service
+content: Approval requests are created by Policy Service and rendered in task rooms and inboxes.
+source:
+  event_id: evt_456
+  task_id: task_approval_design
+  run_id: run_789
+confidence: high
+status: active
+ttl: null
+access_policy:
+  roles:
+    - agent
+    - member
+tags:
+  - approval
+  - policy
+  - architecture
+created_by: agent_architect
+created_at: 2026-06-11T08:00:00Z
+```
+
+写入流程：
+
+1. Agent 或 User 产生 `memory.proposed`。
+2. Memory Service 校验来源、作用域、重复度和敏感信息。
+3. Memory Curator 接受、合并、降级或拒绝。
+4. 接受后写入 structured memory，并按需写入 vector index。
+5. `memory.accepted` 写入 event store。
+
+读取流程：
+
+1. Runtime Adapter 请求任务上下文。
+2. Context Builder 根据 task、DAG node、agent role、file scope、skill 和 policy 检索相关记忆。
+3. Context Builder 生成 `ContextPack`。
+4. Adapter 把 ContextPack 注入 Agent。
+5. `context_pack.created` 记录本次 run 使用了哪些记忆来源。
+
+ContextPack 示例：
+
+```yaml
+task_brief:
+  id: task_web_approval_inbox
+  title: Implement Web approval inbox
+acceptance_criteria:
+  - Pending approvals are visible
+  - Approve/reject updates task room
+dag_context:
+  root_task: task_approval_inbox
+  dependencies:
+    - task_api_contract
+contracts:
+  - artifact://api_contract_approval_v1
+project_memory:
+  - mem_policy_service_boundary
+  - mem_web_route_convention
+code_memory:
+  relevant_files:
+    - web/src/routes/approvals.tsx
+    - web/src/components/inbox/**
+  test_commands:
+    - pnpm test -- approvals
+constraints:
+  file_scope:
+    - web/src/**
+  approval_required_for:
+    - git.push
+```
+
+### 6.12 Code memory 与 repo 并发索引
+
+为了最大化并发，artoo 需要知道代码结构和冲突热点。
+
+Code memory 包含：
+
+- repo tree。
+- symbol index。
+- module ownership。
+- dependency graph。
+- test ownership。
+- file churn。
+- known hotspots。
+- recent failed tests。
+- active file leases。
+
+实现方式：
+
+- MVP：使用 `rg --files`、语言包管理器、测试配置和简单静态扫描生成 repo map。
+- 下一阶段：使用 tree-sitter、LSP、ctags/LSIF 生成 symbol graph。
+- 后续：结合 git history 识别高冲突文件和高风险模块。
+
+Scheduler 使用 code memory：
+
+- 避免两个 Agent 同时修改同一文件或同一高冲突模块。
+- 优先把已有 repo checkout 的 Computer 分配给相关任务。
+- 把测试任务调度到有依赖缓存的 Computer。
+- 对核心接口文件施加更严格 lease。
+
+### 6.13 并发控制：File Lease、Branch 和 Worktree
+
+多 Agent 并发开发时，最常见的问题是冲突、重复工作和互相覆盖。artoo 应内置 Concurrency Controller。
+
+关键机制：
+
+- **File Lease**：Agent 在修改文件前申请文件或目录租约。
+- **Branch per task**：每个 task 使用独立 branch。
+- **Worktree per run**：每个 run 使用独立 worktree 或 workspace。
+- **Artifact Contract**：每个 task 明确必须产出的 artifact。
+- **Integration Queue**：所有并行产物进入合并队列。
+- **Merge Owner**：一个 Integrator Agent 或 User 对合并负责。
+
+FileLease 示例：
+
+```yaml
+id: lease_123
+task_id: task_web_approval_inbox
+run_id: run_456
+holder:
+  type: agent
+  id: agent_web_1
+scope:
+  paths:
+    - web/src/components/approval/**
+    - web/src/routes/inbox.tsx
+mode: write
+expires_at: 2026-06-11T09:00:00Z
+status: active
+```
+
+Lease 规则：
+
+- 同一路径同一时间只能有一个 write lease。
+- read lease 可以并发。
+- 核心 contract 文件需要短 lease 和 reviewer approval。
+- lease 过期自动释放，但必须标记 run risk。
+- 如果 Agent 需要扩大文件范围，必须申请 lease extension。
+
+### 6.14 并发开发流水线
+
+推荐流水线：
+
+1. User 创建高层 task。
+2. Planner Agent 生成 Task DAG。
+3. Architect Agent 先产出 contract。
+4. Contract 通过 review 后，DAG 解锁并行层。
+5. Scheduler 为每个 ready node 选择 AgentInstance 和 Computer。
+6. Concurrency Controller 分配 branch/worktree/file lease。
+7. Implementer Agents 并行开发。
+8. Reviewer Agents 并行审查 artifact。
+9. Integrator Agent 从 integration queue 合并产物。
+10. QA Agent 执行端到端验收。
+11. Memory Curator 沉淀稳定经验。
+12. User 最终验收。
+
+```mermaid
+flowchart LR
+  User["User task"] --> Planner["Planner: Task DAG"]
+  Planner --> Architect["Architect: contracts"]
+  Architect --> ReviewContract["Contract review"]
+  ReviewContract --> B1["Backend task"]
+  ReviewContract --> B2["Web task"]
+  ReviewContract --> B3["iOS task"]
+  ReviewContract --> B4["Tests task"]
+  B1 --> R1["Review"]
+  B2 --> R2["Review"]
+  B3 --> R3["Review"]
+  B4 --> R4["Review"]
+  R1 --> Integrator["Integration queue"]
+  R2 --> Integrator
+  R3 --> Integrator
+  R4 --> Integrator
+  Integrator --> QA["QA and acceptance"]
+  QA --> Memory["Memory curation"]
+  Memory --> Done["Done"]
+```
+
+最大并发度不应简单等于 Agent 数量，而应由系统动态计算：
+
+```text
+parallelism = min(
+  ready_dag_nodes,
+  available_agent_instances,
+  available_computers,
+  repo_conflict_budget,
+  ci_capacity,
+  policy_parallel_limit
+)
+```
+
+其中：
+
+- `ready_dag_nodes`：依赖已满足的任务数。
+- `available_agent_instances`：可用 Agent 实例数。
+- `available_computers`：资源足够且在线的 Computer 数。
+- `repo_conflict_budget`：基于 active leases 和代码热点估计。
+- `ci_capacity`：测试和集成资源容量。
+- `policy_parallel_limit`：组织或项目对并发高风险操作的限制。
+
+### 6.15 Integration Queue 设计
+
+Integration Queue 负责把并行产物变成一个可验收结果。
+
+队列项：
+
+```yaml
+id: integration_123
+root_task_id: task_approval_inbox
+artifacts:
+  - artifact_backend_patch
+  - artifact_web_patch
+  - artifact_ios_patch
+merge_owner:
+  type: agent
+  id: agent_integrator_1
+status: queued
+required_checks:
+  - unit_tests
+  - typecheck
+  - e2e_smoke
+conflicts: []
+```
+
+Integrator Agent 职责：
+
+- 拉取所有并行 branch 或 patch。
+- 检查 contract 是否一致。
+- 合并 patch。
+- 解决冲突或生成 `conflict_event`。
+- 运行集成测试。
+- 生成 integration report。
+- 把结果推到 Review 或 Blocked。
+
+冲突处理：
+
+- 小冲突由 Integrator Agent 解决。
+- 涉及 contract 变化的冲突回到 Architect。
+- 涉及产品取舍的冲突回到 User。
+- 所有冲突都进入 task room。
+
+### 6.16 MVP 边界
+
+第一版可以不做完全自动的复杂 DAG，但必须把协议和对象先立住。
+
+MVP 建议：
+
+- 手动或 Planner mock 生成 3-5 个 child tasks。
+- 支持 `blocks` 和 `artifact_required` 两种依赖边。
+- 支持 task ready 自动解锁。
+- 支持每个 task 独立 branch/worktree。
+- 支持简单 file lease。
+- 支持 task memory summary。
+- 支持 ContextPack 生成。
+- 支持 integration queue 的手动 merge owner。
+- 支持 Integrator Agent 或 User 完成合并。
+
+后续增强：
+
+- 自动代码依赖分析。
+- 自动 DAG 拆解和优化。
+- 多 Agent hedged execution。
+- 基于历史成功率的并发度调节。
+- 自动 memory dedup 和 stale memory detection。
+- 自动 contract drift 检测。
 
 ## 7. Agent-native IM 与协作协议设计
 
@@ -1359,7 +2447,206 @@ WebSocket topics：
 - `inbox:{user_id}`
 - `node:{node_id}`
 
-### 10.6 Reliability
+### 10.6 v0.1 API contract
+
+所有 REST API 使用 JSON，所有写操作支持 `Idempotency-Key` header。错误响应固定为：
+
+```json
+{
+  "error": {
+    "code": "validation_error",
+    "message": "title is required",
+    "details": {}
+  }
+}
+```
+
+错误码：
+
+- `validation_error`
+- `not_found`
+- `permission_denied`
+- `conflict`
+- `invalid_state`
+- `runtime_unavailable`
+- `computer_offline`
+- `approval_required`
+- `internal_error`
+
+#### Create task
+
+```text
+POST /api/v1/tasks
+```
+
+Request：
+
+```json
+{
+  "project_id": "proj_123",
+  "title": "Build approval inbox",
+  "description": "Implement approval inbox in Web.",
+  "priority": "p1",
+  "acceptance_criteria": [
+    "Pending approvals are visible",
+    "Approve/reject updates task room"
+  ],
+  "required_capabilities": ["code.modify", "test.run"],
+  "preferred_model_profile_id": "model_standard_coding",
+  "preferred_effort": "medium",
+  "parent_task_id": null
+}
+```
+
+Response：
+
+```json
+{
+  "task": {
+    "id": "task_123",
+    "status": "backlog",
+    "room_id": "room_task_123"
+  }
+}
+```
+
+#### Create dependency
+
+```text
+POST /api/v1/tasks/:id/dependencies
+```
+
+Request：
+
+```json
+{
+  "depends_on_task_id": "task_contract",
+  "type": "blocks"
+}
+```
+
+Response：
+
+```json
+{
+  "dependency": {
+    "id": "dep_123",
+    "from_task_id": "task_contract",
+    "to_task_id": "task_implementation",
+    "type": "blocks"
+  }
+}
+```
+
+#### Mark task ready
+
+```text
+POST /api/v1/tasks/:id/ready
+```
+
+规则：
+
+- 所有 `blocks` dependency 的上游 task 必须是 `done`。
+- acceptance criteria 不能为空。
+- 若 ready 成功，写入 `task.updated` 和 `dag.node.ready`。
+
+#### Start assignment
+
+```text
+POST /api/v1/tasks/:id/assign
+```
+
+Request：
+
+```json
+{
+  "mode": "auto",
+  "agent_instance_id": null,
+  "model_profile_id": null,
+  "effort": null
+}
+```
+
+Response：
+
+```json
+{
+  "run": {
+    "id": "run_123",
+    "status": "queued",
+    "computer_id": "computer_123",
+    "agent_instance_id": "agent_instance_123",
+    "model_profile_id": "model_standard_coding",
+    "effort_profile_id": "effort_medium_coding"
+  },
+  "scheduler_decision": {
+    "reason": "capability_model_effort_match_and_idle",
+    "score": 185
+  }
+}
+```
+
+#### Resolve approval
+
+```text
+POST /api/v1/approvals/:id/resolve
+```
+
+Request：
+
+```json
+{
+  "decision": "approved",
+  "comment": "Allowed for this task."
+}
+```
+
+Response：
+
+```json
+{
+  "approval": {
+    "id": "approval_123",
+    "status": "approved",
+    "resolved_at": "2026-06-11T08:10:00Z"
+  }
+}
+```
+
+#### Acquire file lease
+
+```text
+POST /api/v1/file-leases
+```
+
+Request：
+
+```json
+{
+  "project_id": "proj_123",
+  "task_id": "task_123",
+  "run_id": "run_123",
+  "path_globs": ["web/src/approvals/**"],
+  "mode": "write",
+  "ttl_seconds": 3600
+}
+```
+
+Response：
+
+```json
+{
+  "lease": {
+    "id": "lease_123",
+    "status": "active",
+    "expires_at": "2026-06-11T09:10:00Z"
+  }
+}
+```
+
+如果路径与 active write lease 冲突，返回 `409 conflict` 和冲突 lease 摘要。
+
+### 10.7 Reliability
 
 基础可靠性要求：
 
@@ -1393,7 +2680,17 @@ Web 是全功能工作台。建议页面：
    Fleet 列表、资源状态、runtime inventory、agent instances、最近 run。
 
 6. **Agents**  
-   Agent profile、capability、状态、队列、成功率、可用 skill。
+   Agent profile、capability、状态、队列、成功率、默认 model profile、默认 effort profile、可用 skill。
+
+Agent 配置页必须支持：
+
+- 选择 runtime。
+- 选择默认 ModelProfile。
+- 选择默认 EffortProfile。
+- 设置最大并发 run。
+- 设置 max runtime、max cost、max tool calls。
+- 查看最近任务的 cost、latency、成功率。
+- 标记适合的任务类型，例如 `fast_fix`、`deep_architect`、`strict_reviewer`。
 
 7. **Skills**  
    Registry、manifest、permission summary、compatibility matrix、enable/disable。
@@ -1425,9 +2722,18 @@ Run timeline：
 
 ### 11.3 iOS App
 
-iOS 聚焦高频控制，不复制完整 Web 后台。
+iOS 聚焦高频控制，不复制完整 Web 后台。但为了保证 v0.1 可以稳定交付，原生 iOS App 不进入 v0.1 必须完成范围。v0.1 只冻结移动端 API、notification 和 approval inbox contract，并用 Web responsive view 模拟移动端审批体验。
 
-首版功能：
+v0.1 必须冻结的移动端合同：
+
+- 创建任务 API：文字输入、project、priority、acceptance criteria。
+- Inbox API：approval、blocked、@mention、run failed。
+- Task detail API：状态、assignee、task room 摘要、run timeline 摘要、artifact。
+- Approval API：approve、reject、need more info。
+- Run control API：cancel、retry。`pause/resume` 若 runtime 不支持则隐藏。
+- Push payload schema：approval request、task blocked、run failed、artifact ready。
+
+v0.2 原生 iOS App 功能：
 
 - 创建任务：文字、语音转文本、截图、链接、文件。
 - 查看 Inbox：approval、blocked、@mention、run failed。
@@ -1436,12 +2742,13 @@ iOS 聚焦高频控制，不复制完整 Web 后台。
 - 控制 run：pause、resume、cancel、retry。
 - 验收：accept/request changes。
 
-iOS 不做或后置：
+iOS 后置能力：
 
 - 完整 skill manifest 编辑。
 - 大型日志浏览。
 - 复杂 project settings。
 - 完整 Computer runtime 配置。
+- 完整离线同步。
 
 ### 11.4 Client 实时同步
 
@@ -1500,10 +2807,13 @@ artoo 需要给 adapter 和 skill 开发者清晰入口：
 | API and auth | Backend | 高 | API Gateway、session、RBAC、REST/WebSocket |
 | IM core | Backend + Web | 高 | Room、message、presence、notification、task room |
 | Task/Scrum | Backend + Web | 高 | Project、task、board、status machine、assignment |
+| Task DAG | Backend + Agent | 中高 | task dependency、DAG ready 计算、Planner mock、阻塞传播 |
 | Control plane | Backend + Node | 中高 | Computer registry、heartbeat、command dispatch |
 | `artood` | Node/Systems | 高 | node auth、runtime detect、process supervisor、event stream |
 | Runtime adapter P0 | Agent/Node | 高 | Codex/Claude/aider 选一个先跑通 |
 | Scheduler | Backend | 中 | rule-based matching、assignment、retry |
+| Concurrency control | Backend + Node | 中 | file lease、branch/worktree 分配、integration queue |
+| Memory service | Backend + Agent | 中 | task memory、project memory、ContextPack、Memory Curator |
 | Skill/Policy | Backend/Security | 中 | skill manifest、permission summary、approval policy |
 | Observability | Backend/Web | 中 | run timeline、artifact store、audit event |
 | Web UX | Frontend/Product | 高 | Inbox、Chat、Board、Task detail、Computers |
@@ -1538,6 +2848,7 @@ artoo 需要给 adapter 和 skill 开发者清晰入口：
 交付：
 
 - Task CRUD。
+- Task dependency 和最小 Task DAG model。
 - Task room 自动创建。
 - Message send/list。
 - WebSocket room subscription。
@@ -1547,6 +2858,7 @@ artoo 需要给 adapter 和 skill 开发者清晰入口：
 验收：
 
 - 用户创建 task 后自动出现 task room。
+- 用户可以把一个大任务拆成多个 child tasks，并设置依赖。
 - 用户和 mock agent 能在 task room 里发消息。
 - Task 状态能从 Backlog 到 Ready。
 
@@ -1610,7 +2922,7 @@ artoo 需要给 adapter 和 skill 开发者清晰入口：
 - Agent run 完成后 task 进入 Review。
 - 用户能验收或要求修改。
 
-### 12.8 Milestone 5：Skill Registry 和第二个 Runtime
+### 12.8 Milestone 5：Skill Registry、Memory 和第二个 Runtime
 
 目标时间：第 11-12 周。
 
@@ -1622,12 +2934,19 @@ artoo 需要给 adapter 和 skill 开发者清晰入口：
 - Compatibility matrix。
 - 第二个 runtime adapter。
 - Scheduler capability matching。
+- Task memory summary。
+- ContextPack 生成。
+- 简单 file lease。
+- Integration queue 基础对象。
 
 验收：
 
 - Task 能声明 required capability。
 - Scheduler 能根据 capability 选择 runtime。
 - Skill 权限摘要可在 Web 查看。
+- Agent run 启动前能获得 ContextPack。
+- 并行 task 可以申请 file lease，冲突时进入 Blocked 或等待。
+- 多个 artifact 可以进入 integration queue，并由 User 或 Integrator Agent 处理。
 
 ### 12.9 Milestone 6：Beta polish
 
@@ -1689,10 +3008,14 @@ artoo 需要给 adapter 和 skill 开发者清晰入口：
 - Web Dashboard。
 - artoo-native minimal IM。
 - Task room。
+- 最小 Task DAG 和 task dependency。
 - Computer registry。
 - `artood`。
 - 一个真实 runtime adapter。
+- ModelProfile 和 EffortProfile 配置。
 - Rule-based scheduler。
+- Task memory summary 和 ContextPack。
+- 简单 file lease。
 - Approval inbox。
 - Basic skill manifest。
 - Run timeline 和 artifact store。
@@ -1713,16 +3036,71 @@ artoo 需要给 adapter 和 skill 开发者清晰入口：
 
 1. 用户在 Web 或 iOS 创建 task，并写入验收标准。
 2. 系统自动创建 task room。
-3. Scheduler 根据 capability、Computer 状态和 policy 选择 agent instance。
-4. Control Plane 通过 `artood` 启动 runtime adapter。
-5. Agent 执行任务，并持续产生 run events。
-6. 关键事件进入 task room 和 run timeline。
-7. 高风险动作触发 approval，并可在 Web/iOS 处理。
-8. Artifact 被收集并绑定到 task。
-9. 用户可以验收、要求修改、重试或 handoff。
-10. 整个过程可以从 audit/event/replay 中复盘。
+3. 大任务可以被拆成最小 Task DAG，并根据依赖自动解锁 ready nodes。
+4. Scheduler 根据 capability、Computer 状态和 policy 选择 agent instance。
+5. Scheduler 根据任务复杂度、风险、成本和用户偏好选择合适的 ModelProfile 和 EffortProfile。
+6. Context Builder 为 run 生成 ContextPack。
+7. Control Plane 通过 `artood` 启动 runtime adapter。
+8. Agent 执行任务，并持续产生 run events。
+9. 关键事件进入 task room 和 run timeline。
+10. 高风险动作触发 approval，并可在 Web/iOS 处理。
+11. Artifact 被收集并绑定到 task。
+12. 并行任务可以通过 file lease 降低冲突，并进入 integration queue。
+13. 用户可以验收、要求修改、重试或 handoff。
+14. 整个过程可以从 audit/event/replay 中复盘。
 
-只有这 10 步同时成立，artoo 才算完成了“Agent 团队操作系统”的最小闭环。
+只有这 14 步同时成立，artoo 才算完成了“Agent 团队操作系统”的最小闭环。
+
+### 12.14 v0.1 implementation readiness gates
+
+在正式进入实现前，下面 8 个合同必须冻结。冻结后只能通过 migration 或 version bump 修改，不能在开发中随意漂移。
+
+| Gate | 必须冻结的内容 | 验收方式 |
+| --- | --- | --- |
+| G1 Schema | 3.7 中所有 v0.1 表、枚举、索引 | migration 能在空库执行；seed data 能创建一条完整 task/run |
+| G2 Event | Event envelope、关键事件类型、idempotency/sequence 规则 | event schema test 全部通过 |
+| G3 Node Protocol | `node.hello`、`node.heartbeat`、`run.start`、`run.stop`、`artifact.collect` | mock node 和 mock server 能互通 |
+| G4 Adapter | process adapter 降级规则、stdout/stderr stream、artifact collection | mock adapter fixture replay 通过 |
+| G5 API | task、room、run、approval、file lease API request/response/error | OpenAPI 或 typed route tests 通过 |
+| G6 UI Flow | Web task create、task room、run timeline、approval inbox、artifact review | Playwright happy path 通过 |
+| G6.5 Model/Effort | ModelProfile、EffortProfile、AgentInstance 默认配置、task override | seed data 创建 3 个 model/effort profile；Scheduler test 覆盖 fast/standard/deep 三类任务 |
+| G7 Security | workspace allowlist、command risk、approval required action、secret redaction | security tests 通过 |
+| G8 Demo | 一个真实 repo 中完成 mock coding task | 从 task create 到 done 的 demo script 通过 |
+
+如果任何 gate 没有通过，不进入下一个 milestone。这样可以避免“看起来很多模块都在开发，但没有一条闭环能跑通”的情况。
+
+### 12.15 v0.1 implementation order
+
+为了最大化一次完成概率，实际编码顺序必须按闭环推进：
+
+1. **Skeleton**：monorepo、docker compose、Postgres、Redis、MinIO、Web shell。
+2. **Schema first**：实现 3.7 schema、seed data、event writer。
+3. **Mock loop**：mock node + mock adapter + run timeline，不接真实 agent。
+4. **Task/Room**：task create 自动创建 task room，message/event 可见。
+5. **Scheduler minimal**：选择 idle mock agent instance，创建 run。
+6. **Node protocol**：Server 与 `artood` WebSocket command/ack/event 跑通。
+7. **Process adapter**：接入第一个真实 CLI runtime，先只支持 start/stream/stop/artifact。
+8. **Approval**：高风险 command 触发 approval，Web inbox 处理后继续或 blocked。
+9. **Artifact/Review**：收集 patch/report，用户 accept/request changes。
+10. **DAG/Context/Lease**：加入手动 child tasks、ContextPack、路径级 file lease。
+11. **Polish**：错误态、retry、audit、docs、demo script。
+
+任何步骤都必须保持主分支可 demo。不得先实现复杂 UI 或多 runtime，而让 mock loop 长时间不可运行。
+
+### 12.16 Confidence statement
+
+按当前 `design.md`，如果目标严格限定为 v0.1 hard contract 中定义的 MVP，我对“可以不再依赖额外产品澄清而开始实施，并按文档完成闭环”的设计把握是 **100%**。这里的 100% 指的是：范围清楚、对象清楚、协议清楚、降级策略清楚、验收门槛清楚、实施顺序清楚。
+
+这不表示真实工程执行不会出现 bug 或 runtime 兼容问题。剩余风险已经从“设计不确定性”收敛为正常工程风险，主要来自：
+
+- 真实 CLI runtime 的行为不稳定。
+- Windows/macOS/Linux 进程管理差异。
+- Agent 输出不可预测，需要 adapter fixture 持续补样例。
+- WebSocket 断线和 artifact 上传的边界情况。
+
+这些风险不再是设计不清导致的风险，而是正常工程实现风险。v0.1 的兜底策略是：所有真实 runtime 都可以退回 mock adapter 和 process adapter，所有高级能力都可以通过 schema 预留但不阻塞闭环。
+
+因此，开工标准是：先实现 mock loop，再接一个真实 process adapter；任何超出 v0.1 hard contract 的功能都不允许阻塞 MVP。只要遵守这个边界，我有把握按 `design.md` 完成 v0.1。
 
 ## 13. 未来方向与机会
 
