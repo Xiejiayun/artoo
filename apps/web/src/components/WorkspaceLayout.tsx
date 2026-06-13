@@ -24,7 +24,10 @@ export function WorkspaceLayout(): React.ReactNode {
     return <p role="alert">Failed to load workspace.</p>;
   }
 
-  const { project } = bootstrap.data;
+  const project = bootstrap.data.projects[0];
+  if (project === undefined) {
+    return <p role="alert">No projects available.</p>;
+  }
 
   return (
     <div className="workspace">

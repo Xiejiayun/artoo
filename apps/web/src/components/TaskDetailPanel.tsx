@@ -9,7 +9,6 @@ import { RunTimeline } from "./RunTimeline.js";
 /**
  * Right pane: task detail + run timeline. Shares the `task:` query cache with
  * TaskRoom (same key), so selecting a task triggers one snapshot fetch.
- * Approval/artifact panels are added in a later Phase 1 step.
  */
 export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode {
   const api = useApi();

@@ -10,8 +10,8 @@ import type { Approval, Artifact, Message, Room, Run, Task } from "@artoo/domain
 
 export interface BootstrapResponse {
   organization: { id: string; name: string };
-  user: { id: string; display_name: string; role: string };
-  project: { id: string; name: string; default_workspace: string | null };
+  user: { id: string; email: string; display_name: string; role: string };
+  projects: Array<{ id: string; name: string; default_workspace: string | null }>;
   actor: { type: string; id: string };
 }
 
@@ -26,15 +26,7 @@ export interface TaskSnapshot {
 
 export interface CreateTaskResponse {
   task: Task;
-}
-
-/**
- * NOTE: a project task-list endpoint is implied by the Round 15 left-rail task
- * list but was not in the Round 12 explicit core surface. Flagged for #5; shape
- * here is a placeholder (`GET /tasks?project_id=`), easy to swap.
- */
-export interface TasksResponse {
-  tasks: Task[];
+  room: Room;
 }
 
 export interface AssignResponse {

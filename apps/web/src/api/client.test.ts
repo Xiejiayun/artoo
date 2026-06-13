@@ -31,7 +31,10 @@ describe("ApiClient", () => {
       http.post(`${BASE}/tasks`, async ({ request }) => {
         seenKey = request.headers.get("Idempotency-Key");
         seenBody = (await request.json()) as { title?: string };
-        return HttpResponse.json({ task: { id: "task_1", status: "backlog" } }, { status: 201 });
+        return HttpResponse.json(
+          { task: { id: "task_1", status: "backlog" }, room: { id: "room_1" } },
+          { status: 201 },
+        );
       }),
     );
 
@@ -40,6 +43,7 @@ describe("ApiClient", () => {
     expect(seenKey).toBe("idem-1");
     expect(seenBody.title).toBe("Build inbox");
     expect(res.task.id).toBe("task_1");
+    expect(res.room.id).toBe("room_1");
   });
 
   it("maps the error envelope to ApiClientError with code + status", async () => {
@@ -108,6 +112,37 @@ describe("ApiClient", () => {
 
     expect(snap.runs).toHaveLength(2);
     expect(snap.artifacts[0]?.id).toBe("artifact_1");
+  });
+
+  it("listTasks consumes the project task-list array from the server", async () => {
+    server.use(
+      http.get(`${BASE}/tasks`, ({ request }) => {
+        expect(new URL(request.url).searchParams.get("project_id")).toBe("proj_1");
+        return HttpResponse.json([{ id: "task_1", status: "ready" }]);
+      }),
+    );
+
+    const tasks = await client.listTasks("proj_1");
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.id).toBe("task_1");
+  });
+
+  it("bootstrap consumes the projects array from the server", async () => {
+    server.use(
+      http.get(`${BASE}/bootstrap`, () =>
+        HttpResponse.json({
+          organization: { id: "org_default", name: "Org" },
+          user: { id: "user_1", email: "jeremy@example.com", display_name: "Jeremy", role: "owner" },
+          projects: [{ id: "proj_artoo", name: "artoo", default_workspace: null }],
+          actor: { type: "user", id: "user_1" },
+        }),
+      ),
+    );
+
+    const bootstrap = await client.bootstrap();
+
+    expect(bootstrap.projects[0]?.id).toBe("proj_artoo");
   });
 
   it("throws ApiClientError('network_error') when fetch rejects", async () => {
