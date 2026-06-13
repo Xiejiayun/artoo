@@ -77,7 +77,7 @@ describe("mock run loop", () => {
       payload: { outcome: "accepted" },
     });
     expect(review.statusCode).toBe(200);
-    expect(review.json().status).toBe("done");
+    expect(review.json().task.status).toBe("done");
   });
 
   it("review with changes_requested returns the task to ready", async () => {
@@ -90,7 +90,7 @@ describe("mock run loop", () => {
       payload: { outcome: "changes_requested", comment: "tweak it" },
     });
     expect(review.statusCode).toBe(200);
-    expect(review.json().status).toBe("ready");
+    expect(review.json().task.status).toBe("ready");
   });
 
   it("dedups replayed run events (no duplicate events on re-ingest)", async () => {
@@ -115,7 +115,7 @@ describe("mock run loop", () => {
 
     const retry = await server.app.inject({ method: "POST", url: `/api/v1/tasks/${taskId}/retry` });
     expect(retry.statusCode).toBe(200);
-    expect(retry.json().status).toBe("ready");
+    expect(retry.json().task.status).toBe("ready");
 
     // a fresh assign creates a NEW run (runs are never reused)
     const reassign = await server.app.inject({

@@ -1,6 +1,7 @@
 import { appendEvent, artifacts, messages, runEventIngest, runs, tasks } from "@artoo/db";
 import {
   canTransitionRun,
+  canTransitionTask,
   ID_PREFIXES,
   type ArtifactType,
   type Run,
@@ -48,6 +49,26 @@ export async function cancelRun(ctx: ServerContext, runId: string): Promise<Run>
     }
     await transitionRun(tx, ctx, { runId, from, trigger: "cancel", patch: { endedAt: now } });
     const taskRow = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
+    if (taskRow !== undefined && canTransitionTask(taskRow.status as TaskStatus, "cancel")) {
+      await transitionTask(tx, ctx, {
+        taskId: run.taskId,
+        from: taskRow.status as TaskStatus,
+        trigger: "cancel",
+        now,
+        events: (to) => [
+          buildEvent(ctx, {
+            type: "task.updated",
+            actorType: "user",
+            actorId: ctx.actorUserId,
+            correlationId: run.taskId,
+            projectId: taskRow.projectId,
+            taskId: run.taskId,
+            roomId: taskRow.roomId,
+            payload: { status: to, cancelled_run_id: runId },
+          }),
+        ],
+      });
+    }
     await appendEvent(
       tx,
       buildEvent(ctx, {

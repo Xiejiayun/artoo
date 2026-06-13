@@ -35,12 +35,12 @@ describe("messages + runs endpoints", () => {
       payload: { kind: "text", body: "hello from the user" },
     });
     expect(posted.statusCode).toBe(201);
-    expect(posted.json().body).toBe("hello from the user");
-    expect(posted.json().actor_type).toBe("user");
+    expect(posted.json().message.body).toBe("hello from the user");
+    expect(posted.json().message.actor_type).toBe("user");
 
     const list = await server.app.inject({ method: "GET", url: `/api/v1/rooms/${roomId}/messages` });
     expect(list.statusCode).toBe(200);
-    const bodies = (list.json() as { body: string }[]).map((m) => m.body);
+    const bodies = (list.json().messages as { body: string }[]).map((m) => m.body);
     expect(bodies).toContain("hello from the user");
 
     const missing = await server.app.inject({
@@ -63,16 +63,18 @@ describe("messages + runs endpoints", () => {
 
     const got = await server.app.inject({ method: "GET", url: `/api/v1/runs/${runId}` });
     expect(got.statusCode).toBe(200);
-    expect(got.json().status).toBe("queued");
+    expect(got.json().run.status).toBe("queued");
 
     const cancelled = await server.app.inject({
       method: "POST",
       url: `/api/v1/runs/${runId}/cancel`,
     });
     expect(cancelled.statusCode).toBe(200);
-    expect(cancelled.json().status).toBe("cancelled");
+    expect(cancelled.json().run.status).toBe("cancelled");
 
     const after = await server.app.inject({ method: "GET", url: `/api/v1/runs/${runId}` });
-    expect(after.json().status).toBe("cancelled");
+    expect(after.json().run.status).toBe("cancelled");
+    const task = await server.app.inject({ method: "GET", url: `/api/v1/tasks/${taskId}` });
+    expect(task.json().task.status).toBe("cancelled");
   });
 });

@@ -28,7 +28,7 @@ describe("task lifecycle: ready + assign", () => {
 
     const ready = await server.app.inject({ method: "POST", url: `/api/v1/tasks/${taskId}/ready` });
     expect(ready.statusCode).toBe(200);
-    expect(ready.json().status).toBe("ready");
+    expect(ready.json().task.status).toBe("ready");
 
     const assigned = await server.app.inject({
       method: "POST",

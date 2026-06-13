@@ -1,5 +1,12 @@
 import { runs } from "@artoo/db";
-import { apiError, AssignRequestSchema, CreateTaskRequestSchema, ReviewRequestSchema, SendMessageRequestSchema } from "@artoo/domain";
+import {
+  apiError,
+  AssignRequestSchema,
+  CreateTaskRequestSchema,
+  RetryRequestSchema,
+  ReviewRequestSchema,
+  SendMessageRequestSchema,
+} from "@artoo/domain";
 import websocket from "@fastify/websocket";
 import { eq } from "drizzle-orm";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -85,7 +92,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   app.post("/api/v1/tasks/:id/ready", async (req) => {
     const { id } = req.params as { id: string };
-    return lifecycle.markReady(ctx, id);
+    return { task: await lifecycle.markReady(ctx, id) };
   });
 
   app.post("/api/v1/tasks/:id/assign", async (req) => {
@@ -99,7 +106,11 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   app.post("/api/v1/tasks/:id/retry", async (req) => {
     const { id } = req.params as { id: string };
-    return lifecycle.retryTask(ctx, id);
+    const parsed = RetryRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      throw AppError.validation("invalid retry payload", { issues: parsed.error.issues });
+    }
+    return { task: await lifecycle.retryTask(ctx, id) };
   });
 
   app.post("/api/v1/tasks/:id/review", async (req) => {
@@ -108,7 +119,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (!parsed.success) {
       throw AppError.validation("invalid review payload", { issues: parsed.error.issues });
     }
-    return lifecycle.reviewTask(ctx, id, parsed.data);
+    return { task: await lifecycle.reviewTask(ctx, id, parsed.data) };
   });
 
   // Dev-only: simulate a node/adapter executing a queued run end to end.
@@ -120,7 +131,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   app.get("/api/v1/rooms/:id/messages", async (req) => {
     const { id } = req.params as { id: string };
-    return messageService.listMessages(ctx, id);
+    return { messages: await messageService.listMessages(ctx, id) };
   });
 
   app.post("/api/v1/rooms/:id/messages", async (req, reply) => {
@@ -131,17 +142,17 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     }
     const message = await messageService.postMessage(ctx, id, parsed.data);
     void reply.status(201);
-    return message;
+    return { message };
   });
 
   app.get("/api/v1/runs/:id", async (req) => {
     const { id } = req.params as { id: string };
-    return runService.getRun(ctx, id);
+    return { run: await runService.getRun(ctx, id) };
   });
 
   app.post("/api/v1/runs/:id/cancel", async (req) => {
     const { id } = req.params as { id: string };
-    return runService.cancelRun(ctx, id);
+    return { run: await runService.cancelRun(ctx, id) };
   });
 
   return app;
