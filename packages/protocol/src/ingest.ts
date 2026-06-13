@@ -14,7 +14,10 @@ export interface RunEventKey {
 }
 
 export function runEventKey(key: RunEventKey): string {
-  return `${key.node_id}:${key.run_id}:${key.sequence}`;
+  // JSON.stringify of a fixed-arity tuple is collision-proof: it cannot confuse
+  // e.g. (node_id='a:b', run_id='c') with (node_id='a', run_id='b:c'), which a
+  // naive `${node_id}:${run_id}:${sequence}` join would.
+  return JSON.stringify([key.node_id, key.run_id, key.sequence]);
 }
 
 export class RunEventDeduper {

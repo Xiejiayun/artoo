@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { nodeErrorCodeSchema } from "./errors.js";
+
 /**
  * Transport-level node protocol messages (design.md §4.6).
  *
@@ -45,13 +47,33 @@ export const nodeHeartbeatSchema = z.object({
   running_instances: z.array(z.string())
 });
 
-export const commandAckSchema = z.object({
+// A command.ack is a discriminated union on `status`: an accepted ack carries
+// no error code (message optional/nullable); a rejected ack MUST carry a closed
+// NodeErrorCode plus a human-readable message, so the server can pick the right
+// recovery rule (design.md §4.6, Round 13/18).
+const commandAckBase = {
   kind: z.literal("command.ack"),
   node_id: z.string().min(1),
-  command_id: z.string().min(1),
-  status: z.enum(["accepted", "rejected"]),
-  message: z.string().nullable()
+  command_id: z.string().min(1)
+};
+
+export const commandAckAcceptedSchema = z.object({
+  ...commandAckBase,
+  status: z.literal("accepted"),
+  message: z.string().nullable().optional()
 });
+
+export const commandAckRejectedSchema = z.object({
+  ...commandAckBase,
+  status: z.literal("rejected"),
+  error_code: nodeErrorCodeSchema,
+  message: z.string().min(1)
+});
+
+export const commandAckSchema = z.discriminatedUnion("status", [
+  commandAckAcceptedSchema,
+  commandAckRejectedSchema
+]);
 
 // --- Server -> Node (transport-only commands) -----------------------------
 // run.start is added in the domain-dependent phase because its payload is the

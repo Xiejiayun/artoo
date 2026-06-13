@@ -68,21 +68,46 @@ describe("node.heartbeat", () => {
 });
 
 describe("command.ack", () => {
-  const valid = {
+  const accepted = {
     kind: "command.ack",
     node_id: "computer_123",
     command_id: "cmd_123",
     status: "accepted",
     message: null
   };
+  const rejected = {
+    kind: "command.ack",
+    node_id: "computer_123",
+    command_id: "cmd_123",
+    status: "rejected",
+    error_code: "runtime_missing",
+    message: "no codex runtime on this node"
+  };
 
-  it("accepts accepted/rejected with a nullable message", () => {
-    expect(commandAckSchema.safeParse(valid).success).toBe(true);
-    expect(commandAckSchema.safeParse({ ...valid, status: "rejected", message: "no runtime" }).success).toBe(true);
+  it("accepts an accepted ack with no error code (message nullable)", () => {
+    expect(commandAckSchema.safeParse(accepted).success).toBe(true);
+    expect(commandAckSchema.safeParse({ ...accepted, message: undefined }).success).toBe(true);
+  });
+
+  it("accepts a rejected ack carrying a closed error code and message", () => {
+    expect(commandAckSchema.safeParse(rejected).success).toBe(true);
+  });
+
+  it("rejects a rejected ack with no error_code", () => {
+    const { error_code, ...withoutCode } = rejected;
+    expect(commandAckSchema.safeParse(withoutCode).success).toBe(false);
+  });
+
+  it("rejects a rejected ack with an unknown error_code", () => {
+    expect(commandAckSchema.safeParse({ ...rejected, error_code: "boom" }).success).toBe(false);
+  });
+
+  it("rejects a rejected ack with an empty message", () => {
+    expect(commandAckSchema.safeParse({ ...rejected, message: "" }).success).toBe(false);
   });
 
   it("rejects an unknown ack status", () => {
-    expect(commandAckSchema.safeParse({ ...valid, status: "maybe" }).success).toBe(false);
+    expect(commandAckSchema.safeParse({ ...accepted, status: "maybe" }).success).toBe(false);
   });
 });
 
