@@ -1,11 +1,74 @@
 import { appendEvent, artifacts, messages, runEventIngest, runs, tasks } from "@artoo/db";
-import { ID_PREFIXES, type ArtifactType, type RunStatus, type TaskStatus } from "@artoo/domain";
+import {
+  canTransitionRun,
+  ID_PREFIXES,
+  type ArtifactType,
+  type Run,
+  type RunStatus,
+  type TaskStatus,
+} from "@artoo/domain";
 import { and, eq } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
+import { mapRun } from "../mappers.js";
 import { transitionRun, transitionTask } from "./transition-service.js";
+
+/** GET /api/v1/runs/:id — run snapshot. */
+export async function getRun(ctx: ServerContext, runId: string): Promise<Run> {
+  const row = (
+    await ctx.db.db
+      .select()
+      .from(runs)
+      .where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)))
+  )[0];
+  if (row === undefined) {
+    throw AppError.notFound(`run not found: ${runId}`, { run_id: runId });
+  }
+  return mapRun(row);
+}
+
+/** POST /api/v1/runs/:id/cancel — cancel a non-terminal run; emits run.cancelled. */
+export async function cancelRun(ctx: ServerContext, runId: string): Promise<Run> {
+  const now = ctx.clock.nowIso();
+  return ctx.db.transaction(async (tx) => {
+    const run = (
+      await tx
+        .select()
+        .from(runs)
+        .where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)))
+    )[0];
+    if (run === undefined) {
+      throw AppError.notFound(`run not found: ${runId}`, { run_id: runId });
+    }
+    const from = run.status as RunStatus;
+    if (!canTransitionRun(from, "cancel")) {
+      throw AppError.invalidState(`cannot cancel run in status '${from}'`, { status: from });
+    }
+    await transitionRun(tx, ctx, { runId, from, trigger: "cancel", patch: { endedAt: now } });
+    const taskRow = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
+    await appendEvent(
+      tx,
+      buildEvent(ctx, {
+        type: "run.cancelled",
+        actorType: "user",
+        actorId: ctx.actorUserId,
+        correlationId: run.taskId,
+        projectId: taskRow?.projectId ?? null,
+        taskId: run.taskId,
+        roomId: taskRow?.roomId ?? null,
+        runId,
+        payload: { run_id: runId },
+      }),
+    );
+    const updated = (await tx.select().from(runs).where(eq(runs.id, runId)))[0];
+    if (updated === undefined) {
+      throw new Error("cancelRun: run missing after transition");
+    }
+    return mapRun(updated);
+  });
+}
 
 export type RunIngestEvent =
   | { kind: "lifecycle"; phase: "started" | "completed" | "failed" | "cancelled"; failureReason?: string }

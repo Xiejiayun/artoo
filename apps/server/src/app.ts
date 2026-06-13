@@ -1,5 +1,5 @@
 import { runs } from "@artoo/db";
-import { apiError, AssignRequestSchema, CreateTaskRequestSchema, ReviewRequestSchema } from "@artoo/domain";
+import { apiError, AssignRequestSchema, CreateTaskRequestSchema, ReviewRequestSchema, SendMessageRequestSchema } from "@artoo/domain";
 import websocket from "@fastify/websocket";
 import { eq } from "drizzle-orm";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -7,6 +7,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import * as lifecycle from "./services/lifecycle-service.js";
+import * as messageService from "./services/message-service.js";
 import * as runService from "./services/run-service.js";
 import * as taskService from "./services/task-service.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
@@ -115,6 +116,32 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     const { id } = req.params as { id: string };
     const query = req.query as { outcome?: "completed" | "failed" };
     return runService.mockExecuteRun(ctx, id, query.outcome === "failed" ? "failed" : "completed");
+  });
+
+  app.get("/api/v1/rooms/:id/messages", async (req) => {
+    const { id } = req.params as { id: string };
+    return messageService.listMessages(ctx, id);
+  });
+
+  app.post("/api/v1/rooms/:id/messages", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = SendMessageRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      throw AppError.validation("invalid message payload", { issues: parsed.error.issues });
+    }
+    const message = await messageService.postMessage(ctx, id, parsed.data);
+    void reply.status(201);
+    return message;
+  });
+
+  app.get("/api/v1/runs/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    return runService.getRun(ctx, id);
+  });
+
+  app.post("/api/v1/runs/:id/cancel", async (req) => {
+    const { id } = req.params as { id: string };
+    return runService.cancelRun(ctx, id);
   });
 
   return app;
