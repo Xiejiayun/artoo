@@ -53,6 +53,17 @@ export class FileSystemBlobStore implements BlobStore {
 
   /** Resolve a key under the root, rejecting anything that escapes it. */
   #resolveKey(key: string): string {
+    if (key.includes("\0")) {
+      throw new Error(`blob key contains a null byte: ${key}`);
+    }
+    // Split on BOTH separators regardless of platform so a Windows-style
+    // "..\\x" cannot slip through on POSIX (where "\\" is a valid filename
+    // char), and reject any parent-traversal segment up front.
+    if (key.split(/[\\/]/).some((segment) => segment === "..")) {
+      throw new Error(`blob key escapes store root: ${key}`);
+    }
+    // resolve() additionally catches absolute keys, e.g. a Windows drive path
+    // like "C:\\Windows\\x" or a POSIX "/etc/x".
     const target = resolve(this.#root, key);
     if (target !== this.#root && !target.startsWith(this.#root + sep)) {
       throw new Error(`blob key escapes store root: ${key}`);

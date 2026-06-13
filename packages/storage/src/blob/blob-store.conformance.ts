@@ -45,9 +45,16 @@ export function describeBlobStoreContract(
       expect(await store.get("logs/1.txt")).toBeNull();
     });
 
-    it("rejects keys that escape the store root", async () => {
+    it("rejects keys that escape the store root (POSIX and Windows styles)", async () => {
       const { store } = await setup();
-      await expect(store.put("../escape.txt", encoder.encode("x"))).rejects.toThrow();
+      for (const bad of [
+        "../escape.txt",
+        "..\\escape.txt",
+        "nested/../../escape.txt",
+        "a\\..\\..\\b.txt",
+      ]) {
+        await expect(store.put(bad, encoder.encode("x"))).rejects.toThrow();
+      }
     });
   });
 }
