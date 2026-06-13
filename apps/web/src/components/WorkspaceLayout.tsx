@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { LeftRail } from "./LeftRail.js";
+import { TaskDetailPanel } from "./TaskDetailPanel.js";
+import { TaskRoom } from "./TaskRoom.js";
 
 /**
  * Three-pane workspace shell (codex Round 15): left rail (project / tasks /
@@ -38,13 +40,11 @@ export function WorkspaceLayout(): React.ReactNode {
         {selectedTaskId === null ? (
           <p className="empty">Select a task to view its room.</p>
         ) : (
-          <section data-testid="task-room-placeholder">Task room: {selectedTaskId}</section>
+          <TaskRoom taskId={selectedTaskId} />
         )}
       </main>
       <aside className="pane pane-right" aria-label="Task detail">
-        {selectedTaskId === null ? null : (
-          <section data-testid="task-detail-placeholder">Task detail: {selectedTaskId}</section>
-        )}
+        {selectedTaskId === null ? null : <TaskDetailPanel taskId={selectedTaskId} />}
       </aside>
     </div>
   );

@@ -5,7 +5,7 @@ import { cleanup, render, type RenderResult } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach } from "vitest";
 
-import type { Task } from "@artoo/domain";
+import type { Message, Room, Run, Task } from "@artoo/domain";
 
 import { ApiClient } from "../api/client.js";
 import { ApiProvider } from "../app/ApiContext.js";
@@ -50,6 +50,42 @@ export function taskFixture(
     created_by_id: "user_1",
     created_at: "2026-06-13T00:00:00Z",
     updated_at: "2026-06-13T00:00:00Z",
+    ...partial,
+  };
+}
+
+export function roomFixture(partial: Partial<Room> & Pick<Room, "id">): Room {
+  return {
+    organization_id: "org_default",
+    type: "task",
+    name: "task room",
+    created_at: "2026-06-13T00:00:00Z",
+    ...partial,
+  };
+}
+
+export function runFixture(partial: Partial<Run> & Pick<Run, "id" | "status">): Run {
+  return {
+    organization_id: "org_default",
+    task_id: "task_1",
+    computer_id: "computer_1",
+    agent_instance_id: "ai_1",
+    runtime_id: "mock",
+    sequence: 0,
+    created_at: "2026-06-13T00:00:00Z",
+    ...partial,
+  };
+}
+
+export function messageFixture(partial: Partial<Message> & Pick<Message, "id" | "kind">): Message {
+  return {
+    organization_id: "org_default",
+    room_id: "room_1",
+    actor_type: "user",
+    actor_id: "user_1",
+    body: "",
+    payload: {},
+    created_at: "2026-06-13T00:00:00Z",
     ...partial,
   };
 }

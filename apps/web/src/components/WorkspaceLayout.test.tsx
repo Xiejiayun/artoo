@@ -3,7 +3,14 @@ import { screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { fakeApi, renderWithProviders, taskFixture } from "../test/utils.js";
+import {
+  fakeApi,
+  messageFixture,
+  renderWithProviders,
+  roomFixture,
+  runFixture,
+  taskFixture,
+} from "../test/utils.js";
 import { WorkspaceLayout } from "./WorkspaceLayout.js";
 
 function workspaceClient() {
@@ -15,14 +22,24 @@ function workspaceClient() {
       actor: { type: "user", id: "user_1" },
     }),
     listTasks: async () => ({
-      tasks: [taskFixture({ id: "task_1", title: "Build inbox", status: "ready" })],
+      tasks: [taskFixture({ id: "task_1", title: "Build inbox", status: "review" })],
     }),
     listApprovals: async () => ({ approvals: [] }),
+    getTask: async () => ({
+      task: taskFixture({ id: "task_1", title: "Build inbox", status: "review" }),
+      room: roomFixture({ id: "room_1" }),
+      runs: [runFixture({ id: "run_1", status: "completed" })],
+      approvals: [],
+      artifacts: [],
+    }),
+    listMessages: async () => ({
+      messages: [messageFixture({ id: "m1", kind: "text", body: "agent says hi" })],
+    }),
   });
 }
 
 describe("WorkspaceLayout", () => {
-  it("loads bootstrap, lists tasks, and selecting one reveals the room pane", async () => {
+  it("loads bootstrap, lists tasks, and selecting one shows room + detail", async () => {
     renderWithProviders(<WorkspaceLayout />, { client: workspaceClient() });
 
     expect(await screen.findByRole("heading", { name: "artoo" })).toBeInTheDocument();
@@ -30,7 +47,7 @@ describe("WorkspaceLayout", () => {
 
     await userEvent.click(await screen.findByText("Build inbox"));
 
-    expect(screen.getByTestId("task-room-placeholder")).toHaveTextContent("task_1");
-    expect(screen.getByTestId("task-detail-placeholder")).toHaveTextContent("task_1");
+    expect(await screen.findByText("agent says hi")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Build inbox", level: 2 })).toBeInTheDocument();
   });
 });
