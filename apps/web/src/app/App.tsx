@@ -5,6 +5,7 @@ import { ApiClient } from "../api/client.js";
 import { WorkspaceLayout } from "../components/WorkspaceLayout.js";
 import { ApiProvider } from "./ApiContext.js";
 import { createQueryClient } from "./queryClient.js";
+import { RealtimeProvider } from "./RealtimeContext.js";
 
 export interface AppProps {
   client?: ApiClient;
@@ -19,7 +20,9 @@ export function App({ client, queryClient }: AppProps = {}): React.ReactNode {
   return (
     <QueryClientProvider client={resolvedQueryClient}>
       <ApiProvider client={apiClient}>
-        <WorkspaceLayout />
+        <RealtimeProvider>
+          <WorkspaceLayout />
+        </RealtimeProvider>
       </ApiProvider>
     </QueryClientProvider>
   );
