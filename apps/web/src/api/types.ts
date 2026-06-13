@@ -28,6 +28,15 @@ export interface CreateTaskResponse {
   task: Task;
 }
 
+/**
+ * NOTE: a project task-list endpoint is implied by the Round 15 left-rail task
+ * list but was not in the Round 12 explicit core surface. Flagged for #5; shape
+ * here is a placeholder (`GET /tasks?project_id=`), easy to swap.
+ */
+export interface TasksResponse {
+  tasks: Task[];
+}
+
 export interface AssignResponse {
   run: Run;
   scheduler_decision: { reason: string; score: number };

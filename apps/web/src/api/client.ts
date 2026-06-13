@@ -27,6 +27,7 @@ import type {
   RetryResponse,
   RunResponse,
   TaskSnapshot,
+  TasksResponse,
 } from "./types.js";
 
 export type ApiClientErrorCode = ApiErrorCode | "network_error" | "unknown";
@@ -105,6 +106,10 @@ export class ApiClient {
 
   bootstrap(): Promise<BootstrapResponse> {
     return this.request<BootstrapResponse>("GET", "/bootstrap");
+  }
+
+  listTasks(projectId: string): Promise<TasksResponse> {
+    return this.request<TasksResponse>("GET", `/tasks?project_id=${encodeURIComponent(projectId)}`);
   }
 
   getTask(taskId: string): Promise<TaskSnapshot> {
