@@ -1,6 +1,7 @@
 import type {
   AgentInstanceHandle,
   NodeSideTransport,
+  NodeErrorCode,
   RunEventMessage,
   RunStartCommand,
   RunStopCommand,
@@ -52,17 +53,34 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     });
   }
 
-  async function onRunStart(command: RunStartCommand): Promise<void> {
-    await ackAccepted(command.id);
-    const payload = command.payload;
-    const handle = await adapter.start({
-      runId: payload.run_id,
-      taskId: payload.task_id,
-      agentInstanceId: payload.agent_instance_id,
-      runtime: payload.runtime,
-      workspaceRoot: payload.workspace.root,
-      runStart: payload
+  async function ackRejected(commandId: string, errorCode: NodeErrorCode, message: string): Promise<void> {
+    await transport.send({
+      kind: "command.ack",
+      node_id: nodeId,
+      command_id: commandId,
+      status: "rejected",
+      error_code: errorCode,
+      message
     });
+  }
+
+  async function onRunStart(command: RunStartCommand): Promise<void> {
+    const payload = command.payload;
+    let handle: AgentInstanceHandle;
+    try {
+      handle = await adapter.start({
+        runId: payload.run_id,
+        taskId: payload.task_id,
+        agentInstanceId: payload.agent_instance_id,
+        runtime: payload.runtime,
+        workspaceRoot: payload.workspace.root,
+        runStart: payload
+      });
+    } catch (err) {
+      await ackRejected(command.id, "process_start_failed", errorMessage(err));
+      return;
+    }
+    await ackAccepted(command.id);
     handles.set(payload.run_id, handle);
     try {
       let sequence = 0;
@@ -117,4 +135,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       await Promise.allSettled([...inflight]);
     }
   };
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error && err.message.length > 0 ? err.message : "process start failed";
 }

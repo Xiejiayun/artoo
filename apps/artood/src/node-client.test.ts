@@ -131,4 +131,49 @@ describe("artood node client (mock loop)", () => {
       .map((e) => (e.event.type === "run.lifecycle" ? e.event.payload.phase : null));
     expect(phases).toContain("cancelled");
   });
+
+  it("rejects run.start when the adapter cannot start the process", async () => {
+    const channel = createInProcessChannel();
+    const failingAdapter: RuntimeAdapter = {
+      runtimeId: "failing",
+      async start() {
+        throw new Error("workspace missing");
+      },
+      async *streamEvents() {
+        yield { type: "run.lifecycle", payload: { phase: "started" } };
+      },
+      async stop() {},
+      async collectArtifacts() {
+        return [];
+      }
+    };
+    const client = createNodeClient({ nodeId: "computer_1", transport: channel.node, adapter: failingAdapter });
+    client.start();
+
+    const received: NodeToServerMessage[] = [];
+    const rejected = new Promise<void>((resolve) => {
+      channel.serverTransport.subscribe((m) => {
+        received.push(m);
+        if (isAck(m) && m.status === "rejected") {
+          resolve();
+        }
+      });
+    });
+
+    await channel.serverTransport.send(runStartCommand);
+    await rejected;
+    await client.stop();
+
+    expect(received.filter(isRunEvent)).toEqual([]);
+    expect(received.filter(isAck)).toEqual([
+      {
+        kind: "command.ack",
+        node_id: "computer_1",
+        command_id: "cmd_start_1",
+        status: "rejected",
+        error_code: "process_start_failed",
+        message: "workspace missing"
+      }
+    ]);
+  });
 });
