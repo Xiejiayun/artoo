@@ -5,6 +5,7 @@ import { queryKeys } from "../app/queryKeys.js";
 import { ApprovalInbox } from "./ApprovalInbox.js";
 import { ArtifactReview } from "./ArtifactReview.js";
 import { RunTimeline } from "./RunTimeline.js";
+import { TaskActions } from "./TaskActions.js";
 
 /**
  * Right pane: task detail + run timeline. Shares the `task:` query cache with
@@ -43,6 +44,7 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
           </>
         ) : null}
       </dl>
+      <TaskActions task={task} />
       {task.acceptance_criteria.length > 0 ? (
         <section aria-label="Acceptance criteria">
           <h3>Acceptance criteria</h3>
