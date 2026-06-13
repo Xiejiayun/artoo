@@ -13,4 +13,10 @@ export interface ServerContext {
   organizationId: string;
   /** The acting user for v0.1 (no auth yet); used as created_by / actor. */
   actorUserId: string;
+  /**
+   * Optional hook fired (after commit) when a run is queued by assignment, so a
+   * node binding can dispatch run.start over the node transport. Absent in pure
+   * REST tests (the dev mock-execute path drives ingestion directly instead).
+   */
+  onRunQueued?: (runId: string) => Promise<void>;
 }

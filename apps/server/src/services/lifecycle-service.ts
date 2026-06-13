@@ -98,7 +98,7 @@ export async function assignTask(
   req: AssignRequest,
 ): Promise<AssignResult> {
   const now = ctx.clock.nowIso();
-  return ctx.db.transaction(async (tx) => {
+  const result = await ctx.db.transaction(async (tx) => {
     const row = (
       await tx
         .select()
@@ -194,6 +194,10 @@ export async function assignTask(
       scheduler_decision: { id: decisionId, reason: outcome.reason, score: outcome.score },
     };
   });
+
+  // After commit: let a node binding dispatch run.start (no-op in REST-only tests).
+  await ctx.onRunQueued?.(result.run.id);
+  return result;
 }
 
 /**

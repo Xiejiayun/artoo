@@ -172,6 +172,59 @@ export async function ingestRunEvent(
 }
 
 /**
+ * Recovery for a rejected run.start (node ack rejected, e.g. process_start_failed):
+ * the run never started, so move it queued -> starting -> failed and return the
+ * task to ready (assign_failed_retryable) so it can be rescheduled — never stuck.
+ */
+export async function failRunStart(
+  ctx: ServerContext,
+  runId: string,
+  errorCode: string,
+  message: string,
+): Promise<void> {
+  const now = ctx.clock.nowIso();
+  const reason = `${errorCode}: ${message}`;
+  await ctx.db.transaction(async (tx) => {
+    const run = (
+      await tx
+        .select()
+        .from(runs)
+        .where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)))
+    )[0];
+    if (run === undefined) {
+      throw AppError.notFound(`run not found: ${runId}`, { run_id: runId });
+    }
+    const taskRow = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
+    await transitionRun(tx, ctx, { runId, from: "queued", trigger: "start", patch: { startedAt: now } });
+    await transitionRun(tx, ctx, {
+      runId,
+      from: "starting",
+      trigger: "start_failed",
+      patch: { endedAt: now, failureReason: reason },
+    });
+    await transitionTask(tx, ctx, {
+      taskId: run.taskId,
+      from: "assigned",
+      trigger: "assign_failed_retryable",
+      now,
+    });
+    await appendEvent(
+      tx,
+      buildEvent(ctx, {
+        type: "run.failed",
+        actorType: "system",
+        actorId: "control_plane",
+        correlationId: run.taskId,
+        taskId: run.taskId,
+        roomId: taskRow?.roomId ?? null,
+        runId,
+        payload: { run_id: runId, failure_reason: reason, recoverable: true },
+      }),
+    );
+  });
+}
+
+/**
  * Dev-only: drive a queued run through the happy path (started -> output ->
  * artifact -> completed) or a failure path (started -> output -> failed),
  * simulating what a node/adapter would stream. Proves the server-side run loop

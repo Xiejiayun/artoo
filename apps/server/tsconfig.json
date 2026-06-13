@@ -9,6 +9,9 @@
   "references": [
     { "path": "../../packages/domain" },
     { "path": "../../packages/storage" },
-    { "path": "../../packages/db" }
+    { "path": "../../packages/db" },
+    { "path": "../../packages/protocol" },
+    { "path": "../../packages/testkit" },
+    { "path": "../artood" }
   ]
 }
