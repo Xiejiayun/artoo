@@ -12,8 +12,9 @@ export default defineConfig({
   server: {
     proxy: {
       // Client realtime WS lives under /api, so it must be matched (with
-      // ws:true) before the generic /api http proxy.
-      "/api/v1/ws": { target: WS_TARGET, ws: true },
+      // ws:true) before the generic /api http proxy. changeOrigin rewrites the
+      // Origin to the target so the server accepts the proxied upgrade in dev.
+      "/api/v1/ws": { target: WS_TARGET, ws: true, changeOrigin: true },
       "/api": { target: SERVER_TARGET, changeOrigin: true },
     },
   },
