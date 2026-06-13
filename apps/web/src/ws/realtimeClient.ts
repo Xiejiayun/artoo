@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@artoo/domain";
+import { EventEnvelopeSchema, type EventEnvelope } from "@artoo/domain";
 
 /** Minimal WebSocket surface so tests can inject a fake. */
 export interface WebSocketLike {
@@ -77,7 +77,11 @@ export class RealtimeClient {
       this.open = false;
       this.socket = null;
       if (!this.closedByUser && this.reconnectDelayMs > 0) {
-        this.scheduleTimeout(() => this.connect(), this.reconnectDelayMs);
+        this.scheduleTimeout(() => {
+          if (!this.closedByUser) {
+            this.connect();
+          }
+        }, this.reconnectDelayMs);
       }
     };
     socket.onerror = () => {
@@ -124,22 +128,30 @@ export class RealtimeClient {
     } catch {
       return; // ignore malformed frames defensively
     }
-    if (!isEventFrame(parsed)) {
+    const frame = parseEventFrame(parsed);
+    if (frame === null) {
       return;
     }
-    this.onEvent(parsed.topic, parsed.event);
+    this.onEvent(frame.topic, frame.event);
   }
 }
 
-function isEventFrame(value: unknown): value is EventFrame {
+function parseEventFrame(value: unknown): EventFrame | null {
   if (typeof value !== "object" || value === null) {
-    return false;
+    return null;
   }
   const candidate = value as Record<string, unknown>;
-  return (
-    candidate.type === "event" &&
-    typeof candidate.topic === "string" &&
-    typeof candidate.event === "object" &&
-    candidate.event !== null
-  );
+  if (
+    candidate.type !== "event" ||
+    typeof candidate.topic !== "string" ||
+    typeof candidate.event !== "object" ||
+    candidate.event === null
+  ) {
+    return null;
+  }
+  const event = EventEnvelopeSchema.safeParse(candidate.event);
+  if (!event.success) {
+    return null;
+  }
+  return { type: "event", topic: candidate.topic, event: event.data };
 }

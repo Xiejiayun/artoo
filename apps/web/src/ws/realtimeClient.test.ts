@@ -44,7 +44,23 @@ describe("RealtimeClient", () => {
     const client = new RealtimeClient({ url: "ws://x", onEvent, socketFactory: () => fake });
     client.connect();
     fake.open();
-    fake.emit(JSON.stringify({ type: "event", topic: "task:1", event: { id: "e", type: "run.completed", task_id: "1" } }));
+    fake.emit(
+      JSON.stringify({
+        type: "event",
+        topic: "task:1",
+        event: {
+          id: "e",
+          type: "run.completed",
+          schema_version: "2026-06-11",
+          organization_id: "org_default",
+          actor: { type: "agent", id: "agent_1" },
+          occurred_at: "2026-06-13T00:00:00Z",
+          correlation_id: "corr_1",
+          task_id: "1",
+          payload: {},
+        },
+      }),
+    );
     expect(onEvent).toHaveBeenCalledWith("task:1", expect.objectContaining({ id: "e" }));
   });
 
@@ -56,6 +72,7 @@ describe("RealtimeClient", () => {
     fake.open();
     fake.emit("not json");
     fake.emit(JSON.stringify({ type: "other" }));
+    fake.emit(JSON.stringify({ type: "event", topic: "task:1", event: { id: "e", type: "run.completed" } }));
     expect(onEvent).not.toHaveBeenCalled();
   });
 
@@ -122,5 +139,31 @@ describe("RealtimeClient", () => {
     sockets[0]?.open();
     client.close();
     expect(timeouts).toHaveLength(0);
+  });
+
+  it("does not run a scheduled reconnect after a later explicit close", () => {
+    const sockets: FakeSocket[] = [];
+    const timeouts: Array<() => void> = [];
+    const client = new RealtimeClient({
+      url: "ws://x",
+      onEvent: () => undefined,
+      socketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      reconnectDelayMs: 5,
+      setTimeoutFn: (handler) => {
+        timeouts.push(handler);
+        return 0;
+      },
+    });
+    client.connect();
+    sockets[0]?.open();
+    sockets[0]?.onclose?.();
+    expect(timeouts).toHaveLength(1);
+    client.close();
+    timeouts[0]?.();
+    expect(sockets).toHaveLength(1);
   });
 });
