@@ -14,6 +14,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
+import { registerIdempotency } from "./idempotency-middleware.js";
 import * as approvalService from "./services/approval-service.js";
 import * as lifecycle from "./services/lifecycle-service.js";
 import * as messageService from "./services/message-service.js";
@@ -66,6 +67,8 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     const message = err instanceof Error ? err.message : "internal error";
     void reply.status(500).send(apiError("internal_error", message));
   });
+
+  registerIdempotency(app, ctx);
 
   app.get("/api/v1/bootstrap", async () => taskService.bootstrap(ctx));
 
