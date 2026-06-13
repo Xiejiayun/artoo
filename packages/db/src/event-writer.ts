@@ -10,6 +10,7 @@ import { eventLog } from "./schema.js";
 export interface EventInput {
   id: string;
   organizationId: string;
+  projectId?: string | null;
   type: string;
   schemaVersion: string;
   actorType: string;
@@ -43,6 +44,7 @@ export async function appendEvent(tx: DrizzleDb, input: EventInput): Promise<Eve
     .values({
       id: input.id,
       organizationId: input.organizationId,
+      projectId: input.projectId ?? null,
       type: input.type,
       schemaVersion: input.schemaVersion,
       actorType: input.actorType,

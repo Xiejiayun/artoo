@@ -8,9 +8,19 @@
   "scripts": {
     "build": "tsc -b",
     "dev": "node --watch --loader ts-node/esm src/main.ts",
+    "start": "node dist/main.js",
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@artoo/domain": "0.1.0"
+    "@artoo/db": "0.1.0",
+    "@artoo/domain": "0.1.0",
+    "@artoo/protocol": "0.1.0",
+    "@artoo/storage": "0.1.0",
+    "@fastify/websocket": "^11.2.0",
+    "fastify": "^5.2.0"
+  },
+  "devDependencies": {
+    "@artoo/artood": "0.1.0",
+    "@artoo/testkit": "0.1.0"
   }
 }

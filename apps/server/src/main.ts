@@ -1,3 +1,54 @@
-import { createServerPlaceholder } from "./index.js";
+import { loadMigrationStatements, organizations, seed } from "@artoo/db";
+import { createSystemClock, createUlidIdGen } from "@artoo/domain";
+import { PgliteDbClient } from "@artoo/storage";
 
-console.log(createServerPlaceholder());
+import { buildApp } from "./app.js";
+import type { ServerContext } from "./context.js";
+
+/**
+ * Dev server bootstrap: embedded PGlite + migrate + seed + Fastify listen, in one
+ * command. Used for the cross-process node loop (artood connects to /api/v1/node)
+ * and the web Playwright E2E.
+ *
+ *   ARTOO_PORT (default 4000), ARTOO_HOST (default 127.0.0.1),
+ *   ARTOO_DB_DIR (default in-memory, fresh each run).
+ */
+const PORT = Number(process.env.ARTOO_PORT ?? "4000");
+const HOST = process.env.ARTOO_HOST ?? "127.0.0.1";
+
+async function main(): Promise<void> {
+  const dbDir = process.env.ARTOO_DB_DIR;
+  const db = await PgliteDbClient.create(dbDir !== undefined ? { dataDir: dbDir } : {});
+  await db.migrate(await loadMigrationStatements());
+
+  const existing = await db.db.select().from(organizations);
+  if (existing.length === 0) {
+    await seed(db, createSystemClock().nowIso());
+  }
+
+  const ctx: ServerContext = {
+    db,
+    clock: createSystemClock(),
+    idGen: createUlidIdGen(),
+    organizationId: "org_default",
+    actorUserId: "user_owner",
+  };
+  const app = buildApp(ctx);
+  await app.listen({ port: PORT, host: HOST });
+
+  // eslint-disable-next-line no-console
+  console.log(
+    [
+      `artoo server listening on http://${HOST}:${PORT}`,
+      `  REST:      http://${HOST}:${PORT}/api/v1/bootstrap`,
+      `  node WS:   ws://${HOST}:${PORT}/api/v1/node?token=dev`,
+      `  client WS: ws://${HOST}:${PORT}/api/v1/ws`,
+    ].join("\n"),
+  );
+}
+
+main().catch((err: unknown) => {
+  // eslint-disable-next-line no-console
+  console.error(err);
+  process.exit(1);
+});

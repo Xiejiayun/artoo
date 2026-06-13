@@ -20,6 +20,11 @@ export default defineConfig({
   test: {
     include: ["{apps,packages}/**/*.test.{ts,tsx}"],
     globals: false,
-    environment: "node"
+    environment: "node",
+    // PGlite (embedded Postgres, WASM) integration tests are CPU-heavy; under
+    // full-suite parallelism a fresh instance per test can exceed the 5s default
+    // and flake. Generous timeouts keep the shared `npm test` gate reliable.
+    testTimeout: 30000,
+    hookTimeout: 30000
   }
 });

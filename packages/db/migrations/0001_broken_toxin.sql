@@ -1,0 +1,1 @@
+ALTER TABLE "event_log" ADD COLUMN "project_id" text;
