@@ -29,6 +29,8 @@ export const CoreEventTypeSchema = z.enum([
   "task.assigned",
   "run.started",
   "run.output",
+  "run.failed",
+  "run.cancelled",
   "approval.requested",
   "approval.resolved",
   "artifact.created",

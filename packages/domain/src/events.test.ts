@@ -41,8 +41,10 @@ describe("event envelope", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("isCoreEventType narrows known types", () => {
+  it("isCoreEventType narrows known types incl. failure/cancel lifecycle", () => {
     expect(isCoreEventType("run.completed")).toBe(true);
+    expect(isCoreEventType("run.failed")).toBe(true);
+    expect(isCoreEventType("run.cancelled")).toBe(true);
     expect(isCoreEventType("not.an.event")).toBe(false);
   });
 });

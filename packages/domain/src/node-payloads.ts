@@ -31,22 +31,27 @@ export const PolicySnapshotSchema = z.object({
 export type PolicySnapshot = z.infer<typeof PolicySnapshotSchema>;
 
 export const RunStartPayloadSchema = z.object({
-  run_id: z.string(),
-  task_id: z.string(),
-  agent_instance_id: z.string(),
-  runtime: z.string(),
+  run_id: z.string().min(1),
+  task_id: z.string().min(1),
+  agent_instance_id: z.string().min(1),
+  runtime: z.string().min(1),
   workspace: z.object({
-    root: z.string(),
+    root: z.string().min(1),
     branch: z.string().nullish(),
   }),
-  context_pack: z.object({
-    id: z.string(),
-    uri: z.string().optional(),
-    payload: ContextPackSchema.optional(),
-  }),
+  context_pack: z
+    .object({
+      id: z.string().min(1),
+      // Round 13: context_pack is `id + inline payload OR local URI`.
+      uri: z.string().min(1).optional(),
+      payload: ContextPackSchema.optional(),
+    })
+    .refine((pack) => pack.uri !== undefined || pack.payload !== undefined, {
+      message: "context_pack requires either a 'uri' or an inline 'payload'",
+    }),
   policy_snapshot: PolicySnapshotSchema,
   artifact_rules: z.object({
-    paths: z.array(z.string()),
+    paths: z.array(z.string().min(1)),
   }),
 });
 export type RunStartPayload = z.infer<typeof RunStartPayloadSchema>;

@@ -65,6 +65,11 @@ export interface TaskTransition {
   from: TaskStatus;
   to: TaskStatus;
   trigger: TaskTrigger;
+  /**
+   * Whether the transition's target state is re-enterable via a retry /
+   * change-request loop (a graph property). Do NOT use this for idempotency
+   * scoping — use requiresAttemptScopedIdempotency(), which also covers `assign`.
+   */
   reentrant: boolean;
 }
 
@@ -125,11 +130,22 @@ export function applyTaskTransition(from: TaskStatus, trigger: TaskTrigger): Tas
 }
 
 /**
- * Whether a trigger leads into a re-enterable state. Used by the server to scope
- * idempotency keys for reentrant writes (assign/retry) on the run/attempt axis.
+ * Task triggers whose write may legitimately recur for the same task because
+ * `ready` is re-enterable (retry / change-request / retryable start failure).
+ * The server MUST include the attempt/run dimension in the idempotency key for
+ * these — keying on task-id alone would wrongly dedupe a second legitimate
+ * assign/retry (codex Round 18). `assign` is included even though it leaves
+ * `ready`, because a task can be (re)assigned once per ready-entry.
  */
-export function isTaskTriggerReentrant(trigger: TaskTrigger): boolean {
-  return TASK_TRANSITIONS.some((t) => t.trigger === trigger && t.reentrant);
+export const ATTEMPT_SCOPED_TASK_TRIGGERS = [
+  "assign",
+  "retry",
+  "request_changes",
+  "assign_failed_retryable",
+] as const;
+
+export function requiresAttemptScopedIdempotency(trigger: TaskTrigger): boolean {
+  return (ATTEMPT_SCOPED_TASK_TRIGGERS as readonly TaskTrigger[]).includes(trigger);
 }
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ import {
   isApprovalTerminal,
   isRunTerminal,
   isTaskTerminal,
-  isTaskTriggerReentrant,
+  requiresAttemptScopedIdempotency,
   type TaskStatus,
   type TaskTrigger,
 } from "./state.js";
@@ -74,12 +74,14 @@ describe("task state machine", () => {
     }
   });
 
-  it("reentrant flag marks retry/changes/retryable-start edges only", () => {
-    expect(isTaskTriggerReentrant("retry")).toBe(true);
-    expect(isTaskTriggerReentrant("request_changes")).toBe(true);
-    expect(isTaskTriggerReentrant("assign_failed_retryable")).toBe(true);
-    expect(isTaskTriggerReentrant("assign")).toBe(false);
-    expect(isTaskTriggerReentrant("triage")).toBe(false);
+  it("requiresAttemptScopedIdempotency covers assign/retry/request_changes/retryable-recovery (Round 18)", () => {
+    expect(requiresAttemptScopedIdempotency("assign")).toBe(true);
+    expect(requiresAttemptScopedIdempotency("retry")).toBe(true);
+    expect(requiresAttemptScopedIdempotency("request_changes")).toBe(true);
+    expect(requiresAttemptScopedIdempotency("assign_failed_retryable")).toBe(true);
+    expect(requiresAttemptScopedIdempotency("triage")).toBe(false);
+    expect(requiresAttemptScopedIdempotency("run_started")).toBe(false);
+    expect(requiresAttemptScopedIdempotency("accept")).toBe(false);
   });
 
   it("never permanently stuck: every non-terminal status has an outgoing edge", () => {
