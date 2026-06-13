@@ -13,8 +13,12 @@ export default defineConfig({
       "@artoo/testkit": new URL("./packages/testkit/src/index.ts", import.meta.url).pathname
     }
   },
+  esbuild: {
+    jsx: "automatic",
+    jsxImportSource: "react"
+  },
   test: {
-    include: ["{apps,packages}/**/*.test.ts"],
+    include: ["{apps,packages}/**/*.test.{ts,tsx}"],
     globals: false,
     environment: "node"
   }
