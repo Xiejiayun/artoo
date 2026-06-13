@@ -68,6 +68,25 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     void reply.status(500).send(apiError("internal_error", message));
   });
 
+  // Tolerate empty JSON bodies (no-body mutations like /ready send an empty body
+  // with content-type: application/json) instead of 500; invalid JSON -> 400.
+  app.addContentTypeParser(
+    "application/json",
+    { parseAs: "string" },
+    (_req, raw, done) => {
+      const text = typeof raw === "string" ? raw.trim() : "";
+      if (text === "") {
+        done(null, undefined);
+        return;
+      }
+      try {
+        done(null, JSON.parse(text));
+      } catch {
+        done(AppError.validation("request body is not valid JSON"), undefined);
+      }
+    },
+  );
+
   registerIdempotency(app, ctx);
 
   app.get("/api/v1/bootstrap", async () => taskService.bootstrap(ctx));
