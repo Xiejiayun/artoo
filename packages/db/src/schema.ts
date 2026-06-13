@@ -1,0 +1,442 @@
+import { sql } from "drizzle-orm";
+import {
+  type AnyPgColumn,
+  bigint,
+  bigserial,
+  boolean,
+  check,
+  index,
+  integer,
+  jsonb,
+  numeric,
+  pgTable,
+  text,
+  timestamp,
+  unique,
+} from "drizzle-orm/pg-core";
+
+/**
+ * Drizzle schema = the v0.1-core source of truth for the database (design 3.7).
+ * Migrations are generated from this and must stay Postgres-compatible so they
+ * run on both PGlite (dev/test) and Postgres (prod). Enum domains are enforced
+ * with CHECK constraints mirroring the domain status machines.
+ */
+
+const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "string" });
+const jsonbArray = (name: string) =>
+  jsonb(name)
+    .notNull()
+    .default(sql`'[]'::jsonb`);
+const jsonbObject = (name: string) =>
+  jsonb(name)
+    .notNull()
+    .default(sql`'{}'::jsonb`);
+
+// ---------------------------------------------------------------- identity ---
+
+export const organizations = pgTable("organizations", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  createdAt: ts("created_at").notNull(),
+});
+
+export const users = pgTable("users", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  email: text("email").notNull().unique(),
+  displayName: text("display_name").notNull(),
+  role: text("role").notNull(),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [check("users_role_chk", sql`${t.role} in ('owner','admin','member')`)]);
+
+export const agents = pgTable("agents", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  displayName: text("display_name").notNull(),
+  kind: text("kind").notNull(),
+  status: text("status").notNull(),
+  capabilities: jsonbArray("capabilities"),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check(
+    "agents_kind_chk",
+    sql`${t.kind} in ('coding','reviewer','planner','integrator','qa','memory_curator','mock')`,
+  ),
+  check(
+    "agents_status_chk",
+    sql`${t.status} in ('offline','idle','queued','running','awaiting_approval','blocked','failed')`,
+  ),
+]);
+
+// -------------------------------------------------------------------- work ---
+
+export const projects = pgTable("projects", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  name: text("name").notNull(),
+  defaultWorkspace: text("default_workspace"),
+  createdAt: ts("created_at").notNull(),
+});
+
+export const tasks = pgTable("tasks", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id),
+  parentTaskId: text("parent_task_id").references((): AnyPgColumn => tasks.id),
+  roomId: text("room_id"),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  status: text("status").notNull(),
+  priority: text("priority").notNull().default("p2"),
+  assigneeType: text("assignee_type"),
+  assigneeId: text("assignee_id"),
+  requiredCapabilities: jsonbArray("required_capabilities"),
+  preferredModelProfileId: text("preferred_model_profile_id"),
+  preferredEffort: text("preferred_effort"),
+  acceptanceCriteria: jsonbArray("acceptance_criteria"),
+  createdByType: text("created_by_type").notNull(),
+  createdById: text("created_by_id").notNull(),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+}, (t) => [
+  check(
+    "tasks_status_chk",
+    sql`${t.status} in ('backlog','ready','assigned','running','awaiting_approval','blocked','review','done','cancelled')`,
+  ),
+  check("tasks_assignee_type_chk", sql`${t.assigneeType} is null or ${t.assigneeType} in ('user','agent','agent_team')`),
+  check("tasks_preferred_effort_chk", sql`${t.preferredEffort} is null or ${t.preferredEffort} in ('low','medium','high','max')`),
+  check("tasks_created_by_type_chk", sql`${t.createdByType} in ('user','agent','system')`),
+  index("tasks_project_status_updated_idx").on(t.projectId, t.status, t.updatedAt),
+  index("tasks_parent_idx").on(t.parentTaskId),
+]);
+
+export const taskDependencies = pgTable("task_dependencies", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  fromTaskId: text("from_task_id")
+    .notNull()
+    .references(() => tasks.id),
+  toTaskId: text("to_task_id")
+    .notNull()
+    .references(() => tasks.id),
+  type: text("type").notNull(),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check("task_deps_type_chk", sql`${t.type} in ('blocks','artifact_required')`),
+  unique("task_deps_unique").on(t.fromTaskId, t.toTaskId, t.type),
+  index("task_deps_to_idx").on(t.toTaskId),
+]);
+
+export const modelProfiles = pgTable("model_profiles", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  name: text("name").notNull(),
+  provider: text("provider").notNull(),
+  model: text("model").notNull(),
+  contextWindow: integer("context_window"),
+  costTier: text("cost_tier").notNull(),
+  latencyTier: text("latency_tier").notNull(),
+  capabilityTags: jsonbArray("capability_tags"),
+  config: jsonbObject("config"),
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check("model_profiles_cost_tier_chk", sql`${t.costTier} in ('low','medium','high','premium')`),
+  check("model_profiles_latency_tier_chk", sql`${t.latencyTier} in ('fast','normal','slow')`),
+  unique("model_profiles_org_name").on(t.organizationId, t.name),
+  index("model_profiles_lookup_idx").on(t.organizationId, t.enabled, t.costTier),
+]);
+
+export const effortProfiles = pgTable("effort_profiles", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  name: text("name").notNull(),
+  effort: text("effort").notNull(),
+  maxRuntimeMinutes: integer("max_runtime_minutes").notNull(),
+  maxCostUsd: numeric("max_cost_usd", { precision: 10, scale: 2 }),
+  maxToolCalls: integer("max_tool_calls"),
+  retryBudget: integer("retry_budget").notNull().default(0),
+  description: text("description").notNull().default(""),
+  config: jsonbObject("config"),
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check("effort_profiles_effort_chk", sql`${t.effort} in ('low','medium','high','max')`),
+  unique("effort_profiles_org_name").on(t.organizationId, t.name),
+  index("effort_profiles_lookup_idx").on(t.organizationId, t.enabled, t.effort),
+]);
+
+export const computers = pgTable("computers", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  displayName: text("display_name").notNull(),
+  hostname: text("hostname").notNull(),
+  os: text("os").notNull(),
+  arch: text("arch").notNull(),
+  status: text("status").notNull(),
+  lastHeartbeatAt: ts("last_heartbeat_at"),
+  resources: jsonbObject("resources"),
+  capabilities: jsonbArray("capabilities"),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check("computers_status_chk", sql`${t.status} in ('enrolling','online','offline','disabled')`),
+  index("computers_status_heartbeat_idx").on(t.status, t.lastHeartbeatAt),
+]);
+
+export const agentRuntimes = pgTable("agent_runtimes", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  computerId: text("computer_id")
+    .notNull()
+    .references(() => computers.id),
+  runtime: text("runtime").notNull(),
+  version: text("version"),
+  status: text("status").notNull(),
+  metadata: jsonbObject("metadata"),
+}, (t) => [
+  check("agent_runtimes_status_chk", sql`${t.status} in ('detected','available','missing','disabled')`),
+  unique("agent_runtimes_computer_runtime").on(t.computerId, t.runtime),
+]);
+
+export const agentInstances = pgTable("agent_instances", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  computerId: text("computer_id")
+    .notNull()
+    .references(() => computers.id),
+  agentId: text("agent_id")
+    .notNull()
+    .references(() => agents.id),
+  runtime: text("runtime").notNull(),
+  modelProfileId: text("model_profile_id").references(() => modelProfiles.id),
+  effortProfileId: text("effort_profile_id").references(() => effortProfiles.id),
+  status: text("status").notNull(),
+  workspaceRoot: text("workspace_root"),
+  config: jsonbObject("config"),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check("agent_instances_status_chk", sql`${t.status} in ('idle','queued','running','stopping','failed','disabled')`),
+  index("agent_instances_status_computer_idx").on(t.status, t.computerId),
+  index("agent_instances_profiles_idx").on(t.modelProfileId, t.effortProfileId, t.status),
+]);
+
+export const runs = pgTable("runs", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  taskId: text("task_id")
+    .notNull()
+    .references(() => tasks.id),
+  computerId: text("computer_id").notNull(),
+  agentInstanceId: text("agent_instance_id").notNull(),
+  runtimeId: text("runtime_id").notNull(),
+  schedulerDecisionId: text("scheduler_decision_id"),
+  modelProfileId: text("model_profile_id").references(() => modelProfiles.id),
+  effortProfileId: text("effort_profile_id").references(() => effortProfiles.id),
+  status: text("status").notNull(),
+  contextPackId: text("context_pack_id"),
+  startedAt: ts("started_at"),
+  endedAt: ts("ended_at"),
+  failureReason: text("failure_reason"),
+  sequence: bigint("sequence", { mode: "number" }).notNull().default(0),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check(
+    "runs_status_chk",
+    sql`${t.status} in ('queued','starting','running','awaiting_input','paused','completed','failed','cancelled')`,
+  ),
+  index("runs_task_status_created_idx").on(t.taskId, t.status, t.createdAt),
+]);
+
+export const schedulerDecisions = pgTable("scheduler_decisions", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  taskId: text("task_id")
+    .notNull()
+    .references(() => tasks.id),
+  selectedComputerId: text("selected_computer_id").notNull(),
+  selectedAgentInstanceId: text("selected_agent_instance_id").notNull(),
+  selectedModelProfileId: text("selected_model_profile_id").references(() => modelProfiles.id),
+  selectedEffortProfileId: text("selected_effort_profile_id").references(() => effortProfiles.id),
+  mode: text("mode").notNull(),
+  score: integer("score").notNull(),
+  reason: text("reason").notNull(),
+  candidates: jsonbArray("candidates"),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [check("scheduler_decisions_mode_chk", sql`${t.mode} in ('auto','manual')`)]);
+
+export const artifacts = pgTable("artifacts", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  taskId: text("task_id")
+    .notNull()
+    .references(() => tasks.id),
+  runId: text("run_id").references(() => runs.id),
+  type: text("type").notNull(),
+  uri: text("uri").notNull(),
+  metadata: jsonbObject("metadata"),
+  checksum: text("checksum"),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check(
+    "artifacts_type_chk",
+    sql`${t.type} in ('patch','pull_request','file','screenshot','report','log_bundle','url','test_result')`,
+  ),
+]);
+
+// ------------------------------------------------------------------ collab ---
+
+export const rooms = pgTable("rooms", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  projectId: text("project_id").references(() => projects.id),
+  taskId: text("task_id"),
+  type: text("type").notNull(),
+  name: text("name").notNull(),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check("rooms_type_chk", sql`${t.type} in ('dm','project','sprint','task','agent_team','incident')`),
+]);
+
+export const messages = pgTable("messages", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  roomId: text("room_id")
+    .notNull()
+    .references(() => rooms.id),
+  taskId: text("task_id").references(() => tasks.id),
+  runId: text("run_id").references(() => runs.id),
+  actorType: text("actor_type").notNull(),
+  actorId: text("actor_id").notNull(),
+  kind: text("kind").notNull(),
+  body: text("body").notNull().default(""),
+  payload: jsonbObject("payload"),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check("messages_actor_type_chk", sql`${t.actorType} in ('user','agent','system','bridge')`),
+  index("messages_room_created_idx").on(t.roomId, t.createdAt),
+]);
+
+export const approvals = pgTable("approvals", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  taskId: text("task_id")
+    .notNull()
+    .references(() => tasks.id),
+  runId: text("run_id").references(() => runs.id),
+  requestedByType: text("requested_by_type").notNull(),
+  requestedById: text("requested_by_id").notNull(),
+  action: text("action").notNull(),
+  risk: text("risk").notNull(),
+  summary: text("summary").notNull(),
+  payloadRef: text("payload_ref"),
+  status: text("status").notNull(),
+  resolvedBy: text("resolved_by"),
+  resolvedAt: ts("resolved_at"),
+  expiresAt: ts("expires_at"),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check("approvals_requested_by_type_chk", sql`${t.requestedByType} in ('agent','system')`),
+  check("approvals_risk_chk", sql`${t.risk} in ('low','medium','high')`),
+  check(
+    "approvals_status_chk",
+    sql`${t.status} in ('pending','approved','rejected','needs_more_info','expired')`,
+  ),
+  index("approvals_status_expires_idx").on(t.status, t.expiresAt),
+]);
+
+// ------------------------------------------------------------------ memory ---
+
+export const contextPacks = pgTable("context_packs", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  taskId: text("task_id")
+    .notNull()
+    .references(() => tasks.id),
+  runId: text("run_id"),
+  payload: jsonb("payload").notNull(),
+  sourceMemoryIds: jsonbArray("source_memory_ids"),
+  createdAt: ts("created_at").notNull(),
+});
+
+// ------------------------------------------------------------------- event ---
+
+export const eventLog = pgTable("event_log", {
+  id: text("id").primaryKey(),
+  position: bigserial("position", { mode: "number" }).notNull().unique(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  type: text("type").notNull(),
+  schemaVersion: text("schema_version").notNull(),
+  actorType: text("actor_type").notNull(),
+  actorId: text("actor_id").notNull(),
+  taskId: text("task_id"),
+  roomId: text("room_id"),
+  runId: text("run_id"),
+  correlationId: text("correlation_id").notNull(),
+  idempotencyKey: text("idempotency_key"),
+  sequence: integer("sequence"),
+  payload: jsonbObject("payload"),
+  occurredAt: ts("occurred_at").notNull(),
+}, (t) => [
+  index("event_log_correlation_idx").on(t.correlationId, t.occurredAt),
+  index("event_log_task_idx").on(t.taskId, t.occurredAt),
+]);
+
+// Attempt/run-scoped dedup for ingested node run events (Round 18): a composite
+// UNIQUE makes re-delivered events idempotent without string-key collisions.
+export const runEventIngest = pgTable("run_event_ingest", {
+  nodeId: text("node_id").notNull(),
+  runId: text("run_id").notNull(),
+  sequence: integer("sequence").notNull(),
+  eventId: text("event_id").notNull(),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [unique("run_event_ingest_unique").on(t.nodeId, t.runId, t.sequence)]);
+
+// Idempotency-Key store. `scope` is attempt/run-scoped for re-entrant writes
+// (assign/retry derive scope from run_id, not task_id) per Round 17/18.
+export const idempotencyKeys = pgTable("idempotency_keys", {
+  scope: text("scope").notNull(),
+  key: text("key").notNull(),
+  requestHash: text("request_hash").notNull(),
+  responseJson: jsonb("response_json"),
+  eventIds: jsonbArray("event_ids"),
+  createdAt: ts("created_at").notNull(),
+  expiresAt: ts("expires_at"),
+}, (t) => [unique("idempotency_keys_pk").on(t.scope, t.key)]);
