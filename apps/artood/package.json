@@ -13,5 +13,8 @@
   "dependencies": {
     "@artoo/domain": "0.1.0",
     "@artoo/protocol": "0.1.0"
+  },
+  "devDependencies": {
+    "@artoo/testkit": "0.1.0"
   }
 }
