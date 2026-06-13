@@ -9,7 +9,7 @@
     "build": "tsc -b && vite build",
     "dev": "vite",
     "typecheck": "tsc -b",
-    "test:e2e": "playwright test"
+    "test:e2e": "npm run build --workspace @artoo/server && playwright test"
   },
   "dependencies": {
     "@artoo/domain": "0.1.0",
