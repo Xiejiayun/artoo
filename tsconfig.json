@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/domain" },
+    { "path": "./packages/storage" },
+    { "path": "./packages/db" },
+    { "path": "./packages/protocol" },
+    { "path": "./packages/testkit" },
+    { "path": "./apps/server" },
+    { "path": "./apps/artood" },
+    { "path": "./apps/web" }
+  ]
+}
