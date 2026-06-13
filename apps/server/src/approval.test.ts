@@ -90,4 +90,33 @@ describe("approval platform-gate", () => {
     expect(resolved.json().approval.status).toBe("rejected");
     expect(await status(server, taskId)).toBe("blocked");
   });
+
+  it("needs_more_info leaves the task awaiting approval and can later approve", async () => {
+    server = await buildTestServer();
+    const { taskId } = await runningTask(server);
+    const requested = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/dev/tasks/${taskId}/request-approval`,
+      payload: { action: "git.push", risk: "high", summary: "Need details" },
+    });
+    const approvalId = requested.json().approval.id as string;
+
+    const moreInfo = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${approvalId}/resolve`,
+      payload: { decision: "needs_more_info", comment: "explain risk" },
+    });
+    expect(moreInfo.statusCode).toBe(200);
+    expect(moreInfo.json().approval.status).toBe("needs_more_info");
+    expect(await status(server, taskId)).toBe("awaiting_approval");
+
+    const approved = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${approvalId}/resolve`,
+      payload: { decision: "approved" },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json().approval.status).toBe("approved");
+    expect(await status(server, taskId)).toBe("running");
+  });
 });

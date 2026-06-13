@@ -22,7 +22,7 @@ const STATE = Symbol("artoo.idempotency");
 
 /**
  * Request-level idempotency for write endpoints. A POST carrying an
- * `Idempotency-Key` header is deduped on (scope=route, key): a replay with the
+ * `Idempotency-Key` header is deduped on (scope=method+actual URL, key): a replay with the
  * same body returns the stored response WITHOUT re-running the handler (so no
  * duplicate events); reusing the key with a different body is a conflict.
  *
@@ -39,22 +39,36 @@ export function registerIdempotency(app: FastifyInstance, ctx: ServerContext): v
     if (key === undefined) {
       return;
     }
-    const scope = `POST:${req.routeOptions.url ?? req.url}`;
+    const scope = `POST:${req.url}`;
     const requestHash = hashRequest(req.body);
 
-    const existing = (
-      await ctx.db.db
-        .select()
-        .from(idempotencyKeys)
-        .where(and(eq(idempotencyKeys.scope, scope), eq(idempotencyKeys.key, key)))
-    )[0];
-
-    if (existing !== undefined) {
+    try {
+      await ctx.db.db.insert(idempotencyKeys).values({
+        scope,
+        key,
+        requestHash,
+        responseJson: null,
+        eventIds: [],
+        createdAt: ctx.clock.nowIso(),
+      });
+    } catch {
+      const existing = (
+        await ctx.db.db
+          .select()
+          .from(idempotencyKeys)
+          .where(and(eq(idempotencyKeys.scope, scope), eq(idempotencyKeys.key, key)))
+      )[0];
+      if (existing === undefined) {
+        throw AppError.conflict("Idempotency-Key reservation conflicted", { scope, key });
+      }
       if (existing.requestHash !== requestHash) {
         throw AppError.conflict("Idempotency-Key reused with a different request body", {
           scope,
           key,
         });
+      }
+      if (existing.responseJson === null) {
+        throw AppError.conflict("Idempotency-Key request is still in progress", { scope, key });
       }
       const stored = existing.responseJson as StoredResponse;
       await reply.status(stored.status).send(stored.body);
@@ -68,27 +82,23 @@ export function registerIdempotency(app: FastifyInstance, ctx: ServerContext): v
   app.addHook("onSend", async (req: FastifyRequest, reply: FastifyReply, payload: unknown) => {
     const pending = (req as FastifyRequest & { [STATE]?: PendingIdempotency })[STATE];
     if (pending === undefined || reply.statusCode >= 400 || typeof payload !== "string") {
+      if (pending !== undefined) {
+        await deletePending(ctx, pending);
+      }
       return payload;
     }
     let body: unknown;
     try {
       body = JSON.parse(payload);
     } catch {
+      await deletePending(ctx, pending);
       return payload;
     }
     const stored: StoredResponse = { status: reply.statusCode, body };
-    try {
-      await ctx.db.db.insert(idempotencyKeys).values({
-        scope: pending.scope,
-        key: pending.key,
-        requestHash: pending.requestHash,
-        responseJson: stored,
-        eventIds: [],
-        createdAt: ctx.clock.nowIso(),
-      });
-    } catch {
-      // Concurrent insert with the same key — the other request won the race.
-    }
+    await ctx.db.db
+      .update(idempotencyKeys)
+      .set({ responseJson: stored })
+      .where(and(eq(idempotencyKeys.scope, pending.scope), eq(idempotencyKeys.key, pending.key)));
     return payload;
   });
 }
@@ -102,4 +112,10 @@ function hashRequest(body: unknown): string {
   return createHash("sha256")
     .update(JSON.stringify(body ?? null))
     .digest("hex");
+}
+
+async function deletePending(ctx: ServerContext, pending: PendingIdempotency): Promise<void> {
+  await ctx.db.db
+    .delete(idempotencyKeys)
+    .where(and(eq(idempotencyKeys.scope, pending.scope), eq(idempotencyKeys.key, pending.key)));
 }

@@ -14,6 +14,15 @@ const PAYLOAD = {
   acceptance_criteria: ["ok"],
 };
 
+async function createBacklogTask(server: TestServer, title: string): Promise<string> {
+  const res = await server.app.inject({
+    method: "POST",
+    url: "/api/v1/tasks",
+    payload: { ...PAYLOAD, title },
+  });
+  return res.json().task.id as string;
+}
+
 describe("Idempotency-Key request wrapper", () => {
   let server: TestServer | undefined;
 
@@ -65,5 +74,27 @@ describe("Idempotency-Key request wrapper", () => {
     });
     expect(b.json().task.id).not.toBe(a.json().task.id);
     expect(await taskCount(server)).toBe(2);
+  });
+
+  it("scopes the same key by actual URL, not just the route template", async () => {
+    server = await buildTestServer();
+    const taskA = await createBacklogTask(server, "task a");
+    const taskB = await createBacklogTask(server, "task b");
+    const headers = { "idempotency-key": "same-ready-key" };
+
+    const readyA = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/tasks/${taskA}/ready`,
+      headers,
+    });
+    const readyB = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/tasks/${taskB}/ready`,
+      headers,
+    });
+
+    expect(readyA.json().task.id).toBe(taskA);
+    expect(readyB.json().task.id).toBe(taskB);
+    expect(readyB.json().task.status).toBe("ready");
   });
 });

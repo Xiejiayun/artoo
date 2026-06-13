@@ -65,7 +65,7 @@ export async function requestApproval(
       status: "pending",
       createdAt: now,
     });
-    await transitionTask(tx, ctx, {
+    const transition = await transitionTask(tx, ctx, {
       taskId: params.taskId,
       from: "running",
       trigger: "approval_requested",
@@ -89,6 +89,9 @@ export async function requestApproval(
         }),
       ],
     });
+    if (!transition.changed) {
+      throw AppError.conflict("task is no longer running; approval was not requested");
+    }
     const row = (await tx.select().from(approvals).where(eq(approvals.id, approvalId)))[0];
     if (row === undefined) {
       throw new Error("requestApproval: approval missing after insert");
@@ -145,30 +148,32 @@ export async function resolveApproval(
       });
     }
     const toStatus = applyApprovalTransition(fromStatus, approvalTrigger);
+    const task = (await tx.select().from(tasks).where(eq(tasks.id, approval.taskId)))[0];
+    if (task === undefined) {
+      throw new Error("resolveApproval: task missing for approval");
+    }
+    const taskStatus = task.status as TaskStatus;
+    if (taskStatus !== "awaiting_approval") {
+      throw AppError.invalidState(`task must be 'awaiting_approval' to resolve approval (is '${taskStatus}')`, {
+        status: taskStatus,
+      });
+    }
+
     await tx
       .update(approvals)
       .set({ status: toStatus, resolvedBy: ctx.actorUserId, resolvedAt: now })
       .where(eq(approvals.id, approvalId));
 
-    const task = (await tx.select().from(tasks).where(eq(tasks.id, approval.taskId)))[0];
-    const taskStatus = task?.status as TaskStatus | undefined;
-
     // Drive the task per the decision (only meaningful while awaiting_approval).
-    if (task !== undefined && taskStatus === "awaiting_approval") {
-      if (req.decision === "approved") {
-        await transitionTask(tx, ctx, {
-          taskId: approval.taskId,
-          from: "awaiting_approval",
-          trigger: "approval_granted",
-          now,
-        });
-      } else if (req.decision === "rejected") {
-        await transitionTask(tx, ctx, {
-          taskId: approval.taskId,
-          from: "awaiting_approval",
-          trigger: "approval_rejected",
-          now,
-        });
+    if (req.decision === "approved" || req.decision === "rejected") {
+      const transition = await transitionTask(tx, ctx, {
+        taskId: approval.taskId,
+        from: "awaiting_approval",
+        trigger: req.decision === "approved" ? "approval_granted" : "approval_rejected",
+        now,
+      });
+      if (!transition.changed) {
+        throw AppError.conflict("task approval state changed during approval resolution");
       }
     }
 
@@ -179,9 +184,9 @@ export async function resolveApproval(
         actorType: "user",
         actorId: ctx.actorUserId,
         correlationId: approval.taskId,
-        projectId: task?.projectId ?? null,
+        projectId: task.projectId,
         taskId: approval.taskId,
-        roomId: task?.roomId ?? null,
+        roomId: task.roomId,
         runId: approval.runId,
         payload: { approval_id: approvalId, decision: req.decision, comment: req.comment ?? null },
       }),
