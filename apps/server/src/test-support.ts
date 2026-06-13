@@ -5,6 +5,7 @@ import type { FastifyInstance } from "fastify";
 
 import { buildApp } from "./app.js";
 import type { ServerContext } from "./context.js";
+import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
 
 const FIXED_ISO = "2026-06-13T00:00:00.000Z";
 
@@ -30,6 +31,7 @@ export interface TestServer {
   app: FastifyInstance;
   ctx: ServerContext;
   db: PgliteDbClient;
+  nodeRegistry: NodeRegistry;
   close: () => Promise<void>;
 }
 
@@ -45,12 +47,14 @@ export async function buildTestServer(): Promise<TestServer> {
     organizationId: "org_default",
     actorUserId: "user_owner",
   };
-  const app = buildApp(ctx);
+  const nodeRegistry = createNodeRegistry();
+  const app = buildApp(ctx, { nodeRegistry });
   await app.ready();
   return {
     app,
     ctx,
     db,
+    nodeRegistry,
     close: async () => {
       await app.close();
       await db.close();

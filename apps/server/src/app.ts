@@ -1,4 +1,7 @@
+import { runs } from "@artoo/db";
 import { apiError, AssignRequestSchema, CreateTaskRequestSchema, ReviewRequestSchema } from "@artoo/domain";
+import websocket from "@fastify/websocket";
+import { eq } from "drizzle-orm";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import type { ServerContext } from "./context.js";
@@ -6,14 +9,38 @@ import { AppError } from "./errors.js";
 import * as lifecycle from "./services/lifecycle-service.js";
 import * as runService from "./services/run-service.js";
 import * as taskService from "./services/task-service.js";
+import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
+import { registerNodeWsRoute } from "./ws/node-ws.js";
+
+export interface BuildAppOptions {
+  /** Inject a registry so tests can observe node registration. */
+  nodeRegistry?: NodeRegistry;
+}
 
 /**
  * Build the Fastify app for a given {@link ServerContext}. Routes are thin: they
  * validate input with the domain Zod schemas and delegate to services. All
  * business state transitions live in services, never in routes.
  */
-export function buildApp(ctx: ServerContext): FastifyInstance {
+export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: false });
+  const nodeRegistry = options.nodeRegistry ?? createNodeRegistry();
+
+  // Route a queued run's run.start to the node that owns its computer. Tests may
+  // pre-set onRunQueued (in-process binding) — only install the registry route
+  // when one isn't already provided.
+  ctx.onRunQueued ??= async (runId: string): Promise<void> => {
+    const run = (await ctx.db.db.select().from(runs).where(eq(runs.id, runId)))[0];
+    if (run === undefined) {
+      return;
+    }
+    await nodeRegistry.get(run.computerId)?.dispatchRunStart(runId);
+  };
+
+  void app.register(websocket);
+  void app.register(async (instance) => {
+    registerNodeWsRoute(instance, ctx, nodeRegistry);
+  });
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof AppError) {
