@@ -25,6 +25,16 @@ if (sleepMs > 0) {
   await new Promise((resolve) => setTimeout(resolve, sleepMs));
 }
 
+// Block until stdin reaches EOF — used to verify the ProcessAdapter closes the
+// child's stdin (otherwise this never resolves and the run hangs).
+if (args.includes("--read-stdin")) {
+  await new Promise((resolve) => {
+    process.stdin.on("data", () => {});
+    process.stdin.on("end", resolve);
+    process.stdin.resume();
+  });
+}
+
 if (workspace) {
   writeFileSync(
     join(workspace, "changes.patch"),

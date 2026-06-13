@@ -203,4 +203,22 @@ describe("createProcessAdapter", () => {
       rmSync(ws, { recursive: true, force: true });
     }
   });
+
+  it("closes child stdin so a stdin-reading process does not hang", async () => {
+    const ws = makeWorkspace();
+    try {
+      const adapter = createProcessAdapter({
+        command: [process.execPath, fixture, "--workspace", "{{workspace_root}}", "--read-stdin"],
+        allowedRoots: [ws],
+        artifacts: [{ type: "patch", path: "changes.patch" }]
+      });
+      const handle = await adapter.start(makeConfig(ws));
+      // The fixture blocks until stdin EOF; if the adapter left stdin open this
+      // would never reach a terminal lifecycle (the run would hang).
+      const events = await drain(adapter.streamEvents(handle));
+      expect(events.at(-1)).toEqual({ type: "run.lifecycle", payload: { phase: "completed", reason: null } });
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
 });
