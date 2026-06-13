@@ -1,8 +1,9 @@
-import { apiError, CreateTaskRequestSchema } from "@artoo/domain";
+import { apiError, AssignRequestSchema, CreateTaskRequestSchema } from "@artoo/domain";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
+import * as lifecycle from "./services/lifecycle-service.js";
 import * as taskService from "./services/task-service.js";
 
 /**
@@ -37,6 +38,20 @@ export function buildApp(ctx: ServerContext): FastifyInstance {
   app.get("/api/v1/tasks/:id", async (req) => {
     const { id } = req.params as { id: string };
     return taskService.getTaskSnapshot(ctx, id);
+  });
+
+  app.post("/api/v1/tasks/:id/ready", async (req) => {
+    const { id } = req.params as { id: string };
+    return lifecycle.markReady(ctx, id);
+  });
+
+  app.post("/api/v1/tasks/:id/assign", async (req) => {
+    const { id } = req.params as { id: string };
+    const parsed = AssignRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      throw AppError.validation("invalid assign payload", { issues: parsed.error.issues });
+    }
+    return lifecycle.assignTask(ctx, id, parsed.data);
   });
 
   return app;
