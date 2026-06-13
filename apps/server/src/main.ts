@@ -4,6 +4,8 @@ import { PgliteDbClient } from "@artoo/storage";
 
 import { buildApp } from "./app.js";
 import type { ServerContext } from "./context.js";
+import { createEventPublisher } from "./ws/event-publisher.js";
+import { createWsHub } from "./ws/ws-hub.js";
 
 /**
  * Dev server bootstrap: embedded PGlite + migrate + seed + Fastify listen, in one
@@ -33,8 +35,13 @@ async function main(): Promise<void> {
     organizationId: "org_default",
     actorUserId: "user_owner",
   };
-  const app = buildApp(ctx);
+  const wsHub = createWsHub();
+  const app = buildApp(ctx, { wsHub });
   await app.listen({ port: PORT, host: HOST });
+
+  // Begin streaming committed events to subscribed realtime clients.
+  const publisher = createEventPublisher(ctx, wsHub);
+  await publisher.start();
 
   // eslint-disable-next-line no-console
   console.log(
