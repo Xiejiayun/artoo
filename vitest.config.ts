@@ -1,26 +1,21 @@
-import { fileURLToPath } from "node:url";
-
 import { defineConfig } from "vitest/config";
-
-// Cross-package `@artoo/*` imports must resolve to live `src` (not stale `dist`)
-// so cross-package TDD works without a build step. Shared skeleton config —
-// added on feature/task-4 to unblock db->storage tests; reconcile on main.
-const pkgSrc = (name: string): string =>
-  fileURLToPath(new URL(`./packages/${name}/src/index.ts`, import.meta.url));
 
 export default defineConfig({
   resolve: {
     alias: {
-      "@artoo/domain": pkgSrc("domain"),
-      "@artoo/storage": pkgSrc("storage"),
-      "@artoo/db": pkgSrc("db"),
-      "@artoo/protocol": pkgSrc("protocol"),
-      "@artoo/testkit": pkgSrc("testkit"),
-    },
+      "@artoo/artood": new URL("./apps/artood/src/index.ts", import.meta.url).pathname,
+      "@artoo/server": new URL("./apps/server/src/index.ts", import.meta.url).pathname,
+      "@artoo/web": new URL("./apps/web/src/index.ts", import.meta.url).pathname,
+      "@artoo/db": new URL("./packages/db/src/index.ts", import.meta.url).pathname,
+      "@artoo/domain": new URL("./packages/domain/src/index.ts", import.meta.url).pathname,
+      "@artoo/protocol": new URL("./packages/protocol/src/index.ts", import.meta.url).pathname,
+      "@artoo/storage": new URL("./packages/storage/src/index.ts", import.meta.url).pathname,
+      "@artoo/testkit": new URL("./packages/testkit/src/index.ts", import.meta.url).pathname
+    }
   },
   test: {
     include: ["{apps,packages}/**/*.test.ts"],
     globals: false,
-    environment: "node",
-  },
+    environment: "node"
+  }
 });
