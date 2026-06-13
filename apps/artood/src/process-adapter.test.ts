@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentInstanceConfig, RunEvent } from "@artoo/protocol";
@@ -103,6 +103,83 @@ describe("createProcessAdapter", () => {
       await expect(adapter.start(makeConfig(ws))).rejects.toBeInstanceOf(WorkspaceScopeError);
       // nothing was written outside scope
       expect(existsSync(join(ws, "context_pack.md"))).toBe(false);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a context pack path that escapes the workspace", async () => {
+    const ws = makeWorkspace();
+    const escapedName = `${basename(ws)}-context_pack.md`;
+    try {
+      const adapter = createProcessAdapter({
+        command: cmd,
+        allowedRoots: [ws],
+        contextPackFilename: `../${escapedName}`
+      });
+      await expect(adapter.start(makeConfig(ws))).rejects.toBeInstanceOf(WorkspaceScopeError);
+      expect(existsSync(join(ws, "..", escapedName))).toBe(false);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(join(ws, "..", escapedName), { force: true });
+    }
+  });
+
+  it("rejects artifact specs that escape the workspace before writing context", async () => {
+    const ws = makeWorkspace();
+    try {
+      const adapter = createProcessAdapter({
+        command: cmd,
+        allowedRoots: [ws],
+        artifacts: [{ type: "patch", path: "../escaped.patch" }]
+      });
+      await expect(adapter.start(makeConfig(ws))).rejects.toBeInstanceOf(WorkspaceScopeError);
+      expect(existsSync(join(ws, "context_pack.md"))).toBe(false);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects spawn failures from start", async () => {
+    const ws = makeWorkspace();
+    try {
+      const adapter = createProcessAdapter({
+        command: ["artoo-missing-command-for-test"],
+        allowedRoots: [ws]
+      });
+      await expect(adapter.start(makeConfig(ws))).rejects.toThrow();
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it("maps stop to run.lifecycle cancelled without collecting completion artifacts", async () => {
+    const ws = makeWorkspace();
+    try {
+      const adapter = createProcessAdapter({
+        command: [
+          process.execPath,
+          fixture,
+          "--workspace",
+          "{{workspace_root}}",
+          "--context",
+          "{{context_pack_path}}",
+          "--sleep-ms",
+          "5000"
+        ],
+        allowedRoots: [ws],
+        artifacts: [{ type: "patch", path: "changes.patch" }]
+      });
+      const handle = await adapter.start(makeConfig(ws));
+      const eventsPromise = drain(adapter.streamEvents(handle));
+      await adapter.stop(handle, "user_cancelled");
+      const events = await eventsPromise;
+
+      expect(events.at(-1)).toEqual({
+        type: "run.lifecycle",
+        payload: { phase: "cancelled", reason: "user_cancelled" }
+      });
+      expect(events.some((e) => e.type === "artifact.created")).toBe(false);
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }

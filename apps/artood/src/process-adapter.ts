@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { ArtifactPayload, ArtifactType } from "@artoo/domain";
@@ -51,6 +51,7 @@ interface RunState {
   queue: AsyncEventQueue<RunEvent>;
   kill: () => void;
   workspaceRoot: string;
+  stopReason?: StopReason;
 }
 
 class AsyncEventQueue<T> {
@@ -59,6 +60,9 @@ class AsyncEventQueue<T> {
   private ended = false;
 
   push(item: T): void {
+    if (this.ended) {
+      return;
+    }
     const waiter = this.waiters.shift();
     if (waiter) {
       waiter({ value: item, done: false });
@@ -139,10 +143,20 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
   const artifactSpecs = options.artifacts ?? [];
   const runs = new Map<string, RunState>();
 
+  function workspacePath(workspaceRoot: string, relativePath: string): string {
+    const absolute = resolve(workspaceRoot, relativePath);
+    assertWorkspaceScope(absolute, [workspaceRoot]);
+    return absolute;
+  }
+
+  function artifactPaths(workspaceRoot: string): Array<ArtifactSpec & { absolute: string }> {
+    return artifactSpecs.map((spec) => ({ ...spec, absolute: workspacePath(workspaceRoot, spec.path) }));
+  }
+
   function collectDescriptors(workspaceRoot: string): ArtifactDescriptor[] {
     const descriptors: ArtifactDescriptor[] = [];
-    for (const spec of artifactSpecs) {
-      const absolute = join(workspaceRoot, spec.path);
+    for (const spec of artifactPaths(workspaceRoot)) {
+      const absolute = spec.absolute;
       if (!existsSync(absolute)) {
         continue;
       }
@@ -165,7 +179,8 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
       // Enforce the workspace allowlist before doing anything else.
       assertWorkspaceScope(config.workspaceRoot, options.allowedRoots);
 
-      const contextPackPath = join(config.workspaceRoot, contextPackFilename);
+      const contextPackPath = workspacePath(config.workspaceRoot, contextPackFilename);
+      artifactPaths(config.workspaceRoot);
       writeFileSync(contextPackPath, renderContextPack(config));
 
       const argv = options.command.map((part) =>
@@ -180,7 +195,8 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
 
       const child = spawn(cmd, args, { cwd: config.workspaceRoot });
       const queue = new AsyncEventQueue<RunEvent>();
-      queue.push({ type: "run.lifecycle", payload: { phase: "started" } });
+      let finalized = false;
+      let spawned = false;
 
       const stdout = makeLineEmitter((text) =>
         queue.push({ type: "run.output", payload: { stream: "stdout", text } })
@@ -191,31 +207,72 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
       child.stdout?.on("data", (chunk: Buffer) => stdout.feed(chunk));
       child.stderr?.on("data", (chunk: Buffer) => stderr.feed(chunk));
 
-      child.on("error", (err: Error) => {
-        queue.push({ type: "run.lifecycle", payload: { phase: "failed", reason: err.message } });
-        queue.end();
-      });
-      child.on("close", (code: number | null) => {
-        stdout.flush();
-        stderr.flush();
-        for (const descriptor of collectDescriptors(config.workspaceRoot)) {
-          queue.push({ type: "artifact.created", payload: descriptor.payload });
-        }
-        const ok = code === 0;
-        queue.push({
-          type: "run.lifecycle",
-          payload: { phase: ok ? "completed" : "failed", reason: ok ? null : `exit ${code ?? "signal"}` }
-        });
-        queue.end();
-      });
-
-      runs.set(config.runId, {
+      const state: RunState = {
         queue,
         workspaceRoot: config.workspaceRoot,
         kill: () => {
           child.kill();
         }
+      };
+
+      function finishWith(event: RunEvent): void {
+        if (finalized) {
+          return;
+        }
+        finalized = true;
+        stdout.flush();
+        stderr.flush();
+        queue.push(event);
+        queue.end();
+      }
+
+      child.on("error", (err: Error) => {
+        if (!spawned) {
+          return;
+        }
+        finishWith({ type: "run.lifecycle", payload: { phase: "failed", reason: err.message } });
       });
+      child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+        if (state.stopReason) {
+          finishWith({
+            type: "run.lifecycle",
+            payload: { phase: "cancelled", reason: state.stopReason }
+          });
+          return;
+        }
+
+        if (code === 0) {
+          stdout.flush();
+          stderr.flush();
+          finalized = true;
+          for (const descriptor of collectDescriptors(config.workspaceRoot)) {
+            queue.push({ type: "artifact.created", payload: descriptor.payload });
+          }
+          queue.push({ type: "run.lifecycle", payload: { phase: "completed", reason: null } });
+          queue.end();
+          return;
+        }
+
+        finishWith({
+          type: "run.lifecycle",
+          payload: { phase: "failed", reason: signal ? `signal ${signal}` : `exit ${code ?? "unknown"}` }
+        });
+      });
+
+      await new Promise<void>((resolveSpawn, rejectSpawn) => {
+        child.once("spawn", () => {
+          spawned = true;
+          queue.push({ type: "run.lifecycle", payload: { phase: "started" } });
+          resolveSpawn();
+        });
+        child.once("error", (err: Error) => {
+          if (!spawned) {
+            rejectSpawn(err);
+          }
+        });
+      });
+
+      runs.set(config.runId, state);
       return { runId: config.runId };
     },
 
@@ -227,8 +284,12 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
       return state.queue.drain();
     },
 
-    async stop(handle: AgentInstanceHandle, _reason: StopReason): Promise<void> {
-      runs.get(handle.runId)?.kill();
+    async stop(handle: AgentInstanceHandle, reason: StopReason): Promise<void> {
+      const state = runs.get(handle.runId);
+      if (state) {
+        state.stopReason = reason;
+        state.kill();
+      }
     },
 
     async collectArtifacts(handle: AgentInstanceHandle): Promise<ArtifactDescriptor[]> {

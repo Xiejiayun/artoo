@@ -13,12 +13,17 @@ function getArg(name) {
 
 const workspace = getArg("--workspace");
 const shouldFail = args.includes("--fail");
+const sleepMs = Number(getArg("--sleep-ms") ?? "0");
 const lines = (getArg("--lines") ?? "reading context||applying changes||done").split("||");
 
 for (const line of lines) {
   console.log(`mock-agent: ${line}`);
 }
 console.error("mock-agent: sample warning");
+
+if (sleepMs > 0) {
+  await new Promise((resolve) => setTimeout(resolve, sleepMs));
+}
 
 if (workspace) {
   writeFileSync(
