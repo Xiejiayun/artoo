@@ -194,6 +194,11 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
       }
 
       const child = spawn(cmd, args, { cwd: config.workspaceRoot });
+      // The agent receives its task via the command template + context pack, not
+      // stdin. Close stdin so CLIs that read it (e.g. `codex exec` prints
+      // "Reading additional input from stdin...") get EOF immediately instead of
+      // blocking forever on an open, never-written pipe.
+      child.stdin?.end();
       const queue = new AsyncEventQueue<RunEvent>();
       let finalized = false;
       let spawned = false;
