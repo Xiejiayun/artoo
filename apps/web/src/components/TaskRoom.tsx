@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { useSubscription } from "../app/RealtimeContext.js";
 import { MessageCard } from "./MessageCard.js";
 
 /**
@@ -16,6 +17,7 @@ export function TaskRoom({ taskId }: { taskId: string }): React.ReactNode {
     queryFn: () => api.getTask(taskId),
   });
   const roomId = snapshot.data?.room?.id ?? null;
+  useSubscription(roomId === null ? [] : [`room:${roomId}`]);
   const messages = useQuery({
     queryKey: roomId === null ? ["messages", "pending"] : queryKeys.messages(roomId),
     queryFn: () => api.listMessages(roomId as string),
