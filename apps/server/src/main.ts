@@ -1,3 +1,6 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { loadMigrationStatements, organizations, seed } from "@artoo/db";
 import { createSystemClock, createUlidIdGen } from "@artoo/domain";
 import { PgliteDbClient } from "@artoo/storage";
@@ -23,9 +26,11 @@ async function main(): Promise<void> {
   const db = await PgliteDbClient.create(dbDir !== undefined ? { dataDir: dbDir } : {});
   await db.migrate(await loadMigrationStatements());
 
+  // Isolated workspace so a real ProcessAdapter never writes into the live repo.
+  const workspaceRoot = process.env.ARTOO_WORKSPACE_ROOT ?? join(tmpdir(), "artoo-workspace");
   const existing = await db.db.select().from(organizations);
   if (existing.length === 0) {
-    await seed(db, createSystemClock().nowIso());
+    await seed(db, createSystemClock().nowIso(), { workspaceRoot });
   }
 
   const ctx: ServerContext = {
@@ -50,6 +55,7 @@ async function main(): Promise<void> {
       `  REST:      http://${HOST}:${PORT}/api/v1/bootstrap`,
       `  node WS:   ws://${HOST}:${PORT}/api/v1/node?token=dev`,
       `  client WS: ws://${HOST}:${PORT}/api/v1/ws`,
+      `  workspace: ${workspaceRoot}`,
     ].join("\n"),
   );
 }

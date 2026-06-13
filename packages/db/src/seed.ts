@@ -21,6 +21,16 @@ export interface SeedIds {
   agentInstanceId: string;
 }
 
+export interface SeedOptions {
+  /**
+   * Workspace root for the seeded project/agent-instance. Defaults to the repo
+   * path for tests, but the dev server overrides it with an ISOLATED directory
+   * so a real ProcessAdapter (#7) never writes context_pack.md / artifacts into
+   * the live working tree.
+   */
+  workspaceRoot?: string;
+}
+
 /**
  * Seed the minimal runnable graph for v0.1-core (design / Round 16): one org,
  * owner, project, an online mock computer with an idle mock agent instance, and
@@ -28,7 +38,12 @@ export interface SeedIds {
  * This is exactly enough for the scheduler to pick an idle instance and run the
  * mock loop end to end.
  */
-export async function seed(client: DbClient, now: string): Promise<SeedIds> {
+export async function seed(
+  client: DbClient,
+  now: string,
+  options: SeedOptions = {},
+): Promise<SeedIds> {
+  const workspaceRoot = options.workspaceRoot ?? "C:/workspace/artoo";
   const ids: SeedIds = {
     organizationId: "org_default",
     userId: "user_owner",
@@ -54,7 +69,7 @@ export async function seed(client: DbClient, now: string): Promise<SeedIds> {
       id: ids.projectId,
       organizationId: ids.organizationId,
       name: "artoo",
-      defaultWorkspace: "C:/workspace/artoo",
+      defaultWorkspace: workspaceRoot,
       createdAt: now,
     });
 
@@ -113,7 +128,7 @@ export async function seed(client: DbClient, now: string): Promise<SeedIds> {
       modelProfileId: "model_standard_coding",
       effortProfileId: "effort_standard_coding",
       status: "idle",
-      workspaceRoot: "C:/workspace/artoo",
+      workspaceRoot,
       config: {},
       createdAt: now,
     });
