@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+import {
+  ArtifactPayloadSchema,
+  RunLifecyclePayloadSchema,
+  RunOutputPayloadSchema,
+  RunStartPayloadSchema
+} from "@artoo/domain";
+
 import { nodeErrorCodeSchema } from "./errors.js";
 
 /**
@@ -104,6 +111,40 @@ export const artifactCollectCommandSchema = z.object({
   })
 });
 
+// run.start carries the domain RunStartPayload (imported, not redefined — the
+// payload is owned by @artoo/domain). The wire envelope (id/idempotency_key/
+// deadline_at) is owned here.
+export const runStartCommandSchema = z.object({
+  ...commandEnvelope,
+  type: z.literal("run.start"),
+  payload: RunStartPayloadSchema
+});
+
+/** All Server -> Node commands, discriminated on `type`. */
+export const commandSchema = z.discriminatedUnion("type", [
+  runStartCommandSchema,
+  runStopCommandSchema,
+  artifactCollectCommandSchema
+]);
+
+// --- Node -> Server: run.event --------------------------------------------
+// The event body is a discriminated union over the domain payloads; the wire
+// message adds the transport tuple (node_id, run_id, sequence) used for ordered,
+// idempotent ingest (see RunEventDeduper).
+export const runEventBodySchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("run.output"), payload: RunOutputPayloadSchema }),
+  z.object({ type: z.literal("run.lifecycle"), payload: RunLifecyclePayloadSchema }),
+  z.object({ type: z.literal("artifact.created"), payload: ArtifactPayloadSchema })
+]);
+
+export const runEventMessageSchema = z.object({
+  kind: z.literal("run.event"),
+  node_id: z.string().min(1),
+  run_id: z.string().min(1),
+  sequence: z.number().int().nonnegative(),
+  event: runEventBodySchema
+});
+
 export type Machine = z.infer<typeof machineSchema>;
 export type NodeHello = z.infer<typeof nodeHelloSchema>;
 export type RuntimeStatus = z.infer<typeof runtimeStatusSchema>;
@@ -111,3 +152,8 @@ export type NodeHeartbeat = z.infer<typeof nodeHeartbeatSchema>;
 export type CommandAck = z.infer<typeof commandAckSchema>;
 export type RunStopCommand = z.infer<typeof runStopCommandSchema>;
 export type ArtifactCollectCommand = z.infer<typeof artifactCollectCommandSchema>;
+export type RunStartCommand = z.infer<typeof runStartCommandSchema>;
+export type Command = z.infer<typeof commandSchema>;
+/** A single adapter-emitted event (domain payload), framed by run.event. */
+export type RunEvent = z.infer<typeof runEventBodySchema>;
+export type RunEventMessage = z.infer<typeof runEventMessageSchema>;

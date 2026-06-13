@@ -3,6 +3,8 @@ import type {
   CommandAck,
   NodeHeartbeat,
   NodeHello,
+  RunEventMessage,
+  RunStartCommand,
   RunStopCommand
 } from "./node-messages.js";
 
@@ -13,15 +15,12 @@ import type {
  * implement this one interface so the mock loop (step 3) and the real node
  * protocol (step 6) share a single command/event contract.
  *
- * NOTE: the message unions below are the domain-independent subset. The
- * run.start command and run.event message — which carry @artoo/domain payloads
- * (RunStartPayload, RunEvent) — are folded in during the domain-dependent phase.
- * Their wire envelopes belong here; their payloads are imported from
- * @artoo/domain (single source of truth), never redefined.
+ * Payloads inside run.start / run.event are owned by @artoo/domain; the wire
+ * envelopes are owned by this package (single source of truth, no redefinition).
  */
-export type NodeToServerMessage = NodeHello | NodeHeartbeat | CommandAck;
+export type NodeToServerMessage = NodeHello | NodeHeartbeat | CommandAck | RunEventMessage;
 
-export type ServerToNodeMessage = RunStopCommand | ArtifactCollectCommand;
+export type ServerToNodeMessage = RunStartCommand | RunStopCommand | ArtifactCollectCommand;
 
 export type Unsubscribe = () => void;
 
