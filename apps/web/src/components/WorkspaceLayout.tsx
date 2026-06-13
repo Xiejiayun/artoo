@@ -19,8 +19,10 @@ export function WorkspaceLayout(): React.ReactNode {
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
 
   const userId = bootstrap.data?.user.id;
+  const projectId = bootstrap.data?.projects[0]?.id;
   useSubscription([
     ...(userId !== undefined ? [`inbox:${userId}`] : []),
+    ...(projectId !== undefined ? [`project:${projectId}`] : []),
     ...(selectedTaskId !== null ? [`task:${selectedTaskId}`] : []),
   ]);
 
