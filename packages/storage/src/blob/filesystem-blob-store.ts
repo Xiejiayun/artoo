@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { BlobRef, BlobStore } from "../ports.js";
@@ -56,14 +56,17 @@ export class FileSystemBlobStore implements BlobStore {
     if (key.includes("\0")) {
       throw new Error(`blob key contains a null byte: ${key}`);
     }
+    if (posix.isAbsolute(key) || win32.isAbsolute(key) || /^[A-Za-z]:/.test(key)) {
+      throw new Error(`blob key escapes store root: ${key}`);
+    }
     // Split on BOTH separators regardless of platform so a Windows-style
     // "..\\x" cannot slip through on POSIX (where "\\" is a valid filename
     // char), and reject any parent-traversal segment up front.
     if (key.split(/[\\/]/).some((segment) => segment === "..")) {
       throw new Error(`blob key escapes store root: ${key}`);
     }
-    // resolve() additionally catches absolute keys, e.g. a Windows drive path
-    // like "C:\\Windows\\x" or a POSIX "/etc/x".
+    // resolve() is the final containment check after cross-platform absolute
+    // path and traversal cases have been rejected above.
     const target = resolve(this.#root, key);
     if (target !== this.#root && !target.startsWith(this.#root + sep)) {
       throw new Error(`blob key escapes store root: ${key}`);

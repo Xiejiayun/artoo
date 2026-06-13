@@ -48,6 +48,10 @@ export function describeBlobStoreContract(
     it("rejects keys that escape the store root (POSIX and Windows styles)", async () => {
       const { store } = await setup();
       for (const bad of [
+        "\0bad.txt",
+        "/etc/passwd",
+        "C:\\Windows\\system32\\drivers\\etc\\hosts",
+        "\\\\server\\share\\escape.txt",
         "../escape.txt",
         "..\\escape.txt",
         "nested/../../escape.txt",

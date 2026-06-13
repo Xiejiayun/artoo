@@ -10,7 +10,6 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@artoo/domain": "0.1.0",
     "@electric-sql/pglite": "^0.5.2",
     "drizzle-orm": "^0.45.2"
   }
