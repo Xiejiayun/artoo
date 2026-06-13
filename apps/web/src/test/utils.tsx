@@ -5,7 +5,7 @@ import { cleanup, render, type RenderResult } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach } from "vitest";
 
-import type { Message, Room, Run, Task } from "@artoo/domain";
+import type { Approval, Artifact, Message, Room, Run, Task } from "@artoo/domain";
 
 import { ApiClient } from "../api/client.js";
 import { ApiProvider } from "../app/ApiContext.js";
@@ -85,6 +85,34 @@ export function messageFixture(partial: Partial<Message> & Pick<Message, "id" | 
     actor_id: "user_1",
     body: "",
     payload: {},
+    created_at: "2026-06-13T00:00:00Z",
+    ...partial,
+  };
+}
+
+export function approvalFixture(
+  partial: Partial<Approval> & Pick<Approval, "id" | "status">,
+): Approval {
+  return {
+    organization_id: "org_default",
+    task_id: "task_1",
+    requested_by_type: "agent",
+    requested_by_id: "agent_1",
+    action: "git.push",
+    risk: "high",
+    summary: "Push branch",
+    created_at: "2026-06-13T00:00:00Z",
+    ...partial,
+  };
+}
+
+export function artifactFixture(
+  partial: Partial<Artifact> & Pick<Artifact, "id" | "type" | "uri">,
+): Artifact {
+  return {
+    organization_id: "org_default",
+    task_id: "task_1",
+    metadata: {},
     created_at: "2026-06-13T00:00:00Z",
     ...partial,
   };

@@ -2,6 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { ApprovalInbox } from "./ApprovalInbox.js";
+import { ArtifactReview } from "./ArtifactReview.js";
 import { RunTimeline } from "./RunTimeline.js";
 
 /**
@@ -23,7 +25,7 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
     return <p role="alert">Failed to load detail.</p>;
   }
 
-  const { task, runs } = snapshot.data;
+  const { task, runs, approvals, artifacts } = snapshot.data;
 
   return (
     <div className="task-detail">
@@ -52,10 +54,12 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
           </ul>
         </section>
       ) : null}
+      <ApprovalInbox taskId={task.id} approvals={approvals} />
       <section aria-label="Runs">
         <h3>Runs</h3>
         <RunTimeline runs={runs} />
       </section>
+      <ArtifactReview task={task} artifacts={artifacts} />
     </div>
   );
 }
