@@ -31,6 +31,10 @@ export function registerNodeWsRoute(
     let nodeId: string | undefined;
 
     const unsubscribe = transport.subscribe((message) => {
+      if (nodeId === undefined && message.kind !== "node.hello") {
+        raw.close(1008, "node.hello required");
+        return;
+      }
       if (message.kind === "node.hello") {
         if (nodeId !== undefined) {
           return; // already registered; ignore duplicate hello
@@ -49,8 +53,10 @@ export function registerNodeWsRoute(
       unsubscribe();
       binding?.close();
       if (nodeId !== undefined) {
-        registry.unregister(nodeId);
-        void setComputerOffline(ctx, nodeId);
+        const removedCurrent = registry.unregister(nodeId, binding);
+        if (removedCurrent) {
+          void setComputerOffline(ctx, nodeId);
+        }
       }
     });
   });

@@ -8,6 +8,7 @@
   "scripts": {
     "build": "tsc -b",
     "dev": "node --watch --loader ts-node/esm src/main.ts",
+    "start": "node dist/main.js",
     "typecheck": "tsc -b"
   },
   "dependencies": {

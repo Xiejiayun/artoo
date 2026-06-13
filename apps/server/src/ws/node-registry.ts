@@ -7,7 +7,7 @@ import type { NodeBinding } from "../node-binding.js";
  */
 export interface NodeRegistry {
   register(computerId: string, binding: NodeBinding): void;
-  unregister(computerId: string): void;
+  unregister(computerId: string, binding?: NodeBinding): boolean;
   get(computerId: string): NodeBinding | undefined;
 }
 
@@ -17,8 +17,13 @@ export function createNodeRegistry(): NodeRegistry {
     register(computerId, binding): void {
       bindings.set(computerId, binding);
     },
-    unregister(computerId): void {
-      bindings.delete(computerId);
+    unregister(computerId, binding): boolean {
+      const current = bindings.get(computerId);
+      if (binding === undefined || current === binding) {
+        bindings.delete(computerId);
+        return true;
+      }
+      return false;
     },
     get(computerId): NodeBinding | undefined {
       return bindings.get(computerId);
