@@ -4,3 +4,4 @@ export function createArtoodPlaceholder(): string {
 
 export * from "./node-client.js";
 export * from "./process-adapter.js";
+export * from "./ws-transport.js";
