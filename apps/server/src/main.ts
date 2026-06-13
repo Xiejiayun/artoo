@@ -11,7 +11,8 @@ import type { ServerContext } from "./context.js";
  * and the web Playwright E2E.
  *
  *   ARTOO_PORT (default 4000), ARTOO_HOST (default 127.0.0.1),
- *   ARTOO_DB_DIR (default in-memory, fresh each run).
+ *   ARTOO_DB_DIR (default in-memory, fresh each run),
+ *   ARTOO_WORKSPACE_ROOT (default isolated dev run workspace).
  */
 const PORT = Number(process.env.ARTOO_PORT ?? "4000");
 const HOST = process.env.ARTOO_HOST ?? "127.0.0.1";
@@ -23,7 +24,7 @@ async function main(): Promise<void> {
 
   const existing = await db.db.select().from(organizations);
   if (existing.length === 0) {
-    await seed(db, createSystemClock().nowIso());
+    await seed(db, createSystemClock().nowIso(), { workspaceRoot: process.env.ARTOO_WORKSPACE_ROOT });
   }
 
   const ctx: ServerContext = {

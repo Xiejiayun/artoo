@@ -1,4 +1,4 @@
-import { agentInstances, runs } from "@artoo/db";
+import { agentInstances, DEFAULT_DEV_WORKSPACE_ROOT, runs } from "@artoo/db";
 import { ID_PREFIXES } from "@artoo/domain";
 import type {
   NodeToServerMessage,
@@ -80,7 +80,7 @@ export function attachNodeBinding(ctx: ServerContext, transport: NodeTransport):
           .from(agentInstances)
           .where(eq(agentInstances.id, run.agentInstanceId))
       )[0];
-      const workspaceRoot = instance?.workspaceRoot ?? "C:/workspace/artoo";
+      const workspaceRoot = instance?.workspaceRoot ?? DEFAULT_DEV_WORKSPACE_ROOT;
       const contextPackId = ctx.idGen.generate(ID_PREFIXES.contextPack);
       const commandId = ctx.idGen.generate("cmd");
       pendingCommandRun.set(commandId, runId);

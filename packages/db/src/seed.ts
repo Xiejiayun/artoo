@@ -21,6 +21,12 @@ export interface SeedIds {
   agentInstanceId: string;
 }
 
+export interface SeedOptions {
+  workspaceRoot?: string;
+}
+
+export const DEFAULT_DEV_WORKSPACE_ROOT = "C:/workspace/artoo-runs/dev-seed";
+
 /**
  * Seed the minimal runnable graph for v0.1-core (design / Round 16): one org,
  * owner, project, an online mock computer with an idle mock agent instance, and
@@ -28,7 +34,7 @@ export interface SeedIds {
  * This is exactly enough for the scheduler to pick an idle instance and run the
  * mock loop end to end.
  */
-export async function seed(client: DbClient, now: string): Promise<SeedIds> {
+export async function seed(client: DbClient, now: string, options: SeedOptions = {}): Promise<SeedIds> {
   const ids: SeedIds = {
     organizationId: "org_default",
     userId: "user_owner",
@@ -37,6 +43,10 @@ export async function seed(client: DbClient, now: string): Promise<SeedIds> {
     agentId: "agent_mock_coder",
     agentInstanceId: "instance_mock_coder",
   };
+  const workspaceRoot =
+    options.workspaceRoot !== undefined && options.workspaceRoot.trim() !== ""
+      ? options.workspaceRoot
+      : DEFAULT_DEV_WORKSPACE_ROOT;
 
   await client.transaction(async (tx) => {
     await tx.insert(organizations).values({ id: ids.organizationId, name: "Default Org", createdAt: now });
@@ -54,7 +64,7 @@ export async function seed(client: DbClient, now: string): Promise<SeedIds> {
       id: ids.projectId,
       organizationId: ids.organizationId,
       name: "artoo",
-      defaultWorkspace: "C:/workspace/artoo",
+      defaultWorkspace: workspaceRoot,
       createdAt: now,
     });
 
@@ -113,7 +123,7 @@ export async function seed(client: DbClient, now: string): Promise<SeedIds> {
       modelProfileId: "model_standard_coding",
       effortProfileId: "effort_standard_coding",
       status: "idle",
-      workspaceRoot: "C:/workspace/artoo",
+      workspaceRoot,
       config: {},
       createdAt: now,
     });
