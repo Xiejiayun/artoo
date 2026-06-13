@@ -45,6 +45,8 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
   const intervalMs = options.heartbeatIntervalMs ?? 10_000;
   const handlers = new Set<(message: ServerToNodeMessage) => void>();
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  let readySettled = false;
+  let closed = false;
 
   let resolveReady!: () => void;
   let rejectReady!: (reason: unknown) => void;
@@ -55,11 +57,37 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
 
   const socket = new WS(options.url);
 
+  function settleReady(resolve: boolean, reason?: unknown): void {
+    if (readySettled) {
+      return;
+    }
+    readySettled = true;
+    if (resolve) {
+      resolveReady();
+    } else {
+      rejectReady(reason);
+    }
+  }
+
+  function clearHeartbeat(): void {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = undefined;
+    }
+  }
+
   const sendRaw = (message: NodeToServerMessage): void => {
+    if (socket.readyState !== WS.OPEN) {
+      throw new Error("websocket is not open");
+    }
     socket.send(JSON.stringify(message));
   };
 
   socket.addEventListener("open", () => {
+    if (closed) {
+      socket.close();
+      return;
+    }
     // node.hello must be the first app frame.
     sendRaw(options.hello);
     const beat = options.heartbeat;
@@ -70,7 +98,7 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
         }
       }, intervalMs);
     }
-    resolveReady();
+    settleReady(true);
   });
 
   socket.addEventListener("message", (event: MessageEvent) => {
@@ -91,7 +119,14 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
   });
 
   socket.addEventListener("error", () => {
-    rejectReady(new Error("websocket error"));
+    settleReady(false, new Error("websocket error"));
+  });
+
+  socket.addEventListener("close", () => {
+    clearHeartbeat();
+    if (!closed) {
+      settleReady(false, new Error("websocket closed before ready"));
+    }
   });
 
   return {
@@ -106,11 +141,10 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
       };
     },
     async close(): Promise<void> {
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = undefined;
-      }
+      closed = true;
+      clearHeartbeat();
       handlers.clear();
+      settleReady(false, new Error("websocket closed"));
       socket.close();
     }
   };

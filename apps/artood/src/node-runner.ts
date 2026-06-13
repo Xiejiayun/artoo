@@ -17,6 +17,7 @@ export interface ArtoodNodeOptions {
   adapter: RuntimeAdapter;
   heartbeat?: () => NodeHeartbeat;
   heartbeatIntervalMs?: number;
+  WebSocketImpl?: typeof WebSocket;
 }
 
 export interface ArtoodNode {
@@ -26,28 +27,45 @@ export interface ArtoodNode {
 }
 
 export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
-  const transport = createWebSocketTransport({
-    url: options.url,
-    hello: options.hello,
-    heartbeat: options.heartbeat,
-    heartbeatIntervalMs: options.heartbeatIntervalMs
-  });
-  const client = createNodeClient({
-    nodeId: options.hello.node_id,
-    transport,
-    adapter: options.adapter
-  });
+  let transport: ReturnType<typeof createWebSocketTransport> | null = null;
+  let client: ReturnType<typeof createNodeClient> | null = null;
 
   return {
     async start(): Promise<void> {
+      if (transport !== null && client !== null) {
+        await transport.ready;
+        return;
+      }
+      transport = createWebSocketTransport({
+        url: options.url,
+        hello: options.hello,
+        heartbeat: options.heartbeat,
+        heartbeatIntervalMs: options.heartbeatIntervalMs,
+        WebSocketImpl: options.WebSocketImpl
+      });
+      client = createNodeClient({
+        nodeId: options.hello.node_id,
+        transport,
+        adapter: options.adapter
+      });
       // Subscribe before the connection is registered for dispatch (server only
       // dispatches after node.hello), then wait for open + hello.
       client.start();
-      await transport.ready;
+      try {
+        await transport.ready;
+      } catch (err) {
+        await client.stop();
+        await transport.close();
+        client = null;
+        transport = null;
+        throw err;
+      }
     },
     async stop(): Promise<void> {
-      await client.stop();
-      await transport.close();
+      await client?.stop();
+      await transport?.close();
+      client = null;
+      transport = null;
     }
   };
 }

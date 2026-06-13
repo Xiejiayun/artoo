@@ -8,6 +8,7 @@ import type {
   CommandAck,
   NodeHello,
   NodeToServerMessage,
+  RuntimeAdapter,
   RunEventMessage,
   RunStartCommand
 } from "@artoo/protocol";
@@ -67,9 +68,80 @@ let activeServer: WebSocketServer | undefined;
 afterEach(() => {
   activeServer?.close();
   activeServer = undefined;
+  fakeClientSockets.length = 0;
 });
 
+const idleAdapter: RuntimeAdapter = {
+  runtimeId: "idle",
+  async start(config) {
+    return { runId: config.runId };
+  },
+  async *streamEvents() {},
+  async stop() {},
+  async collectArtifacts() {
+    return [];
+  }
+};
+
+const fakeClientSockets: FakeClientWebSocket[] = [];
+
+class FakeClientWebSocket {
+  static readonly OPEN = 1;
+
+  readonly sent: string[] = [];
+  readyState = 0;
+  private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
+
+  constructor(readonly url: string) {
+    fakeClientSockets.push(this);
+  }
+
+  addEventListener(type: string, listener: (event: unknown) => void): void {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  close(): void {
+    this.readyState = 3;
+    this.emit("close", {});
+  }
+
+  open(): void {
+    this.readyState = FakeClientWebSocket.OPEN;
+    this.emit("open", {});
+  }
+
+  private emit(type: string, event: unknown): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event);
+    }
+  }
+}
+
 describe("createArtoodNode (WS + ProcessAdapter end-to-end)", () => {
+  it("does not open the WebSocket until start is called", async () => {
+    const node = createArtoodNode({
+      url: "ws://example.invalid/api/v1/node?token=dev",
+      hello,
+      adapter: idleAdapter,
+      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket
+    });
+
+    expect(fakeClientSockets).toHaveLength(0);
+    const started = node.start();
+    expect(fakeClientSockets).toHaveLength(1);
+    fakeClientSockets[0]?.open();
+    await started;
+    expect(fakeClientSockets[0]?.sent[0]).toBe(JSON.stringify(hello));
+
+    await node.stop();
+  });
+
   it("runs the full node loop: hello -> run.start -> process adapter -> run.event -> completed", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "artoo-node-"));
     try {

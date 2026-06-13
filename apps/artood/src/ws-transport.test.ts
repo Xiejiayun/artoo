@@ -72,7 +72,48 @@ let activeServer: WebSocketServer | undefined;
 afterEach(() => {
   activeServer?.close();
   activeServer = undefined;
+  fakeClientSockets.length = 0;
 });
+
+const fakeClientSockets: FakeClientWebSocket[] = [];
+
+class FakeClientWebSocket {
+  static readonly OPEN = 1;
+
+  readonly sent: string[] = [];
+  readyState = 0;
+  private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
+
+  constructor(readonly url: string) {
+    fakeClientSockets.push(this);
+  }
+
+  addEventListener(type: string, listener: (event: unknown) => void): void {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  close(): void {
+    this.readyState = 3;
+    this.emit("close", {});
+  }
+
+  open(): void {
+    this.readyState = FakeClientWebSocket.OPEN;
+    this.emit("open", {});
+  }
+
+  private emit(type: string, event: unknown): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event);
+    }
+  }
+}
 
 describe("createWebSocketTransport", () => {
   it("sends node.hello first, relays Server->Node commands, and frames Node->Server out", async () => {
@@ -152,5 +193,15 @@ describe("createWebSocketTransport", () => {
 
     await waitUntil(() => harness.received.filter((m) => (m as { kind?: string }).kind === "node.heartbeat").length >= 2);
     await transport.close();
+  });
+
+  it("rejects ready when the socket closes before open", async () => {
+    const transport = createWebSocketTransport({
+      url: "ws://example.invalid/api/v1/node?token=dev",
+      hello,
+      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket
+    });
+    fakeClientSockets[0]?.close();
+    await expect(transport.ready).rejects.toThrow("websocket closed before ready");
   });
 });
