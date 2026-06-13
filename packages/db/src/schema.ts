@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
+  bigint,
   bigserial,
   boolean,
   check,
@@ -260,7 +261,7 @@ export const runs = pgTable("runs", {
   startedAt: ts("started_at"),
   endedAt: ts("ended_at"),
   failureReason: text("failure_reason"),
-  sequence: bigserial("sequence", { mode: "number" }).notNull(),
+  sequence: bigint("sequence", { mode: "number" }).notNull().default(0),
   createdAt: ts("created_at").notNull(),
 }, (t) => [
   check(

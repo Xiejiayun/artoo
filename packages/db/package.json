@@ -10,7 +10,6 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
-    "@artoo/domain": "0.1.0",
     "@artoo/storage": "0.1.0",
     "drizzle-orm": "^0.45.2"
   },

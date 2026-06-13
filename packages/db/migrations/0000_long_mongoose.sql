@@ -225,7 +225,7 @@ CREATE TABLE "runs" (
 	"started_at" timestamp with time zone,
 	"ended_at" timestamp with time zone,
 	"failure_reason" text,
-	"sequence" bigserial NOT NULL,
+	"sequence" bigint DEFAULT 0 NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "runs_status_chk" CHECK ("runs"."status" in ('queued','starting','running','awaiting_input','paused','completed','failed','cancelled'))
 );
