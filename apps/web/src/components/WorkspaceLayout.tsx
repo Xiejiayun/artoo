@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { useSubscription } from "../app/RealtimeContext.js";
 import { LeftRail } from "./LeftRail.js";
 import { TaskDetailPanel } from "./TaskDetailPanel.js";
 import { TaskRoom } from "./TaskRoom.js";
@@ -16,6 +17,12 @@ export function WorkspaceLayout(): React.ReactNode {
   const api = useApi();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
+
+  const userId = bootstrap.data?.user.id;
+  useSubscription([
+    ...(userId !== undefined ? [`inbox:${userId}`] : []),
+    ...(selectedTaskId !== null ? [`task:${selectedTaskId}`] : []),
+  ]);
 
   if (bootstrap.isLoading) {
     return <p role="status">Loading workspace…</p>;
