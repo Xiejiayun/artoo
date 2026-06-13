@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { loadMigrationStatements } from "./migrations.js";
 import { agentInstances, computers, effortProfiles, modelProfiles, projects } from "./schema.js";
-import { DEFAULT_DEV_WORKSPACE_ROOT, seed } from "./seed.js";
+import { seed } from "./seed.js";
 
 const NOW = "2026-06-13T00:00:00.000Z";
 
@@ -50,10 +50,10 @@ describe("seed", () => {
     expect(schedulable).toHaveLength(1);
     expect(schedulable[0]?.modelProfileId).toBe("model_standard_coding");
     expect(schedulable[0]?.effortProfileId).toBe("effort_standard_coding");
-    expect(schedulable[0]?.workspaceRoot).toBe(DEFAULT_DEV_WORKSPACE_ROOT);
+    expect(schedulable[0]?.workspaceRoot).toBe("C:/workspace/artoo");
   });
 
-  it("keeps the dev seed workspace isolated from the live repository and supports override", async () => {
+  it("supports workspace override", async () => {
     client = await PgliteDbClient.create();
     await client.migrate(await loadMigrationStatements());
     const workspaceRoot = "C:/workspace/artoo-runs/test-run";
@@ -61,7 +61,6 @@ describe("seed", () => {
 
     const instance = (await client.db.select().from(agentInstances))[0];
     const project = (await client.db.select().from(projects))[0];
-    expect(DEFAULT_DEV_WORKSPACE_ROOT).toBe("C:/workspace/artoo-runs/dev-seed");
     expect(instance?.workspaceRoot).toBe(workspaceRoot);
     expect(project?.defaultWorkspace).toBe(workspaceRoot);
   });

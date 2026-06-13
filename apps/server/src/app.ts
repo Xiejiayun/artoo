@@ -11,10 +11,14 @@ import * as runService from "./services/run-service.js";
 import * as taskService from "./services/task-service.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
 import { registerNodeWsRoute } from "./ws/node-ws.js";
+import { registerClientWsRoute } from "./ws/client-ws.js";
+import { createWsHub, type WsHub } from "./ws/ws-hub.js";
 
 export interface BuildAppOptions {
   /** Inject a registry so tests can observe node registration. */
   nodeRegistry?: NodeRegistry;
+  /** Inject the realtime hub so the caller owns the event publisher. */
+  wsHub?: WsHub;
 }
 
 /**
@@ -25,6 +29,7 @@ export interface BuildAppOptions {
 export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: false });
   const nodeRegistry = options.nodeRegistry ?? createNodeRegistry();
+  const wsHub = options.wsHub ?? createWsHub();
 
   // Route a queued run's run.start to the node that owns its computer. Tests may
   // pre-set onRunQueued (in-process binding) — only install the registry route
@@ -40,6 +45,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   void app.register(websocket);
   void app.register(async (instance) => {
     registerNodeWsRoute(instance, ctx, nodeRegistry);
+    registerClientWsRoute(instance, wsHub);
   });
 
   app.setErrorHandler((err, _req, reply) => {

@@ -9,4 +9,4 @@ export {
   type IdempotentParams,
   type IdempotentResult,
 } from "./idempotency.js";
-export { DEFAULT_DEV_WORKSPACE_ROOT, seed, type SeedIds, type SeedOptions } from "./seed.js";
+export { seed, type SeedIds, type SeedOptions } from "./seed.js";

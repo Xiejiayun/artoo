@@ -5,7 +5,9 @@ import type { FastifyInstance } from "fastify";
 
 import { buildApp } from "./app.js";
 import type { ServerContext } from "./context.js";
+import { createEventPublisher, type EventPublisher } from "./ws/event-publisher.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
+import { createWsHub, type WsHub } from "./ws/ws-hub.js";
 
 const FIXED_ISO = "2026-06-13T00:00:00.000Z";
 
@@ -32,6 +34,8 @@ export interface TestServer {
   ctx: ServerContext;
   db: PgliteDbClient;
   nodeRegistry: NodeRegistry;
+  wsHub: WsHub;
+  publisher: EventPublisher;
   close: () => Promise<void>;
 }
 
@@ -48,14 +52,19 @@ export async function buildTestServer(): Promise<TestServer> {
     actorUserId: "user_owner",
   };
   const nodeRegistry = createNodeRegistry();
-  const app = buildApp(ctx, { nodeRegistry });
+  const wsHub = createWsHub();
+  const app = buildApp(ctx, { nodeRegistry, wsHub });
+  const publisher = createEventPublisher(ctx, wsHub);
   await app.ready();
   return {
     app,
     ctx,
     db,
     nodeRegistry,
+    wsHub,
+    publisher,
     close: async () => {
+      publisher.stop();
       await app.close();
       await db.close();
     },

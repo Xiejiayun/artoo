@@ -1,4 +1,7 @@
-import { agentInstances, DEFAULT_DEV_WORKSPACE_ROOT, runs } from "@artoo/db";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { agentInstances, runs } from "@artoo/db";
 import { ID_PREFIXES } from "@artoo/domain";
 import type {
   NodeToServerMessage,
@@ -16,6 +19,8 @@ import {
   type IngestEnvelope,
   type RunIngestEvent,
 } from "./services/run-service.js";
+
+const FALLBACK_WORKSPACE_ROOT = join(tmpdir(), "artoo-workspace");
 
 export interface NodeBinding {
   /** Build + send run.start for a queued run over the node transport. */
@@ -80,7 +85,7 @@ export function attachNodeBinding(ctx: ServerContext, transport: NodeTransport):
           .from(agentInstances)
           .where(eq(agentInstances.id, run.agentInstanceId))
       )[0];
-      const workspaceRoot = instance?.workspaceRoot ?? DEFAULT_DEV_WORKSPACE_ROOT;
+      const workspaceRoot = instance?.workspaceRoot ?? FALLBACK_WORKSPACE_ROOT;
       const contextPackId = ctx.idGen.generate(ID_PREFIXES.contextPack);
       const commandId = ctx.idGen.generate("cmd");
       pendingCommandRun.set(commandId, runId);

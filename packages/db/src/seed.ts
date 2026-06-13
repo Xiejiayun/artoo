@@ -22,10 +22,14 @@ export interface SeedIds {
 }
 
 export interface SeedOptions {
+  /**
+   * Workspace root for the seeded project/agent-instance. Defaults to the repo
+   * path for tests, but the dev server overrides it with an ISOLATED directory
+   * so a real ProcessAdapter (#7) never writes context_pack.md / artifacts into
+   * the live working tree.
+   */
   workspaceRoot?: string;
 }
-
-export const DEFAULT_DEV_WORKSPACE_ROOT = "C:/workspace/artoo-runs/dev-seed";
 
 /**
  * Seed the minimal runnable graph for v0.1-core (design / Round 16): one org,
@@ -34,7 +38,11 @@ export const DEFAULT_DEV_WORKSPACE_ROOT = "C:/workspace/artoo-runs/dev-seed";
  * This is exactly enough for the scheduler to pick an idle instance and run the
  * mock loop end to end.
  */
-export async function seed(client: DbClient, now: string, options: SeedOptions = {}): Promise<SeedIds> {
+export async function seed(
+  client: DbClient,
+  now: string,
+  options: SeedOptions = {},
+): Promise<SeedIds> {
   const ids: SeedIds = {
     organizationId: "org_default",
     userId: "user_owner",
@@ -46,7 +54,7 @@ export async function seed(client: DbClient, now: string, options: SeedOptions =
   const workspaceRoot =
     options.workspaceRoot !== undefined && options.workspaceRoot.trim() !== ""
       ? options.workspaceRoot
-      : DEFAULT_DEV_WORKSPACE_ROOT;
+      : "C:/workspace/artoo";
 
   await client.transaction(async (tx) => {
     await tx.insert(organizations).values({ id: ids.organizationId, name: "Default Org", createdAt: now });
