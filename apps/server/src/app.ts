@@ -3,6 +3,7 @@ import {
   apiError,
   AssignRequestSchema,
   CreateTaskRequestSchema,
+  ResolveApprovalRequestSchema,
   RetryRequestSchema,
   ReviewRequestSchema,
   SendMessageRequestSchema,
@@ -13,6 +14,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
+import * as approvalService from "./services/approval-service.js";
 import * as lifecycle from "./services/lifecycle-service.js";
 import * as messageService from "./services/message-service.js";
 import * as runService from "./services/run-service.js";
@@ -153,6 +155,42 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   app.post("/api/v1/runs/:id/cancel", async (req) => {
     const { id } = req.params as { id: string };
     return { run: await runService.cancelRun(ctx, id) };
+  });
+
+  app.get("/api/v1/approvals", async (req) => {
+    const { status } = req.query as { status?: string };
+    return { approvals: await approvalService.listApprovals(ctx, status) };
+  });
+
+  app.post("/api/v1/approvals/:id/resolve", async (req) => {
+    const { id } = req.params as { id: string };
+    const parsed = ResolveApprovalRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw AppError.validation("invalid approval resolution payload", {
+        issues: parsed.error.issues,
+      });
+    }
+    return { approval: await approvalService.resolveApproval(ctx, id, parsed.data) };
+  });
+
+  // Dev-only: the platform requesting a high-risk action approval on a running task.
+  app.post("/api/v1/dev/tasks/:id/request-approval", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as {
+      action?: string;
+      risk?: "low" | "medium" | "high";
+      summary?: string;
+      run_id?: string;
+    };
+    const approval = await approvalService.requestApproval(ctx, {
+      taskId: id,
+      runId: body.run_id ?? null,
+      action: body.action ?? "git.push",
+      risk: body.risk ?? "high",
+      summary: body.summary ?? "Push branch to remote",
+    });
+    void reply.status(201);
+    return { approval };
   });
 
   return app;
