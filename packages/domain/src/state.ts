@@ -7,8 +7,8 @@
  *  - `assigned -> ready` (retryable start failure) / `assigned -> blocked` (permission)
  *
  * `reentrant` marks transitions whose target state is re-enterable through a
- * retry/changes loop. The server reads this to derive idempotency scope: a
- * reentrant write must key on the run/attempt dimension, not just the task id.
+ * retry/changes loop. It is a graph property only; server idempotency scoping
+ * must use requiresAttemptScopedIdempotency(), which also covers `assign`.
  *
  * All functions are pure (no IO, no time, no randomness).
  */
