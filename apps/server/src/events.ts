@@ -8,6 +8,7 @@ export interface EventSpec {
   actorType: "user" | "agent" | "system" | "bridge";
   actorId: string;
   correlationId: string;
+  projectId?: string | null;
   taskId?: string | null;
   roomId?: string | null;
   runId?: string | null;
@@ -25,6 +26,7 @@ export function buildEvent(ctx: ServerContext, spec: EventSpec): EventInput {
   return {
     id: ctx.idGen.generate(ID_PREFIXES.event),
     organizationId: ctx.organizationId,
+    projectId: spec.projectId ?? null,
     type: spec.type,
     schemaVersion: EVENT_SCHEMA_VERSION,
     actorType: spec.actorType,

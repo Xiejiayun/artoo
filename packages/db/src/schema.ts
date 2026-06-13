@@ -402,6 +402,7 @@ export const eventLog = pgTable("event_log", {
   organizationId: text("organization_id")
     .notNull()
     .references(() => organizations.id),
+  projectId: text("project_id"),
   type: text("type").notNull(),
   schemaVersion: text("schema_version").notNull(),
   actorType: text("actor_type").notNull(),
