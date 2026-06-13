@@ -1,9 +1,10 @@
-import { apiError, AssignRequestSchema, CreateTaskRequestSchema } from "@artoo/domain";
+import { apiError, AssignRequestSchema, CreateTaskRequestSchema, ReviewRequestSchema } from "@artoo/domain";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import * as lifecycle from "./services/lifecycle-service.js";
+import * as runService from "./services/run-service.js";
 import * as taskService from "./services/task-service.js";
 
 /**
@@ -35,6 +36,14 @@ export function buildApp(ctx: ServerContext): FastifyInstance {
     return result;
   });
 
+  app.get("/api/v1/tasks", async (req) => {
+    const query = req.query as { project_id?: string };
+    if (query.project_id === undefined || query.project_id === "") {
+      throw AppError.validation("project_id query parameter is required");
+    }
+    return taskService.listTasks(ctx, query.project_id);
+  });
+
   app.get("/api/v1/tasks/:id", async (req) => {
     const { id } = req.params as { id: string };
     return taskService.getTaskSnapshot(ctx, id);
@@ -52,6 +61,27 @@ export function buildApp(ctx: ServerContext): FastifyInstance {
       throw AppError.validation("invalid assign payload", { issues: parsed.error.issues });
     }
     return lifecycle.assignTask(ctx, id, parsed.data);
+  });
+
+  app.post("/api/v1/tasks/:id/retry", async (req) => {
+    const { id } = req.params as { id: string };
+    return lifecycle.retryTask(ctx, id);
+  });
+
+  app.post("/api/v1/tasks/:id/review", async (req) => {
+    const { id } = req.params as { id: string };
+    const parsed = ReviewRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw AppError.validation("invalid review payload", { issues: parsed.error.issues });
+    }
+    return lifecycle.reviewTask(ctx, id, parsed.data);
+  });
+
+  // Dev-only: simulate a node/adapter executing a queued run end to end.
+  app.post("/api/v1/dev/runs/:id/mock-execute", async (req) => {
+    const { id } = req.params as { id: string };
+    const query = req.query as { outcome?: "completed" | "failed" };
+    return runService.mockExecuteRun(ctx, id, query.outcome === "failed" ? "failed" : "completed");
   });
 
   return app;

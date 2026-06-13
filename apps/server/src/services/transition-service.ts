@@ -1,5 +1,12 @@
-import { appendEvent, tasks, type EventInput } from "@artoo/db";
-import { applyTaskTransition, type TaskStatus, type TaskTrigger } from "@artoo/domain";
+import { appendEvent, runs, tasks, type EventInput } from "@artoo/db";
+import {
+  applyRunTransition,
+  applyTaskTransition,
+  type RunStatus,
+  type RunTrigger,
+  type TaskStatus,
+  type TaskTrigger,
+} from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
 import { and, eq } from "drizzle-orm";
 
@@ -50,3 +57,39 @@ export async function transitionTask(
   }
   return { changed, to };
 }
+
+export interface RunTransitionResult {
+  changed: boolean;
+  to: RunStatus;
+}
+
+/**
+ * Guarded compare-and-set run transition. Like {@link transitionTask} but on the
+ * runs table; an extra `set` patch (ended_at, failure_reason) is applied with the
+ * status change. Returns whether the row actually changed.
+ */
+export async function transitionRun(
+  tx: DrizzleDb,
+  ctx: ServerContext,
+  params: {
+    runId: string;
+    from: RunStatus;
+    trigger: RunTrigger;
+    patch?: Partial<{ endedAt: string; startedAt: string; failureReason: string }>;
+  },
+): Promise<RunTransitionResult> {
+  const to = applyRunTransition(params.from, params.trigger);
+  const updated = await tx
+    .update(runs)
+    .set({ status: to, ...params.patch })
+    .where(
+      and(
+        eq(runs.id, params.runId),
+        eq(runs.status, params.from),
+        eq(runs.organizationId, ctx.organizationId),
+      ),
+    )
+    .returning({ id: runs.id });
+  return { changed: updated.length > 0, to };
+}
+

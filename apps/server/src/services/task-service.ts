@@ -10,7 +10,7 @@ import {
   users,
 } from "@artoo/db";
 import { ID_PREFIXES, type CreateTaskRequest, type Room, type Task } from "@artoo/domain";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -51,6 +51,20 @@ export async function bootstrap(ctx: ServerContext): Promise<BootstrapResponse> 
     })),
     actor: { type: "user", id: userRow.id },
   };
+}
+
+/**
+ * GET /api/v1/tasks?project_id=<id> — project-scoped task list for the web left
+ * rail. Stable order (created_at, id) so rendering is deterministic; web derives
+ * no lifecycle, it just renders these snapshots.
+ */
+export async function listTasks(ctx: ServerContext, projectId: string): Promise<Task[]> {
+  const rows = await ctx.db.db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.organizationId, ctx.organizationId), eq(tasks.projectId, projectId)))
+    .orderBy(asc(tasks.createdAt), asc(tasks.id));
+  return rows.map(mapTask);
 }
 
 /**

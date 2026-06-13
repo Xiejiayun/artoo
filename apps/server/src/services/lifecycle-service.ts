@@ -10,6 +10,7 @@ import {
   ID_PREFIXES,
   type AssignRequest,
   type Capability,
+  type ReviewRequest,
   type Run,
   type Task,
   type TaskStatus,
@@ -192,5 +193,114 @@ export async function assignTask(
       run: mapRun(runRow),
       scheduler_decision: { id: decisionId, reason: outcome.reason, score: outcome.score },
     };
+  });
+}
+
+/**
+ * POST /tasks/:id/review — accept (review -> done) or request changes
+ * (review -> ready). The review.completed event carries the outcome so the
+ * change-request loop is auditable (gap1).
+ */
+export async function reviewTask(
+  ctx: ServerContext,
+  taskId: string,
+  req: ReviewRequest,
+): Promise<Task> {
+  const now = ctx.clock.nowIso();
+  const trigger = req.outcome === "accepted" ? "accept" : "request_changes";
+  return ctx.db.transaction(async (tx) => {
+    const row = (
+      await tx
+        .select()
+        .from(tasks)
+        .where(and(eq(tasks.id, taskId), eq(tasks.organizationId, ctx.organizationId)))
+    )[0];
+    if (row === undefined) {
+      throw AppError.notFound(`task not found: ${taskId}`, { task_id: taskId });
+    }
+    if (row.status !== "review") {
+      throw AppError.invalidState(`task must be 'review' to review (is '${row.status}')`, {
+        status: row.status,
+      });
+    }
+    const result = await transitionTask(tx, ctx, {
+      taskId,
+      from: "review",
+      trigger,
+      now,
+      events: (to) => [
+        buildEvent(ctx, {
+          type: "review.completed",
+          actorType: "user",
+          actorId: ctx.actorUserId,
+          correlationId: taskId,
+          taskId,
+          roomId: row.roomId,
+          payload: { outcome: req.outcome, comment: req.comment ?? null },
+        }),
+        buildEvent(ctx, {
+          type: "task.updated",
+          actorType: "user",
+          actorId: ctx.actorUserId,
+          correlationId: taskId,
+          taskId,
+          roomId: row.roomId,
+          payload: { status: to },
+        }),
+      ],
+    });
+    if (!result.changed) {
+      throw AppError.conflict("task is no longer in review");
+    }
+    const updated = (await tx.select().from(tasks).where(eq(tasks.id, taskId)))[0];
+    if (updated === undefined) {
+      throw new Error("reviewTask: task missing after transition");
+    }
+    return mapTask(updated);
+  });
+}
+
+/**
+ * POST /tasks/:id/retry — recover a blocked task by returning it to ready
+ * (blocked -> ready). Reassignment then creates a NEW run (runs are never
+ * reused). Guarantees a blocked task is never stuck (the ack/timeout invariant).
+ */
+export async function retryTask(ctx: ServerContext, taskId: string): Promise<Task> {
+  const now = ctx.clock.nowIso();
+  return ctx.db.transaction(async (tx) => {
+    const row = (
+      await tx
+        .select()
+        .from(tasks)
+        .where(and(eq(tasks.id, taskId), eq(tasks.organizationId, ctx.organizationId)))
+    )[0];
+    if (row === undefined) {
+      throw AppError.notFound(`task not found: ${taskId}`, { task_id: taskId });
+    }
+    if (!canTransitionTask(row.status as TaskStatus, "retry")) {
+      throw AppError.invalidState(`cannot retry from '${row.status}'`, { status: row.status });
+    }
+    await transitionTask(tx, ctx, {
+      taskId,
+      from: row.status as TaskStatus,
+      trigger: "retry",
+      now,
+      events: (to) => [
+        buildEvent(ctx, {
+          type: "task.updated",
+          actorType: "user",
+          actorId: ctx.actorUserId,
+          correlationId: taskId,
+          taskId,
+          roomId: row.roomId,
+          payload: { status: to, retried: true },
+        }),
+      ],
+    });
+    const updated = (await tx.select().from(tasks).where(eq(tasks.id, taskId)))[0];
+    if (updated === undefined) {
+      throw new Error("retryTask: task missing after transition");
+    }
+    return mapTask(updated);
   });
 }
