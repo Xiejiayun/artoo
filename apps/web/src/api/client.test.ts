@@ -114,18 +114,18 @@ describe("ApiClient", () => {
     expect(snap.artifacts[0]?.id).toBe("artifact_1");
   });
 
-  it("listTasks consumes the project task-list array from the server", async () => {
+  it("listTasks consumes the wrapped project task-list from the server", async () => {
     server.use(
       http.get(`${BASE}/tasks`, ({ request }) => {
         expect(new URL(request.url).searchParams.get("project_id")).toBe("proj_1");
-        return HttpResponse.json([{ id: "task_1", status: "ready" }]);
+        return HttpResponse.json({ tasks: [{ id: "task_1", status: "ready" }] });
       }),
     );
 
     const tasks = await client.listTasks("proj_1");
 
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0]?.id).toBe("task_1");
+    expect(tasks.tasks).toHaveLength(1);
+    expect(tasks.tasks[0]?.id).toBe("task_1");
   });
 
   it("bootstrap consumes the projects array from the server", async () => {

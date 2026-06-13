@@ -47,6 +47,9 @@ describe("server core HTTP", () => {
     );
     const types = (events.rows as { type: string }[]).map((r) => r.type);
     expect(types).toEqual(["task.created", "room.created"]);
+
+    const list = await server.app.inject({ method: "GET", url: "/api/v1/tasks?project_id=proj_artoo" });
+    expect(list.json().tasks.map((task: { id: string }) => task.id)).toContain(body.task.id);
   });
 
   it("POST /tasks rolls back fully when the project does not exist (no task, no event)", async () => {

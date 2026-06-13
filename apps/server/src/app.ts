@@ -82,7 +82,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (query.project_id === undefined || query.project_id === "") {
       throw AppError.validation("project_id query parameter is required");
     }
-    return taskService.listTasks(ctx, query.project_id);
+    return { tasks: await taskService.listTasks(ctx, query.project_id) };
   });
 
   app.get("/api/v1/tasks/:id", async (req) => {

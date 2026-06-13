@@ -26,6 +26,7 @@ import type {
   MessagesResponse,
   RetryResponse,
   RunResponse,
+  TasksResponse,
   TaskSnapshot,
 } from "./types.js";
 
@@ -107,8 +108,8 @@ export class ApiClient {
     return this.request<BootstrapResponse>("GET", "/bootstrap");
   }
 
-  listTasks(projectId: string): Promise<Task[]> {
-    return this.request<Task[]>("GET", `/tasks?project_id=${encodeURIComponent(projectId)}`);
+  listTasks(projectId: string): Promise<TasksResponse> {
+    return this.request<TasksResponse>("GET", `/tasks?project_id=${encodeURIComponent(projectId)}`);
   }
 
   getTask(taskId: string): Promise<TaskSnapshot> {

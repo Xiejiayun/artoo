@@ -10,10 +10,12 @@ describe("TaskList", () => {
   it("renders tasks from the snapshot and selects on click", async () => {
     const onSelectTask = vi.fn();
     const client = fakeApi({
-      listTasks: async () => [
-        taskFixture({ id: "task_1", title: "Build inbox", status: "ready", priority: "p1" }),
-        taskFixture({ id: "task_2", title: "Wire WS", status: "backlog" }),
-      ],
+      listTasks: async () => ({
+        tasks: [
+          taskFixture({ id: "task_1", title: "Build inbox", status: "ready", priority: "p1" }),
+          taskFixture({ id: "task_2", title: "Wire WS", status: "backlog" }),
+        ],
+      }),
     });
 
     renderWithProviders(
@@ -27,7 +29,7 @@ describe("TaskList", () => {
   });
 
   it("shows an empty state", async () => {
-    const client = fakeApi({ listTasks: async () => [] });
+    const client = fakeApi({ listTasks: async () => ({ tasks: [] }) });
     renderWithProviders(
       <TaskList projectId="proj_artoo" selectedTaskId={null} onSelectTask={() => undefined} />,
       { client },

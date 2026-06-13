@@ -29,6 +29,10 @@ export interface CreateTaskResponse {
   room: Room;
 }
 
+export interface TasksResponse {
+  tasks: Task[];
+}
+
 export interface AssignResponse {
   run: Run;
   scheduler_decision: { reason: string; score: number };

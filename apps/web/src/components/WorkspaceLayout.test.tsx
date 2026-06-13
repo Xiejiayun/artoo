@@ -21,7 +21,7 @@ function workspaceClient() {
       projects: [{ id: "proj_artoo", name: "artoo", default_workspace: null }],
       actor: { type: "user", id: "user_1" },
     }),
-    listTasks: async () => [taskFixture({ id: "task_1", title: "Build inbox", status: "review" })],
+    listTasks: async () => ({ tasks: [taskFixture({ id: "task_1", title: "Build inbox", status: "review" })] }),
     listApprovals: async () => ({ approvals: [] }),
     getTask: async () => ({
       task: taskFixture({ id: "task_1", title: "Build inbox", status: "review" }),
