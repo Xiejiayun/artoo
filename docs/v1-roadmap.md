@@ -8,13 +8,13 @@ described in `design.md` section 12.13.
 
 Accepted v0.1 is on `origin/main` at `eec68d8`.
 
-Current v1 integration head is `origin/main` at `d20960e`:
+Current v1 integration head is `origin/main` at `962596a`:
 
 - #11 Task DAG is done: dependency CRUD, ready unlock, blocked propagation,
   aggregate review, and evidence gates are merged.
 - #12 Concurrency is in progress: Phase A focuses on pure path/lease contracts,
   file lease storage/service, and integration queue records.
-- #13 Skill registry is ready to claim for a pure `skill.yaml v1alpha1`
+- #13 Skill registry is in progress with a pure `skill.yaml v1alpha1`
   manifest/permission/capability contract slice.
 - #14 Memory is ready to claim for a pure lifecycle/retrieval/ContextPack
   selection contract slice.
