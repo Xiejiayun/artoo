@@ -7,7 +7,9 @@ import {
 } from "@artoo/db";
 import {
   canTransitionTask,
+  type DagEdge,
   ID_PREFIXES,
+  isTaskUnlocked,
   type AssignRequest,
   type Capability,
   type ReviewRequest,
@@ -21,12 +23,13 @@ import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { mapRun, mapTask } from "../mappers.js";
+import * as dagService from "./dag-service.js";
 import { scheduleTask } from "./scheduler.js";
 import { transitionTask } from "./transition-service.js";
 
 /**
  * POST /tasks/:id/ready — triage backlog -> ready. Requires non-empty
- * acceptance criteria and all upstream `blocks` dependencies done (API contract).
+ * acceptance criteria and all upstream gating dependencies done (API contract).
  */
 export async function markReady(ctx: ServerContext, taskId: string): Promise<Task> {
   const now = ctx.clock.nowIso();
@@ -43,13 +46,27 @@ export async function markReady(ctx: ServerContext, taskId: string): Promise<Tas
     if ((row.acceptanceCriteria as string[]).length === 0) {
       throw AppError.validation("acceptance_criteria must be non-empty to mark a task ready");
     }
-    const blockers = await tx
-      .select({ status: tasks.status })
+    const dependencyRows = await tx
+      .select({
+        fromTaskId: taskDependencies.fromTaskId,
+        toTaskId: taskDependencies.toTaskId,
+        type: taskDependencies.type,
+        status: tasks.status,
+      })
       .from(taskDependencies)
       .innerJoin(tasks, eq(taskDependencies.fromTaskId, tasks.id))
-      .where(and(eq(taskDependencies.toTaskId, taskId), eq(taskDependencies.type, "blocks")));
-    if (blockers.some((b) => b.status !== "done")) {
-      throw AppError.invalidState("upstream 'blocks' dependencies are not all done");
+      .where(and(eq(taskDependencies.organizationId, ctx.organizationId), eq(taskDependencies.toTaskId, taskId)));
+    const incoming: DagEdge[] = dependencyRows.map((dep) => ({
+      from_task_id: dep.fromTaskId,
+      to_task_id: dep.toTaskId,
+      type: dep.type as DagEdge["type"],
+    }));
+    const statusById: Record<string, TaskStatus> = {};
+    for (const dep of dependencyRows) {
+      statusById[dep.fromTaskId] = dep.status as TaskStatus;
+    }
+    if (!isTaskUnlocked(incoming, statusById)) {
+      throw AppError.invalidState("upstream gating dependencies are not all done");
     }
     const currentStatus = row.status as TaskStatus;
     if (!canTransitionTask(currentStatus, "triage")) {
@@ -229,6 +246,22 @@ export async function reviewTask(
         status: row.status,
       });
     }
+    // Aggregate review: a parent cannot be accepted (-> done) until every child
+    // task is done or cancelled. Otherwise accepting a parent would mark a tree
+    // complete while sub-tasks are still open.
+    if (req.outcome === "accepted") {
+      const children = await tx
+        .select({ status: tasks.status })
+        .from(tasks)
+        .where(and(eq(tasks.parentTaskId, taskId), eq(tasks.organizationId, ctx.organizationId)));
+      const pending = children.filter((c) => c.status !== "done" && c.status !== "cancelled");
+      if (pending.length > 0) {
+        throw AppError.invalidState(
+          "cannot accept parent task until all child tasks are done or cancelled",
+          { open_children: pending.length },
+        );
+      }
+    }
     const result = await transitionTask(tx, ctx, {
       taskId,
       from: "review",
@@ -259,6 +292,11 @@ export async function reviewTask(
     });
     if (!result.changed) {
       throw AppError.conflict("task is no longer in review");
+    }
+    // On accept (-> done), auto-unlock downstream dependents whose gating
+    // prerequisites are now all satisfied (emits dag.node.ready per unlock).
+    if (req.outcome === "accepted") {
+      await dagService.unlockDownstream(ctx, tx, taskId);
     }
     const updated = (await tx.select().from(tasks).where(eq(tasks.id, taskId)))[0];
     if (updated === undefined) {
