@@ -119,6 +119,9 @@ export async function seed(
       runtime: "mock",
       version: "0.1.0",
       status: "available",
+      // Fresh heartbeat timestamp so the runtime is schedulable under the #15
+      // Part 3 staleness gate (a null last_seen_at would be treated as stale).
+      lastSeenAt: now,
       metadata: {},
     });
 

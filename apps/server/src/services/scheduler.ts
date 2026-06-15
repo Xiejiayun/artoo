@@ -1,10 +1,27 @@
-import { agentInstances, agents, computers } from "@artoo/db";
-import { matchCapabilities, type Capability } from "@artoo/domain";
+import { agentInstances, agentRuntimes, agents, computers } from "@artoo/db";
+import { isRuntimeStale, matchCapabilities, type Capability } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
 import { and, eq } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
+
+/**
+ * How long after its last heartbeat a runtime row is considered stale (and its
+ * instance excluded). Default 30s = 3x the 10s heartbeat interval; an
+ * `ARTOO_RUNTIME_STALE_MS` env override is honored only if it parses to a
+ * positive finite number. Tests stay deterministic via the pure helper.
+ */
+const RUNTIME_STALE_AFTER_MS = ((): number => {
+  const raw = process.env.ARTOO_RUNTIME_STALE_MS;
+  if (raw !== undefined) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 30_000;
+})();
 
 export interface SchedulerCandidate {
   agent_instance_id: string;
@@ -53,12 +70,25 @@ export async function scheduleTask(
       computerStatus: computers.status,
       agentCaps: agents.capabilities,
       computerCaps: computers.capabilities,
+      // Runtime row for this instance's runtime (LEFT JOIN: null when absent).
+      runtimeStatus: agentRuntimes.status,
+      runtimeCaps: agentRuntimes.capabilities,
+      runtimeLastSeen: agentRuntimes.lastSeenAt,
     })
     .from(agentInstances)
     .innerJoin(computers, eq(agentInstances.computerId, computers.id))
     .innerJoin(agents, eq(agentInstances.agentId, agents.id))
+    .leftJoin(
+      agentRuntimes,
+      and(
+        eq(agentRuntimes.organizationId, ctx.organizationId),
+        eq(agentRuntimes.computerId, agentInstances.computerId),
+        eq(agentRuntimes.runtime, agentInstances.runtime),
+      ),
+    )
     .where(eq(agentInstances.organizationId, ctx.organizationId));
 
+  const now = ctx.clock.nowIso();
   const candidates: SchedulerCandidate[] = rows
     .filter((r) => r.instanceStatus === "idle" && r.computerStatus === "online")
     .filter(
@@ -67,12 +97,28 @@ export async function scheduleTask(
         opts.agentInstanceId == null ||
         r.instanceId === opts.agentInstanceId,
     )
-    .filter((r) =>
-      matchCapabilities(required, [
+    .filter((r) => {
+      // Runtime eligibility (#15 Part 3). A missing agent_runtimes row is a
+      // deliberate fallback (seeded/dev/pre-heartbeat): the candidate stays
+      // eligible with no runtime caps. A present-but-disabled or stale/timestamp-
+      // less row excludes the candidate (its runtime is known-bad). A fresh,
+      // enabled row contributes its capabilities. `version` is non-gating.
+      let runtimeCaps: Capability[] = [];
+      if (r.runtimeStatus !== null) {
+        if (r.runtimeStatus === "disabled") {
+          return false;
+        }
+        if (isRuntimeStale(r.runtimeLastSeen, now, RUNTIME_STALE_AFTER_MS)) {
+          return false;
+        }
+        runtimeCaps = (r.runtimeCaps as Capability[] | null) ?? [];
+      }
+      return matchCapabilities(required, [
         ...(r.agentCaps as Capability[]),
         ...(r.computerCaps as Capability[]),
-      ]),
-    )
+        ...runtimeCaps,
+      ]);
+    })
     .map((r) => ({
       agent_instance_id: r.instanceId,
       agent_id: r.agentId,
