@@ -15,6 +15,13 @@
       "when": 1781349200285,
       "tag": "0001_broken_toxin",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1781525213632,
+      "tag": "0002_sharp_silver_samurai",
+      "breakpoints": true
     }
   ]
 }

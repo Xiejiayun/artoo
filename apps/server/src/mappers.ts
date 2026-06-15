@@ -1,10 +1,11 @@
-import { artifacts, approvals, messages, rooms, runs, tasks } from "@artoo/db";
+import { artifacts, approvals, messages, rooms, runs, taskDependencies, tasks } from "@artoo/db";
 import {
   ApprovalSchema,
   ArtifactSchema,
   MessageSchema,
   RoomSchema,
   RunSchema,
+  TaskDependencySchema,
   TaskSchema,
   type Approval,
   type Artifact,
@@ -12,6 +13,7 @@ import {
   type Room,
   type Run,
   type Task,
+  type TaskDependency,
 } from "@artoo/domain";
 
 /**
@@ -124,6 +126,17 @@ export function mapMessage(row: typeof messages.$inferSelect): Message {
     kind: row.kind,
     body: row.body,
     payload: row.payload,
+    created_at: row.createdAt,
+  });
+}
+
+export function mapDependency(row: typeof taskDependencies.$inferSelect): TaskDependency {
+  return TaskDependencySchema.parse({
+    id: row.id,
+    organization_id: row.organizationId,
+    from_task_id: row.fromTaskId,
+    to_task_id: row.toTaskId,
+    type: row.type,
     created_at: row.createdAt,
   });
 }

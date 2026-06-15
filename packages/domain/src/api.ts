@@ -9,6 +9,7 @@ import { z } from "zod";
 
 import { CapabilitySchema } from "./capabilities.js";
 import { DependencyTypeSchema, EffortSchema, PrioritySchema } from "./schemas.js";
+import { TaskStatusSchema } from "./state.js";
 
 export const ApiErrorCodeSchema = z.enum([
   "validation_error",
@@ -59,6 +60,30 @@ export const CreateDependencyRequestSchema = z.object({
   type: DependencyTypeSchema,
 });
 export type CreateDependencyRequest = z.infer<typeof CreateDependencyRequestSchema>;
+
+/** A node in a task DAG snapshot. */
+export const DagNodeSchema = z.object({
+  task_id: z.string(),
+  status: TaskStatusSchema,
+  parent_task_id: z.string().nullish(),
+  title: z.string(),
+});
+export type DagNode = z.infer<typeof DagNodeSchema>;
+
+/** A DAG snapshot for a task subtree: nodes + dependency edges
+ *  (from_task_id = prerequisite, to_task_id = dependent). */
+export const DagSnapshotSchema = z.object({
+  root_task_id: z.string(),
+  nodes: z.array(DagNodeSchema),
+  edges: z.array(
+    z.object({
+      from_task_id: z.string(),
+      to_task_id: z.string(),
+      type: DependencyTypeSchema,
+    }),
+  ),
+});
+export type DagSnapshot = z.infer<typeof DagSnapshotSchema>;
 
 export const AssignRequestSchema = z.object({
   mode: z.enum(["auto", "manual"]).default("auto"),

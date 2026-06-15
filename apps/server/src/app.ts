@@ -2,6 +2,7 @@ import { runs } from "@artoo/db";
 import {
   apiError,
   AssignRequestSchema,
+  CreateDependencyRequestSchema,
   CreateTaskRequestSchema,
   ResolveApprovalRequestSchema,
   RetryRequestSchema,
@@ -16,6 +17,7 @@ import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import { registerIdempotency } from "./idempotency-middleware.js";
 import * as approvalService from "./services/approval-service.js";
+import * as dagService from "./services/dag-service.js";
 import * as lifecycle from "./services/lifecycle-service.js";
 import * as messageService from "./services/message-service.js";
 import * as runService from "./services/run-service.js";
@@ -112,6 +114,22 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   app.get("/api/v1/tasks/:id", async (req) => {
     const { id } = req.params as { id: string };
     return taskService.getTaskSnapshot(ctx, id);
+  });
+
+  app.post("/api/v1/tasks/:id/dependencies", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = CreateDependencyRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw AppError.validation("invalid dependency payload", { issues: parsed.error.issues });
+    }
+    const dependency = await dagService.createDependency(ctx, id, parsed.data);
+    void reply.status(201);
+    return { dependency };
+  });
+
+  app.get("/api/v1/tasks/:id/dag", async (req) => {
+    const { id } = req.params as { id: string };
+    return { dag: await dagService.getDag(ctx, id) };
   });
 
   app.post("/api/v1/tasks/:id/ready", async (req) => {

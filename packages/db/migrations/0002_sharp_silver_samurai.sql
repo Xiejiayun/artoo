@@ -1,0 +1,2 @@
+ALTER TABLE "task_dependencies" DROP CONSTRAINT "task_deps_type_chk";--> statement-breakpoint
+ALTER TABLE "task_dependencies" ADD CONSTRAINT "task_deps_type_chk" CHECK ("task_dependencies"."type" in ('blocks','artifact_required','contract_required','review_required','soft_context'));

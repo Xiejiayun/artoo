@@ -47,6 +47,29 @@ describe("event envelope", () => {
     expect(isCoreEventType("run.cancelled")).toBe(true);
     expect(isCoreEventType("not.an.event")).toBe(false);
   });
+
+  it("recognizes the v1 DAG event types", () => {
+    expect(isCoreEventType("task.decomposed")).toBe(true);
+    expect(isCoreEventType("dag.node.ready")).toBe(true);
+    expect(isCoreEventType("dag.node.blocked")).toBe(true);
+  });
+
+  it("still parses an unknown dag-ish type as a valid envelope (forward-compat)", () => {
+    const result = parseEvent({
+      id: "evt_1",
+      type: "dag.node.future_thing",
+      schema_version: "2026-06-11",
+      organization_id: "org_default",
+      actor: { type: "system", id: "sys" },
+      occurred_at: "2026-06-15T00:00:00.000Z",
+      correlation_id: "corr_1",
+      payload: {},
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.known).toBe(false);
+    }
+  });
 });
 
 describe("message kinds", () => {

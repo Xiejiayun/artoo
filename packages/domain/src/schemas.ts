@@ -18,7 +18,15 @@ export type Effort = z.infer<typeof EffortSchema>;
 
 export const AssigneeTypeSchema = z.enum(["user", "agent", "agent_team"]);
 export const CreatedByTypeSchema = z.enum(["user", "agent", "system"]);
-export const DependencyTypeSchema = z.enum(["blocks", "artifact_required"]);
+export const DependencyTypeSchema = z.enum([
+  "blocks",
+  "artifact_required",
+  "contract_required",
+  "review_required",
+  "soft_context",
+]);
+export const DEPENDENCY_TYPES = DependencyTypeSchema.options;
+export type DependencyType = z.infer<typeof DependencyTypeSchema>;
 export const RiskSchema = z.enum(["low", "medium", "high"]);
 export const RoomTypeSchema = z.enum(["dm", "project", "sprint", "task", "agent_team", "incident"]);
 
