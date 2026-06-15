@@ -184,7 +184,7 @@ describe("createWebSocketTransport", () => {
         node_id: "computer_1",
         sequence: sequence++,
         resources: { cpu_load: 0.1, memory_used_pct: 20, disk_free_gb: 100 },
-        runtimes: [{ runtime: "codex", status: "available" }],
+        runtimes: [{ runtime: "codex", status: "available", capabilities: [] }],
         running_instances: []
       })
     });

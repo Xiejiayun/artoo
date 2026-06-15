@@ -1,6 +1,7 @@
 import type { NodeHeartbeat, NodeHello, RuntimeAdapter } from "@artoo/protocol";
 
 import type { AdapterRegistry } from "./adapter-registry.js";
+import { createRegistryHeartbeat } from "./heartbeat.js";
 import { createNodeClient } from "./node-client.js";
 import { createWebSocketTransport } from "./ws-transport.js";
 
@@ -39,10 +40,18 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
         await transport.ready;
         return;
       }
+      // In registry mode, default to a heartbeat that advertises the registered
+      // runtimes' capability tags (so the server learns runtime capabilities for
+      // scheduling). An explicit `heartbeat` option overrides this escape hatch.
+      const heartbeat =
+        options.heartbeat ??
+        (options.registry
+          ? createRegistryHeartbeat({ nodeId: options.hello.node_id, registry: options.registry })
+          : undefined);
       transport = createWebSocketTransport({
         url: options.url,
         hello: options.hello,
-        heartbeat: options.heartbeat,
+        heartbeat,
         heartbeatIntervalMs: options.heartbeatIntervalMs,
         WebSocketImpl: options.WebSocketImpl
       });

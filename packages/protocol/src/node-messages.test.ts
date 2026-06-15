@@ -5,7 +5,8 @@ import {
   commandAckSchema,
   nodeHeartbeatSchema,
   nodeHelloSchema,
-  runStopCommandSchema
+  runStopCommandSchema,
+  runtimeStatusSchema
 } from "./node-messages.js";
 
 describe("node.hello", () => {
@@ -64,6 +65,27 @@ describe("node.heartbeat", () => {
         runtimes: [{ runtime: "codex", status: "on_fire" }]
       }).success
     ).toBe(false);
+  });
+
+  it("defaults runtime capabilities to [] when absent (back-compat)", () => {
+    // Old heartbeats (no capabilities key) must still parse, yielding [].
+    const parsed = nodeHeartbeatSchema.parse(valid);
+    expect(parsed.runtimes[0]?.capabilities).toEqual([]);
+  });
+
+  it("accepts and preserves runtime capability tags", () => {
+    const parsed = nodeHeartbeatSchema.parse({
+      ...valid,
+      runtimes: [
+        { runtime: "codex", status: "available", capabilities: ["code.read", "code.modify"] }
+      ]
+    });
+    expect(parsed.runtimes[0]?.capabilities).toEqual(["code.read", "code.modify"]);
+  });
+
+  it("normalizes a runtime status's capabilities to [] (never undefined)", () => {
+    const parsed = runtimeStatusSchema.parse({ runtime: "codex", status: "available" });
+    expect(parsed.capabilities).toEqual([]);
   });
 });
 

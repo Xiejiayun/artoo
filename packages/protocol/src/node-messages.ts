@@ -38,7 +38,11 @@ export const nodeHelloSchema = z.object({
 export const runtimeStatusSchema = z.object({
   runtime: z.string().min(1),
   status: z.enum(["detected", "available", "missing", "disabled"]),
-  version: z.string().nullable().optional()
+  version: z.string().nullable().optional(),
+  // Capability tags this runtime advertises (e.g. "code.read", "code.modify").
+  // Optional for back-compat: pre-capability heartbeats omit it and parse to [],
+  // never undefined, so the scheduler can always read an array.
+  capabilities: z.array(z.string()).default([])
 });
 
 export const nodeHeartbeatSchema = z.object({

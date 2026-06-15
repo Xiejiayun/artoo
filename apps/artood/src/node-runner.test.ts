@@ -6,17 +6,21 @@ import { fileURLToPath } from "node:url";
 
 import type {
   CommandAck,
+  NodeHeartbeat,
   NodeHello,
   NodeToServerMessage,
   RuntimeAdapter,
   RunEventMessage,
   RunStartCommand
 } from "@artoo/protocol";
+import { nodeHeartbeatSchema } from "@artoo/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
 
+import { createAdapterRegistry } from "./adapter-registry.js";
 import { createArtoodNode } from "./node-runner.js";
 import { createProcessAdapter } from "./process-adapter.js";
+import { claudeCodeRuntime, codexRuntime } from "./runtimes.js";
 
 const fixture = fileURLToPath(new URL("../test-fixtures/mock-agent.mjs", import.meta.url));
 
@@ -190,5 +194,75 @@ describe("createArtoodNode (WS + ProcessAdapter end-to-end)", () => {
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
+  });
+});
+
+describe("createArtoodNode registry heartbeat wiring", () => {
+  function heartbeatFrames(socket: FakeClientWebSocket): NodeToServerMessage[] {
+    return socket.sent
+      .map((s) => JSON.parse(s) as NodeToServerMessage)
+      .filter((m) => m.kind === "node.heartbeat");
+  }
+
+  it("auto-wires a heartbeat advertising registry capability tags in registry mode", async () => {
+    const registry = createAdapterRegistry([
+      codexRuntime({ allowedRoots: ["/ws"] }),
+      claudeCodeRuntime({ allowedRoots: ["/ws"] })
+    ]);
+    const node = createArtoodNode({
+      url: "ws://example.invalid/api/v1/node?token=dev",
+      hello,
+      registry,
+      heartbeatIntervalMs: 5,
+      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket
+    });
+    const started = node.start();
+    fakeClientSockets[0]?.open();
+    await started;
+
+    const socket = fakeClientSockets[0]!;
+    await waitUntil(() => heartbeatFrames(socket).length > 0);
+    const parsed = nodeHeartbeatSchema.parse(heartbeatFrames(socket)[0]);
+    expect(parsed.node_id).toBe("computer_1");
+    expect(parsed.runtimes).toEqual([
+      { runtime: "codex", status: "available", capabilities: ["code.read", "code.modify"] },
+      {
+        runtime: "claude-code",
+        status: "available",
+        capabilities: ["code.read", "code.modify", "code.review"]
+      }
+    ]);
+
+    await node.stop();
+  });
+
+  it("lets an explicit heartbeat option override the registry default", async () => {
+    const registry = createAdapterRegistry([codexRuntime({ allowedRoots: ["/ws"] })]);
+    const explicit = (): NodeHeartbeat => ({
+      kind: "node.heartbeat",
+      node_id: "computer_1",
+      sequence: 0,
+      resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 0 },
+      runtimes: [],
+      running_instances: []
+    });
+    const node = createArtoodNode({
+      url: "ws://example.invalid/api/v1/node?token=dev",
+      hello,
+      registry,
+      heartbeat: explicit,
+      heartbeatIntervalMs: 5,
+      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket
+    });
+    const started = node.start();
+    fakeClientSockets[0]?.open();
+    await started;
+
+    const socket = fakeClientSockets[0]!;
+    await waitUntil(() => heartbeatFrames(socket).length > 0);
+    // Empty runtimes proves the explicit producer was used, not the registry default.
+    expect(nodeHeartbeatSchema.parse(heartbeatFrames(socket)[0]).runtimes).toEqual([]);
+
+    await node.stop();
   });
 });
