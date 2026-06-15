@@ -9,8 +9,18 @@ import type {
   ServerToNodeMessage,
   Unsubscribe
 } from "@artoo/protocol";
+import { assertWorkspaceScope } from "@artoo/protocol";
 
 import type { AdapterRegistry } from "./adapter-registry.js";
+import {
+  cleanupWorkspace,
+  createGitCliExecutor,
+  materializeWorkspace,
+  planWorkspace,
+  type GitExecutor,
+  type WorkspaceConfig,
+  type WorkspacePlan
+} from "./workspace-binding.js";
 
 /**
  * `artood` node-protocol client (mock-loop core of task #6).
@@ -35,6 +45,10 @@ export interface NodeClientOptions {
   adapter?: RuntimeAdapter;
   /** Multi-runtime mode: resolves the adapter by run.start.runtime; unknown -> runtime_missing. */
   registry?: AdapterRegistry;
+  /** Node-side workspace materialization config (git worktree mode). Default: no worktree support. */
+  workspace?: WorkspaceConfig;
+  /** Git executor for worktree materialization; defaults to the real git CLI. */
+  git?: GitExecutor;
 }
 
 export interface NodeClient {
@@ -51,6 +65,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   // scheduling or fallback here. Single-adapter mode handles every runtime.
   const resolveAdapter = (runtime: string): RuntimeAdapter | undefined =>
     options.registry ? options.registry.resolve(runtime) : options.adapter;
+  const workspaceConfig: WorkspaceConfig = options.workspace ?? {};
+  const git: GitExecutor = options.git ?? createGitCliExecutor();
   const runs = new Map<string, { handle: AgentInstanceHandle; adapter: RuntimeAdapter }>();
   const inflight = new Set<Promise<void>>();
   let unsubscribe: Unsubscribe | undefined;
@@ -83,6 +99,24 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       await ackRejected(command.id, "runtime_missing", `no adapter for runtime '${payload.runtime}'`);
       return;
     }
+
+    // Prepare the workspace before the adapter starts. A branch-backed run
+    // materializes a git worktree at workspace.root; a missing base repo or a
+    // failed materialization rejects run.start without ever starting the adapter.
+    const planResult = planWorkspace(payload.workspace, workspaceConfig);
+    if (!planResult.ok) {
+      await ackRejected(command.id, planResult.code, planResult.reason);
+      return;
+    }
+    const plan = planResult.plan;
+    try {
+      assertWorkspaceScope(plan.root, payload.policy_snapshot.filesystem_write_scope);
+      await materializeWorkspace(plan, git);
+    } catch (err) {
+      await ackRejected(command.id, "process_start_failed", errorMessage(err));
+      return;
+    }
+
     let handle: AgentInstanceHandle;
     try {
       handle = await adapter.start({
@@ -94,6 +128,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         runStart: payload
       });
     } catch (err) {
+      // The adapter never started: tear down a worktree we just materialized.
+      await safeCleanup(plan);
       await ackRejected(command.id, "process_start_failed", errorMessage(err));
       return;
     }
@@ -114,6 +150,17 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       }
     } finally {
       runs.delete(payload.run_id);
+      // Terminal (completed/failed/cancelled): remove a worktree we created.
+      await safeCleanup(plan);
+    }
+  }
+
+  async function safeCleanup(plan: WorkspacePlan): Promise<void> {
+    try {
+      await cleanupWorkspace(plan, git);
+    } catch {
+      // Best-effort: the run outcome is already reported, so a worktree that
+      // fails to remove must not turn a finished run into a failure.
     }
   }
 

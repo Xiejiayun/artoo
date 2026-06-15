@@ -4,6 +4,7 @@ import type { AdapterRegistry } from "./adapter-registry.js";
 import { createRegistryHeartbeat } from "./heartbeat.js";
 import { createNodeClient } from "./node-client.js";
 import { createWebSocketTransport } from "./ws-transport.js";
+import type { GitExecutor, WorkspaceConfig } from "./workspace-binding.js";
 
 /**
  * The artood node daemon: wires a {@link createWebSocketTransport} (real WS to
@@ -21,6 +22,10 @@ export interface ArtoodNodeOptions {
   registry?: AdapterRegistry;
   heartbeat?: () => NodeHeartbeat;
   heartbeatIntervalMs?: number;
+  /** Node-side workspace materialization config (git worktree mode). */
+  workspace?: WorkspaceConfig;
+  /** Git executor for worktree materialization; defaults to the real git CLI. */
+  git?: GitExecutor;
   WebSocketImpl?: typeof WebSocket;
 }
 
@@ -59,7 +64,9 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
         nodeId: options.hello.node_id,
         transport,
         adapter: options.adapter,
-        registry: options.registry
+        registry: options.registry,
+        workspace: options.workspace,
+        git: options.git
       });
       // Subscribe before the connection is registered for dispatch (server only
       // dispatches after node.hello), then wait for open + hello.

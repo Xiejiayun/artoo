@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import { createAdapterRegistry } from "./adapter-registry.js";
 import { createNodeClient } from "./node-client.js";
+import type { GitExecutor } from "./workspace-binding.js";
 
 const runStartCommand: RunStartCommand = {
   kind: "command",
@@ -238,5 +239,234 @@ describe("artood node client (multi-runtime registry)", () => {
     expect(received.filter(isRunEvent)).toEqual([]);
     const ack = received.filter(isAck)[0];
     expect(ack).toMatchObject({ status: "rejected", error_code: "runtime_missing" });
+  });
+});
+
+describe("artood node client (worktree materialization, task #19)", () => {
+  function fakeGit(failOn?: string): GitExecutor & { calls: string[][] } {
+    const calls: string[][] = [];
+    return {
+      calls,
+      async run(args) {
+        calls.push([...args]);
+        if (failOn && args.includes(failOn)) {
+          throw new Error(`git ${failOn} failed`);
+        }
+      }
+    };
+  }
+
+  function worktreeStart(branch: string | undefined): RunStartCommand {
+    return {
+      ...runStartCommand,
+      payload: {
+        ...runStartCommand.payload,
+        workspace: { root: "C:/ws/run_1", branch },
+        policy_snapshot: { ...runStartCommand.payload.policy_snapshot, filesystem_write_scope: ["C:/ws"] }
+      }
+    };
+  }
+
+  // An adapter whose start() always throws, to exercise the post-materialization
+  // failure path (the worktree must be cleaned up).
+  const failingStartAdapter: RuntimeAdapter = {
+    runtimeId: "mock-coder",
+    async start() {
+      throw new Error("spawn failed");
+    },
+    async *streamEvents() {},
+    async stop() {},
+    async collectArtifacts() {
+      return [];
+    }
+  };
+
+  const addCall = ["-C", "C:/repo", "worktree", "add", "C:/ws/run_1", "task/run_1"];
+  const removeCall = ["-C", "C:/repo", "worktree", "remove", "--force", "C:/ws/run_1"];
+
+  it("materializes a worktree before the run and removes it after completion", async () => {
+    const channel = createInProcessChannel();
+    const adapter = createMockAdapter({ outputLines: ["building"] });
+    const git = fakeGit();
+    const client = createNodeClient({
+      nodeId: "computer_1",
+      transport: channel.node,
+      adapter,
+      git,
+      workspace: { worktreeBaseRepo: "C:/repo" }
+    });
+    client.start();
+
+    const received: NodeToServerMessage[] = [];
+    const done = new Promise<void>((resolve) => {
+      channel.serverTransport.subscribe((m) => {
+        received.push(m);
+        if (isRunEvent(m) && m.event.type === "run.lifecycle" && m.event.payload.phase === "completed") {
+          resolve();
+        }
+      });
+    });
+    await channel.serverTransport.send(worktreeStart("task/run_1"));
+    await done;
+    await client.stop(); // awaits the run task's finally, where cleanup runs
+
+    expect(received.filter(isAck)[0]).toMatchObject({ status: "accepted" });
+    expect(git.calls).toEqual([addCall, removeCall]);
+  });
+
+  it("rejects a branch-backed run with process_start_failed when no base repo is configured", async () => {
+    const channel = createInProcessChannel();
+    const adapter = createMockAdapter({ outputLines: ["x"] });
+    const git = fakeGit();
+    const client = createNodeClient({ nodeId: "computer_1", transport: channel.node, adapter, git });
+    client.start();
+
+    const received: NodeToServerMessage[] = [];
+    const rejected = new Promise<void>((resolve) => {
+      channel.serverTransport.subscribe((m) => {
+        received.push(m);
+        if (isAck(m) && m.status === "rejected") resolve();
+      });
+    });
+    await channel.serverTransport.send(worktreeStart("task/run_1"));
+    await rejected;
+    await client.stop();
+
+    expect(received.filter(isAck)[0]).toMatchObject({
+      status: "rejected",
+      error_code: "process_start_failed"
+    });
+    expect(received.filter(isRunEvent)).toEqual([]);
+    expect(git.calls).toEqual([]);
+  });
+
+  it("rejects with process_start_failed and starts no run if materialization fails", async () => {
+    const channel = createInProcessChannel();
+    const adapter = createMockAdapter({ outputLines: ["x"] });
+    const git = fakeGit("add"); // worktree add throws
+    const client = createNodeClient({
+      nodeId: "computer_1",
+      transport: channel.node,
+      adapter,
+      git,
+      workspace: { worktreeBaseRepo: "C:/repo" }
+    });
+    client.start();
+
+    const received: NodeToServerMessage[] = [];
+    const rejected = new Promise<void>((resolve) => {
+      channel.serverTransport.subscribe((m) => {
+        received.push(m);
+        if (isAck(m) && m.status === "rejected") resolve();
+      });
+    });
+    await channel.serverTransport.send(worktreeStart("task/run_1"));
+    await rejected;
+    await client.stop();
+
+    expect(received.filter(isAck)[0]).toMatchObject({
+      status: "rejected",
+      error_code: "process_start_failed"
+    });
+    expect(received.filter(isRunEvent)).toEqual([]);
+    expect(git.calls).toEqual([addCall]); // add attempted, no remove (nothing created)
+  });
+
+  it("rejects before git if the worktree root is outside the policy write scope", async () => {
+    const channel = createInProcessChannel();
+    const adapter = createMockAdapter({ outputLines: ["x"] });
+    const git = fakeGit();
+    const client = createNodeClient({
+      nodeId: "computer_1",
+      transport: channel.node,
+      adapter,
+      git,
+      workspace: { worktreeBaseRepo: "C:/repo" }
+    });
+    client.start();
+
+    const received: NodeToServerMessage[] = [];
+    const rejected = new Promise<void>((resolve) => {
+      channel.serverTransport.subscribe((m) => {
+        received.push(m);
+        if (isAck(m) && m.status === "rejected") resolve();
+      });
+    });
+    await channel.serverTransport.send({
+      ...worktreeStart("task/run_1"),
+      payload: {
+        ...worktreeStart("task/run_1").payload,
+        policy_snapshot: { filesystem_write_scope: ["C:/other"], requires_approval: [] }
+      }
+    });
+    await rejected;
+    await client.stop();
+
+    expect(received.filter(isAck)[0]).toMatchObject({
+      status: "rejected",
+      error_code: "process_start_failed"
+    });
+    expect(received.filter(isRunEvent)).toEqual([]);
+    expect(git.calls).toEqual([]);
+  });
+
+  it("removes the worktree if the adapter fails to start after materialization", async () => {
+    const channel = createInProcessChannel();
+    const git = fakeGit();
+    const client = createNodeClient({
+      nodeId: "computer_1",
+      transport: channel.node,
+      adapter: failingStartAdapter,
+      git,
+      workspace: { worktreeBaseRepo: "C:/repo" }
+    });
+    client.start();
+
+    const received: NodeToServerMessage[] = [];
+    const rejected = new Promise<void>((resolve) => {
+      channel.serverTransport.subscribe((m) => {
+        received.push(m);
+        if (isAck(m) && m.status === "rejected") resolve();
+      });
+    });
+    await channel.serverTransport.send(worktreeStart("task/run_1"));
+    await rejected;
+    await client.stop();
+
+    expect(received.filter(isAck)[0]).toMatchObject({
+      status: "rejected",
+      error_code: "process_start_failed"
+    });
+    expect(git.calls).toEqual([addCall, removeCall]);
+  });
+
+  it("runs an ordinary (branchless) workspace with no git calls", async () => {
+    const channel = createInProcessChannel();
+    const adapter = createMockAdapter({ outputLines: ["building"] });
+    const git = fakeGit();
+    const client = createNodeClient({
+      nodeId: "computer_1",
+      transport: channel.node,
+      adapter,
+      git,
+      workspace: { worktreeBaseRepo: "C:/repo" }
+    });
+    client.start();
+
+    const received: NodeToServerMessage[] = [];
+    const done = new Promise<void>((resolve) => {
+      channel.serverTransport.subscribe((m) => {
+        received.push(m);
+        if (isRunEvent(m) && m.event.type === "run.lifecycle" && m.event.payload.phase === "completed") {
+          resolve();
+        }
+      });
+    });
+    await channel.serverTransport.send(worktreeStart(undefined)); // no branch
+    await done;
+    await client.stop();
+
+    expect(received.filter(isAck)[0]).toMatchObject({ status: "accepted" });
+    expect(git.calls).toEqual([]);
   });
 });

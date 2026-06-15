@@ -9,3 +9,4 @@ export * from "./process-adapter.js";
 export * from "./runtimes.js";
 export * from "./ws-transport.js";
 export * from "./node-runner.js";
+export * from "./workspace-binding.js";
