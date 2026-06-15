@@ -102,7 +102,15 @@ export function attachNodeBinding(ctx: ServerContext, transport: NodeTransport):
           task_id: run.taskId,
           agent_instance_id: run.agentInstanceId,
           runtime: run.runtimeId,
-          workspace: { root: workspaceRoot },
+          // Branch-backed worktree (#23): include `branch` only when the run was
+          // assigned one, so artood materializes a worktree; ordinary runs send
+          // just `root`. The node worktree-root authorization stays governed by
+          // policy_snapshot.filesystem_write_scope = [workspaceRoot] (unchanged) —
+          // write_paths narrowing lives in the ContextPack domain, not here.
+          workspace: {
+            root: workspaceRoot,
+            ...(run.workspaceBranch != null ? { branch: run.workspaceBranch } : {}),
+          },
           context_pack: { id: contextPackId, uri: `artoo://contextpack/${contextPackId}` },
           policy_snapshot: {
             filesystem_write_scope: [workspaceRoot],
