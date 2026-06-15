@@ -7,9 +7,9 @@ unilaterally.
 
 ## Current Evidence
 
-- Current main before this audit doc: `76d2676`.
-- Current validated code head: `27c9998`.
-- Clean clone: `C:\workspace\artoo-clean-v1-27c9998`.
+- Current main: `194b10a`.
+- Current validated code/docs head: `194b10a`.
+- Clean clone: `C:\workspace\artoo-clean-v1-194b10a`.
 - Environment: Windows, Node 24.16.0, npm 11.13.0.
 - `npm ci` passed in the clean clone.
 - `npm run verify:v1` passed in the clean clone:
@@ -34,7 +34,7 @@ unilaterally.
 | Skill registry validates manifests, stores installs, and participates in scheduling | #13 domain tests; #24 API/scheduler tests; #25 web read surface tests | Proved |
 | Web surfaces for board/sprint, computers, agents, skills, memory, runs/audit | Component tests, route tests, and Playwright release flows | Proved for current v1 read/action surfaces |
 | Audit/replay evidence and public redaction | Audit-bundle/export tests; `npm run demo:v1` export verification | Proved; cryptographic signing intentionally deferred |
-| Self-host local runbook | Clean clone `npm ci`, `verify:v1`, and `demo:v1` at `27c9998` | Proved on this Windows machine |
+| Self-host local runbook | Clean clone `npm ci`, `verify:v1`, and `demo:v1` at `194b10a` | Proved on this Windows machine |
 
 ## Explicit Release Decisions Still Needed
 

@@ -98,7 +98,7 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 
 ## Clean Local Checkout Validation
 
-The self-host runbook has been validated from a fresh local clone at `27c9998`
+The self-host runbook has been validated from a fresh local clone at `194b10a`
 on Windows with Node 24.16.0 and npm 11.13.0:
 
 ```bash
@@ -109,7 +109,7 @@ npm run verify:v1
 npm run demo:v1
 ```
 
-Fresh clone path: `C:\workspace\artoo-clean-v1-27c9998`.
+Fresh clone path: `C:\workspace\artoo-clean-v1-194b10a`.
 
 Evidence from that clone:
 
