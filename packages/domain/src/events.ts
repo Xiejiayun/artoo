@@ -42,6 +42,10 @@ export const CoreEventTypeSchema = z.enum([
   "lease.acquired",
   "lease.released",
   "lease.expired",
+  "memory.proposed",
+  "memory.accepted",
+  "memory.rejected",
+  "memory.superseded",
 ]);
 export const CORE_EVENT_TYPES = CoreEventTypeSchema.options;
 export type CoreEventType = z.infer<typeof CoreEventTypeSchema>;

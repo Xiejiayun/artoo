@@ -8,6 +8,7 @@
 import { z } from "zod";
 
 import { CapabilitySchema } from "./capabilities.js";
+import { MemoryScopeSchema } from "./memory.js";
 import {
   DependencyTypeSchema,
   EffortSchema,
@@ -149,3 +150,41 @@ export const SendMessageRequestSchema = z.object({
   payload: z.record(z.unknown()).default({}),
 });
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>;
+
+/**
+ * POST /memories — propose a memory (also the body for POST /memories/:id/supersede,
+ * whose replacement content must pass the same checks). Mirrors the Phase A
+ * MemorySchema content rule: at least one of non-blank text / non-empty payload.
+ */
+export const ProposeMemoryRequestSchema = z
+  .object({
+    scope: MemoryScopeSchema,
+    project_id: z.string().nullish(),
+    task_id: z.string().nullish(),
+    source_task_id: z.string().nullish(),
+    source_run_id: z.string().nullish(),
+    source_message_id: z.string().nullish(),
+    source_artifact_id: z.string().nullish(),
+    text: z.string().nullish(),
+    payload: z.record(z.unknown()).nullish(),
+    tags: z.array(z.string()).default([]),
+    confidence: z.number().min(0).max(1).default(1),
+  })
+  .superRefine((req, ctx) => {
+    const hasText = req.text != null && req.text.trim().length > 0;
+    const hasPayload = req.payload != null && Object.keys(req.payload).length > 0;
+    if (!hasText && !hasPayload) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["text"],
+        message: "memory requires text or payload",
+      });
+    }
+  });
+export type ProposeMemoryRequest = z.infer<typeof ProposeMemoryRequestSchema>;
+
+/** POST /memories/:id/accept|reject — optional curator comment. */
+export const MemoryTransitionRequestSchema = z.object({
+  comment: z.string().nullish(),
+});
+export type MemoryTransitionRequest = z.infer<typeof MemoryTransitionRequestSchema>;

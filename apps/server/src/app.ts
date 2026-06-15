@@ -6,6 +6,9 @@ import {
   CreateDependencyRequestSchema,
   CreateTaskRequestSchema,
   LeaseStatusSchema,
+  MemoryTransitionRequestSchema,
+  type MemoryTrigger,
+  ProposeMemoryRequestSchema,
   ResolveApprovalRequestSchema,
   RetryRequestSchema,
   ReviewRequestSchema,
@@ -23,6 +26,7 @@ import * as approvalService from "./services/approval-service.js";
 import * as dagService from "./services/dag-service.js";
 import * as leaseService from "./services/lease-service.js";
 import * as lifecycle from "./services/lifecycle-service.js";
+import * as memoryService from "./services/memory-service.js";
 import * as messageService from "./services/message-service.js";
 import * as runService from "./services/run-service.js";
 import * as runtimeRegistry from "./services/runtime-registry-service.js";
@@ -269,6 +273,82 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       return { leases: await leaseService.listLeases(ctx, id, parsed.data) };
     }
     return { leases: await leaseService.listLeases(ctx, id) };
+  });
+
+  // Memory (#14 Phase B): propose/curate memories + accepted-only retrieval.
+  app.post("/api/v1/memories", async (req, reply) => {
+    const parsed = ProposeMemoryRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw AppError.validation("invalid memory payload", { issues: parsed.error.issues });
+    }
+    const memory = await memoryService.proposeMemory(ctx, parsed.data);
+    void reply.status(201);
+    return { memory };
+  });
+
+  app.get("/api/v1/memories", async (req) => {
+    const q = req.query as {
+      scope?: string;
+      status?: string;
+      project_id?: string;
+      task_id?: string;
+      tag?: string;
+    };
+    return {
+      memories: await memoryService.listMemories(ctx, {
+        scope: q.scope,
+        status: q.status,
+        projectId: q.project_id,
+        taskId: q.task_id,
+        tag: q.tag,
+      }),
+    };
+  });
+
+  // Static `/context` is matched ahead of the `/:id` param route by Fastify.
+  app.get("/api/v1/memories/context", async (req) => {
+    const q = req.query as { project_id?: string; task_id?: string; limit?: string };
+    let limit: number | undefined;
+    if (q.limit !== undefined && q.limit !== "") {
+      limit = Number(q.limit);
+      if (!Number.isInteger(limit) || limit < 0) {
+        throw AppError.validation("limit must be a non-negative integer", { limit: q.limit });
+      }
+    }
+    return memoryService.selectForContext(
+      ctx,
+      { projectId: q.project_id, taskId: q.task_id },
+      limit,
+    );
+  });
+
+  app.get("/api/v1/memories/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    return { memory: await memoryService.getMemory(ctx, id) };
+  });
+
+  app.post("/api/v1/memories/:id/supersede", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = ProposeMemoryRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw AppError.validation("invalid memory replacement payload", { issues: parsed.error.issues });
+    }
+    const result = await memoryService.supersedeMemory(ctx, id, parsed.data);
+    void reply.status(201);
+    return result;
+  });
+
+  app.post("/api/v1/memories/:id/:action", async (req) => {
+    const { id, action } = req.params as { id: string; action: string };
+    if (action !== "accept" && action !== "reject") {
+      throw AppError.validation(`unknown memory action: ${action}`, { action });
+    }
+    const parsed = MemoryTransitionRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      throw AppError.validation("invalid memory transition payload", { issues: parsed.error.issues });
+    }
+    const memory = await memoryService.transitionMemory(ctx, id, action as MemoryTrigger, parsed.data);
+    return { memory };
   });
 
   // Dev-only: the platform requesting a high-risk action approval on a running task.

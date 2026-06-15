@@ -441,6 +441,40 @@ export const approvals = pgTable("approvals", {
 
 // ------------------------------------------------------------------ memory ---
 
+export const memories = pgTable("memories", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  projectId: text("project_id").references(() => projects.id),
+  taskId: text("task_id").references(() => tasks.id),
+  status: text("status").notNull(),
+  scope: text("scope").notNull(),
+  // Provenance refs are loose (may point cross-project or at removed rows) so
+  // they are plain columns, not FKs.
+  sourceTaskId: text("source_task_id"),
+  sourceRunId: text("source_run_id"),
+  sourceMessageId: text("source_message_id"),
+  sourceArtifactId: text("source_artifact_id"),
+  authorType: text("author_type").notNull(),
+  authorId: text("author_id").notNull(),
+  confidence: numeric("confidence", { precision: 3, scale: 2 }).notNull().default(sql`1`),
+  text: text("text"),
+  payload: jsonb("payload"),
+  tags: jsonbArray("tags"),
+  supersedesId: text("supersedes_id"),
+  supersededById: text("superseded_by_id"),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at"),
+}, (t) => [
+  check("memories_status_chk", sql`${t.status} in ('proposed','accepted','rejected','superseded')`),
+  check("memories_scope_chk", sql`${t.scope} in ('task','project','organization','code')`),
+  check("memories_author_type_chk", sql`${t.authorType} in ('user','agent','system')`),
+  index("memories_org_status_idx").on(t.organizationId, t.status),
+  index("memories_project_scope_idx").on(t.projectId, t.scope),
+  index("memories_updated_idx").on(t.updatedAt),
+]);
+
 export const contextPacks = pgTable("context_packs", {
   id: text("id").primaryKey(),
   organizationId: text("organization_id")
