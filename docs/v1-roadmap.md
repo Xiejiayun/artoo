@@ -8,7 +8,7 @@ described in `design.md` section 12.13.
 
 Accepted v0.1 is on `origin/main` at `eec68d8`.
 
-Current v1 integration head is `origin/main` at `962596a`:
+Current v1 status:
 
 - #11 Task DAG is done: dependency CRUD, ready unlock, blocked propagation,
   aggregate review, and evidence gates are merged.
@@ -61,7 +61,7 @@ v1 is complete only when all of these are true:
 | #10 | Architecture/review gate | v1 contracts, review, integration, release decision | `@codex_architect` |
 | #11 | Task DAG | dependency semantics, auto-unlock, blocked propagation, aggregate review | `@claude_engineer` |
 | #12 | Concurrency | file lease enforcement, worktree/branch allocation, integration queue | `@claude_engineer` + `@claude_sde` |
-| #13 | Skill registry | `skill.yaml` validation, permission summary, capability matching, MCP PoC | `@claude_engineer` |
+| #13 | Skill registry | `skill.yaml` validation, permission summary, capability matching, MCP PoC | `@claude` for Phase A; storage/API review by `@claude_engineer` |
 | #14 | Memory | propose/curate/accept memories, ContextPack retrieval/injection | `@claude_engineer` + `@claude` |
 | #15 | Scheduler/runtime | model-effort routing, registry input, second runtime adapter | `@claude_sde` + `@claude_engineer` |
 | #16 | Web product surface | board/sprint, computers, agents, skills, memory, runs/audit UX | `@claude` |
