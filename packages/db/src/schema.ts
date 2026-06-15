@@ -271,6 +271,8 @@ export const agentRuntimes = pgTable("agent_runtimes", {
   runtime: text("runtime").notNull(),
   version: text("version"),
   status: text("status").notNull(),
+  capabilities: jsonbArray("capabilities"),
+  lastSeenAt: ts("last_seen_at"),
   metadata: jsonbObject("metadata"),
 }, (t) => [
   check("agent_runtimes_status_chk", sql`${t.status} in ('detected','available','missing','disabled')`),

@@ -1,5 +1,6 @@
-import { artifacts, approvals, fileLeases, messages, rooms, runs, taskDependencies, tasks } from "@artoo/db";
+import { agentRuntimes, artifacts, approvals, fileLeases, messages, rooms, runs, taskDependencies, tasks } from "@artoo/db";
 import {
+  AgentRuntimeSchema,
   ApprovalSchema,
   ArtifactSchema,
   FileLeaseSchema,
@@ -8,6 +9,7 @@ import {
   RunSchema,
   TaskDependencySchema,
   TaskSchema,
+  type AgentRuntime,
   type Approval,
   type Artifact,
   type FileLease,
@@ -159,5 +161,18 @@ export function mapFileLease(row: typeof fileLeases.$inferSelect): FileLease {
     expires_at: row.expiresAt,
     released_at: row.releasedAt,
     created_at: row.createdAt,
+  });
+}
+
+export function mapAgentRuntime(row: typeof agentRuntimes.$inferSelect): AgentRuntime {
+  return AgentRuntimeSchema.parse({
+    id: row.id,
+    organization_id: row.organizationId,
+    computer_id: row.computerId,
+    runtime: row.runtime,
+    version: row.version,
+    status: row.status,
+    capabilities: row.capabilities ?? [],
+    last_seen_at: row.lastSeenAt,
   });
 }

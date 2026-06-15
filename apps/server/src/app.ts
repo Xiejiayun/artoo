@@ -24,6 +24,7 @@ import * as leaseService from "./services/lease-service.js";
 import * as lifecycle from "./services/lifecycle-service.js";
 import * as messageService from "./services/message-service.js";
 import * as runService from "./services/run-service.js";
+import * as runtimeRegistry from "./services/runtime-registry-service.js";
 import * as taskService from "./services/task-service.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
 import { registerNodeWsRoute } from "./ws/node-ws.js";
@@ -205,6 +206,13 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   app.get("/api/v1/runs/:id", async (req) => {
     const { id } = req.params as { id: string };
     return { run: await runService.getRun(ctx, id) };
+  });
+
+  // Runtime registry (#15 Part 2): the runtimes a computer last advertised via
+  // heartbeat, with status + last_seen_at for the scheduler to filter (Part 3).
+  app.get("/api/v1/computers/:id/runtimes", async (req) => {
+    const { id } = req.params as { id: string };
+    return { runtimes: await runtimeRegistry.listComputerRuntimes(ctx, id) };
   });
 
   app.post("/api/v1/runs/:id/cancel", async (req) => {

@@ -36,6 +36,13 @@
       "when": 1781529540271,
       "tag": "0004_rich_penance",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1781531457810,
+      "tag": "0005_premium_grandmaster",
+      "breakpoints": true
     }
   ]
 }

@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { ServerContext } from "../context.js";
 import { attachNodeBinding, type NodeBinding } from "../node-binding.js";
+import { recordHeartbeatRuntimes } from "../services/runtime-registry-service.js";
 import type { NodeRegistry } from "./node-registry.js";
 import { createServerNodeTransport, type RawServerSocket } from "./ws-node-transport.js";
 
@@ -40,11 +41,20 @@ export function registerNodeWsRoute(
           return; // already registered; ignore duplicate hello
         }
         nodeId = message.node_id;
-        void setComputerOnline(ctx, message.node_id);
+        void setComputerOnline(ctx, nodeId);
         binding = attachNodeBinding(ctx, transport);
-        registry.register(message.node_id, binding);
+        registry.register(nodeId, binding);
       } else if (message.kind === "node.heartbeat") {
-        void touchHeartbeat(ctx, message.node_id);
+        const sessionNodeId = nodeId;
+        if (sessionNodeId === undefined) {
+          raw.close(1008, "node.hello required");
+          return;
+        }
+        void touchHeartbeat(ctx, sessionNodeId);
+        // Persist advertised runtime capabilities (#15 Part 2). Best-effort: a db
+        // hiccup must not tear down the node connection. The accepted hello's
+        // nodeId is the session/computer key; heartbeat node_id is not trusted.
+        void recordHeartbeatRuntimes(ctx, sessionNodeId, message.runtimes).catch(() => {});
       }
       // command.ack / run.event are consumed by the binding's own subscription.
     });

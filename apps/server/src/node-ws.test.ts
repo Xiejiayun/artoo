@@ -51,6 +51,27 @@ async function computerStatus(server: TestServer): Promise<string> {
   return row?.status ?? "missing";
 }
 
+async function addComputer(server: TestServer, id: string): Promise<void> {
+  await server.db.db.insert(computers).values({
+    id,
+    organizationId: "org_default",
+    displayName: id,
+    hostname: id,
+    os: "windows",
+    arch: "x64",
+    status: "online",
+    createdAt: "2026-06-13T00:00:00.000Z",
+  });
+}
+
+async function advertisedRuntimeIds(server: TestServer, computerId: string): Promise<string[]> {
+  const res = await server.app.inject({
+    method: "GET",
+    url: `/api/v1/computers/${computerId}/runtimes`,
+  });
+  return (res.json().runtimes as Array<{ runtime: string }>).map((runtime) => runtime.runtime);
+}
+
 describe("node WS endpoint (real WebSocket loopback)", () => {
   let server: TestServer | undefined;
   let node: ReturnType<typeof createNodeClient> | undefined;
@@ -175,5 +196,39 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
 
     second.close();
     await waitFor(async () => (await computerStatus(server!)) === "offline", "second node offline");
+  });
+
+  it("persists heartbeat runtimes under the accepted hello session id", async () => {
+    server = await buildTestServer();
+    const spoofedNodeId = "computer_spoofed";
+    await addComputer(server, spoofedNodeId);
+    const port = await listen(server);
+
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=dev`);
+    await new Promise<void>((resolve) => {
+      socket.addEventListener("open", () => {
+        socket.send(JSON.stringify(hello(NODE_ID)));
+        resolve();
+      });
+    });
+    await waitFor(() => server?.nodeRegistry.get(NODE_ID) !== undefined, "node registered");
+
+    socket.send(
+      JSON.stringify({
+        kind: "node.heartbeat",
+        node_id: spoofedNodeId,
+        sequence: 0,
+        resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 1 },
+        runtimes: [{ runtime: "codex", status: "available", capabilities: ["code.modify"] }],
+        running_instances: [],
+      }),
+    );
+
+    await waitFor(
+      async () => (await advertisedRuntimeIds(server!, NODE_ID)).includes("codex"),
+      "runtime persisted under session node",
+    );
+    expect(await advertisedRuntimeIds(server, spoofedNodeId)).toEqual([]);
+    socket.close();
   });
 });

@@ -114,6 +114,21 @@ export const IntegrationQueueEntrySchema = z.object({
 });
 export type IntegrationQueueEntry = z.infer<typeof IntegrationQueueEntrySchema>;
 
+/** A runtime advertised by a computer's node heartbeat (#15 Part 2). */
+export const AgentRuntimeStatusSchema = z.enum(["detected", "available", "missing", "disabled"]);
+export type AgentRuntimeStatus = z.infer<typeof AgentRuntimeStatusSchema>;
+export const AgentRuntimeSchema = z.object({
+  id: z.string(),
+  organization_id: z.string(),
+  computer_id: z.string(),
+  runtime: z.string(),
+  version: z.string().nullish(),
+  status: AgentRuntimeStatusSchema,
+  capabilities: z.array(z.string()).default([]),
+  last_seen_at: z.string().nullish(),
+});
+export type AgentRuntime = z.infer<typeof AgentRuntimeSchema>;
+
 export const RunSchema = z.object({
   id: z.string(),
   organization_id: z.string(),
