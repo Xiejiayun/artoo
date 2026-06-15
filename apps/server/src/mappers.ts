@@ -4,6 +4,7 @@ import {
   approvals,
   eventLog,
   fileLeases,
+  memories,
   messages,
   rooms,
   runs,
@@ -17,6 +18,7 @@ import {
   ApprovalSchema,
   ArtifactSchema,
   FileLeaseSchema,
+  MemorySchema,
   MessageSchema,
   RoomSchema,
   RunSchema,
@@ -28,6 +30,7 @@ import {
   type Approval,
   type Artifact,
   type FileLease,
+  type Memory,
   type Message,
   type Room,
   type Run,
@@ -229,5 +232,32 @@ export function mapAuditEvent(row: typeof eventLog.$inferSelect): AuditEvent {
     idempotency_key: row.idempotencyKey,
     sequence: row.sequence,
     payload: row.payload,
+  });
+}
+
+export function mapMemory(row: typeof memories.$inferSelect): Memory {
+  return MemorySchema.parse({
+    id: row.id,
+    status: row.status,
+    scope: row.scope,
+    organization_id: row.organizationId,
+    project_id: row.projectId,
+    task_id: row.taskId,
+    source_task_id: row.sourceTaskId,
+    source_run_id: row.sourceRunId,
+    source_message_id: row.sourceMessageId,
+    source_artifact_id: row.sourceArtifactId,
+    author_type: row.authorType,
+    author_id: row.authorId,
+    // numeric columns come back as strings from drizzle; coerce to the
+    // domain's number.
+    confidence: row.confidence === null ? undefined : Number(row.confidence),
+    text: row.text,
+    payload: row.payload,
+    tags: row.tags,
+    supersedes_id: row.supersedesId,
+    superseded_by_id: row.supersededById,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
   });
 }

@@ -50,6 +50,13 @@
       "when": 1781532956710,
       "tag": "0006_stiff_iron_lad",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1781534452938,
+      "tag": "0007_majestic_runaways",
+      "breakpoints": true
     }
   ]
 }

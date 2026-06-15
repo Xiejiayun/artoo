@@ -29,6 +29,7 @@ export const ID_PREFIXES = {
   integrationJob: "integration",
   modelProfile: "model",
   effortProfile: "effort",
+  memory: "mem",
 } as const;
 
 export type IdPrefixName = keyof typeof ID_PREFIXES;
