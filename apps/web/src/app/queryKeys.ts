@@ -9,4 +9,8 @@ export const queryKeys = {
   task: (taskId: string) => ["task", taskId] as const,
   messages: (roomId: string) => ["messages", roomId] as const,
   approvals: (status: string) => ["approvals", status] as const,
+  memories: (filters: Record<string, string | undefined> = {}) => ["memories", filters] as const,
+  memory: (memoryId: string) => ["memory", memoryId] as const,
+  memoryContext: (projectId: string, taskId?: string) =>
+    ["memoryContext", projectId, taskId ?? null] as const,
 };

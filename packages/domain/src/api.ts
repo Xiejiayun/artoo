@@ -130,6 +130,38 @@ export const AssignRequestSchema = z.object({
    * keys server-side. Empty/absent is a back-compat no-op.
    */
   write_paths: z.array(z.string()).nullish(),
+  /**
+   * Branch-backed worktree opt-in (#23). Provide an explicit `workspace_branch`
+   * to use that exact branch, OR `branch_backed: true` to have the server
+   * generate a deterministic `artoo/run-<runId>` branch. Both absent -> ordinary
+   * run (no worktree, `workspace_branch = null`). Providing both is invalid.
+   */
+  workspace_branch: z.string().nullish(),
+  branch_backed: z.boolean().nullish(),
+}).superRefine((data, ctx) => {
+  const branch = data.workspace_branch;
+  const hasExplicitBranch = branch != null;
+  if (branch != null && branch.trim() === "") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "workspace_branch must be non-empty when provided",
+      path: ["workspace_branch"],
+    });
+  }
+  if (branch != null && branch !== branch.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "workspace_branch must not include leading or trailing whitespace",
+      path: ["workspace_branch"],
+    });
+  }
+  if (hasExplicitBranch && data.branch_backed === true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "provide either workspace_branch or branch_backed, not both",
+      path: ["workspace_branch"],
+    });
+  }
 });
 export type AssignRequest = z.infer<typeof AssignRequestSchema>;
 

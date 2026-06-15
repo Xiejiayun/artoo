@@ -33,6 +33,17 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
   if (topic.startsWith("inbox:") || event.type.startsWith("approval.")) {
     keys.push(queryKeys.approvals("pending"));
   }
+  // memory curation (propose/accept/reject/supersede) refreshes the memory lists
+  // and the accepted-only ContextPack context preview. Prefix keys invalidate
+  // every filtered list / context query.
+  if (event.type.startsWith("memory.")) {
+    keys.push(["memories"]);
+    keys.push(["memoryContext"]);
+    const memoryId = event.payload["memory_id"];
+    if (typeof memoryId === "string") {
+      keys.push(queryKeys.memory(memoryId));
+    }
+  }
 
   return dedupeKeys(keys);
 }
