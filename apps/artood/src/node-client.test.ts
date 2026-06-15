@@ -281,7 +281,7 @@ describe("artood node client (worktree materialization, task #19)", () => {
     }
   };
 
-  const addCall = ["-C", "C:/repo", "worktree", "add", "C:/ws/run_1", "task/run_1"];
+  const addCall = ["-C", "C:/repo", "worktree", "add", "-b", "task/run_1", "C:/ws/run_1"];
   const removeCall = ["-C", "C:/repo", "worktree", "remove", "--force", "C:/ws/run_1"];
 
   it("materializes a worktree before the run and removes it after completion", async () => {

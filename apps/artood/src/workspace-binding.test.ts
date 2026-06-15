@@ -85,7 +85,7 @@ describe("materializeWorkspace", () => {
       baseRepo: "/repo"
     };
     await materializeWorkspace(plan, git);
-    expect(git.calls).toEqual([["-C", "/repo", "worktree", "add", "/ws/run1", "task/run1"]]);
+    expect(git.calls).toEqual([["-C", "/repo", "worktree", "add", "-b", "task/run1", "/ws/run1"]]);
   });
 });
 

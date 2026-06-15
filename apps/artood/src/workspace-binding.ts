@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
  * - `branch` absent → the root is an already-prepared ordinary workspace. artood
  *   runs in it as-is and never deletes it.
  * - `branch` present → artood materializes a per-run git worktree at `root` before
- *   spawning the adapter (`git -C <baseRepo> worktree add <root> <branch>`), then
+ *   spawning the adapter (`git -C <baseRepo> worktree add -b <branch> <root>`), then
  *   removes it on terminal completion/failure/cancel.
  *
  * The protocol does not carry the source repository, so worktree mode requires an
@@ -64,13 +64,16 @@ export interface GitExecutor {
 
 /**
  * Materialize the planned workspace. Ordinary plans are a no-op (the root is
- * already prepared); worktree plans add a fresh worktree at the root.
+ * already prepared); worktree plans add a fresh worktree at the root on a NEW
+ * branch. `-b` is required because per-run branches (e.g. `artoo/run-<id>`) do
+ * not pre-exist — `git worktree add <root> <branch>` would abort with
+ * "invalid reference" for an unknown branch.
  */
 export async function materializeWorkspace(plan: WorkspacePlan, git: GitExecutor): Promise<void> {
   if (plan.kind === "ordinary") {
     return;
   }
-  await git.run(["-C", plan.baseRepo, "worktree", "add", plan.root, plan.branch]);
+  await git.run(["-C", plan.baseRepo, "worktree", "add", "-b", plan.branch, plan.root]);
 }
 
 /**
