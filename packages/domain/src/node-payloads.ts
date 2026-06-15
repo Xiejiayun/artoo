@@ -20,6 +20,7 @@ export const ArtifactTypeSchema = z.enum([
   "log_bundle",
   "url",
   "test_result",
+  "contract",
 ]);
 export const ARTIFACT_TYPES = ArtifactTypeSchema.options;
 export type ArtifactType = z.infer<typeof ArtifactTypeSchema>;
