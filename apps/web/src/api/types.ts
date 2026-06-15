@@ -7,10 +7,16 @@
  * business state from these — it only renders the snapshot + WS patches.
  */
 import type {
+  Agent,
+  AgentInstance,
+  AgentRuntime,
   Approval,
   Artifact,
   Memory,
   Message,
+  Computer,
+  EffortProfile,
+  ModelProfile,
   Room,
   Run,
   Task,
@@ -22,7 +28,16 @@ export interface BootstrapResponse {
   organization: { id: string; name: string };
   user: { id: string; email: string; display_name: string; role: string };
   projects: Array<{ id: string; name: string; default_workspace: string | null }>;
+  computers: Computer[];
+  agents: Agent[];
+  agent_instances: AgentInstance[];
+  model_profiles: ModelProfile[];
+  effort_profiles: EffortProfile[];
   actor: { type: string; id: string };
+}
+
+export interface ComputerRuntimesResponse {
+  runtimes: AgentRuntime[];
 }
 
 /** Aggregated read model for a single task detail view. */

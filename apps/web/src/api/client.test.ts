@@ -135,6 +135,11 @@ describe("ApiClient", () => {
           organization: { id: "org_default", name: "Org" },
           user: { id: "user_1", email: "jeremy@example.com", display_name: "Jeremy", role: "owner" },
           projects: [{ id: "proj_artoo", name: "artoo", default_workspace: null }],
+          computers: [{ id: "computer_local_mock", display_name: "Local Mock" }],
+          agents: [{ id: "agent_mock_coder", display_name: "Mock Coder" }],
+          agent_instances: [{ id: "instance_mock_coder", runtime: "mock" }],
+          model_profiles: [{ id: "model_standard_coding", name: "standard_coding" }],
+          effort_profiles: [{ id: "effort_standard_coding", name: "standard_coding" }],
           actor: { type: "user", id: "user_1" },
         }),
       ),
@@ -143,6 +148,31 @@ describe("ApiClient", () => {
     const bootstrap = await client.bootstrap();
 
     expect(bootstrap.projects[0]?.id).toBe("proj_artoo");
+    expect(bootstrap.computers[0]?.id).toBe("computer_local_mock");
+    expect(bootstrap.agent_instances[0]?.runtime).toBe("mock");
+  });
+
+  it("listComputerRuntimes fetches heartbeat-backed runtime rows", async () => {
+    server.use(
+      http.get(`${BASE}/computers/computer_local_mock/runtimes`, () =>
+        HttpResponse.json({
+          runtimes: [
+            {
+              id: "runtime_mock",
+              computer_id: "computer_local_mock",
+              runtime: "mock",
+              status: "available",
+              capabilities: ["code.modify"],
+            },
+          ],
+        }),
+      ),
+    );
+
+    const res = await client.listComputerRuntimes("computer_local_mock");
+
+    expect(res.runtimes[0]?.runtime).toBe("mock");
+    expect(res.runtimes[0]?.capabilities).toEqual(["code.modify"]);
   });
 
   it("getTaskAuditBundle fetches the read-only task evidence bundle", async () => {

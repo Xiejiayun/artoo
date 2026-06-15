@@ -48,6 +48,109 @@ export type IntegrationQueueStatus = z.infer<typeof IntegrationQueueStatusSchema
 export const RiskSchema = z.enum(["low", "medium", "high"]);
 export const RoomTypeSchema = z.enum(["dm", "project", "sprint", "task", "agent_team", "incident"]);
 
+export const AgentKindSchema = z.enum([
+  "coding",
+  "reviewer",
+  "planner",
+  "integrator",
+  "qa",
+  "memory_curator",
+  "mock",
+]);
+export const AgentStatusSchema = z.enum([
+  "offline",
+  "idle",
+  "queued",
+  "running",
+  "awaiting_approval",
+  "blocked",
+  "failed",
+]);
+export const ComputerStatusSchema = z.enum(["enrolling", "online", "offline", "disabled"]);
+export const AgentInstanceStatusSchema = z.enum([
+  "idle",
+  "queued",
+  "running",
+  "stopping",
+  "failed",
+  "disabled",
+]);
+export const CostTierSchema = z.enum(["low", "medium", "high", "premium"]);
+export const LatencyTierSchema = z.enum(["fast", "normal", "slow"]);
+
+export const AgentSchema = z.object({
+  id: z.string(),
+  organization_id: z.string(),
+  display_name: z.string(),
+  kind: AgentKindSchema,
+  status: AgentStatusSchema,
+  capabilities: z.array(CapabilitySchema).default([]),
+  created_at: z.string(),
+});
+export type Agent = z.infer<typeof AgentSchema>;
+
+export const ComputerSchema = z.object({
+  id: z.string(),
+  organization_id: z.string(),
+  display_name: z.string(),
+  hostname: z.string(),
+  os: z.string(),
+  arch: z.string(),
+  status: ComputerStatusSchema,
+  last_heartbeat_at: z.string().nullish(),
+  resources: z.record(z.unknown()).default({}),
+  capabilities: z.array(CapabilitySchema).default([]),
+  created_at: z.string(),
+});
+export type Computer = z.infer<typeof ComputerSchema>;
+
+export const ModelProfileSchema = z.object({
+  id: z.string(),
+  organization_id: z.string(),
+  name: z.string(),
+  provider: z.string(),
+  model: z.string(),
+  context_window: z.number().int().nullish(),
+  cost_tier: CostTierSchema,
+  latency_tier: LatencyTierSchema,
+  capability_tags: z.array(CapabilitySchema).default([]),
+  config: z.record(z.unknown()).default({}),
+  enabled: z.boolean(),
+  created_at: z.string(),
+});
+export type ModelProfile = z.infer<typeof ModelProfileSchema>;
+
+export const EffortProfileSchema = z.object({
+  id: z.string(),
+  organization_id: z.string(),
+  name: z.string(),
+  effort: EffortSchema,
+  max_runtime_minutes: z.number().int(),
+  max_cost_usd: z.number().nullish(),
+  max_tool_calls: z.number().int().nullish(),
+  retry_budget: z.number().int(),
+  description: z.string().default(""),
+  config: z.record(z.unknown()).default({}),
+  enabled: z.boolean(),
+  created_at: z.string(),
+});
+export type EffortProfile = z.infer<typeof EffortProfileSchema>;
+
+export const AgentInstanceSchema = z.object({
+  id: z.string(),
+  organization_id: z.string(),
+  computer_id: z.string(),
+  agent_id: z.string(),
+  runtime: z.string(),
+  model_profile_id: z.string().nullish(),
+  effort_profile_id: z.string().nullish(),
+  status: AgentInstanceStatusSchema,
+  workspace_root: z.string().nullish(),
+  config: z.record(z.unknown()).default({}),
+  created_at: z.string(),
+});
+export type AgentInstance = z.infer<typeof AgentInstanceSchema>;
+
 export const TaskSchema = z.object({
   id: z.string(),
   organization_id: z.string(),

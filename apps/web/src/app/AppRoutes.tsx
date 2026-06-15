@@ -1,16 +1,16 @@
 import { Route, Routes } from "react-router-dom";
 
 import { BoardView } from "../components/BoardView.js";
+import { AgentsPage, ComputersPage, SkillsPage } from "../components/InventoryPages.js";
 import { MemoryPage } from "../components/MemoryPage.js";
 import { Nav } from "../components/Nav.js";
-import { PlaceholderPage } from "../components/PlaceholderPage.js";
 import { RunsAuditPage } from "../components/RunsAuditPage.js";
 import { WorkspaceLayout } from "../components/WorkspaceLayout.js";
 
 /**
  * Product nav + route surface (no router/providers — App supplies BrowserRouter;
- * tests supply MemoryRouter). Only Workspace + Board are backed by v0.1 APIs; the
- * rest are explicit placeholders pending #11–#15 contracts.
+ * tests supply MemoryRouter). Routes render only backed server/domain contracts;
+ * no client-only read models are invented for unfinished product lanes.
  */
 export function AppRoutes(): React.ReactNode {
   return (
@@ -20,18 +20,9 @@ export function AppRoutes(): React.ReactNode {
         <Routes>
           <Route path="/" element={<WorkspaceLayout />} />
           <Route path="/board" element={<BoardView />} />
-          <Route
-            path="/computers"
-            element={<PlaceholderPage title="Computers" waitingFor="#15 scheduler/runtime" />}
-          />
-          <Route
-            path="/agents"
-            element={<PlaceholderPage title="Agents" waitingFor="#15 scheduler/runtime" />}
-          />
-          <Route
-            path="/skills"
-            element={<PlaceholderPage title="Skills" waitingFor="#13 skill registry" />}
-          />
+          <Route path="/computers" element={<ComputersPage />} />
+          <Route path="/agents" element={<AgentsPage />} />
+          <Route path="/skills" element={<SkillsPage />} />
           <Route path="/memory" element={<MemoryPage />} />
           <Route path="/runs" element={<RunsAuditPage />} />
         </Routes>

@@ -1,11 +1,16 @@
 import {
+  agentInstances,
   agentRuntimes,
+  agents,
   artifacts,
   approvals,
+  computers,
+  effortProfiles,
   eventLog,
   fileLeases,
   memories,
   messages,
+  modelProfiles,
   rooms,
   runs,
   schedulerDecisions,
@@ -13,25 +18,35 @@ import {
   tasks,
 } from "@artoo/db";
 import {
+  AgentInstanceSchema,
   AgentRuntimeSchema,
+  AgentSchema,
   AuditEventSchema,
   ApprovalSchema,
   ArtifactSchema,
+  ComputerSchema,
+  EffortProfileSchema,
   FileLeaseSchema,
   MemorySchema,
   MessageSchema,
+  ModelProfileSchema,
   RoomSchema,
   RunSchema,
   SchedulerDecisionSchema,
   TaskDependencySchema,
   TaskSchema,
+  type Agent,
+  type AgentInstance,
   type AgentRuntime,
   type AuditEvent,
   type Approval,
   type Artifact,
+  type Computer,
+  type EffortProfile,
   type FileLease,
   type Memory,
   type Message,
+  type ModelProfile,
   type Room,
   type Run,
   type SchedulerDecision,
@@ -67,6 +82,84 @@ export function mapTask(row: typeof tasks.$inferSelect): Task {
     created_by_id: row.createdById,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
+  });
+}
+
+export function mapAgent(row: typeof agents.$inferSelect): Agent {
+  return AgentSchema.parse({
+    id: row.id,
+    organization_id: row.organizationId,
+    display_name: row.displayName,
+    kind: row.kind,
+    status: row.status,
+    capabilities: row.capabilities,
+    created_at: row.createdAt,
+  });
+}
+
+export function mapComputer(row: typeof computers.$inferSelect): Computer {
+  return ComputerSchema.parse({
+    id: row.id,
+    organization_id: row.organizationId,
+    display_name: row.displayName,
+    hostname: row.hostname,
+    os: row.os,
+    arch: row.arch,
+    status: row.status,
+    last_heartbeat_at: row.lastHeartbeatAt,
+    resources: row.resources,
+    capabilities: row.capabilities,
+    created_at: row.createdAt,
+  });
+}
+
+export function mapModelProfile(row: typeof modelProfiles.$inferSelect): ModelProfile {
+  return ModelProfileSchema.parse({
+    id: row.id,
+    organization_id: row.organizationId,
+    name: row.name,
+    provider: row.provider,
+    model: row.model,
+    context_window: row.contextWindow,
+    cost_tier: row.costTier,
+    latency_tier: row.latencyTier,
+    capability_tags: row.capabilityTags,
+    config: row.config,
+    enabled: row.enabled,
+    created_at: row.createdAt,
+  });
+}
+
+export function mapEffortProfile(row: typeof effortProfiles.$inferSelect): EffortProfile {
+  return EffortProfileSchema.parse({
+    id: row.id,
+    organization_id: row.organizationId,
+    name: row.name,
+    effort: row.effort,
+    max_runtime_minutes: row.maxRuntimeMinutes,
+    max_cost_usd: row.maxCostUsd === null ? null : Number(row.maxCostUsd),
+    max_tool_calls: row.maxToolCalls,
+    retry_budget: row.retryBudget,
+    description: row.description,
+    config: row.config,
+    enabled: row.enabled,
+    created_at: row.createdAt,
+  });
+}
+
+export function mapAgentInstance(row: typeof agentInstances.$inferSelect): AgentInstance {
+  return AgentInstanceSchema.parse({
+    id: row.id,
+    organization_id: row.organizationId,
+    computer_id: row.computerId,
+    agent_id: row.agentId,
+    runtime: row.runtime,
+    model_profile_id: row.modelProfileId,
+    effort_profile_id: row.effortProfileId,
+    status: row.status,
+    workspace_root: row.workspaceRoot,
+    config: row.config,
+    created_at: row.createdAt,
   });
 }
 

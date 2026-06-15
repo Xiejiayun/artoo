@@ -4,6 +4,7 @@ import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import {
+  bootstrapFixture,
   fakeApi,
   renderWithProviders,
   roomFixture,
@@ -14,11 +15,20 @@ import { AppRoutes } from "./AppRoutes.js";
 
 function appClient() {
   return fakeApi({
-    bootstrap: async () => ({
-      organization: { id: "org_default", name: "Org" },
-      user: { id: "user_1", email: "j@x.com", display_name: "J", role: "owner" },
-      projects: [{ id: "proj_artoo", name: "artoo", default_workspace: null }],
-      actor: { type: "user", id: "user_1" },
+    bootstrap: async () => bootstrapFixture(),
+    listComputerRuntimes: async () => ({
+      runtimes: [
+        {
+          id: "runtime_mock",
+          organization_id: "org_default",
+          computer_id: "computer_local_mock",
+          runtime: "mock",
+          version: "0.1.0",
+          status: "available",
+          capabilities: ["code.modify"],
+          last_seen_at: "2026-06-13T00:00:00Z",
+        },
+      ],
     }),
     listApprovals: async () => ({ approvals: [] }),
     listTasks: async () => ({
@@ -42,10 +52,12 @@ describe("AppRoutes", () => {
     expect(await screen.findByRole("heading", { name: "artoo", level: 1 })).toBeInTheDocument();
   });
 
-  it("shows an explicit placeholder for an unbuilt view", async () => {
+  it("routes skills to the backed manifest contract view", async () => {
     renderWithProviders(<AppRoutes />, { client: appClient(), route: "/skills" });
     expect(await screen.findByRole("heading", { name: "Skills", level: 1 })).toBeInTheDocument();
-    expect(screen.getByText(/waiting on the #13/)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Skill manifest contract" })).toHaveTextContent(
+      "v1alpha1",
+    );
   });
 
   it("board card click selects the task and returns to the workspace detail", async () => {

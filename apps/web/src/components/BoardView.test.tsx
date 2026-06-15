@@ -3,17 +3,12 @@ import { screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { fakeApi, renderWithProviders, taskFixture } from "../test/utils.js";
+import { bootstrapFixture, fakeApi, renderWithProviders, taskFixture } from "../test/utils.js";
 import { BoardView } from "./BoardView.js";
 
 function boardClient() {
   return fakeApi({
-    bootstrap: async () => ({
-      organization: { id: "org_default", name: "Org" },
-      user: { id: "user_1", email: "j@x.com", display_name: "J", role: "owner" },
-      projects: [{ id: "proj_artoo", name: "artoo", default_workspace: null }],
-      actor: { type: "user", id: "user_1" },
-    }),
+    bootstrap: async () => bootstrapFixture(),
     listApprovals: async () => ({ approvals: [] }),
     listTasks: async () => ({
       tasks: [

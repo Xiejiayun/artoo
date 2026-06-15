@@ -19,6 +19,17 @@ describe("server core HTTP", () => {
     expect(body.organization.id).toBe("org_default");
     expect(body.user.id).toBe("user_owner");
     expect(body.projects.map((p: { id: string }) => p.id)).toContain("proj_artoo");
+    expect(body.computers.map((c: { id: string }) => c.id)).toContain("computer_local_mock");
+    expect(body.agents.map((a: { id: string }) => a.id)).toContain("agent_mock_coder");
+    expect(body.agent_instances.map((i: { id: string }) => i.id)).toContain(
+      "instance_mock_coder",
+    );
+    expect(body.model_profiles.map((p: { id: string }) => p.id)).toContain(
+      "model_standard_coding",
+    );
+    expect(body.effort_profiles.map((p: { id: string }) => p.id)).toContain(
+      "effort_standard_coding",
+    );
     expect(body.actor).toEqual({ type: "user", id: "user_owner" });
   });
 

@@ -1,7 +1,12 @@
 import {
   appendEvent,
+  agentInstances,
+  agents,
   approvals,
   artifacts,
+  computers,
+  effortProfiles,
+  modelProfiles,
   organizations,
   projects,
   rooms,
@@ -9,18 +14,44 @@ import {
   tasks,
   users,
 } from "@artoo/db";
-import { ID_PREFIXES, type CreateTaskRequest, type Room, type Task } from "@artoo/domain";
+import {
+  ID_PREFIXES,
+  type Agent,
+  type AgentInstance,
+  type Computer,
+  type CreateTaskRequest,
+  type EffortProfile,
+  type ModelProfile,
+  type Room,
+  type Task,
+} from "@artoo/domain";
 import { and, asc, eq } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
-import { mapApproval, mapArtifact, mapRoom, mapRun, mapTask } from "../mappers.js";
+import {
+  mapAgent,
+  mapAgentInstance,
+  mapApproval,
+  mapArtifact,
+  mapComputer,
+  mapEffortProfile,
+  mapModelProfile,
+  mapRoom,
+  mapRun,
+  mapTask,
+} from "../mappers.js";
 
 export interface BootstrapResponse {
   organization: { id: string; name: string };
   user: { id: string; email: string; display_name: string; role: string };
   projects: { id: string; name: string; default_workspace: string | null }[];
+  computers: Computer[];
+  agents: Agent[];
+  agent_instances: AgentInstance[];
+  model_profiles: ModelProfile[];
+  effort_profiles: EffortProfile[];
   actor: { type: "user"; id: string };
 }
 
@@ -35,7 +66,33 @@ export async function bootstrap(ctx: ServerContext): Promise<BootstrapResponse> 
   const projectRows = await db
     .select()
     .from(projects)
-    .where(eq(projects.organizationId, ctx.organizationId));
+    .where(eq(projects.organizationId, ctx.organizationId))
+    .orderBy(asc(projects.name), asc(projects.id));
+  const computerRows = await db
+    .select()
+    .from(computers)
+    .where(eq(computers.organizationId, ctx.organizationId))
+    .orderBy(asc(computers.displayName), asc(computers.id));
+  const agentRows = await db
+    .select()
+    .from(agents)
+    .where(eq(agents.organizationId, ctx.organizationId))
+    .orderBy(asc(agents.displayName), asc(agents.id));
+  const instanceRows = await db
+    .select()
+    .from(agentInstances)
+    .where(eq(agentInstances.organizationId, ctx.organizationId))
+    .orderBy(asc(agentInstances.id));
+  const modelRows = await db
+    .select()
+    .from(modelProfiles)
+    .where(eq(modelProfiles.organizationId, ctx.organizationId))
+    .orderBy(asc(modelProfiles.name), asc(modelProfiles.id));
+  const effortRows = await db
+    .select()
+    .from(effortProfiles)
+    .where(eq(effortProfiles.organizationId, ctx.organizationId))
+    .orderBy(asc(effortProfiles.name), asc(effortProfiles.id));
   return {
     organization: { id: orgRow.id, name: orgRow.name },
     user: {
@@ -49,6 +106,11 @@ export async function bootstrap(ctx: ServerContext): Promise<BootstrapResponse> 
       name: p.name,
       default_workspace: p.defaultWorkspace,
     })),
+    computers: computerRows.map(mapComputer),
+    agents: agentRows.map(mapAgent),
+    agent_instances: instanceRows.map(mapAgentInstance),
+    model_profiles: modelRows.map(mapModelProfile),
+    effort_profiles: effortRows.map(mapEffortProfile),
     actor: { type: "user", id: userRow.id },
   };
 }

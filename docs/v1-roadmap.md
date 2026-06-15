@@ -10,8 +10,8 @@ Accepted v0.1 is on `origin/main` at `eec68d8`.
 
 Current v1 status:
 
-- This status snapshot includes implementation changes through `75726a5`
-  (#23 gated assign-to-server-to-node real-git branch worktree smoke).
+- This status snapshot reflects main after the v1 web inventory/read-model
+  slice.
 - #11 Task DAG is done: dependency CRUD, ready unlock, blocked propagation,
   aggregate review, and evidence gates are merged.
 - #12/#20 Concurrency Phase A+B server work is done: file lease contracts,
@@ -29,9 +29,11 @@ Current v1 status:
   runtime capabilities, server persistence, and scheduler consumption of
   `agent_runtimes` are merged. Gated true Claude runtime smoke and future
   `compatible_runtimes` scheduler refinement remain open.
-- #16 Web product surface has the nav shell and backed Board merged; Memory can
-  now build against #21 APIs, while richer Computers/Agents/Skills/Runs/Audit
-  pages still need backed contracts.
+- #16 Web product surface now has backed Workspace, Board, Computers, Agents,
+  Skills, Memory, and Runs/Audit routes. Computers and Agents render bootstrap
+  inventory plus heartbeat-backed runtime rows; Skills renders the Phase A
+  `skill.yaml v1alpha1` manifest/permission/capability contract without
+  pretending installed-skill storage exists.
 - #17 Release hardening has its first audit-bundle contract merged:
   `GET /api/v1/tasks/:id/audit-bundle` exports deterministic task evidence and
   redacts credential-shaped values at the public evidence boundary. A v1alpha1
@@ -282,22 +284,27 @@ Minimum tests:
 The web lane must follow server contracts instead of creating client-only
 schemas.
 
-First backed slice:
+Backed slices:
 
 - Board/Sprint read model over existing `tasks(project)` data.
-- Navigation shell for future Computers, Agents, Skills, Memory, Runs, and Audit
-  pages.
+- Computers read model from seeded `computers` plus heartbeat-backed
+  `agent_runtimes`.
+- Agents read model from `agent_instances`, `agents`, `computers`,
+  `model_profiles`, and `effort_profiles`.
+- Skills read model over the Phase A `skill.yaml v1alpha1` domain contract:
+  permission categories, capabilities, and runtime compatibility. Installed
+  skill storage/API remains Phase B.
+- Memory curation/source-traceability UI built against #21 APIs.
+- Runs/Audit built against server task audit bundles.
 
 Deferred until contracts land:
 
 - DAG editing/viewing can now build against #11.
 - Lease/conflict visualization can now build against #12/#20 read surfaces, but
   integration queue actions still need a product/server contract.
-- Skills page behavior can build the Phase A manifest/permission contract, with
-  storage/API work still required for a true product page.
-- Memory view can now build against #21 curation/context APIs.
-- Runtime/agent routing controls wait for #15 scheduler consumption and richer
-  Computers/Agents APIs.
+- Installed/enabled skill registry UX waits for storage/API work.
+- Runtime/agent routing controls wait for explicit product write contracts; the
+  read-only inventory surfaces are backed.
 
 Minimum tests:
 

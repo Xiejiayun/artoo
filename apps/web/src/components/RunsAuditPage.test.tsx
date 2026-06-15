@@ -8,6 +8,7 @@ import {
   artifactFixture,
   auditBundleFixture,
   auditEventFixture,
+  bootstrapFixture,
   fakeApi,
   renderWithProviders,
   runFixture,
@@ -17,12 +18,7 @@ import {
 import { RunsAuditPage } from "./RunsAuditPage.js";
 
 function bootstrap() {
-  return {
-    organization: { id: "org_default", name: "Org" },
-    user: { id: "user_1", email: "j@x.com", display_name: "J", role: "owner" },
-    projects: [{ id: "proj_artoo", name: "artoo", default_workspace: null }],
-    actor: { type: "user", id: "user_1" },
-  };
+  return bootstrapFixture();
 }
 
 const task = taskFixture({ id: "task_1", title: "Audited task", status: "review" });

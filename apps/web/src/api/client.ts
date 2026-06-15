@@ -25,6 +25,7 @@ import type {
   AssignResponse,
   AuditBundleResponse,
   BootstrapResponse,
+  ComputerRuntimesResponse,
   CreateTaskResponse,
   MemoriesResponse,
   MemoryContextResponse,
@@ -172,6 +173,13 @@ export class ApiClient {
 
   getRun(runId: string): Promise<RunResponse> {
     return this.request<RunResponse>("GET", `/runs/${encodeURIComponent(runId)}`);
+  }
+
+  listComputerRuntimes(computerId: string): Promise<ComputerRuntimesResponse> {
+    return this.request<ComputerRuntimesResponse>(
+      "GET",
+      `/computers/${encodeURIComponent(computerId)}/runtimes`,
+    );
   }
 
   cancelRun(runId: string, idempotencyKey: string): Promise<RunResponse> {

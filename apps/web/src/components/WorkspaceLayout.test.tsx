@@ -4,6 +4,7 @@ import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import {
+  bootstrapFixture,
   fakeApi,
   messageFixture,
   renderWithProviders,
@@ -15,12 +16,15 @@ import { WorkspaceLayout } from "./WorkspaceLayout.js";
 
 function workspaceClient() {
   return fakeApi({
-    bootstrap: async () => ({
-      organization: { id: "org_default", name: "Org" },
-      user: { id: "user_1", email: "jeremy@example.com", display_name: "Jeremy", role: "owner" },
-      projects: [{ id: "proj_artoo", name: "artoo", default_workspace: null }],
-      actor: { type: "user", id: "user_1" },
-    }),
+    bootstrap: async () =>
+      bootstrapFixture({
+        user: {
+          id: "user_1",
+          email: "jeremy@example.com",
+          display_name: "Jeremy",
+          role: "owner",
+        },
+      }),
     listTasks: async () => ({ tasks: [taskFixture({ id: "task_1", title: "Build inbox", status: "review" })] }),
     listApprovals: async () => ({ approvals: [] }),
     getTask: async () => ({

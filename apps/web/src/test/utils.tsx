@@ -20,6 +20,7 @@ import type {
 } from "@artoo/domain";
 
 import { ApiClient } from "../api/client.js";
+import type { BootstrapResponse } from "../api/types.js";
 import { ApiProvider } from "../app/ApiContext.js";
 import { SelectionProvider } from "../app/SelectionContext.js";
 
@@ -46,6 +47,89 @@ export function fakeApi(overrides: Partial<ApiClient>): ApiClient {
     fetch: () => Promise.reject(new Error("network disabled in component test")),
   });
   return Object.assign(base, overrides);
+}
+
+export function bootstrapFixture(partial: Partial<BootstrapResponse> = {}): BootstrapResponse {
+  const base: BootstrapResponse = {
+    organization: { id: "org_default", name: "Org" },
+    user: { id: "user_1", email: "j@x.com", display_name: "J", role: "owner" },
+    projects: [{ id: "proj_artoo", name: "artoo", default_workspace: "C:/workspace/artoo" }],
+    computers: [
+      {
+        id: "computer_local_mock",
+        organization_id: "org_default",
+        display_name: "Local Mock",
+        hostname: "localhost",
+        os: "windows",
+        arch: "x64",
+        status: "online",
+        last_heartbeat_at: "2026-06-13T00:00:00Z",
+        resources: {},
+        capabilities: ["code.modify", "test.run"],
+        created_at: "2026-06-13T00:00:00Z",
+      },
+    ],
+    agents: [
+      {
+        id: "agent_mock_coder",
+        organization_id: "org_default",
+        display_name: "Mock Coder",
+        kind: "mock",
+        status: "idle",
+        capabilities: ["code.modify", "test.run"],
+        created_at: "2026-06-13T00:00:00Z",
+      },
+    ],
+    agent_instances: [
+      {
+        id: "instance_mock_coder",
+        organization_id: "org_default",
+        computer_id: "computer_local_mock",
+        agent_id: "agent_mock_coder",
+        runtime: "mock",
+        model_profile_id: "model_standard_coding",
+        effort_profile_id: "effort_standard_coding",
+        status: "idle",
+        workspace_root: "C:/workspace/artoo",
+        config: {},
+        created_at: "2026-06-13T00:00:00Z",
+      },
+    ],
+    model_profiles: [
+      {
+        id: "model_standard_coding",
+        organization_id: "org_default",
+        name: "standard_coding",
+        provider: "mock",
+        model: "mock-standard_coding",
+        context_window: null,
+        cost_tier: "medium",
+        latency_tier: "normal",
+        capability_tags: ["code.modify", "test.run"],
+        config: {},
+        enabled: true,
+        created_at: "2026-06-13T00:00:00Z",
+      },
+    ],
+    effort_profiles: [
+      {
+        id: "effort_standard_coding",
+        organization_id: "org_default",
+        name: "standard_coding",
+        effort: "medium",
+        max_runtime_minutes: 60,
+        max_cost_usd: null,
+        max_tool_calls: null,
+        retry_budget: 1,
+        description: "standard coding effort profile",
+        config: {},
+        enabled: true,
+        created_at: "2026-06-13T00:00:00Z",
+      },
+    ],
+    actor: { type: "user", id: "user_1" },
+  };
+  return { ...base, ...partial };
 }
 
 /** Build a complete Task snapshot row for fixtures. */
