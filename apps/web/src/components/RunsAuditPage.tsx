@@ -45,7 +45,6 @@ export function RunsAuditPage(): React.ReactNode {
     <div className="runs-audit">
       <header className="runs-audit-header">
         <h1>Runs &amp; Audit</h1>
-        <p className="hint">Read-only task evidence from the server audit bundle.</p>
       </header>
       <div className="runs-audit-body">
         <nav className="audit-task-picker" aria-label="Tasks">
@@ -59,6 +58,7 @@ export function RunsAuditPage(): React.ReactNode {
                   onClick={() => setSelectedTaskId(task.id)}
                 >
                   <span className="title">{task.title}</span>
+                  <span aria-hidden="true"> · </span>
                   <span className="status">{task.status}</span>
                 </button>
               </li>
@@ -67,7 +67,7 @@ export function RunsAuditPage(): React.ReactNode {
         </nav>
 
         <section className="audit-bundle" aria-label="Audit bundle">
-          {selectedTaskId === null ? <p>Select a task to view its audit bundle.</p> : null}
+          {selectedTaskId === null ? <p>No task selected.</p> : null}
           {selectedTaskId !== null && bundle.isLoading ? (
             <p role="status">Loading audit bundle…</p>
           ) : null}
