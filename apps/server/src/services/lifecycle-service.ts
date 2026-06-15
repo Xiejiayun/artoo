@@ -24,6 +24,7 @@ import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { mapRun, mapTask } from "../mappers.js";
 import * as dagService from "./dag-service.js";
+import * as contextPackService from "./context-pack-service.js";
 import * as leaseService from "./lease-service.js";
 import { scheduleTask } from "./scheduler.js";
 import { transitionTask } from "./transition-service.js";
@@ -177,6 +178,17 @@ export async function assignTask(
         .where(eq(agentInstances.id, outcome.selected.agent_instance_id))
     )[0];
 
+    const workspaceRoot = instance?.workspaceRoot ?? null;
+
+    // Build + persist the run's ContextPack (#21 Part D): select accepted memories
+    // for this context and record source_memory_ids for audit; the run links it.
+    const contextPack = await contextPackService.buildRunContextPack(ctx, tx, {
+      runId,
+      task: row,
+      workspaceRoot,
+      writePaths: req.write_paths ?? [],
+    });
+
     await tx.insert(runs).values({
       id: runId,
       organizationId: ctx.organizationId,
@@ -188,7 +200,8 @@ export async function assignTask(
       modelProfileId: outcome.selected.model_profile_id,
       effortProfileId: outcome.selected.effort_profile_id,
       status: "queued",
-      workspaceRoot: instance?.workspaceRoot ?? null,
+      contextPackId: contextPack.contextPackId,
+      workspaceRoot,
       workspaceBranch: null,
       createdAt: now,
     });
