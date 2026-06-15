@@ -49,7 +49,9 @@ Current v1 status:
   accept -> audit export verification. The local clean-clone gate has passed,
   and production npm audit is clean; remaining dev audit advisories are isolated
   to drizzle-kit/esbuild migration tooling. Broader CI/release gates remain. A
-  local v1 gate script and release runbook live in `docs/v1-release-gates.md`.
+  local v1 gate script and release runbook live in `docs/v1-release-gates.md`;
+  the current release-candidate decision audit lives in
+  `docs/v1-release-candidate.md`.
 - #18 iOS source is done as native SwiftUI source, but first macOS/Xcode build,
   run, and test verification remains pending outside this Windows environment.
 
@@ -182,16 +184,14 @@ Merged contract:
   dispatch. A conflict aborts the whole assignment and leaves the task `ready`.
 - Lease release happens on completed, failed, cancelled, and rejected
   `run.start` recovery.
-- Runs record `workspace_root` and `workspace_branch`; branch remains `null` in
-  the ordinary-workspace path until true worktree activation is explicitly
-  enabled.
+- Runs record `workspace_root` and `workspace_branch`; ordinary workspace runs
+  keep `workspace_branch = null`, while branch-backed opt-in materializes a
+  per-run git worktree through artood.
 - Integration queue records `patch` and `pull_request` artifacts that require
   merge/rebase/review. Other artifact types are not enqueued.
 
-Remaining:
+Deferred product work:
 
-- Gate branch-backed worktree activation on artood `worktreeBaseRepo`, server
-  `workspace_branch`, and a true git worktree smoke on a real base repo.
 - Add product UI for lease conflicts and integration queue state only after the
   queue worker/product contract is defined.
 
@@ -254,16 +254,12 @@ Merged contract:
 - `GET /api/v1/memories/context` returns accepted-only memories and exact
   `source_memory_ids` using the pure selector order.
 - Code memories are project-bound, never organization-global.
-
-Remaining:
-
 - Assign builds and persists a ContextPack in the same transaction as run
   creation, records exact `context_packs.source_memory_ids`, and sets
   `runs.context_pack_id`.
 - ContextPack policy write scope dedupes by canonical lease key while preserving
   source-case filesystem paths for runtime policy.
-- Web Memory curation/source-traceability UI should build against the merged
-  #21 API rather than fake memory behavior.
+- Web Memory curation/source-traceability UI is backed by the merged #21 APIs.
 
 ### Scheduler and Runtime (#15)
 
@@ -322,7 +318,7 @@ Backed slices:
 - Memory curation/source-traceability UI built against #21 APIs.
 - Runs/Audit built against server task audit bundles.
 
-Deferred until contracts land:
+Deferred product write surfaces:
 
 - DAG editing/viewing can now build against #11.
 - Lease/conflict visualization can now build against #12/#20 read surfaces, but

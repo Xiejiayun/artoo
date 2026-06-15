@@ -5,6 +5,9 @@ stricter than the current implementation: v1 is not complete until every
 required gate below is either automated and passing or explicitly deferred by a
 recorded release decision.
 
+For the current requirement-by-requirement release-candidate audit and explicit
+human-gated release decisions, see `docs/v1-release-candidate.md`.
+
 ## Automated Local Gate
 
 From a clean checkout:

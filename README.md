@@ -16,7 +16,9 @@ v0.1 has been accepted on `origin/main` at `eec68d8`. It proves the core loop:
 
 The v1 workstream is tracked in [docs/v1-roadmap.md](docs/v1-roadmap.md).
 Release gates and the local self-host runbook are tracked in
-[docs/v1-release-gates.md](docs/v1-release-gates.md).
+[docs/v1-release-gates.md](docs/v1-release-gates.md). The current release
+candidate decision audit is tracked in
+[docs/v1-release-candidate.md](docs/v1-release-candidate.md).
 
 ## Development
 
