@@ -85,7 +85,7 @@ export function attachNodeBinding(ctx: ServerContext, transport: NodeTransport):
           .from(agentInstances)
           .where(eq(agentInstances.id, run.agentInstanceId))
       )[0];
-      const workspaceRoot = instance?.workspaceRoot ?? FALLBACK_WORKSPACE_ROOT;
+      const workspaceRoot = run.workspaceRoot ?? instance?.workspaceRoot ?? FALLBACK_WORKSPACE_ROOT;
       // Use the ContextPack persisted at assign time (#21 Part D). The transient
       // fallback only covers legacy/defensive rows with no pack of record.
       const contextPackId = run.contextPackId ?? ctx.idGen.generate(ID_PREFIXES.contextPack);

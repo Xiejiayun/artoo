@@ -1,4 +1,4 @@
-import { contextPacks } from "@artoo/db";
+import { agentInstances, contextPacks } from "@artoo/db";
 import type { RunStartCommand, ServerToNodeMessage } from "@artoo/protocol";
 import { createInProcessChannel } from "@artoo/testkit";
 import { eq } from "drizzle-orm";
@@ -41,6 +41,7 @@ async function createTask(server: TestServer): Promise<string> {
 async function assign(
   server: TestServer,
   capabilities: string[] = ["code.modify"],
+  writePaths?: string[],
 ): Promise<{ run: { id: string; context_pack_id: string | null } }> {
   const created = await server.app.inject({
     method: "POST",
@@ -52,7 +53,7 @@ async function assign(
   const assigned = await server.app.inject({
     method: "POST",
     url: `/api/v1/tasks/${taskId}/assign`,
-    payload: { mode: "auto" },
+    payload: { mode: "auto", ...(writePaths ? { write_paths: writePaths } : {}) },
   });
   return assigned.json();
 }
@@ -77,7 +78,7 @@ describe("ContextPack memory injection at run-start (#21 Part D)", () => {
     server = await buildTestServer();
     const memId = await acceptMemory(server, { text: "prefer async/await" });
 
-    const body = await assign(server);
+    const body = await assign(server, ["code.modify"], ["Src/Foo", "src/foo"]);
     const contextPackId = body.run.context_pack_id;
     expect(contextPackId).toBeTruthy();
 
@@ -87,6 +88,9 @@ describe("ContextPack memory injection at run-start (#21 Part D)", () => {
     expect((pack?.payload as { memory: { project_notes: string[] } }).memory.project_notes).toContain(
       "prefer async/await",
     );
+    expect(
+      (pack?.payload as { policy: { filesystem_write_scope: string[] } }).policy.filesystem_write_scope,
+    ).toEqual(["Src/Foo"]);
   });
 
   it("does not inject proposed, rejected, or non-matching memories", async () => {
@@ -124,11 +128,16 @@ describe("ContextPack memory injection at run-start (#21 Part D)", () => {
     });
 
     const body = await assign(server);
+    await server.db.db
+      .update(agentInstances)
+      .set({ workspaceRoot: "C:/workspace/drifted-instance" })
+      .where(eq(agentInstances.id, "instance_mock_coder"));
     await binding.dispatchRunStart(body.run.id);
     binding.close();
 
     const runStart = sent.find((m) => m.kind === "command") as RunStartCommand | undefined;
     expect(runStart?.type).toBe("run.start");
     expect(runStart?.payload.context_pack.id).toBe(body.run.context_pack_id);
+    expect(runStart?.payload.workspace.root).toBe("C:/workspace/artoo");
   });
 });

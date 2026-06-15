@@ -2,6 +2,7 @@ import { contextPacks, memories, projects, tasks } from "@artoo/db";
 import {
   ContextPackSchema,
   ID_PREFIXES,
+  normalizeLeasePath,
   selectInjectableMemories,
   type ContextPack,
   type Memory,
@@ -29,6 +30,19 @@ export interface BuiltContextPack {
 /** Render a memory's injectable content (text, else its structured payload). */
 function renderMemory(memory: Memory): string {
   return memory.text ?? JSON.stringify(memory.payload ?? {});
+}
+
+function dedupeWriteScope(writePaths: readonly string[]): string[] {
+  const scope: string[] = [];
+  const seen = new Set<string>();
+  for (const path of writePaths) {
+    const normalized = normalizeLeasePath("", path);
+    if (normalized.ok && !seen.has(normalized.path)) {
+      seen.add(normalized.path);
+      scope.push(path);
+    }
+  }
+  return scope;
 }
 
 /**
@@ -65,9 +79,11 @@ export async function buildRunContextPack(
   const taskScoped = selection.memories.filter((m) => m.scope === "task");
   const otherScoped = selection.memories.filter((m) => m.scope !== "task");
 
-  // Prefer the run's declared write paths for the write scope (#20); fall back to
-  // the broad workspace root for back-compat when none were declared.
-  const writePaths = params.writePaths ?? [];
+  // Prefer the run's declared write paths for the FS write scope (#20). Dedupe
+  // using canonical lease keys, but preserve the source-case path because this
+  // policy is a runtime/filesystem domain, not the lowercase lease-control key.
+  // Fall back to the broad workspace root for back-compat when none were declared.
+  const writePaths = dedupeWriteScope(params.writePaths ?? []);
   const filesystemWriteScope =
     writePaths.length > 0 ? [...writePaths] : workspaceRoot === "" ? [] : [workspaceRoot];
 
