@@ -37,8 +37,9 @@ Current v1 status:
   redacts credential-shaped values at the public evidence boundary. A v1alpha1
   export envelope now provides a deterministic SHA-256 over the redacted bundle,
   with cryptographic signing explicitly deferred until key management exists.
-  Demo and broader CI/release gates remain. A local v1 gate script and release runbook live in
-  `docs/v1-release-gates.md`.
+  A local v1 demo script now drives create -> ready -> assign -> mock run ->
+  accept -> audit export verification. Broader CI/release gates remain. A local
+  v1 gate script and release runbook live in `docs/v1-release-gates.md`.
 - #18 iOS source is done as native SwiftUI source, but first macOS/Xcode build,
   run, and test verification remains pending outside this Windows environment.
 
@@ -319,7 +320,8 @@ Required gates:
 - cross-process mock runtime smoke
 - gated true runtime smoke
 - self-hosted dev runbook
-- v1 demo script or documented manual demo path
+- v1 demo script or documented manual demo path. `npm run demo:v1` now provides
+  a build-backed API demo with audit export verification.
 - audit/replay bundle proof for a completed task. v1alpha1 export now provides
   a deterministic SHA-256 over the redacted bundle.
 - signed/exportable audit bundle format, or a documented decision to defer

@@ -26,6 +26,27 @@ For quick local iteration only, `npm run verify:v1 -- --skip-e2e` or
 `ARTOO_V1_SKIP_E2E=1 npm run verify:v1` skips Playwright. A skipped E2E run is
 not a release gate result.
 
+## Demo Script
+
+After `npm run build`, run:
+
+```bash
+npm run demo:v1
+```
+
+The script starts a temporary built server with a fresh in-memory DB and temp
+workspace, then drives the API through create -> ready -> assign -> dev mock run
+-> review accept. It finishes by fetching `GET /tasks/:id/audit-bundle/export`
+and verifying the v1alpha1 envelope, completed run evidence, artifact evidence,
+scheduler decision evidence, event-log evidence, signing deferral, and
+deterministic SHA-256 over the redacted bundle.
+
+To target an already-running server instead:
+
+```bash
+ARTOO_DEMO_BASE_URL=http://127.0.0.1:4000 npm run demo:v1
+```
+
 ## Manual Dev Runbook
 
 After `npm install` and `npm run build`, start the server:
@@ -61,6 +82,7 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 | Cross-process mock runtime smoke | Covered by server/node and artood integration tests | Automated in Vitest |
 | True CLI runtime smoke | Gated manual run in isolated workspace | Open for Claude; Codex previously smoked |
 | Audit bundle proof | `GET /api/v1/tasks/:id/audit-bundle/export` returns redacted bundle + deterministic SHA-256 | Automated; cryptographic signing deferred by v1 decision |
+| v1 demo path | `npm run demo:v1` after build | Automated local demo script |
 | Self-host runbook | This document | Needs clean-machine validation |
 | Secret/policy negatives | Workspace guard, lease, approval tests plus audit-bundle secret redaction coverage | Broader secret storage/rotation remains out of scope |
 | Branch worktree smoke | `ARTOO_GIT_SMOKE=1 npx vitest run apps/server/src/branch-e2e-smoke.test.ts` | Gated automated |

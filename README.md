@@ -27,6 +27,7 @@ npm run build
 npm test
 npm run test:e2e --workspace @artoo/web
 npm run verify:v1
+npm run demo:v1
 ```
 
 Run the server after building:
