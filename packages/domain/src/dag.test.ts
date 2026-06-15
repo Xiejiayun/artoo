@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   type DagEdge,
   gatingNeedsEvidence,
+  hasRequiredEvidence,
   incomingEdges,
   isBlockedByUpstream,
   isGatingDependency,
   isTaskUnlocked,
+  requiredEvidenceKind,
   unlockedTaskIds,
   wouldCreateCycle,
 } from "./dag.js";
@@ -27,12 +29,56 @@ describe("dependency gating", () => {
     }
   });
 
-  it("marks artifact/contract/review as needing (not-yet-wired) evidence", () => {
+  it("artifact/contract need evidence; review_required is satisfied by done", () => {
     expect(gatingNeedsEvidence("artifact_required")).toBe(true);
     expect(gatingNeedsEvidence("contract_required")).toBe(true);
-    expect(gatingNeedsEvidence("review_required")).toBe(true);
+    // review_required == done (done is already gated by review-accept).
+    expect(gatingNeedsEvidence("review_required")).toBe(false);
     expect(gatingNeedsEvidence("blocks")).toBe(false);
     expect(gatingNeedsEvidence("soft_context")).toBe(false);
+  });
+
+  it("maps each type to its required evidence kind", () => {
+    expect(requiredEvidenceKind("artifact_required")).toBe("artifact");
+    expect(requiredEvidenceKind("contract_required")).toBe("contract");
+    expect(requiredEvidenceKind("review_required")).toBeNull();
+    expect(requiredEvidenceKind("blocks")).toBeNull();
+    expect(requiredEvidenceKind("soft_context")).toBeNull();
+  });
+});
+
+describe("hasRequiredEvidence", () => {
+  it("requires an artifact for artifact_required edges", () => {
+    const incoming = [edge("p", "d", "artifact_required")];
+    expect(hasRequiredEvidence(incoming, {})).toBe(false);
+    expect(hasRequiredEvidence(incoming, { p: new Set(["artifact"]) })).toBe(true);
+  });
+
+  it("requires a contract artifact for contract_required edges", () => {
+    const incoming = [edge("p", "d", "contract_required")];
+    // a plain artifact is not enough for contract_required
+    expect(hasRequiredEvidence(incoming, { p: new Set(["artifact"]) })).toBe(false);
+    expect(hasRequiredEvidence(incoming, { p: new Set(["artifact", "contract"]) })).toBe(true);
+  });
+
+  it("ignores edges that need no evidence (blocks / review_required / soft_context)", () => {
+    const incoming = [
+      edge("a", "d", "blocks"),
+      edge("b", "d", "review_required"),
+      edge("c", "d", "soft_context"),
+    ];
+    expect(hasRequiredEvidence(incoming, {})).toBe(true);
+  });
+
+  it("requires evidence from every evidence-bearing edge", () => {
+    const incoming = [edge("p1", "d", "artifact_required"), edge("p2", "d", "contract_required")];
+    expect(hasRequiredEvidence(incoming, { p1: new Set(["artifact"]) })).toBe(false);
+    expect(
+      hasRequiredEvidence(incoming, {
+        p1: new Set(["artifact"]),
+        p2: new Set(["contract"]),
+      }),
+    ).toBe(true);
   });
 });
 

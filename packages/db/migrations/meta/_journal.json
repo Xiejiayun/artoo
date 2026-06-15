@@ -22,6 +22,13 @@
       "when": 1781525213632,
       "tag": "0002_sharp_silver_samurai",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1781527970683,
+      "tag": "0003_silky_the_fury",
+      "breakpoints": true
     }
   ]
 }

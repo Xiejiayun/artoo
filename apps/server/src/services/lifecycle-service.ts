@@ -9,7 +9,6 @@ import {
   canTransitionTask,
   type DagEdge,
   ID_PREFIXES,
-  isTaskUnlocked,
   type AssignRequest,
   type Capability,
   type ReviewRequest,
@@ -65,8 +64,8 @@ export async function markReady(ctx: ServerContext, taskId: string): Promise<Tas
     for (const dep of dependencyRows) {
       statusById[dep.fromTaskId] = dep.status as TaskStatus;
     }
-    if (!isTaskUnlocked(incoming, statusById)) {
-      throw AppError.invalidState("upstream gating dependencies are not all done");
+    if (!(await dagService.isDependentSatisfied(ctx, tx, incoming, statusById))) {
+      throw AppError.invalidState("upstream gating dependencies are not all satisfied");
     }
     const currentStatus = row.status as TaskStatus;
     if (!canTransitionTask(currentStatus, "triage")) {

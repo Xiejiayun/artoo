@@ -1,0 +1,2 @@
+ALTER TABLE "artifacts" DROP CONSTRAINT "artifacts_type_chk";--> statement-breakpoint
+ALTER TABLE "artifacts" ADD CONSTRAINT "artifacts_type_chk" CHECK ("artifacts"."type" in ('patch','pull_request','file','screenshot','report','log_bundle','url','test_result','contract'));

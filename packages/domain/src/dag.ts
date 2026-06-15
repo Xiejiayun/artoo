@@ -26,18 +26,56 @@ export function isGatingDependency(type: DependencyType): boolean {
   return type !== "soft_context";
 }
 
+/** Concrete evidence a gating edge demands BEYOND the prerequisite being done. */
+export type EvidenceKind = "artifact" | "contract";
+
 /**
- * TODO(v1 evidence injection): `artifact_required`, `contract_required`, and
- * `review_required` currently share the single Phase A gate "prerequisite is
- * done". The stronger evidence checks — an artifact exists / an interface
- * contract is published / a review passed — are NOT yet enforced. This marker
- * keeps callers from pretending the evidence is checked; the real checks wire in
- * when artifact/contract/review evidence is available (Phase B boundary).
+ * The evidence a gating edge requires beyond `done`, or `null` when `done` alone
+ * satisfies it (design.md §6.9):
+ * - `artifact_required` → the prerequisite produced at least one artifact.
+ * - `contract_required` → the prerequisite produced a `contract` artifact.
+ * - `review_required` → `null`: `done` is already gated by review-accept, so the
+ *   review IS the evidence; no extra check.
+ * - `blocks` / `soft_context` → `null`.
+ */
+export function requiredEvidenceKind(type: DependencyType): EvidenceKind | null {
+  if (type === "artifact_required") {
+    return "artifact";
+  }
+  if (type === "contract_required") {
+    return "contract";
+  }
+  return null;
+}
+
+/**
+ * Whether a gating edge needs evidence beyond `done`. True only for
+ * `artifact_required` / `contract_required`; `review_required` is satisfied by
+ * `done` (review-accept is the evidence). Pairs with {@link requiredEvidenceKind}.
  */
 export function gatingNeedsEvidence(type: DependencyType): boolean {
-  return (
-    type === "artifact_required" || type === "contract_required" || type === "review_required"
-  );
+  return requiredEvidenceKind(type) !== null;
+}
+
+/**
+ * Whether every evidence-bearing incoming gating edge has its evidence available.
+ * `evidenceByPrereq[prereqId]` is the set of evidence kinds that prerequisite has
+ * produced. Edges without an evidence requirement (blocks / review_required) and
+ * soft edges pass here — combine with {@link isTaskUnlocked} for the full gate.
+ */
+export function hasRequiredEvidence(
+  incoming: readonly DagEdge[],
+  evidenceByPrereq: Readonly<Record<string, ReadonlySet<EvidenceKind> | undefined>>,
+): boolean {
+  return incoming
+    .filter((edge) => isGatingDependency(edge.type))
+    .every((edge) => {
+      const need = requiredEvidenceKind(edge.type);
+      if (need === null) {
+        return true;
+      }
+      return evidenceByPrereq[edge.from_task_id]?.has(need) ?? false;
+    });
 }
 
 /** Incoming edges of a dependent task (those whose `to_task_id === taskId`). */

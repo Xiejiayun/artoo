@@ -310,7 +310,7 @@ export const artifacts = pgTable("artifacts", {
 }, (t) => [
   check(
     "artifacts_type_chk",
-    sql`${t.type} in ('patch','pull_request','file','screenshot','report','log_bundle','url','test_result')`,
+    sql`${t.type} in ('patch','pull_request','file','screenshot','report','log_bundle','url','test_result','contract')`,
   ),
 ]);
 

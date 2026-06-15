@@ -1,8 +1,10 @@
-import { appendEvent, taskDependencies, tasks } from "@artoo/db";
+import { appendEvent, artifacts, taskDependencies, tasks } from "@artoo/db";
 import {
   type CreateDependencyRequest,
   type DagEdge,
   type DagSnapshot,
+  type EvidenceKind,
+  hasRequiredEvidence,
   ID_PREFIXES,
   incomingEdges,
   isGatingDependency,
@@ -11,7 +13,7 @@ import {
   type TaskStatus,
   wouldCreateCycle,
 } from "@artoo/domain";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import type { DrizzleDb } from "@artoo/storage";
 
@@ -300,6 +302,56 @@ async function loadStatusMap(
 }
 
 /**
+ * The evidence kinds each prerequisite task has produced, keyed by task id.
+ * "artifact" = at least one artifact row; "contract" = a `contract` artifact.
+ */
+async function loadEvidenceMap(
+  ctx: ServerContext,
+  tx: DrizzleDb,
+  prereqIds: readonly string[],
+): Promise<Record<string, Set<EvidenceKind>>> {
+  const map: Record<string, Set<EvidenceKind>> = {};
+  if (prereqIds.length === 0) {
+    return map;
+  }
+  const rows = await tx
+    .select({ taskId: artifacts.taskId, type: artifacts.type })
+    .from(artifacts)
+    .where(
+      and(eq(artifacts.organizationId, ctx.organizationId), inArray(artifacts.taskId, [...prereqIds])),
+    );
+  for (const r of rows) {
+    const set = map[r.taskId] ?? new Set<EvidenceKind>();
+    set.add("artifact");
+    if (r.type === "contract") {
+      set.add("contract");
+    }
+    map[r.taskId] = set;
+  }
+  return map;
+}
+
+/**
+ * The full server-side unlock gate for a dependent: every gating prerequisite is
+ * `done` (status gate) AND every evidence-bearing edge has its artifact/contract
+ * evidence (design.md §6.9). Combines the pure domain helpers with the artifacts
+ * table. `statusById` must cover the prerequisite task ids.
+ */
+export async function isDependentSatisfied(
+  ctx: ServerContext,
+  tx: DrizzleDb,
+  incoming: readonly DagEdge[],
+  statusById: Readonly<Record<string, TaskStatus | undefined>>,
+): Promise<boolean> {
+  if (!isTaskUnlocked(incoming, statusById)) {
+    return false;
+  }
+  const prereqIds = incoming.filter((e) => isGatingDependency(e.type)).map((e) => e.from_task_id);
+  const evidenceMap = await loadEvidenceMap(ctx, tx, prereqIds);
+  return hasRequiredEvidence(incoming, evidenceMap);
+}
+
+/**
  * When `completedTaskId` reaches `done`, auto-unlock any directly-downstream
  * dependent whose gating prerequisites are now ALL done: transition it from
  * backlog -> ready (triage) and emit `dag.node.ready`. soft_context edges never
@@ -339,7 +391,7 @@ export async function unlockDownstream(
     if ((dependent.acceptanceCriteria as string[]).length === 0) {
       continue;
     }
-    if (!isTaskUnlocked(incomingEdges(edges, dependentId), statusById)) {
+    if (!(await isDependentSatisfied(ctx, tx, incomingEdges(edges, dependentId), statusById))) {
       continue;
     }
     const res = await transitionTask(tx, ctx, {
