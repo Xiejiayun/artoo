@@ -27,6 +27,23 @@ export const DependencyTypeSchema = z.enum([
 ]);
 export const DEPENDENCY_TYPES = DependencyTypeSchema.options;
 export type DependencyType = z.infer<typeof DependencyTypeSchema>;
+
+/** A file lease is a read- or write-scoped claim over a workspace path (#12). */
+export const LeaseModeSchema = z.enum(["read", "write"]);
+export type LeaseMode = z.infer<typeof LeaseModeSchema>;
+export const LeaseStatusSchema = z.enum(["held", "released", "expired"]);
+export type LeaseStatus = z.infer<typeof LeaseStatusSchema>;
+/** Who owns a lease. Defaults to run/task; agent/system reserved for Phase B. */
+export const LeaseHolderTypeSchema = z.enum(["run", "task", "agent", "system"]);
+export type LeaseHolderType = z.infer<typeof LeaseHolderTypeSchema>;
+export const IntegrationQueueStatusSchema = z.enum([
+  "queued",
+  "integrating",
+  "done",
+  "failed",
+]);
+export type IntegrationQueueStatus = z.infer<typeof IntegrationQueueStatusSchema>;
+
 export const RiskSchema = z.enum(["low", "medium", "high"]);
 export const RoomTypeSchema = z.enum(["dm", "project", "sprint", "task", "agent_team", "incident"]);
 
@@ -62,6 +79,40 @@ export const TaskDependencySchema = z.object({
   created_at: z.string(),
 });
 export type TaskDependency = z.infer<typeof TaskDependencySchema>;
+
+export const FileLeaseSchema = z.object({
+  id: z.string(),
+  organization_id: z.string(),
+  project_id: z.string(),
+  task_id: z.string(),
+  run_id: z.string().nullish(),
+  holder_type: LeaseHolderTypeSchema,
+  holder_id: z.string(),
+  path: z.string(),
+  mode: LeaseModeSchema,
+  status: LeaseStatusSchema,
+  acquired_at: z.string(),
+  expires_at: z.string().nullish(),
+  released_at: z.string().nullish(),
+  created_at: z.string(),
+});
+export type FileLease = z.infer<typeof FileLeaseSchema>;
+
+export const IntegrationQueueEntrySchema = z.object({
+  id: z.string(),
+  organization_id: z.string(),
+  project_id: z.string(),
+  task_id: z.string(),
+  run_id: z.string().nullish(),
+  status: IntegrationQueueStatusSchema,
+  sequence: z.number().int(),
+  artifact_ref: z.string().nullish(),
+  enqueued_at: z.string(),
+  started_at: z.string().nullish(),
+  ended_at: z.string().nullish(),
+  created_at: z.string(),
+});
+export type IntegrationQueueEntry = z.infer<typeof IntegrationQueueEntrySchema>;
 
 export const RunSchema = z.object({
   id: z.string(),

@@ -1,9 +1,11 @@
 import { runs } from "@artoo/db";
 import {
+  AcquireLeaseRequestSchema,
   apiError,
   AssignRequestSchema,
   CreateDependencyRequestSchema,
   CreateTaskRequestSchema,
+  LeaseStatusSchema,
   ResolveApprovalRequestSchema,
   RetryRequestSchema,
   ReviewRequestSchema,
@@ -18,6 +20,7 @@ import { AppError } from "./errors.js";
 import { registerIdempotency } from "./idempotency-middleware.js";
 import * as approvalService from "./services/approval-service.js";
 import * as dagService from "./services/dag-service.js";
+import * as leaseService from "./services/lease-service.js";
 import * as lifecycle from "./services/lifecycle-service.js";
 import * as messageService from "./services/message-service.js";
 import * as runService from "./services/run-service.js";
@@ -223,6 +226,35 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       });
     }
     return { approval: await approvalService.resolveApproval(ctx, id, parsed.data) };
+  });
+
+  // Concurrency control (#12): file leases over workspace paths.
+  app.post("/api/v1/leases", async (req, reply) => {
+    const parsed = AcquireLeaseRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw AppError.validation("invalid lease payload", { issues: parsed.error.issues });
+    }
+    const lease = await leaseService.acquireLease(ctx, parsed.data);
+    void reply.status(201);
+    return { lease };
+  });
+
+  app.delete("/api/v1/leases/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    return { lease: await leaseService.releaseLease(ctx, id) };
+  });
+
+  app.get("/api/v1/projects/:id/leases", async (req) => {
+    const { id } = req.params as { id: string };
+    const { status } = req.query as { status?: string };
+    if (status !== undefined && status !== "") {
+      const parsed = LeaseStatusSchema.safeParse(status);
+      if (!parsed.success) {
+        throw AppError.validation("invalid lease status filter", { status });
+      }
+      return { leases: await leaseService.listLeases(ctx, id, parsed.data) };
+    }
+    return { leases: await leaseService.listLeases(ctx, id) };
   });
 
   // Dev-only: the platform requesting a high-risk action approval on a running task.

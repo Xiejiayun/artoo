@@ -1,7 +1,8 @@
-import { artifacts, approvals, messages, rooms, runs, taskDependencies, tasks } from "@artoo/db";
+import { artifacts, approvals, fileLeases, messages, rooms, runs, taskDependencies, tasks } from "@artoo/db";
 import {
   ApprovalSchema,
   ArtifactSchema,
+  FileLeaseSchema,
   MessageSchema,
   RoomSchema,
   RunSchema,
@@ -9,6 +10,7 @@ import {
   TaskSchema,
   type Approval,
   type Artifact,
+  type FileLease,
   type Message,
   type Room,
   type Run,
@@ -137,6 +139,25 @@ export function mapDependency(row: typeof taskDependencies.$inferSelect): TaskDe
     from_task_id: row.fromTaskId,
     to_task_id: row.toTaskId,
     type: row.type,
+    created_at: row.createdAt,
+  });
+}
+
+export function mapFileLease(row: typeof fileLeases.$inferSelect): FileLease {
+  return FileLeaseSchema.parse({
+    id: row.id,
+    organization_id: row.organizationId,
+    project_id: row.projectId,
+    task_id: row.taskId,
+    run_id: row.runId,
+    holder_type: row.holderType,
+    holder_id: row.holderId,
+    path: row.path,
+    mode: row.mode,
+    status: row.status,
+    acquired_at: row.acquiredAt,
+    expires_at: row.expiresAt,
+    released_at: row.releasedAt,
     created_at: row.createdAt,
   });
 }

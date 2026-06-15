@@ -142,6 +142,62 @@ export const taskDependencies = pgTable("task_dependencies", {
   index("task_deps_to_idx").on(t.toTaskId),
 ]);
 
+export const fileLeases = pgTable("file_leases", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id),
+  taskId: text("task_id")
+    .notNull()
+    .references(() => tasks.id),
+  runId: text("run_id").references(() => runs.id),
+  holderType: text("holder_type").notNull(),
+  holderId: text("holder_id").notNull(),
+  path: text("path").notNull(),
+  mode: text("mode").notNull(),
+  status: text("status").notNull().default("held"),
+  acquiredAt: ts("acquired_at").notNull(),
+  expiresAt: ts("expires_at"),
+  releasedAt: ts("released_at"),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check("file_leases_mode_chk", sql`${t.mode} in ('read','write')`),
+  check("file_leases_status_chk", sql`${t.status} in ('held','released','expired')`),
+  check("file_leases_holder_type_chk", sql`${t.holderType} in ('run','task','agent','system')`),
+  index("file_leases_project_status_idx").on(t.projectId, t.status),
+  index("file_leases_path_idx").on(t.path),
+]);
+
+export const integrationQueue = pgTable("integration_queue", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id),
+  taskId: text("task_id")
+    .notNull()
+    .references(() => tasks.id),
+  runId: text("run_id").references(() => runs.id),
+  status: text("status").notNull().default("queued"),
+  sequence: integer("sequence").notNull(),
+  artifactRef: text("artifact_ref"),
+  enqueuedAt: ts("enqueued_at").notNull(),
+  startedAt: ts("started_at"),
+  endedAt: ts("ended_at"),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check(
+    "integration_queue_status_chk",
+    sql`${t.status} in ('queued','integrating','done','failed')`,
+  ),
+  index("integration_queue_project_status_idx").on(t.projectId, t.status),
+]);
+
 export const modelProfiles = pgTable("model_profiles", {
   id: text("id").primaryKey(),
   organizationId: text("organization_id")

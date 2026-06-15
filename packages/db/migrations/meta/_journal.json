@@ -29,6 +29,13 @@
       "when": 1781527970683,
       "tag": "0003_silky_the_fury",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1781529540271,
+      "tag": "0004_rich_penance",
+      "breakpoints": true
     }
   ]
 }

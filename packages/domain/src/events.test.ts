@@ -54,6 +54,12 @@ describe("event envelope", () => {
     expect(isCoreEventType("dag.node.blocked")).toBe(true);
   });
 
+  it("recognizes the v1 concurrency lease event types", () => {
+    expect(isCoreEventType("lease.acquired")).toBe(true);
+    expect(isCoreEventType("lease.released")).toBe(true);
+    expect(isCoreEventType("lease.expired")).toBe(true);
+  });
+
   it("still parses an unknown dag-ish type as a valid envelope (forward-compat)", () => {
     const result = parseEvent({
       id: "evt_1",

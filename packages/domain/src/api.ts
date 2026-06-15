@@ -8,7 +8,13 @@
 import { z } from "zod";
 
 import { CapabilitySchema } from "./capabilities.js";
-import { DependencyTypeSchema, EffortSchema, PrioritySchema } from "./schemas.js";
+import {
+  DependencyTypeSchema,
+  EffortSchema,
+  LeaseHolderTypeSchema,
+  LeaseModeSchema,
+  PrioritySchema,
+} from "./schemas.js";
 import { TaskStatusSchema } from "./state.js";
 
 export const ApiErrorCodeSchema = z.enum([
@@ -60,6 +66,32 @@ export const CreateDependencyRequestSchema = z.object({
   type: DependencyTypeSchema,
 });
 export type CreateDependencyRequest = z.infer<typeof CreateDependencyRequestSchema>;
+
+/**
+ * Acquire a file lease over a workspace path (#12). `path` is normalized +
+ * containment-checked server-side before storage. `holder_type`/`holder_id`
+ * default to run/run_id when `run_id` is present, else task/task_id.
+ */
+export const AcquireLeaseRequestSchema = z.object({
+  task_id: z.string(),
+  run_id: z.string().nullish(),
+  path: z.string(),
+  mode: LeaseModeSchema,
+  holder_type: LeaseHolderTypeSchema.nullish(),
+  holder_id: z.string().nullish(),
+  expires_at: z.string().nullish(),
+}).superRefine((data, ctx) => {
+  const hasHolderType = data.holder_type != null;
+  const hasHolderId = data.holder_id != null;
+  if (hasHolderType !== hasHolderId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "holder_type and holder_id must be provided together",
+      path: hasHolderType ? ["holder_id"] : ["holder_type"],
+    });
+  }
+});
+export type AcquireLeaseRequest = z.infer<typeof AcquireLeaseRequestSchema>;
 
 /** A node in a task DAG snapshot. */
 export const DagNodeSchema = z.object({

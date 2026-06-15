@@ -39,6 +39,9 @@ export const CoreEventTypeSchema = z.enum([
   "task.decomposed",
   "dag.node.ready",
   "dag.node.blocked",
+  "lease.acquired",
+  "lease.released",
+  "lease.expired",
 ]);
 export const CORE_EVENT_TYPES = CoreEventTypeSchema.options;
 export type CoreEventType = z.infer<typeof CoreEventTypeSchema>;
