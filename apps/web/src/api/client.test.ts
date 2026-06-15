@@ -170,6 +170,41 @@ describe("ApiClient", () => {
     expect(res.bundle.events[0]?.position).toBe(1);
   });
 
+  it("getTaskAuditBundleExport fetches the shareable audit proof envelope", async () => {
+    server.use(
+      http.get(`${BASE}/tasks/task_1/audit-bundle/export`, () =>
+        HttpResponse.json({
+          export: {
+            schema_version: "v1alpha1",
+            exported_at: "2026-06-13T00:00:00.000Z",
+            bundle_sha256: `sha256:${"a".repeat(64)}`,
+            bundle: {
+              task: { id: "task_1", status: "review" },
+              room: null,
+              messages: [],
+              runs: [],
+              artifacts: [],
+              approvals: [],
+              scheduler_decisions: [],
+              events: [],
+            },
+            signature: null,
+            signing: {
+              status: "deferred",
+              reason: "v1 does not manage signing keys yet",
+            },
+          },
+        }),
+      ),
+    );
+
+    const res = await client.getTaskAuditBundleExport("task_1");
+
+    expect(res.export.schema_version).toBe("v1alpha1");
+    expect(res.export.bundle.task.id).toBe("task_1");
+    expect(res.export.signing.status).toBe("deferred");
+  });
+
   it("throws ApiClientError('network_error') when fetch rejects", async () => {
     const offline = new ApiClient({
       baseUrl: BASE,

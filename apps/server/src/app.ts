@@ -132,6 +132,11 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     return { bundle: await auditService.getTaskAuditBundle(ctx, id) };
   });
 
+  app.get("/api/v1/tasks/:id/audit-bundle/export", async (req) => {
+    const { id } = req.params as { id: string };
+    return { export: await auditService.exportTaskAuditBundle(ctx, id) };
+  });
+
   app.post("/api/v1/tasks/:id/dependencies", async (req, reply) => {
     const { id } = req.params as { id: string };
     const parsed = CreateDependencyRequestSchema.safeParse(req.body);

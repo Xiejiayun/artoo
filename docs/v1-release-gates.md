@@ -60,7 +60,7 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 | Playwright DAG unlock | `npm run test:e2e --workspace @artoo/web` | Automated |
 | Cross-process mock runtime smoke | Covered by server/node and artood integration tests | Automated in Vitest |
 | True CLI runtime smoke | Gated manual run in isolated workspace | Open for Claude; Codex previously smoked |
-| Audit bundle proof | `GET /api/v1/tasks/:id/audit-bundle` exists and redacts credential-shaped values | Replay/signing still open |
+| Audit bundle proof | `GET /api/v1/tasks/:id/audit-bundle/export` returns redacted bundle + deterministic SHA-256 | Automated; cryptographic signing deferred by v1 decision |
 | Self-host runbook | This document | Needs clean-machine validation |
 | Secret/policy negatives | Workspace guard, lease, approval tests plus audit-bundle secret redaction coverage | Broader secret storage/rotation remains out of scope |
 | Branch worktree smoke | `ARTOO_GIT_SMOKE=1 npx vitest run apps/server/src/branch-e2e-smoke.test.ts` | Gated automated |
@@ -106,3 +106,27 @@ tokens, OpenAI-style `sk-` keys, env-var assignments such as `*_TOKEN=...`, and
 structured JSON fields named like `token`, `api_key`, `password`, `secret`, or
 `credential`. The persisted event log and task-room messages remain unchanged;
 redaction is applied only to the shareable evidence bundle.
+
+## Audit Bundle Export
+
+The shareable v1 evidence envelope is:
+
+```bash
+GET /api/v1/tasks/<task-id>/audit-bundle/export
+```
+
+The response includes:
+
+- `schema_version: "v1alpha1"`
+- `exported_at`
+- `bundle_sha256`, a SHA-256 over the canonical JSON form of the redacted
+  `bundle`
+- `bundle`, matching `GET /tasks/:id/audit-bundle`
+- `signature: null`
+- `signing.status: "deferred"`
+
+Release decision: v1 intentionally defers cryptographic signing because Artoo
+does not yet manage signing keys, key rotation, identity binding, or signature
+verification policy. The deterministic hash is the v1 replay/proof primitive;
+signed archives require a later key-management slice before they can be claimed
+as release-complete.

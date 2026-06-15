@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { stableJson } from "./services/audit-service.js";
 import { ingestRunEvent } from "./services/run-service.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 
@@ -224,6 +225,49 @@ describe("task audit bundle", () => {
     expect(message?.body).toContain("Authorization: Bearer <redacted:secret>");
     expect(message?.payload.note).toBe("keep this evidence");
     expect(message?.payload.token).toBe("<redacted:secret>");
+  });
+
+  it("exports an unsigned deterministic audit bundle proof over the redacted evidence", async () => {
+    server = await buildTestServer();
+    const { taskId } = await taskWithEvidence(server);
+
+    const res = await server.app.inject({
+      method: "GET",
+      url: `/api/v1/tasks/${taskId}/audit-bundle/export`,
+    });
+    expect(res.statusCode).toBe(200);
+    const exported = res.json().export;
+
+    expect(exported.schema_version).toBe("v1alpha1");
+    expect(exported.exported_at).toBe("2026-06-13T00:00:00.000Z");
+    expect(exported.signature).toBeNull();
+    expect(exported.signing).toEqual({
+      status: "deferred",
+      reason: "v1 does not manage signing keys yet",
+    });
+    expect(exported.bundle.task.id).toBe(taskId);
+    expect(exported.bundle_sha256).toMatch(/^sha256:[a-f0-9]{64}$/);
+
+    const bundleRes = await server.app.inject({
+      method: "GET",
+      url: `/api/v1/tasks/${taskId}/audit-bundle`,
+    });
+    expect(exported.bundle).toEqual(bundleRes.json().bundle);
+
+    const expected = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(stableJson(exported.bundle)),
+    );
+    const expectedHex = [...new Uint8Array(expected)]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    expect(exported.bundle_sha256).toBe(`sha256:${expectedHex}`);
+
+    const second = await server.app.inject({
+      method: "GET",
+      url: `/api/v1/tasks/${taskId}/audit-bundle/export`,
+    });
+    expect(second.json().export).toEqual(exported);
   });
 
   it("returns 404 for a missing task", async () => {

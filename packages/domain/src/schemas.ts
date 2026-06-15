@@ -244,3 +244,16 @@ export const TaskAuditBundleSchema = z.object({
   events: z.array(AuditEventSchema),
 });
 export type TaskAuditBundle = z.infer<typeof TaskAuditBundleSchema>;
+
+export const AuditBundleExportSchema = z.object({
+  schema_version: z.literal("v1alpha1"),
+  exported_at: z.string(),
+  bundle_sha256: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  bundle: TaskAuditBundleSchema,
+  signature: z.null(),
+  signing: z.object({
+    status: z.literal("deferred"),
+    reason: z.literal("v1 does not manage signing keys yet"),
+  }),
+});
+export type AuditBundleExport = z.infer<typeof AuditBundleExportSchema>;

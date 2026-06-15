@@ -20,6 +20,7 @@ import type {
 } from "@artoo/domain";
 
 import type {
+  AuditBundleExportResponse,
   ApprovalsResponse,
   AssignResponse,
   AuditBundleResponse,
@@ -247,6 +248,13 @@ export class ApiClient {
     return this.request<AuditBundleResponse>(
       "GET",
       `/tasks/${encodeURIComponent(taskId)}/audit-bundle`,
+    );
+  }
+
+  getTaskAuditBundleExport(taskId: string): Promise<AuditBundleExportResponse> {
+    return this.request<AuditBundleExportResponse>(
+      "GET",
+      `/tasks/${encodeURIComponent(taskId)}/audit-bundle/export`,
     );
   }
 }

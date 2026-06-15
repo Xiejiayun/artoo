@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   artifacts,
   approvals,
@@ -8,7 +10,12 @@ import {
   schedulerDecisions,
   tasks,
 } from "@artoo/db";
-import { TaskAuditBundleSchema, type TaskAuditBundle } from "@artoo/domain";
+import {
+  AuditBundleExportSchema,
+  TaskAuditBundleSchema,
+  type AuditBundleExport,
+  type TaskAuditBundle,
+} from "@artoo/domain";
 import { and, asc, eq, or } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
@@ -94,4 +101,42 @@ export async function getTaskAuditBundle(ctx: ServerContext, taskId: string): Pr
     events: eventRows.map(mapAuditEvent),
   });
   return redactTaskAuditBundle(bundle);
+}
+
+/** Exportable v1alpha1 evidence envelope. Unsigned by design until key management exists. */
+export async function exportTaskAuditBundle(ctx: ServerContext, taskId: string): Promise<AuditBundleExport> {
+  const bundle = await getTaskAuditBundle(ctx, taskId);
+  return AuditBundleExportSchema.parse({
+    schema_version: "v1alpha1",
+    exported_at: ctx.clock.nowIso(),
+    bundle_sha256: sha256(stableJson(bundle)),
+    bundle,
+    signature: null,
+    signing: {
+      status: "deferred",
+      reason: "v1 does not manage signing keys yet",
+    },
+  });
+}
+
+export function stableJson(value: unknown): string {
+  return JSON.stringify(sortJson(value));
+}
+
+function sha256(input: string): string {
+  return `sha256:${createHash("sha256").update(input).digest("hex")}`;
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (value !== null && typeof value === "object") {
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      sorted[key] = sortJson((value as Record<string, unknown>)[key]);
+    }
+    return sorted;
+  }
+  return value;
 }

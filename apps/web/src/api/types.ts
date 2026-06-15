@@ -14,6 +14,7 @@ import type {
   Room,
   Run,
   Task,
+  AuditBundleExport,
   TaskAuditBundle,
 } from "@artoo/domain";
 
@@ -88,4 +89,9 @@ export interface MemoryContextResponse {
 /** `GET /tasks/:id/audit-bundle` — deterministic read-only task evidence. */
 export interface AuditBundleResponse {
   bundle: TaskAuditBundle;
+}
+
+/** `GET /tasks/:id/audit-bundle/export` — shareable unsigned v1alpha1 evidence proof. */
+export interface AuditBundleExportResponse {
+  export: AuditBundleExport;
 }

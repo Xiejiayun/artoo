@@ -34,9 +34,10 @@ Current v1 status:
   pages still need backed contracts.
 - #17 Release hardening has its first audit-bundle contract merged:
   `GET /api/v1/tasks/:id/audit-bundle` exports deterministic task evidence and
-  redacts credential-shaped values at the public evidence boundary.
-  Signed/exportable bundles, replay proof, demo, and broader CI/release gates
-  remain. A local v1 gate script and release runbook live in
+  redacts credential-shaped values at the public evidence boundary. A v1alpha1
+  export envelope now provides a deterministic SHA-256 over the redacted bundle,
+  with cryptographic signing explicitly deferred until key management exists.
+  Demo and broader CI/release gates remain. A local v1 gate script and release runbook live in
   `docs/v1-release-gates.md`.
 - #18 iOS source is done as native SwiftUI source, but first macOS/Xcode build,
   run, and test verification remains pending outside this Windows environment.
@@ -319,9 +320,11 @@ Required gates:
 - gated true runtime smoke
 - self-hosted dev runbook
 - v1 demo script or documented manual demo path
-- audit/replay bundle proof for a completed task
+- audit/replay bundle proof for a completed task. v1alpha1 export now provides
+  a deterministic SHA-256 over the redacted bundle.
 - signed/exportable audit bundle format, or a documented decision to defer
-  signing from v1
+  signing from v1. v1 now documents the signing deferral decision; signed
+  archives still require a future key-management slice.
 - policy/secrets negative tests for filesystem scope, branch worktree roots,
   credential handling, and approval-gated operations. Credential-shaped values
   in public audit bundles now have automated redaction coverage; branch worktree
