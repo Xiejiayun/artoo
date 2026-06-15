@@ -11,6 +11,7 @@
     "build": "npm run build --workspaces --if-present",
     "test": "vitest run",
     "typecheck": "tsc -b",
+    "verify:v1": "node scripts/v1-gate.mjs",
     "dev": "npm run dev --workspace @artoo/server",
     "dev:web": "npm run dev --workspace @artoo/web",
     "dev:artood": "npm run dev --workspace @artoo/artood"

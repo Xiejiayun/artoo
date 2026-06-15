@@ -15,6 +15,8 @@ v0.1 has been accepted on `origin/main` at `eec68d8`. It proves the core loop:
 5. review the artifact and mark the task done.
 
 The v1 workstream is tracked in [docs/v1-roadmap.md](docs/v1-roadmap.md).
+Release gates and the local self-host runbook are tracked in
+[docs/v1-release-gates.md](docs/v1-release-gates.md).
 
 ## Development
 
@@ -24,6 +26,7 @@ npm run typecheck
 npm run build
 npm test
 npm run test:e2e --workspace @artoo/web
+npm run verify:v1
 ```
 
 Run the server after building:

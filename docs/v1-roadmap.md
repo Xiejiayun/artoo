@@ -10,8 +10,8 @@ Accepted v0.1 is on `origin/main` at `eec68d8`.
 
 Current v1 status:
 
-- This status snapshot includes implementation changes through `3871649`
-  (#21 A/B/C memory storage/API/context retrieval).
+- This status snapshot includes implementation changes through `cef427b`
+  (#21 Part D run-start ContextPack source-memory injection).
 - #11 Task DAG is done: dependency CRUD, ready unlock, blocked propagation,
   aggregate review, and evidence gates are merged.
 - #12/#20 Concurrency Phase A+B server work is done: file lease contracts,
@@ -22,20 +22,21 @@ Current v1 status:
 - #13 Skill registry Phase A is done with pure `skill.yaml v1alpha1`
   validation, permission summary, runtime-aware capability contribution, and
   fake/local MCP descriptor contracts.
-- #14/#21 Memory is partly complete: pure lifecycle/retrieval contract plus
-  durable memory storage, curation APIs, supersession, and accepted-only context
-  retrieval are merged. Run-start ContextPack injection and
-  `context_packs.source_memory_ids` persistence remain as #21 Part D.
+- #14/#21 Memory is done: pure lifecycle/retrieval contract, durable memory
+  storage, curation APIs, supersession, accepted-only context retrieval, and
+  assign-time ContextPack persistence with exact `source_memory_ids` are merged.
 - #15 Scheduler/runtime is in progress: multi-runtime presets, heartbeat
-  runtime capabilities, and server persistence are merged. Scheduler consumption
-  of `agent_runtimes` is approved and next.
+  runtime capabilities, server persistence, and scheduler consumption of
+  `agent_runtimes` are merged. Gated true Claude runtime smoke and future
+  `compatible_runtimes` scheduler refinement remain open.
 - #16 Web product surface has the nav shell and backed Board merged; Memory can
   now build against #21 APIs, while richer Computers/Agents/Skills/Runs/Audit
   pages still need backed contracts.
 - #17 Release hardening has its first audit-bundle contract merged:
   `GET /api/v1/tasks/:id/audit-bundle` exports deterministic task evidence.
-  Signed/exportable bundles, replay proof, policy/secrets negatives, runbook,
-  demo, and CI/release gates remain.
+  Signed/exportable bundles, replay proof, policy/secrets negatives, demo, and
+  broader CI/release gates remain. A local v1 gate script and release runbook
+  live in `docs/v1-release-gates.md`.
 - #18 iOS source is done as native SwiftUI source, but first macOS/Xcode build,
   run, and test verification remains pending outside this Windows environment.
 
@@ -224,9 +225,11 @@ Merged contract:
 
 Remaining:
 
-- #21 Part D must call the same selector during run-start ContextPack
-  generation, persist `context_packs.source_memory_ids`, and set
+- Assign builds and persists a ContextPack in the same transaction as run
+  creation, records exact `context_packs.source_memory_ids`, and sets
   `runs.context_pack_id`.
+- ContextPack policy write scope dedupes by canonical lease key while preserving
+  source-case filesystem paths for runtime policy.
 - Web Memory curation/source-traceability UI should build against the merged
   #21 API rather than fake memory behavior.
 
@@ -308,6 +311,7 @@ Required gates:
 - `npm run typecheck`
 - `npm run build`
 - full `npm test`
+- `npm run verify:v1`
 - Playwright E2E suite covering happy path, change-request/retry, approval gate,
   and one DAG unlock path
 - cross-process mock runtime smoke
