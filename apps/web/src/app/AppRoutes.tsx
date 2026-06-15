@@ -4,6 +4,7 @@ import { BoardView } from "../components/BoardView.js";
 import { MemoryPage } from "../components/MemoryPage.js";
 import { Nav } from "../components/Nav.js";
 import { PlaceholderPage } from "../components/PlaceholderPage.js";
+import { RunsAuditPage } from "../components/RunsAuditPage.js";
 import { WorkspaceLayout } from "../components/WorkspaceLayout.js";
 
 /**
@@ -32,10 +33,7 @@ export function AppRoutes(): React.ReactNode {
             element={<PlaceholderPage title="Skills" waitingFor="#13 skill registry" />}
           />
           <Route path="/memory" element={<MemoryPage />} />
-          <Route
-            path="/runs"
-            element={<PlaceholderPage title="Runs & Audit" waitingFor="#17 observability" />}
-          />
+          <Route path="/runs" element={<RunsAuditPage />} />
         </Routes>
       </main>
     </div>

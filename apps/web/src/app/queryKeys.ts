@@ -13,4 +13,5 @@ export const queryKeys = {
   memory: (memoryId: string) => ["memory", memoryId] as const,
   memoryContext: (projectId: string, taskId?: string) =>
     ["memoryContext", projectId, taskId ?? null] as const,
+  auditBundle: (taskId: string) => ["auditBundle", taskId] as const,
 };

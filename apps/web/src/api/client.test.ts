@@ -145,6 +145,31 @@ describe("ApiClient", () => {
     expect(bootstrap.projects[0]?.id).toBe("proj_artoo");
   });
 
+  it("getTaskAuditBundle fetches the read-only task evidence bundle", async () => {
+    server.use(
+      http.get(`${BASE}/tasks/task_1/audit-bundle`, () =>
+        HttpResponse.json({
+          bundle: {
+            task: { id: "task_1", status: "review" },
+            room: null,
+            messages: [],
+            runs: [{ id: "run_1" }],
+            artifacts: [],
+            approvals: [],
+            scheduler_decisions: [],
+            events: [{ id: "evt_1", type: "task.assigned", position: 1 }],
+          },
+        }),
+      ),
+    );
+
+    const res = await client.getTaskAuditBundle("task_1");
+
+    expect(res.bundle.task.id).toBe("task_1");
+    expect(res.bundle.runs[0]?.id).toBe("run_1");
+    expect(res.bundle.events[0]?.position).toBe(1);
+  });
+
   it("throws ApiClientError('network_error') when fetch rejects", async () => {
     const offline = new ApiClient({
       baseUrl: BASE,

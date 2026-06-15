@@ -17,9 +17,10 @@ function event(partial: Partial<EventEnvelope> & Pick<EventEnvelope, "type">): E
 }
 
 describe("invalidationsForEvent", () => {
-  it("invalidates the task snapshot for an event carrying task_id", () => {
+  it("invalidates the task snapshot and its audit bundle for an event carrying task_id", () => {
     const keys = invalidationsForEvent("task:task_1", event({ type: "run.completed", task_id: "task_1" }));
     expect(keys).toContainEqual(["task", "task_1"]);
+    expect(keys).toContainEqual(["auditBundle", "task_1"]);
   });
 
   it("invalidates messages for a room event (and the task snapshot)", () => {

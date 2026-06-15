@@ -22,6 +22,7 @@ import type {
 import type {
   ApprovalsResponse,
   AssignResponse,
+  AuditBundleResponse,
   BootstrapResponse,
   CreateTaskResponse,
   MemoriesResponse,
@@ -239,6 +240,14 @@ export class ApiClient {
     const params = new URLSearchParams({ project_id: projectId });
     if (taskId) params.set("task_id", taskId);
     return this.request<MemoryContextResponse>("GET", `/memories/context?${params.toString()}`);
+  }
+
+  // Runs & Audit (#16): deterministic read-only task evidence bundle.
+  getTaskAuditBundle(taskId: string): Promise<AuditBundleResponse> {
+    return this.request<AuditBundleResponse>(
+      "GET",
+      `/tasks/${encodeURIComponent(taskId)}/audit-bundle`,
+    );
   }
 }
 

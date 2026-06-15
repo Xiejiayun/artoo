@@ -6,7 +6,18 @@ import type { ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach } from "vitest";
 
-import type { Approval, Artifact, Memory, Message, Room, Run, Task } from "@artoo/domain";
+import type {
+  Approval,
+  Artifact,
+  AuditEvent,
+  Memory,
+  Message,
+  Room,
+  Run,
+  SchedulerDecision,
+  Task,
+  TaskAuditBundle,
+} from "@artoo/domain";
 
 import { ApiClient } from "../api/client.js";
 import { ApiProvider } from "../app/ApiContext.js";
@@ -132,6 +143,51 @@ export function memoryFixture(
     tags: [],
     text: "a memory",
     created_at: "2026-06-13T00:00:00Z",
+    ...partial,
+  };
+}
+
+export function auditEventFixture(
+  partial: Partial<AuditEvent> & Pick<AuditEvent, "id" | "type" | "position">,
+): AuditEvent {
+  return {
+    schema_version: "2026-06-11",
+    organization_id: "org_default",
+    actor: { type: "system", id: "control_plane" },
+    occurred_at: "2026-06-13T00:00:00Z",
+    correlation_id: "task_1",
+    payload: {},
+    ...partial,
+  };
+}
+
+export function schedulerDecisionFixture(
+  partial: Partial<SchedulerDecision> & Pick<SchedulerDecision, "id">,
+): SchedulerDecision {
+  return {
+    organization_id: "org_default",
+    task_id: "task_1",
+    selected_computer_id: "computer_1",
+    selected_agent_instance_id: "ai_1",
+    mode: "auto",
+    score: 100,
+    reason: "capability_match_and_idle",
+    candidates: [],
+    created_at: "2026-06-13T00:00:00Z",
+    ...partial,
+  };
+}
+
+export function auditBundleFixture(partial: Partial<TaskAuditBundle> = {}): TaskAuditBundle {
+  return {
+    task: taskFixture({ id: "task_1", title: "Audited task", status: "review" }),
+    room: null,
+    messages: [],
+    runs: [],
+    artifacts: [],
+    approvals: [],
+    scheduler_decisions: [],
+    events: [],
     ...partial,
   };
 }
