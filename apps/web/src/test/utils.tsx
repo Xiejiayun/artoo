@@ -3,12 +3,14 @@ import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, type RenderResult } from "@testing-library/react";
 import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach } from "vitest";
 
 import type { Approval, Artifact, Message, Room, Run, Task } from "@artoo/domain";
 
 import { ApiClient } from "../api/client.js";
 import { ApiProvider } from "../app/ApiContext.js";
+import { SelectionProvider } from "../app/SelectionContext.js";
 
 // globals:false means @testing-library's automatic afterEach cleanup is not
 // registered; do it explicitly so each test starts with a fresh DOM.
@@ -120,12 +122,16 @@ export function artifactFixture(
 
 export function renderWithProviders(
   ui: ReactElement,
-  options: { client: ApiClient; queryClient?: QueryClient },
+  options: { client: ApiClient; queryClient?: QueryClient; route?: string },
 ): RenderResult {
   const queryClient = options.queryClient ?? createTestQueryClient();
   return render(
-    <QueryClientProvider client={queryClient}>
-      <ApiProvider client={options.client}>{ui}</ApiProvider>
-    </QueryClientProvider>,
+    <MemoryRouter initialEntries={[options.route ?? "/"]}>
+      <QueryClientProvider client={queryClient}>
+        <ApiProvider client={options.client}>
+          <SelectionProvider>{ui}</SelectionProvider>
+        </ApiProvider>
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
