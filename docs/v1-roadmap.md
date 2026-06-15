@@ -8,6 +8,23 @@ described in `design.md` section 12.13.
 
 Accepted v0.1 is on `origin/main` at `eec68d8`.
 
+Current v1 integration head is `origin/main` at `d20960e`:
+
+- #11 Task DAG is done: dependency CRUD, ready unlock, blocked propagation,
+  aggregate review, and evidence gates are merged.
+- #12 Concurrency is in progress: Phase A focuses on pure path/lease contracts,
+  file lease storage/service, and integration queue records.
+- #13 Skill registry is ready to claim for a pure `skill.yaml v1alpha1`
+  manifest/permission/capability contract slice.
+- #14 Memory is ready to claim for a pure lifecycle/retrieval/ContextPack
+  selection contract slice.
+- #15 Scheduler/runtime is in progress: multi-runtime presets are merged; the
+  next contract is heartbeat runtime capabilities plus scheduler consumption.
+- #16 Web product surface has the nav shell and backed Board merged; rich pages
+  wait for #12-#15 and #17 contracts.
+- #18 iOS source is done as native SwiftUI source, but first macOS/Xcode build,
+  run, and test verification remains pending outside this Windows environment.
+
 The v0.1 path proves that a task can be created in the web UI, assigned through
 the server to a node/runtime adapter, executed by a mock or real `codex exec`
 process, streamed back as run events, reviewed in the UI, and marked done.
