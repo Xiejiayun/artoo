@@ -37,11 +37,11 @@ function isRunEvent(m: NodeToServerMessage): m is RunEventMessage {
 
 describe.skipIf(!ENABLED)("#23 gated e2e: REST assign -> node -> real git worktree", () => {
   let server: TestServer | undefined;
-  const cleanups: Array<() => void> = [];
+  const cleanups: Array<() => void | Promise<void>> = [];
 
   afterEach(async () => {
     while (cleanups.length > 0) {
-      cleanups.pop()?.();
+      await cleanups.pop()?.();
     }
     await server?.close();
     server = undefined;
@@ -94,9 +94,7 @@ describe.skipIf(!ENABLED)("#23 gated e2e: REST assign -> node -> real git worktr
       git: createGitCliExecutor(),
     });
     node.start();
-    cleanups.push(() => {
-      void node.stop();
-    });
+    cleanups.push(() => node.stop());
 
     const received: NodeToServerMessage[] = [];
     const completed = new Promise<void>((resolve) => {
