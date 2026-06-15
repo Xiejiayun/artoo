@@ -5,6 +5,7 @@ import {
   AssignRequestSchema,
   CreateDependencyRequestSchema,
   CreateTaskRequestSchema,
+  InstallSkillRequestSchema,
   LeaseStatusSchema,
   MemoryScopeSchema,
   MemoryStatusSchema,
@@ -32,6 +33,7 @@ import * as memoryService from "./services/memory-service.js";
 import * as messageService from "./services/message-service.js";
 import * as runService from "./services/run-service.js";
 import * as runtimeRegistry from "./services/runtime-registry-service.js";
+import * as skillService from "./services/skill-service.js";
 import * as taskService from "./services/task-service.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
 import { registerNodeWsRoute } from "./ws/node-ws.js";
@@ -230,6 +232,39 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   app.get("/api/v1/computers/:id/runtimes", async (req) => {
     const { id } = req.params as { id: string };
     return { runtimes: await runtimeRegistry.listComputerRuntimes(ctx, id) };
+  });
+
+  // Skill registry (#24): durable installs/read APIs over the v1alpha1 manifest contract.
+  app.post("/api/v1/skills/install", async (req, reply) => {
+    const parsed = InstallSkillRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw AppError.validation("invalid skill install payload", { issues: parsed.error.issues });
+    }
+    const skill = await skillService.installSkill(ctx, parsed.data);
+    void reply.status(201);
+    return { skill };
+  });
+
+  app.get("/api/v1/skills", async (req) => {
+    const q = req.query as { project_id?: string; enabled?: string };
+    let enabled: boolean | undefined;
+    if (q.enabled !== undefined && q.enabled !== "") {
+      if (q.enabled !== "true" && q.enabled !== "false") {
+        throw AppError.validation("enabled filter must be 'true' or 'false'", { enabled: q.enabled });
+      }
+      enabled = q.enabled === "true";
+    }
+    return {
+      skills: await skillService.listSkillInstalls(ctx, {
+        projectId: q.project_id,
+        enabled,
+      }),
+    };
+  });
+
+  app.get("/api/v1/skills/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    return { skill: await skillService.getSkillInstall(ctx, id) };
   });
 
   app.post("/api/v1/runs/:id/cancel", async (req) => {

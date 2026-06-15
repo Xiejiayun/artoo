@@ -30,6 +30,7 @@ export const ID_PREFIXES = {
   modelProfile: "model",
   effortProfile: "effort",
   memory: "mem",
+  skillInstall: "skill",
 } as const;
 
 export type IdPrefixName = keyof typeof ID_PREFIXES;

@@ -303,6 +303,31 @@ export const agentInstances = pgTable("agent_instances", {
   index("agent_instances_profiles_idx").on(t.modelProfileId, t.effortProfileId, t.status),
 ]);
 
+export const skillInstalls = pgTable("skill_installs", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  projectId: text("project_id").references(() => projects.id),
+  skillId: text("skill_id").notNull(),
+  name: text("name").notNull(),
+  version: text("version").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  manifest: jsonb("manifest").notNull(),
+  capabilities: jsonbArray("capabilities"),
+  compatibleRuntimes: jsonbArray("compatible_runtimes"),
+  permissionSummary: jsonbObject("permission_summary"),
+  installedByType: text("installed_by_type").notNull(),
+  installedById: text("installed_by_id").notNull(),
+  installedAt: ts("installed_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+}, (t) => [
+  check("skill_installs_installed_by_type_chk", sql`${t.installedByType} in ('user','agent','system')`),
+  index("skill_installs_org_enabled_idx").on(t.organizationId, t.enabled),
+  index("skill_installs_project_enabled_idx").on(t.projectId, t.enabled),
+  index("skill_installs_skill_idx").on(t.organizationId, t.skillId),
+]);
+
 export const runs = pgTable("runs", {
   id: text("id").primaryKey(),
   organizationId: text("organization_id")

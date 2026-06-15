@@ -21,9 +21,9 @@ describe("db migrations", () => {
     const res = await client.db.execute(
       sql`select count(*)::int as c from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'`,
     );
-    // 24 domain tables (drizzle adds its own bookkeeping table only when using
+    // 25 domain tables (drizzle adds its own bookkeeping table only when using
     // its migrator; we apply raw statements, so exactly the schema tables exist).
-    expect((res.rows[0] as { c: number }).c).toBe(24);
+    expect((res.rows[0] as { c: number }).c).toBe(25);
   });
 
   it("is idempotent enough to re-run check queries after migration", async () => {

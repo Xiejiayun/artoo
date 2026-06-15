@@ -14,6 +14,7 @@ import {
   rooms,
   runs,
   schedulerDecisions,
+  skillInstalls,
   taskDependencies,
   tasks,
 } from "@artoo/db";
@@ -33,6 +34,7 @@ import {
   RoomSchema,
   RunSchema,
   SchedulerDecisionSchema,
+  SkillInstallSchema,
   TaskDependencySchema,
   TaskSchema,
   type Agent,
@@ -50,6 +52,7 @@ import {
   type Room,
   type Run,
   type SchedulerDecision,
+  type SkillInstall,
   type Task,
   type TaskDependency,
 } from "@artoo/domain";
@@ -288,6 +291,26 @@ export function mapAgentRuntime(row: typeof agentRuntimes.$inferSelect): AgentRu
     status: row.status,
     capabilities: row.capabilities ?? [],
     last_seen_at: row.lastSeenAt,
+  });
+}
+
+export function mapSkillInstall(row: typeof skillInstalls.$inferSelect): SkillInstall {
+  return SkillInstallSchema.parse({
+    id: row.id,
+    organization_id: row.organizationId,
+    project_id: row.projectId,
+    skill_id: row.skillId,
+    name: row.name,
+    version: row.version,
+    enabled: row.enabled,
+    manifest: row.manifest,
+    capabilities: row.capabilities,
+    compatible_runtimes: row.compatibleRuntimes,
+    permission_summary: row.permissionSummary,
+    installed_by_type: row.installedByType,
+    installed_by_id: row.installedById,
+    installed_at: row.installedAt,
+    updated_at: row.updatedAt,
   });
 }
 

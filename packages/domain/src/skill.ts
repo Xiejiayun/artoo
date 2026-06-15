@@ -4,8 +4,9 @@
  *
  * Pure domain: zod schema/types, deterministic validation, a stable permission
  * summary for UI/policy, and runtime-aware capability contribution. Storage,
- * install/enable APIs, scheduler consumption, and approval-policy integration
- * are Phase B and intentionally NOT here.
+ * install/read APIs, scheduler consumption, and approval-policy integration
+ * are implemented by server layers; this package only owns pure contracts and
+ * helpers.
  *
  * Conventions: manifest keys are snake_case (as authored in skill.yaml). The
  * manifest is `.passthrough()` so unknown top-level fields survive for
@@ -188,6 +189,17 @@ export interface PermissionSummary {
   risk: Risk;
 }
 
+export const PermissionSummarySchema = z.object({
+  filesystem: z.object({ read: z.array(z.string()), write: z.array(z.string()) }).strict(),
+  network: z.object({ outbound: z.array(z.string()) }).strict(),
+  secrets: z.array(z.string()),
+  external_services: z.array(z.string()),
+  high_risk_actions: z.array(HighRiskActionSchema),
+  approval_risks: z.array(ApprovalRiskSchema),
+  categories: z.array(PermissionCategorySchema),
+  risk: RiskSchema,
+}).strict();
+
 const RISK_ORDER: Record<Risk, number> = { low: 0, medium: 1, high: 2 };
 
 function maxRisk(a: Risk, b: Risk): Risk {
@@ -254,6 +266,25 @@ export interface SkillInstallState {
   manifest: SkillManifest;
   enabled: boolean;
 }
+
+export const SkillInstallSchema = z.object({
+  id: z.string(),
+  organization_id: z.string(),
+  project_id: z.string().nullish(),
+  skill_id: z.string(),
+  name: z.string(),
+  version: SemverSchema,
+  enabled: z.boolean(),
+  manifest: SkillManifestSchema,
+  capabilities: z.array(CapabilitySchema).default([]),
+  compatible_runtimes: z.array(z.string()).default([]),
+  permission_summary: PermissionSummarySchema,
+  installed_by_type: z.enum(["user", "agent", "system"]),
+  installed_by_id: z.string(),
+  installed_at: z.string(),
+  updated_at: z.string(),
+});
+export type SkillInstall = z.infer<typeof SkillInstallSchema>;
 
 /**
  * Capabilities an enabled skill contributes, in canonical CAPABILITIES order.

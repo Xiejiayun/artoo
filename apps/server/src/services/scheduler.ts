@@ -1,7 +1,14 @@
-import { agentInstances, agentRuntimes, agents, computers } from "@artoo/db";
-import { isRuntimeStale, matchCapabilities, type Capability } from "@artoo/domain";
+import { agentInstances, agentRuntimes, agents, computers, skillInstalls } from "@artoo/db";
+import {
+  SkillManifestSchema,
+  contributedCapabilities,
+  isRuntimeStale,
+  matchCapabilities,
+  type Capability,
+  type SkillInstallState,
+} from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -42,14 +49,45 @@ export interface SchedulerOutcome {
 
 export interface ScheduleOptions {
   mode: "auto" | "manual";
+  projectId: string;
   agentInstanceId?: string | null;
+}
+
+async function loadEnabledSkillInstallStates(
+  tx: DrizzleDb,
+  ctx: ServerContext,
+  projectId: string,
+): Promise<SkillInstallState[]> {
+  const rows = await tx
+    .select({
+      manifest: skillInstalls.manifest,
+      enabled: skillInstalls.enabled,
+    })
+    .from(skillInstalls)
+    .where(
+      and(
+        eq(skillInstalls.organizationId, ctx.organizationId),
+        eq(skillInstalls.enabled, true),
+        or(isNull(skillInstalls.projectId), eq(skillInstalls.projectId, projectId)),
+      ),
+    );
+
+  const installs: SkillInstallState[] = [];
+  for (const row of rows) {
+    const parsed = SkillManifestSchema.safeParse(row.manifest);
+    if (parsed.success) {
+      installs.push({ manifest: parsed.data, enabled: row.enabled });
+    }
+  }
+  return installs;
 }
 
 /**
  * Rule-based core scheduler (codex Round 14). Hard filters: idle instance on an
- * online computer whose (agent ∪ computer) capabilities cover the task's
- * required set; a manual override pins the instance. Deterministic selection:
- * highest score, then lowest instance id. No eligible candidate maps to an
+ * online computer whose (agent ∪ computer ∪ runtime ∪ compatible enabled skill)
+ * capabilities cover the task's required set; a manual override pins the
+ * instance. Deterministic selection: highest score, then lowest instance id.
+ * No eligible candidate maps to an
  * explainable `computer_offline` / `runtime_unavailable` error (task stays ready).
  */
 export async function scheduleTask(
@@ -58,6 +96,7 @@ export async function scheduleTask(
   required: readonly Capability[],
   opts: ScheduleOptions,
 ): Promise<SchedulerOutcome> {
+  const enabledSkillInstalls = await loadEnabledSkillInstallStates(tx, ctx, opts.projectId);
   const rows = await tx
     .select({
       instanceId: agentInstances.id,
@@ -113,10 +152,12 @@ export async function scheduleTask(
         }
         runtimeCaps = (r.runtimeCaps as Capability[] | null) ?? [];
       }
+      const skillCaps = contributedCapabilities(enabledSkillInstalls, r.runtime);
       return matchCapabilities(required, [
         ...(r.agentCaps as Capability[]),
         ...(r.computerCaps as Capability[]),
         ...runtimeCaps,
+        ...skillCaps,
       ]);
     })
     .map((r) => ({

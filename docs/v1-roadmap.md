@@ -10,8 +10,8 @@ Accepted v0.1 is on `origin/main` at `eec68d8`.
 
 Current v1 status:
 
-- This status snapshot reflects main after the v1 web inventory/read-model
-  slice.
+- This status snapshot reflects main after the v1 skill install storage/read API
+  and scheduler contribution slice.
 - #11 Task DAG is done: dependency CRUD, ready unlock, blocked propagation,
   aggregate review, and evidence gates are merged.
 - #12/#20 Concurrency Phase A+B server work is done: file lease contracts,
@@ -22,13 +22,19 @@ Current v1 status:
 - #13 Skill registry Phase A is done with pure `skill.yaml v1alpha1`
   validation, permission summary, runtime-aware capability contribution, and
   fake/local MCP descriptor contracts.
+- #24 Skill registry Phase B has durable `skill_installs` storage plus
+  `POST /api/v1/skills/install`, `GET /api/v1/skills`, and
+  `GET /api/v1/skills/:id`. Enabled org/project-effective installs now
+  contribute capabilities to scheduler matching only when compatible with the
+  candidate runtime.
 - #14/#21 Memory is done: pure lifecycle/retrieval contract, durable memory
   storage, curation APIs, supersession, accepted-only context retrieval, and
   assign-time ContextPack persistence with exact `source_memory_ids` are merged.
 - #15 Scheduler/runtime is in progress: multi-runtime presets, heartbeat
   runtime capabilities, server persistence, and scheduler consumption of
-  `agent_runtimes` are merged. Gated true Claude runtime smoke and future
-  `compatible_runtimes` scheduler refinement remain open.
+  `agent_runtimes` are merged. The #13/#24 `compatible_runtimes` scheduler
+  refinement is merged for enabled skill installs. Gated true Claude runtime
+  smoke remains open.
 - #16 Web product surface now has backed Workspace, Board, Computers, Agents,
   Skills, Memory, and Runs/Audit routes. Computers and Agents render bootstrap
   inventory plus heartbeat-backed runtime rows; Skills renders the Phase A
@@ -93,6 +99,7 @@ v1 is complete only when all of these are true:
 | #20 | Concurrency server | run-start lease reservation/release and integration queue flow | `@claude_engineer` |
 | #21 | Memory server | durable curation APIs and ContextPack source-memory evidence | `@claude` |
 | #22 | Memory web | memory curation and source traceability UI | `@claude` after #21 API |
+| #24 | Skill registry Phase B | durable skill installs, read APIs, scheduler contribution | `@codex_architect` |
 
 ## Phase Rules
 
@@ -201,12 +208,30 @@ Contract to freeze:
 - Enabled skills contribute capabilities to scheduler matching.
 - Permission summary is stable enough for web display and approval policy.
 
+Merged Phase B server behavior:
+
+- `skill_installs` records org/project scope, manifest, derived capabilities,
+  compatible runtimes, permission summary, enabled state, installer, and
+  timestamps.
+- `POST /api/v1/skills/install` validates a manifest through the domain schema,
+  persists the install, and emits a forward-compatible `skill.installed` event.
+- `GET /api/v1/skills` lists org installs, with optional `enabled` filtering and
+  project-effective scope (`project_id` returns org-wide plus matching project
+  installs).
+- `GET /api/v1/skills/:id` returns one install snapshot.
+- Scheduler matching includes enabled skill capabilities after candidate runtime
+  eligibility is established, and only when the install's
+  `compatible_runtimes` includes the candidate runtime.
+
 Minimum tests:
 
 - Manifest validation success/failure fixtures.
 - Capability matching from enabled skills.
 - Permission/risk summary generation.
 - One MCP/tool adapter proof using a fake or local MCP fixture.
+- Install/list/get API persistence, invalid manifest/project rejection, and
+  scheduler contribution boundaries for enabled, disabled, runtime-mismatched,
+  and wrong-project installs.
 
 ### Memory and ContextPack (#14)
 
@@ -292,8 +317,9 @@ Backed slices:
 - Agents read model from `agent_instances`, `agents`, `computers`,
   `model_profiles`, and `effort_profiles`.
 - Skills read model over the Phase A `skill.yaml v1alpha1` domain contract:
-  permission categories, capabilities, and runtime compatibility. Installed
-  skill storage/API remains Phase B.
+  permission categories, capabilities, and runtime compatibility. Durable
+  install/read APIs now exist in the server; installed/enabled skill UX remains a
+  follow-up product slice.
 - Memory curation/source-traceability UI built against #21 APIs.
 - Runs/Audit built against server task audit bundles.
 
@@ -302,7 +328,8 @@ Deferred until contracts land:
 - DAG editing/viewing can now build against #11.
 - Lease/conflict visualization can now build against #12/#20 read surfaces, but
   integration queue actions still need a product/server contract.
-- Installed/enabled skill registry UX waits for storage/API work.
+- Installed/enabled skill registry UX can now build against the #24 storage/API
+  work.
 - Runtime/agent routing controls wait for explicit product write contracts; the
   read-only inventory surfaces are backed.
 

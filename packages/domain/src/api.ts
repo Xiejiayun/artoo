@@ -16,6 +16,7 @@ import {
   LeaseModeSchema,
   PrioritySchema,
 } from "./schemas.js";
+import { SkillManifestSchema } from "./skill.js";
 import { TaskStatusSchema } from "./state.js";
 
 export const ApiErrorCodeSchema = z.enum([
@@ -241,3 +242,11 @@ export const MemoryTransitionRequestSchema = z.object({
   comment: z.string().nullish(),
 });
 export type MemoryTransitionRequest = z.infer<typeof MemoryTransitionRequestSchema>;
+
+/** POST /skills/install — persist a validated skill manifest as an install. */
+export const InstallSkillRequestSchema = z.object({
+  project_id: z.string().nullish(),
+  manifest: SkillManifestSchema,
+  enabled: z.boolean().default(true),
+});
+export type InstallSkillRequest = z.infer<typeof InstallSkillRequestSchema>;

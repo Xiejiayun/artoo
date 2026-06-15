@@ -81,6 +81,7 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 | Playwright approval gate | `npm run test:e2e --workspace @artoo/web` | Automated via node WS + dev approval request |
 | Playwright DAG unlock | `npm run test:e2e --workspace @artoo/web` | Automated |
 | Web inventory surfaces | Bootstrap/runtime read models + Skills domain-contract component tests | Automated in Vitest |
+| Skill registry storage + scheduler | Install/list/get API tests plus compatible enabled-skill scheduler matching | Automated in Vitest |
 | Cross-process mock runtime smoke | Covered by server/node and artood integration tests | Automated in Vitest |
 | True CLI runtime smoke | Gated manual run in isolated workspace | Open for Claude; Codex previously smoked |
 | Audit bundle proof | `GET /api/v1/tasks/:id/audit-bundle/export` returns redacted bundle + deterministic SHA-256 | Automated; cryptographic signing deferred by v1 decision |

@@ -136,6 +136,7 @@ export async function assignTask(
 
     const outcome = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], {
       mode: req.mode,
+      projectId: row.projectId,
       agentInstanceId: req.agent_instance_id ?? null,
     });
 

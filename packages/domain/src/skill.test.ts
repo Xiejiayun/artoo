@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   PERMISSION_CATEGORIES,
   SKILL_API_VERSION,
+  SkillInstallSchema,
   SkillManifestSchema,
   McpBindingSchema,
   contributedCapabilities,
@@ -260,6 +261,35 @@ describe("capability contribution", () => {
       "codex",
     );
     expect(caps).toEqual(["code.read"]);
+  });
+});
+
+describe("skill install read model schema", () => {
+  it("parses a persisted install snapshot with manifest, permissions, and derived capability fields", () => {
+    const manifest = SkillManifestSchema.parse(validWithMcp);
+    const permissionSummary = summarizeSkillPermissions(manifest);
+    const result = SkillInstallSchema.safeParse({
+      id: "skill_01",
+      organization_id: "org_default",
+      project_id: null,
+      skill_id: manifest.id,
+      name: manifest.name,
+      version: manifest.version,
+      enabled: true,
+      manifest,
+      capabilities: ["code.read", "code.modify"],
+      compatible_runtimes: ["claude-code"],
+      permission_summary: permissionSummary,
+      installed_by_type: "user",
+      installed_by_id: "user_owner",
+      installed_at: "2026-06-13T00:00:00.000Z",
+      updated_at: "2026-06-13T00:00:00.000Z",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.permission_summary.risk).toBe("high");
+      expect(result.data.capabilities).toEqual(["code.read", "code.modify"]);
+    }
   });
 });
 
