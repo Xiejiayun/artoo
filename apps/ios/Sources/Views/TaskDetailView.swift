@@ -162,8 +162,8 @@ public struct TaskDetailView: View {
     }
 }
 
-/// Minimal assign sheet: auto-schedule or pin an agent instance id. A richer agent picker is
-/// a follow-up once the agents/scheduler contracts (#15) land.
+/// Minimal assign sheet: auto-schedule or pin an agent instance id. A richer
+/// picker over the backed Agents inventory is a product follow-up.
 private struct AssignSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var mode = "auto"

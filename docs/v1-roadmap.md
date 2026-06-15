@@ -10,8 +10,9 @@ Accepted v0.1 is on `origin/main` at `eec68d8`.
 
 Current v1 status:
 
-- This status snapshot reflects main after the v1 skill install storage/read API
-  and scheduler contribution slice.
+- This status snapshot reflects main after the v1 skill install storage/read API,
+  scheduler contribution, installed-skills web surface, and release-candidate
+  audit doc slices.
 - #11 Task DAG is done: dependency CRUD, ready unlock, blocked propagation,
   aggregate review, and evidence gates are merged.
 - #12/#20 Concurrency Phase A+B server work is done: file lease contracts,
@@ -27,6 +28,8 @@ Current v1 status:
   `GET /api/v1/skills/:id`. Enabled org/project-effective installs now
   contribute capabilities to scheduler matching only when compatible with the
   candidate runtime.
+- #25 Skill registry web Phase B is done: `/skills` renders installed skill rows
+  from the #24 read API plus the manifest/permission/capability vocabulary.
 - #14/#21 Memory is done: pure lifecycle/retrieval contract, durable memory
   storage, curation APIs, supersession, accepted-only context retrieval, and
   assign-time ContextPack persistence with exact `source_memory_ids` are merged.
@@ -102,6 +105,7 @@ v1 is complete only when all of these are true:
 | #21 | Memory server | durable curation APIs and ContextPack source-memory evidence | `@claude` |
 | #22 | Memory web | memory curation and source traceability UI | `@claude` after #21 API |
 | #24 | Skill registry Phase B | durable skill installs, read APIs, scheduler contribution | `@codex_architect` |
+| #25 | Skill registry web Phase B | installed skill read surface | `@codex_architect` |
 
 ## Phase Rules
 

@@ -1,8 +1,8 @@
 # artoo iOS — native SwiftUI client
 
 A native SwiftUI control surface for **artoo** (the agent-team operating system).
-This is the `#18-A` first slice: an **Inbox/Approvals-first** mobile work surface
-plus the task lifecycle loop (`create → ready → assign → run → review`).
+This is the #18 v1 mobile slice: an **Inbox/Approvals-first** mobile work
+surface plus the task lifecycle loop (`create → ready → assign → run → review`).
 
 > ## ⚠️ UNVERIFIED — Windows-authored, macOS/Xcode-pending
 >
@@ -93,13 +93,14 @@ Tests/
 | Lifecycle actions | `ready` / `assign` / `retry` / `review`     |
 | Run summary       | from the task snapshot (`GET /runs/:id` ready) |
 
-These mirror the endpoints exercised by `apps/web` against the v0.1 server.
+These mirror the endpoints exercised by `apps/web` against the current v1
+server contract.
 
 ## API contract assumptions (reconcile on a Mac with the live server)
 
 The request/response shapes were inferred from `apps/web/src/api/client.ts` and the
-domain schemas. **Verify these before shipping** — they are the most likely source
-of first-build mismatches:
+domain schemas. **Verify these before shipping the iOS client** — they are the
+most likely source of first-build mismatches:
 
 - Base path `/api/v1`. Endpoints as in the table above.
 - Bootstrap is `GET /api/v1/bootstrap` returning `{ organization, user, projects[], actor }`.
@@ -114,8 +115,8 @@ of first-build mismatches:
 - **WS realtime** (`/api/v1/ws`) — screens are pull-to-refresh for now; live
   `task:`/`run:`/`approval:` subscriptions are a follow-up.
 - **Auth** beyond an optional bearer token (embedded v0.1 bootstrap is unauthenticated).
-- **Rich agent picker** for assign — currently a minimal type+id sheet, pending the
-  agents/scheduler contracts (#15).
+- **Rich agent picker** for assign — currently a minimal auto/manual type+id
+  sheet; a picker over the backed Agents inventory is a product follow-up.
 - Push notifications, offline cache, voice.
 
 ## Open contract questions
@@ -127,5 +128,6 @@ Tracked in the #18 thread rather than guessed at:
 - Live-server verification should confirm the Swift DTO optionality for fields
   the web client does not render yet, especially messages, run timing, and room
   display metadata.
-- Rich manual assign UX is still pending the agents/scheduler contracts (#15);
-  current live request shape is `{ mode, agent_instance_id?, model_profile_id?, effort? }`.
+- Live-server verification should confirm assignment request fields
+  `{ mode, agent_instance_id?, model_profile_id?, effort? }` before building a
+  richer manual routing picker.

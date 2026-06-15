@@ -66,9 +66,9 @@ public enum ArtooJSON {
 // MARK: - Live URLSession client
 //
 // UNVERIFIED: authored on Windows without an iOS SDK. The request shapes mirror
-// the v0.1 REST surface exercised by apps/web, but no call here has been run
-// against a live server. Treat endpoint paths as the current best contract and
-// reconcile against the server before shipping. See apps/ios/README.md.
+// the REST surface exercised by apps/web, but no call here has been run against
+// a live server. Treat endpoint paths as the current best contract and reconcile
+// against the server before shipping the iOS client. See apps/ios/README.md.
 
 public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
     private let baseURL: URL
@@ -156,7 +156,7 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
 
     public func listRuns(taskId: String) async throws -> [Run] {
         throw ApiError.notImplemented(
-            "The v0.1 server does not expose /tasks/\(taskId)/runs; use the task snapshot or /runs/:id."
+            "The server does not expose /tasks/\(taskId)/runs; use the task snapshot or /runs/:id."
         )
     }
 
