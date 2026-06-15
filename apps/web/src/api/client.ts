@@ -9,6 +9,7 @@ import type {
   ApiErrorCode,
   AssignRequest,
   CreateTaskRequest,
+  ProposeMemoryRequest,
   ResolveApprovalRequest,
   RetryRequest,
   ReviewRequest,
@@ -23,9 +24,13 @@ import type {
   AssignResponse,
   BootstrapResponse,
   CreateTaskResponse,
+  MemoriesResponse,
+  MemoryContextResponse,
+  MemoryResponse,
   MessagesResponse,
   RetryResponse,
   RunResponse,
+  SupersedeMemoryResponse,
   TasksResponse,
   TaskSnapshot,
 } from "./types.js";
@@ -188,4 +193,60 @@ export class ApiClient {
       { body, idempotencyKey },
     );
   }
+
+  // Memory (#22): list/filter, detail, curation actions, and the accepted-only
+  // context preview that surfaces ContextPack source-memory evidence.
+  listMemories(filters: MemoryFilters = {}): Promise<MemoriesResponse> {
+    const params = new URLSearchParams();
+    if (filters.status) params.set("status", filters.status);
+    if (filters.scope) params.set("scope", filters.scope);
+    if (filters.tag) params.set("tag", filters.tag);
+    if (filters.projectId) params.set("project_id", filters.projectId);
+    if (filters.taskId) params.set("task_id", filters.taskId);
+    const qs = params.toString();
+    return this.request<MemoriesResponse>("GET", `/memories${qs ? `?${qs}` : ""}`);
+  }
+
+  getMemory(memoryId: string): Promise<MemoryResponse> {
+    return this.request<MemoryResponse>("GET", `/memories/${encodeURIComponent(memoryId)}`);
+  }
+
+  acceptMemory(memoryId: string, idempotencyKey: string): Promise<MemoryResponse> {
+    return this.request<MemoryResponse>("POST", `/memories/${encodeURIComponent(memoryId)}/accept`, {
+      idempotencyKey,
+    });
+  }
+
+  rejectMemory(memoryId: string, idempotencyKey: string): Promise<MemoryResponse> {
+    return this.request<MemoryResponse>("POST", `/memories/${encodeURIComponent(memoryId)}/reject`, {
+      idempotencyKey,
+    });
+  }
+
+  supersedeMemory(
+    memoryId: string,
+    body: ProposeMemoryRequest,
+    idempotencyKey: string,
+  ): Promise<SupersedeMemoryResponse> {
+    return this.request<SupersedeMemoryResponse>(
+      "POST",
+      `/memories/${encodeURIComponent(memoryId)}/supersede`,
+      { body, idempotencyKey },
+    );
+  }
+
+  getMemoryContext(projectId: string, taskId?: string): Promise<MemoryContextResponse> {
+    const params = new URLSearchParams({ project_id: projectId });
+    if (taskId) params.set("task_id", taskId);
+    return this.request<MemoryContextResponse>("GET", `/memories/context?${params.toString()}`);
+  }
+}
+
+/** Filters for {@link ApiClient.listMemories}. */
+export interface MemoryFilters {
+  status?: string;
+  scope?: string;
+  tag?: string;
+  projectId?: string;
+  taskId?: string;
 }

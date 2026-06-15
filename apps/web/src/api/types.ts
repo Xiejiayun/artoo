@@ -6,7 +6,7 @@
  * #5 names/routes differ (codex Phase 1 guardrail). The web NEVER derives
  * business state from these — it only renders the snapshot + WS patches.
  */
-import type { Approval, Artifact, Message, Room, Run, Task } from "@artoo/domain";
+import type { Approval, Artifact, Memory, Message, Room, Run, Task } from "@artoo/domain";
 
 export interface BootstrapResponse {
   organization: { id: string; name: string };
@@ -54,4 +54,24 @@ export interface RunResponse {
 
 export interface ApprovalsResponse {
   approvals: Approval[];
+}
+
+export interface MemoriesResponse {
+  memories: Memory[];
+}
+
+export interface MemoryResponse {
+  memory: Memory;
+}
+
+/** `POST /memories/:id/supersede` returns the replacement + the de-listed old memory. */
+export interface SupersedeMemoryResponse {
+  memory: Memory;
+  superseded: Memory;
+}
+
+/** `GET /memories/context` — the accepted memories that would inject + the audit ids. */
+export interface MemoryContextResponse {
+  memories: Memory[];
+  source_memory_ids: string[];
 }

@@ -48,6 +48,16 @@ describe("invalidationsForEvent", () => {
     ).toContainEqual(["approvals", "pending"]);
   });
 
+  it("invalidates memory lists, context, and the memory on memory.* events", () => {
+    const keys = invalidationsForEvent(
+      "project:proj_artoo",
+      event({ type: "memory.accepted", project_id: "proj_artoo", payload: { memory_id: "mem_1" } }),
+    );
+    expect(keys).toContainEqual(["memories"]);
+    expect(keys).toContainEqual(["memoryContext"]);
+    expect(keys).toContainEqual(["memory", "mem_1"]);
+  });
+
   it("dedupes repeated keys", () => {
     const keys = invalidationsForEvent("task:task_1", event({ type: "task.updated", task_id: "task_1" }));
     const taskKeys = keys.filter((k) => JSON.stringify(k) === JSON.stringify(["task", "task_1"]));

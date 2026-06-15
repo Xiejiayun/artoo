@@ -6,7 +6,7 @@ import type { ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach } from "vitest";
 
-import type { Approval, Artifact, Message, Room, Run, Task } from "@artoo/domain";
+import type { Approval, Artifact, Memory, Message, Room, Run, Task } from "@artoo/domain";
 
 import { ApiClient } from "../api/client.js";
 import { ApiProvider } from "../app/ApiContext.js";
@@ -115,6 +115,22 @@ export function artifactFixture(
     organization_id: "org_default",
     task_id: "task_1",
     metadata: {},
+    created_at: "2026-06-13T00:00:00Z",
+    ...partial,
+  };
+}
+
+export function memoryFixture(
+  partial: Partial<Memory> & Pick<Memory, "id" | "status" | "scope">,
+): Memory {
+  return {
+    organization_id: "org_default",
+    project_id: "proj_artoo",
+    author_type: "agent",
+    author_id: "agent_claude",
+    confidence: 1,
+    tags: [],
+    text: "a memory",
     created_at: "2026-06-13T00:00:00Z",
     ...partial,
   };
