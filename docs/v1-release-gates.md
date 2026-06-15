@@ -95,7 +95,7 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 
 ## Clean Local Checkout Validation
 
-The self-host runbook has been validated from a fresh local clone at `96b80a4`
+The self-host runbook has been validated from a fresh local clone at `27c9998`
 on Windows with Node 24.16.0 and npm 11.13.0:
 
 ```bash
@@ -106,13 +106,13 @@ npm run verify:v1
 npm run demo:v1
 ```
 
-Fresh clone path: `C:\workspace\artoo-clean-v1-96b80a4`.
+Fresh clone path: `C:\workspace\artoo-clean-v1-27c9998`.
 
 Evidence from that clone:
 
 - `npm ci` passed. The install still reports the known full-dev audit advisories
   described below.
-- `npm run verify:v1` passed: typecheck, build, full Vitest (90 files / 472
+- `npm run verify:v1` passed: typecheck, build, full Vitest (90 files / 474
   passed + 2 gated-skipped), Playwright 4/4, production audit clean, and
   whitespace diff clean.
 - `npm run demo:v1` passed with a completed task/run, mock artifact, deterministic
