@@ -15,6 +15,7 @@ const checks = [
   ...(skipE2e
     ? []
     : [["Playwright E2E", "npm", ["run", "test:e2e", "--workspace", "@artoo/web"]]]),
+  ["production dependency audit", "npm", ["audit", "--omit=dev"]],
   ["whitespace diff", "git", ["diff", "--check"]],
 ];
 

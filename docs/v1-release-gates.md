@@ -20,7 +20,8 @@ npm run verify:v1
 2. `npm run build`
 3. `npm test`
 4. `npm run test:e2e --workspace @artoo/web`
-5. `git diff --check`
+5. `npm audit --omit=dev`
+6. `git diff --check`
 
 For quick local iteration only, `npm run verify:v1 -- --skip-e2e` or
 `ARTOO_V1_SKIP_E2E=1 npm run verify:v1` skips Playwright. A skipped E2E run is

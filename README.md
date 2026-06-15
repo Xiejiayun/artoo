@@ -28,8 +28,10 @@ npm test
 npm run test:e2e --workspace @artoo/web
 npm run verify:v1
 npm run demo:v1
-npm audit --omit=dev
 ```
+
+`npm run verify:v1` includes typecheck, build, full Vitest, Playwright, the
+production dependency audit (`npm audit --omit=dev`), and `git diff --check`.
 
 Run the server after building:
 
