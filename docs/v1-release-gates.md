@@ -94,8 +94,8 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 
 ## Clean Local Checkout Validation
 
-The self-host runbook has been validated from a fresh local clone on Windows with
-Node 24.16.0 and npm 11.13.0:
+The self-host runbook has been validated from a fresh local clone at `eefed06`
+on Windows with Node 24.16.0 and npm 11.13.0:
 
 ```bash
 git clone <repo> <fresh-dir>
@@ -105,9 +105,10 @@ npm run verify:v1
 npm run demo:v1
 ```
 
-This proves the lockfile, build, full automated gate, Playwright release flows,
-and API demo path outside the warmed working tree. It is still not a substitute
-for a separate machine smoke before tagging a public release.
+This proves the lockfile install, build, full automated gate, Playwright release
+flows, production dependency audit, and API demo path outside the warmed working
+tree. It is still not a substitute for a separate machine smoke before tagging a
+public release.
 
 ## Dependency Audit
 
