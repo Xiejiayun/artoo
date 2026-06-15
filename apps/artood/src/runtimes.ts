@@ -32,6 +32,10 @@ export function codexRuntime(options: RuntimePresetOptions): RuntimeRegistration
     capabilities: options.capabilities ?? ["code.read", "code.modify"],
     adapter: createProcessAdapter({
       runtimeId: "codex",
+      // `codex exec` is already the non-interactive entrypoint: `-s workspace-write`
+      // is its only approval/sandbox control (verified v0.139.0). There is NO
+      // `--ask-for-approval` flag on `exec` — passing it aborts with exit 2
+      // ("unexpected argument"), so non-interactiveness comes from `-s` alone.
       command: options.command ?? [
         "codex",
         "exec",
@@ -39,8 +43,6 @@ export function codexRuntime(options: RuntimePresetOptions): RuntimeRegistration
         "--ephemeral",
         "-s",
         "workspace-write",
-        "--ask-for-approval",
-        "never",
         "-C",
         "{{workspace_root}}",
         TASK_PROMPT,
