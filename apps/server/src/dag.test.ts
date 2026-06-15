@@ -1,3 +1,5 @@
+import { projects, taskDependencies } from "@artoo/db";
+import { and, eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildTestServer, type TestServer } from "./test-support.js";
@@ -9,6 +11,16 @@ async function createTask(server: TestServer, body: Record<string, unknown> = {}
     payload: { project_id: "proj_artoo", title: "t", acceptance_criteria: ["x"], ...body },
   });
   return res.json().task.id as string;
+}
+
+async function createProject(server: TestServer, id: string): Promise<void> {
+  await server.ctx.db.db.insert(projects).values({
+    id,
+    organizationId: server.ctx.organizationId,
+    name: id,
+    defaultWorkspace: null,
+    createdAt: server.ctx.clock.nowIso(),
+  });
 }
 
 async function addDependency(
@@ -56,6 +68,45 @@ describe("task DAG dependencies", () => {
     const cycle = await addDependency(server, b, a); // b depends on a -> cycle
     expect(cycle.statusCode).toBe(409);
     expect(cycle.json().error.code).toBe("conflict");
+  });
+
+  it("rejects dependencies across projects", async () => {
+    server = await buildTestServer();
+    await createProject(server, "proj_other");
+    const prereq = await createTask(server, { title: "prereq", project_id: "proj_artoo" });
+    const dependent = await createTask(server, { title: "dependent", project_id: "proj_other" });
+
+    const res = await addDependency(server, dependent, prereq);
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatchObject({
+      code: "validation_error",
+      details: {
+        dependent_project_id: "proj_other",
+        prerequisite_project_id: "proj_artoo",
+      },
+    });
+  });
+
+  it("rejects duplicate dependencies with a conflict", async () => {
+    server = await buildTestServer();
+    const prereq = await createTask(server, { title: "prereq" });
+    const dependent = await createTask(server, { title: "dependent" });
+
+    expect((await addDependency(server, dependent, prereq, "blocks")).statusCode).toBe(201);
+    const duplicate = await addDependency(server, dependent, prereq, "blocks");
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.json().error.code).toBe("conflict");
+    const rows = await server.ctx.db.db
+      .select()
+      .from(taskDependencies)
+      .where(
+        and(
+          eq(taskDependencies.fromTaskId, prereq),
+          eq(taskDependencies.toTaskId, dependent),
+          eq(taskDependencies.type, "blocks"),
+        ),
+      );
+    expect(rows).toHaveLength(1);
   });
 
   it("returns a DAG snapshot of the subtree with edges", async () => {

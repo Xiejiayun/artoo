@@ -63,12 +63,41 @@ export async function createDependency(
         depends_on_task_id: prerequisiteId,
       });
     }
+    if (dependent.projectId !== prerequisite.projectId) {
+      throw AppError.validation("dependencies must stay within one project", {
+        dependent_task_id: dependentTaskId,
+        dependent_project_id: dependent.projectId,
+        prerequisite_task_id: prerequisiteId,
+        prerequisite_project_id: prerequisite.projectId,
+      });
+    }
 
     const edges = await loadEdges(ctx, tx);
     if (wouldCreateCycle(edges, prerequisiteId, dependentTaskId)) {
       throw AppError.conflict("dependency would create a cycle", {
         from_task_id: prerequisiteId,
         to_task_id: dependentTaskId,
+      });
+    }
+    const existing = (
+      await tx
+        .select({ id: taskDependencies.id })
+        .from(taskDependencies)
+        .where(
+          and(
+            eq(taskDependencies.organizationId, ctx.organizationId),
+            eq(taskDependencies.fromTaskId, prerequisiteId),
+            eq(taskDependencies.toTaskId, dependentTaskId),
+            eq(taskDependencies.type, req.type),
+          ),
+        )
+    )[0];
+    if (existing !== undefined) {
+      throw AppError.conflict("dependency already exists", {
+        dependency_id: existing.id,
+        from_task_id: prerequisiteId,
+        to_task_id: dependentTaskId,
+        type: req.type,
       });
     }
 
