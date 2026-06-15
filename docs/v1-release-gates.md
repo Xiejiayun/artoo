@@ -55,9 +55,9 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 | Build | `npm run build` | Automated |
 | Full Vitest suite | `npm test` | Automated |
 | Playwright happy path | `npm run test:e2e --workspace @artoo/web` | Automated |
-| Playwright change-request/retry | Pending E2E expansion | Open |
-| Playwright approval gate | Pending E2E expansion | Open |
-| Playwright DAG unlock | Pending E2E expansion | Open |
+| Playwright change-request/retry | `npm run test:e2e --workspace @artoo/web` | Automated |
+| Playwright approval gate | `npm run test:e2e --workspace @artoo/web` | Automated via node WS + dev approval request |
+| Playwright DAG unlock | `npm run test:e2e --workspace @artoo/web` | Automated |
 | Cross-process mock runtime smoke | Covered by server/node and artood integration tests | Automated in Vitest |
 | True CLI runtime smoke | Gated manual run in isolated workspace | Open for Claude; Codex previously smoked |
 | Audit bundle proof | `GET /api/v1/tasks/:id/audit-bundle` exists | Replay/signing still open |

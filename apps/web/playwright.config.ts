@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// E2E config for the artoo web happy path. Playwright starts the real server
+// E2E config for the artoo release flows. Playwright starts the real server
 // (dev bootstrap: embedded PGlite + migrate + seed + listen) and the Vite dev
 // server (which proxies /api + the client WS to the server).
 const SERVER_PORT = process.env.ARTOO_PORT ?? "4010";
