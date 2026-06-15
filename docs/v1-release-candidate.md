@@ -7,8 +7,8 @@ unilaterally.
 
 ## Current Evidence
 
-- Current main: `194b10a`.
-- Current validated code/docs head: `194b10a`.
+- Current main/evidence-doc head: `494e7b2`.
+- Clean-clone validated source/docs head: `194b10a`.
 - Clean clone: `C:\workspace\artoo-clean-v1-194b10a`.
 - Environment: Windows, Node 24.16.0, npm 11.13.0.
 - `npm ci` passed in the clean clone.
@@ -21,6 +21,8 @@ unilaterally.
   - whitespace diff clean
 - `npm run demo:v1` passed in the clean clone with a completed task/run,
   artifact, audit-bundle hash, and signing status `deferred`.
+- After refreshing this evidence doc, the main working tree at `494e7b2` also
+  passed `npm run verify:v1` and `npm run demo:v1`.
 
 ## Release Definition Audit
 
@@ -34,7 +36,7 @@ unilaterally.
 | Skill registry validates manifests, stores installs, and participates in scheduling | #13 domain tests; #24 API/scheduler tests; #25 web read surface tests | Proved |
 | Web surfaces for board/sprint, computers, agents, skills, memory, runs/audit | Component tests, route tests, and Playwright release flows | Proved for current v1 read/action surfaces |
 | Audit/replay evidence and public redaction | Audit-bundle/export tests; `npm run demo:v1` export verification | Proved; cryptographic signing intentionally deferred |
-| Self-host local runbook | Clean clone `npm ci`, `verify:v1`, and `demo:v1` at `194b10a` | Proved on this Windows machine |
+| Self-host local runbook | Clean clone `npm ci`, `verify:v1`, and `demo:v1` at `194b10a`; local evidence-doc head `494e7b2` passed `verify:v1` and `demo:v1` | Proved on this Windows machine |
 
 ## Explicit Release Decisions Still Needed
 

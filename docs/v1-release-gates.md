@@ -98,8 +98,10 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 
 ## Clean Local Checkout Validation
 
-The self-host runbook has been validated from a fresh local clone at `194b10a`
-on Windows with Node 24.16.0 and npm 11.13.0:
+The self-host runbook has been validated from a fresh local clone at source/docs
+head `194b10a` on Windows with Node 24.16.0 and npm 11.13.0. The evidence-doc
+refresh commit is `494e7b2`; after that docs-only refresh, the main worktree also
+passed `npm run verify:v1` and `npm run demo:v1`.
 
 ```bash
 git clone <repo> <fresh-dir>

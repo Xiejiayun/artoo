@@ -51,10 +51,10 @@ Current v1 status:
   A local v1 demo script now drives create -> ready -> assign -> mock run ->
   accept -> audit export verification. The local clean-clone gate has passed,
   and production npm audit is clean; remaining dev audit advisories are isolated
-  to drizzle-kit/esbuild migration tooling. Broader CI/release gates remain. A
-  local v1 gate script and release runbook live in `docs/v1-release-gates.md`;
-  the current release-candidate decision audit lives in
-  `docs/v1-release-candidate.md`.
+  to drizzle-kit/esbuild migration tooling. The only remaining release gates are
+  the explicit human-gated decisions tracked in
+  `docs/v1-release-candidate.md`. A local v1 gate script and release runbook
+  live in `docs/v1-release-gates.md`.
 - #18 iOS source is done as native SwiftUI source, but first macOS/Xcode build,
   run, and test verification remains pending outside this Windows environment.
 
@@ -353,7 +353,7 @@ Required gates:
 - Playwright E2E suite covering happy path, change-request/retry, approval gate,
   and one DAG unlock path
 - cross-process mock runtime smoke
-- gated true runtime smoke
+- gated true runtime smoke, or a recorded decision to defer it from v1
 - self-hosted dev runbook
 - v1 demo script or documented manual demo path. `npm run demo:v1` now provides
   a build-backed API demo with audit export verification.
@@ -365,9 +365,10 @@ Required gates:
   signing from v1. v1 now documents the signing deferral decision; signed
   archives still require a future key-management slice.
 - policy/secrets negative tests for filesystem scope, branch worktree roots,
-  credential handling, and approval-gated operations. Credential-shaped values
-  in public audit bundles now have automated redaction coverage; branch worktree
-  roots now have a gated real-git smoke; broader policy coverage still remains.
+  credential handling, and approval-gated operations. Workspace guard, leases,
+  approval gates, audit-bundle redaction, and branch worktree roots now have
+  automated coverage; broader secret storage/rotation policy remains out of
+  scope for v1.
 
 ## Review Checklist
 
