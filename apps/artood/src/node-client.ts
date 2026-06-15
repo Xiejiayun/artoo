@@ -10,6 +10,8 @@ import type {
   Unsubscribe
 } from "@artoo/protocol";
 
+import type { AdapterRegistry } from "./adapter-registry.js";
+
 /**
  * `artood` node-protocol client (mock-loop core of task #6).
  *
@@ -29,7 +31,10 @@ import type {
 export interface NodeClientOptions {
   nodeId: string;
   transport: NodeSideTransport;
-  adapter: RuntimeAdapter;
+  /** Single-runtime mode: handles any run.start.runtime. Provide this OR registry. */
+  adapter?: RuntimeAdapter;
+  /** Multi-runtime mode: resolves the adapter by run.start.runtime; unknown -> runtime_missing. */
+  registry?: AdapterRegistry;
 }
 
 export interface NodeClient {
@@ -38,8 +43,15 @@ export interface NodeClient {
 }
 
 export function createNodeClient(options: NodeClientOptions): NodeClient {
-  const { nodeId, transport, adapter } = options;
-  const handles = new Map<string, AgentInstanceHandle>();
+  const { nodeId, transport } = options;
+  if (!options.adapter && !options.registry) {
+    throw new Error("createNodeClient requires either an adapter or a registry");
+  }
+  // run.start.runtime is the only adapter-selection key on the node side — no
+  // scheduling or fallback here. Single-adapter mode handles every runtime.
+  const resolveAdapter = (runtime: string): RuntimeAdapter | undefined =>
+    options.registry ? options.registry.resolve(runtime) : options.adapter;
+  const runs = new Map<string, { handle: AgentInstanceHandle; adapter: RuntimeAdapter }>();
   const inflight = new Set<Promise<void>>();
   let unsubscribe: Unsubscribe | undefined;
 
@@ -66,6 +78,11 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
 
   async function onRunStart(command: RunStartCommand): Promise<void> {
     const payload = command.payload;
+    const adapter = resolveAdapter(payload.runtime);
+    if (!adapter) {
+      await ackRejected(command.id, "runtime_missing", `no adapter for runtime '${payload.runtime}'`);
+      return;
+    }
     let handle: AgentInstanceHandle;
     try {
       handle = await adapter.start({
@@ -81,7 +98,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       return;
     }
     await ackAccepted(command.id);
-    handles.set(payload.run_id, handle);
+    runs.set(payload.run_id, { handle, adapter });
     try {
       let sequence = 0;
       for await (const event of adapter.streamEvents(handle)) {
@@ -96,15 +113,15 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         await transport.send(message);
       }
     } finally {
-      handles.delete(payload.run_id);
+      runs.delete(payload.run_id);
     }
   }
 
   async function onRunStop(command: RunStopCommand): Promise<void> {
     await ackAccepted(command.id);
-    const handle = handles.get(command.payload.run_id);
-    if (handle) {
-      await adapter.stop(handle, "user_cancelled");
+    const run = runs.get(command.payload.run_id);
+    if (run) {
+      await run.adapter.stop(run.handle, "user_cancelled");
     }
   }
 

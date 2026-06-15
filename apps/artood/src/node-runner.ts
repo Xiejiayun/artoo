@@ -1,20 +1,23 @@
 import type { NodeHeartbeat, NodeHello, RuntimeAdapter } from "@artoo/protocol";
 
+import type { AdapterRegistry } from "./adapter-registry.js";
 import { createNodeClient } from "./node-client.js";
 import { createWebSocketTransport } from "./ws-transport.js";
 
 /**
  * The artood node daemon: wires a {@link createWebSocketTransport} (real WS to
- * `ws /api/v1/node`) and a {@link RuntimeAdapter} together through #6's
- * {@link createNodeClient}. This is the live MockAdapter -> ProcessAdapter
- * handoff — the same node-client contract, now driving a real process adapter
- * over a real transport. The Codex adapter is just a {@link createProcessAdapter}
- * instance passed as `adapter`.
+ * `ws /api/v1/node`) and a runtime (single {@link RuntimeAdapter} or an
+ * {@link AdapterRegistry} for multi-runtime) together through {@link createNodeClient}.
+ * The same node-client contract drives a real process adapter over a real
+ * transport; with a registry, `run.start.runtime` selects the adapter.
  */
 export interface ArtoodNodeOptions {
   url: string;
   hello: NodeHello;
-  adapter: RuntimeAdapter;
+  /** Single-runtime mode. Provide this OR registry. */
+  adapter?: RuntimeAdapter;
+  /** Multi-runtime mode: run.start.runtime selects the adapter. */
+  registry?: AdapterRegistry;
   heartbeat?: () => NodeHeartbeat;
   heartbeatIntervalMs?: number;
   WebSocketImpl?: typeof WebSocket;
@@ -46,7 +49,8 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
       client = createNodeClient({
         nodeId: options.hello.node_id,
         transport,
-        adapter: options.adapter
+        adapter: options.adapter,
+        registry: options.registry
       });
       // Subscribe before the connection is registered for dispatch (server only
       // dispatches after node.hello), then wait for open + hello.

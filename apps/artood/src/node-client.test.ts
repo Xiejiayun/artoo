@@ -9,6 +9,7 @@ import type {
 import { createInProcessChannel, createMockAdapter } from "@artoo/testkit";
 import { describe, expect, it } from "vitest";
 
+import { createAdapterRegistry } from "./adapter-registry.js";
 import { createNodeClient } from "./node-client.js";
 
 const runStartCommand: RunStartCommand = {
@@ -175,5 +176,67 @@ describe("artood node client (mock loop)", () => {
         message: "workspace missing"
       }
     ]);
+  });
+});
+
+describe("artood node client (multi-runtime registry)", () => {
+  it("routes run.start to the adapter registered for its runtime", async () => {
+    const channel = createInProcessChannel();
+    const registry = createAdapterRegistry([
+      { runtime: "mock-coder", adapter: createMockAdapter({ outputLines: ["x"] }), capabilities: ["code.modify"] }
+    ]);
+    const client = createNodeClient({ nodeId: "computer_1", transport: channel.node, registry });
+    client.start();
+
+    const received: NodeToServerMessage[] = [];
+    const done = new Promise<void>((resolve) => {
+      channel.serverTransport.subscribe((m) => {
+        received.push(m);
+        if (isRunEvent(m) && m.event.type === "run.lifecycle" && m.event.payload.phase === "completed") {
+          resolve();
+        }
+      });
+    });
+
+    await channel.serverTransport.send(runStartCommand); // runtime: "mock-coder"
+    await done;
+    await client.stop();
+
+    expect(received.filter(isAck)[0]).toMatchObject({ status: "accepted", command_id: "cmd_start_1" });
+    expect(received.filter(isRunEvent).at(-1)?.event).toEqual({
+      type: "run.lifecycle",
+      payload: { phase: "completed" }
+    });
+  });
+
+  it("rejects run.start for an unknown runtime with runtime_missing (no fallback)", async () => {
+    const channel = createInProcessChannel();
+    const registry = createAdapterRegistry([
+      { runtime: "mock-coder", adapter: createMockAdapter() }
+    ]);
+    const client = createNodeClient({ nodeId: "computer_1", transport: channel.node, registry });
+    client.start();
+
+    const received: NodeToServerMessage[] = [];
+    const rejected = new Promise<void>((resolve) => {
+      channel.serverTransport.subscribe((m) => {
+        received.push(m);
+        if (isAck(m) && m.status === "rejected") {
+          resolve();
+        }
+      });
+    });
+
+    const ghostRuntime: RunStartCommand = {
+      ...runStartCommand,
+      payload: { ...runStartCommand.payload, runtime: "ghost-runtime" }
+    };
+    await channel.serverTransport.send(ghostRuntime);
+    await rejected;
+    await client.stop();
+
+    expect(received.filter(isRunEvent)).toEqual([]);
+    const ack = received.filter(isAck)[0];
+    expect(ack).toMatchObject({ status: "rejected", error_code: "runtime_missing" });
   });
 });
