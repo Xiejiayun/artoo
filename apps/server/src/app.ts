@@ -127,6 +127,18 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     return { dependency };
   });
 
+  app.get("/api/v1/tasks/:id/dependencies", async (req) => {
+    const { id } = req.params as { id: string };
+    return { dependencies: await dagService.listDependencies(ctx, id) };
+  });
+
+  app.delete("/api/v1/tasks/:id/dependencies/:dependencyId", async (req, reply) => {
+    const { id, dependencyId } = req.params as { id: string; dependencyId: string };
+    await dagService.deleteDependency(ctx, id, dependencyId);
+    void reply.status(204);
+    return null;
+  });
+
   app.get("/api/v1/tasks/:id/dag", async (req) => {
     const { id } = req.params as { id: string };
     return { dag: await dagService.getDag(ctx, id) };

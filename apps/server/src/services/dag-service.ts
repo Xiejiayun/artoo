@@ -192,6 +192,97 @@ export async function getDag(ctx: ServerContext, rootTaskId: string): Promise<Da
   return { root_task_id: rootTaskId, nodes, edges };
 }
 
+/**
+ * GET /tasks/:id/dependencies — list the task's direct prerequisites (edges
+ * where `:id` is the DEPENDENT, i.e. `to_task_id = :id`). Symmetric with the
+ * POST/DELETE endpoints, which treat `:id` as the dependent.
+ */
+export async function listDependencies(
+  ctx: ServerContext,
+  dependentTaskId: string,
+): Promise<TaskDependency[]> {
+  const db = ctx.db.db;
+  const dependent = (
+    await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.id, dependentTaskId), eq(tasks.organizationId, ctx.organizationId)))
+  )[0];
+  if (dependent === undefined) {
+    throw AppError.notFound(`task not found: ${dependentTaskId}`, { task_id: dependentTaskId });
+  }
+  const rows = await db
+    .select()
+    .from(taskDependencies)
+    .where(
+      and(
+        eq(taskDependencies.organizationId, ctx.organizationId),
+        eq(taskDependencies.toTaskId, dependentTaskId),
+      ),
+    );
+  return rows.map(mapDependency);
+}
+
+/**
+ * DELETE /tasks/:id/dependencies/:dependencyId — remove a prerequisite edge owned
+ * by `:id` (the dependent). 404 if the edge is unknown, 400 if it does not belong
+ * to this task. Structural only: the dependent is NOT auto-transitioned (a human
+ * removing a blocker then calls /ready). Emits task.updated.dependency_removed.
+ */
+export async function deleteDependency(
+  ctx: ServerContext,
+  dependentTaskId: string,
+  dependencyId: string,
+): Promise<void> {
+  const now = ctx.clock.nowIso();
+  await ctx.db.transaction(async (tx) => {
+    const row = (
+      await tx
+        .select()
+        .from(taskDependencies)
+        .where(
+          and(
+            eq(taskDependencies.id, dependencyId),
+            eq(taskDependencies.organizationId, ctx.organizationId),
+          ),
+        )
+    )[0];
+    if (row === undefined) {
+      throw AppError.notFound(`dependency not found: ${dependencyId}`, {
+        dependency_id: dependencyId,
+      });
+    }
+    if (row.toTaskId !== dependentTaskId) {
+      throw AppError.validation("dependency does not belong to this task", {
+        dependency_id: dependencyId,
+        task_id: dependentTaskId,
+      });
+    }
+    await tx.delete(taskDependencies).where(eq(taskDependencies.id, dependencyId));
+    const dependent = (await tx.select().from(tasks).where(eq(tasks.id, dependentTaskId)))[0];
+    await appendEvent(
+      tx,
+      buildEvent(ctx, {
+        type: "task.updated",
+        actorType: "user",
+        actorId: ctx.actorUserId,
+        correlationId: dependentTaskId,
+        projectId: dependent?.projectId ?? null,
+        taskId: dependentTaskId,
+        roomId: dependent?.roomId ?? null,
+        payload: {
+          dependency_removed: {
+            id: dependencyId,
+            from_task_id: row.fromTaskId,
+            to_task_id: row.toTaskId,
+            type: row.type,
+          },
+        },
+      }),
+    );
+  });
+}
+
 /** Snapshot of every task's status in the org (for unlock evaluation). */
 async function loadStatusMap(
   ctx: ServerContext,
