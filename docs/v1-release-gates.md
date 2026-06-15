@@ -63,8 +63,24 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 | Audit bundle proof | `GET /api/v1/tasks/:id/audit-bundle` exists and redacts credential-shaped values | Replay/signing still open |
 | Self-host runbook | This document | Needs clean-machine validation |
 | Secret/policy negatives | Workspace guard, lease, approval tests plus audit-bundle secret redaction coverage | Broader secret storage/rotation remains out of scope |
-| Branch worktree smoke | Requires `worktreeBaseRepo` and git smoke | Open |
+| Branch worktree smoke | `ARTOO_GIT_SMOKE=1 npx vitest run apps/server/src/branch-e2e-smoke.test.ts` | Gated automated |
 | iOS verification | Requires macOS/Xcode | Open |
+
+## Gated Branch Worktree Smoke
+
+This gate is opt-in because it shells out to real `git` and creates throwaway
+worktrees. It must always use temporary directories for both the base repo and
+the assigned workspace root:
+
+```bash
+ARTOO_GIT_SMOKE=1 npx vitest run apps/server/src/branch-e2e-smoke.test.ts
+```
+
+Successful proof covers REST `assign { branch_backed: true }`, persisted
+`runs.workspace_branch`, persisted ContextPack dispatch, node-client worktree
+materialization on a new git branch, mock-agent artifact production, terminal
+worktree cleanup, branch retention in the base repo, and task transition to
+`review`.
 
 ## Gated True Runtime Smoke
 

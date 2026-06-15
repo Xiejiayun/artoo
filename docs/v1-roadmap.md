@@ -10,15 +10,15 @@ Accepted v0.1 is on `origin/main` at `eec68d8`.
 
 Current v1 status:
 
-- This status snapshot includes implementation changes through `cef427b`
-  (#21 Part D run-start ContextPack source-memory injection).
+- This status snapshot includes implementation changes through `75726a5`
+  (#23 gated assign-to-server-to-node real-git branch worktree smoke).
 - #11 Task DAG is done: dependency CRUD, ready unlock, blocked propagation,
   aggregate review, and evidence gates are merged.
 - #12/#20 Concurrency Phase A+B server work is done: file lease contracts,
   lease storage/service, run-start reservation, terminal release, workspace root
-  recording, and patch/pull_request integration queue enqueue are merged. Branch
-  worktree activation remains gated on artood `worktreeBaseRepo` plus a true git
-  worktree smoke.
+  recording, and patch/pull_request integration queue enqueue are merged.
+  #23 branch-backed worktree activation is also merged with a gated real-git
+  server-to-node seam smoke.
 - #13 Skill registry Phase A is done with pure `skill.yaml v1alpha1`
   validation, permission summary, runtime-aware capability contribution, and
   fake/local MCP descriptor contracts.
@@ -325,7 +325,7 @@ Required gates:
 - policy/secrets negative tests for filesystem scope, branch worktree roots,
   credential handling, and approval-gated operations. Credential-shaped values
   in public audit bundles now have automated redaction coverage; branch worktree
-  and broader policy coverage still remain.
+  roots now have a gated real-git smoke; broader policy coverage still remains.
 
 ## Review Checklist
 
