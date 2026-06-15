@@ -134,7 +134,10 @@ export const taskDependencies = pgTable("task_dependencies", {
   type: text("type").notNull(),
   createdAt: ts("created_at").notNull(),
 }, (t) => [
-  check("task_deps_type_chk", sql`${t.type} in ('blocks','artifact_required')`),
+  check(
+    "task_deps_type_chk",
+    sql`${t.type} in ('blocks','artifact_required','contract_required','review_required','soft_context')`,
+  ),
   unique("task_deps_unique").on(t.fromTaskId, t.toTaskId, t.type),
   index("task_deps_to_idx").on(t.toTaskId),
 ]);
