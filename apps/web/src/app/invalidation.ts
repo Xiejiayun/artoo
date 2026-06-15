@@ -18,6 +18,8 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
 
   if (typeof event.task_id === "string") {
     keys.push(queryKeys.task(event.task_id));
+    // Any task activity (runs, approvals, messages, events) changes its audit bundle.
+    keys.push(queryKeys.auditBundle(event.task_id));
   }
   if (typeof event.room_id === "string") {
     keys.push(queryKeys.messages(event.room_id));

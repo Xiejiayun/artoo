@@ -6,7 +6,16 @@
  * #5 names/routes differ (codex Phase 1 guardrail). The web NEVER derives
  * business state from these — it only renders the snapshot + WS patches.
  */
-import type { Approval, Artifact, Memory, Message, Room, Run, Task } from "@artoo/domain";
+import type {
+  Approval,
+  Artifact,
+  Memory,
+  Message,
+  Room,
+  Run,
+  Task,
+  TaskAuditBundle,
+} from "@artoo/domain";
 
 export interface BootstrapResponse {
   organization: { id: string; name: string };
@@ -74,4 +83,9 @@ export interface SupersedeMemoryResponse {
 export interface MemoryContextResponse {
   memories: Memory[];
   source_memory_ids: string[];
+}
+
+/** `GET /tasks/:id/audit-bundle` — deterministic read-only task evidence. */
+export interface AuditBundleResponse {
+  bundle: TaskAuditBundle;
 }
