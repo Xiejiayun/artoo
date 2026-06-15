@@ -39,11 +39,23 @@ export interface TestServer {
   close: () => Promise<void>;
 }
 
+export interface BuildTestServerOptions {
+  /**
+   * Override the seeded instance/project workspace root. The default seed points
+   * at the live repo (`C:/workspace/artoo`), which is fine for ordinary runs (no
+   * materialization) but MUST be a tmpdir for any real branch-backed worktree
+   * test so `git worktree add` never touches the repo (#23 gated smoke).
+   */
+  workspaceRoot?: string;
+}
+
 /** A fully wired server over an embedded, migrated, seeded database. */
-export async function buildTestServer(): Promise<TestServer> {
+export async function buildTestServer(
+  options: BuildTestServerOptions = {},
+): Promise<TestServer> {
   const db = await PgliteDbClient.create();
   await db.migrate(await loadMigrationStatements());
-  await seed(db, FIXED_ISO);
+  await seed(db, FIXED_ISO, { workspaceRoot: options.workspaceRoot });
   const ctx: ServerContext = {
     db,
     clock: fixedClock(),
