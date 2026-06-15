@@ -38,8 +38,10 @@ Current v1 status:
   export envelope now provides a deterministic SHA-256 over the redacted bundle,
   with cryptographic signing explicitly deferred until key management exists.
   A local v1 demo script now drives create -> ready -> assign -> mock run ->
-  accept -> audit export verification. Broader CI/release gates remain. A local
-  v1 gate script and release runbook live in `docs/v1-release-gates.md`.
+  accept -> audit export verification. The local clean-clone gate has passed,
+  and production npm audit is clean; remaining dev audit advisories are isolated
+  to drizzle-kit/esbuild migration tooling. Broader CI/release gates remain. A
+  local v1 gate script and release runbook live in `docs/v1-release-gates.md`.
 - #18 iOS source is done as native SwiftUI source, but first macOS/Xcode build,
   run, and test verification remains pending outside this Windows environment.
 
@@ -322,6 +324,8 @@ Required gates:
 - self-hosted dev runbook
 - v1 demo script or documented manual demo path. `npm run demo:v1` now provides
   a build-backed API demo with audit export verification.
+- production dependency audit. `npm audit --omit=dev` is clean; full dev audit
+  still reports drizzle-kit/esbuild migration-tooling advisories.
 - audit/replay bundle proof for a completed task. v1alpha1 export now provides
   a deterministic SHA-256 over the redacted bundle.
 - signed/exportable audit bundle format, or a documented decision to defer

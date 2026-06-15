@@ -28,6 +28,7 @@ npm test
 npm run test:e2e --workspace @artoo/web
 npm run verify:v1
 npm run demo:v1
+npm audit --omit=dev
 ```
 
 Run the server after building:

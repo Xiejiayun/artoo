@@ -83,10 +83,40 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 | True CLI runtime smoke | Gated manual run in isolated workspace | Open for Claude; Codex previously smoked |
 | Audit bundle proof | `GET /api/v1/tasks/:id/audit-bundle/export` returns redacted bundle + deterministic SHA-256 | Automated; cryptographic signing deferred by v1 decision |
 | v1 demo path | `npm run demo:v1` after build | Automated local demo script |
-| Self-host runbook | This document | Needs clean-machine validation |
+| Production dependency audit | `npm audit --omit=dev` | Automated check is clean |
+| Dev dependency audit | `npm audit` | Vite/Vitest advisories fixed; drizzle-kit/esbuild dev-tooling advisory remains open |
+| Self-host runbook | This document | Local clean-clone validation passed; independent machine validation still recommended |
 | Secret/policy negatives | Workspace guard, lease, approval tests plus audit-bundle secret redaction coverage | Broader secret storage/rotation remains out of scope |
 | Branch worktree smoke | `ARTOO_GIT_SMOKE=1 npx vitest run apps/server/src/branch-e2e-smoke.test.ts` | Gated automated |
 | iOS verification | Requires macOS/Xcode | Open |
+
+## Clean Local Checkout Validation
+
+The self-host runbook has been validated from a fresh local clone on Windows with
+Node 24.16.0 and npm 11.13.0:
+
+```bash
+git clone <repo> <fresh-dir>
+cd <fresh-dir>
+npm ci
+npm run verify:v1
+npm run demo:v1
+```
+
+This proves the lockfile, build, full automated gate, Playwright release flows,
+and API demo path outside the warmed working tree. It is still not a substitute
+for a separate machine smoke before tagging a public release.
+
+## Dependency Audit
+
+`npm audit --omit=dev` is clean, so the production dependency surface has no
+known npm advisories at this gate. The full dev audit was reduced by upgrading
+Vite/Vitest/React plugin tooling to the current Vite 8/Vitest 4 line; the
+remaining npm audit findings are isolated to `drizzle-kit` and its deprecated
+`@esbuild-kit/*` / nested `esbuild` migration-generation toolchain. `drizzle-kit`
+is not used by the runtime, web build, tests, or v1 demo, but the advisory stays
+open until Drizzle publishes a non-vulnerable migration generator path or the
+project replaces that tooling.
 
 ## Gated Branch Worktree Smoke
 
