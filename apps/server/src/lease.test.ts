@@ -68,6 +68,22 @@ describe("file leases (#12 Phase A)", () => {
     expect(rw.statusCode).toBe(409);
   });
 
+  it("case-folds lease paths before conflict checks", async () => {
+    server = await buildTestServer();
+    const a = await createTask(server, "a");
+    const b = await createTask(server, "b");
+    const first = await acquire(server, { task_id: a, path: "Src/Foo", mode: "write" });
+    expect(first.statusCode).toBe(201);
+    expect(first.json().lease.path).toBe("src/foo");
+
+    const mixedCaseOverlap = await acquire(server, {
+      task_id: b,
+      path: "src/foo/bar.ts",
+      mode: "write",
+    });
+    expect(mixedCaseOverlap.statusCode).toBe(409);
+  });
+
   it("non-overlapping paths coexist regardless of mode (segment-aware)", async () => {
     server = await buildTestServer();
     const a = await createTask(server, "a");

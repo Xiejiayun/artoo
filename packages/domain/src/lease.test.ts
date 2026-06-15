@@ -23,9 +23,10 @@ describe("normalizeLeasePath", () => {
   it("normalizes relative and contained-absolute paths to workspace-relative POSIX", () => {
     expect(norm("src/app.ts")).toBe("src/app.ts");
     expect(norm("src\\app.ts")).toBe("src/app.ts"); // windows separators
+    expect(norm("Src\\Foo.ts")).toBe("src/foo.ts"); // canonical case-fold
     expect(norm("./src/./app.ts")).toBe("src/app.ts");
     expect(norm("src/sub/../app.ts")).toBe("src/app.ts"); // contained ..
-    expect(norm("/work/ws/src/app.ts")).toBe("src/app.ts"); // absolute within root
+    expect(norm("/WORK/WS/src/app.ts")).toBe("src/app.ts"); // absolute within root
     expect(norm("/work/ws")).toBe(""); // the root itself
   });
 

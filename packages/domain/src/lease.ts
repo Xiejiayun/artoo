@@ -38,8 +38,9 @@ function isAbsolutePosix(p: string): boolean {
  * null bytes; absolute paths (drive / UNC / root) that escape `workspaceRoot`;
  * and any `..` traversal that climbs above the workspace root. An absolute path
  * inside `workspaceRoot` is accepted and made relative. The returned path uses
- * `/` separators and contains no `.`/`..`/empty segments (the workspace root
- * itself normalizes to `""`).
+ * `/` separators, contains no `.`/`..`/empty segments, and is lowercased so
+ * lease comparisons are conservative across case-insensitive workspaces (the
+ * workspace root itself normalizes to `""`).
  */
 export function normalizeLeasePath(
   workspaceRoot: string,
@@ -52,8 +53,8 @@ export function normalizeLeasePath(
     return { ok: false, reason: "path is empty" };
   }
 
-  const root = toPosix(workspaceRoot).replace(/\/+$/, "");
-  const raw = toPosix(rawPath);
+  const root = toPosix(workspaceRoot).replace(/\/+$/, "").toLowerCase();
+  const raw = toPosix(rawPath).toLowerCase();
 
   let relative: string;
   if (isAbsolutePosix(raw)) {
