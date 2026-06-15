@@ -146,6 +146,9 @@ export const RunSchema = z.object({
   ended_at: z.string().nullish(),
   failure_reason: z.string().nullish(),
   sequence: z.number().int().default(0),
+  /** Allocated workspace (#20). Real FS/git paths — source-case preserved. */
+  workspace_root: z.string().nullish(),
+  workspace_branch: z.string().nullish(),
   created_at: z.string(),
 });
 export type Run = z.infer<typeof RunSchema>;

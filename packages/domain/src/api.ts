@@ -122,6 +122,13 @@ export const AssignRequestSchema = z.object({
   agent_instance_id: z.string().nullish(),
   model_profile_id: z.string().nullish(),
   effort: EffortSchema.nullish(),
+  /**
+   * Paths the run will write (#20). Reserved as `write` file leases (holder=run)
+   * inside the assignment transaction; a conflict aborts the whole assign and
+   * leaves the task `ready`. Normalized + deduped to canonical lowercase lease
+   * keys server-side. Empty/absent is a back-compat no-op.
+   */
+  write_paths: z.array(z.string()).nullish(),
 });
 export type AssignRequest = z.infer<typeof AssignRequestSchema>;
 

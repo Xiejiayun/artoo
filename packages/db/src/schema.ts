@@ -323,6 +323,8 @@ export const runs = pgTable("runs", {
   endedAt: ts("ended_at"),
   failureReason: text("failure_reason"),
   sequence: bigint("sequence", { mode: "number" }).notNull().default(0),
+  workspaceRoot: text("workspace_root"),
+  workspaceBranch: text("workspace_branch"),
   createdAt: ts("created_at").notNull(),
 }, (t) => [
   check(

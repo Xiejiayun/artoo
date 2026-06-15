@@ -15,6 +15,8 @@ import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { mapRun } from "../mappers.js";
 import * as dagService from "./dag-service.js";
+import { enqueueArtifactForIntegration } from "./integration-service.js";
+import { releaseRunLeases } from "./lease-service.js";
 import { transitionRun, transitionTask } from "./transition-service.js";
 
 /** GET /api/v1/runs/:id — run snapshot. */
@@ -90,6 +92,7 @@ export async function cancelRun(ctx: ServerContext, runId: string): Promise<Run>
       // The task is now cancelled: signal downstream gating dependents (advisory).
       await dagService.propagateBlocked(ctx, tx, run.taskId, "run_cancelled");
     }
+    await releaseRunLeases(ctx, tx, runId);
     const updated = (await tx.select().from(runs).where(eq(runs.id, runId)))[0];
     if (updated === undefined) {
       throw new Error("cancelRun: run missing after transition");
@@ -210,6 +213,7 @@ export async function ingestRunEvent(
         await transitionRun(tx, ctx, { runId: env.runId, from: "running", trigger: "run_completed", patch: { endedAt: now } });
         await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_completed", now });
         eventId = await emit("run.completed", { run_id: env.runId }, { kind: "run_event", body: "Run completed; task ready for review" });
+        await releaseRunLeases(ctx, tx, env.runId);
       } else if (ev.phase === "failed") {
         await transitionRun(tx, ctx, {
           runId: env.runId,
@@ -219,6 +223,7 @@ export async function ingestRunEvent(
         });
         const taskBlocked = await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_failed", now });
         eventId = await emit("run.failed", { run_id: env.runId, failure_reason: ev.failureReason ?? "unknown" }, { kind: "run_event", body: "Run failed" });
+        await releaseRunLeases(ctx, tx, env.runId);
         if (taskBlocked.changed) {
           // The task is now blocked: signal downstream gating dependents (advisory).
           await dagService.propagateBlocked(ctx, tx, run.taskId, `run_failed: ${ev.failureReason ?? "unknown"}`);
@@ -226,6 +231,7 @@ export async function ingestRunEvent(
       } else {
         await transitionRun(tx, ctx, { runId: env.runId, from: run.status as RunStatus, trigger: "cancel", patch: { endedAt: now } });
         eventId = await emit("run.cancelled", { run_id: env.runId }, { kind: "run_event", body: "Run cancelled" });
+        await releaseRunLeases(ctx, tx, env.runId);
       }
     } else if (ev.kind === "output") {
       eventId = await emit("run.output", { stream: ev.stream, text: ev.text });
@@ -247,6 +253,14 @@ export async function ingestRunEvent(
         { artifact_id: artifactId, type: ev.artifactType, uri: ev.uri },
         { kind: "artifact", body: `Artifact created: ${ev.artifactType}` },
       );
+      // Enqueue mergeable artifacts (patch/pull_request) for serialized integration (#20).
+      await enqueueArtifactForIntegration(ctx, tx, {
+        projectId: taskRow.projectId,
+        taskId: run.taskId,
+        runId: env.runId,
+        artifactId,
+        artifactType: ev.artifactType,
+      });
     }
 
     await tx.insert(runEventIngest).values({
@@ -318,6 +332,7 @@ export async function failRunStart(
         payload: { run_id: runId, failure_reason: reason, recoverable: true },
       }),
     );
+    await releaseRunLeases(ctx, tx, runId);
   });
 }
 

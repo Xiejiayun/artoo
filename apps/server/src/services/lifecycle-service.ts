@@ -1,4 +1,5 @@
 import {
+  agentInstances,
   appendEvent,
   runs,
   schedulerDecisions,
@@ -23,6 +24,7 @@ import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { mapRun, mapTask } from "../mappers.js";
 import * as dagService from "./dag-service.js";
+import * as leaseService from "./lease-service.js";
 import { scheduleTask } from "./scheduler.js";
 import { transitionTask } from "./transition-service.js";
 
@@ -165,6 +167,16 @@ export async function assignTask(
       createdAt: now,
     });
 
+    // Record the assigned instance's workspace root (#20). Real FS path — source
+    // case preserved. branch stays null in Phase A (ordinary workspace; branch
+    // activation waits for artood worktreeBaseRepo + gated git worktree smoke).
+    const instance = (
+      await tx
+        .select({ workspaceRoot: agentInstances.workspaceRoot })
+        .from(agentInstances)
+        .where(eq(agentInstances.id, outcome.selected.agent_instance_id))
+    )[0];
+
     await tx.insert(runs).values({
       id: runId,
       organizationId: ctx.organizationId,
@@ -176,7 +188,18 @@ export async function assignTask(
       modelProfileId: outcome.selected.model_profile_id,
       effortProfileId: outcome.selected.effort_profile_id,
       status: "queued",
+      workspaceRoot: instance?.workspaceRoot ?? null,
+      workspaceBranch: null,
       createdAt: now,
+    });
+
+    // Reserve write leases for the run's declared paths (#20). A conflict throws,
+    // rolling back this whole transaction: no run, no assignment, task stays ready.
+    await leaseService.reserveRunLeases(ctx, tx, {
+      taskId,
+      runId,
+      projectId: row.projectId,
+      paths: req.write_paths ?? [],
     });
 
     await tx

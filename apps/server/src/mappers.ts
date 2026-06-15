@@ -96,6 +96,8 @@ export function mapRun(row: typeof runs.$inferSelect): Run {
     ended_at: row.endedAt,
     failure_reason: row.failureReason,
     sequence: row.sequence,
+    workspace_root: row.workspaceRoot,
+    workspace_branch: row.workspaceBranch,
     created_at: row.createdAt,
   });
 }

@@ -275,3 +275,163 @@ export async function listLeases(
     return rows.map(mapFileLease);
   });
 }
+
+/**
+ * Reserve `write` leases for a run (#20), INSIDE the caller's transaction (so a
+ * conflict aborts the whole assignment — no run row, task stays `ready`). Paths
+ * are normalized + deduped to canonical lowercase keys (so `Src/Foo` and
+ * `src/foo` reserve once). Idempotent: a path this run already holds is skipped.
+ * The run's own overlapping paths never self-conflict. Throws AppError.conflict on
+ * a foreign overlapping lease. Returns the reserved/existing lease ids.
+ */
+export async function reserveRunLeases(
+  ctx: ServerContext,
+  tx: DrizzleDb,
+  params: { taskId: string; runId: string; projectId: string; paths: readonly string[] },
+): Promise<string[]> {
+  if (params.paths.length === 0) {
+    return [];
+  }
+  const now = ctx.clock.nowIso();
+  const keys = new Set<string>();
+  for (const raw of params.paths) {
+    const normalized = normalizeLeasePath(LEASE_PATH_ROOT, raw);
+    if (!normalized.ok) {
+      throw AppError.validation(`invalid write path: ${normalized.reason}`, { path: raw });
+    }
+    keys.add(normalized.path);
+  }
+
+  const projectLeases = await tx
+    .select()
+    .from(fileLeases)
+    .where(
+      and(
+        eq(fileLeases.organizationId, ctx.organizationId),
+        eq(fileLeases.projectId, params.projectId),
+        eq(fileLeases.status, "held"),
+      ),
+    );
+  await expireStaleLeases(ctx, tx, projectLeases, now);
+  const active = projectLeases.filter((l) => isActive(l, now));
+  const ownedByRun = (l: LeaseRow): boolean =>
+    l.holderType === "run" && l.holderId === params.runId;
+
+  const reserved: string[] = [];
+  for (const path of keys) {
+    const existing = active.find((l) => ownedByRun(l) && l.path === path && l.mode === "write");
+    if (existing !== undefined) {
+      reserved.push(existing.id);
+      continue;
+    }
+    const scope: LeaseScope = { path, mode: "write" };
+    const conflict = active.find(
+      (l) => !ownedByRun(l) && leasesConflict(scope, { path: l.path, mode: l.mode as LeaseMode }),
+    );
+    if (conflict !== undefined) {
+      throw AppError.conflict("file lease conflict on write_paths", {
+        path,
+        conflicting_lease_id: conflict.id,
+        conflicting_path: conflict.path,
+        conflicting_mode: conflict.mode,
+        conflicting_holder_id: conflict.holderId,
+      });
+    }
+    const id = ctx.idGen.generate(ID_PREFIXES.lease);
+    const row: LeaseRow = {
+      id,
+      organizationId: ctx.organizationId,
+      projectId: params.projectId,
+      taskId: params.taskId,
+      runId: params.runId,
+      holderType: "run",
+      holderId: params.runId,
+      path,
+      mode: "write",
+      status: "held",
+      acquiredAt: now,
+      expiresAt: null,
+      releasedAt: null,
+      createdAt: now,
+    };
+    await tx.insert(fileLeases).values(row);
+    await appendEvent(
+      tx,
+      buildEvent(ctx, {
+        type: "lease.acquired",
+        actorType: "system",
+        actorId: "control_plane",
+        correlationId: params.taskId,
+        projectId: params.projectId,
+        taskId: params.taskId,
+        runId: params.runId,
+        payload: {
+          lease_id: id,
+          project_id: params.projectId,
+          task_id: params.taskId,
+          run_id: params.runId,
+          path,
+          mode: "write",
+          holder_type: "run",
+          holder_id: params.runId,
+        },
+      }),
+    );
+    // Subsequent paths in this same call must see the just-reserved lease.
+    active.push(row);
+    reserved.push(id);
+  }
+  return reserved;
+}
+
+/**
+ * Release every held lease owned by a run (#20), INSIDE the caller's transaction.
+ * Called at terminal run transitions (completed/failed/cancelled/start-failed).
+ * Emits `lease.released` only for leases actually transitioned (held -> released).
+ */
+export async function releaseRunLeases(
+  ctx: ServerContext,
+  tx: DrizzleDb,
+  runId: string,
+): Promise<void> {
+  const now = ctx.clock.nowIso();
+  const held = await tx
+    .select()
+    .from(fileLeases)
+    .where(
+      and(
+        eq(fileLeases.organizationId, ctx.organizationId),
+        eq(fileLeases.holderType, "run"),
+        eq(fileLeases.holderId, runId),
+        eq(fileLeases.status, "held"),
+      ),
+    );
+  for (const lease of held) {
+    await tx
+      .update(fileLeases)
+      .set({ status: "released", releasedAt: now })
+      .where(eq(fileLeases.id, lease.id));
+    await appendEvent(
+      tx,
+      buildEvent(ctx, {
+        type: "lease.released",
+        actorType: "system",
+        actorId: "control_plane",
+        correlationId: lease.taskId,
+        projectId: lease.projectId,
+        taskId: lease.taskId,
+        runId: lease.runId,
+        payload: {
+          lease_id: lease.id,
+          project_id: lease.projectId,
+          task_id: lease.taskId,
+          run_id: lease.runId,
+          path: lease.path,
+          mode: lease.mode,
+          holder_type: lease.holderType,
+          holder_id: lease.holderId,
+        },
+      }),
+    );
+  }
+}
