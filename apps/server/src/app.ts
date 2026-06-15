@@ -18,6 +18,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import { registerIdempotency } from "./idempotency-middleware.js";
+import * as auditService from "./services/audit-service.js";
 import * as approvalService from "./services/approval-service.js";
 import * as dagService from "./services/dag-service.js";
 import * as leaseService from "./services/lease-service.js";
@@ -118,6 +119,11 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   app.get("/api/v1/tasks/:id", async (req) => {
     const { id } = req.params as { id: string };
     return taskService.getTaskSnapshot(ctx, id);
+  });
+
+  app.get("/api/v1/tasks/:id/audit-bundle", async (req) => {
+    const { id } = req.params as { id: string };
+    return { bundle: await auditService.getTaskAuditBundle(ctx, id) };
   });
 
   app.post("/api/v1/tasks/:id/dependencies", async (req, reply) => {

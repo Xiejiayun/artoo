@@ -1,21 +1,37 @@
-import { agentRuntimes, artifacts, approvals, fileLeases, messages, rooms, runs, taskDependencies, tasks } from "@artoo/db";
+import {
+  agentRuntimes,
+  artifacts,
+  approvals,
+  eventLog,
+  fileLeases,
+  messages,
+  rooms,
+  runs,
+  schedulerDecisions,
+  taskDependencies,
+  tasks,
+} from "@artoo/db";
 import {
   AgentRuntimeSchema,
+  AuditEventSchema,
   ApprovalSchema,
   ArtifactSchema,
   FileLeaseSchema,
   MessageSchema,
   RoomSchema,
   RunSchema,
+  SchedulerDecisionSchema,
   TaskDependencySchema,
   TaskSchema,
   type AgentRuntime,
+  type AuditEvent,
   type Approval,
   type Artifact,
   type FileLease,
   type Message,
   type Room,
   type Run,
+  type SchedulerDecision,
   type Task,
   type TaskDependency,
 } from "@artoo/domain";
@@ -174,5 +190,42 @@ export function mapAgentRuntime(row: typeof agentRuntimes.$inferSelect): AgentRu
     status: row.status,
     capabilities: row.capabilities ?? [],
     last_seen_at: row.lastSeenAt,
+  });
+}
+
+export function mapSchedulerDecision(row: typeof schedulerDecisions.$inferSelect): SchedulerDecision {
+  return SchedulerDecisionSchema.parse({
+    id: row.id,
+    organization_id: row.organizationId,
+    task_id: row.taskId,
+    selected_computer_id: row.selectedComputerId,
+    selected_agent_instance_id: row.selectedAgentInstanceId,
+    selected_model_profile_id: row.selectedModelProfileId,
+    selected_effort_profile_id: row.selectedEffortProfileId,
+    mode: row.mode,
+    score: row.score,
+    reason: row.reason,
+    candidates: row.candidates,
+    created_at: row.createdAt,
+  });
+}
+
+export function mapAuditEvent(row: typeof eventLog.$inferSelect): AuditEvent {
+  return AuditEventSchema.parse({
+    position: row.position,
+    id: row.id,
+    type: row.type,
+    schema_version: row.schemaVersion,
+    organization_id: row.organizationId,
+    project_id: row.projectId,
+    task_id: row.taskId,
+    room_id: row.roomId,
+    run_id: row.runId,
+    actor: { type: row.actorType, id: row.actorId },
+    occurred_at: row.occurredAt,
+    correlation_id: row.correlationId,
+    idempotency_key: row.idempotencyKey,
+    sequence: row.sequence,
+    payload: row.payload,
   });
 }

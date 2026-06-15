@@ -6,6 +6,7 @@
 import { z } from "zod";
 
 import { CapabilitySchema } from "./capabilities.js";
+import { EventEnvelopeSchema } from "./events.js";
 import { ArtifactTypeSchema } from "./node-payloads.js";
 import { ApprovalStatusSchema, RunStatusSchema, TaskStatusSchema } from "./state.js";
 
@@ -207,3 +208,36 @@ export const ArtifactSchema = z.object({
   created_at: z.string(),
 });
 export type Artifact = z.infer<typeof ArtifactSchema>;
+
+export const SchedulerDecisionSchema = z.object({
+  id: z.string(),
+  organization_id: z.string(),
+  task_id: z.string(),
+  selected_computer_id: z.string(),
+  selected_agent_instance_id: z.string(),
+  selected_model_profile_id: z.string().nullish(),
+  selected_effort_profile_id: z.string().nullish(),
+  mode: z.enum(["auto", "manual"]),
+  score: z.number().int(),
+  reason: z.string(),
+  candidates: z.array(z.record(z.unknown())).default([]),
+  created_at: z.string(),
+});
+export type SchedulerDecision = z.infer<typeof SchedulerDecisionSchema>;
+
+export const AuditEventSchema = EventEnvelopeSchema.extend({
+  position: z.number().int(),
+});
+export type AuditEvent = z.infer<typeof AuditEventSchema>;
+
+export const TaskAuditBundleSchema = z.object({
+  task: TaskSchema,
+  room: RoomSchema.nullable(),
+  messages: z.array(MessageSchema),
+  runs: z.array(RunSchema),
+  artifacts: z.array(ArtifactSchema),
+  approvals: z.array(ApprovalSchema),
+  scheduler_decisions: z.array(SchedulerDecisionSchema),
+  events: z.array(AuditEventSchema),
+});
+export type TaskAuditBundle = z.infer<typeof TaskAuditBundleSchema>;
