@@ -60,9 +60,9 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 | Playwright DAG unlock | `npm run test:e2e --workspace @artoo/web` | Automated |
 | Cross-process mock runtime smoke | Covered by server/node and artood integration tests | Automated in Vitest |
 | True CLI runtime smoke | Gated manual run in isolated workspace | Open for Claude; Codex previously smoked |
-| Audit bundle proof | `GET /api/v1/tasks/:id/audit-bundle` exists | Replay/signing still open |
+| Audit bundle proof | `GET /api/v1/tasks/:id/audit-bundle` exists and redacts credential-shaped values | Replay/signing still open |
 | Self-host runbook | This document | Needs clean-machine validation |
-| Secret/policy negatives | Workspace guard, lease, approval tests exist | Secret redaction coverage open |
+| Secret/policy negatives | Workspace guard, lease, approval tests plus audit-bundle secret redaction coverage | Broader secret storage/rotation remains out of scope |
 | Branch worktree smoke | Requires `worktreeBaseRepo` and git smoke | Open |
 | iOS verification | Requires macOS/Xcode | Open |
 
@@ -81,3 +81,12 @@ Expected proof for a successful true runtime smoke:
 - task can be accepted to `done`
 - audit bundle for the task includes the run, artifact, scheduler decision, and
   event-log evidence
+
+## Audit Bundle Redaction
+
+The public audit-bundle endpoint redacts common credential-shaped values at
+export time, including agent/machine tokens, bearer tokens, JWTs, GitHub-style
+tokens, OpenAI-style `sk-` keys, env-var assignments such as `*_TOKEN=...`, and
+structured JSON fields named like `token`, `api_key`, `password`, `secret`, or
+`credential`. The persisted event log and task-room messages remain unchanged;
+redaction is applied only to the shareable evidence bundle.

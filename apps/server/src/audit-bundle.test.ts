@@ -133,6 +133,99 @@ describe("task audit bundle", () => {
     expect(second.json().bundle).toEqual(bundle);
   });
 
+  it("redacts credential-shaped values from the exported bundle", async () => {
+    server = await buildTestServer();
+    const { taskId, roomId } = await createTask(server);
+
+    await server.app.inject({
+      method: "POST",
+      url: `/api/v1/rooms/${roomId}/messages`,
+      payload: {
+        kind: "text",
+        body: "token dump: ARTOO_TOKEN=sk_agent_abc123secret and Authorization: Bearer rawbearertoken1234567890",
+        payload: {
+          note: "keep this evidence",
+          token: "plain-structured-token",
+          nested: {
+            api_key: "sk-proj-1234567890abcdefghijklmnop",
+            diagnostic: "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.signature123456",
+          },
+        },
+      },
+    });
+    await server.app.inject({ method: "POST", url: `/api/v1/tasks/${taskId}/ready` });
+    const assigned = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/tasks/${taskId}/assign`,
+      payload: { mode: "auto" },
+    });
+    const runId = assigned.json().run.id as string;
+    await ingestRunEvent(server.ctx, {
+      runId,
+      nodeId: "computer_local_mock",
+      sequence: 0,
+      event: { kind: "lifecycle", phase: "started" },
+    });
+    await ingestRunEvent(server.ctx, {
+      runId,
+      nodeId: "computer_local_mock",
+      sequence: 1,
+      event: {
+        kind: "output",
+        stream: "stdout",
+        text: "OPENAI_API_KEY=sk-1234567890abcdefghijklmnopqr",
+      },
+    });
+    await server.app.inject({
+      method: "POST",
+      url: `/api/v1/dev/tasks/${taskId}/request-approval`,
+      payload: {
+        action: "git.push",
+        risk: "high",
+        summary: "push with secret ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+        run_id: runId,
+      },
+    });
+    await ingestRunEvent(server.ctx, {
+      runId,
+      nodeId: "computer_local_mock",
+      sequence: 2,
+      event: {
+        kind: "artifact",
+        artifactType: "log_bundle",
+        uri: "file://mock/logs?credential=sk_machine_secret123",
+      },
+    });
+
+    const res = await server.app.inject({
+      method: "GET",
+      url: `/api/v1/tasks/${taskId}/audit-bundle`,
+    });
+    expect(res.statusCode).toBe(200);
+    const bundle = res.json().bundle;
+    const serialized = JSON.stringify(bundle);
+
+    expect(serialized).not.toContain("sk_agent_abc123secret");
+    expect(serialized).not.toContain("rawbearertoken1234567890");
+    expect(serialized).not.toContain("plain-structured-token");
+    expect(serialized).not.toContain("sk-proj-1234567890abcdefghijklmnop");
+    expect(serialized).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+    expect(serialized).not.toContain("sk-1234567890abcdefghijklmnopqr");
+    expect(serialized).not.toContain("ghp_1234567890abcdefghijklmnopqrstuvwxyz");
+    expect(serialized).not.toContain("sk_machine_secret123");
+    expect(serialized).toContain("<redacted:secret>");
+    expect(serialized).toContain("<redacted:jwt>");
+    expect(serialized).toContain("keep this evidence");
+
+    const message = (bundle.messages as { body: string; payload: Record<string, unknown> }[]).find((m) =>
+      m.body.includes("token dump"),
+    );
+    expect(message?.body).toContain("ARTOO_TOKEN=<redacted:secret>");
+    expect(message?.body).toContain("Authorization: Bearer <redacted:secret>");
+    expect(message?.payload.note).toBe("keep this evidence");
+    expect(message?.payload.token).toBe("<redacted:secret>");
+  });
+
   it("returns 404 for a missing task", async () => {
     server = await buildTestServer();
     const res = await server.app.inject({

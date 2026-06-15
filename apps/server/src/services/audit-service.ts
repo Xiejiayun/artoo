@@ -23,6 +23,7 @@ import {
   mapSchedulerDecision,
   mapTask,
 } from "../mappers.js";
+import { redactTaskAuditBundle } from "./redaction.js";
 
 /** GET /api/v1/tasks/:id/audit-bundle — deterministic read-only task evidence. */
 export async function getTaskAuditBundle(ctx: ServerContext, taskId: string): Promise<TaskAuditBundle> {
@@ -82,7 +83,7 @@ export async function getTaskAuditBundle(ctx: ServerContext, taskId: string): Pr
     )
     .orderBy(asc(eventLog.position));
 
-  return TaskAuditBundleSchema.parse({
+  const bundle = TaskAuditBundleSchema.parse({
     task: mapTask(taskRow),
     room: roomRow !== undefined ? mapRoom(roomRow) : null,
     messages: messageRows.map(mapMessage),
@@ -92,4 +93,5 @@ export async function getTaskAuditBundle(ctx: ServerContext, taskId: string): Pr
     scheduler_decisions: schedulerDecisionRows.map(mapSchedulerDecision),
     events: eventRows.map(mapAuditEvent),
   });
+  return redactTaskAuditBundle(bundle);
 }
