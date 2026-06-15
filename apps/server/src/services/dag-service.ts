@@ -4,16 +4,22 @@ import {
   type DagEdge,
   type DagSnapshot,
   ID_PREFIXES,
+  incomingEdges,
+  isGatingDependency,
+  isTaskUnlocked,
   type TaskDependency,
   type TaskStatus,
   wouldCreateCycle,
 } from "@artoo/domain";
 import { and, eq } from "drizzle-orm";
 
+import type { DrizzleDb } from "@artoo/storage";
+
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { mapDependency } from "../mappers.js";
+import { transitionTask } from "./transition-service.js";
 
 /** Load all dependency edges for the org as DAG edges (from=prereq, to=dependent). */
 async function loadEdges(
@@ -184,4 +190,152 @@ export async function getDag(ctx: ServerContext, rootTaskId: string): Promise<Da
   );
 
   return { root_task_id: rootTaskId, nodes, edges };
+}
+
+/** Snapshot of every task's status in the org (for unlock evaluation). */
+async function loadStatusMap(
+  ctx: ServerContext,
+  tx: DrizzleDb,
+): Promise<Record<string, TaskStatus>> {
+  const rows = await tx
+    .select({ id: tasks.id, status: tasks.status })
+    .from(tasks)
+    .where(eq(tasks.organizationId, ctx.organizationId));
+  const map: Record<string, TaskStatus> = {};
+  for (const r of rows) {
+    map[r.id] = r.status as TaskStatus;
+  }
+  return map;
+}
+
+/**
+ * When `completedTaskId` reaches `done`, auto-unlock any directly-downstream
+ * dependent whose gating prerequisites are now ALL done: transition it from
+ * backlog -> ready (triage) and emit `dag.node.ready`. soft_context edges never
+ * gate, so they never unlock. A dependent with empty acceptance criteria stays
+ * in backlog (it cannot be readied). Runs inside the caller's transaction.
+ * Returns the ids actually unlocked.
+ */
+export async function unlockDownstream(
+  ctx: ServerContext,
+  tx: DrizzleDb,
+  completedTaskId: string,
+): Promise<string[]> {
+  const edges = await loadEdges(ctx, tx);
+  const downstreamIds = [
+    ...new Set(
+      edges
+        .filter((e) => e.from_task_id === completedTaskId && isGatingDependency(e.type))
+        .map((e) => e.to_task_id),
+    ),
+  ];
+  if (downstreamIds.length === 0) {
+    return [];
+  }
+  const statusById = await loadStatusMap(ctx, tx);
+  const now = ctx.clock.nowIso();
+  const unlocked: string[] = [];
+  for (const dependentId of downstreamIds) {
+    const dependent = (
+      await tx
+        .select()
+        .from(tasks)
+        .where(and(eq(tasks.id, dependentId), eq(tasks.organizationId, ctx.organizationId)))
+    )[0];
+    if (dependent === undefined || dependent.status !== "backlog") {
+      continue;
+    }
+    if ((dependent.acceptanceCriteria as string[]).length === 0) {
+      continue;
+    }
+    if (!isTaskUnlocked(incomingEdges(edges, dependentId), statusById)) {
+      continue;
+    }
+    const res = await transitionTask(tx, ctx, {
+      taskId: dependentId,
+      from: "backlog",
+      trigger: "triage",
+      now,
+      events: (to) => [
+        buildEvent(ctx, {
+          type: "dag.node.ready",
+          actorType: "system",
+          actorId: "control_plane",
+          correlationId: dependentId,
+          projectId: dependent.projectId,
+          taskId: dependentId,
+          roomId: dependent.roomId,
+          payload: { unlocked_by: completedTaskId, status: to },
+        }),
+        buildEvent(ctx, {
+          type: "task.updated",
+          actorType: "system",
+          actorId: "control_plane",
+          correlationId: dependentId,
+          projectId: dependent.projectId,
+          taskId: dependentId,
+          roomId: dependent.roomId,
+          payload: { status: to },
+        }),
+      ],
+    });
+    if (res.changed) {
+      unlocked.push(dependentId);
+    }
+  }
+  return unlocked;
+}
+
+/**
+ * When `sourceTaskId` becomes blocked or cancelled, emit `dag.node.blocked` for
+ * each directly-downstream gating dependent that is still pending (backlog or
+ * ready) so the control plane / UI can surface the stall. Dependents are NOT
+ * transitioned — this is an advisory signal; recovery (retry of the source)
+ * later re-unlocks via {@link unlockDownstream}. soft_context never propagates.
+ * Returns the dependent ids that were signalled.
+ */
+export async function propagateBlocked(
+  ctx: ServerContext,
+  tx: DrizzleDb,
+  sourceTaskId: string,
+  reason: string,
+): Promise<string[]> {
+  const edges = await loadEdges(ctx, tx);
+  const downstreamIds = [
+    ...new Set(
+      edges
+        .filter((e) => e.from_task_id === sourceTaskId && isGatingDependency(e.type))
+        .map((e) => e.to_task_id),
+    ),
+  ];
+  if (downstreamIds.length === 0) {
+    return [];
+  }
+  const affected: string[] = [];
+  for (const dependentId of downstreamIds) {
+    const dependent = (
+      await tx
+        .select()
+        .from(tasks)
+        .where(and(eq(tasks.id, dependentId), eq(tasks.organizationId, ctx.organizationId)))
+    )[0];
+    if (dependent === undefined || (dependent.status !== "backlog" && dependent.status !== "ready")) {
+      continue;
+    }
+    await appendEvent(
+      tx,
+      buildEvent(ctx, {
+        type: "dag.node.blocked",
+        actorType: "system",
+        actorId: "control_plane",
+        correlationId: dependentId,
+        projectId: dependent.projectId,
+        taskId: dependentId,
+        roomId: dependent.roomId,
+        payload: { blocked_by: sourceTaskId, reason },
+      }),
+    );
+    affected.push(dependentId);
+  }
+  return affected;
 }

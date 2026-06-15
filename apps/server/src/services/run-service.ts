@@ -14,6 +14,7 @@ import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { mapRun } from "../mappers.js";
+import * as dagService from "./dag-service.js";
 import { transitionRun, transitionTask } from "./transition-service.js";
 
 /** GET /api/v1/runs/:id — run snapshot. */
@@ -49,8 +50,9 @@ export async function cancelRun(ctx: ServerContext, runId: string): Promise<Run>
     }
     await transitionRun(tx, ctx, { runId, from, trigger: "cancel", patch: { endedAt: now } });
     const taskRow = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
+    let taskCancelled = false;
     if (taskRow !== undefined && canTransitionTask(taskRow.status as TaskStatus, "cancel")) {
-      await transitionTask(tx, ctx, {
+      const cancelTransition = await transitionTask(tx, ctx, {
         taskId: run.taskId,
         from: taskRow.status as TaskStatus,
         trigger: "cancel",
@@ -68,6 +70,7 @@ export async function cancelRun(ctx: ServerContext, runId: string): Promise<Run>
           }),
         ],
       });
+      taskCancelled = cancelTransition.changed;
     }
     await appendEvent(
       tx,
@@ -83,6 +86,10 @@ export async function cancelRun(ctx: ServerContext, runId: string): Promise<Run>
         payload: { run_id: runId },
       }),
     );
+    if (taskCancelled) {
+      // The task is now cancelled: signal downstream gating dependents (advisory).
+      await dagService.propagateBlocked(ctx, tx, run.taskId, "run_cancelled");
+    }
     const updated = (await tx.select().from(runs).where(eq(runs.id, runId)))[0];
     if (updated === undefined) {
       throw new Error("cancelRun: run missing after transition");
@@ -210,8 +217,12 @@ export async function ingestRunEvent(
           trigger: "run_failed",
           patch: { endedAt: now, failureReason: ev.failureReason ?? "unknown" },
         });
-        await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_failed", now });
+        const taskBlocked = await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_failed", now });
         eventId = await emit("run.failed", { run_id: env.runId, failure_reason: ev.failureReason ?? "unknown" }, { kind: "run_event", body: "Run failed" });
+        if (taskBlocked.changed) {
+          // The task is now blocked: signal downstream gating dependents (advisory).
+          await dagService.propagateBlocked(ctx, tx, run.taskId, `run_failed: ${ev.failureReason ?? "unknown"}`);
+        }
       } else {
         await transitionRun(tx, ctx, { runId: env.runId, from: run.status as RunStatus, trigger: "cancel", patch: { endedAt: now } });
         eventId = await emit("run.cancelled", { run_id: env.runId }, { kind: "run_event", body: "Run cancelled" });

@@ -21,6 +21,7 @@ import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { mapRun, mapTask } from "../mappers.js";
+import * as dagService from "./dag-service.js";
 import { scheduleTask } from "./scheduler.js";
 import { transitionTask } from "./transition-service.js";
 
@@ -229,6 +230,22 @@ export async function reviewTask(
         status: row.status,
       });
     }
+    // Aggregate review: a parent cannot be accepted (-> done) until every child
+    // task is done or cancelled. Otherwise accepting a parent would mark a tree
+    // complete while sub-tasks are still open.
+    if (req.outcome === "accepted") {
+      const children = await tx
+        .select({ status: tasks.status })
+        .from(tasks)
+        .where(and(eq(tasks.parentTaskId, taskId), eq(tasks.organizationId, ctx.organizationId)));
+      const pending = children.filter((c) => c.status !== "done" && c.status !== "cancelled");
+      if (pending.length > 0) {
+        throw AppError.invalidState(
+          "cannot accept parent task until all child tasks are done or cancelled",
+          { open_children: pending.length },
+        );
+      }
+    }
     const result = await transitionTask(tx, ctx, {
       taskId,
       from: "review",
@@ -259,6 +276,11 @@ export async function reviewTask(
     });
     if (!result.changed) {
       throw AppError.conflict("task is no longer in review");
+    }
+    // On accept (-> done), auto-unlock downstream dependents whose gating
+    // prerequisites are now all satisfied (emits dag.node.ready per unlock).
+    if (req.outcome === "accepted") {
+      await dagService.unlockDownstream(ctx, tx, taskId);
     }
     const updated = (await tx.select().from(tasks).where(eq(tasks.id, taskId)))[0];
     if (updated === undefined) {
