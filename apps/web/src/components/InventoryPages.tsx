@@ -146,13 +146,61 @@ export function AgentsPage(): React.ReactNode {
   );
 }
 
-/** Read-only skill contract surface; install/storage APIs are not present in Phase A. */
+/** Read-only installed skill registry backed by the #24 server API. */
 export function SkillsPage(): React.ReactNode {
+  const api = useApi();
+  const skillsQuery = useQuery({
+    queryKey: queryKeys.skillInstalls,
+    queryFn: () => api.listSkillInstalls(),
+  });
+  const skills = skillsQuery.data?.skills ?? [];
+
   return (
     <section className="inventory-page" aria-label="Skills">
       <header>
         <h1>Skills</h1>
       </header>
+      <section aria-label="Installed skills">
+        <h2>Installed Skills</h2>
+        {skillsQuery.isLoading ? <p role="status">Loading skills…</p> : null}
+        {skillsQuery.isError ? <p role="alert">Failed to load skills.</p> : null}
+        {!skillsQuery.isLoading && !skillsQuery.isError && skills.length === 0 ? (
+          <p>No skills installed.</p>
+        ) : null}
+        {skills.length > 0 ? (
+          <div className="inventory-list">
+            {skills.map((skill) => (
+              <article key={skill.id} aria-label={skill.name} className="inventory-item">
+                <h3>{skill.name}</h3>
+                <dl>
+                  <dt>Status</dt>
+                  <dd>{skill.enabled ? "enabled" : "disabled"}</dd>
+                  <dt>Scope</dt>
+                  <dd>{skill.project_id ?? "organization"}</dd>
+                  <dt>Skill id</dt>
+                  <dd>{skill.skill_id}</dd>
+                  <dt>Version</dt>
+                  <dd>{skill.version}</dd>
+                  <dt>Capabilities</dt>
+                  <dd>{list(skill.capabilities)}</dd>
+                  <dt>Compatible runtimes</dt>
+                  <dd>{list(skill.compatible_runtimes)}</dd>
+                  <dt>Permission risk</dt>
+                  <dd>{skill.permission_summary.risk}</dd>
+                  <dt>Permission categories</dt>
+                  <dd>{list(skill.permission_summary.categories)}</dd>
+                  <dt>Installed by</dt>
+                  <dd>
+                    {skill.installed_by_type}:{skill.installed_by_id}
+                  </dd>
+                  <dt>Updated</dt>
+                  <dd>{value(skill.updated_at)}</dd>
+                </dl>
+              </article>
+            ))}
+          </div>
+        ) : null}
+      </section>
       <section aria-label="Skill manifest contract">
         <h2>Manifest Contract</h2>
         <dl>
@@ -161,7 +209,7 @@ export function SkillsPage(): React.ReactNode {
           <dt>Capability source</dt>
           <dd>manifest capabilities plus compatible_runtimes</dd>
           <dt>Storage/API status</dt>
-          <dd>Phase B</dd>
+          <dd>durable install read API</dd>
         </dl>
       </section>
       <section aria-label="Permission categories">

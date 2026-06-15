@@ -19,6 +19,7 @@ import type {
   ModelProfile,
   Room,
   Run,
+  SkillInstall,
   Task,
   AuditBundleExport,
   TaskAuditBundle,
@@ -38,6 +39,10 @@ export interface BootstrapResponse {
 
 export interface ComputerRuntimesResponse {
   runtimes: AgentRuntime[];
+}
+
+export interface SkillInstallsResponse {
+  skills: SkillInstall[];
 }
 
 /** Aggregated read model for a single task detail view. */

@@ -33,6 +33,7 @@ import type {
   MessagesResponse,
   RetryResponse,
   RunResponse,
+  SkillInstallsResponse,
   SupersedeMemoryResponse,
   TasksResponse,
   TaskSnapshot,
@@ -180,6 +181,10 @@ export class ApiClient {
       "GET",
       `/computers/${encodeURIComponent(computerId)}/runtimes`,
     );
+  }
+
+  listSkillInstalls(): Promise<SkillInstallsResponse> {
+    return this.request<SkillInstallsResponse>("GET", "/skills");
   }
 
   cancelRun(runId: string, idempotencyKey: string): Promise<RunResponse> {

@@ -9,6 +9,7 @@ export const queryKeys = {
   task: (taskId: string) => ["task", taskId] as const,
   messages: (roomId: string) => ["messages", roomId] as const,
   computerRuntimes: (computerId: string) => ["computerRuntimes", computerId] as const,
+  skillInstalls: ["skillInstalls"] as const,
   approvals: (status: string) => ["approvals", status] as const,
   memories: (filters: Record<string, string | undefined> = {}) => ["memories", filters] as const,
   memory: (memoryId: string) => ["memory", memoryId] as const,

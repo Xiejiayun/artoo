@@ -175,6 +175,31 @@ describe("ApiClient", () => {
     expect(res.runtimes[0]?.capabilities).toEqual(["code.modify"]);
   });
 
+  it("listSkillInstalls fetches durable installed skill rows", async () => {
+    server.use(
+      http.get(`${BASE}/skills`, () =>
+        HttpResponse.json({
+          skills: [
+            {
+              id: "skill_1",
+              name: "Web Research",
+              skill_id: "web-research",
+              enabled: true,
+              capabilities: ["research.web"],
+              compatible_runtimes: ["mock"],
+              permission_summary: { risk: "medium", categories: ["network"] },
+            },
+          ],
+        }),
+      ),
+    );
+
+    const res = await client.listSkillInstalls();
+
+    expect(res.skills[0]?.name).toBe("Web Research");
+    expect(res.skills[0]?.capabilities).toEqual(["research.web"]);
+  });
+
   it("getTaskAuditBundle fetches the read-only task evidence bundle", async () => {
     server.use(
       http.get(`${BASE}/tasks/task_1/audit-bundle`, () =>

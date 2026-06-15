@@ -37,9 +37,9 @@ Current v1 status:
   smoke remains open.
 - #16 Web product surface now has backed Workspace, Board, Computers, Agents,
   Skills, Memory, and Runs/Audit routes. Computers and Agents render bootstrap
-  inventory plus heartbeat-backed runtime rows; Skills renders the Phase A
-  `skill.yaml v1alpha1` manifest/permission/capability contract without
-  pretending installed-skill storage exists.
+  inventory plus heartbeat-backed runtime rows; Skills renders installed skill
+  rows from the #24 read API plus the `skill.yaml v1alpha1`
+  manifest/permission/capability vocabulary.
 - #17 Release hardening has its first audit-bundle contract merged:
   `GET /api/v1/tasks/:id/audit-bundle` exports deterministic task evidence and
   redacts credential-shaped values at the public evidence boundary. A v1alpha1
@@ -317,9 +317,8 @@ Backed slices:
 - Agents read model from `agent_instances`, `agents`, `computers`,
   `model_profiles`, and `effort_profiles`.
 - Skills read model over the Phase A `skill.yaml v1alpha1` domain contract:
-  permission categories, capabilities, and runtime compatibility. Durable
-  install/read APIs now exist in the server; installed/enabled skill UX remains a
-  follow-up product slice.
+  installed skills from the #24 read API, enabled state, scope, capabilities,
+  runtime compatibility, permission summary, and the manifest vocabulary.
 - Memory curation/source-traceability UI built against #21 APIs.
 - Runs/Audit built against server task audit bundles.
 
@@ -328,8 +327,8 @@ Deferred until contracts land:
 - DAG editing/viewing can now build against #11.
 - Lease/conflict visualization can now build against #12/#20 read surfaces, but
   integration queue actions still need a product/server contract.
-- Installed/enabled skill registry UX can now build against the #24 storage/API
-  work.
+- Installed/enabled skill registry actions wait for explicit product/write
+  contracts; the read-only installed skill surface is backed.
 - Runtime/agent routing controls wait for explicit product write contracts; the
   read-only inventory surfaces are backed.
 

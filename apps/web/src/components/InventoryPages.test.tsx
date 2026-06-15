@@ -50,12 +50,59 @@ describe("Inventory pages", () => {
     expect(agent).toHaveTextContent("C:/workspace/artoo");
   });
 
-  it("renders the Phase A skill manifest contract without an installed-skill list", () => {
-    const client = fakeApi({});
+  it("renders installed skills from the Phase B read API plus the manifest vocabulary", async () => {
+    const listSkillInstalls = vi.fn(async () => ({
+      skills: [
+        {
+          id: "skill_000001",
+          organization_id: "org_default",
+          project_id: "proj_artoo",
+          skill_id: "web-research",
+          name: "Web Research",
+          version: "1.0.0",
+          enabled: true,
+          manifest: {
+            api_version: "v1alpha1" as const,
+            id: "web-research",
+            name: "Web Research",
+            version: "1.0.0",
+            description: "",
+            capabilities: ["research.web" as const],
+            compatible_runtimes: ["mock"],
+            approval_risks: [],
+            evals: [],
+          },
+          capabilities: ["research.web" as const],
+          compatible_runtimes: ["mock"],
+          permission_summary: {
+            filesystem: { read: [], write: [] },
+            network: { outbound: ["search.example.com"] },
+            secrets: [],
+            external_services: [],
+            high_risk_actions: [],
+            approval_risks: [],
+            categories: ["network" as const],
+            risk: "medium" as const,
+          },
+          installed_by_type: "user" as const,
+          installed_by_id: "user_owner",
+          installed_at: "2026-06-13T00:00:00Z",
+          updated_at: "2026-06-13T00:00:00Z",
+        },
+      ],
+    }));
+    const client = fakeApi({ listSkillInstalls });
 
     renderWithProviders(<SkillsPage />, { client, route: "/skills" });
 
     expect(screen.getByRole("heading", { name: "Skills", level: 1 })).toBeInTheDocument();
+    const installed = await screen.findByRole("article", { name: "Web Research" });
+    expect(installed).toHaveTextContent("enabled");
+    expect(installed).toHaveTextContent("proj_artoo");
+    expect(installed).toHaveTextContent("research.web");
+    expect(installed).toHaveTextContent("mock");
+    expect(installed).toHaveTextContent("medium");
+    expect(installed).toHaveTextContent("network");
     expect(screen.getByRole("region", { name: "Skill manifest contract" })).toHaveTextContent(
       "v1alpha1",
     );
@@ -65,6 +112,14 @@ describe("Inventory pages", () => {
     expect(screen.getByRole("region", { name: "Known capabilities" })).toHaveTextContent(
       "code.modify",
     );
-    expect(screen.queryByText(/Installed skills/i)).toBeNull();
+    expect(listSkillInstalls).toHaveBeenCalledOnce();
+  });
+
+  it("renders an installed skill empty state", async () => {
+    const client = fakeApi({ listSkillInstalls: async () => ({ skills: [] }) });
+
+    renderWithProviders(<SkillsPage />, { client, route: "/skills" });
+
+    expect(await screen.findByText("No skills installed.")).toBeInTheDocument();
   });
 });
