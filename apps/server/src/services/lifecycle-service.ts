@@ -180,6 +180,18 @@ export async function assignTask(
 
     const workspaceRoot = instance?.workspaceRoot ?? null;
 
+    // Branch-backed worktree opt-in (#23): an explicit branch is used verbatim; a
+    // `branch_backed` request generates a deterministic per-run `artoo/run-<id>`;
+    // neither -> null (ordinary workspace, unchanged). Branch spelling is a git ref
+    // (source-case preserved), separate from canonical-lowercase lease keys.
+    const explicitBranch = (req.workspace_branch ?? "").trim();
+    const workspaceBranch =
+      explicitBranch !== ""
+        ? explicitBranch
+        : req.branch_backed === true
+          ? `artoo/run-${runId}`
+          : null;
+
     // Build + persist the run's ContextPack (#21 Part D): select accepted memories
     // for this context and record source_memory_ids for audit; the run links it.
     const contextPack = await contextPackService.buildRunContextPack(ctx, tx, {
@@ -202,7 +214,7 @@ export async function assignTask(
       status: "queued",
       contextPackId: contextPack.contextPackId,
       workspaceRoot,
-      workspaceBranch: null,
+      workspaceBranch,
       createdAt: now,
     });
 
