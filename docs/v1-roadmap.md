@@ -10,18 +10,32 @@ Accepted v0.1 is on `origin/main` at `eec68d8`.
 
 Current v1 status:
 
+- This status snapshot includes implementation changes through `3871649`
+  (#21 A/B/C memory storage/API/context retrieval).
 - #11 Task DAG is done: dependency CRUD, ready unlock, blocked propagation,
   aggregate review, and evidence gates are merged.
-- #12 Concurrency is in progress: Phase A focuses on pure path/lease contracts,
-  file lease storage/service, and integration queue records.
-- #13 Skill registry is in progress with a pure `skill.yaml v1alpha1`
-  manifest/permission/capability contract slice.
-- #14 Memory is ready to claim for a pure lifecycle/retrieval/ContextPack
-  selection contract slice.
-- #15 Scheduler/runtime is in progress: multi-runtime presets are merged; the
-  next contract is heartbeat runtime capabilities plus scheduler consumption.
-- #16 Web product surface has the nav shell and backed Board merged; rich pages
-  wait for #12-#15 and #17 contracts.
+- #12/#20 Concurrency Phase A+B server work is done: file lease contracts,
+  lease storage/service, run-start reservation, terminal release, workspace root
+  recording, and patch/pull_request integration queue enqueue are merged. Branch
+  worktree activation remains gated on artood `worktreeBaseRepo` plus a true git
+  worktree smoke.
+- #13 Skill registry Phase A is done with pure `skill.yaml v1alpha1`
+  validation, permission summary, runtime-aware capability contribution, and
+  fake/local MCP descriptor contracts.
+- #14/#21 Memory is partly complete: pure lifecycle/retrieval contract plus
+  durable memory storage, curation APIs, supersession, and accepted-only context
+  retrieval are merged. Run-start ContextPack injection and
+  `context_packs.source_memory_ids` persistence remain as #21 Part D.
+- #15 Scheduler/runtime is in progress: multi-runtime presets, heartbeat
+  runtime capabilities, and server persistence are merged. Scheduler consumption
+  of `agent_runtimes` is approved and next.
+- #16 Web product surface has the nav shell and backed Board merged; Memory can
+  now build against #21 APIs, while richer Computers/Agents/Skills/Runs/Audit
+  pages still need backed contracts.
+- #17 Release hardening has its first audit-bundle contract merged:
+  `GET /api/v1/tasks/:id/audit-bundle` exports deterministic task evidence.
+  Signed/exportable bundles, replay proof, policy/secrets negatives, runbook,
+  demo, and CI/release gates remain.
 - #18 iOS source is done as native SwiftUI source, but first macOS/Xcode build,
   run, and test verification remains pending outside this Windows environment.
 
@@ -66,6 +80,11 @@ v1 is complete only when all of these are true:
 | #15 | Scheduler/runtime | model-effort routing, registry input, second runtime adapter | `@claude_sde` + `@claude_engineer` |
 | #16 | Web product surface | board/sprint, computers, agents, skills, memory, runs/audit UX | `@claude` |
 | #17 | Release hardening | audit/replay bundles, policy/secrets, CI/docs/demo gates | split later |
+| #18 | iOS app | native SwiftUI mobile control surface | `@claude` |
+| #19 | Concurrency node | artood workspace root/worktree materialization | `@claude_sde` |
+| #20 | Concurrency server | run-start lease reservation/release and integration queue flow | `@claude_engineer` |
+| #21 | Memory server | durable curation APIs and ContextPack source-memory evidence | `@claude` |
+| #22 | Memory web | memory curation and source traceability UI | `@claude` after #21 API |
 
 ## Phase Rules
 
@@ -135,24 +154,31 @@ Minimum tests:
 
 v1 must prevent concurrent agents from corrupting one workspace.
 
-Contract to freeze:
+Merged contract:
 
 - File lease identity uses `lease_*` ids.
 - Lease scope is organization, project, task/run, workspace root, path pattern,
   mode, holder, expiry, and status.
 - Write leases conflict on overlapping path patterns. Read leases can coexist
   unless a write lease overlaps.
-- Assignment or run start must reserve required write scope before process spawn.
-- Lease release happens on run terminal states and on timeout recovery.
-- Per-task worktree/branch allocation is recorded and included in ContextPack.
-- Integration queue records produced artifacts that require merge/rebase/review.
+- Lease paths are canonical lowercase workspace-relative keys; real filesystem
+  workspace roots preserve source case.
+- Assignment reserves declared `write_paths` as run-held write leases before
+  dispatch. A conflict aborts the whole assignment and leaves the task `ready`.
+- Lease release happens on completed, failed, cancelled, and rejected
+  `run.start` recovery.
+- Runs record `workspace_root` and `workspace_branch`; branch remains `null` in
+  the ordinary-workspace path until true worktree activation is explicitly
+  enabled.
+- Integration queue records `patch` and `pull_request` artifacts that require
+  merge/rebase/review. Other artifact types are not enqueued.
 
-Minimum tests:
+Remaining:
 
-- Path normalization and workspace escape tests.
-- Conflicting lease acquisition tests.
-- Run cancellation/failure releases leases.
-- Two independent tasks can run concurrently when scopes do not overlap.
+- Gate branch-backed worktree activation on artood `worktreeBaseRepo`, server
+  `workspace_branch`, and a true git worktree smoke on a real base repo.
+- Add product UI for lease conflicts and integration queue state only after the
+  queue worker/product contract is defined.
 
 ### Skill Registry (#13)
 
@@ -183,20 +209,26 @@ Existing primitives:
 - `ContextPack.memory.task_summary`
 - `ContextPack.memory.project_notes`
 
-Contract to freeze:
+Merged contract:
 
-- Memories have propose -> curated -> accepted/rejected lifecycle.
+- Memories have proposed, accepted, rejected, and superseded lifecycle states.
 - A memory has scope (`task`, `project`, `organization`, or `code`), source,
   author actor, confidence, text/payload, and timestamps.
 - Only accepted memories can be injected into a run by default.
-- Context builder records injected memory ids in `source_memory_ids`.
-- Memory curation events are auditable and visible in task/project rooms.
+- Superseding an accepted memory atomically creates the replacement as accepted,
+  links old/new ids, transitions the old memory to superseded, and makes the old
+  memory non-retrievable.
+- `GET /api/v1/memories/context` returns accepted-only memories and exact
+  `source_memory_ids` using the pure selector order.
+- Code memories are project-bound, never organization-global.
 
-Minimum tests:
+Remaining:
 
-- Propose/curate/accept state machine.
-- ContextPack retrieval filters by project/task/scope and accepted status.
-- Injected `source_memory_ids` round trip through DB and run start.
+- #21 Part D must call the same selector during run-start ContextPack
+  generation, persist `context_packs.source_memory_ids`, and set
+  `runs.context_pack_id`.
+- Web Memory curation/source-traceability UI should build against the merged
+  #21 API rather than fake memory behavior.
 
 ### Scheduler and Runtime (#15)
 
@@ -208,7 +240,7 @@ Existing primitives:
 - `agent_instances.effort_profile_id`
 - `scheduler_decisions`
 
-Contract to freeze:
+Current contract:
 
 - Scheduler scores capability match, runtime availability, computer health,
   queue depth, task priority, preferred model profile, preferred effort, and
@@ -217,6 +249,16 @@ Contract to freeze:
 - Runtime adapters expose enough detection metadata for registry matching.
 - The second runtime adapter must pass the same process-adapter lifecycle
   contract as Codex: start, stream output, stop, collect artifacts, failure.
+- artood registry heartbeats report runtime capability tags, and the server
+  persists them in `agent_runtimes`.
+- Scheduler consumption should LEFT JOIN `agent_runtimes` by
+  `(organization_id, computer_id, runtime)`: missing rows fall back with
+  `runtimeCaps=[]`; disabled rows are excluded; rows with null/stale
+  `last_seen_at` are excluded; fresh non-disabled rows contribute runtime caps.
+  Runtime staleness is strict `serverNow - last_seen_at > 30_000` ms by default,
+  and version is non-gating.
+- Seeded `runtime_mock` must have `last_seen_at = now` so existing mock flows
+  remain schedulable.
 
 Minimum tests:
 
@@ -224,6 +266,8 @@ Minimum tests:
 - Capability mismatch rejection.
 - Manual override still records a scheduler decision.
 - Second runtime fixture smoke through node transport.
+- Runtime-only capability routing, disabled/stale/null-row exclusion, missing
+  row fallback, capability subset mismatch, and strict staleness boundary.
 
 ### Web Product Surface (#16)
 
@@ -238,11 +282,14 @@ First backed slice:
 
 Deferred until contracts land:
 
-- DAG editing/viewing waits for #11.
-- Lease/conflict visualization waits for #12.
-- Skills page behavior waits for #13.
-- Memory view waits for #14.
-- Runtime/agent routing controls wait for #15.
+- DAG editing/viewing can now build against #11.
+- Lease/conflict visualization can now build against #12/#20 read surfaces, but
+  integration queue actions still need a product/server contract.
+- Skills page behavior can build the Phase A manifest/permission contract, with
+  storage/API work still required for a true product page.
+- Memory view can now build against #21 curation/context APIs.
+- Runtime/agent routing controls wait for #15 scheduler consumption and richer
+  Computers/Agents APIs.
 
 Minimum tests:
 
@@ -252,7 +299,9 @@ Minimum tests:
 
 ### Release Hardening (#17)
 
-This lane starts after the core contracts stabilize.
+This lane is active. The first merged slice is a deterministic task audit bundle
+endpoint that exports task, room, messages, runs, artifacts, approvals,
+scheduler decisions, and ordered event log evidence.
 
 Required gates:
 
@@ -266,6 +315,10 @@ Required gates:
 - self-hosted dev runbook
 - v1 demo script or documented manual demo path
 - audit/replay bundle proof for a completed task
+- signed/exportable audit bundle format, or a documented decision to defer
+  signing from v1
+- policy/secrets negative tests for filesystem scope, branch worktree roots,
+  credential handling, and approval-gated operations
 
 ## Review Checklist
 
