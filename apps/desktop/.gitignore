@@ -1,0 +1,12 @@
+# Built web UI copied in from apps/web/dist at build time — not source.
+renderer/
+
+# electron-builder output
+release/
+
+# ad-hoc build deps (electron/electron-builder installed only to package)
+node_modules/
+
+# spike scratch
+.smoke.log
+.abb-recover/
