@@ -24,7 +24,9 @@ function isSpaNavigation(req: FastifyRequest): boolean {
     return false;
   }
   const path = req.url.split("?")[0] ?? "";
-  if (path.startsWith("/api/") || path.startsWith("/auth/")) {
+  // Exclude the API/auth namespaces — both exact roots and sub-paths — so a bad
+  // /api or /auth link never returns the SPA as a 200.
+  if (path === "/api" || path.startsWith("/api/") || path === "/auth" || path.startsWith("/auth/")) {
     return false;
   }
   return (req.headers.accept ?? "").includes("text/html");

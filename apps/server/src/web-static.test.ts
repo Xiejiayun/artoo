@@ -60,6 +60,13 @@ describe("web static SPA serving (#34)", () => {
     const unknownAuth = await get("/auth/nope", HTML_ACCEPT);
     expect(unknownAuth.statusCode).toBe(404);
     expect(unknownAuth.body).not.toContain("artoo");
+    // exact namespace ROOTS (no trailing slash) must NOT fall through to the SPA
+    for (const root of ["/api", "/auth"]) {
+      const res = await get(root, HTML_ACCEPT);
+      expect(res.statusCode).toBe(404);
+      expect(res.body).not.toContain("artoo");
+      expect(JSON.parse(res.body).error.code).toBe("not_found");
+    }
   });
 
   it("lets a real API route win over the SPA fallback even for html-accepting requests", async () => {
