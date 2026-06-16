@@ -138,6 +138,11 @@ describe("ContextPack memory injection at run-start (#21 Part D)", () => {
     const runStart = sent.find((m) => m.kind === "command") as RunStartCommand | undefined;
     expect(runStart?.type).toBe("run.start");
     expect(runStart?.payload.context_pack.id).toBe(body.run.context_pack_id);
+    expect(runStart?.payload.context_pack.uri).toBeUndefined();
+    expect(runStart?.payload.context_pack.payload).toMatchObject({
+      task: { id: expect.any(String), title: "t", acceptance_criteria: ["done"] },
+      project: { id: PROJECT },
+    });
     expect(runStart?.payload.workspace.root).toBe("C:/workspace/artoo");
   });
 });

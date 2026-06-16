@@ -1,8 +1,8 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { agentInstances, runs } from "@artoo/db";
-import { ID_PREFIXES } from "@artoo/domain";
+import { agentInstances, contextPacks, runs } from "@artoo/db";
+import { ContextPackSchema, ID_PREFIXES } from "@artoo/domain";
 import type {
   NodeToServerMessage,
   NodeTransport,
@@ -89,6 +89,17 @@ export function attachNodeBinding(ctx: ServerContext, transport: NodeTransport):
       // Use the ContextPack persisted at assign time (#21 Part D). The transient
       // fallback only covers legacy/defensive rows with no pack of record.
       const contextPackId = run.contextPackId ?? ctx.idGen.generate(ID_PREFIXES.contextPack);
+      const persistedContextPack =
+        run.contextPackId === null
+          ? undefined
+          : (
+              await ctx.db.db
+                .select()
+                .from(contextPacks)
+                .where(and(eq(contextPacks.id, run.contextPackId), eq(contextPacks.organizationId, ctx.organizationId)))
+            )[0];
+      const parsedContextPack =
+        persistedContextPack === undefined ? undefined : ContextPackSchema.safeParse(persistedContextPack.payload);
       const commandId = ctx.idGen.generate("cmd");
       pendingCommandRun.set(commandId, runId);
 
@@ -111,7 +122,10 @@ export function attachNodeBinding(ctx: ServerContext, transport: NodeTransport):
             root: workspaceRoot,
             ...(run.workspaceBranch != null ? { branch: run.workspaceBranch } : {}),
           },
-          context_pack: { id: contextPackId, uri: `artoo://contextpack/${contextPackId}` },
+          context_pack:
+            parsedContextPack?.success === true
+              ? { id: contextPackId, payload: parsedContextPack.data }
+              : { id: contextPackId, uri: `artoo://contextpack/${contextPackId}` },
           policy_snapshot: {
             filesystem_write_scope: [workspaceRoot],
             requires_approval: ["git.push", "external.post"],

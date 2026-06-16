@@ -16,6 +16,19 @@ function makeWorkspace(): string {
 }
 
 function makeConfig(workspace: string): AgentInstanceConfig {
+  const contextPack = {
+    task: {
+      id: "task_1",
+      title: "Process adapter task",
+      description: "Make the runtime prove it received the task.",
+      acceptance_criteria: ["write changes.patch"]
+    },
+    project: { id: "proj_1", name: "Artoo", default_workspace: workspace },
+    workspace: { root: workspace, file_scope: ["src/**"] },
+    policy: { filesystem_write_scope: [workspace], requires_approval: ["git.push"] },
+    memory: { task_summary: null, project_notes: ["prefer small patches"] },
+    artifacts: { expected: ["changes.patch"] }
+  };
   return {
     runId: "run_1",
     taskId: "task_1",
@@ -28,7 +41,7 @@ function makeConfig(workspace: string): AgentInstanceConfig {
       agent_instance_id: "ai_1",
       runtime: "codex",
       workspace: { root: workspace },
-      context_pack: { id: "ctx_1", uri: "inline" },
+      context_pack: { id: "ctx_1", payload: contextPack },
       policy_snapshot: { filesystem_write_scope: [workspace], requires_approval: [] },
       artifact_rules: { paths: ["*.patch"] }
     }
@@ -75,7 +88,12 @@ describe("createProcessAdapter", () => {
 
       // context pack was written into the workspace for the agent
       expect(existsSync(join(ws, "context_pack.md"))).toBe(true);
-      expect(readFileSync(join(ws, "context_pack.md"), "utf8")).toContain("Context Pack ctx_1");
+      const context = readFileSync(join(ws, "context_pack.md"), "utf8");
+      expect(context).toContain("Context Pack ctx_1");
+      expect(context).toContain("## Task");
+      expect(context).toContain("title: Process adapter task");
+      expect(context).toContain("- write changes.patch");
+      expect(context).toContain("## Raw Payload");
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }

@@ -127,13 +127,52 @@ function makeLineEmitter(onLine: (text: string) => void): {
 
 function renderContextPack(config: AgentInstanceConfig): string {
   const pack = config.runStart.context_pack;
-  const lines = [
+  const lines: string[] = [
     `# Context Pack ${pack.id}`,
     `task: ${config.taskId}`,
     `run: ${config.runId}`,
-    pack.uri ? `uri: ${pack.uri}` : undefined,
-    pack.payload ? `payload: ${JSON.stringify(pack.payload)}` : undefined
-  ].filter((line): line is string => line !== undefined);
+  ];
+  if (pack.uri) {
+    lines.push(`uri: ${pack.uri}`);
+  }
+  if (pack.payload) {
+    lines.push(
+      "",
+      "## Task",
+      `id: ${pack.payload.task.id}`,
+      `title: ${pack.payload.task.title}`,
+      `description: ${pack.payload.task.description}`,
+      "acceptance_criteria:",
+      ...pack.payload.task.acceptance_criteria.map((criterion) => `- ${criterion}`),
+      "",
+      "## Project",
+      `id: ${pack.payload.project.id}`,
+      `name: ${pack.payload.project.name}`,
+      `default_workspace: ${pack.payload.project.default_workspace ?? ""}`,
+      "",
+      "## Workspace",
+      `root: ${pack.payload.workspace.root}`,
+      "file_scope:",
+      ...pack.payload.workspace.file_scope.map((scope) => `- ${scope}`),
+      "",
+      "## Policy",
+      "filesystem_write_scope:",
+      ...pack.payload.policy.filesystem_write_scope.map((scope) => `- ${scope}`),
+      "requires_approval:",
+      ...pack.payload.policy.requires_approval.map((approval) => `- ${approval}`),
+      "",
+      "## Memory",
+      `task_summary: ${pack.payload.memory.task_summary ?? ""}`,
+      "project_notes:",
+      ...pack.payload.memory.project_notes.map((note) => `- ${note}`),
+      "",
+      "## Expected Artifacts",
+      ...pack.payload.artifacts.expected.map((artifact) => `- ${artifact}`),
+      "",
+      "## Raw Payload",
+      JSON.stringify(pack.payload, null, 2)
+    );
+  }
   return `${lines.join("\n")}\n`;
 }
 
