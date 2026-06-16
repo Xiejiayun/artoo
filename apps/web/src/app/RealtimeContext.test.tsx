@@ -6,6 +6,7 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { WebSocketLike } from "../ws/realtimeClient.js";
+import { queryKeys } from "./queryKeys.js";
 import { RealtimeProvider, useSubscription } from "./RealtimeContext.js";
 
 afterEach(() => {
@@ -15,14 +16,17 @@ afterEach(() => {
 class FakeSocket implements WebSocketLike {
   sent: string[] = [];
   onopen: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number; reason: string }) => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   send(data: string): void {
     this.sent.push(data);
   }
   close(): void {
-    this.onclose?.();
+    this.onclose?.({ code: 1000, reason: "" });
+  }
+  closeWith(code: number, reason = ""): void {
+    this.onclose?.({ code, reason });
   }
   open(): void {
     this.onopen?.();
@@ -80,5 +84,32 @@ describe("RealtimeProvider", () => {
     );
 
     expect(spy).toHaveBeenCalledWith({ queryKey: ["task", "task_1"] });
+  });
+
+  it("re-probes the session when the control WS closes 1008 (routes to #34 gate)", async () => {
+    let socket: FakeSocket | undefined;
+    const queryClient = new QueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RealtimeProvider
+          socketFactory={() => {
+            socket = new FakeSocket();
+            return socket;
+          }}
+          reconnectDelayMs={0}
+        >
+          <Subscriber topics={["task:task_1"]} />
+        </RealtimeProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(socket).toBeDefined());
+    socket?.open();
+    spy.mockClear();
+
+    socket?.closeWith(1008, "unauthenticated");
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.session });
   });
 });

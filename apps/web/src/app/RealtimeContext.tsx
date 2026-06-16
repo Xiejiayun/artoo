@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useRef, type ReactNode } from "re
 
 import { RealtimeClient, type SocketFactory } from "../ws/realtimeClient.js";
 import { invalidationsForEvent } from "./invalidation.js";
+import { queryKeys } from "./queryKeys.js";
 
 const RealtimeContext = createContext<RealtimeClient | null>(null);
 
@@ -36,6 +37,12 @@ export function RealtimeProvider({
         for (const key of invalidationsForEvent(topic, event)) {
           void queryClient.invalidateQueries({ queryKey: key });
         }
+      },
+      // #28 3b: the control WS closes 1008 on a terminal auth failure (no/expired/
+      // revoked session). Re-probe the session so the #34 AuthGate routes the user
+      // to the login page instead of the client silently reconnect-looping.
+      onUnauthenticated: () => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.session });
       },
     });
   }
