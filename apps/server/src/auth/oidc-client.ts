@@ -175,6 +175,12 @@ export function validateIdToken(idToken: string, jwks: Jwks, opts: ValidateIdTok
   if (typeof claims.email !== "string" || claims.email.length === 0) {
     throw authError("id_token missing email");
   }
+  // Enforce provider verification at the OIDC boundary so EVERY login path (both
+  // first-time provisioning and existing-subject login, which returns early in
+  // provisionUser) requires a verified email.
+  if (claims.email_verified !== true) {
+    throw authError("id_token email is not verified");
+  }
   if (opts.hostedDomain !== undefined && claims.hd !== opts.hostedDomain) {
     throw authError("id_token hosted-domain not allowed");
   }

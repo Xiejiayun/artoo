@@ -71,6 +71,26 @@ describe("validateIdToken", () => {
     expect(() => validateIdToken(token(p, { email: "" }), p.jwks, OPTS)).toThrow();
   });
 
+  it("rejects an unverified email on every login path", () => {
+    const p = provider();
+    expect(() => validateIdToken(token(p, { email_verified: false }), p.jwks, OPTS)).toThrow(
+      /authentication failed/,
+    );
+    // non-boolean true is not accepted
+    expect(() => validateIdToken(token(p, { email_verified: "true" }), p.jwks, OPTS)).toThrow();
+    // missing email_verified claim entirely
+    const noVerified = p.signIdToken({
+      iss: ISS,
+      aud: AUD,
+      sub: "s",
+      email: "x@example.com",
+      nonce: "nonce-1",
+      iat: NOW_S,
+      exp: NOW_S + 3600,
+    });
+    expect(() => validateIdToken(noVerified, p.jwks, OPTS)).toThrow();
+  });
+
   it("rejects a token whose kid is not in the JWKS", () => {
     const signer = provider("other-kid");
     const verifier = provider("fake-key-1");
