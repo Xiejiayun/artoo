@@ -328,6 +328,88 @@ export const skillInstalls = pgTable("skill_installs", {
   index("skill_installs_skill_idx").on(t.organizationId, t.skillId),
 ]);
 
+// ------------------------------------------------------------------ devices ---
+// A device (#28 v2-C) is one client install — a control surface plus, on
+// desktop, a compute-node host. It is NOT a human user and NOT an agent. On
+// desktop it maps to a `computers` row (computer_id) for the embedded node.
+
+export const devices = pgTable("devices", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  displayName: text("display_name").notNull(),
+  platform: text("platform").notNull(),
+  appVersion: text("app_version").notNull(),
+  /** Set when this device hosts a compute node. Null for control-only (mobile). */
+  computerId: text("computer_id").references(() => computers.id),
+  enrolledByUserId: text("enrolled_by_user_id")
+    .notNull()
+    .references(() => users.id),
+  trust: text("trust").notNull(),
+  lastSeenAt: ts("last_seen_at"),
+  createdAt: ts("created_at").notNull(),
+  revokedAt: ts("revoked_at"),
+}, (t) => [
+  check("devices_platform_chk", sql`${t.platform} in ('windows','macos','android','ios')`),
+  check("devices_trust_chk", sql`${t.trust} in ('active','revoked')`),
+  index("devices_org_trust_idx").on(t.organizationId, t.trust),
+  index("devices_computer_idx").on(t.computerId),
+]);
+
+// The two credential CLASSES bound to one device identity. Only the hash (+ a
+// non-secret lookup) is stored; the raw token never lands in this table.
+export const deviceTokens = pgTable("device_tokens", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  deviceId: text("device_id")
+    .notNull()
+    .references(() => devices.id),
+  kind: text("kind").notNull(),
+  tokenLookup: text("token_lookup").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  status: text("status").notNull(),
+  createdAt: ts("created_at").notNull(),
+  lastUsedAt: ts("last_used_at"),
+  expiresAt: ts("expires_at"),
+  revokedAt: ts("revoked_at"),
+}, (t) => [
+  check("device_tokens_kind_chk", sql`${t.kind} in ('control_session','node')`),
+  check("device_tokens_status_chk", sql`${t.status} in ('active','revoked')`),
+  unique("device_tokens_lookup").on(t.tokenLookup),
+  index("device_tokens_device_idx").on(t.deviceId, t.kind, t.status),
+]);
+
+// Short-lived single-use pairing codes. The raw code is never stored — only its
+// HMAC (keyed by a server pepper) so a DB leak does not enable offline guessing.
+export const pairingCodes = pgTable("pairing_codes", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  codeHash: text("code_hash").notNull(),
+  createdByUserId: text("created_by_user_id")
+    .notNull()
+    .references(() => users.id),
+  intendedPlatform: text("intended_platform"),
+  status: text("status").notNull(),
+  failedAttempts: integer("failed_attempts").notNull().default(0),
+  expiresAt: ts("expires_at").notNull(),
+  claimedByDeviceId: text("claimed_by_device_id").references(() => devices.id),
+  createdAt: ts("created_at").notNull(),
+  claimedAt: ts("claimed_at"),
+}, (t) => [
+  check("pairing_codes_status_chk", sql`${t.status} in ('pending','claimed','expired','cancelled')`),
+  check(
+    "pairing_codes_platform_chk",
+    sql`${t.intendedPlatform} is null or ${t.intendedPlatform} in ('windows','macos','android','ios')`,
+  ),
+  index("pairing_codes_code_hash_idx").on(t.codeHash),
+  index("pairing_codes_org_status_idx").on(t.organizationId, t.status),
+]);
+
 export const runs = pgTable("runs", {
   id: text("id").primaryKey(),
   organizationId: text("organization_id")

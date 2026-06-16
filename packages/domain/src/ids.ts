@@ -31,6 +31,9 @@ export const ID_PREFIXES = {
   effortProfile: "effort",
   memory: "mem",
   skillInstall: "skill",
+  device: "device",
+  deviceToken: "dtok",
+  pairingCode: "pair",
 } as const;
 
 export type IdPrefixName = keyof typeof ID_PREFIXES;
