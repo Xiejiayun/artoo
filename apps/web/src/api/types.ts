@@ -115,3 +115,17 @@ export interface AuditBundleResponse {
 export interface AuditBundleExportResponse {
   export: AuditBundleExport;
 }
+
+/** The authenticated user. Fields align with the bootstrap user (#34 server locks the exact shape). */
+export interface SessionUser {
+  id: string;
+  email: string;
+  name?: string;
+  display_name?: string;
+  role?: string;
+}
+
+/** `GET /auth/session` — current user when authenticated; the endpoint 401s otherwise. */
+export interface SessionResponse {
+  user: SessionUser;
+}

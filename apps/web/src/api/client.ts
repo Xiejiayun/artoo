@@ -33,6 +33,7 @@ import type {
   MessagesResponse,
   RetryResponse,
   RunResponse,
+  SessionResponse,
   SkillInstallsResponse,
   SupersedeMemoryResponse,
   TasksResponse,
@@ -67,10 +68,13 @@ interface RequestOptions {
 
 export class ApiClient {
   private readonly baseUrl: string;
+  /** Origin root for auth endpoints (`/auth/*`), i.e. baseUrl without `/api/v1`. */
+  private readonly authBaseUrl: string;
   private readonly fetchOverride?: typeof fetch;
 
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "/api/v1").replace(/\/$/, "");
+    this.authBaseUrl = this.baseUrl.replace(/\/api\/v1$/, "");
     this.fetchOverride = options.fetch;
   }
 
@@ -91,6 +95,9 @@ export class ApiClient {
       response = await fetchImpl(`${this.baseUrl}${path}`, {
         method,
         headers,
+        // Send the session cookie (#34 web auth) so the server's protected guard
+        // can authenticate the request.
+        credentials: "include",
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
       });
     } catch (cause) {
@@ -269,6 +276,43 @@ export class ApiClient {
       "GET",
       `/tasks/${encodeURIComponent(taskId)}/audit-bundle/export`,
     );
+  }
+
+  // Auth (#34): session + logout hit `/auth/*` at the server origin root (NOT
+  // `/api/v1`). The OAuth start/callback are browser navigations, not fetches
+  // (see LoginPage). getSession throws ApiClientError(401) when unauthenticated.
+  getSession(): Promise<SessionResponse> {
+    return this.authRequest<SessionResponse>("GET", "/auth/session");
+  }
+
+  async logout(): Promise<void> {
+    await this.authRequest<unknown>("POST", "/auth/logout");
+  }
+
+  private async authRequest<T>(method: string, path: string): Promise<T> {
+    const fetchImpl = this.fetchOverride ?? globalThis.fetch;
+    let response: Response;
+    try {
+      response = await fetchImpl(`${this.authBaseUrl}${path}`, {
+        method,
+        headers: { Accept: "application/json" },
+        credentials: "include",
+      });
+    } catch (cause) {
+      throw new ApiClientError("network_error", `Network request failed: ${String(cause)}`, 0);
+    }
+    const text = await response.text();
+    const json: unknown = text.length > 0 ? JSON.parse(text) : undefined;
+    if (!response.ok) {
+      const envelope = (json as { error?: { code?: ApiErrorCode; message?: string } } | undefined)
+        ?.error;
+      throw new ApiClientError(
+        envelope?.code ?? "unknown",
+        envelope?.message ?? response.statusText,
+        response.status,
+      );
+    }
+    return json as T;
   }
 }
 
