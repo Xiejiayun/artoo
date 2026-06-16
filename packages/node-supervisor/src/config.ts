@@ -1,5 +1,38 @@
 import { z } from "zod";
 
+/** True iff `value` is a ws:/wss: URL with no userinfo and no query string. */
+function isCleanWsUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "ws:" && url.protocol !== "wss:") return false;
+  if (url.username !== "" || url.password !== "") return false;
+  if (url.search !== "") return false;
+  return true;
+}
+
+/**
+ * Strip any userinfo/query/hash from a URL so a misconfigured value can never
+ * leak a token or credentials through a printable summary. Unparseable input
+ * yields "" rather than echoing the raw string.
+ */
+function sanitizeBaseUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+
 /**
  * Config model for the local-node control plane (#29 v2-D slice 2). Pure — no IO.
  * A desktop client persists {@link SupervisorSettings}, validates them (a missing
@@ -9,32 +42,32 @@ import { z } from "zod";
  * printable {@link summarizeSettings} status object, logs, or error messages.
  */
 export const SupervisorSettingsSchema = z.object({
-  /** Base node WS URL WITHOUT a token, e.g. `ws://host:4000/api/v1/node`. */
-  serverNodeUrl: z.string().refine(
-    (value) => {
-      try {
-        // eslint-disable-next-line no-new
-        new URL(value);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    { message: "must be a valid URL" }
-  ),
+  /**
+   * Base node WS URL WITHOUT a token, e.g. `ws://host:4000/api/v1/node`. Must be
+   * `ws:`/`wss:` with NO userinfo and NO query string — the credential is added
+   * separately into the env, and a token/userinfo here would leak through the
+   * printable summary.
+   */
+  serverNodeUrl: z.string().refine((value) => isCleanWsUrl(value), {
+    message: "must be a ws:// or wss:// URL with no userinfo and no query string"
+  }),
   /** Computer/node id sent in node.hello. */
-  nodeId: z.string().min(1),
+  nodeId: z.string().trim().min(1),
   /**
    * Device-bound node credential (#28). SECRET: only ever flows into
-   * `ARTOO_NODE_URL`'s token; never logged/summarized/echoed in errors.
+   * `ARTOO_NODE_URL`'s token; never logged/summarized/echoed in errors. Not
+   * trimmed (preserve exact spelling), but a blank/whitespace-only value is
+   * rejected.
    */
-  nodeCredential: z.string().min(1),
+  nodeCredential: z.string().refine((value) => value.trim().length > 0, {
+    message: "must not be blank"
+  }),
   /** Runtime preset names to register (e.g. ["codex","claude-code"]). */
-  runtimes: z.array(z.string()).default([]),
-  /** Filesystem roots the adapters may operate in (required, ≥1). */
-  allowedRoots: z.array(z.string().min(1)).min(1),
+  runtimes: z.array(z.string().trim().min(1)).default([]),
+  /** Filesystem roots the adapters may operate in (required, ≥1, non-blank). */
+  allowedRoots: z.array(z.string().trim().min(1)).min(1),
   /** Optional git repo for per-run worktrees (#23). */
-  worktreeBaseRepo: z.string().min(1).optional()
+  worktreeBaseRepo: z.string().trim().min(1).optional()
 });
 
 export type SupervisorSettings = z.infer<typeof SupervisorSettingsSchema>;
@@ -96,7 +129,7 @@ export interface SettingsSummary {
 
 export function summarizeSettings(settings: SupervisorSettings): SettingsSummary {
   return {
-    serverNodeUrl: settings.serverNodeUrl,
+    serverNodeUrl: sanitizeBaseUrl(settings.serverNodeUrl),
     nodeId: settings.nodeId,
     runtimes: settings.runtimes,
     allowedRoots: settings.allowedRoots,

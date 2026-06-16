@@ -105,3 +105,63 @@ describe("summarizeSettings (credential redaction)", () => {
     expect(JSON.stringify(summarizeSettings(valid))).not.toContain(SECRET);
   });
 });
+
+describe("serverNodeUrl hardening", () => {
+  it("rejects a token-bearing url without echoing the token", () => {
+    const result = validateSettings({ ...valid, serverNodeUrl: "ws://host/api/v1/node?token=leaked" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join("\n")).not.toContain("leaked");
+  });
+
+  it("rejects a url with userinfo without echoing the password", () => {
+    const result = validateSettings({ ...valid, serverNodeUrl: "ws://user:hunter2@host/api/v1/node" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join("\n")).not.toContain("hunter2");
+  });
+
+  it("rejects non-ws protocols (http/file)", () => {
+    expect(validateSettings({ ...valid, serverNodeUrl: "http://host/api/v1/node" }).ok).toBe(false);
+    expect(validateSettings({ ...valid, serverNodeUrl: "file:///etc/passwd" }).ok).toBe(false);
+  });
+
+  it("accepts wss", () => {
+    expect(validateSettings({ ...valid, serverNodeUrl: "wss://host/api/v1/node" }).ok).toBe(true);
+  });
+
+  it("summary sanitizes a token/userinfo-bearing url (defense in depth)", () => {
+    // Bypass validation to prove the summary itself never echoes secrets.
+    const dirty: SupervisorSettings = {
+      ...valid,
+      serverNodeUrl: "ws://user:hunter2@host/api/v1/node?token=leaked"
+    };
+    const summary = summarizeSettings(dirty);
+    expect(summary.serverNodeUrl).toBe("ws://host/api/v1/node");
+    expect(JSON.stringify(summary)).not.toContain("leaked");
+    expect(JSON.stringify(summary)).not.toContain("hunter2");
+  });
+});
+
+describe("whitespace-only rejection", () => {
+  it("rejects whitespace-only nodeId and nodeCredential, naming the fields", () => {
+    const result = validateSettings({ ...valid, nodeId: "   ", nodeCredential: "  \t " });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      const joined = result.errors.join("\n");
+      expect(joined).toMatch(/nodeId/);
+      expect(joined).toMatch(/nodeCredential/);
+    }
+  });
+
+  it("rejects whitespace-only allowed roots", () => {
+    expect(validateSettings({ ...valid, allowedRoots: ["  "] }).ok).toBe(false);
+  });
+
+  it("trims normalizable fields (nodeId, allowedRoots)", () => {
+    const result = validateSettings({ ...valid, nodeId: " computer_1 ", allowedRoots: [" C:/ws "] });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.settings.nodeId).toBe("computer_1");
+      expect(result.settings.allowedRoots).toEqual(["C:/ws"]);
+    }
+  });
+});
