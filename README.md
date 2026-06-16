@@ -20,6 +20,9 @@ Release gates and the local self-host runbook are tracked in
 candidate decision audit is tracked in
 [docs/v1-release-candidate.md](docs/v1-release-candidate.md).
 
+The v2 multi-client workstream is tracked in
+[docs/v2-roadmap.md](docs/v2-roadmap.md).
+
 ## Development
 
 ```bash
