@@ -45,6 +45,14 @@ describe("loadConfigFromEnv", () => {
     expect(loadConfigFromEnv({ ...baseEnv, ARTOO_WORKTREE_BASE_REPO: "C:/repo" }).worktreeBaseRepo).toBe("C:/repo");
   });
 
+  it("parses ARTOO_HEARTBEAT_INTERVAL_MS only when a positive finite number", () => {
+    expect(loadConfigFromEnv({ ...baseEnv }).heartbeatIntervalMs).toBeUndefined();
+    expect(loadConfigFromEnv({ ...baseEnv, ARTOO_HEARTBEAT_INTERVAL_MS: "500" }).heartbeatIntervalMs).toBe(500);
+    expect(loadConfigFromEnv({ ...baseEnv, ARTOO_HEARTBEAT_INTERVAL_MS: "0" }).heartbeatIntervalMs).toBeUndefined();
+    expect(loadConfigFromEnv({ ...baseEnv, ARTOO_HEARTBEAT_INTERVAL_MS: "-5" }).heartbeatIntervalMs).toBeUndefined();
+    expect(loadConfigFromEnv({ ...baseEnv, ARTOO_HEARTBEAT_INTERVAL_MS: "abc" }).heartbeatIntervalMs).toBeUndefined();
+  });
+
   it("splits allowedRoots on ; or ,", () => {
     expect(loadConfigFromEnv({ ...baseEnv, ARTOO_ALLOWED_ROOTS: "C:/a; C:/b , C:/c" }).allowedRoots).toEqual([
       "C:/a",

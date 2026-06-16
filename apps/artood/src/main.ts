@@ -37,6 +37,8 @@ export interface ArtoodConfig {
   runtimes: string[];
   allowedRoots: string[];
   worktreeBaseRepo?: string;
+  /** Heartbeat interval override (ms); omitted = createArtoodNode's 10s default. */
+  heartbeatIntervalMs?: number;
 }
 
 function splitList(value: string | undefined, separators: RegExp = /[;,]/): string[] {
@@ -44,6 +46,13 @@ function splitList(value: string | undefined, separators: RegExp = /[;,]/): stri
     .split(separators)
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+/** Parse a positive-finite ms override, else undefined (keep the built-in default). */
+function parsePositiveMs(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 /** Parse the artood config from environment variables, throwing on missing required keys. */
@@ -65,7 +74,8 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
     nodeId,
     runtimes: runtimes.length > 0 ? runtimes : ["codex", "claude-code"],
     allowedRoots,
-    worktreeBaseRepo: env.ARTOO_WORKTREE_BASE_REPO?.trim() || undefined
+    worktreeBaseRepo: env.ARTOO_WORKTREE_BASE_REPO?.trim() || undefined,
+    heartbeatIntervalMs: parsePositiveMs(env.ARTOO_HEARTBEAT_INTERVAL_MS)
   };
 }
 
@@ -100,7 +110,8 @@ export function createNodeFromConfig(config: ArtoodConfig): ArtoodNode {
     url: config.url,
     hello: helloFor(config),
     registry: buildRegistry(config),
-    workspace: { worktreeBaseRepo: config.worktreeBaseRepo }
+    workspace: { worktreeBaseRepo: config.worktreeBaseRepo },
+    heartbeatIntervalMs: config.heartbeatIntervalMs
   });
 }
 
