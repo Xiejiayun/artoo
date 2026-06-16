@@ -63,6 +63,27 @@ Every installed client should have a device identity distinct from a human user:
 - short-lived pairing codes or links for first setup;
 - presence state for active clients and local nodes.
 
+### Human Login And Google Auth
+
+v2 must add real human login before installable multi-client release claims. The
+default identity provider is Google OAuth/OIDC, using authorization-code flow
+with PKCE as the primary contract:
+
+- Google sign-in creates or links a durable user identity inside an Artoo org;
+- web sessions use server-owned `HttpOnly` cookies with explicit expiry and
+  logout/revocation behavior;
+- desktop and mobile clients use the same server session model through bearer
+  access/refresh tokens stored in platform secure storage after a system-browser
+  PKCE login;
+- OAuth state, nonce, redirect URI, issuer, audience, expiry, and PKCE replay
+  protection are required before production enablement;
+- local development keeps an explicit dev-auth fallback that cannot be enabled
+  accidentally in production;
+- device pairing and device-token issuance require an authenticated user, but
+  device tokens remain separate from Google/user credentials;
+- web, desktop, Android, and Apple clients must share the same login/session
+  contract instead of each client inventing its own auth flow.
+
 ### Local Node And Runtime Control Plane
 
 `artood` is the portable local node. v2 clients should be able to show and manage
@@ -99,17 +120,24 @@ Default direction:
 | v2-F | Android client | Android control surface and APK smoke path | `@claude` |
 | v2-G | iOS and macOS verification | Mac runner setup, Xcode build/run/test, Apple release limitation removal | unassigned until Mac access exists |
 | v2-H | Installer/release hardening | Cross-machine smoke, installer docs, update/uninstall checks, audit evidence | `@codex_architect` |
+| v2-I | Google Auth login | OAuth/OIDC user identity, sessions, logout, client login surfaces, and device-pairing boundary | `@claude_engineer` with client integration from `@claude` |
 
 ## v2 Release Gates
 
 - `npm run verify:v1` continues to pass until replaced by a broader v2 gate.
 - Web Playwright release flows pass against the v2 API.
+- Google Auth can complete auth-code + PKCE login, session refresh/validation,
+  logout, and protected API access in automated tests with a fake OIDC provider;
+  production Google credentials are never required for the default test gate.
+- Production auth rejects dev-login paths and validates OAuth state, nonce,
+  redirect URI, issuer, audience, expiry, and hosted-domain policy when
+  configured.
 - Windows desktop package installs, launches, connects to a server, and completes
-  a task approval/review smoke.
+  Google login plus a task approval/review smoke.
 - Local `artood` supervision smoke proves start, heartbeat, runtime capability
   display, stop, and restart on at least Windows.
-- Android APK builds and runs a login/pairing plus task/inbox smoke before any
-  Android installable claim.
+- Android APK builds and runs a Google login or fake-OIDC login, pairing, plus
+  task/inbox smoke before any Android installable claim.
 - macOS and iOS installable claims require real Mac evidence.
 - Device tokens can be created, revoked, and refused after revocation.
 - Offline command replay has tests for success, duplicate replay, stale state,
@@ -126,3 +154,5 @@ Default direction:
 - Whether mobile clients should ever run local runtimes, or remain remote control
   surfaces only.
 - Mac runner availability for macOS desktop and iOS.
+- Production Google Auth policy: allowed domains, invite-only org creation, and
+  whether non-Google identity providers are required in v2.
