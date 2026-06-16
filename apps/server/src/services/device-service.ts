@@ -140,7 +140,6 @@ export async function createPairing(
     createdByUserId: input.createdByUserId,
     intendedPlatform: input.intendedPlatform ?? null,
     status: "pending" as const,
-    failedAttempts: 0,
     expiresAt: isoPlusMs(now, config.ttlMs),
     claimedByDeviceId: null as string | null,
     createdAt: now,
@@ -208,6 +207,12 @@ export async function claimPairing(
       .update(pairingCodes)
       .set({ status: "expired" })
       .where(and(eq(pairingCodes.id, existing.id), eq(pairingCodes.status, "pending")));
+    throw invalidPairing();
+  }
+  // A pairing bound to a platform is authoritative: a mismatched claim is
+  // rejected (uniform surface) and the code stays pending for a correct-platform
+  // retry — it is neither consumed nor marked expired.
+  if (existing.intendedPlatform !== null && existing.intendedPlatform !== input.platform) {
     throw invalidPairing();
   }
 

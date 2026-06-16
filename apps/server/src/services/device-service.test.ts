@@ -102,6 +102,28 @@ describe("device-service", () => {
     expect(row.status).toBe("expired");
   });
 
+  it("enforces intended_platform: a mismatched claim is rejected and leaves the code pending", async () => {
+    const { ctx } = server;
+    const { code, pairing } = await createPairing(ctx, config, {
+      createdByUserId: "user_owner",
+      intendedPlatform: "ios",
+    });
+    await expect(
+      claimPairing(ctx, config, { code, platform: "windows", appVersion: "2", displayName: "d" }),
+    ).rejects.toThrow(/invalid or expired/);
+    // The code is neither consumed nor expired — it stays pending for a retry.
+    const row = (await server.db.db.select().from(pairingCodes).where(eq(pairingCodes.id, pairing.id)))[0]!;
+    expect(row.status).toBe("pending");
+    // A correct-platform claim then succeeds.
+    const { device } = await claimPairing(ctx, config, {
+      code,
+      platform: "ios",
+      appVersion: "2",
+      displayName: "d",
+    });
+    expect(device.platform).toBe("ios");
+  });
+
   it("resolve rejects malformed, wrong-kind, and tampered tokens", async () => {
     const { ctx } = server;
     const { code } = await createPairing(ctx, config, { createdByUserId: "user_owner" });

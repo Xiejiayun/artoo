@@ -395,7 +395,6 @@ export const pairingCodes = pgTable("pairing_codes", {
     .references(() => users.id),
   intendedPlatform: text("intended_platform"),
   status: text("status").notNull(),
-  failedAttempts: integer("failed_attempts").notNull().default(0),
   expiresAt: ts("expires_at").notNull(),
   claimedByDeviceId: text("claimed_by_device_id").references(() => devices.id),
   createdAt: ts("created_at").notNull(),

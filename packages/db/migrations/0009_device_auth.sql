@@ -38,7 +38,6 @@ CREATE TABLE "pairing_codes" (
 	"created_by_user_id" text NOT NULL,
 	"intended_platform" text,
 	"status" text NOT NULL,
-	"failed_attempts" integer DEFAULT 0 NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
 	"claimed_by_device_id" text,
 	"created_at" timestamp with time zone NOT NULL,
