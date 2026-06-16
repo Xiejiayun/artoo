@@ -5,12 +5,12 @@ const REDACTED_SECRET = "<redacted:secret>";
 const ENV_SECRET_ASSIGNMENT =
   /\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY|REFRESH_TOKEN|CREDENTIAL)[A-Z0-9_]*)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/g;
 const BEARER_TOKEN = /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gi;
-const AGENT_TOKEN = /\bsk_(agent|machine)_[A-Za-z0-9_-]+/g;
+const AGENT_TOKEN = /\bsk_(agent|machine|device)_[A-Za-z0-9_-]+/g;
 const OPENAI_STYLE_KEY = /\bsk-[A-Za-z0-9_-]{16,}/g;
 const GITHUB_TOKEN = /\bgh[pousr]_[A-Za-z0-9_]{20,}/g;
 const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
 
-function isSensitiveFieldName(key: string): boolean {
+export function isSensitiveFieldName(key: string): boolean {
   const normalized = key.toLowerCase().replace(/[-\s]/g, "_");
   if (normalized === "idempotency_key") return false;
   return (

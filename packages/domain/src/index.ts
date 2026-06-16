@@ -20,3 +20,4 @@ export * from "./skill.js";
 export * from "./lease.js";
 export * from "./memory.js";
 export * from "./runtime.js";
+export * from "./device.js";
