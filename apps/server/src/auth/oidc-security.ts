@@ -12,7 +12,7 @@
  */
 import { createHash } from "node:crypto";
 
-import { cryptoRandomSource, type RandomSource } from "../services/device-credential.js";
+import { cryptoRandomSource, sha256Hex, type RandomSource } from "../services/device-credential.js";
 
 const MAX_RETURN_TO = 2048;
 // A backslash (authority/path confusion) or any control char (incl DEL).
@@ -74,6 +74,55 @@ export function generatePkce(random: RandomSource = cryptoRandomSource): Pkce {
   const verifier = random.bytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier, "utf8").digest("base64url");
   return { verifier, challenge };
+}
+
+// ---------------------------------------------------------------------------
+// Session token: `sk_session_<lookup>_<secret>` — the opaque value carried in the
+// client's HttpOnly cookie (web) or OS secure storage (native). Mirrors the #28
+// device token: `lookup` is a non-secret index, `secret` is the high-entropy
+// authenticator verified in constant time against a stored sha256 hash. The
+// server stores only `{lookup, sha256(secret)}`.
+// ---------------------------------------------------------------------------
+
+export const SESSION_TOKEN_PREFIX = "sk_session_";
+const SESSION_LOOKUP = /^[A-Za-z0-9-]+$/; // underscore-free so the first `_` splits
+const SESSION_SECRET = /^[A-Za-z0-9_-]+$/;
+
+export interface GeneratedSessionToken {
+  /** `sk_session_<lookup>_<secret>` — set as the session cookie ONCE; never stored. */
+  raw: string;
+  /** Non-secret index hint. Persist + index. */
+  lookup: string;
+  /** sha256(secret) hex. Persist this; the raw secret is never stored. */
+  secretHash: string;
+}
+
+export function generateSessionToken(random: RandomSource = cryptoRandomSource): GeneratedSessionToken {
+  const lookup = random.bytes(6).toString("hex");
+  const secret = random.bytes(32).toString("base64url");
+  return { raw: `${SESSION_TOKEN_PREFIX}${lookup}_${secret}`, lookup, secretHash: sha256Hex(secret) };
+}
+
+export interface ParsedSessionToken {
+  lookup: string;
+  secret: string;
+}
+
+export function parseSessionToken(raw: string): ParsedSessionToken | null {
+  if (!raw.startsWith(SESSION_TOKEN_PREFIX)) {
+    return null;
+  }
+  const body = raw.slice(SESSION_TOKEN_PREFIX.length);
+  const sep = body.indexOf("_");
+  if (sep <= 0 || sep >= body.length - 1) {
+    return null;
+  }
+  const lookup = body.slice(0, sep);
+  const secret = body.slice(sep + 1);
+  if (!SESSION_LOOKUP.test(lookup) || !SESSION_SECRET.test(secret)) {
+    return null;
+  }
+  return { lookup, secret };
 }
 
 // Re-export the at-rest hashing + constant-time compare so auth storage uses the

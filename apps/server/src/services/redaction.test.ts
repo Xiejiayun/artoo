@@ -14,6 +14,12 @@ describe("redactSecretText — free text", () => {
     expect(redactSecretText("k=sk_machine_abc123secret")).toContain("sk_machine_<redacted:secret>");
   });
 
+  it("redacts sk_session_ tokens (#34)", () => {
+    const out = redactSecretText("Set-Cookie: session=sk_session_ab12cd_S3ssionSecret-x_y; HttpOnly");
+    expect(out).toContain("sk_session_<redacted:secret>");
+    expect(out).not.toContain("S3ssionSecret");
+  });
+
   it("redacts a device token embedded in a larger log line", () => {
     const line = "injected ARTOO_NODE_URL with sk_device_deadbeef_AbCdEf012-_ and continued";
     const out = redactSecretText(line);

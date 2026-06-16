@@ -34,6 +34,9 @@ export const ID_PREFIXES = {
   device: "device",
   deviceToken: "dtok",
   pairingCode: "pair",
+  userIdentity: "uid",
+  session: "sess",
+  oauthFlow: "oauth",
 } as const;
 
 export type IdPrefixName = keyof typeof ID_PREFIXES;

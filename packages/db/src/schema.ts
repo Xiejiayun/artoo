@@ -409,6 +409,77 @@ export const pairingCodes = pgTable("pairing_codes", {
   index("pairing_codes_org_status_idx").on(t.organizationId, t.status),
 ]);
 
+// -------------------------------------------------------------- google auth ---
+// #34: a human user's external (Google/OIDC) identity, the server-owned
+// revocable session, and the short-lived in-flight OAuth authorization-code flow.
+
+export const userIdentities = pgTable("user_identities", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id),
+  provider: text("provider").notNull(),
+  /** The provider's stable user id (Google `sub`). */
+  subject: text("subject").notNull(),
+  email: text("email"),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check("user_identities_provider_chk", sql`${t.provider} in ('google')`),
+  unique("user_identities_provider_subject").on(t.provider, t.subject),
+  index("user_identities_user_idx").on(t.userId),
+]);
+
+// Server-owned revocable session. Only the token hash (+ a non-secret lookup) is
+// stored — the raw session token lives in the client's HttpOnly cookie (web) or
+// OS secure storage (native). Mirrors the #28 device-token at-rest model.
+export const sessions = pgTable("sessions", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id),
+  tokenLookup: text("token_lookup").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  createdAt: ts("created_at").notNull(),
+  expiresAt: ts("expires_at").notNull(),
+  lastSeenAt: ts("last_seen_at"),
+  revokedAt: ts("revoked_at"),
+}, (t) => [
+  unique("sessions_token_lookup").on(t.tokenLookup),
+  index("sessions_user_idx").on(t.userId),
+]);
+
+// Short-lived single-use OAuth flow state. `state` is round-tripped through the
+// IdP (looked up by its hash); `flow_binding_hash` is the hash of a high-entropy
+// secret held only in the initiating browser's HttpOnly cookie, compared on
+// callback BEFORE the state is consumed (binds the callback to the initiator).
+export const oauthFlows = pgTable("oauth_flows", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  provider: text("provider").notNull(),
+  stateHash: text("state_hash").notNull(),
+  nonce: text("nonce").notNull(),
+  codeVerifier: text("code_verifier").notNull(),
+  flowBindingHash: text("flow_binding_hash").notNull(),
+  returnTo: text("return_to").notNull(),
+  status: text("status").notNull(),
+  createdAt: ts("created_at").notNull(),
+  expiresAt: ts("expires_at").notNull(),
+  consumedAt: ts("consumed_at"),
+}, (t) => [
+  check("oauth_flows_provider_chk", sql`${t.provider} in ('google')`),
+  check("oauth_flows_status_chk", sql`${t.status} in ('pending','consumed','expired')`),
+  unique("oauth_flows_state_hash").on(t.stateHash),
+  index("oauth_flows_org_status_idx").on(t.organizationId, t.status),
+]);
+
 export const runs = pgTable("runs", {
   id: text("id").primaryKey(),
   organizationId: text("organization_id")
