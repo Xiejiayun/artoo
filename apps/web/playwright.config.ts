@@ -23,7 +23,14 @@ export default defineConfig({
   webServer: [
     {
       command: "node ../server/dist/main.js",
-      env: { ARTOO_PORT: SERVER_PORT, ARTOO_HOST: "127.0.0.1" },
+      // Explicit dev env: the server fails closed without a pairing pepper, and
+      // the dev node-token escape is opt-in (never silently enabled in main.ts).
+      env: {
+        ARTOO_PORT: SERVER_PORT,
+        ARTOO_HOST: "127.0.0.1",
+        ARTOO_PAIRING_PEPPER: "e2e-pairing-pepper",
+        ARTOO_ALLOW_DEV_NODE_TOKEN: "1",
+      },
       url: `${SERVER_URL}/api/v1/bootstrap`,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,

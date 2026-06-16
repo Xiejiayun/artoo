@@ -45,19 +45,11 @@ async function main(): Promise<void> {
     idGen: createUlidIdGen(),
     organizationId: "org_default",
     actorUserId: "user_owner",
-    // Dev bootstrap: provide a dev pepper + dev node-token escape so the local
-    // loop / Playwright E2E run without extra env. Production (NODE_ENV=production)
-    // loads strictly and fails closed when ARTOO_PAIRING_PEPPER is absent.
-    deviceAuth: loadDeviceAuthConfig(
-      process.env.NODE_ENV === "production"
-        ? process.env
-        : {
-            NODE_ENV: process.env.NODE_ENV,
-            ARTOO_PAIRING_PEPPER: process.env.ARTOO_PAIRING_PEPPER ?? "dev-pairing-pepper",
-            ARTOO_ALLOW_DEV_NODE_TOKEN: process.env.ARTOO_ALLOW_DEV_NODE_TOKEN ?? "1",
-            ARTOO_DEV_NODE_TOKEN: process.env.ARTOO_DEV_NODE_TOKEN,
-          },
-    ),
+    // Strict load: never silently enable the dev node-token escape. The dev/E2E
+    // launchers (package.json scripts + playwright webServer env) set
+    // ARTOO_PAIRING_PEPPER and ARTOO_ALLOW_DEV_NODE_TOKEN explicitly; a bare
+    // `node main.js` with no config fails closed.
+    deviceAuth: loadDeviceAuthConfig(process.env),
   };
   const wsHub = createWsHub();
   const app = buildApp(ctx, { wsHub });

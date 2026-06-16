@@ -123,22 +123,43 @@ export function registerNodeWsRoute(
       // command.ack / run.event are consumed by the binding's own subscription.
     };
 
-    // Queue frames until auth resolves, then dispatch live.
+    // Queue frames until auth resolves, then dispatch live. The queue is bounded:
+    // an unauthenticated peer cannot make us buffer without limit (a legitimate
+    // node sends only node.hello before auth completes).
+    const MAX_PREAUTH_FRAMES = 16;
     let dispatch: (message: NodeToServerMessage) => void = (message) => {
+      if (terminated) {
+        return;
+      }
       earlyQueue.push(message);
+      if (earlyQueue.length > MAX_PREAUTH_FRAMES) {
+        earlyQueue.length = 0;
+        close(1008, "too many frames before authentication");
+      }
     };
     const unsubscribe = transport.subscribe((message) => {
       dispatch(message);
     });
 
     void (async () => {
-      const result = await authenticateNodeToken(ctx, token);
+      let result: NodeAuth | null;
+      try {
+        result = await authenticateNodeToken(ctx, token);
+      } catch {
+        // A failing auth path (e.g. db error) must close, not leave an
+        // unauthenticated socket open with a growing queue.
+        earlyQueue.length = 0;
+        close(1008, "node authentication error");
+        return;
+      }
       if (result === null) {
+        earlyQueue.length = 0;
         close(1008, "invalid node credential");
         return;
       }
       if (terminated) {
-        return; // socket already closed during auth
+        earlyQueue.length = 0;
+        return; // socket already closed during auth (e.g. queue overflow)
       }
       auth = result;
       dispatch = handleMessage;

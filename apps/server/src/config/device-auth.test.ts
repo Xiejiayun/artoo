@@ -45,6 +45,15 @@ describe("loadDeviceAuthConfig", () => {
       }).devNodeToken,
     ).toBe("custom-dev");
   });
+
+  it("does NOT enable the dev escape by default in a dev bootstrap (no silent default)", () => {
+    // Regression for #28 3a review: a non-production server bootstrap must not
+    // get token=dev acceptance unless ARTOO_ALLOW_DEV_NODE_TOKEN is explicitly
+    // "1". A pairing pepper alone (a typical dev env) does NOT enable the escape.
+    expect(
+      loadDeviceAuthConfig({ NODE_ENV: "development", ARTOO_PAIRING_PEPPER: "p" }).devNodeToken,
+    ).toBeNull();
+  });
 });
 
 describe("testDeviceAuthConfig", () => {

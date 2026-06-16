@@ -7,7 +7,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -b",
-    "dev": "node --watch --loader ts-node/esm src/main.ts",
+    "dev": "npm run build && node scripts/dev-server.mjs",
     "start": "node dist/main.js",
     "typecheck": "tsc -b"
   },
