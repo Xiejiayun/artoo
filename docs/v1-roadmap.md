@@ -51,12 +51,15 @@ Current v1 status:
   A local v1 demo script now drives create -> ready -> assign -> mock run ->
   accept -> audit export verification. The local clean-clone gate has passed,
   and production npm audit is clean; remaining dev audit advisories are isolated
-  to drizzle-kit/esbuild migration tooling. The only remaining release gates are
-  the explicit human-gated decisions tracked in
-  `docs/v1-release-candidate.md`. A local v1 gate script and release runbook
-  live in `docs/v1-release-gates.md`.
-- #18 iOS source is done as native SwiftUI source, but first macOS/Xcode build,
-  run, and test verification remains pending outside this Windows environment.
+  to drizzle-kit/esbuild migration tooling. The remaining release decisions and
+  gated runtime evidence are tracked in `docs/v1-release-candidate.md`. A local
+  v1 gate script and release runbook live in `docs/v1-release-gates.md`. As of
+  2026-06-16, iOS/macOS installable verification and separate-machine installer
+  proof are v2 release-gate work; true Claude runtime smoke is enabled and
+  pending evidence.
+- #18 iOS source is done as native SwiftUI source. v1 treats it as an
+  unverified source package because macOS/Xcode build, run, and test
+  verification cannot be performed in this Windows environment.
 
 The v0.1 path proves that a task can be created in the web UI, assigned through
 the server to a node/runtime adapter, executed by a mock or real `codex exec`

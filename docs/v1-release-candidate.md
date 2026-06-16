@@ -1,14 +1,14 @@
 # Artoo v1 Release-Candidate Audit
 
 This is the current release-decision summary for v1. It separates work that is
-proved by automated/current evidence from work that needs an explicit human
-release decision because this Windows machine cannot or must not run it
-unilaterally.
+proved by automated/current evidence from work that is either explicitly
+deferred from the v1 installable promise or still awaiting gated smoke evidence.
 
 ## Current Evidence
 
-- Current main/evidence-doc head: `494e7b2`.
-- Clean-clone validated source/docs head: `194b10a`.
+- Latest clean-clone validated source/docs head: `194b10a`.
+- Latest local full-gate release-doc head: `adc7fd1`.
+- Later docs-only v2 kickoff commit: `d7390cb`.
 - Clean clone: `C:\workspace\artoo-clean-v1-194b10a`.
 - Environment: Windows, Node 24.16.0, npm 11.13.0.
 - `npm ci` passed in the clean clone.
@@ -21,8 +21,8 @@ unilaterally.
   - whitespace diff clean
 - `npm run demo:v1` passed in the clean clone with a completed task/run,
   artifact, audit-bundle hash, and signing status `deferred`.
-- After refreshing this evidence doc, the main working tree at `494e7b2` also
-  passed `npm run verify:v1` and `npm run demo:v1`.
+- After later release-decision doc refreshes, the main working tree at
+  `adc7fd1` also passed `npm run verify:v1` and `npm run demo:v1`.
 
 ## Release Definition Audit
 
@@ -38,46 +38,42 @@ unilaterally.
 | Audit/replay evidence and public redaction | Audit-bundle/export tests; `npm run demo:v1` export verification | Proved; cryptographic signing intentionally deferred |
 | Self-host local runbook | Clean clone `npm ci`, `verify:v1`, and `demo:v1` at `194b10a`; local evidence-doc head `494e7b2` passed `verify:v1` and `demo:v1` | Proved on this Windows machine |
 
-## Explicit Release Decisions Still Needed
+## Release Decisions
 
 These are not ordinary coding gaps on this machine.
 
 1. **True Claude CLI runtime smoke**
 
-   Current status: not run. The test would spawn a real `claude` CLI process
-   using real local auth/quota and possible network access. It must stay gated
-   until @jeremy-xie explicitly enables it.
+   Current status: enabled by @jeremy-xie's renewed delegation on 2026-06-16
+   and assigned to @claude_sde for an isolated local smoke. The test spawns a
+   real `claude` CLI process using real local auth/quota and possible network
+   access, so the run must stay confined to a temporary workspace and must not
+   publish auth or credential output.
 
-   Release decision options:
+   Required v1 evidence before closing #15/#17/#10:
 
-   - Enable it now in an isolated workspace and require a passing result before
-     v1.
-   - Defer it from v1 and record that v1 ships with Codex/mock/runtime-registry
-     evidence plus documented Claude-runtime readiness, but no true Claude CLI
-     smoke on this machine.
+   - command/environment boundary
+   - task id and run id
+   - terminal run status and task status transition
+   - collected `changes.patch` artifact with hash
+   - audit-bundle export evidence
 
 2. **iOS verification**
 
-   Current status: source exists under `apps/ios`, but this Windows environment
-   has no macOS/Xcode/iOS SDK. The app is clearly marked unverified in its README
-   and source comments.
+   Decision: defer iOS installable/runtime verification from v1. Source exists
+   under `apps/ios`, but this Windows environment has no macOS/Xcode/iOS SDK.
+   The app is clearly marked unverified in its README and source comments.
 
-   Release decision options:
-
-   - Require macOS/Xcode build/run/test before v1.
-   - Defer iOS verification from v1 and treat the SwiftUI source as an
-     unverified preview/control-surface source package.
+   v1 treats the SwiftUI app as an unverified source package, not as a directly
+   installable/runnable release artifact. macOS/Xcode build, simulator/device
+   run, and tests are v2 release-gate work.
 
 3. **Separate-machine self-host smoke**
 
-   Current status: local clean-clone validation passed on this machine. The
-   runbook still recommends a separate-machine smoke before public tagging.
-
-   Release decision options:
-
-   - Require a second-machine smoke before v1.
-   - Treat the current clean-clone proof as sufficient for v1 and keep
-     separate-machine validation as a recommended pre-public-tag check.
+   Decision: accept the current Windows clean-clone proof as sufficient for the
+   v1 local self-host gate. A separate-machine install/run smoke remains
+   valuable, but it moves to v2 installer/release hardening rather than blocking
+   v1 completion.
 
 ## Already Recorded Deferrals
 
@@ -93,6 +89,6 @@ These are not ordinary coding gaps on this machine.
 
 ## Recommendation
 
-Treat current main as a v1 release candidate once @jeremy-xie records explicit
-decisions for the three remaining gated items above. Do not mark v1 complete
-until those decisions are present or the required smokes have passed.
+Treat current main as a v1 release candidate while the true Claude runtime
+smoke is running. Do not mark v1 complete until that enabled smoke either passes
+with recorded evidence or is explicitly replaced by a deferral decision.

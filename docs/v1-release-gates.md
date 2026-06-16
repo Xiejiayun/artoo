@@ -86,15 +86,15 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 | Web inventory surfaces | Bootstrap/runtime read models + Skills domain-contract component tests | Automated in Vitest |
 | Skill registry storage + scheduler | Install/list/get API tests plus compatible enabled-skill scheduler matching | Automated in Vitest |
 | Cross-process mock runtime smoke | Covered by server/node and artood integration tests | Automated in Vitest |
-| True CLI runtime smoke | Gated manual run in isolated workspace | Open for Claude; Codex previously smoked |
+| True CLI runtime smoke | Gated manual run in isolated workspace | Claude enabled and pending evidence; Codex previously smoked |
 | Audit bundle proof | `GET /api/v1/tasks/:id/audit-bundle/export` returns redacted bundle + deterministic SHA-256 | Automated; cryptographic signing deferred by v1 decision |
 | v1 demo path | `npm run demo:v1` after build | Automated local demo script |
 | Production dependency audit | `npm audit --omit=dev` | Automated check is clean |
 | Dev dependency audit | `npm audit` | Vite/Vitest advisories fixed; drizzle-kit/esbuild dev-tooling advisory remains open |
-| Self-host runbook | This document | Local clean-clone validation passed; independent machine validation still recommended |
+| Self-host runbook | This document | Local clean-clone validation accepted for v1; separate-machine proof moved to v2 |
 | Secret/policy negatives | Workspace guard, lease, approval tests plus audit-bundle secret redaction coverage | Broader secret storage/rotation remains out of scope |
 | Branch worktree smoke | `ARTOO_GIT_SMOKE=1 npx vitest run apps/server/src/branch-e2e-smoke.test.ts` | Gated automated |
-| iOS verification | Requires macOS/Xcode | Open |
+| iOS verification | Requires macOS/Xcode | Deferred from v1 installable promise; v2 Apple gate |
 
 ## Clean Local Checkout Validation
 
@@ -125,8 +125,8 @@ Evidence from that clone:
 
 This proves the lockfile install, build, full automated gate, Playwright release
 flows, production dependency audit, and API demo path outside the warmed working
-tree. It is still not a substitute for a separate-machine smoke before tagging a
-public release.
+tree. It is the accepted v1 local self-host proof. A separate-machine
+install/run smoke is now tracked as v2 installer/release hardening.
 
 ## Dependency Audit
 
@@ -157,8 +157,9 @@ worktree cleanup, branch retention in the base repo, and task transition to
 
 ## Gated True Runtime Smoke
 
-Do not run a true CLI runtime smoke unless a human explicitly enables it for the
-current machine. Use an isolated workspace such as
+Do not run a true CLI runtime smoke unless it is explicitly enabled for the
+current machine. Claude runtime smoke was enabled on 2026-06-16 by the renewed
+release delegation. Use an isolated workspace such as
 `C:/workspace/artoo-runs/<smoke-id>`, keep write scope confined to that
 workspace, and stop if the CLI needs interactive auth.
 
