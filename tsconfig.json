@@ -6,6 +6,7 @@
     { "path": "./packages/db" },
     { "path": "./packages/protocol" },
     { "path": "./packages/testkit" },
+    { "path": "./packages/node-supervisor" },
     { "path": "./apps/server" },
     { "path": "./apps/artood" },
     { "path": "./apps/web" }

@@ -10,7 +10,8 @@ export default defineConfig({
       "@artoo/domain": new URL("./packages/domain/src/index.ts", import.meta.url).pathname,
       "@artoo/protocol": new URL("./packages/protocol/src/index.ts", import.meta.url).pathname,
       "@artoo/storage": new URL("./packages/storage/src/index.ts", import.meta.url).pathname,
-      "@artoo/testkit": new URL("./packages/testkit/src/index.ts", import.meta.url).pathname
+      "@artoo/testkit": new URL("./packages/testkit/src/index.ts", import.meta.url).pathname,
+      "@artoo/node-supervisor": new URL("./packages/node-supervisor/src/index.ts", import.meta.url).pathname
     }
   },
   test: {
