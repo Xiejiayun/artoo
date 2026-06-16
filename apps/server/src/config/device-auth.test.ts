@@ -54,6 +54,22 @@ describe("loadDeviceAuthConfig", () => {
       loadDeviceAuthConfig({ NODE_ENV: "development", ARTOO_PAIRING_PEPPER: "p" }).devNodeToken,
     ).toBeNull();
   });
+
+  it("rides the same gate for the control-WS dev escape (#28 3b)", () => {
+    const base = { ARTOO_PAIRING_PEPPER: "p" };
+    // non-production + flag => anonymous control WS allowed
+    expect(
+      loadDeviceAuthConfig({ ...base, NODE_ENV: "development", ARTOO_ALLOW_DEV_NODE_TOKEN: "1" })
+        .devControlEscape,
+    ).toBe(true);
+    // flag absent => off (no anonymous control WS even in dev)
+    expect(loadDeviceAuthConfig({ ...base, NODE_ENV: "development" }).devControlEscape).toBe(false);
+    // production NEVER allows an anonymous control WS, even with the flag
+    expect(
+      loadDeviceAuthConfig({ ...base, NODE_ENV: "production", ARTOO_ALLOW_DEV_NODE_TOKEN: "1" })
+        .devControlEscape,
+    ).toBe(false);
+  });
 });
 
 describe("testDeviceAuthConfig", () => {
@@ -61,7 +77,9 @@ describe("testDeviceAuthConfig", () => {
     expect(testDeviceAuthConfig()).toEqual({
       pairingPepper: "test-pairing-pepper-0123456789",
       devNodeToken: "dev",
+      devControlEscape: true,
     });
     expect(testDeviceAuthConfig({ devNodeToken: null }).devNodeToken).toBeNull();
+    expect(testDeviceAuthConfig({ devControlEscape: false }).devControlEscape).toBe(false);
   });
 });

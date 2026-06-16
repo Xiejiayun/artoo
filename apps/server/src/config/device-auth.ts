@@ -11,6 +11,11 @@
  *  - the legacy `token=dev` node escape is OFF unless BOTH `NODE_ENV` is not
  *    "production" AND `ARTOO_ALLOW_DEV_NODE_TOKEN === "1"`. Production can never
  *    enable it; there is no code path that accepts `token=dev` in production.
+ *  - the control-plane WS dev escape ({@link DeviceAuthConfig.devControlEscape})
+ *    rides the SAME gate: an *anonymous* `/api/v1/ws` connection is accepted only
+ *    in non-production with the explicit opt-in. Production has no anonymous
+ *    control WS — every connection must present a session cookie or a
+ *    `control_session` device token (#28 slice 3b).
  */
 export interface DeviceAuthConfig {
   /** HMAC pepper for pairing codes (#28 slice 3c). Never logged. */
@@ -21,6 +26,14 @@ export interface DeviceAuthConfig {
    * `null` disables the escape — the only path then is a real device node token.
    */
   devNodeToken: string | null;
+  /**
+   * When true (non-production + explicit opt-in only), an `/api/v1/ws` control
+   * connection that presents NO credential is accepted as a `dev` identity, so
+   * existing dev/test realtime flows keep working. A *presented-but-invalid*
+   * credential is still rejected — the escape only covers truly anonymous dev
+   * connections. `false` in production: no anonymous control WS (#28 slice 3b).
+   */
+  devControlEscape: boolean;
 }
 
 /** The subset of process env this loader reads. */
@@ -47,10 +60,15 @@ export function loadDeviceAuthConfig(env: DeviceAuthEnv): DeviceAuthConfig {
   const escapeAllowed = env.NODE_ENV !== "production" && env.ARTOO_ALLOW_DEV_NODE_TOKEN === "1";
   const devToken = env.ARTOO_DEV_NODE_TOKEN?.trim();
   const devNodeToken = escapeAllowed ? (devToken !== undefined && devToken !== "" ? devToken : "dev") : null;
-  return { pairingPepper: pepper, devNodeToken };
+  return { pairingPepper: pepper, devNodeToken, devControlEscape: escapeAllowed };
 }
 
 /** Fixed config for tests/fixtures (dev escape on, deterministic pepper). */
 export function testDeviceAuthConfig(overrides: Partial<DeviceAuthConfig> = {}): DeviceAuthConfig {
-  return { pairingPepper: "test-pairing-pepper-0123456789", devNodeToken: "dev", ...overrides };
+  return {
+    pairingPepper: "test-pairing-pepper-0123456789",
+    devNodeToken: "dev",
+    devControlEscape: true,
+    ...overrides,
+  };
 }

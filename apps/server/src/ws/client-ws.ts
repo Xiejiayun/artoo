@@ -1,11 +1,16 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
+import { parseCookies } from "../auth/cookies.js";
+import { resolveSession } from "../auth/auth-service.js";
+import type { ServerContext } from "../context.js";
+import { resolveControlToken } from "../services/device-service.js";
 import type { HubSocket, WsHub } from "./ws-hub.js";
 
 /** The minimal surface of a `ws` WebSocket the client route uses. */
 interface RawClientSocket extends HubSocket {
   on(event: "message", cb: (data: unknown) => void): void;
   on(event: "close", cb: () => void): void;
+  close(code: number, reason: string): void;
 }
 
 interface ClientFrame {
@@ -14,18 +19,114 @@ interface ClientFrame {
 }
 
 /**
- * Register the client realtime endpoint `ws /api/v1/ws` (WS wire format v0.1).
- * MVP is dev-auth (single user). Client frames: {type:subscribe|unsubscribe,
- * topics}. The server pushes {type:"event", topic, event:<EventEnvelope>} for
- * each topic a socket subscribes to; the web client invalidates/refetches.
+ * The authenticated identity of an `/api/v1/ws` control connection (#28 slice 3b).
+ * `user` = a browser session (the #34 cookie); `device` = a paired device's
+ * `control_session` token; `dev` = the explicit non-production escape. Slice 3c
+ * indexes `device` connections by `deviceId` so a device revoke can close them.
  */
-export function registerClientWsRoute(app: FastifyInstance, hub: WsHub): void {
-  app.get("/api/v1/ws", { websocket: true }, (socket: unknown, _req: FastifyRequest) => {
+export type ClientIdentity =
+  | { kind: "user"; userId: string }
+  | { kind: "device"; deviceId: string }
+  | { kind: "dev" };
+
+export interface ClientWsHooks {
+  /**
+   * Invoked once a connection authenticates, immediately before it is allowed to
+   * register any subscription. Slice 3c uses this to index device sockets for
+   * revoke-closes-sockets; in 3b it is an optional observability seam (tests
+   * assert the resolved identity here).
+   */
+  onAuthenticated?: (identity: ClientIdentity, socket: HubSocket) => void;
+}
+
+/**
+ * Authenticate a control-plane WS upgrade from its request, returning the
+ * connection identity or `null` to reject. Credential precedence:
+ *  1. `Authorization: Bearer <control_session>` — a paired device's control
+ *     token, validated (revocation-checked) by {@link resolveControlToken}.
+ *  2. `Cookie: <sessionCookieName>=<session>` — a browser session, validated by
+ *     {@link resolveSession} (the #34 seam).
+ *  3. No credential at all — accepted as `dev` ONLY when the non-production
+ *     control escape is enabled; otherwise rejected.
+ *
+ * A *presented-but-invalid* credential (bad / expired / revoked token or cookie)
+ * always returns `null`: an explicit auth attempt that failed never silently
+ * falls back to the dev escape. This is what makes expired/revoked sessions and
+ * revoked devices fail closed even in a dev build.
+ */
+async function authenticateClient(
+  ctx: ServerContext,
+  req: FastifyRequest,
+): Promise<ClientIdentity | null> {
+  const bearer = parseBearer(req.headers.authorization);
+  if (bearer !== null) {
+    const device = await resolveControlToken(ctx, bearer);
+    return device === null ? null : { kind: "device", deviceId: device.deviceId };
+  }
+
+  const sessionToken = parseCookies(req.headers.cookie)[ctx.authConfig.sessionCookieName];
+  if (sessionToken !== undefined && sessionToken !== "") {
+    const session = await resolveSession(ctx, sessionToken);
+    return session === null ? null : { kind: "user", userId: session.userId };
+  }
+
+  // No credential presented: only the explicit non-production escape may accept.
+  return ctx.deviceAuth.devControlEscape ? { kind: "dev" } : null;
+}
+
+/** Extract the token from a case-insensitive `Bearer <token>` header, or null. */
+function parseBearer(header: string | undefined): string | null {
+  if (header === undefined) {
+    return null;
+  }
+  const trimmed = header.trim();
+  const space = trimmed.indexOf(" ");
+  if (space < 0 || trimmed.slice(0, space).toLowerCase() !== "bearer") {
+    return null;
+  }
+  const token = trimmed.slice(space + 1).trim();
+  return token.length === 0 ? null : token;
+}
+
+/**
+ * Register the client realtime endpoint `ws /api/v1/ws` (WS wire format v0.1).
+ *
+ * #28 slice 3b adds authentication: every connection must resolve to a
+ * {@link ClientIdentity} (browser session cookie, device `control_session`
+ * token, or the explicit non-production dev escape) BEFORE it is added to the
+ * hub or allowed to subscribe. Authentication is async (a DB lookup), so the
+ * socket's `message` listener is attached synchronously and any frames that
+ * arrive before auth resolves are queued in a bounded buffer; once auth
+ * succeeds they are drained, and the socket is registered with the hub. A
+ * failed / missing / revoked credential closes the socket with code 1008
+ * ("unauthenticated") and it is NEVER added to the hub — so it cannot register
+ * a subscription or receive any pushed event.
+ *
+ * Client frames: {type:subscribe|unsubscribe, topics}. The server pushes
+ * {type:"event", topic, event:<EventEnvelope>} for each subscribed topic.
+ */
+export function registerClientWsRoute(
+  app: FastifyInstance,
+  ctx: ServerContext,
+  hub: WsHub,
+  hooks: ClientWsHooks = {},
+): void {
+  app.get("/api/v1/ws", { websocket: true }, (socket: unknown, req: FastifyRequest) => {
     const raw = socket as RawClientSocket;
-    hub.add(raw);
-    raw.on("message", (data: unknown) => {
-      const frame = parseClientFrame(data);
-      if (frame === null) {
+    let identity: ClientIdentity | undefined;
+    let terminated = false;
+    const earlyFrames: ClientFrame[] = [];
+
+    const close = (code: number, reason: string): void => {
+      if (terminated) {
+        return;
+      }
+      terminated = true;
+      raw.close(code, reason);
+    };
+
+    const applyFrame = (frame: ClientFrame): void => {
+      if (terminated || identity === undefined) {
         return;
       }
       if (frame.type === "subscribe") {
@@ -33,10 +134,69 @@ export function registerClientWsRoute(app: FastifyInstance, hub: WsHub): void {
       } else {
         hub.unsubscribe(raw, frame.topics);
       }
+    };
+
+    // Before auth resolves, queue frames in a bounded buffer. An unauthenticated
+    // peer cannot make us buffer without limit (a legitimate client sends only a
+    // subscribe or two before auth completes).
+    const MAX_PREAUTH_FRAMES = 16;
+    let dispatch: (frame: ClientFrame) => void = (frame) => {
+      if (terminated) {
+        return;
+      }
+      earlyFrames.push(frame);
+      if (earlyFrames.length > MAX_PREAUTH_FRAMES) {
+        earlyFrames.length = 0;
+        close(1008, "too many frames before authentication");
+      }
+    };
+
+    raw.on("message", (data: unknown) => {
+      const frame = parseClientFrame(data);
+      if (frame === null) {
+        return;
+      }
+      dispatch(frame);
     });
     raw.on("close", () => {
+      terminated = true;
       hub.remove(raw);
     });
+
+    void (async () => {
+      let result: ClientIdentity | null;
+      try {
+        result = await authenticateClient(ctx, req);
+      } catch {
+        // A failing auth path (e.g. a db error) must close, not leave an
+        // unauthenticated socket open with a growing queue.
+        earlyFrames.length = 0;
+        close(1008, "unauthenticated");
+        return;
+      }
+      if (result === null) {
+        earlyFrames.length = 0;
+        close(1008, "unauthenticated");
+        return;
+      }
+      if (terminated) {
+        earlyFrames.length = 0;
+        return; // socket already closed during auth (e.g. queue overflow)
+      }
+      identity = result;
+      // Register with the hub ONLY after authentication: until now the socket
+      // holds no subscription state and is unknown to the publisher.
+      hub.add(raw);
+      hooks.onAuthenticated?.(identity, raw);
+      dispatch = applyFrame;
+      for (const queued of earlyFrames) {
+        if (terminated) {
+          break;
+        }
+        applyFrame(queued);
+      }
+      earlyFrames.length = 0;
+    })();
   });
 }
 

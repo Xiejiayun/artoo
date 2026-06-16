@@ -11,6 +11,7 @@ import type { DeviceAuthConfig } from "./config/device-auth.js";
 import type { ServerContext } from "./context.js";
 import { createEventPublisher, type EventPublisher } from "./ws/event-publisher.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
+import type { ClientWsHooks } from "./ws/client-ws.js";
 import { createWsHub, type WsHub } from "./ws/ws-hub.js";
 
 const FIXED_ISO = "2026-06-13T00:00:00.000Z";
@@ -61,6 +62,9 @@ export interface BuildTestServerOptions {
   authConfig?: Partial<AuthConfig>;
   /** Serve a built web SPA from this dir (same-origin static, #34). */
   webDistDir?: string;
+  /** Control-WS hooks (#28 slice 3b) — inject an `onAuthenticated` spy to assert
+   *  the resolved connection identity. */
+  clientWsHooks?: ClientWsHooks;
 }
 
 /** A fully wired server over an embedded, migrated, seeded database. */
@@ -88,7 +92,12 @@ export async function buildTestServer(
   };
   const nodeRegistry = createNodeRegistry();
   const wsHub = createWsHub();
-  const app = buildApp(ctx, { nodeRegistry, wsHub, webDistDir: options.webDistDir });
+  const app = buildApp(ctx, {
+    nodeRegistry,
+    wsHub,
+    webDistDir: options.webDistDir,
+    clientWsHooks: options.clientWsHooks,
+  });
   const publisher = createEventPublisher(ctx, wsHub);
   await app.ready();
   return {

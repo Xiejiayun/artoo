@@ -23,6 +23,8 @@
   "devDependencies": {
     "@artoo/artood": "0.1.0",
     "@artoo/node-supervisor": "0.1.0",
-    "@artoo/testkit": "0.1.0"
+    "@artoo/testkit": "0.1.0",
+    "@types/ws": "^8.5.0",
+    "ws": "^8.18.0"
   }
 }

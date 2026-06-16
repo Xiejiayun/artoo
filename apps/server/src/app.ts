@@ -38,7 +38,7 @@ import * as skillService from "./services/skill-service.js";
 import * as taskService from "./services/task-service.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
 import { registerNodeWsRoute } from "./ws/node-ws.js";
-import { registerClientWsRoute } from "./ws/client-ws.js";
+import { registerClientWsRoute, type ClientWsHooks } from "./ws/client-ws.js";
 import { createWsHub, type WsHub } from "./ws/ws-hub.js";
 import { registerWebStatic } from "./web-static.js";
 
@@ -49,6 +49,9 @@ export interface BuildAppOptions {
   wsHub?: WsHub;
   /** Serve the built web SPA from this dir (same-origin #34). Omit/absent dir = off. */
   webDistDir?: string;
+  /** Control-WS lifecycle hooks (#28 slice 3b identity tagging; slice 3c indexes
+   *  device sockets for revoke-closes-sockets). */
+  clientWsHooks?: ClientWsHooks;
 }
 
 /**
@@ -75,7 +78,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   void app.register(websocket);
   void app.register(async (instance) => {
     registerNodeWsRoute(instance, ctx, nodeRegistry);
-    registerClientWsRoute(instance, wsHub);
+    registerClientWsRoute(instance, ctx, wsHub, options.clientWsHooks);
   });
 
   // Google Auth (#34): the protected-API guard (opt-in via enforceApiAuth) and
