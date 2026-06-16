@@ -71,7 +71,7 @@ async function main(): Promise<void> {
     oidcHttp: createFetchOidcHttp(),
   };
   const wsHub = createWsHub();
-  const app = buildApp(ctx, { wsHub });
+  const app = buildApp(ctx, { wsHub, webDistDir: process.env.ARTOO_WEB_DIST });
   await app.listen({ port: PORT, host: HOST });
 
   // Begin streaming committed events to subscribed realtime clients.

@@ -59,6 +59,8 @@ export interface BuildTestServerOptions {
   /** Override Google-auth config (e.g. `{ enforceApiAuth: true }`). The fake OIDC
    *  provider is created to match the resulting issuer/clientId. */
   authConfig?: Partial<AuthConfig>;
+  /** Serve a built web SPA from this dir (same-origin static, #34). */
+  webDistDir?: string;
 }
 
 /** A fully wired server over an embedded, migrated, seeded database. */
@@ -86,7 +88,7 @@ export async function buildTestServer(
   };
   const nodeRegistry = createNodeRegistry();
   const wsHub = createWsHub();
-  const app = buildApp(ctx, { nodeRegistry, wsHub });
+  const app = buildApp(ctx, { nodeRegistry, wsHub, webDistDir: options.webDistDir });
   const publisher = createEventPublisher(ctx, wsHub);
   await app.ready();
   return {

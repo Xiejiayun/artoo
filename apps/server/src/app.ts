@@ -40,12 +40,15 @@ import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
 import { registerNodeWsRoute } from "./ws/node-ws.js";
 import { registerClientWsRoute } from "./ws/client-ws.js";
 import { createWsHub, type WsHub } from "./ws/ws-hub.js";
+import { registerWebStatic } from "./web-static.js";
 
 export interface BuildAppOptions {
   /** Inject a registry so tests can observe node registration. */
   nodeRegistry?: NodeRegistry;
   /** Inject the realtime hub so the caller owns the event publisher. */
   wsHub?: WsHub;
+  /** Serve the built web SPA from this dir (same-origin #34). Omit/absent dir = off. */
+  webDistDir?: string;
 }
 
 /**
@@ -435,6 +438,10 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     void reply.status(201);
     return { approval };
   });
+
+  // Static web SPA last: the API/auth/WS routes above are matched first; this only
+  // adds file serving + an SPA navigation fallback (no-op when no built dist).
+  registerWebStatic(app, options.webDistDir);
 
   return app;
 }
