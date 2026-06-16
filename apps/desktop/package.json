@@ -1,0 +1,24 @@
+{
+  "name": "@artoo/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "artoo desktop shell (Electron spike, #30): wraps the web reference UI, connects to a configurable server, with seams for #28 device pairing and #29 local artood supervision. Not the full desktop product.",
+  "author": "artoo",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win --publish never"
+  },
+  "comment:build-deps": "electron + electron-builder are intentionally NOT in the workspace deps so the monorepo's default install/verify stays light. Install them ad-hoc to build the desktop shell: `npm i -D electron@33.4.11 electron-builder@25 -w @artoo/desktop`. See README.md.",
+  "build": {
+    "appId": "dev.artoo.desktop",
+    "productName": "Artoo",
+    "electronVersion": "33.4.11",
+    "asar": true,
+    "files": ["main.cjs", "preload.cjs", "renderer/**"],
+    "directories": { "output": "release" },
+    "win": { "target": "nsis" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+  }
+}
+
