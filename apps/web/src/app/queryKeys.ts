@@ -5,6 +5,7 @@
  */
 export const queryKeys = {
   bootstrap: ["bootstrap"] as const,
+  session: ["session"] as const,
   tasks: (projectId: string) => ["tasks", projectId] as const,
   task: (taskId: string) => ["task", taskId] as const,
   messages: (roomId: string) => ["messages", roomId] as const,

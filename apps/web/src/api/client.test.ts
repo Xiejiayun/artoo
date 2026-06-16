@@ -24,6 +24,35 @@ const createReq: CreateTaskRequest = {
 };
 
 describe("ApiClient", () => {
+  it("getSession returns the authenticated user from /auth/session (origin root)", async () => {
+    server.use(
+      http.get("http://localhost/auth/session", () =>
+        HttpResponse.json({ user: { id: "user_1", email: "a@b.c", name: "A" } }),
+      ),
+    );
+    const res = await client.getSession();
+    expect(res.user.id).toBe("user_1");
+  });
+
+  it("getSession throws ApiClientError(401) when unauthenticated", async () => {
+    server.use(
+      http.get("http://localhost/auth/session", () => new HttpResponse(null, { status: 401 })),
+    );
+    await expect(client.getSession()).rejects.toMatchObject({ name: "ApiClientError", status: 401 });
+  });
+
+  it("logout posts to /auth/logout", async () => {
+    let hit = false;
+    server.use(
+      http.post("http://localhost/auth/logout", () => {
+        hit = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    await client.logout();
+    expect(hit).toBe(true);
+  });
+
   it("createTask posts the body with an Idempotency-Key header and returns the task", async () => {
     let seenKey: string | null = null;
     let seenBody: { title?: string } = {};

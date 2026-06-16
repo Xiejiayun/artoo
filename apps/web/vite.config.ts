@@ -16,6 +16,8 @@ export default defineConfig({
       // Origin to the target so the server accepts the proxied upgrade in dev.
       "/api/v1/ws": { target: WS_TARGET, ws: true, changeOrigin: true },
       "/api": { target: SERVER_TARGET, changeOrigin: true },
+      // #34 Google Auth endpoints live at the origin root, not under /api/v1.
+      "/auth": { target: SERVER_TARGET, changeOrigin: true },
     },
   },
 });

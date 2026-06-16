@@ -1,5 +1,7 @@
 import { NavLink } from "react-router-dom";
 
+import { LogoutButton } from "./LogoutButton.js";
+
 const LINKS = [
   { to: "/", label: "Workspace", end: true },
   { to: "/board", label: "Board", end: false },
@@ -28,6 +30,7 @@ export function Nav(): React.ReactNode {
           </li>
         ))}
       </ul>
+      <LogoutButton />
     </nav>
   );
 }
