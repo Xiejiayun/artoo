@@ -30,6 +30,49 @@ export function topicsForEvent(event: EventEnvelope, ownerId: string): string[] 
 
 type EventRow = typeof eventLog.$inferSelect;
 
+/**
+ * A realtime push frame (#27 v2-B). `cursor` is the event's monotonic
+ * `event_log.position` — the sync log of record. Clients track the highest
+ * cursor seen and reconnect with `since_cursor` to catch up exactly.
+ */
+export interface EventFrame {
+  type: "event";
+  topic: string;
+  event: EventEnvelope;
+  cursor: number;
+}
+
+/**
+ * Replay frames for events after `sinceCursor` that match any of `subscribedTopics`
+ * (#27 WS recovery / catch-up). Returns frames in ascending cursor order; the
+ * `position > sinceCursor` filter guarantees nothing already acked is replayed.
+ */
+export async function collectCatchUp(
+  ctx: ServerContext,
+  sinceCursor: number,
+  subscribedTopics: readonly string[],
+): Promise<EventFrame[]> {
+  const wanted = new Set(subscribedTopics);
+  if (wanted.size === 0) {
+    return [];
+  }
+  const rows = await ctx.db.db
+    .select()
+    .from(eventLog)
+    .where(gt(eventLog.position, sinceCursor))
+    .orderBy(asc(eventLog.position));
+  const frames: EventFrame[] = [];
+  for (const row of rows as EventRow[]) {
+    const envelope = toEnvelope(row);
+    for (const topic of topicsForEvent(envelope, ctx.actorUserId)) {
+      if (wanted.has(topic)) {
+        frames.push({ type: "event", topic, event: envelope, cursor: row.position });
+      }
+    }
+  }
+  return frames;
+}
+
 /** Reconstruct the domain EventEnvelope from a stored event_log row. */
 export function toEnvelope(row: EventRow): EventEnvelope {
   return {
@@ -78,7 +121,7 @@ export function createEventPublisher(ctx: ServerContext, hub: WsHub): EventPubli
       }
       const envelope = toEnvelope(row);
       for (const topic of topicsForEvent(envelope, ctx.actorUserId)) {
-        hub.publish(topic, { type: "event", topic, event: envelope });
+        hub.publish(topic, { type: "event", topic, event: envelope, cursor: row.position });
       }
     }
   }

@@ -4,6 +4,7 @@ import { parseCookies } from "../auth/cookies.js";
 import { resolveSession } from "../auth/auth-service.js";
 import type { ServerContext } from "../context.js";
 import { resolveControlToken } from "../services/device-service.js";
+import { collectCatchUp } from "./event-publisher.js";
 import type { HubSocket, WsHub } from "./ws-hub.js";
 
 /** The minimal surface of a `ws` WebSocket the client route uses. */
@@ -16,6 +17,8 @@ interface RawClientSocket extends HubSocket {
 interface ClientFrame {
   type: "subscribe" | "unsubscribe";
   topics: string[];
+  /** On subscribe: replay events with cursor > since_cursor (#27 WS recovery). */
+  since_cursor?: number;
 }
 
 /**
@@ -119,7 +122,7 @@ function parseBearer(header: string | undefined): string | null {
 }
 
 /**
- * Register the client realtime endpoint `ws /api/v1/ws` (WS wire format v0.1).
+ * Register the client realtime endpoint `ws /api/v1/ws` (WS wire format v0.2).
  *
  * #28 slice 3b adds authentication: every connection must resolve to a
  * {@link ClientIdentity} (browser session cookie, device `control_session`
@@ -132,8 +135,12 @@ function parseBearer(header: string | undefined): string | null {
  * ("unauthenticated") and it is NEVER added to the hub — so it cannot register
  * a subscription or receive any pushed event.
  *
- * Client frames: {type:subscribe|unsubscribe, topics}. The server pushes
- * {type:"event", topic, event:<EventEnvelope>} for each subscribed topic.
+ * Client frames: {type:subscribe|unsubscribe, topics, since_cursor?}. The server
+ * pushes {type:"event", topic, event, cursor} for each subscribed topic, where
+ * `cursor` is the monotonic event_log.position. On a subscribe that carries
+ * `since_cursor`, the server first subscribes the socket to live delivery, then
+ * REPLAYS the matching events appended after that cursor — so a client that was
+ * offline reconnects and catches up exactly. Clients dedupe/ordering by cursor.
  */
 export function registerClientWsRoute(
   app: FastifyInstance,
@@ -160,7 +167,12 @@ export function registerClientWsRoute(
         return;
       }
       if (frame.type === "subscribe") {
+        // Subscribe to live delivery FIRST so nothing is missed during the async
+        // catch-up; the client dedupes any boundary overlap by cursor.
         hub.subscribe(raw, frame.topics);
+        if (frame.since_cursor !== undefined) {
+          void replayCatchUp(raw, ctx, frame.since_cursor, frame.topics);
+        }
       } else {
         hub.unsubscribe(raw, frame.topics);
       }
@@ -230,6 +242,22 @@ export function registerClientWsRoute(
   });
 }
 
+async function replayCatchUp(
+  socket: HubSocket,
+  ctx: ServerContext,
+  sinceCursor: number,
+  topics: readonly string[],
+): Promise<void> {
+  try {
+    const frames = await collectCatchUp(ctx, sinceCursor, topics);
+    for (const frame of frames) {
+      socket.send(JSON.stringify(frame));
+    }
+  } catch {
+    // best-effort catch-up; live delivery still converges the client
+  }
+}
+
 function toText(data: unknown): string | null {
   if (typeof data === "string") {
     return data;
@@ -259,12 +287,17 @@ function parseClientFrame(data: unknown): ClientFrame | null {
   }
   const type = (raw as { type?: unknown }).type;
   const topics = (raw as { topics?: unknown }).topics;
+  const sinceCursor = (raw as { since_cursor?: unknown }).since_cursor;
   if (
     (type === "subscribe" || type === "unsubscribe") &&
     Array.isArray(topics) &&
     topics.every((topic) => typeof topic === "string")
   ) {
-    return { type, topics: topics as string[] };
+    const frame: ClientFrame = { type, topics: topics as string[] };
+    if (type === "subscribe" && typeof sinceCursor === "number" && Number.isFinite(sinceCursor)) {
+      frame.since_cursor = sinceCursor;
+    }
+    return frame;
   }
   return null;
 }
