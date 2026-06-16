@@ -12,6 +12,7 @@
     "test": "vitest run",
     "typecheck": "tsc -b",
     "demo:v1": "node scripts/v1-demo.mjs",
+    "e2e:auth": "node scripts/auth-e2e.mjs",
     "verify:v1": "node scripts/v1-gate.mjs",
     "dev": "npm run dev --workspace @artoo/server",
     "dev:web": "npm run dev --workspace @artoo/web",
