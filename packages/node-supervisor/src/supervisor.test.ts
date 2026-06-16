@@ -140,6 +140,23 @@ describe("createNodeSupervisor", () => {
     expect(spawner.children).toHaveLength(2);
   });
 
+  it("stop() during the crash backoff window cancels the pending restart", async () => {
+    const health = { iso: FRESH };
+    const { spawner, sched, supervisor } = setup({ health });
+    supervisor.start(ENV);
+    supervisor.tick();
+
+    spawner.last().exit(1); // crash -> stopped, restart scheduled
+    await flush();
+    expect(supervisor.state()).toBe("stopped");
+    expect(sched.size).toBeGreaterThan(0);
+
+    supervisor.stop(); // operator stops during the backoff window
+    sched.runAll(); // the pending restart callback fires...
+    expect(spawner.children).toHaveLength(1); // ...but does NOT spawn a new child
+    expect(supervisor.state()).toBe("stopped");
+  });
+
   it("stops auto-restarting once the restart cap is reached", async () => {
     const health = { iso: FRESH };
     const spawner = new FakeSpawner();

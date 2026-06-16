@@ -74,6 +74,10 @@ export function createNodeSupervisor(deps: SupervisorDeps): NodeSupervisor {
   let child: ChildHandle | null = null;
   let lastEnv: Record<string, string> | null = null;
   let stopRequested = false;
+  // Bumped on every start() and stop() so a pending (scheduled) auto-restart from
+  // an older generation is invalidated — otherwise stop() during a crash-loop's
+  // backoff window could not cancel the queued respawn.
+  let generation = 0;
   const listeners = new Set<(state: SupervisorState) => void>();
 
   function transition(event: Parameters<typeof nextSupervisorState>[1]): void {
@@ -104,8 +108,10 @@ export function createNodeSupervisor(deps: SupervisorDeps): NodeSupervisor {
     if (!decision.restart || lastEnv === null) return;
     restarts += 1;
     const env = lastEnv;
+    const gen = generation;
     deps.schedule(() => {
-      if (state === "stopped") spawnNode(env);
+      // Only respawn if no start()/stop() happened in the meantime.
+      if (generation === gen && state === "stopped") spawnNode(env);
     }, decision.delayMs);
   }
 
@@ -115,6 +121,7 @@ export function createNodeSupervisor(deps: SupervisorDeps): NodeSupervisor {
 
     start(env) {
       if (state !== "stopped") return;
+      generation += 1;
       restarts = 0;
       spawnNode(env);
     },
@@ -133,6 +140,9 @@ export function createNodeSupervisor(deps: SupervisorDeps): NodeSupervisor {
     },
 
     stop() {
+      // Invalidate any pending auto-restart even when already stopped (crash-loop
+      // backoff window), so "stop" is reliable.
+      generation += 1;
       if (state === "stopped") return;
       stopRequested = true;
       transition({ type: "stop" });
