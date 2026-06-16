@@ -51,6 +51,14 @@ function open(port: string, headers: Record<string, string> | undefined, sink: W
   return socket;
 }
 
+/** Open a control WS at an explicit query string (for the forbidden `?token=` shape). */
+function openQuery(port: string, query: string, sink: WebSocket[]): WebSocket {
+  const socket = new WebSocket(`${wsUrl(port)}${query}`);
+  socket.on("error", () => {});
+  sink.push(socket);
+  return socket;
+}
+
 /** Resolve the application close code for a rejected connection, or -1 if it stays open. */
 function closeCode(socket: WebSocket): Promise<number> {
   return new Promise<number>((resolve) => {
@@ -272,5 +280,38 @@ describe("client WS auth gate (#28 slice 3b)", () => {
     const port = await listen(server);
     const headers = { Cookie: `artoo_session=${raw}` };
     await expect(closeCode(open(port, headers, sockets))).resolves.toBe(1008);
+  });
+
+  // --- "presented-but-invalid never downgrades to dev" edge cases (codex 3b
+  // review finding). These all run with devControlEscape ON to prove the escape
+  // covers ONLY truly anonymous connections, not a forbidden/malformed/empty
+  // credential — otherwise a client could rely on a forbidden shape and still
+  // pass local dev smoke as `dev`. ---
+
+  it("rejects the forbidden `?token=` query shape even with a VALID token + escape on", async () => {
+    server = await buildTestServer(); // devControlEscape: true
+    const { raw } = await seedControlToken(server, "query_shape");
+    const port = await listen(server);
+    // Forbidden URL-token shape -> 1008, even though the token itself is valid...
+    await expect(
+      closeCode(openQuery(port, `?token=${encodeURIComponent(raw)}`, sockets)),
+    ).resolves.toBe(1008);
+    // ...while the SAME token via the Authorization header is accepted.
+    await expect(closeCode(open(port, { Authorization: `Bearer ${raw}` }, sockets))).resolves.toBe(-1);
+  });
+
+  it("rejects a non-Bearer / empty Authorization header even with escape on", async () => {
+    server = await buildTestServer(); // devControlEscape: true
+    const port = await listen(server);
+    await expect(
+      closeCode(open(port, { Authorization: "Basic dXNlcjpwYXNz" }, sockets)),
+    ).resolves.toBe(1008);
+    await expect(closeCode(open(port, { Authorization: "Bearer " }, sockets))).resolves.toBe(1008);
+  });
+
+  it("rejects a present-but-empty session cookie even with escape on", async () => {
+    server = await buildTestServer(); // devControlEscape: true
+    const port = await listen(server);
+    await expect(closeCode(open(port, { Cookie: "artoo_session=" }, sockets))).resolves.toBe(1008);
   });
 });

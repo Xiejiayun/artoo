@@ -41,36 +41,66 @@ export interface ClientWsHooks {
 
 /**
  * Authenticate a control-plane WS upgrade from its request, returning the
- * connection identity or `null` to reject. Credential precedence:
- *  1. `Authorization: Bearer <control_session>` — a paired device's control
- *     token, validated (revocation-checked) by {@link resolveControlToken}.
- *  2. `Cookie: <sessionCookieName>=<session>` — a browser session, validated by
- *     {@link resolveSession} (the #34 seam).
- *  3. No credential at all — accepted as `dev` ONLY when the non-production
- *     control escape is enabled; otherwise rejected.
+ * connection identity or `null` to reject. The function deliberately
+ * distinguishes a connection that presents NO credential from one that presents
+ * an invalid / unsupported / forbidden credential — only the former may use the
+ * dev escape:
+ *  1. A `?token=` query param is the forbidden URL-token shape on the control
+ *     plane (a token must never land in a URL / access log). Its mere presence
+ *     is rejected — even under the dev escape — so a client cannot rely on the
+ *     forbidden shape and still pass dev smoke as `dev`.
+ *  2. `Authorization: Bearer <control_session>` — a paired device's control
+ *     token, validated (revocation-checked) by {@link resolveControlToken}. An
+ *     `Authorization` header that is present but not a non-empty Bearer token
+ *     (Basic, empty Bearer, …) is rejected, never dev.
+ *  3. `Cookie: <sessionCookieName>=<session>` — a browser session, validated by
+ *     {@link resolveSession} (the #34 seam). A session cookie whose name is
+ *     present but empty / unresolvable is rejected, never dev.
+ *  4. Truly no auth-bearing query/header/cookie — accepted as `dev` ONLY when
+ *     the non-production control escape is enabled; otherwise rejected.
  *
- * A *presented-but-invalid* credential (bad / expired / revoked token or cookie)
- * always returns `null`: an explicit auth attempt that failed never silently
- * falls back to the dev escape. This is what makes expired/revoked sessions and
- * revoked devices fail closed even in a dev build.
+ * A *presented-but-invalid* credential (bad / expired / revoked / malformed /
+ * forbidden-shape) always returns `null`: an explicit auth attempt that failed
+ * never silently falls back to the dev escape. This keeps expired/revoked
+ * sessions, revoked devices, and the forbidden `?token=` shape fail-closed even
+ * in a dev build.
  */
 async function authenticateClient(
   ctx: ServerContext,
   req: FastifyRequest,
 ): Promise<ClientIdentity | null> {
-  const bearer = parseBearer(req.headers.authorization);
-  if (bearer !== null) {
+  // (1) The forbidden URL-token shape: any `?token=` presence is a rejected
+  // credential attempt, never a dev fall-through.
+  if ((req.query as { token?: unknown }).token !== undefined) {
+    return null;
+  }
+
+  // (2) An Authorization header, when present, MUST be a non-empty Bearer token
+  // that resolves to a device control session; any other shape is rejected.
+  const authorization = req.headers.authorization;
+  if (authorization !== undefined) {
+    const bearer = parseBearer(authorization);
+    if (bearer === null) {
+      return null;
+    }
     const device = await resolveControlToken(ctx, bearer);
     return device === null ? null : { kind: "device", deviceId: device.deviceId };
   }
 
-  const sessionToken = parseCookies(req.headers.cookie)[ctx.authConfig.sessionCookieName];
-  if (sessionToken !== undefined && sessionToken !== "") {
+  // (3) A session cookie, when the cookie name is present at all (even empty),
+  // is a presented credential: it must resolve or be rejected.
+  const cookies = parseCookies(req.headers.cookie);
+  if (Object.prototype.hasOwnProperty.call(cookies, ctx.authConfig.sessionCookieName)) {
+    const sessionToken = cookies[ctx.authConfig.sessionCookieName];
+    if (sessionToken === undefined || sessionToken === "") {
+      return null;
+    }
     const session = await resolveSession(ctx, sessionToken);
     return session === null ? null : { kind: "user", userId: session.userId };
   }
 
-  // No credential presented: only the explicit non-production escape may accept.
+  // (4) Truly no auth-bearing query/header/cookie: only the explicit
+  // non-production escape may accept (an anonymous dev connection).
   return ctx.deviceAuth.devControlEscape ? { kind: "dev" } : null;
 }
 
