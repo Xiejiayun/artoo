@@ -19,10 +19,10 @@ import {
 } from "@artoo/domain";
 import websocket from "@fastify/websocket";
 import { eq } from "drizzle-orm";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 
 import type { ServerContext } from "./context.js";
-import { registerApiAuthGuard, registerAuthRoutes } from "./auth/auth-routes.js";
+import { registerApiAuthGuard, registerAuthRoutes, requestContext } from "./auth/auth-routes.js";
 import { AppError } from "./errors.js";
 import { registerIdempotency } from "./idempotency-middleware.js";
 import * as auditService from "./services/audit-service.js";
@@ -80,6 +80,11 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   registerApiAuthGuard(app, ctx, ctx.authConfig);
   registerAuthRoutes(app, ctx, { config: ctx.authConfig, oidcHttp: ctx.oidcHttp });
 
+  // Per-request service context bound to the authenticated session user (when the
+  // guard enforced auth); falls back to the base ctx otherwise. REST handlers use
+  // `rc(req)` so services attribute to the logged-in user, never a shared actor.
+  const rc = (req: FastifyRequest): ServerContext => requestContext(ctx, req);
+
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof AppError) {
       void reply.status(err.httpStatus).send(err.toEnvelope());
@@ -110,14 +115,14 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   registerIdempotency(app, ctx);
 
-  app.get("/api/v1/bootstrap", async () => taskService.bootstrap(ctx));
+  app.get("/api/v1/bootstrap", async (req) => taskService.bootstrap(rc(req)));
 
   app.post("/api/v1/tasks", async (req, reply) => {
     const parsed = CreateTaskRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       throw AppError.validation("invalid task payload", { issues: parsed.error.issues });
     }
-    const result = await taskService.createTask(ctx, parsed.data);
+    const result = await taskService.createTask(rc(req), parsed.data);
     void reply.status(201);
     return result;
   });
@@ -127,22 +132,22 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (query.project_id === undefined || query.project_id === "") {
       throw AppError.validation("project_id query parameter is required");
     }
-    return { tasks: await taskService.listTasks(ctx, query.project_id) };
+    return { tasks: await taskService.listTasks(rc(req), query.project_id) };
   });
 
   app.get("/api/v1/tasks/:id", async (req) => {
     const { id } = req.params as { id: string };
-    return taskService.getTaskSnapshot(ctx, id);
+    return taskService.getTaskSnapshot(rc(req), id);
   });
 
   app.get("/api/v1/tasks/:id/audit-bundle", async (req) => {
     const { id } = req.params as { id: string };
-    return { bundle: await auditService.getTaskAuditBundle(ctx, id) };
+    return { bundle: await auditService.getTaskAuditBundle(rc(req), id) };
   });
 
   app.get("/api/v1/tasks/:id/audit-bundle/export", async (req) => {
     const { id } = req.params as { id: string };
-    return { export: await auditService.exportTaskAuditBundle(ctx, id) };
+    return { export: await auditService.exportTaskAuditBundle(rc(req), id) };
   });
 
   app.post("/api/v1/tasks/:id/dependencies", async (req, reply) => {
@@ -151,31 +156,31 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (!parsed.success) {
       throw AppError.validation("invalid dependency payload", { issues: parsed.error.issues });
     }
-    const dependency = await dagService.createDependency(ctx, id, parsed.data);
+    const dependency = await dagService.createDependency(rc(req), id, parsed.data);
     void reply.status(201);
     return { dependency };
   });
 
   app.get("/api/v1/tasks/:id/dependencies", async (req) => {
     const { id } = req.params as { id: string };
-    return { dependencies: await dagService.listDependencies(ctx, id) };
+    return { dependencies: await dagService.listDependencies(rc(req), id) };
   });
 
   app.delete("/api/v1/tasks/:id/dependencies/:dependencyId", async (req, reply) => {
     const { id, dependencyId } = req.params as { id: string; dependencyId: string };
-    await dagService.deleteDependency(ctx, id, dependencyId);
+    await dagService.deleteDependency(rc(req), id, dependencyId);
     void reply.status(204);
     return null;
   });
 
   app.get("/api/v1/tasks/:id/dag", async (req) => {
     const { id } = req.params as { id: string };
-    return { dag: await dagService.getDag(ctx, id) };
+    return { dag: await dagService.getDag(rc(req), id) };
   });
 
   app.post("/api/v1/tasks/:id/ready", async (req) => {
     const { id } = req.params as { id: string };
-    return { task: await lifecycle.markReady(ctx, id) };
+    return { task: await lifecycle.markReady(rc(req), id) };
   });
 
   app.post("/api/v1/tasks/:id/assign", async (req) => {
@@ -184,7 +189,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (!parsed.success) {
       throw AppError.validation("invalid assign payload", { issues: parsed.error.issues });
     }
-    return lifecycle.assignTask(ctx, id, parsed.data);
+    return lifecycle.assignTask(rc(req), id, parsed.data);
   });
 
   app.post("/api/v1/tasks/:id/retry", async (req) => {
@@ -193,7 +198,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (!parsed.success) {
       throw AppError.validation("invalid retry payload", { issues: parsed.error.issues });
     }
-    return { task: await lifecycle.retryTask(ctx, id) };
+    return { task: await lifecycle.retryTask(rc(req), id) };
   });
 
   app.post("/api/v1/tasks/:id/review", async (req) => {
@@ -202,19 +207,19 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (!parsed.success) {
       throw AppError.validation("invalid review payload", { issues: parsed.error.issues });
     }
-    return { task: await lifecycle.reviewTask(ctx, id, parsed.data) };
+    return { task: await lifecycle.reviewTask(rc(req), id, parsed.data) };
   });
 
   // Dev-only: simulate a node/adapter executing a queued run end to end.
   app.post("/api/v1/dev/runs/:id/mock-execute", async (req) => {
     const { id } = req.params as { id: string };
     const query = req.query as { outcome?: "completed" | "failed" };
-    return runService.mockExecuteRun(ctx, id, query.outcome === "failed" ? "failed" : "completed");
+    return runService.mockExecuteRun(rc(req), id, query.outcome === "failed" ? "failed" : "completed");
   });
 
   app.get("/api/v1/rooms/:id/messages", async (req) => {
     const { id } = req.params as { id: string };
-    return { messages: await messageService.listMessages(ctx, id) };
+    return { messages: await messageService.listMessages(rc(req), id) };
   });
 
   app.post("/api/v1/rooms/:id/messages", async (req, reply) => {
@@ -223,21 +228,21 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (!parsed.success) {
       throw AppError.validation("invalid message payload", { issues: parsed.error.issues });
     }
-    const message = await messageService.postMessage(ctx, id, parsed.data);
+    const message = await messageService.postMessage(rc(req), id, parsed.data);
     void reply.status(201);
     return { message };
   });
 
   app.get("/api/v1/runs/:id", async (req) => {
     const { id } = req.params as { id: string };
-    return { run: await runService.getRun(ctx, id) };
+    return { run: await runService.getRun(rc(req), id) };
   });
 
   // Runtime registry (#15 Part 2): the runtimes a computer last advertised via
   // heartbeat, with status + last_seen_at for the scheduler to filter (Part 3).
   app.get("/api/v1/computers/:id/runtimes", async (req) => {
     const { id } = req.params as { id: string };
-    return { runtimes: await runtimeRegistry.listComputerRuntimes(ctx, id) };
+    return { runtimes: await runtimeRegistry.listComputerRuntimes(rc(req), id) };
   });
 
   // Skill registry (#24): durable installs/read APIs over the v1alpha1 manifest contract.
@@ -246,7 +251,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (!parsed.success) {
       throw AppError.validation("invalid skill install payload", { issues: parsed.error.issues });
     }
-    const skill = await skillService.installSkill(ctx, parsed.data);
+    const skill = await skillService.installSkill(rc(req), parsed.data);
     void reply.status(201);
     return { skill };
   });
@@ -261,7 +266,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       enabled = q.enabled === "true";
     }
     return {
-      skills: await skillService.listSkillInstalls(ctx, {
+      skills: await skillService.listSkillInstalls(rc(req), {
         projectId: q.project_id,
         enabled,
       }),
@@ -270,17 +275,17 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   app.get("/api/v1/skills/:id", async (req) => {
     const { id } = req.params as { id: string };
-    return { skill: await skillService.getSkillInstall(ctx, id) };
+    return { skill: await skillService.getSkillInstall(rc(req), id) };
   });
 
   app.post("/api/v1/runs/:id/cancel", async (req) => {
     const { id } = req.params as { id: string };
-    return { run: await runService.cancelRun(ctx, id) };
+    return { run: await runService.cancelRun(rc(req), id) };
   });
 
   app.get("/api/v1/approvals", async (req) => {
     const { status } = req.query as { status?: string };
-    return { approvals: await approvalService.listApprovals(ctx, status) };
+    return { approvals: await approvalService.listApprovals(rc(req), status) };
   });
 
   app.post("/api/v1/approvals/:id/resolve", async (req) => {
@@ -291,7 +296,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
         issues: parsed.error.issues,
       });
     }
-    return { approval: await approvalService.resolveApproval(ctx, id, parsed.data) };
+    return { approval: await approvalService.resolveApproval(rc(req), id, parsed.data) };
   });
 
   // Concurrency control (#12): file leases over workspace paths.
@@ -300,14 +305,14 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (!parsed.success) {
       throw AppError.validation("invalid lease payload", { issues: parsed.error.issues });
     }
-    const lease = await leaseService.acquireLease(ctx, parsed.data);
+    const lease = await leaseService.acquireLease(rc(req), parsed.data);
     void reply.status(201);
     return { lease };
   });
 
   app.delete("/api/v1/leases/:id", async (req) => {
     const { id } = req.params as { id: string };
-    return { lease: await leaseService.releaseLease(ctx, id) };
+    return { lease: await leaseService.releaseLease(rc(req), id) };
   });
 
   app.get("/api/v1/projects/:id/leases", async (req) => {
@@ -318,9 +323,9 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       if (!parsed.success) {
         throw AppError.validation("invalid lease status filter", { status });
       }
-      return { leases: await leaseService.listLeases(ctx, id, parsed.data) };
+      return { leases: await leaseService.listLeases(rc(req), id, parsed.data) };
     }
-    return { leases: await leaseService.listLeases(ctx, id) };
+    return { leases: await leaseService.listLeases(rc(req), id) };
   });
 
   // Memory (#14 Phase B): propose/curate memories + accepted-only retrieval.
@@ -329,7 +334,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (!parsed.success) {
       throw AppError.validation("invalid memory payload", { issues: parsed.error.issues });
     }
-    const memory = await memoryService.proposeMemory(ctx, parsed.data);
+    const memory = await memoryService.proposeMemory(rc(req), parsed.data);
     void reply.status(201);
     return { memory };
   });
@@ -355,7 +360,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       }
     }
     return {
-      memories: await memoryService.listMemories(ctx, {
+      memories: await memoryService.listMemories(rc(req), {
         scope: q.scope,
         status: q.status,
         projectId: q.project_id,
@@ -376,7 +381,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       }
     }
     return memoryService.selectForContext(
-      ctx,
+      rc(req),
       { projectId: q.project_id, taskId: q.task_id },
       limit,
     );
@@ -384,7 +389,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   app.get("/api/v1/memories/:id", async (req) => {
     const { id } = req.params as { id: string };
-    return { memory: await memoryService.getMemory(ctx, id) };
+    return { memory: await memoryService.getMemory(rc(req), id) };
   });
 
   app.post("/api/v1/memories/:id/supersede", async (req, reply) => {
@@ -393,7 +398,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (!parsed.success) {
       throw AppError.validation("invalid memory replacement payload", { issues: parsed.error.issues });
     }
-    const result = await memoryService.supersedeMemory(ctx, id, parsed.data);
+    const result = await memoryService.supersedeMemory(rc(req), id, parsed.data);
     void reply.status(201);
     return result;
   });
@@ -407,7 +412,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (!parsed.success) {
       throw AppError.validation("invalid memory transition payload", { issues: parsed.error.issues });
     }
-    const memory = await memoryService.transitionMemory(ctx, id, action as MemoryTrigger, parsed.data);
+    const memory = await memoryService.transitionMemory(rc(req), id, action as MemoryTrigger, parsed.data);
     return { memory };
   });
 
@@ -420,7 +425,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       summary?: string;
       run_id?: string;
     };
-    const approval = await approvalService.requestApproval(ctx, {
+    const approval = await approvalService.requestApproval(rc(req), {
       taskId: id,
       runId: body.run_id ?? null,
       action: body.action ?? "git.push",

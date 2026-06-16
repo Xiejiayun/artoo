@@ -41,6 +41,22 @@ interface SessionUser {
   name: string;
 }
 
+/** A request carrying the authenticated session user's id (set by the guard). */
+interface RequestWithActor extends FastifyRequest {
+  actorUserId?: string;
+}
+
+/**
+ * The per-request service context: when the guard has bound a session user to the
+ * request, services run as that user; otherwise the base context is used
+ * unchanged. A fresh shallow copy per request, so the shared singleton's
+ * `actorUserId` is never mutated (race-safe across concurrent requests).
+ */
+export function requestContext(ctx: ServerContext, req: FastifyRequest): ServerContext {
+  const actorUserId = (req as RequestWithActor).actorUserId;
+  return actorUserId !== undefined ? { ...ctx, actorUserId } : ctx;
+}
+
 function unauthorized(): { error: { code: string; message: string; details: Record<string, unknown> } } {
   return { error: { code: "unauthorized", message: "authentication required", details: {} } };
 }
@@ -197,6 +213,9 @@ export function registerApiAuthGuard(app: FastifyInstance, ctx: ServerContext, c
     const user = await currentUser(ctx, config, req);
     if (user === null) {
       await reply.status(401).send(unauthorized());
+      return;
     }
+    // Bind the authenticated user to the request so handlers run services as them.
+    (req as RequestWithActor).actorUserId = user.id;
   });
 }

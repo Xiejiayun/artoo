@@ -1,3 +1,4 @@
+import { tasks } from "@artoo/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { buildTestServer, type TestServer } from "../test-support.js";
@@ -7,7 +8,10 @@ interface InjectedResponse {
   statusCode: number;
   headers: Record<string, unknown>;
   cookies: Array<{ name: string; value: string }>;
-  json: () => { user?: { id: string; email: string; name: string } };
+  json: () => {
+    user?: { id: string; email: string; name: string };
+    actor?: { type: string; id: string };
+  };
 }
 
 function cookie(res: InjectedResponse, name: string): string | undefined {
@@ -135,5 +139,44 @@ describe("protected-API guard (enforceApiAuth)", () => {
       cookies: { artoo_session: session ?? "" },
     })) as unknown as InjectedResponse;
     expect(authed.statusCode).toBe(200);
+  });
+
+  it("attributes protected API actions to the session user, not the seeded user_owner", async () => {
+    server = await buildTestServer({ authConfig: { enforceApiAuth: true } });
+    const { session } = await login(server, {
+      sub: "g-actor",
+      email: "actor@example.com",
+      email_verified: true,
+      name: "Actor",
+    });
+
+    // bootstrap's actor is the logged-in Google user, not user_owner
+    const boot = (await server.app.inject({
+      method: "GET",
+      url: "/api/v1/bootstrap",
+      cookies: { artoo_session: session ?? "" },
+    })) as unknown as InjectedResponse;
+    expect(boot.statusCode).toBe(200);
+    const actorId = boot.json().actor?.id;
+    expect(actorId).toBeDefined();
+    expect(actorId).not.toBe("user_owner");
+
+    // a task created through the session is attributed to that user
+    const created = (await server.app.inject({
+      method: "POST",
+      url: "/api/v1/tasks",
+      cookies: { artoo_session: session ?? "" },
+      payload: {
+        project_id: "proj_artoo",
+        title: "actor-attribution task",
+        acceptance_criteria: ["ok"],
+        required_capabilities: ["code.modify"],
+      },
+    })) as unknown as InjectedResponse;
+    expect(created.statusCode).toBe(201);
+    const rows = await server.db.db.select().from(tasks);
+    const row = rows.find((t) => t.title === "actor-attribution task");
+    expect(row?.createdById).toBe(actorId);
+    expect(row?.createdById).not.toBe("user_owner");
   });
 });
