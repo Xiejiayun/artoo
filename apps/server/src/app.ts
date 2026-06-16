@@ -22,6 +22,7 @@ import { eq } from "drizzle-orm";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import type { ServerContext } from "./context.js";
+import { registerApiAuthGuard, registerAuthRoutes } from "./auth/auth-routes.js";
 import { AppError } from "./errors.js";
 import { registerIdempotency } from "./idempotency-middleware.js";
 import * as auditService from "./services/audit-service.js";
@@ -73,6 +74,11 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     registerNodeWsRoute(instance, ctx, nodeRegistry);
     registerClientWsRoute(instance, wsHub);
   });
+
+  // Google Auth (#34): the protected-API guard (opt-in via enforceApiAuth) and
+  // the /auth/* routes.
+  registerApiAuthGuard(app, ctx, ctx.authConfig);
+  registerAuthRoutes(app, ctx, { config: ctx.authConfig, oidcHttp: ctx.oidcHttp });
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof AppError) {

@@ -4,6 +4,8 @@ import { PgliteDbClient } from "@artoo/storage";
 import type { FastifyInstance } from "fastify";
 
 import { buildApp } from "./app.js";
+import { testAuthConfig, type AuthConfig } from "./auth/auth-config.js";
+import { createFakeOidcProvider, type FakeOidcProvider } from "./auth/fake-oidc.js";
 import { testDeviceAuthConfig } from "./config/device-auth.js";
 import type { DeviceAuthConfig } from "./config/device-auth.js";
 import type { ServerContext } from "./context.js";
@@ -38,6 +40,8 @@ export interface TestServer {
   nodeRegistry: NodeRegistry;
   wsHub: WsHub;
   publisher: EventPublisher;
+  /** The in-process fake OIDC provider wired as ctx.oidcHttp (#34). */
+  fakeOidc: FakeOidcProvider;
   close: () => Promise<void>;
 }
 
@@ -52,6 +56,9 @@ export interface BuildTestServerOptions {
   /** Override device-auth config (e.g. `{ devNodeToken: null }` to assert the
    *  production path rejects `token=dev`). Defaults to a dev-escape-on fixture. */
   deviceAuth?: DeviceAuthConfig;
+  /** Override Google-auth config (e.g. `{ enforceApiAuth: true }`). The fake OIDC
+   *  provider is created to match the resulting issuer/clientId. */
+  authConfig?: Partial<AuthConfig>;
 }
 
 /** A fully wired server over an embedded, migrated, seeded database. */
@@ -61,6 +68,12 @@ export async function buildTestServer(
   const db = await PgliteDbClient.create();
   await db.migrate(await loadMigrationStatements());
   await seed(db, FIXED_ISO, { workspaceRoot: options.workspaceRoot });
+  const authConfig = testAuthConfig(options.authConfig);
+  const fakeOidc = createFakeOidcProvider({
+    issuer: authConfig.google.issuer,
+    audience: authConfig.google.clientId,
+    nowMs: Date.parse(FIXED_ISO),
+  });
   const ctx: ServerContext = {
     db,
     clock: fixedClock(),
@@ -68,6 +81,8 @@ export async function buildTestServer(
     organizationId: "org_default",
     actorUserId: "user_owner",
     deviceAuth: options.deviceAuth ?? testDeviceAuthConfig(),
+    authConfig,
+    oidcHttp: fakeOidc.http,
   };
   const nodeRegistry = createNodeRegistry();
   const wsHub = createWsHub();
@@ -81,6 +96,7 @@ export async function buildTestServer(
     nodeRegistry,
     wsHub,
     publisher,
+    fakeOidc,
     close: async () => {
       publisher.stop();
       await app.close();

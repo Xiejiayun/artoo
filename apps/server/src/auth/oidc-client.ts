@@ -59,6 +59,42 @@ export interface OidcHttp {
   fetchJwks(jwksUri: string): Promise<Jwks>;
 }
 
+/** Production OidcHttp over global fetch (the IdP token + JWKS endpoints). */
+export function createFetchOidcHttp(): OidcHttp {
+  return {
+    async exchangeCode(input: ExchangeCodeInput): Promise<OidcTokens> {
+      const body = new URLSearchParams({
+        grant_type: "authorization_code",
+        code: input.code,
+        code_verifier: input.codeVerifier,
+        client_id: input.clientId,
+        client_secret: input.clientSecret,
+        redirect_uri: input.redirectUri,
+      });
+      const res = await fetch(input.tokenEndpoint, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body,
+      });
+      if (!res.ok) {
+        throw new Error(`token endpoint returned ${res.status}`);
+      }
+      const json = (await res.json()) as { id_token?: unknown };
+      if (typeof json.id_token !== "string") {
+        throw new Error("token response missing id_token");
+      }
+      return { idToken: json.id_token };
+    },
+    async fetchJwks(jwksUri: string): Promise<Jwks> {
+      const res = await fetch(jwksUri);
+      if (!res.ok) {
+        throw new Error(`jwks endpoint returned ${res.status}`);
+      }
+      return (await res.json()) as Jwks;
+    },
+  };
+}
+
 export interface BuildAuthorizationUrlInput {
   authorizationEndpoint: string;
   clientId: string;

@@ -6,6 +6,8 @@ import { createSystemClock, createUlidIdGen } from "@artoo/domain";
 import { PgliteDbClient } from "@artoo/storage";
 
 import { buildApp } from "./app.js";
+import { loadAuthConfig, type AuthConfig, type AuthConfigEnv } from "./auth/auth-config.js";
+import { createFetchOidcHttp } from "./auth/oidc-client.js";
 import { loadDeviceAuthConfig } from "./config/device-auth.js";
 import type { ServerContext } from "./context.js";
 import { createEventPublisher } from "./ws/event-publisher.js";
@@ -22,6 +24,21 @@ import { createWsHub } from "./ws/ws-hub.js";
  */
 const PORT = Number(process.env.ARTOO_PORT ?? "4000");
 const HOST = process.env.ARTOO_HOST ?? "127.0.0.1";
+
+/** Production loads Google-auth config strictly (fail-closed). Dev tolerates
+ *  missing Google credentials so the local loop / E2E start without OAuth set up;
+ *  the auth routes then exist but are inert (enforceApiAuth defaults off). */
+function resolveAuthConfig(env: AuthConfigEnv): AuthConfig {
+  if (env.NODE_ENV === "production") {
+    return loadAuthConfig(env);
+  }
+  return loadAuthConfig({
+    ...env,
+    GOOGLE_CLIENT_ID: env.GOOGLE_CLIENT_ID ?? "dev-client-id",
+    GOOGLE_CLIENT_SECRET: env.GOOGLE_CLIENT_SECRET ?? "dev-client-secret",
+    GOOGLE_REDIRECT_URI: env.GOOGLE_REDIRECT_URI ?? `http://${HOST}:${PORT}/auth/google/callback`,
+  });
+}
 
 async function main(): Promise<void> {
   const dbDir = process.env.ARTOO_DB_DIR;
@@ -50,6 +67,8 @@ async function main(): Promise<void> {
     // ARTOO_PAIRING_PEPPER and ARTOO_ALLOW_DEV_NODE_TOKEN explicitly; a bare
     // `node main.js` with no config fails closed.
     deviceAuth: loadDeviceAuthConfig(process.env),
+    authConfig: resolveAuthConfig(process.env),
+    oidcHttp: createFetchOidcHttp(),
   };
   const wsHub = createWsHub();
   const app = buildApp(ctx, { wsHub });

@@ -1,6 +1,8 @@
 import type { Clock, IdGen } from "@artoo/domain";
 import type { DbClient } from "@artoo/storage";
 
+import type { AuthConfig } from "./auth/auth-config.js";
+import type { OidcHttp } from "./auth/oidc-client.js";
 import type { DeviceAuthConfig } from "./config/device-auth.js";
 
 /**
@@ -17,6 +19,10 @@ export interface ServerContext {
   actorUserId: string;
   /** Device-auth secrets/policy (#28): pairing pepper + dev node-token escape. */
   deviceAuth: DeviceAuthConfig;
+  /** Google-auth wiring (#34): OIDC provider coords, cookies, session policy. */
+  authConfig: AuthConfig;
+  /** OIDC transport (#34): token exchange + JWKS. fetch in prod; fake in tests. */
+  oidcHttp: OidcHttp;
   /**
    * Optional hook fired (after commit) when a run is queued by assignment, so a
    * node binding can dispatch run.start over the node transport. Absent in pure
