@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "react-router-dom";
 
+import { ApiClientError } from "../api/client.js";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { LoginPage } from "./LoginPage.js";
@@ -36,10 +37,34 @@ function AuthGuard({ children }: { children: React.ReactNode }): React.ReactNode
   if (session.isLoading) {
     return <p role="status">Loading…</p>;
   }
-  // 401 (or any auth probe failure) → show the login page. return_to is the
-  // current same-origin path so the user lands back where they were.
-  if (session.isError || session.data === undefined) {
-    return <LoginPage returnTo={`${location.pathname}${location.search}`} />;
+
+  // Only a clean 401 means "not signed in" → start the login flow. Anything
+  // else (500, network failure, malformed body) is a service error: show a
+  // retryable state instead of bouncing the user into a Google login.
+  if (session.isError) {
+    if (session.error instanceof ApiClientError && session.error.status === 401) {
+      return <LoginPage returnTo={`${location.pathname}${location.search}`} />;
+    }
+    return <SessionError onRetry={() => void session.refetch()} />;
   }
+
+  // Successful probe with no user is a malformed response, not an unauthenticated
+  // user — treat it as a service error rather than a silent login bounce.
+  if (!session.data?.user) {
+    return <SessionError onRetry={() => void session.refetch()} />;
+  }
+
   return <>{children}</>;
+}
+
+/** Retryable error state for a failed/unusable `/auth/session` probe. */
+function SessionError({ onRetry }: { onRetry: () => void }): React.ReactNode {
+  return (
+    <div role="alert" className="auth-error">
+      <p>We couldn’t verify your session. Please try again.</p>
+      <button type="button" onClick={onRetry}>
+        Retry
+      </button>
+    </div>
+  );
 }
