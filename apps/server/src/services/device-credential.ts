@@ -37,22 +37,22 @@ export function hmacSha256Hex(input: string, key: string): string {
 }
 
 /**
- * Constant-time compare of two hex digests. Unequal length (or empty) returns
- * false; equal-length comparison is timing-safe via {@link timingSafeEqual}.
+ * Constant-time compare of two 256-bit hex digests (SHA-256 / HMAC-SHA256).
+ *
+ * Both inputs are validated against a canonical 64-char hex shape BEFORE
+ * decoding. Node's hex decoder is permissive — it silently drops trailing
+ * non-hex characters and truncates odd-length input — so checking only the
+ * decoded Buffer length would let `digest + "zz"` decode to the same 32 bytes
+ * as `digest` and compare equal. Non-canonical or wrong-width input returns
+ * false; canonical equal-width input is compared with {@link timingSafeEqual}.
  */
+const HEX_256 = /^[0-9a-f]{64}$/i;
+
 export function constantTimeEqualHex(a: string, b: string): boolean {
-  let ab: Buffer;
-  let bb: Buffer;
-  try {
-    ab = Buffer.from(a, "hex");
-    bb = Buffer.from(b, "hex");
-  } catch {
+  if (!HEX_256.test(a) || !HEX_256.test(b)) {
     return false;
   }
-  if (ab.length === 0 || ab.length !== bb.length) {
-    return false;
-  }
-  return timingSafeEqual(ab, bb);
+  return timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
 }
 
 // ---------------------------------------------------------------------------

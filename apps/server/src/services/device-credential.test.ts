@@ -37,13 +37,19 @@ describe("hashing primitives", () => {
     expect(sha256Hex("abc")).toHaveLength(64);
   });
 
-  it("constantTimeEqualHex compares equal-length hex and rejects mismatches", () => {
+  it("constantTimeEqualHex compares canonical 64-hex digests and rejects non-canonical input", () => {
     const h = sha256Hex("x");
     expect(constantTimeEqualHex(h, h)).toBe(true);
     expect(constantTimeEqualHex(h, sha256Hex("y"))).toBe(false);
-    expect(constantTimeEqualHex(h, h.slice(0, 60))).toBe(false); // different length
+    // Node's hex decoder is permissive: `h + "zz"` would decode to the same 32
+    // bytes as `h`. The canonical-shape guard must reject it BEFORE decoding.
+    expect(constantTimeEqualHex(h, `${h}zz`)).toBe(false);
+    expect(constantTimeEqualHex(`${h}zz`, h)).toBe(false);
+    expect(constantTimeEqualHex(h, h.slice(0, 63))).toBe(false); // truncated width
+    expect(constantTimeEqualHex(h, h.slice(0, 60))).toBe(false); // wrong width
+    expect(constantTimeEqualHex(`${h.slice(0, 62)}gg`, h)).toBe(false); // non-hex chars
     expect(constantTimeEqualHex("", "")).toBe(false); // empty
-    expect(constantTimeEqualHex("zz", "zz")).toBe(false); // non-hex
+    expect(constantTimeEqualHex("zz", "zz")).toBe(false); // non-hex, non-canonical
   });
 });
 
