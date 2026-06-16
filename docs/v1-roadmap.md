@@ -33,11 +33,11 @@ Current v1 status:
 - #14/#21 Memory is done: pure lifecycle/retrieval contract, durable memory
   storage, curation APIs, supersession, accepted-only context retrieval, and
   assign-time ContextPack persistence with exact `source_memory_ids` are merged.
-- #15 Scheduler/runtime is in progress: multi-runtime presets, heartbeat
+- #15 Scheduler/runtime is done: multi-runtime presets, heartbeat
   runtime capabilities, server persistence, and scheduler consumption of
   `agent_runtimes` are merged. The #13/#24 `compatible_runtimes` scheduler
   refinement is merged for enabled skill installs. Gated true Claude runtime
-  smoke remains open.
+  smoke passed after the `5310bea` ContextPack delivery fix.
 - #16 Web product surface now has backed Workspace, Board, Computers, Agents,
   Skills, Memory, and Runs/Audit routes. Computers and Agents render bootstrap
   inventory plus heartbeat-backed runtime rows; Skills renders installed skill
@@ -55,8 +55,8 @@ Current v1 status:
   gated runtime evidence are tracked in `docs/v1-release-candidate.md`. A local
   v1 gate script and release runbook live in `docs/v1-release-gates.md`. As of
   2026-06-16, iOS/macOS installable verification and separate-machine installer
-  proof are v2 release-gate work; true Claude runtime smoke is enabled and
-  pending evidence.
+  proof are v2 release-gate work. True Claude runtime smoke now has passing
+  evidence.
 - #18 iOS source is done as native SwiftUI source. v1 treats it as an
   unverified source package because macOS/Xcode build, run, and test
   verification cannot be performed in this Windows environment.

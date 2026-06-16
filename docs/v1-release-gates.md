@@ -86,7 +86,7 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 | Web inventory surfaces | Bootstrap/runtime read models + Skills domain-contract component tests | Automated in Vitest |
 | Skill registry storage + scheduler | Install/list/get API tests plus compatible enabled-skill scheduler matching | Automated in Vitest |
 | Cross-process mock runtime smoke | Covered by server/node and artood integration tests | Automated in Vitest |
-| True CLI runtime smoke | Gated manual run in isolated workspace | Claude enabled and pending evidence; Codex previously smoked |
+| True CLI runtime smoke | `ARTOO_CLAUDE_SMOKE=1 npx vitest run apps/server/src/claude-runtime-smoke.test.ts` | Claude passed after `5310bea`; gated/default-skipped |
 | Audit bundle proof | `GET /api/v1/tasks/:id/audit-bundle/export` returns redacted bundle + deterministic SHA-256 | Automated; cryptographic signing deferred by v1 decision |
 | v1 demo path | `npm run demo:v1` after build | Automated local demo script |
 | Production dependency audit | `npm audit --omit=dev` | Automated check is clean |
@@ -171,6 +171,20 @@ Expected proof for a successful true runtime smoke:
 - task can be accepted to `done`
 - audit bundle for the task includes the run, artifact, scheduler decision, and
   event-log evidence
+
+Recorded Claude proof after `5310bea`:
+
+- command: `ARTOO_CLAUDE_SMOKE=1 npx vitest run apps/server/src/claude-runtime-smoke.test.ts`
+- true `claude` CLI 2.1.178, in-process server, OS-temp workspace only
+- task `task_000001`, run `run_000001`
+- lifecycle `started -> completed`; task reached `review`
+- `greeting.txt` contained `ARTOO-CLAUDE-SMOKE-OK`
+- non-empty `changes.patch`, 155 bytes, SHA-256
+  `0726c6a47eba49c0b70d683b07f3c9b8ad3733f640e848bbe735ab1c89872480`
+- audit-bundle export returned HTTP 200 with a 7,559-byte export
+
+This smoke is intentionally gated and default-skipped because it uses the local
+Claude CLI auth/quota and may access network services.
 
 ## Audit Bundle Redaction
 

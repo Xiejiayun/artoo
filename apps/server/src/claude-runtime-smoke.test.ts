@@ -174,6 +174,8 @@ describe.skipIf(!ENABLED)("gated true Claude runtime smoke (real claude CLI)", (
       expect(phases).toContain("completed");
       expect(outputEvents.length).toBeGreaterThan(0);
       expect(artifactEvents.length).toBeGreaterThan(0);
+      expect(patchExists).toBe(true);
+      expect(patchBytes.length).toBeGreaterThan(0);
       expect(taskStatus).toBe("review");
       expect(auditExport.statusCode).toBe(200);
     },
