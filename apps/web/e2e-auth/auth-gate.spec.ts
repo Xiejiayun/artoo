@@ -65,4 +65,14 @@ test.describe("auth gate + static-host boundary (VITE_AUTH_ENABLED=true)", () =>
     expect(session.status()).toBe(401);
     expect(session.headers()["content-type"]).toContain("application/json");
   });
+
+  test("exact /api and /auth roots (HTML Accept) stay JSON, not the SPA index", async ({ request }) => {
+    // Regression for the SPA-fallback edge where exact namespace roots (no
+    // trailing slash) with a navigation Accept could be served index.html.
+    for (const path of ["/api", "/auth"]) {
+      const res = await request.get(path, { headers: { Accept: "text/html,application/xhtml+xml" } });
+      expect(res.headers()["content-type"] ?? "").not.toContain("text/html");
+      expect([401, 404]).toContain(res.status());
+    }
+  });
 });
