@@ -5,7 +5,7 @@ import { RealtimeClient, type WebSocketLike } from "./realtimeClient.js";
 class FakeSocket implements WebSocketLike {
   sent: string[] = [];
   onopen: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number; reason: string }) => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
 
@@ -13,7 +13,11 @@ class FakeSocket implements WebSocketLike {
     this.sent.push(data);
   }
   close(): void {
-    this.onclose?.();
+    this.onclose?.({ code: 1000, reason: "" });
+  }
+  /** Simulate a server/transport close with a specific code. */
+  closeWith(code: number, reason = ""): void {
+    this.onclose?.({ code, reason });
   }
   open(): void {
     this.onopen?.();
@@ -111,7 +115,7 @@ describe("RealtimeClient", () => {
     expect(sockets[0]?.lastFrame()).toEqual({ type: "subscribe", topics: ["task:1"] });
 
     // server-side close triggers a scheduled reconnect.
-    sockets[0]?.onclose?.();
+    sockets[0]?.closeWith(1006);
     expect(timeouts).toHaveLength(1);
     timeouts[0]?.();
     sockets[1]?.open();
@@ -160,10 +164,66 @@ describe("RealtimeClient", () => {
     });
     client.connect();
     sockets[0]?.open();
-    sockets[0]?.onclose?.();
+    sockets[0]?.closeWith(1006);
     expect(timeouts).toHaveLength(1);
     client.close();
     timeouts[0]?.();
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("does not reconnect on a 1008 terminal auth failure and signals onUnauthenticated", () => {
+    const sockets: FakeSocket[] = [];
+    const timeouts: Array<() => void> = [];
+    const onUnauthenticated = vi.fn();
+    const client = new RealtimeClient({
+      url: "ws://x",
+      onEvent: () => undefined,
+      onUnauthenticated,
+      socketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      reconnectDelayMs: 5,
+      setTimeoutFn: (handler) => {
+        timeouts.push(handler);
+        return 0;
+      },
+    });
+    client.subscribe(["task:1"]);
+    client.connect();
+    sockets[0]?.open();
+
+    sockets[0]?.closeWith(1008, "unauthenticated");
+    // No reconnect scheduled; the app is told to route through the #34 gate.
+    expect(timeouts).toHaveLength(0);
+    expect(onUnauthenticated).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays terminal after 1008: a subsequent transport close does not reconnect", () => {
+    const sockets: FakeSocket[] = [];
+    const timeouts: Array<() => void> = [];
+    const client = new RealtimeClient({
+      url: "ws://x",
+      onEvent: () => undefined,
+      onUnauthenticated: () => undefined,
+      socketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      reconnectDelayMs: 5,
+      setTimeoutFn: (handler) => {
+        timeouts.push(handler);
+        return 0;
+      },
+    });
+    client.connect();
+    sockets[0]?.open();
+    sockets[0]?.closeWith(1008, "unauthenticated");
+    // A stray later close (e.g. a duplicate event) must not resurrect reconnect.
+    sockets[0]?.closeWith(1006);
+    expect(timeouts).toHaveLength(0);
     expect(sockets).toHaveLength(1);
   });
 });
