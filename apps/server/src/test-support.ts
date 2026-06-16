@@ -4,6 +4,8 @@ import { PgliteDbClient } from "@artoo/storage";
 import type { FastifyInstance } from "fastify";
 
 import { buildApp } from "./app.js";
+import { testDeviceAuthConfig } from "./config/device-auth.js";
+import type { DeviceAuthConfig } from "./config/device-auth.js";
 import type { ServerContext } from "./context.js";
 import { createEventPublisher, type EventPublisher } from "./ws/event-publisher.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
@@ -47,6 +49,9 @@ export interface BuildTestServerOptions {
    * test so `git worktree add` never touches the repo (#23 gated smoke).
    */
   workspaceRoot?: string;
+  /** Override device-auth config (e.g. `{ devNodeToken: null }` to assert the
+   *  production path rejects `token=dev`). Defaults to a dev-escape-on fixture. */
+  deviceAuth?: DeviceAuthConfig;
 }
 
 /** A fully wired server over an embedded, migrated, seeded database. */
@@ -62,6 +67,7 @@ export async function buildTestServer(
     idGen: sequentialIdGen(),
     organizationId: "org_default",
     actorUserId: "user_owner",
+    deviceAuth: options.deviceAuth ?? testDeviceAuthConfig(),
   };
   const nodeRegistry = createNodeRegistry();
   const wsHub = createWsHub();

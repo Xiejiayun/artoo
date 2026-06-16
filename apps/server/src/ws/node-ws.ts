@@ -1,18 +1,66 @@
 import { computers } from "@artoo/db";
+import type { NodeToServerMessage } from "@artoo/protocol";
 import { and, eq } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { ServerContext } from "../context.js";
 import { attachNodeBinding, type NodeBinding } from "../node-binding.js";
+import { resolveNodeToken } from "../services/device-service.js";
 import { recordHeartbeatRuntimes } from "../services/runtime-registry-service.js";
 import type { NodeRegistry } from "./node-registry.js";
 import { createServerNodeTransport, type RawServerSocket } from "./ws-node-transport.js";
 
+/** Authenticated identity of a `/api/v1/node` connection (#28 slice 3a). */
+type NodeAuth = { mode: "dev" } | { mode: "device"; deviceId: string; computerId: string };
+
 /**
- * Register the node protocol WebSocket endpoint `ws /api/v1/node` (WS wire format
- * v0.1). Missing/empty token rejects the connection. `node.hello` must be the
- * first app frame; only after it is accepted does the server register the
- * transport (so no run.start can be dispatched to a node that hasn't said hello).
+ * Authenticate a node connection's `?token=`. Returns:
+ *  - `{mode:"dev"}` when the legacy escape is enabled (non-production + explicit
+ *    flag) and the token matches — preserving the v1 `node.hello` -> computer
+ *    mapping;
+ *  - `{mode:"device"}` when a real device node token resolves to a device that is
+ *    LINKED to a computer;
+ *  - `null` otherwise, INCLUDING an unlinked device token (`computerId === null`),
+ *    which fails closed until the device<->computer enrollment slice exists. This
+ *    is what prevents a production node token from binding an arbitrary computer.
+ */
+async function authenticateNodeToken(
+  ctx: ServerContext,
+  token: string | undefined,
+): Promise<NodeAuth | null> {
+  if (token === undefined || token === "") {
+    return null;
+  }
+  const { devNodeToken } = ctx.deviceAuth;
+  if (devNodeToken !== null && token === devNodeToken) {
+    return { mode: "dev" };
+  }
+  const resolved = await resolveNodeToken(ctx, token);
+  if (resolved === null || resolved.computerId === null) {
+    return null;
+  }
+  return { mode: "device", deviceId: resolved.deviceId, computerId: resolved.computerId };
+}
+
+/**
+ * The computer id a node.hello may register, or null to reject. The dev escape
+ * trusts hello's node_id (v1). A device connection must present a node_id equal
+ * to its credential's linked computer.
+ */
+function helloComputerId(auth: NodeAuth, helloNodeId: string): string | null {
+  if (auth.mode === "dev") {
+    return helloNodeId;
+  }
+  return helloNodeId === auth.computerId ? auth.computerId : null;
+}
+
+/**
+ * Register the node protocol WebSocket endpoint `ws /api/v1/node`. The `?token=`
+ * is authenticated (#28 slice 3a): a valid dev escape or a computer-linked device
+ * node token, else the connection is closed. Because authentication is async, the
+ * transport (and its socket 'message' listener) is attached synchronously and
+ * early frames are queued, then drained once auth resolves. `node.hello` must be
+ * the first app frame and its node_id must be consistent with the credential.
  */
 export function registerNodeWsRoute(
   app: FastifyInstance,
@@ -22,44 +70,89 @@ export function registerNodeWsRoute(
   app.get("/api/v1/node", { websocket: true }, (socket: unknown, req: FastifyRequest) => {
     const raw = socket as RawServerSocket;
     const token = (req.query as { token?: string }).token;
-    if (token === undefined || token === "") {
-      raw.close(1008, "missing node token");
-      return;
-    }
 
     const transport = createServerNodeTransport(raw);
     let binding: NodeBinding | undefined;
     let nodeId: string | undefined;
+    let auth: NodeAuth | undefined;
+    let terminated = false;
+    const earlyQueue: NodeToServerMessage[] = [];
 
-    const unsubscribe = transport.subscribe((message) => {
+    const close = (code: number, reason: string): void => {
+      if (terminated) {
+        return;
+      }
+      terminated = true;
+      raw.close(code, reason);
+    };
+
+    const handleMessage = (message: NodeToServerMessage): void => {
+      const currentAuth = auth;
+      if (terminated || currentAuth === undefined) {
+        return;
+      }
       if (nodeId === undefined && message.kind !== "node.hello") {
-        raw.close(1008, "node.hello required");
+        close(1008, "node.hello required");
         return;
       }
       if (message.kind === "node.hello") {
         if (nodeId !== undefined) {
           return; // already registered; ignore duplicate hello
         }
-        nodeId = message.node_id;
+        const computerId = helloComputerId(currentAuth, message.node_id);
+        if (computerId === null) {
+          close(1008, "node.hello node_id does not match credential");
+          return;
+        }
+        nodeId = computerId;
         void setComputerOnline(ctx, nodeId);
         binding = attachNodeBinding(ctx, transport);
         registry.register(nodeId, binding);
       } else if (message.kind === "node.heartbeat") {
         const sessionNodeId = nodeId;
         if (sessionNodeId === undefined) {
-          raw.close(1008, "node.hello required");
+          close(1008, "node.hello required");
           return;
         }
-        void touchHeartbeat(ctx, sessionNodeId);
         // Persist advertised runtime capabilities (#15 Part 2). Best-effort: a db
         // hiccup must not tear down the node connection. The accepted hello's
         // nodeId is the session/computer key; heartbeat node_id is not trusted.
+        void touchHeartbeat(ctx, sessionNodeId);
         void recordHeartbeatRuntimes(ctx, sessionNodeId, message.runtimes).catch(() => {});
       }
       // command.ack / run.event are consumed by the binding's own subscription.
+    };
+
+    // Queue frames until auth resolves, then dispatch live.
+    let dispatch: (message: NodeToServerMessage) => void = (message) => {
+      earlyQueue.push(message);
+    };
+    const unsubscribe = transport.subscribe((message) => {
+      dispatch(message);
     });
 
+    void (async () => {
+      const result = await authenticateNodeToken(ctx, token);
+      if (result === null) {
+        close(1008, "invalid node credential");
+        return;
+      }
+      if (terminated) {
+        return; // socket already closed during auth
+      }
+      auth = result;
+      dispatch = handleMessage;
+      for (const queued of earlyQueue) {
+        if (terminated) {
+          break;
+        }
+        handleMessage(queued);
+      }
+      earlyQueue.length = 0;
+    })();
+
     raw.on("close", () => {
+      terminated = true;
       unsubscribe();
       binding?.close();
       if (nodeId !== undefined) {

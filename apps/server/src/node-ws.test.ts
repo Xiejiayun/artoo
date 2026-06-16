@@ -1,10 +1,12 @@
 import { createNodeClient, createWebSocketTransport } from "@artoo/artood";
-import { computers } from "@artoo/db";
+import { computers, devices, deviceTokens } from "@artoo/db";
 import type { NodeHello } from "@artoo/protocol";
 import { createMockAdapter } from "@artoo/testkit";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { testDeviceAuthConfig } from "./config/device-auth.js";
+import { generateDeviceToken } from "./services/device-credential.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 
 const NODE_ID = "computer_local_mock";
@@ -230,5 +232,116 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
     );
     expect(await advertisedRuntimeIds(server, spoofedNodeId)).toEqual([]);
     socket.close();
+  });
+});
+
+describe("node WS auth gate (#28 slice 3a)", () => {
+  const NOW = "2026-06-13T00:00:00.000Z";
+  let server: TestServer | undefined;
+
+  afterEach(async () => {
+    await server?.close();
+    server = undefined;
+  });
+
+  /** Open a node WS with the given token (and optional first hello); resolve the
+   *  close code, or -1 if the socket stays open past the timeout. */
+  function closeCodeFor(port: string, token: string, helloNodeId?: string): Promise<number> {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=${token}`);
+    return new Promise<number>((resolve) => {
+      socket.addEventListener("open", () => {
+        if (helloNodeId !== undefined) {
+          socket.send(JSON.stringify(hello(helloNodeId)));
+        }
+      });
+      socket.addEventListener("close", (event) => resolve(event.code));
+      setTimeout(() => resolve(-1), 2500);
+    });
+  }
+
+  /** Insert a device + its node credential, optionally linked to a computer.
+   *  Returns the raw node token (`sk_device_<lookup>_<secret>`). */
+  async function seedNodeToken(
+    s: TestServer,
+    name: string,
+    opts: { computerId: string | null },
+  ): Promise<string> {
+    const tok = generateDeviceToken();
+    if (opts.computerId !== null) {
+      await addComputer(s, opts.computerId);
+    }
+    await s.db.db.insert(devices).values({
+      id: `device_${name}`,
+      organizationId: "org_default",
+      displayName: name,
+      platform: "windows",
+      appVersion: "2.0.0",
+      computerId: opts.computerId,
+      enrolledByUserId: "user_owner",
+      trust: "active",
+      lastSeenAt: null,
+      createdAt: NOW,
+      revokedAt: null,
+    });
+    await s.db.db.insert(deviceTokens).values({
+      id: `dtok_${name}`,
+      organizationId: "org_default",
+      deviceId: `device_${name}`,
+      kind: "node",
+      tokenLookup: tok.lookup,
+      tokenHash: tok.secretHash,
+      status: "active",
+      createdAt: NOW,
+      lastUsedAt: null,
+      expiresAt: null,
+      revokedAt: null,
+    });
+    return tok.raw;
+  }
+
+  it("rejects token=dev when the dev escape is disabled (production path)", async () => {
+    server = await buildTestServer({ deviceAuth: testDeviceAuthConfig({ devNodeToken: null }) });
+    const port = await listen(server);
+    await expect(closeCodeFor(port, "dev")).resolves.toBe(1008);
+  });
+
+  it("accepts a device node token whose linked computer matches node.hello", async () => {
+    server = await buildTestServer();
+    const raw = await seedNodeToken(server, "linked", { computerId: "computer_linked" });
+    const port = await listen(server);
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=${raw}`);
+    await new Promise<void>((resolve) => {
+      socket.addEventListener("open", () => {
+        socket.send(JSON.stringify(hello("computer_linked")));
+        resolve();
+      });
+    });
+    await waitFor(
+      () => server?.nodeRegistry.get("computer_linked") !== undefined,
+      "device node registered",
+    );
+    expect(server.nodeRegistry.get("computer_linked")).toBeDefined();
+    socket.close();
+  });
+
+  it("rejects a device node token when node.hello node_id != linked computer", async () => {
+    server = await buildTestServer();
+    const raw = await seedNodeToken(server, "mismatch", { computerId: "computer_mismatch" });
+    const port = await listen(server);
+    await expect(closeCodeFor(port, raw, "computer_other")).resolves.toBe(1008);
+    expect(server.nodeRegistry.get("computer_mismatch")).toBeUndefined();
+  });
+
+  it("rejects an unlinked device node token (no computer) — fail closed", async () => {
+    server = await buildTestServer();
+    const raw = await seedNodeToken(server, "unlinked", { computerId: null });
+    const port = await listen(server);
+    await expect(closeCodeFor(port, raw, "computer_whatever")).resolves.toBe(1008);
+  });
+
+  it("rejects an unknown device token", async () => {
+    server = await buildTestServer();
+    const port = await listen(server);
+    await expect(closeCodeFor(port, "sk_device_deadbeef_unknownsecret")).resolves.toBe(1008);
   });
 });

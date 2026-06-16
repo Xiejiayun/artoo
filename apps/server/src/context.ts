@@ -1,6 +1,8 @@
 import type { Clock, IdGen } from "@artoo/domain";
 import type { DbClient } from "@artoo/storage";
 
+import type { DeviceAuthConfig } from "./config/device-auth.js";
+
 /**
  * Per-request-independent server dependencies. Single org/tenant for v0.1, so
  * the organization and the acting user are pinned here (bootstrap seeds them).
@@ -13,6 +15,8 @@ export interface ServerContext {
   organizationId: string;
   /** The acting user for v0.1 (no auth yet); used as created_by / actor. */
   actorUserId: string;
+  /** Device-auth secrets/policy (#28): pairing pepper + dev node-token escape. */
+  deviceAuth: DeviceAuthConfig;
   /**
    * Optional hook fired (after commit) when a run is queued by assignment, so a
    * node binding can dispatch run.start over the node transport. Absent in pure
