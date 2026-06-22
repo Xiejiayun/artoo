@@ -5,6 +5,7 @@ import { resolveSession } from "../auth/auth-service.js";
 import type { ServerContext } from "../context.js";
 import { resolveControlToken } from "../services/device-service.js";
 import { collectCatchUp } from "./event-publisher.js";
+import type { DeviceConnectionRegistry } from "./device-connections.js";
 import type { HubSocket, WsHub } from "./ws-hub.js";
 
 /** The minimal surface of a `ws` WebSocket the client route uses. */
@@ -147,11 +148,13 @@ export function registerClientWsRoute(
   ctx: ServerContext,
   hub: WsHub,
   hooks: ClientWsHooks = {},
+  deviceConnections?: DeviceConnectionRegistry,
 ): void {
   app.get("/api/v1/ws", { websocket: true }, (socket: unknown, req: FastifyRequest) => {
     const raw = socket as RawClientSocket;
     let identity: ClientIdentity | undefined;
     let terminated = false;
+    let releaseDeviceConn: (() => void) | undefined;
     const earlyFrames: ClientFrame[] = [];
 
     const close = (code: number, reason: string): void => {
@@ -202,6 +205,7 @@ export function registerClientWsRoute(
     });
     raw.on("close", () => {
       terminated = true;
+      releaseDeviceConn?.();
       hub.remove(raw);
     });
 
@@ -230,6 +234,13 @@ export function registerClientWsRoute(
       // holds no subscription state and is unknown to the publisher.
       hub.add(raw);
       hooks.onAuthenticated?.(identity, raw);
+      // Index a device control socket by device id so a device revoke can close
+      // it synchronously (not only reject the next connection).
+      if (identity.kind === "device" && deviceConnections !== undefined) {
+        releaseDeviceConn = deviceConnections.add(identity.deviceId, {
+          close: (code, reason) => close(code, reason),
+        });
+      }
       dispatch = applyFrame;
       for (const queued of earlyFrames) {
         if (terminated) {

@@ -210,6 +210,12 @@ export function registerApiAuthGuard(app: FastifyInstance, ctx: ServerContext, c
     if (path.startsWith("/api/v1/node") || path.startsWith("/api/v1/ws")) {
       return;
     }
+    // Device pairing claim (#28 4b) is authenticated by the pairing CODE itself —
+    // an unpaired device has no session yet — so this exact route is exempt from
+    // the user-session guard. Every OTHER /api/v1/devices/* route stays gated.
+    if (path === "/api/v1/devices/claim") {
+      return;
+    }
     const user = await currentUser(ctx, config, req);
     if (user === null) {
       await reply.status(401).send(unauthorized());

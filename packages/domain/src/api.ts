@@ -28,6 +28,7 @@ export const ApiErrorCodeSchema = z.enum([
   "runtime_unavailable",
   "computer_offline",
   "approval_required",
+  "rate_limited",
   "internal_error",
 ]);
 export const API_ERROR_CODES = ApiErrorCodeSchema.options;

@@ -26,6 +26,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import type { ServerContext } from "./context.js";
 import { registerApiAuthGuard, registerAuthRoutes, requestContext } from "./auth/auth-routes.js";
 import { AppError } from "./errors.js";
+import { createClaimLimiter, DEFAULT_CLAIM_LIMIT, type ClaimLimiter } from "./claim-rate-limit.js";
 import { registerIdempotency } from "./idempotency-middleware.js";
 import * as auditService from "./services/audit-service.js";
 import * as approvalService from "./services/approval-service.js";
@@ -41,6 +42,7 @@ import * as skillService from "./services/skill-service.js";
 import * as syncService from "./services/sync-service.js";
 import * as taskService from "./services/task-service.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
+import { createDeviceConnectionRegistry } from "./ws/device-connections.js";
 import { registerNodeWsRoute } from "./ws/node-ws.js";
 import { registerClientWsRoute, type ClientWsHooks } from "./ws/client-ws.js";
 import { createWsHub, type WsHub } from "./ws/ws-hub.js";
@@ -56,6 +58,8 @@ export interface BuildAppOptions {
   /** Control-WS lifecycle hooks (#28 slice 3b identity tagging; slice 3c indexes
    *  device sockets for revoke-closes-sockets). */
   clientWsHooks?: ClientWsHooks;
+  /** Inject a claim rate-limiter (#28 4b) so tests can use a tight bound. */
+  claimLimiter?: ClaimLimiter;
 }
 
 /**
@@ -67,6 +71,10 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   const app = Fastify({ logger: false });
   const nodeRegistry = options.nodeRegistry ?? createNodeRegistry();
   const wsHub = options.wsHub ?? createWsHub();
+  // Index of live device sockets (node + control) so a revoke can close them.
+  const deviceConnections = createDeviceConnectionRegistry();
+  // Bounded attempts for the public (unauthenticated) claim route.
+  const claimLimiter = options.claimLimiter ?? createClaimLimiter(DEFAULT_CLAIM_LIMIT);
 
   // Route a queued run's run.start to the node that owns its computer. Tests may
   // pre-set onRunQueued (in-process binding) — only install the registry route
@@ -81,8 +89,8 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   void app.register(websocket);
   void app.register(async (instance) => {
-    registerNodeWsRoute(instance, ctx, nodeRegistry);
-    registerClientWsRoute(instance, ctx, wsHub, options.clientWsHooks);
+    registerNodeWsRoute(instance, ctx, nodeRegistry, deviceConnections);
+    registerClientWsRoute(instance, ctx, wsHub, options.clientWsHooks, deviceConnections);
   });
 
   // Google Auth (#34): the protected-API guard (opt-in via enforceApiAuth) and
@@ -152,8 +160,14 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   });
 
   // Claim a pairing code into a device + credentials. The CODE is the authority
-  // here (the unpaired client has no session yet), so this is not user-gated.
+  // here (the unpaired client has no session yet), so this route is exempt from
+  // the #34 session guard. Because it is public, every attempt — right or wrong —
+  // is rate-limited by source BEFORE the code is examined, so the limiter cannot
+  // be used as an oracle for whether a code exists.
   app.post("/api/v1/devices/claim", async (req, reply) => {
+    if (!claimLimiter.tryConsume(claimSource(req), Date.parse(ctx.clock.nowIso()))) {
+      throw AppError.rateLimited("too many pairing attempts; slow down");
+    }
     const body = (req.body ?? {}) as {
       code?: unknown;
       platform?: unknown;
@@ -189,11 +203,14 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   app.get("/api/v1/devices", async (req) => ({ devices: await deviceService.listDevices(rc(req)) }));
 
-  // Revoke a device: both its credentials flip to revoked and live sockets drop.
+  // Revoke a device: both its credentials flip to revoked AND every live socket
+  // (node + control) it holds is closed — revocation is immediate, not just a
+  // future-reconnect rejection.
   app.post("/api/v1/devices/:id/revoke", async (req) => {
     const { id } = req.params as { id: string };
     const result = await deviceService.revokeDevice(rc(req), id);
-    return { device_id: result.deviceId, revoked: result.revoked };
+    const closed = deviceConnections.closeForDevice(id, 1008, "device revoked");
+    return { device_id: result.deviceId, revoked: result.revoked, connections_closed: closed };
   });
 
   app.post("/api/v1/tasks", async (req, reply) => {
@@ -546,6 +563,11 @@ function readBaseVersion(body: unknown): number | undefined {
 
 /** Pairing code lifetime (#28 4b): short and single-use. */
 const DEVICE_PAIRING_TTL_MS = 10 * 60 * 1000;
+
+/** Rate-limit key for a claim attempt: the request source IP (fallback "unknown"). */
+function claimSource(req: FastifyRequest): string {
+  return req.ip && req.ip !== "" ? req.ip : "unknown";
+}
 
 /** Parse a required device platform from a command body, rejecting unknown values. */
 function requireDevicePlatform(value: string): DevicePlatform {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { createClaimLimiter } from "./claim-rate-limit.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 
 /**
@@ -107,5 +108,54 @@ describe("device HTTP flow (pairing → claim → enroll → list → revoke)", 
       payload: {},
     });
     expect(enroll.statusCode).toBe(400);
+  });
+
+  // ── #28 4b review gate 1: the claim route is exempt from the #34 session
+  // guard, but every other /api/v1/devices/* route stays session-gated. ────────
+  it("with enforceApiAuth, claim is reachable without a session while the rest are 401-gated", async () => {
+    server = await buildTestServer({ authConfig: { enforceApiAuth: true } });
+
+    // Session-gated routes reject an unauthenticated request with 401.
+    for (const r of [
+      { method: "POST" as const, url: "/api/v1/devices/pairings", payload: {} },
+      { method: "GET" as const, url: "/api/v1/devices" },
+      { method: "POST" as const, url: "/api/v1/devices/device_x/enroll", payload: {} },
+      { method: "POST" as const, url: "/api/v1/devices/device_x/revoke", payload: {} },
+    ]) {
+      const res = await server.app.inject(r);
+      expect(res.statusCode, `${r.method} ${r.url}`).toBe(401);
+    }
+
+    // Claim is NOT 401-gated: it reaches the handler (a bad code -> 400, not 401),
+    // proving the pairing code — not a session — is the authority here.
+    const claimRes = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/devices/claim",
+      payload: { code: "WRON-GCOD", platform: "windows", app_version: "1", display_name: "x" },
+    });
+    expect(claimRes.statusCode).toBe(400);
+    expect(claimRes.json().error.code).toBe("validation_error");
+  });
+
+  // ── #28 4b review gate 3: public claim is bounded per source, and the 429
+  // fires BEFORE the code is examined (no code-existence oracle). ──────────────
+  it("rate-limits claim attempts and the limit fires regardless of code validity", async () => {
+    server = await buildTestServer({ claimLimiter: createClaimLimiter({ capacity: 2, windowMs: 60_000 }) });
+    const validCode = await createPairing(server); // a real, claimable code
+
+    const wrong = { code: "WRON-GCOD", platform: "windows", app_version: "1", display_name: "x" };
+    // First two attempts are within the bound (wrong code -> 400 validation).
+    expect((await server.app.inject({ method: "POST", url: "/api/v1/devices/claim", payload: wrong })).statusCode).toBe(400);
+    expect((await server.app.inject({ method: "POST", url: "/api/v1/devices/claim", payload: wrong })).statusCode).toBe(400);
+
+    // The third attempt is denied — and even presenting the VALID code yields 429,
+    // not 201, so the limiter response cannot be used to probe code existence.
+    const third = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/devices/claim",
+      payload: { code: validCode, platform: "windows", app_version: "2.0.0", display_name: "d" },
+    });
+    expect(third.statusCode).toBe(429);
+    expect(third.json().error.code).toBe("rate_limited");
   });
 });

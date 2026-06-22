@@ -39,4 +39,8 @@ export class AppError extends Error {
   static permissionDenied(message: string, details?: Record<string, unknown>): AppError {
     return new AppError("permission_denied", message, 403, details);
   }
+
+  static rateLimited(message: string, details?: Record<string, unknown>): AppError {
+    return new AppError("rate_limited", message, 429, details);
+  }
 }

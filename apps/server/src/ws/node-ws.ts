@@ -8,6 +8,7 @@ import { attachNodeBinding, type NodeBinding } from "../node-binding.js";
 import { resolveNodeToken } from "../services/device-service.js";
 import { recordHeartbeatRuntimes } from "../services/runtime-registry-service.js";
 import type { NodeRegistry } from "./node-registry.js";
+import type { DeviceConnectionRegistry } from "./device-connections.js";
 import { createServerNodeTransport, type RawServerSocket } from "./ws-node-transport.js";
 
 /** Authenticated identity of a `/api/v1/node` connection (#28 slice 3a). */
@@ -66,6 +67,7 @@ export function registerNodeWsRoute(
   app: FastifyInstance,
   ctx: ServerContext,
   registry: NodeRegistry,
+  deviceConnections?: DeviceConnectionRegistry,
 ): void {
   app.get("/api/v1/node", { websocket: true }, (socket: unknown, req: FastifyRequest) => {
     const raw = socket as RawServerSocket;
@@ -76,6 +78,7 @@ export function registerNodeWsRoute(
     let nodeId: string | undefined;
     let auth: NodeAuth | undefined;
     let terminated = false;
+    let releaseDeviceConn: (() => void) | undefined;
     const earlyQueue: NodeToServerMessage[] = [];
 
     const close = (code: number, reason: string): void => {
@@ -162,6 +165,14 @@ export function registerNodeWsRoute(
         return; // socket already closed during auth (e.g. queue overflow)
       }
       auth = result;
+      // Index this live socket by device id so a device revoke can close it
+      // (not only reject a future reconnect). Dev-escape connections carry no
+      // device identity and are not indexed.
+      if (result.mode === "device" && deviceConnections !== undefined) {
+        releaseDeviceConn = deviceConnections.add(result.deviceId, {
+          close: (code, reason) => close(code, reason),
+        });
+      }
       dispatch = handleMessage;
       for (const queued of earlyQueue) {
         if (terminated) {
@@ -174,6 +185,7 @@ export function registerNodeWsRoute(
 
     raw.on("close", () => {
       terminated = true;
+      releaseDeviceConn?.();
       unsubscribe();
       binding?.close();
       if (nodeId !== undefined) {

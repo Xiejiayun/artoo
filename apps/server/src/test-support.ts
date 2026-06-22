@@ -4,6 +4,7 @@ import { PgliteDbClient } from "@artoo/storage";
 import type { FastifyInstance } from "fastify";
 
 import { buildApp } from "./app.js";
+import type { ClaimLimiter } from "./claim-rate-limit.js";
 import { testAuthConfig, type AuthConfig } from "./auth/auth-config.js";
 import { createFakeOidcProvider, type FakeOidcProvider } from "./auth/fake-oidc.js";
 import { testDeviceAuthConfig } from "./config/device-auth.js";
@@ -65,6 +66,8 @@ export interface BuildTestServerOptions {
   /** Control-WS hooks (#28 slice 3b) — inject an `onAuthenticated` spy to assert
    *  the resolved connection identity. */
   clientWsHooks?: ClientWsHooks;
+  /** Inject a claim rate-limiter (#28 4b) so tests can assert a tight bound. */
+  claimLimiter?: ClaimLimiter;
 }
 
 /** A fully wired server over an embedded, migrated, seeded database. */
@@ -97,6 +100,7 @@ export async function buildTestServer(
     wsHub,
     webDistDir: options.webDistDir,
     clientWsHooks: options.clientWsHooks,
+    claimLimiter: options.claimLimiter,
   });
   const publisher = createEventPublisher(ctx, wsHub);
   await app.ready();
