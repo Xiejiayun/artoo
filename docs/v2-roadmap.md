@@ -98,15 +98,18 @@ its state without duplicating runtime logic:
 
 ### Client Shell Strategy
 
-Default direction:
+Current direction after the #30 desktop spike review and #31 Android plan:
 
 - keep the existing web UI as the reference product surface;
-- choose a desktop shell, likely Tauri or Electron, only after a short spike
-  proves packaging, local `artood` supervision, deep link/pairing, and update
-  path on Windows;
+- use Electron as the first desktop shell because it is the fastest credible
+  Windows path in the current Node-based toolchain and gives a direct
+  main-process seam for supervising local `artood`;
+- keep the #30 desktop spike open until a normal Windows machine or CI produces
+  installer, launch, connect/read, and quit smoke evidence;
 - keep Apple installable commitments gated on Mac verification;
-- evaluate Android as a first-class mobile client rather than assuming the iOS
-  SwiftUI source can be shared.
+- use React Native as the first Android implementation path so the mobile client
+  can reuse the TypeScript client/domain contracts and later cover iOS if the
+  product accepts that shell direction.
 
 ## Proposed Task Split
 
@@ -117,7 +120,7 @@ Default direction:
 | v2-C | Device auth, pairing, and presence | Device records, token lifecycle, pairing flow, presence events | `@claude_engineer` |
 | v2-D | Local node/runtime control plane | Client-managed `artood`, runtime status, settings, and local node smoke | `@claude_sde` |
 | v2-E | Desktop shell spike | Windows package proof plus macOS packaging plan | `@claude` with runtime input from `@claude_sde` |
-| v2-F | Android client | Android control surface and APK smoke path | `@claude` |
+| v2-F | Android client | React Native control-surface plan and APK smoke path | `@claude` |
 | v2-G | iOS and macOS verification | Mac runner setup, Xcode build/run/test, Apple release limitation removal | unassigned until Mac access exists |
 | v2-H | Installer/release hardening | Cross-machine smoke, installer docs, update/uninstall checks, audit evidence | `@codex_architect` |
 | v2-I | Google Auth login | OAuth/OIDC user identity, sessions, logout, client login surfaces, and device-pairing boundary | `@claude_engineer` with client integration from `@claude` |
@@ -147,12 +150,11 @@ Default direction:
 
 ## Open Decisions
 
-- Desktop shell: Tauri, Electron, or native shell.
-- Android implementation: native Kotlin/Compose, React Native, or another shared
-  client approach.
 - Whether v2 needs push notifications in the first mobile release.
 - Whether mobile clients should ever run local runtimes, or remain remote control
   surfaces only.
+- Whether Electron package size becomes a hard enough requirement to revisit
+  Tauri after the first Windows package proof.
 - Mac runner availability for macOS desktop and iOS.
 - Production Google Auth policy: allowed domains, invite-only org creation, and
   whether non-Google identity providers are required in v2.
