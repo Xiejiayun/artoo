@@ -5,6 +5,8 @@ import {
   AssignRequestSchema,
   CreateDependencyRequestSchema,
   CreateTaskRequestSchema,
+  type DevicePlatform,
+  DevicePlatformSchema,
   InstallSkillRequestSchema,
   LeaseStatusSchema,
   MemoryScopeSchema,
@@ -28,6 +30,7 @@ import { registerIdempotency } from "./idempotency-middleware.js";
 import * as auditService from "./services/audit-service.js";
 import * as approvalService from "./services/approval-service.js";
 import * as dagService from "./services/dag-service.js";
+import * as deviceService from "./services/device-service.js";
 import * as leaseService from "./services/lease-service.js";
 import * as lifecycle from "./services/lifecycle-service.js";
 import * as memoryService from "./services/memory-service.js";
@@ -127,6 +130,71 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   // #27 v2-B slice 2a — read cursor. Clients use this as the hydration/tail
   // baseline for WS since_cursor; command base_version comes from resource reads.
   app.get("/api/v1/sync/cursor", async (req) => ({ cursor: await syncService.currentCursor(rc(req)) }));
+
+  // #28 v2-C slice 4b — device pairing/enroll/list/revoke HTTP surface. The
+  // pairing HMAC pepper comes from ctx.deviceAuth (never an env read here). The
+  // pairing config TTL is short — codes are single-use and time-boxed.
+  const pairingConfig = (): deviceService.DevicePairingConfig => ({
+    pepper: ctx.deviceAuth.pairingPepper,
+    ttlMs: DEVICE_PAIRING_TTL_MS,
+  });
+
+  // Create a single-use pairing code (an authenticated user initiates pairing).
+  app.post("/api/v1/devices/pairings", async (req, reply) => {
+    const body = (req.body ?? {}) as { intended_platform?: unknown };
+    const c = rc(req);
+    const result = await deviceService.createPairing(c, pairingConfig(), {
+      createdByUserId: c.actorUserId,
+      intendedPlatform: readDevicePlatform(body.intended_platform),
+    });
+    void reply.status(201);
+    return result;
+  });
+
+  // Claim a pairing code into a device + credentials. The CODE is the authority
+  // here (the unpaired client has no session yet), so this is not user-gated.
+  app.post("/api/v1/devices/claim", async (req, reply) => {
+    const body = (req.body ?? {}) as {
+      code?: unknown;
+      platform?: unknown;
+      app_version?: unknown;
+      display_name?: unknown;
+    };
+    if (typeof body.code !== "string" || typeof body.platform !== "string") {
+      throw AppError.validation("code and platform are required");
+    }
+    const { device, controlToken, nodeToken } = await deviceService.claimPairing(rc(req), pairingConfig(), {
+      code: body.code,
+      platform: requireDevicePlatform(body.platform),
+      appVersion: typeof body.app_version === "string" ? body.app_version : "",
+      displayName: typeof body.display_name === "string" ? body.display_name : "",
+    });
+    void reply.status(201);
+    return { device, control_token: controlToken, node_token: nodeToken };
+  });
+
+  // Link a desktop device to a computer so its node token can bind (#28 4a).
+  app.post("/api/v1/devices/:id/enroll", async (req) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const result = await deviceService.enrollDeviceComputer(rc(req), {
+      deviceId: id,
+      displayName: typeof body.display_name === "string" ? body.display_name : undefined,
+      hostname: typeof body.hostname === "string" ? body.hostname : undefined,
+      os: typeof body.os === "string" ? body.os : undefined,
+      arch: typeof body.arch === "string" ? body.arch : undefined,
+    });
+    return { device_id: result.deviceId, computer_id: result.computerId, created: result.created };
+  });
+
+  app.get("/api/v1/devices", async (req) => ({ devices: await deviceService.listDevices(rc(req)) }));
+
+  // Revoke a device: both its credentials flip to revoked and live sockets drop.
+  app.post("/api/v1/devices/:id/revoke", async (req) => {
+    const { id } = req.params as { id: string };
+    const result = await deviceService.revokeDevice(rc(req), id);
+    return { device_id: result.deviceId, revoked: result.revoked };
+  });
 
   app.post("/api/v1/tasks", async (req, reply) => {
     const parsed = CreateTaskRequestSchema.safeParse(req.body);
@@ -474,4 +542,27 @@ function readBaseVersion(body: unknown): number | undefined {
     throw AppError.validation("base_version must be a non-negative integer", { base_version: value });
   }
   return value;
+}
+
+/** Pairing code lifetime (#28 4b): short and single-use. */
+const DEVICE_PAIRING_TTL_MS = 10 * 60 * 1000;
+
+/** Parse a required device platform from a command body, rejecting unknown values. */
+function requireDevicePlatform(value: string): DevicePlatform {
+  const parsed = DevicePlatformSchema.safeParse(value);
+  if (!parsed.success) {
+    throw AppError.validation(`unsupported device platform: ${value}`, { platform: value });
+  }
+  return parsed.data;
+}
+
+/** Parse an optional intended platform: undefined/null/empty -> null (any). */
+function readDevicePlatform(value: unknown): DevicePlatform | null {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw AppError.validation("intended_platform must be a string", { intended_platform: value });
+  }
+  return requireDevicePlatform(value);
 }

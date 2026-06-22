@@ -29,7 +29,7 @@ import {
   type DeviceTokenKind,
   type PairingCode,
 } from "@artoo/domain";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -122,6 +122,16 @@ export interface CreatedPairing {
   pairing: PairingCode;
   /** Raw pairing code — show to the initiator ONCE; never persisted or logged. */
   code: string;
+}
+
+/** List the org's devices, newest first. Metadata only — no raw secrets/hashes. */
+export async function listDevices(ctx: ServerContext): Promise<Device[]> {
+  const rows = await ctx.db.db
+    .select()
+    .from(devices)
+    .where(eq(devices.organizationId, ctx.organizationId))
+    .orderBy(desc(devices.createdAt), desc(devices.id));
+  return rows.map(mapDevice);
 }
 
 /** Create a short-lived single-use pairing code. Stores only its HMAC. */
