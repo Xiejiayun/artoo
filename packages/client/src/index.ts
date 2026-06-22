@@ -4,3 +4,4 @@
 export const ARTOO_CLIENT_PACKAGE = "@artoo/client";
 
 export * from "./sync-client.js";
+export * from "./command-queue.js";
