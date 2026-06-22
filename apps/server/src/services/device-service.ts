@@ -16,7 +16,7 @@
  *  - revoke flips device trust AND every active credential to `revoked`; closing
  *    live sockets is the wire layer's job (slice 3) — this returns the deviceId.
  */
-import { devices, deviceTokens, pairingCodes } from "@artoo/db";
+import { computers, devices, deviceTokens, pairingCodes } from "@artoo/db";
 import {
   ID_PREFIXES,
   parseDeviceToken,
@@ -390,5 +390,102 @@ export async function revokeDevice(ctx: ServerContext, deviceId: string): Promis
         ),
       );
     return { deviceId, revoked: true };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Enrollment: device <-> computer binding (#28 slice 4a)
+// ---------------------------------------------------------------------------
+
+/** Desktop platforms that may host a local `artood` compute node. Mobile
+ *  clients are remote control surfaces only (v2 roadmap), so they never enroll a
+ *  local computer. */
+const NODE_HOST_PLATFORMS: ReadonlySet<DevicePlatform> = new Set<DevicePlatform>(["windows", "macos"]);
+
+export interface EnrollDeviceComputerInput {
+  deviceId: string;
+  /** Computer display name; defaults to the device's display name. */
+  displayName?: string;
+  /** Reported hostname; defaults to the device's display name. */
+  hostname?: string;
+  /** Reported OS; defaults to the device platform. */
+  os?: string;
+  /** Reported CPU arch; defaults to "unknown" until the node heartbeat refines it. */
+  arch?: string;
+}
+
+export interface EnrollResult {
+  deviceId: string;
+  computerId: string;
+  /** True when this call created the binding; false when it already existed (idempotent). */
+  created: boolean;
+}
+
+/**
+ * Link a desktop device to a compute `computers` row so its `node` token can
+ * bind on `/api/v1/node`. Until this runs, claimPairing leaves `computer_id`
+ * null and node-ws fails closed on the unlinked token — this is the real-flow
+ * enrollment seam that lets a production node token connect.
+ *
+ * Fail-closed and idempotent:
+ *  - an unknown device is `notFound`; a revoked device is rejected (no binding a
+ *    dead identity to a fresh computer);
+ *  - mobile platforms are rejected — they do not host local nodes;
+ *  - re-enrolling an already-linked device returns the existing computer without
+ *    creating a second row.
+ *
+ * The created computer starts in `enrolling`; its real `online` status, resources,
+ * and capabilities are filled in by the node heartbeat (#29), not here.
+ */
+export async function enrollDeviceComputer(
+  ctx: ServerContext,
+  input: EnrollDeviceComputerInput,
+): Promise<EnrollResult> {
+  const now = ctx.clock.nowIso();
+  return ctx.db.transaction(async (tx) => {
+    const device = (
+      await tx
+        .select()
+        .from(devices)
+        .where(and(eq(devices.id, input.deviceId), eq(devices.organizationId, ctx.organizationId)))
+    )[0];
+    if (device === undefined) {
+      throw AppError.notFound(`device not found: ${input.deviceId}`, { device_id: input.deviceId });
+    }
+    if (device.trust !== "active") {
+      throw AppError.conflict(`device is revoked: ${input.deviceId}`, { device_id: input.deviceId });
+    }
+    if (!NODE_HOST_PLATFORMS.has(device.platform as DevicePlatform)) {
+      throw AppError.validation(
+        `device platform ${device.platform} cannot host a local node; mobile clients are remote control surfaces`,
+        { device_id: input.deviceId, platform: device.platform },
+      );
+    }
+    // Idempotent: an already-linked device returns its existing computer.
+    if (device.computerId !== null) {
+      return { deviceId: device.id, computerId: device.computerId, created: false };
+    }
+
+    const computerId = ctx.idGen.generate(ID_PREFIXES.computer);
+    const displayName = input.displayName?.trim() || device.displayName;
+    await tx.insert(computers).values({
+      id: computerId,
+      organizationId: ctx.organizationId,
+      displayName,
+      hostname: input.hostname?.trim() || device.displayName,
+      os: input.os?.trim() || device.platform,
+      arch: input.arch?.trim() || "unknown",
+      status: "enrolling",
+      lastHeartbeatAt: null,
+      resources: {},
+      capabilities: [],
+      createdAt: now,
+    });
+    await tx
+      .update(devices)
+      .set({ computerId })
+      .where(and(eq(devices.id, device.id), eq(devices.organizationId, ctx.organizationId)));
+
+    return { deviceId: device.id, computerId, created: true };
   });
 }

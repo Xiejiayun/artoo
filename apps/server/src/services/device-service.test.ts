@@ -1,4 +1,4 @@
-import { devices, deviceTokens, pairingCodes } from "@artoo/db";
+import { computers, devices, deviceTokens, pairingCodes } from "@artoo/db";
 import { parseDeviceToken } from "@artoo/domain";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   type DevicePairingConfig,
   claimPairing,
   createPairing,
+  enrollDeviceComputer,
   resolveControlToken,
   resolveNodeToken,
   revokeDevice,
@@ -179,5 +180,99 @@ describe("device-service", () => {
     }
     const nodeTok = toks.find((t) => t.kind === "node")!;
     expect(nodeTok.tokenHash).toBe(sha256Hex(parsed.secret));
+  });
+
+  // -------------------------------------------------------------------------
+  // Enrollment: device <-> computer binding (#28 slice 4a). claimPairing leaves
+  // computer_id null; a real node token is fail-closed by node-ws until this
+  // binding exists. Enrollment links a desktop device to an `enrolling` computer.
+  // -------------------------------------------------------------------------
+
+  async function claimDesktop(displayName = "Jeremy's ThinkPad") {
+    const { ctx } = server;
+    const { code } = await createPairing(ctx, config, { createdByUserId: "user_owner" });
+    return claimPairing(ctx, config, {
+      code,
+      platform: "windows",
+      appVersion: "2.0.0",
+      displayName,
+    });
+  }
+
+  it("enrolls a desktop device: creates an enrolling computer, links it, node token resolves with the computer id", async () => {
+    const { ctx, db } = server;
+    const { device, nodeToken } = await claimDesktop();
+    // Pre-enrollment: device has no computer and the node token, while valid,
+    // does not yet resolve a computer (node-ws fails closed on null computerId).
+    expect(device.computer_id).toBeNull();
+    expect(await resolveNodeToken(ctx, nodeToken)).toMatchObject({ deviceId: device.id, computerId: null });
+
+    const result = await enrollDeviceComputer(ctx, { deviceId: device.id });
+    expect(result.created).toBe(true);
+    expect(result.deviceId).toBe(device.id);
+    expect(result.computerId).toMatch(/^computer_/);
+
+    // The device row is now linked.
+    const drow = (await db.db.select().from(devices).where(eq(devices.id, device.id)))[0]!;
+    expect(drow.computerId).toBe(result.computerId);
+
+    // A real `enrolling` computer row exists in the same org.
+    const crow = (await db.db.select().from(computers).where(eq(computers.id, result.computerId)))[0]!;
+    expect(crow.status).toBe("enrolling");
+    expect(crow.organizationId).toBe(ctx.organizationId);
+    expect(crow.os).toBe("windows");
+
+    // The node token now resolves WITH the computer id — this is exactly what
+    // node-ws gates on, so a real node connection can finally bind.
+    expect(await resolveNodeToken(ctx, nodeToken)).toMatchObject({
+      deviceId: device.id,
+      computerId: result.computerId,
+      kind: "node",
+    });
+  });
+
+  it("is idempotent: re-enrolling returns the same computer and does not create a second", async () => {
+    const { ctx, db } = server;
+    const { device } = await claimDesktop();
+    const first = await enrollDeviceComputer(ctx, { deviceId: device.id });
+    const second = await enrollDeviceComputer(ctx, { deviceId: device.id });
+    expect(second.created).toBe(false);
+    expect(second.computerId).toBe(first.computerId);
+    const all = await db.db.select().from(computers).where(eq(computers.organizationId, ctx.organizationId));
+    // Only the seeded computer + the one we enrolled — no duplicate.
+    expect(all.filter((c) => c.id === first.computerId)).toHaveLength(1);
+  });
+
+  it("rejects mobile platforms — phones are remote control surfaces, not node hosts", async () => {
+    const { ctx } = server;
+    const { code } = await createPairing(ctx, config, { createdByUserId: "user_owner" });
+    const { device } = await claimPairing(ctx, config, {
+      code,
+      platform: "android",
+      appVersion: "1.0.0",
+      displayName: "Pixel",
+    });
+    await expect(enrollDeviceComputer(ctx, { deviceId: device.id })).rejects.toThrow(/cannot host a local node/);
+  });
+
+  it("rejects a revoked device", async () => {
+    const { ctx } = server;
+    const { device } = await claimDesktop();
+    await revokeDevice(ctx, device.id);
+    await expect(enrollDeviceComputer(ctx, { deviceId: device.id })).rejects.toThrow(/revoked/);
+  });
+
+  it("after revoke, the node token is refused even though a computer was linked (refuse-after-revoke at the node plane)", async () => {
+    const { ctx } = server;
+    const { device, nodeToken } = await claimDesktop();
+    await enrollDeviceComputer(ctx, { deviceId: device.id });
+    expect(await resolveNodeToken(ctx, nodeToken)).not.toBeNull();
+    await revokeDevice(ctx, device.id);
+    expect(await resolveNodeToken(ctx, nodeToken)).toBeNull();
+  });
+
+  it("rejects an unknown device id", async () => {
+    const { ctx } = server;
+    await expect(enrollDeviceComputer(ctx, { deviceId: "device_nonexistent" })).rejects.toThrow(/not found/);
   });
 });
