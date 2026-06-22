@@ -124,10 +124,9 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   app.get("/api/v1/bootstrap", async (req) => taskService.bootstrap(rc(req)));
 
-  // #27 v2-B slice 2a — read cursor. Clients pin the snapshot version they read
-  // at and reuse it as the WS since_cursor + command base_version baseline.
+  // #27 v2-B slice 2a — read cursor. Clients use this as the hydration/tail
+  // baseline for WS since_cursor; command base_version comes from resource reads.
   app.get("/api/v1/sync/cursor", async (req) => ({ cursor: await syncService.currentCursor(rc(req)) }));
-
 
   app.post("/api/v1/tasks", async (req, reply) => {
     const parsed = CreateTaskRequestSchema.safeParse(req.body);

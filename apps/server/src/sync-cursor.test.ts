@@ -4,9 +4,9 @@ import { buildTestServer, type TestServer } from "./test-support.js";
 import { currentCursor } from "./services/sync-service.js";
 
 /**
- * #27 v2-B slice 2a — read cursor. Clients pin the snapshot version they read at
- * (the org's highest event_log.position) and reuse it as the WS since_cursor
- * baseline and the command base_version baseline.
+ * #27 v2-B slice 2a — read cursor. Clients use the org's highest
+ * event_log.position as the WS since_cursor hydration/tail baseline. Command
+ * base_version values come from resource snapshots, not this global cursor.
  */
 describe("sync cursor read", () => {
   let server: TestServer | undefined;
