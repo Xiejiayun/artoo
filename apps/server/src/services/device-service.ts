@@ -29,7 +29,7 @@ import {
   type DeviceTokenKind,
   type PairingCode,
 } from "@artoo/domain";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -461,7 +461,8 @@ export async function enrollDeviceComputer(
         { device_id: input.deviceId, platform: device.platform },
       );
     }
-    // Idempotent: an already-linked device returns its existing computer.
+    // Idempotent fast path: an already-linked device returns its existing
+    // computer without minting a throwaway candidate.
     if (device.computerId !== null) {
       return { deviceId: device.id, computerId: device.computerId, created: false };
     }
@@ -481,10 +482,41 @@ export async function enrollDeviceComputer(
       capabilities: [],
       createdAt: now,
     });
-    await tx
+    // Atomic link: only the call that finds computer_id STILL null wins. A
+    // concurrent enrollment that already linked the device leaves 0 rows here —
+    // we then drop our orphan candidate and return the winner's computer. The
+    // `computer_id IS NULL` guard is the concurrency boundary; the fast path
+    // above is only an optimization.
+    const linked = await tx
       .update(devices)
       .set({ computerId })
-      .where(and(eq(devices.id, device.id), eq(devices.organizationId, ctx.organizationId)));
+      .where(
+        and(
+          eq(devices.id, device.id),
+          eq(devices.organizationId, ctx.organizationId),
+          isNull(devices.computerId),
+        ),
+      )
+      .returning({ id: devices.id });
+
+    if (linked.length === 0) {
+      // Lost the race: remove the candidate we just inserted and return the
+      // computer the winning call linked.
+      await tx.delete(computers).where(eq(computers.id, computerId));
+      const winner = (
+        await tx
+          .select({ computerId: devices.computerId })
+          .from(devices)
+          .where(and(eq(devices.id, device.id), eq(devices.organizationId, ctx.organizationId)))
+      )[0];
+      if (winner?.computerId == null) {
+        // Should not happen: the row was non-null when we lost the guard.
+        throw AppError.conflict(`device enrollment race left no computer: ${input.deviceId}`, {
+          device_id: input.deviceId,
+        });
+      }
+      return { deviceId: device.id, computerId: winner.computerId, created: false };
+    }
 
     return { deviceId: device.id, computerId, created: true };
   });

@@ -243,6 +243,32 @@ describe("device-service", () => {
     expect(all.filter((c) => c.id === first.computerId)).toHaveLength(1);
   });
 
+  it("concurrent enrollments converge: both return the same computer and only one is created", async () => {
+    const { ctx, db } = server;
+    const { device } = await claimDesktop();
+    const before = (
+      await db.db.select().from(computers).where(eq(computers.organizationId, ctx.organizationId))
+    ).length;
+
+    // Fire two enrollments at once. The atomic `computer_id IS NULL` link guard
+    // must let exactly one win; the loser drops its candidate and returns the
+    // winner's computer — no orphan computers row.
+    const [a, b] = await Promise.all([
+      enrollDeviceComputer(ctx, { deviceId: device.id }),
+      enrollDeviceComputer(ctx, { deviceId: device.id }),
+    ]);
+    expect(a.computerId).toBe(b.computerId);
+    expect([a.created, b.created].filter(Boolean)).toHaveLength(1); // exactly one created
+
+    const after = await db.db.select().from(computers).where(eq(computers.organizationId, ctx.organizationId));
+    // Exactly one new computer overall — no orphan from the losing call.
+    expect(after.length).toBe(before + 1);
+    expect(after.filter((c) => c.id === a.computerId)).toHaveLength(1);
+    // The device points at the shared computer.
+    const drow = (await db.db.select().from(devices).where(eq(devices.id, device.id)))[0]!;
+    expect(drow.computerId).toBe(a.computerId);
+  });
+
   it("rejects mobile platforms — phones are remote control surfaces, not node hosts", async () => {
     const { ctx } = server;
     const { code } = await createPairing(ctx, config, { createdByUserId: "user_owner" });
