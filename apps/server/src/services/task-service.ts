@@ -30,6 +30,7 @@ import { and, asc, eq } from "drizzle-orm";
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
+import { currentTaskVersion } from "./sync-service.js";
 import {
   mapAgent,
   mapAgentInstance,
@@ -223,6 +224,14 @@ export interface TaskSnapshot {
   runs: ReturnType<typeof mapRun>[];
   approvals: ReturnType<typeof mapApproval>[];
   artifacts: ReturnType<typeof mapArtifact>[];
+  /**
+   * Task-scoped optimistic-concurrency version (#27 v2-B slice 2): the task's
+   * highest `event_log.position`. A client that hydrated this snapshot sends it
+   * back as a command `base_version`; the server rejects the command if the task
+   * has since advanced. Sourced from the actual resource read — not the global
+   * org cursor — so a command can never act on a snapshot the user never loaded.
+   */
+  version_cursor: number;
 }
 
 /** GET /api/v1/tasks/:id — task + room + runs[] + approvals[] + artifacts[]. */
@@ -252,5 +261,6 @@ export async function getTaskSnapshot(ctx: ServerContext, id: string): Promise<T
     runs: runRows.map(mapRun),
     approvals: approvalRows.map(mapApproval),
     artifacts: artifactRows.map(mapArtifact),
+    version_cursor: await currentTaskVersion(ctx, id),
   };
 }

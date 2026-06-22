@@ -27,6 +27,7 @@ import * as dagService from "./dag-service.js";
 import * as contextPackService from "./context-pack-service.js";
 import * as leaseService from "./lease-service.js";
 import { scheduleTask } from "./scheduler.js";
+import { assertFreshTaskBaseVersion } from "./sync-service.js";
 import { transitionTask } from "./transition-service.js";
 
 /**
@@ -276,6 +277,7 @@ export async function reviewTask(
   ctx: ServerContext,
   taskId: string,
   req: ReviewRequest,
+  baseVersion?: number | null,
 ): Promise<Task> {
   const now = ctx.clock.nowIso();
   const trigger = req.outcome === "accepted" ? "accept" : "request_changes";
@@ -289,6 +291,10 @@ export async function reviewTask(
     if (row === undefined) {
       throw AppError.notFound(`task not found: ${taskId}`, { task_id: taskId });
     }
+    // Optimistic concurrency (#27 v2-B slice 2): if the caller pinned a
+    // base_version from the task snapshot it hydrated, reject when the task has
+    // since advanced. Checked inside the tx so it is consistent with the write.
+    await assertFreshTaskBaseVersion(tx, ctx.organizationId, taskId, baseVersion);
     if (row.status !== "review") {
       throw AppError.invalidState(`task must be 'review' to review (is '${row.status}')`, {
         status: row.status,

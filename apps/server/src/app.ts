@@ -35,6 +35,7 @@ import * as messageService from "./services/message-service.js";
 import * as runService from "./services/run-service.js";
 import * as runtimeRegistry from "./services/runtime-registry-service.js";
 import * as skillService from "./services/skill-service.js";
+import * as syncService from "./services/sync-service.js";
 import * as taskService from "./services/task-service.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
 import { registerNodeWsRoute } from "./ws/node-ws.js";
@@ -122,6 +123,11 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   registerIdempotency(app, ctx);
 
   app.get("/api/v1/bootstrap", async (req) => taskService.bootstrap(rc(req)));
+
+  // #27 v2-B slice 2a — read cursor. Clients pin the snapshot version they read
+  // at and reuse it as the WS since_cursor + command base_version baseline.
+  app.get("/api/v1/sync/cursor", async (req) => ({ cursor: await syncService.currentCursor(rc(req)) }));
+
 
   app.post("/api/v1/tasks", async (req, reply) => {
     const parsed = CreateTaskRequestSchema.safeParse(req.body);
@@ -213,7 +219,9 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (!parsed.success) {
       throw AppError.validation("invalid review payload", { issues: parsed.error.issues });
     }
-    return { task: await lifecycle.reviewTask(rc(req), id, parsed.data) };
+    // base_version (#27 v2-B slice 2) is an optional optimistic-concurrency hint
+    // carried alongside the command body, not part of the domain ReviewRequest.
+    return { task: await lifecycle.reviewTask(rc(req), id, parsed.data, readBaseVersion(req.body)) };
   });
 
   // Dev-only: simulate a node/adapter executing a queued run end to end.
@@ -447,4 +455,24 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   registerWebStatic(app, options.webDistDir);
 
   return app;
+}
+
+/**
+ * Read the optional `base_version` optimistic-concurrency hint from a command
+ * body (#27 v2-B slice 2). Returns the value when it is a non-negative integer,
+ * `undefined` when absent (no OCC check), and rejects a present-but-malformed
+ * value so a client cannot silently bypass concurrency control with garbage.
+ */
+function readBaseVersion(body: unknown): number | undefined {
+  if (body === null || typeof body !== "object" || !("base_version" in body)) {
+    return undefined;
+  }
+  const value = (body as { base_version?: unknown }).base_version;
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw AppError.validation("base_version must be a non-negative integer", { base_version: value });
+  }
+  return value;
 }
