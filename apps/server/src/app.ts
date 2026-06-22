@@ -131,7 +131,9 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     },
   );
 
-  registerIdempotency(app, ctx);
+  // Credential-issuance routes return raw codes/tokens once and must never have
+  // those bodies persisted by the idempotency store (#28 invariant) — exempt them.
+  registerIdempotency(app, ctx, new Set(["/api/v1/devices/pairings", "/api/v1/devices/claim"]));
 
   app.get("/api/v1/bootstrap", async (req) => taskService.bootstrap(rc(req)));
 

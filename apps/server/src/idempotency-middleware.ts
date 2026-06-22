@@ -30,13 +30,26 @@ const STATE = Symbol("artoo.idempotency");
  * re-entrant ops like assign/retry the web client generates a new key per call,
  * so a legitimate second assign is NOT deduped against the first (Round 17/18).
  */
-export function registerIdempotency(app: FastifyInstance, ctx: ServerContext): void {
+export function registerIdempotency(
+  app: FastifyInstance,
+  ctx: ServerContext,
+  exemptPaths: ReadonlySet<string> = new Set(),
+): void {
   app.addHook("preHandler", async (req: FastifyRequest, reply: FastifyReply) => {
     if (req.method !== "POST") {
       return;
     }
     const key = headerValue(req.headers["idempotency-key"]);
     if (key === undefined) {
+      return;
+    }
+    // Credential-issuance routes are exempt: their success body carries raw
+    // pairing codes / device tokens, and the idempotency store persists response
+    // bodies — storing (or replaying) those raw secrets would violate the #28
+    // never-persist-secrets invariant. Skipping reservation means no STATE is set,
+    // so the onSend hook below also never persists their body.
+    const path = req.url.split("?")[0] ?? "";
+    if (exemptPaths.has(path)) {
       return;
     }
     const scope = `POST:${req.url}`;

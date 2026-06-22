@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { idempotencyKeys } from "@artoo/db";
 import { createClaimLimiter } from "./claim-rate-limit.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 
@@ -157,5 +158,53 @@ describe("device HTTP flow (pairing → claim → enroll → list → revoke)", 
     });
     expect(third.statusCode).toBe(429);
     expect(third.json().error.code).toBe("rate_limited");
+  });
+
+  // ── #28 4b re-review: issuance routes are exempt from the idempotency store,
+  // so raw codes/tokens are never persisted and cannot be replayed from it. ────
+  it("never persists raw codes/tokens via Idempotency-Key, and replay does not re-return secrets", async () => {
+    server = await buildTestServer();
+
+    // Pairing + claim WITH an Idempotency-Key on each (the store would otherwise
+    // persist the success body).
+    const pairing = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/devices/pairings",
+      headers: { "idempotency-key": "pair-key-1" },
+      payload: {},
+    });
+    const code = pairing.json().code as string;
+
+    const claim = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/devices/claim",
+      headers: { "idempotency-key": "claim-key-1" },
+      payload: { code, platform: "windows", app_version: "2.0.0", display_name: "d" },
+    });
+    expect(claim.statusCode).toBe(201);
+    const nodeToken = claim.json().node_token as string;
+    const controlToken = claim.json().control_token as string;
+
+    // The idempotency store holds nothing for these routes, and certainly none of
+    // the raw secrets anywhere in it.
+    const rows = await server.db.db.select().from(idempotencyKeys);
+    const dump = JSON.stringify(rows);
+    expect(dump).not.toContain(code);
+    expect(dump).not.toContain(nodeToken);
+    expect(dump).not.toContain(controlToken);
+    expect(rows.filter((r) => r.scope.includes("/devices/"))).toHaveLength(0);
+
+    // Replay: re-POST claim with the SAME key + code. It is NOT served from the
+    // idempotency store (which would leak the raw tokens); it re-runs and hits the
+    // single-use atomic guard (the code is already claimed) -> uniform 400.
+    const replay = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/devices/claim",
+      headers: { "idempotency-key": "claim-key-1" },
+      payload: { code, platform: "windows", app_version: "2.0.0", display_name: "d" },
+    });
+    expect(replay.statusCode).toBe(400);
+    expect(JSON.stringify(replay.json())).not.toContain(nodeToken);
+    expect(JSON.stringify(replay.json())).not.toContain(controlToken);
   });
 });
