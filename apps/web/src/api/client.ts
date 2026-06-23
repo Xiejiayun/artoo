@@ -57,6 +57,8 @@ export class ApiClientError extends Error {
 export interface ApiClientOptions {
   /** Defaults to `/api/v1` (served via the Vite dev proxy / same origin). */
   baseUrl?: string;
+  /** Fetch credential mode. Browser web uses cookies; desktop device smoke does not. */
+  credentials?: RequestCredentials;
   /** Override for tests; defaults to the global fetch. */
   fetch?: typeof fetch;
 }
@@ -70,11 +72,13 @@ export class ApiClient {
   private readonly baseUrl: string;
   /** Origin root for auth endpoints (`/auth/*`), i.e. baseUrl without `/api/v1`. */
   private readonly authBaseUrl: string;
+  private readonly credentials: RequestCredentials;
   private readonly fetchOverride?: typeof fetch;
 
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "/api/v1").replace(/\/$/, "");
     this.authBaseUrl = this.baseUrl.replace(/\/api\/v1$/, "");
+    this.credentials = options.credentials ?? "include";
     this.fetchOverride = options.fetch;
   }
 
@@ -97,7 +101,7 @@ export class ApiClient {
         headers,
         // Send the session cookie (#34 web auth) so the server's protected guard
         // can authenticate the request.
-        credentials: "include",
+        credentials: this.credentials,
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
       });
     } catch (cause) {
@@ -296,7 +300,7 @@ export class ApiClient {
       response = await fetchImpl(`${this.authBaseUrl}${path}`, {
         method,
         headers: { Accept: "application/json" },
-        credentials: "include",
+        credentials: this.credentials,
       });
     } catch (cause) {
       throw new ApiClientError("network_error", `Network request failed: ${String(cause)}`, 0);

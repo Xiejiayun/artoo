@@ -7,14 +7,21 @@
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
-    "dist:win": "electron-builder --win --publish never"
+    "prepare-renderer": "npm run build --workspace @artoo/web && node scripts/prepare-renderer.mjs",
+    "pack:win": "npm run prepare-renderer && electron-builder --win dir --publish never",
+    "dist:win": "npm run prepare-renderer && electron-builder --win nsis --publish never",
+    "smoke:win": "node scripts/windows-e2e-smoke.mjs"
   },
-  "comment:build-deps": "electron + electron-builder are intentionally NOT in the workspace deps so the monorepo's default install/verify stays light. Install them ad-hoc to build the desktop shell: `npm i -D electron@33.4.11 electron-builder@25 -w @artoo/desktop`. See README.md.",
+  "devDependencies": {
+    "electron": "33.4.11",
+    "electron-builder": "^25.1.8"
+  },
   "build": {
     "appId": "dev.artoo.desktop",
     "productName": "Artoo",
     "electronVersion": "33.4.11",
     "asar": true,
+    "npmRebuild": false,
     "files": ["main.cjs", "preload.cjs", "renderer/**"],
     "directories": { "output": "release" },
     "win": { "target": "nsis" },

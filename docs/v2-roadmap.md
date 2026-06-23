@@ -104,8 +104,10 @@ Current direction after the #30 desktop spike review and #31 Android plan:
 - use Electron as the first desktop shell because it is the fastest credible
   Windows path in the current Node-based toolchain and gives a direct
   main-process seam for supervising local `artood`;
-- keep the #30 desktop spike open until a normal Windows machine or CI produces
-  installer, launch, connect/read, and quit smoke evidence;
+- #30/#33 now have a Windows installer proof: `npm run smoke:win --workspace
+  @artoo/desktop` builds NSIS, installs, launches, connects to a temp server,
+  reads and writes through the packaged renderer, screenshots, quits, uninstalls,
+  and verifies the executable is removed;
 - keep Apple installable commitments gated on Mac verification;
 - use React Native as the first Android implementation path so the mobile client
   can reuse the TypeScript client/domain contracts and later cover iOS if the
@@ -136,7 +138,8 @@ Current direction after the #30 desktop spike review and #31 Android plan:
   redirect URI, issuer, audience, expiry, and hosted-domain policy when
   configured.
 - Windows desktop package installs, launches, connects to a server, and completes
-  Google login plus a task approval/review smoke.
+  the packaged renderer read/write smoke. The broader release gate still requires
+  Google login plus a task approval/review smoke once desktop auth is wired.
 - Local `artood` supervision smoke proves start, heartbeat, runtime capability
   display, stop, and restart on at least Windows.
 - Android APK builds and runs a Google login or fake-OIDC login, pairing, plus

@@ -5,7 +5,7 @@ import { loadMigrationStatements, organizations, seed } from "@artoo/db";
 import { createSystemClock, createUlidIdGen } from "@artoo/domain";
 import { PgliteDbClient } from "@artoo/storage";
 
-import { buildApp } from "./app.js";
+import { buildApp, type DesktopCorsOptions } from "./app.js";
 import { loadAuthConfig, type AuthConfig, type AuthConfigEnv } from "./auth/auth-config.js";
 import { createFetchOidcHttp } from "./auth/oidc-client.js";
 import { loadDeviceAuthConfig } from "./config/device-auth.js";
@@ -40,6 +40,17 @@ function resolveAuthConfig(env: AuthConfigEnv): AuthConfig {
   });
 }
 
+function loadDesktopCorsOptions(env: NodeJS.ProcessEnv): DesktopCorsOptions | undefined {
+  if (env.ARTOO_DESKTOP_CORS !== "1") {
+    return undefined;
+  }
+  const allowedOrigins = (env.ARTOO_DESKTOP_CORS_ORIGINS ?? "null")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+  return { allowedOrigins: allowedOrigins.length > 0 ? allowedOrigins : ["null"] };
+}
+
 async function main(): Promise<void> {
   const dbDir = process.env.ARTOO_DB_DIR;
   const db = await PgliteDbClient.create(dbDir !== undefined ? { dataDir: dbDir } : {});
@@ -71,7 +82,11 @@ async function main(): Promise<void> {
     oidcHttp: createFetchOidcHttp(),
   };
   const wsHub = createWsHub();
-  const app = buildApp(ctx, { wsHub, webDistDir: process.env.ARTOO_WEB_DIST });
+  const app = buildApp(ctx, {
+    wsHub,
+    webDistDir: process.env.ARTOO_WEB_DIST,
+    desktopCors: loadDesktopCorsOptions(process.env),
+  });
   await app.listen({ port: PORT, host: HOST });
 
   // Begin streaming committed events to subscribed realtime clients.

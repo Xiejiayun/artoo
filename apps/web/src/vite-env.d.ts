@@ -9,3 +9,11 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+interface Window {
+  readonly artooDesktop?: {
+    readonly serverUrl: string;
+    readonly platform: string;
+    readonly electronVersion: string;
+  };
+}

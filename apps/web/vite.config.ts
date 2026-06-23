@@ -8,6 +8,7 @@ const SERVER_TARGET = process.env.ARTOO_SERVER_URL ?? "http://localhost:4000";
 const WS_TARGET = SERVER_TARGET.replace(/^http/, "ws");
 
 export default defineConfig({
+  base: "./",
   plugins: [react()],
   server: {
     proxy: {

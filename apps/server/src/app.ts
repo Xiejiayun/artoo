@@ -60,6 +60,12 @@ export interface BuildAppOptions {
   clientWsHooks?: ClientWsHooks;
   /** Inject a claim rate-limiter (#28 4b) so tests can use a tight bound. */
   claimLimiter?: ClaimLimiter;
+  /** Allow packaged desktop renderers (file:// -> Origin: null) to call the API. */
+  desktopCors?: DesktopCorsOptions;
+}
+
+export interface DesktopCorsOptions {
+  allowedOrigins: string[];
 }
 
 /**
@@ -92,6 +98,10 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     registerNodeWsRoute(instance, ctx, nodeRegistry, deviceConnections);
     registerClientWsRoute(instance, ctx, wsHub, options.clientWsHooks, deviceConnections);
   });
+
+  if (options.desktopCors !== undefined) {
+    registerDesktopCors(app, options.desktopCors);
+  }
 
   // Google Auth (#34): the protected-API guard (opt-in via enforceApiAuth) and
   // the /auth/* routes.
@@ -541,6 +551,47 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   registerWebStatic(app, options.webDistDir);
 
   return app;
+}
+
+function registerDesktopCors(app: FastifyInstance, options: DesktopCorsOptions): void {
+  const allowedOrigins = new Set(options.allowedOrigins);
+
+  app.addHook("onRequest", async (req, reply) => {
+    const path = req.url.split("?")[0] ?? "";
+    if (!path.startsWith("/api/v1/") && !path.startsWith("/auth/")) {
+      return;
+    }
+    const origin = firstHeader(req.headers.origin);
+    const allowedOrigin = origin === undefined ? undefined : allowDesktopOrigin(origin, allowedOrigins);
+    if (allowedOrigin === undefined) {
+      return;
+    }
+
+    reply.header("Access-Control-Allow-Origin", allowedOrigin);
+    reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    reply.header(
+      "Access-Control-Allow-Headers",
+      firstHeader(req.headers["access-control-request-headers"]) ??
+        "Accept, Content-Type, Idempotency-Key",
+    );
+    reply.header("Access-Control-Max-Age", "600");
+    reply.header("Vary", "Origin");
+
+    if (req.method === "OPTIONS") {
+      await reply.status(204).send();
+    }
+  });
+}
+
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function allowDesktopOrigin(origin: string, allowedOrigins: Set<string>): string | undefined {
+  if (allowedOrigins.has("*")) {
+    return "*";
+  }
+  return allowedOrigins.has(origin) ? origin : undefined;
 }
 
 /**

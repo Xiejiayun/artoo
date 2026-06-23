@@ -3,7 +3,7 @@ import type { Clock, IdGen } from "@artoo/domain";
 import { PgliteDbClient } from "@artoo/storage";
 import type { FastifyInstance } from "fastify";
 
-import { buildApp } from "./app.js";
+import { buildApp, type DesktopCorsOptions } from "./app.js";
 import type { ClaimLimiter } from "./claim-rate-limit.js";
 import { testAuthConfig, type AuthConfig } from "./auth/auth-config.js";
 import { createFakeOidcProvider, type FakeOidcProvider } from "./auth/fake-oidc.js";
@@ -68,6 +68,8 @@ export interface BuildTestServerOptions {
   clientWsHooks?: ClientWsHooks;
   /** Inject a claim rate-limiter (#28 4b) so tests can assert a tight bound. */
   claimLimiter?: ClaimLimiter;
+  /** Enable packaged-desktop CORS for targeted route tests. */
+  desktopCors?: DesktopCorsOptions;
 }
 
 /** A fully wired server over an embedded, migrated, seeded database. */
@@ -101,6 +103,7 @@ export async function buildTestServer(
     webDistDir: options.webDistDir,
     clientWsHooks: options.clientWsHooks,
     claimLimiter: options.claimLimiter,
+    desktopCors: options.desktopCors,
   });
   const publisher = createEventPublisher(ctx, wsHub);
   await app.ready();

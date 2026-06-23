@@ -6,7 +6,7 @@
 //    URL with a paired endpoint + token)
 //  - own the lifecycle seam for a client-managed local `artood` (#29 implements
 //    the real start/stop/status/heartbeat control plane)
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, session, shell } = require("electron");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
@@ -18,6 +18,34 @@ const DEV_URL = process.env.ARTOO_DEV_URL;
 let mainWindow = null;
 /** #29 seam: handle to a supervised local artood child process. */
 let artood = null;
+
+function installDesktopCorsBridge() {
+  const serverOrigin = new URL(SERVER_URL).origin;
+  session.defaultSession.webRequest.onHeadersReceived({ urls: [`${serverOrigin}/*`] }, (details, callback) => {
+    let responseHeaders = details.responseHeaders ?? {};
+    responseHeaders = withDefaultHeader(responseHeaders, "Access-Control-Allow-Origin", "*");
+    responseHeaders = withDefaultHeader(
+      responseHeaders,
+      "Access-Control-Allow-Methods",
+      "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    );
+    responseHeaders = withDefaultHeader(
+      responseHeaders,
+      "Access-Control-Allow-Headers",
+      "Accept, Content-Type, Idempotency-Key",
+    );
+    callback({
+      responseHeaders,
+    });
+  });
+}
+
+function withDefaultHeader(headers, name, value) {
+  if (Object.keys(headers).some((key) => key.toLowerCase() === name.toLowerCase())) {
+    return headers;
+  }
+  return { ...headers, [name]: [value] };
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -73,6 +101,7 @@ function stopArtoodSupervision() {
 }
 
 app.whenReady().then(() => {
+  installDesktopCorsBridge();
   startArtoodSupervision();
   createWindow();
   app.on("activate", () => {

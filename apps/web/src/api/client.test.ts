@@ -181,6 +181,30 @@ describe("ApiClient", () => {
     expect(bootstrap.agent_instances[0]?.runtime).toBe("mock");
   });
 
+  it("allows the desktop shell to omit browser credentials", async () => {
+    let seenCredentials: RequestCredentials | undefined;
+    server.use(
+      http.get(`${BASE}/bootstrap`, ({ request }) => {
+        seenCredentials = request.credentials;
+        return HttpResponse.json({
+          organization: { id: "org_default", name: "Org" },
+          user: { id: "user_1", email: "jeremy@example.com", display_name: "Jeremy", role: "owner" },
+          projects: [],
+          computers: [],
+          agents: [],
+          agent_instances: [],
+          model_profiles: [],
+          effort_profiles: [],
+          actor: { type: "user", id: "user_1" },
+        });
+      }),
+    );
+
+    await new ApiClient({ baseUrl: BASE, credentials: "omit" }).bootstrap();
+
+    expect(seenCredentials).toBe("omit");
+  });
+
   it("listComputerRuntimes fetches heartbeat-backed runtime rows", async () => {
     server.use(
       http.get(`${BASE}/computers/computer_local_mock/runtimes`, () =>
