@@ -36,6 +36,7 @@ import * as leaseService from "./services/lease-service.js";
 import * as lifecycle from "./services/lifecycle-service.js";
 import * as memoryService from "./services/memory-service.js";
 import * as messageService from "./services/message-service.js";
+import * as presenceService from "./services/presence-service.js";
 import * as runService from "./services/run-service.js";
 import * as runtimeRegistry from "./services/runtime-registry-service.js";
 import * as skillService from "./services/skill-service.js";
@@ -78,7 +79,13 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   const nodeRegistry = options.nodeRegistry ?? createNodeRegistry();
   const wsHub = options.wsHub ?? createWsHub();
   // Index of live device sockets (node + control) so a revoke can close them.
-  const deviceConnections = createDeviceConnectionRegistry();
+  // When a device's last live socket drops, emit a presence offline transition
+  // (#28 4c). Revoke handles its own offline event, so closeForDevice does not.
+  const deviceConnections = createDeviceConnectionRegistry({
+    onDeviceOffline: (deviceId) => {
+      void presenceService.markDeviceOffline(ctx, deviceId, "disconnect").catch(() => {});
+    },
+  });
   // Bounded attempts for the public (unauthenticated) claim route.
   const claimLimiter = options.claimLimiter ?? createClaimLimiter(DEFAULT_CLAIM_LIMIT);
 
@@ -215,6 +222,12 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   app.get("/api/v1/devices", async (req) => ({ devices: await deviceService.listDevices(rc(req)) }));
 
+  // Device presence (#28 4c): derived from last_seen_at via the domain helper.
+  app.get("/api/v1/devices/:id/presence", async (req) => {
+    const { id } = req.params as { id: string };
+    return { presence: await presenceService.devicePresence(rc(req), id) };
+  });
+
   // Revoke a device: both its credentials flip to revoked AND every live socket
   // (node + control) it holds is closed — revocation is immediate, not just a
   // future-reconnect rejection.
@@ -222,6 +235,11 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     const { id } = req.params as { id: string };
     const result = await deviceService.revokeDevice(rc(req), id);
     const closed = deviceConnections.closeForDevice(id, 1008, "device revoked");
+    // Emit the offline transition for the revoke (closeForDevice does not, to
+    // avoid double-emitting against the last-disconnect edge).
+    if (result.revoked) {
+      void presenceService.markDeviceOffline(rc(req), id, "revoked").catch(() => {});
+    }
     return { device_id: result.deviceId, revoked: result.revoked, connections_closed: closed };
   });
 

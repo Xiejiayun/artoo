@@ -23,13 +23,25 @@ export interface DeviceConnectionRegistry {
   /**
    * Close every live socket currently held for a device and forget them.
    * Returns how many were closed. Idempotent: a second call closes nothing.
+   * Does NOT fire `onDeviceOffline` — the revoke caller owns that transition.
    */
   closeForDevice(deviceId: string, code: number, reason: string): number;
   /** Live socket count for a device (test/observability aid). */
   countForDevice(deviceId: string): number;
 }
 
-export function createDeviceConnectionRegistry(): DeviceConnectionRegistry {
+export interface DeviceConnectionRegistryOptions {
+  /**
+   * Fired once when a device's live socket count falls to zero through normal
+   * socket close (the last connection released) — the presence offline edge.
+   * NOT fired by `closeForDevice` (revoke), which emits its own offline event.
+   */
+  onDeviceOffline?: (deviceId: string) => void;
+}
+
+export function createDeviceConnectionRegistry(
+  options: DeviceConnectionRegistryOptions = {},
+): DeviceConnectionRegistry {
   const byDevice = new Map<string, Set<DeviceConnection>>();
 
   return {
@@ -43,11 +55,12 @@ export function createDeviceConnectionRegistry(): DeviceConnectionRegistry {
       return () => {
         const current = byDevice.get(deviceId);
         if (current === undefined) {
-          return;
+          return; // already cleared (e.g. by closeForDevice) — no offline edge here
         }
         current.delete(conn);
         if (current.size === 0) {
           byDevice.delete(deviceId);
+          options.onDeviceOffline?.(deviceId); // last socket gone -> offline edge
         }
       };
     },
@@ -58,7 +71,8 @@ export function createDeviceConnectionRegistry(): DeviceConnectionRegistry {
         return 0;
       }
       // Snapshot before closing: a socket's close handler runs its disposer,
-      // mutating the set as we iterate.
+      // mutating the set as we iterate. Deleting first means those disposers find
+      // no set and do NOT fire onDeviceOffline — revoke emits offline itself.
       const conns = [...set];
       byDevice.delete(deviceId);
       for (const conn of conns) {

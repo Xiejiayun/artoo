@@ -4,6 +4,7 @@ import { parseCookies } from "../auth/cookies.js";
 import { resolveSession } from "../auth/auth-service.js";
 import type { ServerContext } from "../context.js";
 import { resolveControlToken } from "../services/device-service.js";
+import { recordDeviceActivity } from "../services/presence-service.js";
 import { collectCatchUp } from "./event-publisher.js";
 import type { DeviceConnectionRegistry } from "./device-connections.js";
 import type { HubSocket, WsHub } from "./ws-hub.js";
@@ -240,6 +241,11 @@ export function registerClientWsRoute(
         releaseDeviceConn = deviceConnections.add(identity.deviceId, {
           close: (code, reason) => close(code, reason),
         });
+      }
+      // Device-level presence (#28 4c): an accepted control-session connection is
+      // authenticated device activity (control token, never the dev escape).
+      if (identity.kind === "device") {
+        void recordDeviceActivity(ctx, identity.deviceId, "control").catch(() => {});
       }
       dispatch = applyFrame;
       for (const queued of earlyFrames) {

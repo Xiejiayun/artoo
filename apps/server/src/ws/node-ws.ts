@@ -6,6 +6,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ServerContext } from "../context.js";
 import { attachNodeBinding, type NodeBinding } from "../node-binding.js";
 import { resolveNodeToken } from "../services/device-service.js";
+import { recordDeviceActivity } from "../services/presence-service.js";
 import { recordHeartbeatRuntimes } from "../services/runtime-registry-service.js";
 import type { NodeRegistry } from "./node-registry.js";
 import type { DeviceConnectionRegistry } from "./device-connections.js";
@@ -109,6 +110,11 @@ export function registerNodeWsRoute(
         }
         nodeId = computerId;
         void setComputerOnline(ctx, nodeId);
+        // Device-level presence (#28 4c): an accepted authenticated device node
+        // connection is device activity. Dev-escape nodes carry no device identity.
+        if (currentAuth.mode === "device") {
+          void recordDeviceActivity(ctx, currentAuth.deviceId, "node").catch(() => {});
+        }
         binding = attachNodeBinding(ctx, transport);
         registry.register(nodeId, binding);
       } else if (message.kind === "node.heartbeat") {
@@ -122,6 +128,11 @@ export function registerNodeWsRoute(
         // nodeId is the session/computer key; heartbeat node_id is not trusted.
         void touchHeartbeat(ctx, sessionNodeId);
         void recordHeartbeatRuntimes(ctx, sessionNodeId, message.runtimes).catch(() => {});
+        // Device presence refresh (#28 4c) — throttled inside the service so a
+        // heartbeat cadence does not become a write/event storm.
+        if (currentAuth.mode === "device") {
+          void recordDeviceActivity(ctx, currentAuth.deviceId, "node").catch(() => {});
+        }
       }
       // command.ack / run.event are consumed by the binding's own subscription.
     };
