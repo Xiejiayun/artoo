@@ -36,8 +36,8 @@ export function RunsAuditPage(): React.ReactNode {
   if (bootstrap.isLoading) {
     return (
       <div className="runs-audit">
-        <p className="runs-audit-loading-label" role="status">
-          Loading…
+        <p className="runs-audit-loading-label" role="status" aria-label="Loading runs and audit">
+          Loading runs and audit
         </p>
       </div>
     );
@@ -81,8 +81,8 @@ export function RunsAuditPage(): React.ReactNode {
             <EmptyState title="No task selected" description="Pick a task to inspect its read-only audit bundle." />
           ) : null}
           {selectedTaskId !== null && bundle.isLoading ? (
-            <p className="runs-audit-loading-label" role="status">
-              Loading audit bundle…
+            <p className="runs-audit-loading-label" role="status" aria-label="Loading audit bundle">
+              Loading audit bundle
             </p>
           ) : null}
           {selectedTaskId !== null && bundle.isError ? <ErrorState title="Failed to load audit bundle" /> : null}

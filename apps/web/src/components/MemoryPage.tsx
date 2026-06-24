@@ -90,8 +90,8 @@ export function MemoryPage(): React.ReactNode {
   if (bootstrap.isLoading) {
     return (
       <div className="memory">
-        <p className="memory-loading-label" role="status">
-          Loading memory…
+        <p className="memory-loading-label" role="status" aria-label="Loading memory">
+          Loading memory
         </p>
       </div>
     );
@@ -141,8 +141,8 @@ export function MemoryPage(): React.ReactNode {
       <div className="memory-body">
         <section className="memory-list" aria-label="Memories">
           {memories.isLoading ? (
-            <p className="memory-loading-label" role="status">
-              Loading memories…
+            <p className="memory-loading-label" role="status" aria-label="Loading memories">
+              Loading memories
             </p>
           ) : null}
           {!memories.isLoading && items.length === 0 ? <p className="inv-empty">No memories match.</p> : null}
@@ -206,7 +206,9 @@ export function MemoryPage(): React.ReactNode {
               </p>
             </>
           ) : (
-            <p role="status">Loading context…</p>
+            <p className="memory-loading-label" role="status" aria-label="Loading context">
+              Loading context
+            </p>
           )}
         </section>
       </div>

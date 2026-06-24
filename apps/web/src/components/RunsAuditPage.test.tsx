@@ -24,6 +24,29 @@ function bootstrap() {
 const task = taskFixture({ id: "task_1", title: "Audited task", status: "review" });
 
 describe("RunsAuditPage", () => {
+  it("announces loading while runs and audit bootstrap is pending", () => {
+    const client = fakeApi({
+      bootstrap: () => new Promise(() => undefined),
+    });
+
+    renderWithProviders(<RunsAuditPage />, { client, route: "/runs" });
+
+    expect(screen.getByRole("status", { name: "Loading runs and audit" })).toBeInTheDocument();
+  });
+
+  it("announces loading while a selected audit bundle is pending", async () => {
+    const client = fakeApi({
+      bootstrap: async () => bootstrap(),
+      listTasks: async () => ({ tasks: [task] }),
+      getTaskAuditBundle: () => new Promise(() => undefined),
+    });
+
+    renderWithProviders(<RunsAuditPage />, { client, route: "/runs" });
+
+    await userEvent.click(await screen.findByRole("button", { name: /Audited task/ }));
+    expect(await screen.findByRole("status", { name: "Loading audit bundle" })).toBeInTheDocument();
+  });
+
   it("lists tasks and renders the selected task's audit bundle", async () => {
     const bundle = auditBundleFixture({
       task,

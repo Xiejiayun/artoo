@@ -14,6 +14,28 @@ const proposed = memoryFixture({ id: "mem_p", status: "proposed", scope: "projec
 const accepted = memoryFixture({ id: "mem_a", status: "accepted", scope: "project", text: "accepted rule" });
 
 describe("MemoryPage", () => {
+  it("announces loading while the memory bootstrap is pending", () => {
+    const client = fakeApi({
+      bootstrap: () => new Promise(() => undefined),
+    });
+
+    renderWithProviders(<MemoryPage />, { client, route: "/memory" });
+
+    expect(screen.getByRole("status", { name: "Loading memory" })).toBeInTheDocument();
+  });
+
+  it("announces loading while the memory list is pending", async () => {
+    const client = fakeApi({
+      bootstrap: async () => bootstrap(),
+      listMemories: () => new Promise(() => undefined),
+      getMemoryContext: async () => ({ memories: [], source_memory_ids: [] }),
+    });
+
+    renderWithProviders(<MemoryPage />, { client, route: "/memory" });
+
+    expect(await screen.findByRole("status", { name: "Loading memories" })).toBeInTheDocument();
+  });
+
   it("lists memories and sources the injectable panel only from /memories/context", async () => {
     const client = fakeApi({
       bootstrap: async () => bootstrap(),
