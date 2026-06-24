@@ -1,0 +1,98 @@
+/**
+ * Artoo UI base layer (#65). Document reset, base element styling, accessible
+ * focus, scrollbars, reduced-motion, and a few layout primitive utilities.
+ * Depends on tokens.css. No component styling lives here — components own theirs.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-regular);
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4 {
+  margin: 0;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0; /* gate §7: no negative letter spacing */
+  color: var(--text);
+}
+
+a {
+  color: var(--accent-text);
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+ul { margin: 0; padding: 0; list-style: none; }
+
+button { font-family: inherit; cursor: pointer; }
+
+/* Accessible focus: a visible ring on every keyboard-reachable control
+ * (gate §9 focus-visible). Mouse clicks don't show it; keyboard does. */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+/* Scrollbars — quiet, consistent across the renderer. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: #d6dae0;
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover { background: #c2c8d0; }
+
+/* Respect reduced-motion (gate §9). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Layout primitives (utility classes). Vertical/horizontal flow with token gaps.
+ * ------------------------------------------------------------------------- */
+.u-stack { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+.u-stack-sm { gap: var(--space-2); }
+.u-stack-lg { gap: var(--space-4); }
+.u-inline { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.u-inline-between { display: flex; align-items: center; gap: var(--space-2); justify-content: space-between; }
+.u-grow { flex: 1; min-width: 0; }
+.u-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u-scroll { overflow: auto; min-height: 0; }
+
+/* Text role helpers mapped to the type scale. */
+.t-display { font-size: var(--text-display); line-height: var(--lh-display); font-weight: var(--fw-bold); }
+.t-h1 { font-size: var(--text-h1); line-height: var(--lh-h1); font-weight: var(--fw-bold); }
+.t-h2 { font-size: var(--text-h2); line-height: var(--lh-h2); font-weight: var(--fw-semibold); }
+.t-h3 { font-size: var(--text-h3); line-height: var(--lh-h3); font-weight: var(--fw-semibold); }
+.t-body { font-size: var(--text-body); line-height: var(--lh-body); }
+.t-small { font-size: var(--text-small); line-height: var(--lh-small); }
+.t-caption { font-size: var(--text-caption); line-height: var(--lh-caption); }
+.t-muted { color: var(--text-muted); }
+.t-subtle { color: var(--text-subtle); }
+.t-mono { font-family: var(--font-mono); font-size: var(--text-mono); line-height: var(--lh-mono); }
