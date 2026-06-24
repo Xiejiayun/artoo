@@ -181,11 +181,11 @@ Every interactive component must define **default / hover / active / focus-visib
 
 | domain | values → token |
 | --- | --- |
-| task status | backlog→neutral, ready→info-soft, assigned→neutral, running→info, awaiting_approval→warning, blocked→danger, review→warning, done→success |
+| task status | backlog→neutral, ready→info-soft, assigned→neutral, running→info, awaiting_approval→warning, blocked→danger, review→warning, done→success, cancelled→danger |
 | priority | p0→danger, p1→warning, p2→accent, p3→neutral |
-| run status | running→info, completed→success, failed→danger |
+| run status | queued→neutral, starting→info-soft, running→info, awaiting_input→warning, paused→warning, completed→success, failed→danger, cancelled→danger |
 | device/agent presence | online→success, stale→warning, offline→neutral/danger; revoked→danger |
-| approval/risk | low→neutral, medium→warning, high→danger |
+| approval status/risk | pending→warning, approved→success, rejected→danger, needs_more_info→warning, expired→neutral; risk low→neutral, medium→warning, high→danger |
 
 This vocabulary is the single source for badges on every client (web + iOS).
 
@@ -193,7 +193,7 @@ This vocabulary is the single source for badges on every client (web + iOS).
 
 ## 7. Accessibility & responsiveness
 
-- WCAG AA contrast for text/!icons on their backgrounds (semantic-soft pairs
+- WCAG AA contrast for text/icons on their backgrounds (semantic-soft pairs
   chosen to pass).
 - Visible focus ring on all interactive elements; full keyboard operability of
   nav, lists, actions.

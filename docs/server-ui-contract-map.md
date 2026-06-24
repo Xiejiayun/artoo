@@ -86,13 +86,15 @@ Idempotency-Key on all; offline-queued + replayed by the canonical
 ## 5. State vocabulary (drives UI badges — shared across clients)
 
 - task status: `backlog | ready | assigned | running | awaiting_approval |
-  blocked | review | done`
+  blocked | review | done | cancelled`
 - priority: `p0 | p1 | p2 | p3`
-- run status: `running | completed | failed`
+- run status: `queued | starting | running | awaiting_input | paused |
+  completed | failed | cancelled`
 - device trust/presence: trust `active | revoked`; presence `online | stale |
   offline`
 - pairing code: `pending | claimed | expired | cancelled`
-- approval/risk: resolve `approved | rejected | needs_more_info`; risk
+- approval status: `pending | approved | rejected | needs_more_info | expired`;
+  approval resolve decisions `approved | rejected | needs_more_info`; risk
   `low | medium | high`
 
 (Maps to semantic color tokens in the UI system spec §6.)
