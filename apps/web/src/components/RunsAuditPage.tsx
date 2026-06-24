@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { useSubscription } from "../app/RealtimeContext.js";
+import { EmptyState, ErrorState, StatusBadge } from "../ui/index.js";
 import { AuditBundleView } from "./AuditBundleView.js";
 
 /**
@@ -33,10 +34,20 @@ export function RunsAuditPage(): React.ReactNode {
   });
 
   if (bootstrap.isLoading) {
-    return <p role="status">Loading…</p>;
+    return (
+      <div className="runs-audit">
+        <p className="runs-audit-loading-label" role="status">
+          Loading…
+        </p>
+      </div>
+    );
   }
   if (bootstrap.isError || projectId === undefined) {
-    return <p role="alert">Failed to load.</p>;
+    return (
+      <div className="runs-audit">
+        <ErrorState title="Failed to load" />
+      </div>
+    );
   }
 
   const taskList = tasks.data?.tasks ?? [];
@@ -44,7 +55,7 @@ export function RunsAuditPage(): React.ReactNode {
   return (
     <div className="runs-audit">
       <header className="runs-audit-header">
-        <h1>Runs &amp; Audit</h1>
+        <h1 className="t-h1">Runs &amp; Audit</h1>
       </header>
       <div className="runs-audit-body">
         <nav className="audit-task-picker" aria-label="Tasks">
@@ -53,13 +64,12 @@ export function RunsAuditPage(): React.ReactNode {
               <li key={task.id}>
                 <button
                   type="button"
-                  className="audit-task"
+                  className={`audit-task${task.id === selectedTaskId ? " is-selected" : ""}`}
                   aria-pressed={task.id === selectedTaskId}
                   onClick={() => setSelectedTaskId(task.id)}
                 >
-                  <span className="title">{task.title}</span>
-                  <span aria-hidden="true"> · </span>
-                  <span className="status">{task.status}</span>
+                  <span className="title u-truncate">{task.title}</span>
+                  <StatusBadge status={task.status} />
                 </button>
               </li>
             ))}
@@ -67,13 +77,15 @@ export function RunsAuditPage(): React.ReactNode {
         </nav>
 
         <section className="audit-bundle" aria-label="Audit bundle">
-          {selectedTaskId === null ? <p>No task selected.</p> : null}
+          {selectedTaskId === null ? (
+            <EmptyState title="No task selected" description="Pick a task to inspect its read-only audit bundle." />
+          ) : null}
           {selectedTaskId !== null && bundle.isLoading ? (
-            <p role="status">Loading audit bundle…</p>
+            <p className="runs-audit-loading-label" role="status">
+              Loading audit bundle…
+            </p>
           ) : null}
-          {selectedTaskId !== null && bundle.isError ? (
-            <p role="alert">Failed to load audit bundle.</p>
-          ) : null}
+          {selectedTaskId !== null && bundle.isError ? <ErrorState title="Failed to load audit bundle" /> : null}
           {bundle.data !== undefined ? <AuditBundleView bundle={bundle.data.bundle} /> : null}
         </section>
       </div>

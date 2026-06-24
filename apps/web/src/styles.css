@@ -162,7 +162,9 @@ label {
 .detail-loading-label[role="status"],
 .task-room-loading-label[role="status"],
 .board-loading-label[role="status"],
-.inventory-loading-label[role="status"] {
+.inventory-loading-label[role="status"],
+.memory-loading-label[role="status"],
+.runs-audit-loading-label[role="status"] {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -852,10 +854,173 @@ label {
 .memory-summary {
   font-weight: 600;
 }
-.memory-body,
 .memory-context {
   font-size: 13px;
   color: var(--text-muted);
+}
+
+/* Memory + Runs/Audit surfaces (#77) */
+.memory {
+  padding: var(--space-5);
+  max-width: 1280px;
+}
+.memory-header {
+  margin-bottom: var(--space-4);
+}
+.memory-header h1 { margin-right: auto; }
+.memory-filters { margin-bottom: 0; align-items: flex-end; }
+.memory-body {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) minmax(240px, 320px);
+  gap: var(--space-4);
+  align-items: start;
+  font-size: inherit;
+  color: inherit;
+}
+.memory-list ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.memory-list .memory-row {
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.memory-list .memory-row[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.memory-row__badges {
+  display: inline-flex;
+  gap: 4px;
+}
+.memory-list .memory-summary {
+  font-weight: var(--fw-medium);
+  font-size: var(--text-small);
+}
+.memory-context__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-small);
+}
+.memory-detail__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.memory-detail__head h2 { margin-right: auto; }
+.memory-detail__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.runs-audit { padding: var(--space-5); max-width: 1280px; }
+.runs-audit-body {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+.audit-task-picker { margin-bottom: 0; }
+.audit-task-picker ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.audit-task {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.audit-task:hover { background: var(--surface-3); }
+.audit-task.is-selected,
+.audit-task[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft);
+}
+.audit-task .title { flex: 1; min-width: 0; font-size: var(--text-small); font-weight: var(--fw-medium); }
+.audit-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+.audit-section__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.audit-section__head h2 { margin-right: auto; }
+.audit-section__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.audit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-small);
+}
+.audit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.audit-events {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-small);
+}
+.audit-event {
+  display: grid;
+  grid-template-columns: 40px minmax(120px, max-content) 1fr auto;
+  gap: var(--space-2);
+  align-items: center;
+  padding: 2px 0;
+}
+@media (max-width: 1100px) {
+  .memory-body { grid-template-columns: minmax(0, 1fr); }
+  .runs-audit-body { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* Inventory pages — agents / computers / skills (#76) */

@@ -7,10 +7,18 @@ import { newIdempotencyKey } from "../api/idempotency.js";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { useSubscription } from "../app/RealtimeContext.js";
+import { Badge, EmptyState, ErrorState, Select, type Tone } from "../ui/index.js";
 import { MemoryDetail } from "./MemoryDetail.js";
 
 const STATUS_FILTERS = ["all", "proposed", "accepted", "rejected", "superseded"] as const;
 const SCOPE_FILTERS = ["all", "task", "project", "organization", "code"] as const;
+
+export const MEMORY_STATUS_TONE: Record<string, Tone> = {
+  proposed: "info",
+  accepted: "success",
+  rejected: "danger",
+  superseded: "neutral",
+};
 
 function summarize(memory: Memory): string {
   return memory.text ?? JSON.stringify(memory.payload ?? {});
@@ -80,10 +88,20 @@ export function MemoryPage(): React.ReactNode {
   });
 
   if (bootstrap.isLoading) {
-    return <p role="status">Loading memory…</p>;
+    return (
+      <div className="memory">
+        <p className="memory-loading-label" role="status">
+          Loading memory…
+        </p>
+      </div>
+    );
   }
   if (bootstrap.isError || projectId === undefined) {
-    return <p role="alert">Failed to load memory.</p>;
+    return (
+      <div className="memory">
+        <ErrorState title="Failed to load memory" />
+      </div>
+    );
   }
 
   const items = memories.data?.memories ?? [];
@@ -93,41 +111,41 @@ export function MemoryPage(): React.ReactNode {
   return (
     <div className="memory">
       <header className="memory-header">
-        <h1>Memory</h1>
+        <h1 className="t-h1">Memory</h1>
         <div className="memory-filters">
-          <label>
-            Status
-            <select
-              value={status}
-              onChange={(event) => setStatus(event.target.value as (typeof STATUS_FILTERS)[number])}
-            >
-              {STATUS_FILTERS.map((value) => (
-                <option key={value} value={value}>
-                  {value === "all" ? "All" : value}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Scope
-            <select
-              value={scope}
-              onChange={(event) => setScope(event.target.value as (typeof SCOPE_FILTERS)[number])}
-            >
-              {SCOPE_FILTERS.map((value) => (
-                <option key={value} value={value}>
-                  {value === "all" ? "All" : value}
-                </option>
-              ))}
-            </select>
-          </label>
+          <Select
+            label="Status"
+            value={status}
+            onChange={(event) => setStatus(event.target.value as (typeof STATUS_FILTERS)[number])}
+          >
+            {STATUS_FILTERS.map((value) => (
+              <option key={value} value={value}>
+                {value === "all" ? "All" : value}
+              </option>
+            ))}
+          </Select>
+          <Select
+            label="Scope"
+            value={scope}
+            onChange={(event) => setScope(event.target.value as (typeof SCOPE_FILTERS)[number])}
+          >
+            {SCOPE_FILTERS.map((value) => (
+              <option key={value} value={value}>
+                {value === "all" ? "All" : value}
+              </option>
+            ))}
+          </Select>
         </div>
       </header>
 
       <div className="memory-body">
         <section className="memory-list" aria-label="Memories">
-          {memories.isLoading ? <p role="status">Loading memories…</p> : null}
-          {!memories.isLoading && items.length === 0 ? <p>No memories match.</p> : null}
+          {memories.isLoading ? (
+            <p className="memory-loading-label" role="status">
+              Loading memories…
+            </p>
+          ) : null}
+          {!memories.isLoading && items.length === 0 ? <p className="inv-empty">No memories match.</p> : null}
           <ul>
             {items.map((memory) => (
               <li key={memory.id}>
@@ -139,9 +157,11 @@ export function MemoryPage(): React.ReactNode {
                   data-status={memory.status}
                   onClick={() => setSelectedId(memory.id)}
                 >
-                  <span className="memory-scope">{memory.scope}</span>
-                  <span className="memory-status">{memory.status}</span>
-                  <span className="memory-summary">{summarize(memory)}</span>
+                  <span className="memory-row__badges">
+                    <Badge tone="neutral">{memory.scope}</Badge>
+                    <Badge tone={MEMORY_STATUS_TONE[memory.status] ?? "neutral"}>{memory.status}</Badge>
+                  </span>
+                  <span className="memory-summary u-truncate">{summarize(memory)}</span>
                 </button>
               </li>
             ))}
@@ -158,22 +178,22 @@ export function MemoryPage(): React.ReactNode {
               onSupersede={(text) => supersede.mutate({ memory: selected, text })}
             />
           ) : (
-            <p>Select a memory to review.</p>
+            <EmptyState title="Select a memory to review" description="Choose a memory from the list to see its full record and curation actions." />
           )}
         </section>
 
         <section className="memory-context" aria-label="Injectable into ContextPack">
-          <h2>Injectable into ContextPack</h2>
+          <h2 className="inventory-subtitle">Injectable into ContextPack</h2>
           <p className="hint">
             Accepted memories that would inject for this project, with the audit ids recorded on a
             run&apos;s ContextPack. Proposed, rejected, and superseded memories never inject.
           </p>
           {context.data !== undefined ? (
             <>
-              <ul>
+              <ul className="memory-context__list">
                 {context.data.memories.map((memory) => (
                   <li key={memory.id}>
-                    <span className="memory-scope">{memory.scope}</span>{" "}
+                    <Badge tone="neutral">{memory.scope}</Badge>{" "}
                     <span className="memory-summary">{summarize(memory)}</span>
                   </li>
                 ))}

@@ -2,6 +2,9 @@ import { useState } from "react";
 
 import type { Memory } from "@artoo/domain";
 
+import { Badge, Button, Textarea } from "../ui/index.js";
+import { MEMORY_STATUS_TONE } from "./MemoryPage.js";
+
 interface MemoryDetailProps {
   memory: Memory;
   busy: boolean;
@@ -34,57 +37,64 @@ export function MemoryDetail({
 
   return (
     <div className="memory-detail">
-      <h2>{memory.id}</h2>
-      <dl className="memory-fields">
-        <dt>Status</dt>
-        <dd data-status={memory.status}>{memory.status}</dd>
-        <dt>Scope</dt>
-        <dd>{memory.scope}</dd>
-        <dt>Confidence</dt>
-        <dd>{memory.confidence}</dd>
-        <dt>Author</dt>
-        <dd>
-          {memory.author_type}:{memory.author_id}
-        </dd>
+      <header className="memory-detail__head">
+        <h2 className="t-h3 t-mono">{memory.id}</h2>
+        <Badge tone={MEMORY_STATUS_TONE[memory.status] ?? "neutral"}>{memory.status}</Badge>
+      </header>
+      <dl className="inv-meta">
+        <div className="inv-row">
+          <dt>Scope</dt>
+          <dd>{memory.scope}</dd>
+        </div>
+        <div className="inv-row">
+          <dt>Confidence</dt>
+          <dd>{memory.confidence}</dd>
+        </div>
+        <div className="inv-row">
+          <dt>Author</dt>
+          <dd>
+            {memory.author_type}:{memory.author_id}
+          </dd>
+        </div>
         {memory.project_id != null ? (
-          <>
+          <div className="inv-row">
             <dt>Project</dt>
-            <dd>{memory.project_id}</dd>
-          </>
+            <dd className="t-mono">{memory.project_id}</dd>
+          </div>
         ) : null}
         {memory.task_id != null ? (
-          <>
+          <div className="inv-row">
             <dt>Task</dt>
-            <dd>{memory.task_id}</dd>
-          </>
+            <dd className="t-mono">{memory.task_id}</dd>
+          </div>
         ) : null}
         {memory.tags.length > 0 ? (
-          <>
+          <div className="inv-row">
             <dt>Tags</dt>
             <dd>{memory.tags.join(", ")}</dd>
-          </>
+          </div>
         ) : null}
       </dl>
 
-      <section aria-label="Content">
-        <h3>Content</h3>
+      <section className="memory-detail__section" aria-label="Content">
+        <h3 className="inventory-subtitle">Content</h3>
         {memory.text != null ? (
-          <p>{memory.text}</p>
+          <p className="t-body">{memory.text}</p>
         ) : (
-          <pre>{JSON.stringify(memory.payload ?? {}, null, 2)}</pre>
+          <pre className="msg__code">{JSON.stringify(memory.payload ?? {}, null, 2)}</pre>
         )}
       </section>
 
       {hasProvenance ? (
-        <section aria-label="Provenance">
-          <h3>Provenance</h3>
-          <dl>
+        <section className="memory-detail__section" aria-label="Provenance">
+          <h3 className="inventory-subtitle">Provenance</h3>
+          <dl className="inv-meta">
             {provenance
               .filter(([, value]) => value != null)
               .map(([label, value]) => (
-                <div key={label}>
+                <div key={label} className="inv-row">
                   <dt>{label}</dt>
-                  <dd>{value}</dd>
+                  <dd className="t-mono">{value}</dd>
                 </div>
               ))}
           </dl>
@@ -92,29 +102,29 @@ export function MemoryDetail({
       ) : null}
 
       {memory.supersedes_id != null || memory.superseded_by_id != null ? (
-        <section aria-label="Supersession">
-          <h3>Supersession</h3>
-          {memory.supersedes_id != null ? <p>Supersedes {memory.supersedes_id}</p> : null}
+        <section className="memory-detail__section" aria-label="Supersession">
+          <h3 className="inventory-subtitle">Supersession</h3>
+          {memory.supersedes_id != null ? <p className="t-small">Supersedes {memory.supersedes_id}</p> : null}
           {memory.superseded_by_id != null ? (
-            <p>Superseded by {memory.superseded_by_id}</p>
+            <p className="t-small">Superseded by {memory.superseded_by_id}</p>
           ) : null}
         </section>
       ) : null}
 
-      <section aria-label="Timestamps">
-        <h3>Timestamps</h3>
-        <p>Created {memory.created_at}</p>
-        {memory.updated_at != null ? <p>Updated {memory.updated_at}</p> : null}
+      <section className="memory-detail__section" aria-label="Timestamps">
+        <h3 className="inventory-subtitle">Timestamps</h3>
+        <p className="t-small t-subtle">Created {memory.created_at}</p>
+        {memory.updated_at != null ? <p className="t-small t-subtle">Updated {memory.updated_at}</p> : null}
       </section>
 
       {memory.status === "proposed" ? (
         <div className="memory-actions">
-          <button type="button" disabled={busy} onClick={onAccept}>
+          <Button variant="primary" size="sm" disabled={busy} onClick={onAccept}>
             Accept
-          </button>
-          <button type="button" disabled={busy} onClick={onReject}>
+          </Button>
+          <Button variant="danger" size="sm" disabled={busy} onClick={onReject}>
             Reject
-          </button>
+          </Button>
         </div>
       ) : null}
 
@@ -122,6 +132,7 @@ export function MemoryDetail({
         <div className="memory-supersede">
           {showSupersede ? (
             <form
+              className="u-stack"
               onSubmit={(event) => {
                 event.preventDefault();
                 onSupersede(replacement);
@@ -129,28 +140,26 @@ export function MemoryDetail({
                 setShowSupersede(false);
               }}
             >
-              <label>
-                Replacement text
-                <textarea
-                  value={replacement}
-                  onChange={(event) => setReplacement(event.target.value)}
-                  required
-                />
-              </label>
-              <p className="hint">
-                Creates a new accepted memory (same scope/refs) and retires this one.
-              </p>
-              <button type="submit" disabled={busy || replacement.trim() === ""}>
-                Save replacement
-              </button>
-              <button type="button" onClick={() => setShowSupersede(false)}>
-                Cancel
-              </button>
+              <Textarea
+                label="Replacement text"
+                value={replacement}
+                onChange={(event) => setReplacement(event.target.value)}
+                required
+              />
+              <p className="hint">Creates a new accepted memory (same scope/refs) and retires this one.</p>
+              <div className="memory-actions">
+                <Button type="submit" variant="primary" size="sm" disabled={busy || replacement.trim() === ""}>
+                  Save replacement
+                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setShowSupersede(false)}>
+                  Cancel
+                </Button>
+              </div>
             </form>
           ) : (
-            <button type="button" disabled={busy} onClick={() => setShowSupersede(true)}>
+            <Button variant="secondary" size="sm" disabled={busy} onClick={() => setShowSupersede(true)}>
               Supersede
-            </button>
+            </Button>
           )}
         </div>
       ) : null}
