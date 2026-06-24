@@ -3,12 +3,36 @@ import { useQuery } from "@tanstack/react-query";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { useSubscription } from "../app/RealtimeContext.js";
+import { EmptyState, ErrorState, Skeleton } from "../ui/index.js";
+import { Icon, Activity, Inbox } from "../ui/Icon.js";
 import { MessageCard } from "./MessageCard.js";
 
+function RoomSkeleton(): React.ReactNode {
+  return (
+    <div className="task-room">
+      <p className="task-room-loading-label" role="status">
+        Loading activity…
+      </p>
+      <div aria-hidden="true" className="u-stack">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="msg msg--skeleton">
+            <Skeleton width={28} height={28} radius="var(--radius-pill)" />
+            <div className="msg__main u-stack-sm">
+              <Skeleton height={12} width="32%" />
+              <Skeleton height={14} width={i % 2 === 0 ? "80%" : "55%"} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /**
- * Center pane: the task room. Resolves the task's room from the snapshot, then
- * renders its messages as defensive cards. A pure projection — no lifecycle
- * inference.
+ * Center pane: the task room / activity feed (#73). Resolves the task's room
+ * from the snapshot, then renders its messages as defensive cards. A pure
+ * projection — no lifecycle inference. Loading/empty/error states use the ui
+ * primitives.
  */
 export function TaskRoom({ taskId }: { taskId: string }): React.ReactNode {
   const api = useApi();
@@ -25,32 +49,52 @@ export function TaskRoom({ taskId }: { taskId: string }): React.ReactNode {
   });
 
   if (snapshot.isLoading) {
-    return <p role="status">Loading task…</p>;
+    return <RoomSkeleton />;
   }
   if (snapshot.isError || snapshot.data === undefined) {
-    return <p role="alert">Failed to load task.</p>;
+    return <ErrorState title="Failed to load task" />;
   }
   if (roomId === null) {
-    return <p className="no-room">No room for this task.</p>;
+    return (
+      <div className="task-room task-room--empty">
+        <EmptyState icon={Inbox} title="No room for this task" description="This task has no activity room yet." />
+      </div>
+    );
   }
   if (messages.isLoading) {
-    return <p role="status">Loading messages…</p>;
+    return <RoomSkeleton />;
   }
   if (messages.isError || messages.data === undefined) {
-    return <p role="alert">Failed to load messages.</p>;
+    return <ErrorState title="Failed to load messages" />;
   }
 
-  if (messages.data.messages.length === 0) {
-    return <p className="empty">No messages yet.</p>;
-  }
+  const items = messages.data.messages;
 
   return (
-    <ul aria-label="Messages" className="messages">
-      {messages.data.messages.map((message) => (
-        <li key={message.id}>
-          <MessageCard message={message} />
-        </li>
-      ))}
-    </ul>
+    <div className="task-room">
+      <header className="task-room__header">
+        <h2 className="task-room__title">
+          <Icon icon={Activity} size={16} /> Activity
+        </h2>
+        <span className="task-room__count">{items.length}</span>
+      </header>
+      {items.length === 0 ? (
+        <div className="task-room--empty">
+          <EmptyState
+            icon={Inbox}
+            title="No activity yet"
+            description="Messages, run events, and approvals for this task will appear here."
+          />
+        </div>
+      ) : (
+        <ul aria-label="Messages" className="messages">
+          {items.map((message) => (
+            <li key={message.id}>
+              <MessageCard message={message} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

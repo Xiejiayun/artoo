@@ -49,6 +49,6 @@ describe("TaskRoom", () => {
 
     renderWithProviders(<TaskRoom taskId="task_1" />, { client });
 
-    expect(await screen.findByText("No messages yet.")).toBeInTheDocument();
+    expect(await screen.findByText("No activity yet")).toBeInTheDocument();
   });
 });
