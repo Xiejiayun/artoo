@@ -20,9 +20,23 @@ public struct InboxView: View {
                         message: "No pending approvals. Agent escalations will appear here."
                     )
                 } else {
-                    List(approvals) { approval in
-                        NavigationLink(value: approval) {
-                            ApprovalRow(approval: approval)
+                    List {
+                        ForEach(riskSections(approvals), id: \.risk.rawValue) { section in
+                            Section {
+                                ForEach(section.approvals) { approval in
+                                    NavigationLink(value: approval) {
+                                        ApprovalRow(approval: approval)
+                                    }
+                                }
+                            } header: {
+                                HStack {
+                                    Text("\(section.risk.label) risk")
+                                    Spacer()
+                                    Text("\(section.approvals.count)")
+                                        .font(ArtooTokens.Typography.caption)
+                                        .foregroundStyle(ArtooTokens.ColorToken.textMuted)
+                                }
+                            }
                         }
                     }
                     .listStyle(.insetGrouped)
@@ -36,28 +50,70 @@ public struct InboxView: View {
             .task { await model.load() }
         }
     }
+
+    private func riskSections(_ approvals: [Approval]) -> [(risk: RiskLevel, approvals: [Approval])] {
+        let order: [RiskLevel] = [.high, .medium, .low]
+        var sections = order.compactMap { risk in
+            let matches = approvals.filter { $0.risk == risk }
+            return matches.isEmpty ? nil : (risk, matches)
+        }
+        let known = Set(order.map { $0.rawValue })
+        let trailingRisks = Set(approvals.map(\.risk.rawValue)).subtracting(known).sorted()
+        for riskRaw in trailingRisks {
+            let risk = RiskLevel(rawValue: riskRaw)
+            let matches = approvals.filter { $0.risk == risk }
+            if !matches.isEmpty {
+                sections.append((risk, matches))
+            }
+        }
+        return sections
+    }
 }
 
 private struct ApprovalRow: View {
     let approval: Approval
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xs) {
+            HStack(alignment: .firstTextBaseline, spacing: ArtooTokens.Spacing.xs) {
                 Text(approval.action)
-                    .font(.subheadline.weight(.semibold))
+                    .font(ArtooTokens.Typography.subheadline.weight(.semibold))
+                    .foregroundStyle(ArtooTokens.ColorToken.text)
+                    .lineLimit(2)
                 Spacer()
                 ApprovalStatusBadge(approval.status)
                 RiskBadge(approval.risk)
             }
             if let summary = approval.summary, !summary.isEmpty {
                 Text(summary)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .font(ArtooTokens.Typography.caption)
+                    .foregroundStyle(ArtooTokens.ColorToken.textMuted)
                     .lineLimit(2)
             }
+            ArtooMetadataGrid([
+                ("Task", approval.taskId),
+                ("Run", approval.runId),
+                ("Created", approval.createdAt)
+            ])
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, ArtooTokens.Spacing.xxs)
+        .padding(.leading, ArtooTokens.Spacing.xs)
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: ArtooTokens.Radius.pill)
+                .fill(riskColor)
+                .frame(width: 4)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(approval.action), \(approval.risk.label) risk, \(approval.status.label)")
+    }
+
+    private var riskColor: Color {
+        switch approval.risk {
+        case .high: return ArtooTokens.ColorToken.danger
+        case .medium: return ArtooTokens.ColorToken.warning
+        case .low: return ArtooTokens.ColorToken.neutral
+        case .other: return ArtooTokens.ColorToken.neutral
+        }
     }
 }
 
@@ -68,48 +124,68 @@ public struct ApprovalDetailView: View {
     @State private var comment: String = ""
 
     public var body: some View {
-        Form {
+        List {
             Section("Decision") {
-                LabeledContent("Action", value: approval.action)
-                LabeledContent("Risk") { RiskBadge(approval.risk) }
-                LabeledContent("Status") { ApprovalStatusBadge(approval.status) }
+                ArtooSectionCard {
+                    VStack(alignment: .leading, spacing: ArtooTokens.Spacing.sm) {
+                        Text(approval.action)
+                            .font(ArtooTokens.Typography.headline)
+                            .foregroundStyle(ArtooTokens.ColorToken.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: ArtooTokens.Spacing.xs) {
+                            ApprovalStatusBadge(approval.status)
+                            RiskBadge(approval.risk)
+                        }
+                        ArtooMetadataGrid([
+                            ("Task", approval.taskId),
+                            ("Run", approval.runId),
+                            ("Created", approval.createdAt)
+                        ])
+                    }
+                }
+                .listRowInsets(EdgeInsets(
+                    top: ArtooTokens.Spacing.sm,
+                    leading: ArtooTokens.Spacing.md,
+                    bottom: ArtooTokens.Spacing.sm,
+                    trailing: ArtooTokens.Spacing.md
+                ))
+                .listRowBackground(Color.clear)
             }
             if let summary = approval.summary, !summary.isEmpty {
                 Section("Summary") { Text(summary) }
-            }
-            Section("Context") {
-                if let taskId = approval.taskId { LabeledContent("Task", value: taskId) }
-                if let runId = approval.runId { LabeledContent("Run", value: runId) }
-                if let createdAt = approval.createdAt { LabeledContent("Created", value: createdAt) }
             }
             Section("Comment (optional)") {
                 TextField("Add a note for the audit trail", text: $comment, axis: .vertical)
                     .lineLimit(1...4)
             }
             Section {
-                Button {
-                    Task {
-                        await model.resolve(approval, approve: true, comment: trimmedComment)
-                        dismiss()
-                    }
-                } label: {
-                    Label("Approve", systemImage: "checkmark.circle.fill")
-                }
-                .disabled(model.isResolving(approval))
-
-                Button(role: .destructive) {
-                    Task {
-                        await model.resolve(approval, approve: false, comment: trimmedComment)
-                        dismiss()
-                    }
-                } label: {
-                    Label("Reject", systemImage: "xmark.circle.fill")
-                }
-                .disabled(model.isResolving(approval))
+                decisionButton(.approved, systemImage: "checkmark.circle.fill")
+                decisionButton(.needsMoreInfo, systemImage: "questionmark.circle.fill")
+                decisionButton(.rejected, systemImage: "xmark.circle.fill", role: .destructive)
             }
         }
+        .listStyle(.insetGrouped)
         .navigationTitle("Approval")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func decisionButton(_ decision: ApprovalDecision, systemImage: String, role: ButtonRole? = nil) -> some View {
+        Button(role: role) {
+            Task {
+                await model.resolve(approval, decision: decision, comment: trimmedComment)
+                dismiss()
+            }
+        } label: {
+            HStack {
+                Label(decision.label, systemImage: systemImage)
+                Spacer()
+                if model.isResolving(approval) {
+                    ProgressView()
+                }
+            }
+        }
+        .disabled(model.isResolving(approval))
+        .accessibilityHint("Resolves this approval as \(decision.label)")
     }
 
     private var trimmedComment: String? {

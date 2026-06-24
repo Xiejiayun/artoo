@@ -102,7 +102,7 @@ public struct RootView: View {
                 .tabItem { Label("Tasks", systemImage: "checklist") }
                 .tag(RootTab.tasks)
 
-            RunsApprovalsOverviewView()
+            RunsOverviewView(client: container.client, projectId: container.projectId)
                 .tabItem { Label("Runs", systemImage: "play.rectangle.stack") }
                 .tag(RootTab.runsApprovals)
 
@@ -114,50 +114,83 @@ public struct RootView: View {
     }
 }
 
-private struct RunsApprovalsOverviewView: View {
+private struct RunsOverviewView: View {
+    @StateObject private var model: RunsOverviewViewModel
+
+    init(client: ApiClientProtocol, projectId: String) {
+        _model = StateObject(wrappedValue: RunsOverviewViewModel(client: client, projectId: projectId))
+    }
+
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    ArtooSectionCard {
-                        VStack(alignment: .leading, spacing: ArtooTokens.Spacing.sm) {
-                            Label("Run and approval overview", systemImage: "play.rectangle.stack")
-                                .font(.headline)
-                                .foregroundStyle(ArtooTokens.ColorToken.text)
-                            Text("Foundation shell placeholder for run summaries and approval history. Pending approvals remain in Today until the work surface slice starts.")
-                                .font(.subheadline)
-                                .foregroundStyle(ArtooTokens.ColorToken.textMuted)
-                                .fixedSize(horizontal: false, vertical: true)
+            StateView(state: model.state, retry: { Task { await model.load() } }) { items in
+                if items.isEmpty {
+                    EmptyStateView(
+                        systemImage: "play.rectangle.stack",
+                        title: "No runs yet",
+                        message: "Assigned tasks will show run progress, blockers, and completed attempts here."
+                    )
+                } else {
+                    List {
+                        Section("Recent runs") {
+                            ForEach(items) { item in
+                                NavigationLink(value: item.run) {
+                                    RunFeedRow(item: item)
+                                }
+                            }
                         }
                     }
-                    .listRowInsets(EdgeInsets(
-                        top: ArtooTokens.Spacing.sm,
-                        leading: ArtooTokens.Spacing.md,
-                        bottom: ArtooTokens.Spacing.sm,
-                        trailing: ArtooTokens.Spacing.md
-                    ))
-                    .listRowBackground(Color.clear)
-                }
-
-                Section("Included in this foundation") {
-                    Label("Native NavigationStack drill-down model", systemImage: "point.3.connected.trianglepath.dotted")
-                    Label("Shared run status vocabulary", systemImage: "tag")
-                    Label("Semantic loading, empty, error, and offline components", systemImage: "rectangle.3.group")
+                    .listStyle(.insetGrouped)
                 }
             }
-            .listStyle(.insetGrouped)
             .navigationTitle("Runs")
+            .navigationDestination(for: Run.self) { run in
+                RunSummaryView(run: run)
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
+                        Task { await model.load() }
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
-                    .disabled(true)
-                    .accessibilityHint("Run refresh becomes available when the Runs work surface is implemented")
                 }
             }
+            .refreshable { await model.load() }
+            .task { await model.load() }
         }
+    }
+}
+
+private struct RunFeedRow: View {
+    let item: RunFeedItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xs) {
+            HStack(alignment: .firstTextBaseline, spacing: ArtooTokens.Spacing.xs) {
+                Text(item.task.title)
+                    .font(ArtooTokens.Typography.subheadline.weight(.semibold))
+                    .foregroundStyle(ArtooTokens.ColorToken.text)
+                    .lineLimit(2)
+                Spacer()
+                RunStatusBadge(item.run.status)
+            }
+            ArtooMetadataGrid([
+                ("Run", item.run.id),
+                ("Runtime", item.run.runtimeId),
+                ("Agent", item.run.agentInstanceId),
+                ("Started", item.run.startedAt ?? item.run.createdAt)
+            ])
+            if let failure = item.run.failureReason, !failure.isEmpty {
+                Text(failure)
+                    .font(ArtooTokens.Typography.caption)
+                    .foregroundStyle(ArtooTokens.ColorToken.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, ArtooTokens.Spacing.xxs)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(item.task.title), run \(item.run.status.label)")
     }
 }
 

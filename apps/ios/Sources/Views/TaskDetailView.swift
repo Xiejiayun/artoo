@@ -43,16 +43,36 @@ public struct TaskDetailView: View {
 
     private func headerSection(_ task: TaskItem) -> some View {
         Section {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(task.title).font(.headline)
-                HStack {
-                    StatusBadge(task.status)
-                    if let priority = task.priority {
-                        PriorityBadge(priority)
+            ArtooSectionCard {
+                VStack(alignment: .leading, spacing: ArtooTokens.Spacing.sm) {
+                    Text(task.title)
+                        .font(ArtooTokens.Typography.headline)
+                        .foregroundStyle(ArtooTokens.ColorToken.text)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: ArtooTokens.Spacing.xs) {
+                        StatusBadge(task.status)
+                        if let priority = task.priority {
+                            PriorityBadge(priority)
+                        }
                     }
+
+                    ArtooMetadataGrid([
+                        ("Assignee", task.assigneeId),
+                        ("Type", task.assigneeType),
+                        ("Updated", task.updatedAt),
+                        ("Created", task.createdAt),
+                        ("Task", task.id)
+                    ])
                 }
             }
-            .padding(.vertical, 2)
+            .listRowInsets(EdgeInsets(
+                top: ArtooTokens.Spacing.sm,
+                leading: ArtooTokens.Spacing.md,
+                bottom: ArtooTokens.Spacing.sm,
+                trailing: ArtooTokens.Spacing.md
+            ))
+            .listRowBackground(Color.clear)
         }
     }
 
@@ -62,7 +82,8 @@ public struct TaskDetailView: View {
             Section("Acceptance criteria") {
                 ForEach(Array(criteria.enumerated()), id: \.offset) { _, item in
                     Label(item, systemImage: "checkmark.circle")
-                        .font(.callout)
+                        .font(ArtooTokens.Typography.body)
+                        .foregroundStyle(ArtooTokens.ColorToken.text)
                 }
             }
         }
@@ -80,13 +101,22 @@ public struct TaskDetailView: View {
                         HStack {
                             Text(action.label)
                             Spacer()
-                            if model.actionInFlight { ProgressView() }
+                            if model.actionInFlight {
+                                ProgressView()
+                            } else {
+                                Image(systemName: action.systemImage)
+                                    .foregroundStyle(ArtooTokens.ColorToken.accent)
+                                    .accessibilityHidden(true)
+                            }
                         }
                     }
                     .disabled(model.actionInFlight)
+                    .accessibilityHint(action.accessibilityHint)
                 }
                 if let error = model.actionError {
-                    Text(error).foregroundStyle(.red).font(.callout)
+                    Text(error)
+                        .foregroundStyle(ArtooTokens.ColorToken.danger)
+                        .font(ArtooTokens.Typography.body)
                 }
             }
         }
@@ -98,16 +128,7 @@ public struct TaskDetailView: View {
             Section("Runs") {
                 ForEach(runs) { run in
                     NavigationLink(value: run) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(run.id).font(.subheadline)
-                                if let runtime = run.runtimeId {
-                                    Text(runtime).font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                            Spacer()
-                            RunStatusBadge(run.status)
-                        }
+                        RunTimelineRow(run: run)
                     }
                 }
             }
@@ -119,14 +140,7 @@ public struct TaskDetailView: View {
         if !approvals.isEmpty {
             Section("Approvals") {
                 ForEach(approvals) { approval in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(approval.action).font(.subheadline)
-                            ApprovalStatusBadge(approval.status)
-                        }
-                        Spacer()
-                        RiskBadge(approval.risk)
-                    }
+                    ApprovalCard(approval: approval)
                 }
             }
         }
@@ -138,10 +152,11 @@ public struct TaskDetailView: View {
             Section("Artifacts") {
                 ForEach(artifacts) { artifact in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(artifact.type).font(.subheadline)
+                        Text(artifact.type)
+                            .font(ArtooTokens.Typography.subheadline.weight(.semibold))
                         Text(artifact.uri)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(ArtooTokens.Typography.caption)
+                            .foregroundStyle(ArtooTokens.ColorToken.textMuted)
                             .lineLimit(1)
                     }
                 }
@@ -206,16 +221,41 @@ public struct RunSummaryView: View {
     public init(run: Run) { self.run = run }
 
     public var body: some View {
-        Form {
+        List {
             Section("Run") {
-                LabeledContent("Id", value: run.id)
-                LabeledContent("Status") { RunStatusBadge(run.status) }
-                if let runtime = run.runtimeId { LabeledContent("Runtime", value: runtime) }
-                if let computer = run.computerId { LabeledContent("Computer", value: computer) }
-                if let agent = run.agentInstanceId { LabeledContent("Agent", value: agent) }
+                ArtooSectionCard {
+                    VStack(alignment: .leading, spacing: ArtooTokens.Spacing.sm) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Run \(run.sequence.map(String.init) ?? run.id)")
+                                .font(ArtooTokens.Typography.headline)
+                                .foregroundStyle(ArtooTokens.ColorToken.text)
+                            Spacer()
+                            RunStatusBadge(run.status)
+                        }
+                        ArtooMetadataGrid([
+                            ("Run", run.id),
+                            ("Task", run.taskId),
+                            ("Runtime", run.runtimeId),
+                            ("Computer", run.computerId),
+                            ("Agent", run.agentInstanceId),
+                            ("Context", run.contextPackId)
+                        ])
+                    }
+                }
+                .listRowInsets(EdgeInsets(
+                    top: ArtooTokens.Spacing.sm,
+                    leading: ArtooTokens.Spacing.md,
+                    bottom: ArtooTokens.Spacing.sm,
+                    trailing: ArtooTokens.Spacing.md
+                ))
+                .listRowBackground(Color.clear)
             }
             if let failureReason = run.failureReason, !failureReason.isEmpty {
-                Section("Failure") { Text(failureReason).foregroundStyle(.red) }
+                Section("Failure") {
+                    Label(failureReason, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(ArtooTokens.ColorToken.danger)
+                        .font(ArtooTokens.Typography.body)
+                }
             }
             Section("Timing") {
                 if let createdAt = run.createdAt { LabeledContent("Created", value: createdAt) }
@@ -224,8 +264,130 @@ public struct RunSummaryView: View {
                 if let sequence = run.sequence { LabeledContent("Sequence", value: String(sequence)) }
             }
         }
+        .listStyle(.insetGrouped)
         .navigationTitle("Run Summary")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct RunTimelineRow: View {
+    let run: Run
+
+    var body: some View {
+        HStack(alignment: .top, spacing: ArtooTokens.Spacing.sm) {
+            VStack(spacing: ArtooTokens.Spacing.xxs) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 12, height: 12)
+                Rectangle()
+                    .fill(statusColor.opacity(0.35))
+                    .frame(width: 2, height: 34)
+            }
+            .padding(.top, ArtooTokens.Spacing.xxs)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xs) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(run.id)
+                        .font(ArtooTokens.Typography.subheadline.weight(.semibold))
+                        .foregroundStyle(ArtooTokens.ColorToken.text)
+                        .lineLimit(1)
+                    Spacer()
+                    RunStatusBadge(run.status)
+                }
+                ArtooMetadataGrid([
+                    ("Runtime", run.runtimeId),
+                    ("Agent", run.agentInstanceId),
+                    ("Started", run.startedAt ?? run.createdAt)
+                ])
+                if let failure = run.failureReason, !failure.isEmpty {
+                    Text(failure)
+                        .font(ArtooTokens.Typography.caption)
+                        .foregroundStyle(ArtooTokens.ColorToken.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.vertical, ArtooTokens.Spacing.xxs)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Run \(run.id), \(run.status.label)")
+    }
+
+    private var statusColor: Color {
+        switch run.status {
+        case .completed: return ArtooTokens.ColorToken.success
+        case .failed, .cancelled: return ArtooTokens.ColorToken.danger
+        case .awaitingInput, .paused: return ArtooTokens.ColorToken.warning
+        case .running, .starting: return ArtooTokens.ColorToken.info
+        case .queued, .other: return ArtooTokens.ColorToken.neutral
+        }
+    }
+}
+
+private struct ApprovalCard: View {
+    let approval: Approval
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xs) {
+            HStack(alignment: .firstTextBaseline, spacing: ArtooTokens.Spacing.xs) {
+                Text(approval.action)
+                    .font(ArtooTokens.Typography.subheadline.weight(.semibold))
+                    .foregroundStyle(ArtooTokens.ColorToken.text)
+                    .lineLimit(2)
+                Spacer()
+                ApprovalStatusBadge(approval.status)
+                RiskBadge(approval.risk)
+            }
+            if let summary = approval.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(ArtooTokens.Typography.caption)
+                    .foregroundStyle(ArtooTokens.ColorToken.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ArtooMetadataGrid([
+                ("Run", approval.runId),
+                ("Created", approval.createdAt)
+            ])
+        }
+        .padding(.vertical, ArtooTokens.Spacing.xxs)
+        .padding(.leading, ArtooTokens.Spacing.xs)
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: ArtooTokens.Radius.pill)
+                .fill(riskColor)
+                .frame(width: 4)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(approval.action), \(approval.status.label), \(approval.risk.label) risk")
+    }
+
+    private var riskColor: Color {
+        switch approval.risk {
+        case .high: return ArtooTokens.ColorToken.danger
+        case .medium: return ArtooTokens.ColorToken.warning
+        case .low, .other: return ArtooTokens.ColorToken.neutral
+        }
+    }
+}
+
+private extension TaskAction {
+    var systemImage: String {
+        switch self {
+        case .markReady: return "checkmark.circle"
+        case .assign: return "person.crop.circle.badge.plus"
+        case .retry: return "arrow.clockwise.circle"
+        case .accept: return "checkmark.seal"
+        case .requestChanges: return "arrow.uturn.backward.circle"
+        }
+    }
+
+    var accessibilityHint: String {
+        switch self {
+        case .markReady: return "Marks the task ready for assignment"
+        case .assign: return "Opens assignment options"
+        case .retry: return "Retries the blocked task"
+        case .accept: return "Accepts the task review"
+        case .requestChanges: return "Requests changes for this task"
+        }
     }
 }
 

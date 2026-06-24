@@ -5,6 +5,10 @@ public struct TasksView: View {
     @StateObject private var model: TasksViewModel
     private let client: ApiClientProtocol
     @State private var showingCreate = false
+    @State private var searchText = ""
+    @State private var selectedStatusRaw = "all"
+
+    private let statusFilters: [TaskStatus] = [.backlog, .ready, .assigned, .running, .awaitingApproval, .blocked, .review, .done, .cancelled]
 
     public init(client: ApiClientProtocol, projectId: String) {
         self.client = client
@@ -14,8 +18,17 @@ public struct TasksView: View {
     public var body: some View {
         NavigationStack {
             StateView(state: model.state, retry: { Task { await model.load() } }) { _ in
-                let columns = model.columns
-                if columns.isEmpty {
+                let columns = model.columns(searchText: searchText, statusRaw: selectedStatusRaw == "all" ? nil : selectedStatusRaw)
+                let hasFilters = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedStatusRaw != "all"
+                if columns.isEmpty && hasFilters {
+                    EmptyStateView(
+                        systemImage: "line.3.horizontal.decrease.circle",
+                        title: "No matching tasks",
+                        message: "Adjust search or status filters to widen the task list.",
+                        actionTitle: "Clear Filters",
+                        action: clearFilters
+                    )
+                } else if columns.isEmpty {
                     EmptyStateView(
                         systemImage: "tray",
                         title: "No tasks yet",
@@ -24,11 +37,19 @@ public struct TasksView: View {
                 } else {
                     List {
                         ForEach(columns, id: \.status) { column in
-                            Section(column.status.label) {
+                            Section {
                                 ForEach(column.tasks) { task in
                                     NavigationLink(value: task) {
                                         TaskRow(task: task)
                                     }
+                                }
+                            } header: {
+                                HStack {
+                                    Text(column.status.label)
+                                    Spacer()
+                                    Text("\(column.tasks.count)")
+                                        .font(ArtooTokens.Typography.caption)
+                                        .foregroundStyle(ArtooTokens.ColorToken.textMuted)
                                 }
                             }
                         }
@@ -37,10 +58,22 @@ public struct TasksView: View {
                 }
             }
             .navigationTitle("Tasks")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search title, assignee, priority")
             .navigationDestination(for: TaskItem.self) { task in
                 TaskDetailView(client: client, taskId: task.id)
             }
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Menu {
+                        Button("All statuses") { selectedStatusRaw = "all" }
+                        ForEach(statusFilters, id: \.rawValue) { status in
+                            Button(status.label) { selectedStatusRaw = status.rawValue }
+                        }
+                    } label: {
+                        Label(statusFilterTitle, systemImage: "line.3.horizontal.decrease.circle")
+                    }
+                    .accessibilityLabel("Filter tasks by status")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         showingCreate = true
@@ -56,32 +89,57 @@ public struct TasksView: View {
             .task { await model.load() }
         }
     }
+
+    private var statusFilterTitle: String {
+        selectedStatusRaw == "all" ? "All" : TaskStatus(rawValue: selectedStatusRaw).label
+    }
+
+    private func clearFilters() {
+        searchText = ""
+        selectedStatusRaw = "all"
+    }
 }
 
 private struct TaskRow: View {
     let task: TaskItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xs) {
+            HStack(alignment: .firstTextBaseline, spacing: ArtooTokens.Spacing.xs) {
                 Text(task.title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(ArtooTokens.Typography.subheadline.weight(.semibold))
+                    .foregroundStyle(ArtooTokens.ColorToken.text)
+                    .lineLimit(2)
                 Spacer()
                 StatusBadge(task.status)
             }
-            HStack(spacing: 8) {
+            HStack(spacing: ArtooTokens.Spacing.xs) {
                 if let priority = task.priority {
                     PriorityBadge(priority)
                 }
-                if let description = task.description, !description.isEmpty {
-                    Text(description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if let assignee = task.assigneeId, !assignee.isEmpty {
+                    Label(assignee, systemImage: "person.crop.circle")
+                        .font(ArtooTokens.Typography.caption)
+                        .foregroundStyle(ArtooTokens.ColorToken.textMuted)
+                        .lineLimit(1)
+                }
+                if let updated = task.updatedAt ?? task.createdAt {
+                    Label(updated, systemImage: "clock")
+                        .font(ArtooTokens.Typography.caption)
+                        .foregroundStyle(ArtooTokens.ColorToken.textMuted)
                         .lineLimit(1)
                 }
             }
+            if let description = task.description, !description.isEmpty {
+                Text(description)
+                    .font(ArtooTokens.Typography.caption)
+                    .foregroundStyle(ArtooTokens.ColorToken.textMuted)
+                    .lineLimit(2)
+            }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, ArtooTokens.Spacing.xxs)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(task.title), \(task.status.label), \(task.priority?.uppercased() ?? "No priority")")
     }
 }
 

@@ -20,6 +20,20 @@ final class ViewModelsTests: XCTestCase {
         XCTAssertEqual(model.state.value?.isEmpty, true)
     }
 
+    func testInboxCanRequestMoreInfo() async {
+        let client = MockApiClient.demo()
+        let model = InboxViewModel(client: client)
+
+        await model.load()
+        let approval = try? XCTUnwrap(model.state.value?.first)
+        if let approval {
+            await model.resolve(approval, decision: .needsMoreInfo, comment: "Need logs")
+        }
+
+        let approvals = try? await client.listApprovals(status: nil)
+        XCTAssertEqual(approvals?.first?.status, .needsMoreInfo)
+    }
+
     func testTasksGroupIntoOrderedColumns() async {
         let model = TasksViewModel(client: MockApiClient.demo(), projectId: "proj_artoo")
         await model.load()
@@ -29,6 +43,19 @@ final class ViewModelsTests: XCTestCase {
         XCTAssertEqual(columns.first?.status, .backlog)
         XCTAssertEqual(columns.first?.tasks.first?.id, "task_2")
         XCTAssertEqual(columns.last?.status, .review)
+    }
+
+    func testTasksSearchAndStatusFilters() async {
+        let model = TasksViewModel(client: MockApiClient.demo(), projectId: "proj_artoo")
+        await model.load()
+
+        let reviewMatches = model.columns(searchText: "inbox", statusRaw: TaskStatus.review.rawValue)
+        XCTAssertEqual(reviewMatches.count, 1)
+        XCTAssertEqual(reviewMatches.first?.status, .review)
+        XCTAssertEqual(reviewMatches.first?.tasks.first?.id, "task_1")
+
+        let filteredOut = model.columns(searchText: "inbox", statusRaw: TaskStatus.backlog.rawValue)
+        XCTAssertTrue(filteredOut.isEmpty)
     }
 
     func testCreateTaskAppendsBacklogTask() async {
@@ -66,6 +93,16 @@ final class ViewModelsTests: XCTestCase {
         XCTAssertEqual(model.state.value?.task.status, .assigned)
         XCTAssertEqual(model.availableActions, [])
         XCTAssertEqual(model.state.value?.runs.isEmpty, false)
+    }
+
+    func testRunsOverviewBuildsFeedFromTaskSnapshots() async {
+        let model = RunsOverviewViewModel(client: MockApiClient.demo(), projectId: "proj_artoo")
+
+        await model.load()
+
+        XCTAssertEqual(model.state.value?.count, 1)
+        XCTAssertEqual(model.state.value?.first?.run.id, "run_1")
+        XCTAssertEqual(model.state.value?.first?.task.id, "task_1")
     }
 
     func testReviewAcceptMovesTaskToDone() async {

@@ -79,6 +79,36 @@ public struct ArtooSectionCard<Content: View>: View {
     }
 }
 
+public struct ArtooMetadataGrid: View {
+    private let rows: [(String, String)]
+
+    public init(_ rows: [(String, String?)]) {
+        self.rows = rows.compactMap { label, value in
+            guard let value, !value.isEmpty else { return nil }
+            return (label, value)
+        }
+    }
+
+    public var body: some View {
+        VStack(spacing: ArtooTokens.Spacing.xs) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { item in
+                HStack(alignment: .firstTextBaseline, spacing: ArtooTokens.Spacing.sm) {
+                    Text(item.element.0)
+                        .font(ArtooTokens.Typography.caption)
+                        .foregroundStyle(ArtooTokens.ColorToken.textMuted)
+                        .frame(width: 86, alignment: .leading)
+                    Text(item.element.1)
+                        .font(ArtooTokens.Typography.caption)
+                        .foregroundStyle(ArtooTokens.ColorToken.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
 // MARK: - Semantic badges
 
 private struct SemanticBadgeStyle {

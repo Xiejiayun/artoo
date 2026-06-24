@@ -24,6 +24,13 @@ public enum ViewState<Value: Equatable>: Equatable {
     }
 }
 
+public struct RunFeedItem: Equatable, Identifiable, Hashable {
+    public let run: Run
+    public let task: TaskItem
+
+    public var id: String { run.id }
+}
+
 private func describe(_ error: Error) -> String {
     if let apiError = error as? ApiError { return apiError.description }
     return error.localizedDescription
@@ -54,12 +61,16 @@ public final class InboxViewModel: ObservableObject {
     }
 
     public func resolve(_ approval: Approval, approve: Bool, comment: String? = nil) async {
+        await resolve(approval, decision: approve ? .approved : .rejected, comment: comment)
+    }
+
+    public func resolve(_ approval: Approval, decision: ApprovalDecision, comment: String? = nil) async {
         resolving.insert(approval.id)
         defer { resolving.remove(approval.id) }
         do {
             _ = try await client.resolveApproval(
                 approvalId: approval.id,
-                request: ResolveApprovalRequest(decision: approve ? "approved" : "rejected", comment: comment)
+                request: ResolveApprovalRequest(decision: decision.rawValue, comment: comment)
             )
             await load()
         } catch {
@@ -69,6 +80,20 @@ public final class InboxViewModel: ObservableObject {
 
     public func isResolving(_ approval: Approval) -> Bool {
         resolving.contains(approval.id)
+    }
+}
+
+public enum ApprovalDecision: String, Equatable, CaseIterable {
+    case approved
+    case rejected
+    case needsMoreInfo = "needs_more_info"
+
+    public var label: String {
+        switch self {
+        case .approved: return "Approve"
+        case .rejected: return "Reject"
+        case .needsMoreInfo: return "Need Info"
+        }
     }
 }
 
@@ -99,10 +124,28 @@ public final class TasksViewModel: ObservableObject {
 
     /// Groups the loaded tasks by status, preserving a stable column order.
     public var columns: [(status: TaskStatus, tasks: [TaskItem])] {
+        columns(searchText: "", statusRaw: nil)
+    }
+
+    public func columns(searchText: String, statusRaw: String?) -> [(status: TaskStatus, tasks: [TaskItem])] {
         let tasks = state.value ?? []
+        let normalizedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let filtered = tasks.filter { task in
+            let matchesStatus = statusRaw == nil || task.status.rawValue == statusRaw
+            guard matchesStatus else { return false }
+            guard !normalizedSearch.isEmpty else { return true }
+            let haystack = [
+                task.title,
+                task.description ?? "",
+                task.assigneeId ?? "",
+                task.priority ?? "",
+                task.status.label
+            ].joined(separator: " ").lowercased()
+            return haystack.contains(normalizedSearch)
+        }
         let order: [TaskStatus] = [.backlog, .ready, .assigned, .running, .awaitingApproval, .blocked, .review, .done]
         var byStatus: [String: [TaskItem]] = [:]
-        for task in tasks {
+        for task in filtered {
             byStatus[task.status.rawValue, default: []].append(task)
         }
         var result: [(TaskStatus, [TaskItem])] = []
@@ -218,6 +261,42 @@ public final class TaskDetailViewModel: ObservableObject {
         } catch {
             actionError = describe(error)
         }
+    }
+}
+
+// MARK: - Runs overview
+
+@MainActor
+public final class RunsOverviewViewModel: ObservableObject {
+    @Published public private(set) var state: ViewState<[RunFeedItem]> = .idle
+
+    public let projectId: String
+    private let client: ApiClientProtocol
+
+    public init(client: ApiClientProtocol, projectId: String) {
+        self.client = client
+        self.projectId = projectId
+    }
+
+    public func load() async {
+        if state.value == nil { state = .loading }
+        do {
+            let tasks = try await client.listTasks(projectId: projectId)
+            var items: [RunFeedItem] = []
+            for task in tasks {
+                let snapshot = try await client.getTask(taskId: task.id)
+                items.append(contentsOf: snapshot.runs.map { RunFeedItem(run: $0, task: snapshot.task) })
+            }
+            state = .loaded(items.sorted(by: sortRuns))
+        } catch {
+            state = .failed(describe(error))
+        }
+    }
+
+    private func sortRuns(_ lhs: RunFeedItem, _ rhs: RunFeedItem) -> Bool {
+        let left = lhs.run.startedAt ?? lhs.run.createdAt ?? lhs.run.id
+        let right = rhs.run.startedAt ?? rhs.run.createdAt ?? rhs.run.id
+        return left > right
     }
 }
 
