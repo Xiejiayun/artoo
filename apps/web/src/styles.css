@@ -161,7 +161,8 @@ label {
 .task-list-loading-label[role="status"],
 .detail-loading-label[role="status"],
 .task-room-loading-label[role="status"],
-.board-loading-label[role="status"] {
+.board-loading-label[role="status"],
+.inventory-loading-label[role="status"] {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -855,6 +856,103 @@ label {
 .memory-context {
   font-size: 13px;
   color: var(--text-muted);
+}
+
+/* Inventory pages — agents / computers / skills (#76) */
+.inventory-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+.inventory-header h1 { margin: 0; }
+.inventory-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+.inventory-subtitle {
+  font-size: var(--text-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.inventory-item__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.inventory-item__head h2,
+.inventory-item__head h3 {
+  margin-right: auto;
+}
+.inventory-item__sub {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+.inv-meta {
+  display: grid;
+  grid-template-columns: minmax(120px, max-content) 1fr;
+  gap: 4px var(--space-3);
+  margin: 0;
+  font-size: var(--text-small);
+}
+.inv-row { display: contents; }
+.inv-meta dt {
+  color: var(--text-subtle);
+  font-size: var(--text-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.inv-meta dd {
+  margin: 0;
+  color: var(--text);
+  word-break: break-word;
+}
+.inv-empty {
+  color: var(--text-subtle);
+  font-size: var(--text-small);
+}
+.inv-runtimes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.inv-runtime {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--text-small);
+}
+.inv-runtime__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.inv-runtime__ver { color: var(--text-muted); }
+.inv-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.inv-chips li {
+  font-size: var(--text-caption);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  background: var(--surface-3);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
 }
 
 /* ---------------------------------------------------------------------------
