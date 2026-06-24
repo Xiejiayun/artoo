@@ -48,9 +48,7 @@ public struct TaskDetailView: View {
                 HStack {
                     StatusBadge(task.status)
                     if let priority = task.priority {
-                        Text(priority.uppercased())
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.secondary)
+                        PriorityBadge(priority)
                     }
                 }
             }
@@ -124,7 +122,7 @@ public struct TaskDetailView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(approval.action).font(.subheadline)
-                            Text(approval.status.label).font(.caption).foregroundStyle(.secondary)
+                            ApprovalStatusBadge(approval.status)
                         }
                         Spacer()
                         RiskBadge(approval.risk)

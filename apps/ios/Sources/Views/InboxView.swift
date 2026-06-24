@@ -28,7 +28,7 @@ public struct InboxView: View {
                     .listStyle(.insetGrouped)
                 }
             }
-            .navigationTitle("Inbox")
+            .navigationTitle("Today")
             .navigationDestination(for: Approval.self) { approval in
                 ApprovalDetailView(approval: approval, model: model)
             }
@@ -47,6 +47,7 @@ private struct ApprovalRow: View {
                 Text(approval.action)
                     .font(.subheadline.weight(.semibold))
                 Spacer()
+                ApprovalStatusBadge(approval.status)
                 RiskBadge(approval.risk)
             }
             if let summary = approval.summary, !summary.isEmpty {
@@ -71,7 +72,7 @@ public struct ApprovalDetailView: View {
             Section("Decision") {
                 LabeledContent("Action", value: approval.action)
                 LabeledContent("Risk") { RiskBadge(approval.risk) }
-                LabeledContent("Status", value: approval.status.label)
+                LabeledContent("Status") { ApprovalStatusBadge(approval.status) }
             }
             if let summary = approval.summary, !summary.isEmpty {
                 Section("Summary") { Text(summary) }
