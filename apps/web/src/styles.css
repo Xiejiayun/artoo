@@ -1,0 +1,795 @@
+/**
+ * Artoo web app styles (#42 v2-J). A coherent visual layer over the existing
+ * markup: the components already carry semantic classNames — this stylesheet
+ * gives them a presentable desktop/web app shell without touching structure,
+ * behavior, or contracts. Design tokens first, then app shell, surfaces, and
+ * components. Light, calm developer-tool aesthetic.
+ */
+
+/* ---------------------------------------------------------------------------
+ * Design tokens
+ * ------------------------------------------------------------------------- */
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #fafbfc;
+  --surface-3: #f1f3f5;
+  --border: #e3e6ea;
+  --border-strong: #d3d8de;
+
+  --text: #1b1f27;
+  --text-muted: #5b6573;
+  --text-subtle: #8a94a3;
+
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef0fe;
+  --accent-text: #4338ca;
+
+  --green: #15803d;
+  --green-soft: #e7f6ec;
+  --amber: #b45309;
+  --amber-soft: #fdf1e0;
+  --red: #b42318;
+  --red-soft: #fdeceb;
+  --blue: #1d6fd1;
+  --blue-soft: #e8f1fc;
+  --slate: #475467;
+  --slate-soft: #eef1f4;
+  --purple: #7c3aed;
+  --purple-soft: #f1ebfe;
+
+  --radius: 8px;
+  --radius-sm: 6px;
+  --radius-lg: 12px;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --nav-h: 52px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Base / reset
+ * ------------------------------------------------------------------------- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+a {
+  color: var(--accent-text);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d6dae0;
+  border-radius: 8px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #c2c8d0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Buttons & form controls
+ * ------------------------------------------------------------------------- */
+button,
+.action,
+.new-task,
+.login-google,
+.logout {
+  appearance: none;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-weight: 550;
+  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+button:hover,
+.action:hover {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+button:focus-visible,
+a:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Primary actions */
+.new-task,
+.login-google,
+.task-actions button,
+.approval-action button,
+.review-actions button:first-child,
+.memory-actions button:first-child {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.new-task:hover,
+.login-google:hover,
+.task-actions button:hover,
+.approval-action button:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+select,
+input[type="text"],
+input[type="search"],
+input:not([type]),
+textarea {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 6px 9px;
+}
+textarea {
+  width: 100%;
+  resize: vertical;
+}
+label {
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-muted);
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* ---------------------------------------------------------------------------
+ * App shell
+ * ------------------------------------------------------------------------- */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.app-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  height: var(--nav-h);
+  padding: 0 var(--space-4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+.app-nav .brand {
+  font-weight: 750;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+  color: var(--accent);
+  padding-right: var(--space-2);
+}
+.app-nav ul {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+}
+.app-nav a {
+  display: block;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-weight: 550;
+  text-decoration: none;
+}
+.app-nav a:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.app-nav a.active {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.app-main {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ---------------------------------------------------------------------------
+ * Workspace — three-pane shell
+ * ------------------------------------------------------------------------- */
+.workspace {
+  display: grid;
+  grid-template-columns: 290px minmax(0, 1fr) 380px;
+  height: 100%;
+  min-height: 0;
+}
+.pane {
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-4);
+}
+.pane-left {
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+.pane-center {
+  background: var(--bg);
+}
+.pane-right {
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+
+/* ---------------------------------------------------------------------------
+ * Left rail
+ * ------------------------------------------------------------------------- */
+.left-rail-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.left-rail-header h1 {
+  font-size: 15px;
+  flex: 1;
+}
+.inbox-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 700;
+}
+.new-task {
+  width: 100%;
+  margin-bottom: var(--space-4);
+}
+
+/* ---------------------------------------------------------------------------
+ * Task list
+ * ------------------------------------------------------------------------- */
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.task-list li {
+  border-radius: var(--radius-sm);
+}
+.task-list button,
+.task-list li > button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 8px 10px;
+}
+.task-list button:hover {
+  background: var(--surface-3);
+}
+.task-list button[aria-current="true"],
+.task-list .active button,
+.task-list button.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft);
+}
+.task-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ---------------------------------------------------------------------------
+ * Status / priority / risk badges
+ * ------------------------------------------------------------------------- */
+.status,
+.task-status,
+.run-status,
+.priority,
+.task-priority,
+.risk,
+.memory-status,
+.memory-scope,
+.artifact-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: capitalize;
+  background: var(--slate-soft);
+  color: var(--slate);
+  white-space: nowrap;
+}
+.status[data-status="done"],
+.task-status[data-status="done"],
+.run-status[data-status="completed"] {
+  background: var(--green-soft);
+  color: var(--green);
+}
+.status[data-status="running"],
+.task-status[data-status="running"],
+.run-status[data-status="running"] {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+.status[data-status="blocked"],
+.task-status[data-status="blocked"],
+.run-status[data-status="failed"],
+.run-failure {
+  background: var(--red-soft);
+  color: var(--red);
+}
+.status[data-status="review"],
+.task-status[data-status="review"],
+.status[data-status="awaiting_approval"] {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+.priority,
+.task-priority {
+  background: var(--purple-soft);
+  color: var(--purple);
+  text-transform: uppercase;
+}
+.risk {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+/* ---------------------------------------------------------------------------
+ * Card primitive — board cards, detail, panels, memory rows, approvals, runs
+ * ------------------------------------------------------------------------- */
+.board-card,
+.task-detail,
+.approval-request,
+.memory-row,
+.memory-detail-panel,
+.run-entry,
+.message-card,
+.inventory-item,
+.artifact {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ---------------------------------------------------------------------------
+ * Board
+ * ------------------------------------------------------------------------- */
+.board {
+  padding: var(--space-5);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.board-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.board-header h1 {
+  font-size: 20px;
+  margin-right: auto;
+}
+.board-columns {
+  display: flex;
+  gap: var(--space-4);
+  align-items: flex-start;
+  overflow-x: auto;
+  padding-bottom: var(--space-4);
+  flex: 1;
+  min-height: 0;
+}
+.board-column {
+  flex: 0 0 280px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.board-column > h2,
+.board-column > h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.board-column .count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.board-card {
+  padding: var(--space-3);
+  margin-bottom: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  cursor: pointer;
+  transition: box-shadow 0.12s ease, border-color 0.12s ease, transform 0.05s ease;
+}
+.board-card:hover {
+  box-shadow: var(--shadow-md);
+  border-color: var(--border-strong);
+}
+.board-card:active {
+  transform: translateY(1px);
+}
+
+/* ---------------------------------------------------------------------------
+ * Task detail + run timeline + approvals (right pane)
+ * ------------------------------------------------------------------------- */
+.task-detail,
+.run-timeline,
+.approval-inbox,
+.runs-audit,
+.audit-bundle-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.task-detail .task-title {
+  font-size: 16px;
+}
+.task-fields,
+.memory-fields {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px var(--space-3);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.task-actions,
+.review-actions,
+.approval-actions,
+.memory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.run-timeline h2,
+.run-timeline h3,
+.approval-inbox h2,
+.approval-inbox h3 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.run-entry,
+.run-event {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.run-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.run-id,
+.run-output,
+.artifact-uri,
+.source-ids,
+.uri {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+.run-output {
+  background: var(--surface-3);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+}
+
+/* ---------------------------------------------------------------------------
+ * Approval inbox
+ * ------------------------------------------------------------------------- */
+.approval-request {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.approval-summary {
+  font-weight: 600;
+}
+.approval-result {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------------------
+ * Task room / messages
+ * ------------------------------------------------------------------------- */
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.message-card {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.message-meta {
+  display: flex;
+  gap: var(--space-2);
+  font-size: 12px;
+  color: var(--text-subtle);
+}
+.message-meta .actor {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.system-notice {
+  font-size: 12px;
+  color: var(--text-subtle);
+  font-style: italic;
+  padding: var(--space-1) 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Memory / inventory / audit pages
+ * ------------------------------------------------------------------------- */
+.memory-page,
+.inventory-page,
+.runs-audit,
+.audit-bundle-view {
+  padding: var(--space-5);
+  max-width: 1100px;
+}
+.memory-page h1,
+.inventory-page h1,
+.runs-audit-header h1 {
+  font-size: 20px;
+  margin-bottom: var(--space-4);
+}
+.memory-filters,
+.audit-task-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.memory-list,
+.inventory-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.memory-row,
+.inventory-item {
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.memory-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.memory-summary {
+  font-weight: 600;
+}
+.memory-body,
+.memory-context {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------------------
+ * States: empty / loading / error / hints
+ * ------------------------------------------------------------------------- */
+.empty,
+.no-room,
+.no-runs,
+.no-artifacts {
+  color: var(--text-subtle);
+  font-size: 13px;
+  padding: var(--space-5);
+  text-align: center;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.hint {
+  font-size: 12px;
+  color: var(--text-subtle);
+}
+[role="status"] {
+  color: var(--text-muted);
+  padding: var(--space-5);
+}
+[role="alert"],
+.auth-error {
+  color: var(--red);
+  background: var(--red-soft);
+  border: 1px solid #f3c9c5;
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-4);
+  margin: var(--space-4);
+}
+
+/* ---------------------------------------------------------------------------
+ * Modal
+ * ------------------------------------------------------------------------- */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(16, 24, 40, 0.45);
+  padding: var(--space-4);
+}
+.modal > * {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-5);
+  width: min(520px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* ---------------------------------------------------------------------------
+ * Login page
+ * ------------------------------------------------------------------------- */
+.login-page {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  text-align: center;
+}
+.login-page h1 {
+  font-size: 24px;
+}
+.login-google {
+  font-size: 14px;
+  padding: 10px 20px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Responsive — keep desktop package and narrow web viewports sane
+ * ------------------------------------------------------------------------- */
+@media (max-width: 1100px) {
+  .workspace {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+  .pane-right {
+    display: none;
+  }
+}
+@media (max-width: 720px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+  .pane-left {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .app-nav {
+    gap: var(--space-2);
+    overflow-x: auto;
+  }
+}
