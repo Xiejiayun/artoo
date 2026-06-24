@@ -7,8 +7,9 @@ for #47–#50 (and a token reference for #51/#52). It is implementation-blocking
 "has some CSS" is not acceptance — these tokens, components, states, and density
 rules are.
 
-Status: draft for @SkywalkerCodex review (#46 gate). No implementation code is
-written against it until it is accepted.
+Status: accepted baseline for implementation after SkywalkerCodex review, with
+`docs/production-ui-gate.md` as the companion gate document. Implementation code
+for #65-#88 must cite the relevant sections of both documents.
 
 ---
 
