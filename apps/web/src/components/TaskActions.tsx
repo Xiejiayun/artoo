@@ -5,6 +5,7 @@ import type { Task } from "@artoo/domain";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { useApi, useCommands } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { Button } from "../ui/index.js";
 
 /**
  * Status-aware task lifecycle controls. Drives the happy path from the UI:
@@ -55,19 +56,19 @@ export function TaskActions({ task }: { task: Task }): React.ReactNode {
   return (
     <div className="task-actions">
       {task.status === "backlog" ? (
-        <button type="button" disabled={busy} onClick={() => ready.mutate()}>
+        <Button variant="primary" loading={ready.isPending} disabled={busy} onClick={() => ready.mutate()}>
           Mark ready
-        </button>
+        </Button>
       ) : null}
       {task.status === "ready" ? (
-        <button type="button" disabled={busy} onClick={() => assign.mutate()}>
+        <Button variant="primary" loading={assign.isPending} disabled={busy} onClick={() => assign.mutate()}>
           Assign
-        </button>
+        </Button>
       ) : null}
       {task.status === "blocked" ? (
-        <button type="button" disabled={busy} onClick={() => retry.mutate()}>
+        <Button variant="primary" loading={retry.isPending} disabled={busy} onClick={() => retry.mutate()}>
           Retry
-        </button>
+        </Button>
       ) : null}
     </div>
   );
