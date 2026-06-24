@@ -395,7 +395,7 @@ test("approval gate moves a running task to awaiting approval and back to runnin
     await page.reload();
     await selectTask(page, title);
     await expectDetailStatus(page, "awaiting_approval");
-    await expect(page.locator(".approval-summary", { hasText: "Push release branch" })).toBeVisible();
+    await expect(page.locator(".approval-card__summary", { hasText: "Push release branch" })).toBeVisible();
 
     await page.getByRole("button", { name: "Approve", exact: true }).click();
     await expectDetailStatus(page, "running");
