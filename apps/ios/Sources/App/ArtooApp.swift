@@ -6,8 +6,9 @@ import SwiftUI
 /// immediately runnable in the iOS Simulator without a server. Flip `useMock`
 /// to false (and set `baseURLString`) to talk to a live artoo server.
 ///
-/// NOTE (unverified): this client has never been compiled or run — it is
-/// authored on Windows without an iOS SDK. See apps/ios/README.md.
+/// Verification boundary: Mac/Xcode no-assets build-for-testing has passed, but
+/// full asset-catalog build, simulator/device runtime, and live-server flows
+/// remain blocked/unverified. See apps/ios/README.md.
 public struct AppConfig {
     public var useMock: Bool
     public var baseURLString: String

@@ -10,7 +10,10 @@
 #   open Artoo.xcodeproj      # build/run in the iOS Simulator
 #   # or: xcodebuild -scheme Artoo -destination 'platform=iOS Simulator,name=iPhone 15' test
 #
-# UNVERIFIED: never generated/compiled/run on this machine. See README.md.
+# Verification boundary: XcodeGen generation and generic iOS no-assets
+# build-for-testing have passed on macOS. Full asset-catalog build,
+# simulator/device runtime, and executed tests remain blocked/unverified.
+# See README.md.
 
 name: Artoo
 options:

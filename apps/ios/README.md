@@ -4,17 +4,17 @@ A native SwiftUI control surface for **artoo** (the agent-team operating system)
 This is the #18 v1 mobile slice: an **Inbox/Approvals-first** mobile work
 surface plus the task lifecycle loop (`create → ready → assign → run → review`).
 
-> ## ⚠️ UNVERIFIED — Windows-authored, macOS/Xcode-pending
+> ## ⚠️ Verification boundary — source build proven, runtime still pending
 >
-> This entire app was written on a **Windows** machine that has **no iOS SDK,
-> no Swift compiler, and no Xcode**. Per @jeremy-xie's decision (2026-06-15,
-> *"先写 Swift 源码不验证"*) the Swift source is delivered **without being
-> compiled, run, or tested** here.
+> The original iOS source was written on a **Windows** machine with no iOS SDK.
+> On 2026-06-24, Mac/Xcode verification produced real evidence for the source
+> build path: `xcodegen generate` passed, and generic iOS `build-for-testing`
+> passed when excluding `.xcassets`.
 >
-> **Nothing in this directory has been built or executed.** Treat it as a
-> reviewed-by-eye source draft. The first real verification happens when someone
-> opens it in Xcode on a Mac (see *Build & run* below). Expect to fix compile
-> errors and reconcile the API contract against the live server on first build.
+> Do **not** over-claim this client yet: full asset-catalog build still blocks in
+> `CompileAssetCatalogVariant thinned` / CoreSimulator tooling on the available
+> Mac, and there is still no simulator/device runtime proof, executed iOS test
+> proof, App Store signing/notarization proof, or live-server verification.
 >
 > This app is intentionally **not** part of the repo's Node/Vitest/`tsc -b`
 > build — the root `npm install/test/typecheck/build` skip it. The empty
@@ -96,7 +96,7 @@ Tests/
 These mirror the endpoints exercised by `apps/web` against the current v1
 server contract.
 
-## API contract assumptions (reconcile on a Mac with the live server)
+## API contract assumptions (reconcile against the live server)
 
 The request/response shapes were inferred from `apps/web/src/api/client.ts` and the
 domain schemas. **Verify these before shipping the iOS client** — they are the
@@ -123,8 +123,9 @@ most likely source of first-build mismatches:
 
 Tracked in the #18 thread rather than guessed at:
 
-- First Mac build may reveal Swift syntax/XcodeGen issues; none of the Swift code
-  has been compiled on this Windows machine.
+- Full asset-catalog build and simulator/device runtime remain blocked by the
+  available Mac's CoreSimulator/asset tooling path; rerun on a healthy Mac before
+  claiming runtime or executed-test evidence.
 - Live-server verification should confirm the Swift DTO optionality for fields
   the web client does not render yet, especially messages, run timing, and room
   display metadata.
