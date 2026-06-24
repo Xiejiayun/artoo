@@ -1,4 +1,4 @@
 test-results/
 playwright-report/
 playwright/.cache/
-apps/web/e2e/ui-shots/
+e2e/ui-shots/
