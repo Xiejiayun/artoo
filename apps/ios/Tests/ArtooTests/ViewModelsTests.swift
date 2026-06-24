@@ -58,6 +58,26 @@ final class ViewModelsTests: XCTestCase {
         XCTAssertTrue(filteredOut.isEmpty)
     }
 
+    func testTasksColumnsKeepCancelledBeforeUnknownStatuses() async throws {
+        let bootstrap = try await MockApiClient.demo().bootstrap()
+        let client = MockApiClient(
+            bootstrap: bootstrap,
+            tasks: [
+                TaskItem(id: "task_done", projectId: "proj_artoo", title: "Accepted", status: .done),
+                TaskItem(id: "task_unknown", projectId: "proj_artoo", title: "Archived", status: .other("archived")),
+                TaskItem(id: "task_cancelled", projectId: "proj_artoo", title: "Cancelled", status: .cancelled)
+            ]
+        )
+        let model = TasksViewModel(client: client, projectId: "proj_artoo")
+
+        await model.load()
+
+        XCTAssertEqual(model.columns.map(\.status), [.done, .cancelled, .other("archived")])
+        let cancelledOnly = model.columns(searchText: "", statusRaw: TaskStatus.cancelled.rawValue)
+        XCTAssertEqual(cancelledOnly.map(\.status), [.cancelled])
+        XCTAssertEqual(cancelledOnly.first?.tasks.first?.id, "task_cancelled")
+    }
+
     func testCreateTaskAppendsBacklogTask() async {
         let model = TasksViewModel(client: MockApiClient.demo(), projectId: "proj_artoo")
         await model.load()

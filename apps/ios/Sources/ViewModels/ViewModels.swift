@@ -143,7 +143,7 @@ public final class TasksViewModel: ObservableObject {
             ].joined(separator: " ").lowercased()
             return haystack.contains(normalizedSearch)
         }
-        let order: [TaskStatus] = [.backlog, .ready, .assigned, .running, .awaitingApproval, .blocked, .review, .done]
+        let order: [TaskStatus] = [.backlog, .ready, .assigned, .running, .awaitingApproval, .blocked, .review, .done, .cancelled]
         var byStatus: [String: [TaskItem]] = [:]
         for task in filtered {
             byStatus[task.status.rawValue, default: []].append(task)
