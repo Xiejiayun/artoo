@@ -316,6 +316,19 @@ The first pass may use deterministic mock/runtime-fixture agents. A real
 Codex/Claude adapter pass is a second evidence layer, not a reason to delay the
 orchestration proof.
 
+Accepted evidence baseline:
+
+- #111 is merged at `main=60e273e` as an opt-in gated smoke test. Without
+  `ARTOO_DAEMON_SMOKE=1`, the smoke skips and stays out of default CI.
+- The accepted proof covers capability routing to distinct computers,
+  simultaneous live mock-agent runs, heartbeat visibility, artifact aggregation,
+  disjoint and conflicting write leases, DAG unlock/block behavior, approval
+  approve/reject paths, audit replay/export determinism, node restart/reconnect,
+  and revoked/mismatched/dev-token WebSocket refusals.
+- The accepted proof is internal dogfood orchestration evidence, not a public
+  production-security claim. The remaining hardening gaps feed #113, #114,
+  #115, and #118.
+
 ### #113 Agent Presence
 
 Must define and test:
@@ -386,6 +399,21 @@ Must produce a threat model and staged hardening roadmap for:
 - token lifecycle, revocation, and credential mismatch;
 - signed update/notarization/release trust;
 - audit integrity and redaction.
+
+Inputs from #111 accepted smoke:
+
+- the current node channel is bare WebSocket; production needs TLS termination
+  rules and likely mTLS or equivalent node identity hardening;
+- local agent runtimes execute real commands with path checks but without an
+  OS/container sandbox, network egress policy, or resource quotas;
+- revocation is device-level and must become finer-grained for per-node token
+  rotation, expiry, and emergency revoke;
+- current presence evidence reaches computer/runtime heartbeat and registry
+  state, but not agent-instance capacity, busy/idle, or queue-depth semantics;
+- agent collaboration remains indirect through server task state and events,
+  without first-class team discussion, decision, handoff, and blocker records;
+- persistent goal execution is still task/DAG-driven and lacks a daemon/server
+  resume loop with checkpoints, budgets, and stop-condition enforcement.
 
 ### #119 V3 Integration/Release Gate
 
