@@ -38,7 +38,9 @@ function AuthGuard({ children }: { children: React.ReactNode }): React.ReactNode
   if (session.isLoading) {
     return (
       <div className="auth-state">
-        <p role="status">Loading…</p>
+        <p role="status" aria-label="Loading session">
+          Loading session
+        </p>
       </div>
     );
   }

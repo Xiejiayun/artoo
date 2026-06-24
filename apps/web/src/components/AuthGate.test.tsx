@@ -35,6 +35,21 @@ function ProtectedProbe(): React.ReactNode {
 }
 
 describe("AuthGate", () => {
+  it("announces loading while the session probe is pending", () => {
+    const client = fakeApi({
+      getSession: () => new Promise(() => undefined),
+    });
+
+    renderWithProviders(
+      <AuthGate enabled>
+        <div>PROTECTED APP</div>
+      </AuthGate>,
+      { client },
+    );
+
+    expect(screen.getByRole("status", { name: "Loading session" })).toBeInTheDocument();
+  });
+
   it("renders the app when the session is valid", async () => {
     renderWithProviders(
       <AuthGate enabled>
