@@ -546,6 +546,20 @@ label {
   align-items: center;
   gap: var(--space-2);
 }
+/* Run step-state accents (#74) */
+.run-entry {
+  border-left: 3px solid var(--border-strong);
+}
+.run-entry[data-status="completed"] { border-left-color: var(--success); }
+.run-entry[data-status="failed"] { border-left-color: var(--danger); }
+.run-entry[data-status="running"],
+.run-entry[data-status="starting"] { border-left-color: var(--info); }
+.run-entry[data-status="awaiting_input"],
+.run-entry[data-status="paused"] { border-left-color: var(--warning); }
+.run-label {
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+}
 .run-id,
 .run-output,
 .artifact-uri,
@@ -578,6 +592,52 @@ label {
 .approval-result {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+/* Approval review cards (#74) */
+.approval-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+.approval-card[data-risk="high"] { border-left-color: var(--danger); }
+.approval-card[data-risk="medium"] { border-left-color: var(--warning); }
+.approval-card[data-risk="low"] { border-left-color: var(--neutral); }
+.approval-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.approval-card__summary {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-small);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.approval-card__action {
+  font-size: var(--text-caption);
+  color: var(--text-muted);
+}
+.approval-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 /* ---------------------------------------------------------------------------

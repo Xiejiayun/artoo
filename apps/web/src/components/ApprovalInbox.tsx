@@ -5,6 +5,7 @@ import type { Approval, ResolveApprovalRequest } from "@artoo/domain";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { Badge, Button, toneFor } from "../ui/index.js";
 
 export interface ApprovalInboxProps {
   taskId: string;
@@ -12,9 +13,10 @@ export interface ApprovalInboxProps {
 }
 
 /**
- * Pending-approval list for a task. Resolving is a platform-gated action: the
- * server applies the decision out-of-band (codex guardrail). No UI path implies
- * resuming a Codex process in place. Each resolve carries a fresh idempotency key.
+ * Pending-approval review cards for a task (#74). Resolving is a platform-gated
+ * action: the server applies the decision out-of-band (codex guardrail). No UI
+ * path implies resuming a Codex process in place. Each resolve carries a fresh
+ * idempotency key. Risk is surfaced via a semantic badge.
  */
 export function ApprovalInbox({ taskId, approvals }: ApprovalInboxProps): React.ReactNode {
   const api = useApi();
@@ -33,41 +35,44 @@ export function ApprovalInbox({ taskId, approvals }: ApprovalInboxProps): React.
     return null;
   }
 
+  const busy = mutation.isPending;
+
   return (
-    <section aria-label="Approvals" className="approval-inbox">
-      <h3>Approvals</h3>
-      <ul>
+    <section aria-label="Approvals" className="approval-inbox task-detail__section">
+      <h3 className="task-detail__section-title">Approvals</h3>
+      <ul className="approval-list">
         {pending.map((approval) => (
-          <li key={approval.id} className="approval" data-risk={approval.risk}>
-            <p className="approval-summary">{approval.summary}</p>
-            <p className="approval-action">
-              <span className="action">{approval.action}</span>
-              <span className="risk">{approval.risk}</span>
-            </p>
-            <div className="approval-actions">
-              <button
-                type="button"
-                disabled={mutation.isPending}
+          <li key={approval.id} className="approval-card" data-risk={approval.risk}>
+            <div className="approval-card__head">
+              <p className="approval-card__summary">{approval.summary}</p>
+              <Badge tone={toneFor.risk(approval.risk)}>{approval.risk} risk</Badge>
+            </div>
+            <p className="approval-card__action t-mono">{approval.action}</p>
+            <div className="approval-card__actions">
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={busy}
                 onClick={() => mutation.mutate({ id: approval.id, body: { decision: "approved" } })}
               >
                 Approve
-              </button>
-              <button
-                type="button"
-                disabled={mutation.isPending}
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={busy}
                 onClick={() => mutation.mutate({ id: approval.id, body: { decision: "rejected" } })}
               >
                 Reject
-              </button>
-              <button
-                type="button"
-                disabled={mutation.isPending}
-                onClick={() =>
-                  mutation.mutate({ id: approval.id, body: { decision: "needs_more_info" } })
-                }
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busy}
+                onClick={() => mutation.mutate({ id: approval.id, body: { decision: "needs_more_info" } })}
               >
                 Need info
-              </button>
+              </Button>
             </div>
           </li>
         ))}
