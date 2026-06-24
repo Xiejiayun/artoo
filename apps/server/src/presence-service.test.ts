@@ -131,11 +131,19 @@ describe("device presence service (#28 4c)", () => {
     expect(await presenceEvents(server, "device_f")).toHaveLength(0);
   });
 
-  it("derives presence for a read: online when fresh, offline when never seen", async () => {
+  it("read presence reflects definitive offline edges (revoked / no live socket)", async () => {
     await insertDevice("device_g", { lastSeenAt: T0 });
     await insertDevice("device_h", { lastSeenAt: null });
-    expect((await devicePresence(at("2026-06-13T00:00:30.000Z"), "device_g", CONFIG)).state).toBe("online");
-    expect((await devicePresence(at(T0), "device_h", CONFIG)).state).toBe("offline");
+    await insertDevice("device_r", { lastSeenAt: T0, trust: "revoked" });
+    const ctx = at("2026-06-13T00:00:30.000Z");
+    // Fresh last_seen + a live socket -> online.
+    expect((await devicePresence(ctx, "device_g", { hasLiveConnection: true }, CONFIG)).state).toBe("online");
+    // Fresh last_seen but NO live socket -> offline (matches the close edge event).
+    expect((await devicePresence(ctx, "device_g", { hasLiveConnection: false }, CONFIG)).state).toBe("offline");
+    // Never seen -> offline.
+    expect((await devicePresence(at(T0), "device_h", { hasLiveConnection: false }, CONFIG)).state).toBe("offline");
+    // Revoked reads offline even with a fresh last_seen and a (stale) live flag.
+    expect((await devicePresence(ctx, "device_r", { hasLiveConnection: true }, CONFIG)).state).toBe("offline");
   });
 
   it("never puts raw secrets in presence event payloads (metadata only)", async () => {

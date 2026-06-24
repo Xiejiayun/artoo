@@ -162,4 +162,72 @@ describe("device presence e2e (#28 4c)", () => {
     const offline = (await presenceEvents(server)).find((e) => e.device_id === deviceId && e.to === "offline");
     expect(offline).toMatchObject({ to: "offline", reason: "revoked" });
   });
+
+  it("after the last socket closes, the read is offline and the offline event is emitted once", async () => {
+    server = await buildTestServer();
+    const port = await listen(server);
+    const { deviceId, computerId, nodeToken } = await issueEnrolledDevice(server);
+
+    const node = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=${nodeToken}`);
+    sockets.push(node);
+    await new Promise<void>((resolve) => node.on("open", () => resolve()));
+    node.send(NODE_HELLO(computerId));
+    await waitFor(async () => (await presence(server!, deviceId)) === "online", "online before close");
+
+    // Close the last (only) socket — the read must flip to offline and exactly one
+    // offline transition event must be emitted.
+    node.close();
+    await waitFor(async () => (await presence(server!, deviceId)) === "offline", "read offline after close");
+    await waitFor(
+      async () => (await presenceEvents(server!)).filter((e) => e.device_id === deviceId && e.to === "offline").length === 1,
+      "one offline event after close",
+    );
+    const offlineEvents = (await presenceEvents(server)).filter((e) => e.device_id === deviceId && e.to === "offline");
+    expect(offlineEvents).toHaveLength(1);
+    expect(offlineEvents[0]).toMatchObject({ from: "online", to: "offline", reason: "disconnect" });
+  });
+
+  it("read is offline after revoke even though last_seen is fresh", async () => {
+    server = await buildTestServer();
+    const port = await listen(server);
+    const { deviceId, computerId, nodeToken } = await issueEnrolledDevice(server);
+
+    const node = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=${nodeToken}`);
+    sockets.push(node);
+    await new Promise<void>((resolve) => node.on("open", () => resolve()));
+    node.send(NODE_HELLO(computerId));
+    await waitFor(async () => (await presence(server!, deviceId)) === "online", "online before revoke");
+
+    // Fixed clock -> last_seen is "fresh", yet a revoked device must read offline.
+    await server.app.inject({ method: "POST", url: `/api/v1/devices/${deviceId}/revoke`, payload: {} });
+    expect(await presence(server, deviceId)).toBe("offline");
+  });
+
+  it("close then revoke does not double-emit offline", async () => {
+    server = await buildTestServer();
+    const port = await listen(server);
+    const { deviceId, computerId, nodeToken } = await issueEnrolledDevice(server);
+
+    const node = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=${nodeToken}`);
+    sockets.push(node);
+    await new Promise<void>((resolve) => node.on("open", () => resolve()));
+    node.send(NODE_HELLO(computerId));
+    await waitFor(async () => (await presence(server!, deviceId)) === "online", "online before close");
+
+    // Last-socket close emits one offline event.
+    node.close();
+    await waitFor(
+      async () => (await presenceEvents(server!)).filter((e) => e.device_id === deviceId && e.to === "offline").length === 1,
+      "offline after close",
+    );
+    // Revoking the already-disconnected device closes nothing and must NOT emit
+    // a second offline event.
+    const revoke = (
+      await server.app.inject({ method: "POST", url: `/api/v1/devices/${deviceId}/revoke`, payload: {} })
+    ).json();
+    expect(revoke.connections_closed).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const offlineEvents = (await presenceEvents(server)).filter((e) => e.device_id === deviceId && e.to === "offline");
+    expect(offlineEvents).toHaveLength(1);
+  });
 });

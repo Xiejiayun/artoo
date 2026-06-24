@@ -141,10 +141,24 @@ export async function markDeviceOffline(
   return { transitioned: true, from, to: "offline" };
 }
 
-/** Read a device's current presence (derived from last_seen_at). */
+export interface PresenceReadInput {
+  /** Whether the device currently holds a live authenticated socket (node or
+   *  control). Sourced from the in-process connection registry by the caller. */
+  hasLiveConnection: boolean;
+}
+
+/**
+ * Read a device's current presence so it agrees with the emitted transition
+ * events. A revoked device or one with NO live socket reads `offline` — matching
+ * the offline event emitted on the last-socket-close / revoke edge — regardless
+ * of how fresh `last_seen_at` is. While a live socket exists, the state is the
+ * domain derivation from `last_seen_at` (online, or `stale` when connected but
+ * not heartbeating recently).
+ */
 export async function devicePresence(
   ctx: ServerContext,
   deviceId: string,
+  input: PresenceReadInput,
   config: PresenceConfig = DEFAULT_PRESENCE_CONFIG,
 ): Promise<DevicePresence> {
   const device = (
@@ -156,9 +170,13 @@ export async function devicePresence(
   if (device === undefined) {
     return { device_id: deviceId, state: "offline", last_seen_at: null };
   }
-  const state = derivePresenceState(device.lastSeenAt, ctx.clock.nowIso(), config.windows);
-  // Normalize the stored timestamp (the DB may return a non-ISO rendering) to ISO
-  // for a stable API shape.
+  // Normalize the stored timestamp (the DB may return a non-ISO rendering) to ISO.
   const lastSeenIso = device.lastSeenAt === null ? null : new Date(device.lastSeenAt).toISOString();
+  // Definitive offline edges: revoked, or no live socket. These are exactly the
+  // conditions under which an offline transition event was emitted.
+  if (device.trust !== "active" || !input.hasLiveConnection) {
+    return { device_id: deviceId, state: "offline", last_seen_at: lastSeenIso };
+  }
+  const state = derivePresenceState(device.lastSeenAt, ctx.clock.nowIso(), config.windows);
   return { device_id: deviceId, state, last_seen_at: lastSeenIso };
 }

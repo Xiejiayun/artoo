@@ -222,10 +222,12 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   app.get("/api/v1/devices", async (req) => ({ devices: await deviceService.listDevices(rc(req)) }));
 
-  // Device presence (#28 4c): derived from last_seen_at via the domain helper.
+  // Device presence (#28 4c): combines last_seen_at, device trust, and live
+  // socket state so the read agrees with the emitted transition events.
   app.get("/api/v1/devices/:id/presence", async (req) => {
     const { id } = req.params as { id: string };
-    return { presence: await presenceService.devicePresence(rc(req), id) };
+    const hasLiveConnection = deviceConnections.countForDevice(id) > 0;
+    return { presence: await presenceService.devicePresence(rc(req), id, { hasLiveConnection }) };
   });
 
   // Revoke a device: both its credentials flip to revoked AND every live socket
@@ -235,9 +237,10 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     const { id } = req.params as { id: string };
     const result = await deviceService.revokeDevice(rc(req), id);
     const closed = deviceConnections.closeForDevice(id, 1008, "device revoked");
-    // Emit the offline transition for the revoke (closeForDevice does not, to
-    // avoid double-emitting against the last-disconnect edge).
-    if (result.revoked) {
+    // Emit the offline transition ONLY when the revoke actually closed a live
+    // socket. If the device was already disconnected, the last-disconnect edge
+    // already emitted offline — gating on `closed > 0` prevents a double-emit.
+    if (result.revoked && closed > 0) {
       void presenceService.markDeviceOffline(rc(req), id, "revoked").catch(() => {});
     }
     return { device_id: result.deviceId, revoked: result.revoked, connections_closed: closed };
