@@ -18,6 +18,19 @@ function twoTaskClient() {
 }
 
 describe("TaskList", () => {
+  it("announces loading while task rows are skeletonized", () => {
+    const client = fakeApi({
+      listTasks: () => new Promise(() => undefined),
+    });
+
+    renderWithProviders(
+      <TaskList projectId="proj_artoo" selectedTaskId={null} onSelectTask={() => undefined} />,
+      { client },
+    );
+
+    expect(screen.getByRole("status", { name: "Loading tasks" })).toBeInTheDocument();
+  });
+
   it("renders tasks from the snapshot and selects on click", async () => {
     const onSelectTask = vi.fn();
     renderWithProviders(

@@ -15,14 +15,19 @@ export interface TaskListProps {
 
 function TaskRowsSkeleton(): React.ReactNode {
   return (
-    <div className="task-list" aria-hidden="true">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div key={i} className="task-row task-row--skeleton">
-          <Skeleton height={14} width="75%" />
-          <Skeleton height={16} width="48%" radius="var(--radius-pill)" />
-        </div>
-      ))}
-    </div>
+    <>
+      <span className="task-list-loading-label" role="status" aria-label="Loading tasks">
+        Loading tasks...
+      </span>
+      <div className="task-list" aria-hidden="true">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="task-row task-row--skeleton">
+            <Skeleton height={14} width="75%" />
+            <Skeleton height={16} width="48%" radius="var(--radius-pill)" />
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -58,7 +63,7 @@ export function TaskList({ projectId, selectedTaskId, onSelectTask, filter = "" 
   const q = filter.trim().toLowerCase();
   const tasks = q === "" ? data.tasks : data.tasks.filter((t) => t.title.toLowerCase().includes(q));
   if (tasks.length === 0) {
-    return <EmptyState icon={Search} title="No matching tasks" description={`No tasks match “${filter.trim()}”.`} />;
+    return <EmptyState icon={Search} title="No matching tasks" description={`No tasks match "${filter.trim()}".`} />;
   }
 
   return (

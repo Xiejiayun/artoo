@@ -157,7 +157,8 @@ label {
 }
 
 /* Workspace layout states (#70) */
-.workspace-loading-label[role="status"] {
+.workspace-loading-label[role="status"],
+.task-list-loading-label[role="status"] {
   position: absolute;
   width: 1px;
   height: 1px;
