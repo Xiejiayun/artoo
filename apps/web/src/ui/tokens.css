@@ -35,6 +35,8 @@
   --text: #1b1f27;
   --text-muted: #5b6573;
   --text-subtle: #8a94a3;
+  --scrollbar-thumb: #d6dae0;
+  --scrollbar-thumb-hover: #c2c8d0;
 
   /* Color — brand & semantic ---------------------------------------------- */
   --accent: #4f46e5;
@@ -67,6 +69,7 @@
   /* Motion ----------------------------------------------------------------- */
   --motion-fast: 120ms ease;
   --motion-enter: 160ms ease-out;
+  --motion-reduced: 0.001ms;
 
   /* Z-index layers --------------------------------------------------------- */
   --z-base: 0; --z-nav: 20; --z-dropdown: 30; --z-toast: 40; --z-modal: 50;

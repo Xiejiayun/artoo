@@ -56,20 +56,20 @@ button { font-family: inherit; cursor: pointer; }
 /* Scrollbars — quiet, consistent across the renderer. */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb {
-  background: #d6dae0;
+  background: var(--scrollbar-thumb);
   border-radius: var(--radius-pill);
   border: 2px solid var(--bg);
 }
-::-webkit-scrollbar-thumb:hover { background: #c2c8d0; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 
 /* Respect reduced-motion (gate §9). */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
-    animation-duration: 0.001ms !important;
+    animation-duration: var(--motion-reduced) !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
+    transition-duration: var(--motion-reduced) !important;
   }
 }
 
