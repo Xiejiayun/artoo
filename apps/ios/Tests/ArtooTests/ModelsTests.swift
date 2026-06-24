@@ -101,6 +101,15 @@ final class ModelsTests: XCTestCase {
     func testRiskAndRunStatusDecodeKnownValues() throws {
         XCTAssertEqual(try decoder.decode(RiskLevel.self, from: Data("\"high\"".utf8)), .high)
         XCTAssertEqual(try decoder.decode(RunStatus.self, from: Data("\"running\"".utf8)), .running)
+        XCTAssertEqual(try decoder.decode(RunStatus.self, from: Data("\"awaiting_input\"".utf8)), .awaitingInput)
+        XCTAssertEqual(try decoder.decode(RunStatus.self, from: Data("\"paused\"".utf8)), .paused)
         XCTAssertEqual(try decoder.decode(ApprovalStatus.self, from: Data("\"approved\"".utf8)), .approved)
+    }
+
+    func testRunStatusEncodesAcceptedGateVocabulary() throws {
+        XCTAssertEqual(RunStatus.awaitingInput.rawValue, "awaiting_input")
+        XCTAssertEqual(RunStatus.paused.rawValue, "paused")
+        XCTAssertEqual(RunStatus.awaitingInput.label, "Awaiting Input")
+        XCTAssertEqual(RunStatus.paused.label, "Paused")
     }
 }

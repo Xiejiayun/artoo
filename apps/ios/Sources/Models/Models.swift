@@ -87,6 +87,8 @@ public enum RunStatus: Equatable, Hashable {
     case queued
     case starting
     case running
+    case awaitingInput
+    case paused
     case completed
     case failed
     case cancelled
@@ -97,6 +99,8 @@ public enum RunStatus: Equatable, Hashable {
         case "queued": self = .queued
         case "starting": self = .starting
         case "running": self = .running
+        case "awaiting_input": self = .awaitingInput
+        case "paused": self = .paused
         case "completed", "succeeded": self = .completed
         case "failed": self = .failed
         case "cancelled", "canceled": self = .cancelled
@@ -109,6 +113,8 @@ public enum RunStatus: Equatable, Hashable {
         case .queued: return "queued"
         case .starting: return "starting"
         case .running: return "running"
+        case .awaitingInput: return "awaiting_input"
+        case .paused: return "paused"
         case .completed: return "completed"
         case .failed: return "failed"
         case .cancelled: return "cancelled"
@@ -121,6 +127,8 @@ public enum RunStatus: Equatable, Hashable {
         case .queued: return "Queued"
         case .starting: return "Starting"
         case .running: return "Running"
+        case .awaitingInput: return "Awaiting Input"
+        case .paused: return "Paused"
         case .completed: return "Completed"
         case .failed: return "Failed"
         case .cancelled: return "Cancelled"

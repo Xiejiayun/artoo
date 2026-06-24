@@ -71,9 +71,7 @@ private struct TaskRow: View {
             }
             HStack(spacing: 8) {
                 if let priority = task.priority {
-                    Text(priority.uppercased())
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
+                    PriorityBadge(priority)
                 }
                 if let description = task.description, !description.isEmpty {
                     Text(description)
