@@ -145,7 +145,8 @@ async function selectTask(page: Page, title: string): Promise<void> {
 }
 
 async function expectDetailStatus(page: Page, status: string): Promise<void> {
-  await expect(page.locator(`.task-detail dd[data-status="${status}"]`)).toBeVisible();
+  const label = status.replace(/_/g, " ");
+  await expect(page.locator(".task-detail .ui-badge--status", { hasText: label })).toBeVisible();
 }
 
 async function connectManualNode(request: APIRequestContext): Promise<{

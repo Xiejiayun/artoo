@@ -10,14 +10,19 @@ import { TaskActions } from "./TaskActions.js";
 
 function DetailSkeleton(): React.ReactNode {
   return (
-    <div className="task-detail" aria-hidden="true">
-      <Skeleton height={22} width="72%" />
-      <div className="task-detail__meta">
-        <Skeleton height={14} width="40%" />
-        <Skeleton height={14} width="55%" />
+    <>
+      <span className="detail-loading-label" role="status" aria-label="Loading detail">
+        Loading detail...
+      </span>
+      <div className="task-detail" aria-hidden="true">
+        <Skeleton height={22} width="72%" />
+        <div className="task-detail__meta">
+          <Skeleton height={14} width="40%" />
+          <Skeleton height={14} width="55%" />
+        </div>
+        <Skeleton height={64} />
       </div>
-      <Skeleton height={64} />
-    </div>
+    </>
   );
 }
 
@@ -71,7 +76,7 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
         {hasAssignee ? (
           <div className="task-detail__meta-row">
             <dt>Assignee</dt>
-            <dd className="u-mono">
+            <dd className="t-mono">
               {task.assignee_type}:{task.assignee_id}
             </dd>
           </div>

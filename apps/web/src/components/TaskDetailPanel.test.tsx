@@ -12,6 +12,16 @@ import {
 import { TaskDetailPanel } from "./TaskDetailPanel.js";
 
 describe("TaskDetailPanel", () => {
+  it("announces loading while detail content is skeletonized", () => {
+    const client = fakeApi({
+      getTask: () => new Promise(() => undefined),
+    });
+
+    renderWithProviders(<TaskDetailPanel taskId="task_1" />, { client });
+
+    expect(screen.getByRole("status", { name: "Loading detail" })).toBeInTheDocument();
+  });
+
   it("renders task fields, acceptance criteria and the run timeline", async () => {
     const client = fakeApi({
       getTask: async () => ({
