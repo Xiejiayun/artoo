@@ -6,6 +6,26 @@ import { bootstrapFixture, fakeApi, renderWithProviders } from "../test/utils.js
 import { AgentsPage, ComputersPage, SkillsPage } from "./InventoryPages.js";
 
 describe("Inventory pages", () => {
+  it("announces loading while computer inventory cards are skeletonized", () => {
+    const client = fakeApi({
+      bootstrap: () => new Promise(() => undefined),
+    });
+
+    renderWithProviders(<ComputersPage />, { client, route: "/computers" });
+
+    expect(screen.getByRole("status", { name: "Loading computers" })).toBeInTheDocument();
+  });
+
+  it("announces loading while agent inventory cards are skeletonized", () => {
+    const client = fakeApi({
+      bootstrap: () => new Promise(() => undefined),
+    });
+
+    renderWithProviders(<AgentsPage />, { client, route: "/agents" });
+
+    expect(screen.getByRole("status", { name: "Loading agents" })).toBeInTheDocument();
+  });
+
   it("renders computers from bootstrap and runtime rows from the heartbeat endpoint", async () => {
     const listComputerRuntimes = vi.fn(async (computerId: string) => ({
       runtimes: [

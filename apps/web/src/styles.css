@@ -875,7 +875,7 @@ label {
 .inventory-subtitle {
   font-size: var(--text-caption);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   color: var(--text-muted);
 }
 .inventory-item__head {
@@ -907,7 +907,7 @@ label {
   color: var(--text-subtle);
   font-size: var(--text-caption);
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0;
 }
 .inv-meta dd {
   margin: 0;

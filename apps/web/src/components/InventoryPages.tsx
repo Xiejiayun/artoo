@@ -42,7 +42,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }):
 function InventoryLoading({ label }: { label: string }): React.ReactNode {
   return (
     <section className="inventory-page">
-      <p className="inventory-loading-label" role="status">
+      <p className="inventory-loading-label" role="status" aria-label={label}>
         {label}
       </p>
       <header>
@@ -73,7 +73,7 @@ export function ComputersPage(): React.ReactNode {
     })),
   });
 
-  if (bootstrap.isLoading) return <InventoryLoading label="Loading computers…" />;
+  if (bootstrap.isLoading) return <InventoryLoading label="Loading computers" />;
   if (bootstrap.isError || bootstrap.data === undefined) {
     return (
       <section className="inventory-page" aria-label="Computers">
@@ -110,7 +110,7 @@ export function ComputersPage(): React.ReactNode {
               </dl>
               <section className="inventory-item__sub" aria-label={`${computer.display_name} runtimes`}>
                 <h3 className="inventory-subtitle">Runtimes</h3>
-                {runtimeQueries[index]?.isLoading ? <p role="status">Loading runtimes…</p> : null}
+                {runtimeQueries[index]?.isLoading ? <p role="status">Loading runtimes...</p> : null}
                 {runtimeQueries[index]?.isError ? <p role="alert">Failed to load runtimes.</p> : null}
                 {!runtimeQueries[index]?.isLoading && runtimes.length === 0 ? (
                   <p className="inv-empty">No runtime heartbeat rows.</p>
@@ -143,7 +143,7 @@ export function AgentsPage(): React.ReactNode {
   const api = useApi();
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
 
-  if (bootstrap.isLoading) return <InventoryLoading label="Loading agents…" />;
+  if (bootstrap.isLoading) return <InventoryLoading label="Loading agents" />;
   if (bootstrap.isError || bootstrap.data === undefined) {
     return (
       <section className="inventory-page" aria-label="Agents">
@@ -221,7 +221,7 @@ export function SkillsPage(): React.ReactNode {
       </header>
       <section className="inventory-section" aria-label="Installed skills">
         <h2 className="inventory-subtitle">Installed Skills</h2>
-        {skillsQuery.isLoading ? <p role="status">Loading skills…</p> : null}
+        {skillsQuery.isLoading ? <p role="status">Loading skills...</p> : null}
         {skillsQuery.isError ? <p role="alert">Failed to load skills.</p> : null}
         {!skillsQuery.isLoading && !skillsQuery.isError && skills.length === 0 ? (
           <p className="inv-empty">No skills installed.</p>
