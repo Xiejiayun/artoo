@@ -109,34 +109,19 @@ label {
   z-index: 20;
 }
 .app-nav .brand {
-  font-weight: 750;
-  font-size: 16px;
+  font-weight: var(--fw-bold);
+  font-size: var(--text-h1);
   letter-spacing: 0;
   color: var(--accent);
   padding-right: var(--space-2);
 }
-.app-nav ul {
+.app-nav__links {
   display: flex;
   align-items: center;
   gap: 2px;
-  flex: 1;
 }
-.app-nav a {
-  display: block;
-  padding: 6px 12px;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  font-weight: 550;
-  text-decoration: none;
-}
-.app-nav a:hover {
-  background: var(--surface-3);
-  color: var(--text);
-}
-.app-nav a.active {
-  background: var(--accent-soft);
-  color: var(--accent-text);
-}
+.app-nav__links li { display: flex; }
+.app-nav__spacer { flex: 1; }
 
 .app-main {
   flex: 1;
