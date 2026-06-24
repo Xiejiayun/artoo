@@ -25,15 +25,19 @@
 
 .ui-btn--primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .ui-btn--primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.ui-btn--primary:active:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
 
 .ui-btn--secondary { background: var(--surface); border-color: var(--border-strong); color: var(--text); }
 .ui-btn--secondary:hover { background: var(--surface-3); }
+.ui-btn--secondary:active:not(:disabled) { background: var(--surface-3); border-color: var(--control-border-hover); }
 
 .ui-btn--ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
 .ui-btn--ghost:hover { background: var(--surface-3); color: var(--text); }
+.ui-btn--ghost:active:not(:disabled) { background: var(--accent-soft); color: var(--accent-text); }
 
-.ui-btn--danger { background: var(--danger); border-color: var(--danger); color: #fff; }
-.ui-btn--danger:hover { filter: brightness(0.94); }
+.ui-btn--danger { background: var(--danger); border-color: var(--danger); color: var(--on-accent); }
+.ui-btn--danger:hover,
+.ui-btn--danger:active:not(:disabled) { background: var(--danger-hover); border-color: var(--danger-hover); }
 
 .ui-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .ui-btn.is-loading { cursor: progress; }
@@ -75,11 +79,14 @@
   transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
 }
 .ui-input::placeholder { color: var(--text-subtle); }
-.ui-input:hover { border-color: #c2c8d0; }
+.ui-input:hover { border-color: var(--control-border-hover); }
+.ui-input:focus-visible { border-color: var(--accent); }
 .ui-input:disabled { background: var(--surface-3); color: var(--text-subtle); cursor: not-allowed; }
 .ui-input[aria-invalid="true"] { border-color: var(--danger); }
+.ui-input[aria-invalid="true"]:focus-visible { border-color: var(--danger); }
 .ui-textarea { height: auto; padding: 7px 9px; line-height: var(--lh-body); resize: vertical; }
-.ui-select { appearance: auto; cursor: pointer; }
+.ui-select { appearance: auto; }
+.ui-select:not(:disabled) { cursor: pointer; }
 
 /* Search ---------------------------------------------------------------- */
 .ui-search { position: relative; display: flex; align-items: center; min-width: 0; }
@@ -107,3 +114,4 @@
   cursor: pointer;
 }
 .ui-search__clear:hover { background: var(--surface-3); color: var(--text); }
+.ui-search__clear:active { background: var(--accent-soft); color: var(--accent-text); }

@@ -4,7 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { Button, Input, SearchInput, Select } from "./forms.js";
+import { Button, Input, SearchInput, Select, Textarea } from "./forms.js";
 
 afterEach(() => cleanup());
 
@@ -55,6 +55,15 @@ describe("ui form controls (#67)", () => {
     expect(screen.getByLabelText("Priority")).toHaveValue("p2");
   });
 
+  it("Textarea wires label/helper text and default row sizing", () => {
+    render(<Textarea label="Notes" helperText="Markdown supported" defaultValue="Initial notes" />);
+    const textarea = screen.getByLabelText("Notes");
+    const helper = screen.getByText("Markdown supported");
+    expect(textarea).toHaveValue("Initial notes");
+    expect(textarea).toHaveAttribute("rows", "3");
+    expect(textarea).toHaveAttribute("aria-describedby", helper.id);
+  });
+
   it("SearchInput shows a clear button only with a value and calls onClear", async () => {
     const onClear = vi.fn();
     const { rerender } = render(<SearchInput value="" onClear={onClear} onChange={() => {}} />);
@@ -62,5 +71,15 @@ describe("ui form controls (#67)", () => {
     rerender(<SearchInput value="task" onClear={onClear} onChange={() => {}} />);
     await userEvent.click(screen.getByRole("button", { name: "Clear search" }));
     expect(onClear).toHaveBeenCalledOnce();
+  });
+
+  it("SearchInput clears from Escape without swallowing caller key handling", async () => {
+    const onClear = vi.fn();
+    const onKeyDown = vi.fn();
+    render(<SearchInput value="task" onClear={onClear} onKeyDown={onKeyDown} onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("searchbox"));
+    await userEvent.keyboard("{Escape}");
+    expect(onClear).toHaveBeenCalledOnce();
+    expect(onKeyDown).toHaveBeenCalledOnce();
   });
 });

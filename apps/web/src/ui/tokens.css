@@ -47,9 +47,12 @@
 
   --success: #15803d; --success-soft: #e7f6ec;
   --warning: #b45309; --warning-soft: #fdf1e0;
-  --danger: #b42318;  --danger-soft: #fdeceb;
+  --danger: #b42318;  --danger-hover: #991b1b; --danger-soft: #fdeceb;
   --info: #1d6fd1;    --info-soft: #e8f1fc;
   --neutral: #475467; --neutral-soft: #eef1f4;
+
+  /* Controls --------------------------------------------------------------- */
+  --control-border-hover: #c2c8d0;
 
   /* Spacing (4px grid) ----------------------------------------------------- */
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
