@@ -100,7 +100,16 @@ function wireNode(srv: TestServer, computerId: string, wsParent: string): WiredN
   const binding = attachNodeBinding(srv.ctx, channel.serverTransport);
   srv.nodeRegistry.register(computerId, binding);
   const adapter = createProcessAdapter({
-    command: [process.execPath, FIXTURE, "--workspace", "{{workspace_root}}", "--context", "{{context_pack_path}}"],
+    command: [
+      process.execPath,
+      FIXTURE,
+      "--workspace",
+      "{{workspace_root}}",
+      "--context",
+      "{{context_pack_path}}",
+      "--sleep-ms",
+      "250",
+    ],
     allowedRoots: [wsParent],
     artifacts: [{ type: "patch", path: "changes.patch" }],
   });
@@ -122,6 +131,12 @@ describe.skipIf(!ENABLED)("#111 daemon + multi-agent production smoke", () => {
   const post = (url: string, payload?: unknown) =>
     srv!.app.inject({ method: "POST", url, payload: payload ?? {} });
   const get = (url: string) => srv!.app.inject({ method: "GET", url });
+
+  async function startServer(): Promise<TestServer> {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "artoo-mas-seed-"));
+    cleanups.push(() => rmSync(workspaceRoot, { recursive: true, force: true }));
+    return buildTestServer({ workspaceRoot });
+  }
 
   async function taskStatus(taskId: string): Promise<string> {
     return (await get(`/api/v1/tasks/${taskId}`)).json().task.status as string;
@@ -191,7 +206,7 @@ describe.skipIf(!ENABLED)("#111 daemon + multi-agent production smoke", () => {
   }
 
   it("Phase A: capability routing + concurrent live runs + heartbeat + artifacts", async () => {
-    srv = await buildTestServer({ workspaceRoot: mkdtempSync(join(tmpdir(), "artoo-mas-seed-")) });
+    srv = await startServer();
     const { parentId } = await setupTeam();
 
     const childA = await createChild(parentId, "edit code", ["code.modify"]);
@@ -204,10 +219,15 @@ describe.skipIf(!ENABLED)("#111 daemon + multi-agent production smoke", () => {
     expect(rA.reason).toBe("capability_match_and_idle");
     evid("A.routing", `childA->${rA.computerId} childB->${rB.computerId} reason=${rA.reason}`);
 
+    await waitFor(async () => {
+      const [statusA, statusB] = await Promise.all([taskStatus(childA), taskStatus(childB)]);
+      return statusA === "running" && statusB === "running";
+    }, "childA and childB simultaneously running");
+    evid("A.concurrent", "childA and childB observed running simultaneously on distinct nodes");
+
     // Concurrent live runs complete on their respective nodes -> task to review.
     await waitFor(async () => (await taskStatus(childA)) === "review", "childA review");
     await waitFor(async () => (await taskStatus(childB)) === "review", "childB review");
-    evid("A.concurrent", "both child runs completed concurrently on distinct nodes");
 
     // Heartbeat visibility per node.
     const rtA = (await get("/api/v1/computers/computer_a/runtimes")).json().runtimes;
@@ -221,7 +241,7 @@ describe.skipIf(!ENABLED)("#111 daemon + multi-agent production smoke", () => {
   });
 
   it("Phase B: write leases — disjoint acquire ok, overlapping write rejected", async () => {
-    srv = await buildTestServer({ workspaceRoot: mkdtempSync(join(tmpdir(), "artoo-mas-seed-")) });
+    srv = await startServer();
     const { parentId } = await setupTeam();
     const t1 = await createChild(parentId, "lease holder 1", ["code.modify"]);
     const t2 = await createChild(parentId, "lease holder 2", ["test.run"]);
@@ -239,7 +259,7 @@ describe.skipIf(!ENABLED)("#111 daemon + multi-agent production smoke", () => {
   });
 
   it("Phase C: DAG dependency unlock on accept; failure block propagation", async () => {
-    srv = await buildTestServer({ workspaceRoot: mkdtempSync(join(tmpdir(), "artoo-mas-seed-")) });
+    srv = await startServer();
     const { parentId } = await setupTeam();
 
     // childC (review) depends on childA (edit). Unlock when childA accepted.
@@ -256,10 +276,11 @@ describe.skipIf(!ENABLED)("#111 daemon + multi-agent production smoke", () => {
     evid("C.unlock", "childC auto-unlocked to ready after childA accepted");
 
     // Failure-block: childE depends on childD; fail childD's run -> blocked + advisory event; childE stays backlog.
-    const childD = await createChild(parentId, "edit code 2", ["code.modify"]);
+    const childD = await createChild(parentId, "unwired failing work", ["doc.write"]);
     const childE = await createChild(parentId, "review code 2", ["code.review"]);
     expect((await post(`/api/v1/tasks/${childE}/dependencies`, { depends_on_task_id: childD, type: "blocks" })).statusCode).toBe(201);
     const rD = await assignAuto(childD);
+    expect(rD.computerId).toBe("computer_d");
     const failed = await post(`/api/v1/dev/runs/${rD.runId}/mock-execute?outcome=failed`);
     expect(failed.statusCode).toBeLessThan(300);
     await waitFor(async () => (await taskStatus(childD)) === "blocked", "childD blocked");
@@ -270,7 +291,7 @@ describe.skipIf(!ENABLED)("#111 daemon + multi-agent production smoke", () => {
   });
 
   it("Phase D: approval block -> resume (approved); reject -> blocked", async () => {
-    srv = await buildTestServer({ workspaceRoot: mkdtempSync(join(tmpdir(), "artoo-mas-seed-")) });
+    srv = await startServer();
     const { parentId } = await setupTeam();
 
     // childD routes to the UNWIRED computer_d, so the run stays queued; we flip it
@@ -305,7 +326,7 @@ describe.skipIf(!ENABLED)("#111 daemon + multi-agent production smoke", () => {
   });
 
   it("Phase E: audit bundle replay (monotonic position) + deterministic export", async () => {
-    srv = await buildTestServer({ workspaceRoot: mkdtempSync(join(tmpdir(), "artoo-mas-seed-")) });
+    srv = await startServer();
     const { parentId } = await setupTeam();
     const child = await createChild(parentId, "audited work", ["code.modify"]);
     const r = await assignAuto(child);
@@ -327,7 +348,7 @@ describe.skipIf(!ENABLED)("#111 daemon + multi-agent production smoke", () => {
   });
 
   it("Phase F: node restart/reconnect lands a subsequent run", async () => {
-    srv = await buildTestServer({ workspaceRoot: mkdtempSync(join(tmpdir(), "artoo-mas-seed-")) });
+    srv = await startServer();
     const { parentId, wsParent, nodes } = await setupTeam();
 
     // First run on node A.
