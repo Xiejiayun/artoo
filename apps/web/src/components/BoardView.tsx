@@ -26,8 +26,8 @@ const PRIORITIES = ["all", "p0", "p1", "p2", "p3"] as const;
 function BoardSkeleton(): React.ReactNode {
   return (
     <div className="board">
-      <p className="board-loading-label" role="status">
-        Loading board…
+      <p className="board-loading-label" role="status" aria-label="Loading board">
+        Loading board...
       </p>
       <div className="board-header">
         <Skeleton height={24} width={120} />

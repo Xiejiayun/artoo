@@ -21,6 +21,17 @@ function boardClient() {
 }
 
 describe("BoardView", () => {
+  it("announces loading while board columns are skeletonized", () => {
+    const client = fakeApi({
+      bootstrap: () => new Promise(() => undefined),
+      listApprovals: async () => ({ approvals: [] }),
+    });
+
+    renderWithProviders(<BoardView />, { client, route: "/board" });
+
+    expect(screen.getByRole("status", { name: "Loading board" })).toBeInTheDocument();
+  });
+
   it("groups tasks into status columns from tasks(project)", async () => {
     renderWithProviders(<BoardView />, { client: boardClient(), route: "/board" });
     const backlog = await screen.findByRole("region", { name: "Backlog" });
