@@ -17,7 +17,7 @@ function RailSkeleton(): React.ReactNode {
       <Skeleton height={20} width="55%" />
       <Skeleton height={32} />
       {Array.from({ length: 5 }).map((_, i) => (
-        <div key={i} className="u-stack-sm" style={{ paddingTop: "var(--space-2)" }}>
+        <div key={i} className="u-stack-sm rail-skeleton-item">
           <Skeleton height={14} width="70%" />
           <Skeleton height={12} width="35%" />
         </div>
@@ -48,6 +48,9 @@ export function WorkspaceLayout(): React.ReactNode {
   if (bootstrap.isLoading) {
     return (
       <div className="workspace">
+        <span className="workspace-loading-label" role="status" aria-label="Loading workspace">
+          Loading workspace...
+        </span>
         <aside className="pane pane-left">
           <RailSkeleton />
         </aside>

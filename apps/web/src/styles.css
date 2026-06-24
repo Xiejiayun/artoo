@@ -133,6 +133,7 @@ label {
  * Workspace — three-pane shell
  * ------------------------------------------------------------------------- */
 .workspace {
+  position: relative;
   display: grid;
   grid-template-columns: 290px minmax(0, 1fr) 380px;
   height: 100%;
@@ -156,6 +157,18 @@ label {
 }
 
 /* Workspace layout states (#70) */
+.workspace-loading-label[role="status"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.rail-skeleton-item { padding-top: var(--space-2); }
 .workspace-state {
   display: flex;
   align-items: center;

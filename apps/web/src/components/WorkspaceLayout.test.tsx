@@ -41,6 +41,16 @@ function workspaceClient() {
 }
 
 describe("WorkspaceLayout", () => {
+  it("announces loading while bootstrapping the workspace shell", () => {
+    const client = fakeApi({
+      bootstrap: () => new Promise(() => undefined),
+    });
+
+    renderWithProviders(<WorkspaceLayout />, { client });
+
+    expect(screen.getByRole("status", { name: "Loading workspace" })).toBeInTheDocument();
+  });
+
   it("loads bootstrap, lists tasks, and selecting one shows room + detail", async () => {
     renderWithProviders(<WorkspaceLayout />, { client: workspaceClient() });
 
