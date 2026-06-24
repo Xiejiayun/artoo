@@ -58,7 +58,7 @@ function e2eKey(prefix: string): string {
 }
 
 async function createTaskViaUi(page: Page, request: APIRequestContext, title: string): Promise<string> {
-  await page.getByRole("button", { name: "New Task" }).click();
+  await page.getByRole("button", { name: "New task" }).click();
   const dialog = page.getByRole("dialog", { name: "Create task" });
   await dialog.getByLabel("Title").fill(title);
   await dialog.getByLabel("Acceptance criteria (one per line)").fill("works end to end");
