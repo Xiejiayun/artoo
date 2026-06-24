@@ -601,7 +601,7 @@ label {
   gap: var(--space-2);
   font-size: var(--text-caption);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   color: var(--text-muted);
 }
 .task-room__title > svg { color: var(--text-subtle); }
@@ -663,14 +663,19 @@ label {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
   font-size: var(--text-caption);
   color: var(--text-subtle);
 }
 .msg__actor {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: var(--fw-semibold);
   color: var(--text-muted);
 }
-.msg__time { margin-left: auto; flex: none; }
+.msg__time { margin-left: auto; flex: none; white-space: nowrap; }
 .msg__text {
   font-size: var(--text-small);
   color: var(--text);

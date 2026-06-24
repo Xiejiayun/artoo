@@ -12,6 +12,16 @@ import {
 import { TaskRoom } from "./TaskRoom.js";
 
 describe("TaskRoom", () => {
+  it("announces loading while activity content is skeletonized", () => {
+    const client = fakeApi({
+      getTask: () => new Promise(() => undefined),
+    });
+
+    renderWithProviders(<TaskRoom taskId="task_1" />, { client });
+
+    expect(screen.getByRole("status", { name: "Loading activity" })).toBeInTheDocument();
+  });
+
   it("renders messages for the task's room", async () => {
     const client = fakeApi({
       getTask: async () => ({

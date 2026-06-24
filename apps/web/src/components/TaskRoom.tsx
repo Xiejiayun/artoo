@@ -10,8 +10,8 @@ import { MessageCard } from "./MessageCard.js";
 function RoomSkeleton(): React.ReactNode {
   return (
     <div className="task-room">
-      <p className="task-room-loading-label" role="status">
-        Loading activity…
+      <p className="task-room-loading-label" role="status" aria-label="Loading activity">
+        Loading activity...
       </p>
       <div aria-hidden="true" className="u-stack">
         {Array.from({ length: 4 }).map((_, i) => (
