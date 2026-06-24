@@ -45,7 +45,7 @@ describe("WorkspaceLayout", () => {
     renderWithProviders(<WorkspaceLayout />, { client: workspaceClient() });
 
     expect(await screen.findByRole("heading", { name: "artoo" })).toBeInTheDocument();
-    expect(screen.getByText("Select a task to view its room.")).toBeInTheDocument();
+    expect(screen.getByText("No task selected")).toBeInTheDocument();
 
     await userEvent.click(await screen.findByText("Build inbox"));
 
