@@ -10,4 +10,13 @@
  *
  * Surfaces (#69–#78) consume these instead of ad-hoc markup.
  */
-export {};
+export { Icon, type IconProps } from "./Icon.js";
+export {
+  NavItem,
+  Toolbar,
+  ToolbarSpacer,
+  Breadcrumbs,
+  type NavItemProps,
+  type ToolbarProps,
+  type Crumb,
+} from "./nav.js";

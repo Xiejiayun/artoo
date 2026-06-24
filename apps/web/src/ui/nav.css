@@ -1,0 +1,90 @@
+/**
+ * Navigation primitive styles (#66): nav item (active pill / hover / focus),
+ * toolbar, breadcrumbs. Tokens only. States have no layout shift (gate §9).
+ */
+
+/* Nav item -------------------------------------------------------------- */
+.ui-nav-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--text-small);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background var(--motion-fast), color var(--motion-fast);
+  cursor: pointer;
+}
+.ui-nav-item:hover {
+  background: var(--surface-3);
+  color: var(--text);
+  text-decoration: none;
+}
+.ui-nav-item.is-active,
+.ui-nav-item[data-active] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.ui-nav-item > svg {
+  flex: none;
+  color: currentColor;
+}
+.ui-nav-item__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: var(--text-caption);
+  font-weight: var(--fw-bold);
+}
+.ui-nav-item.is-active .ui-nav-item__count {
+  background: var(--surface);
+  color: var(--accent-text);
+}
+
+/* Toolbar --------------------------------------------------------------- */
+.ui-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.ui-toolbar__spacer {
+  flex: 1;
+}
+
+/* Breadcrumbs ----------------------------------------------------------- */
+.ui-breadcrumbs ol {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.ui-breadcrumbs li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--text-muted);
+}
+.ui-breadcrumbs a {
+  color: var(--text-muted);
+}
+.ui-breadcrumbs a:hover {
+  color: var(--text);
+}
+.ui-breadcrumbs [aria-current="page"] {
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+.ui-breadcrumbs__sep {
+  color: var(--text-subtle);
+}
