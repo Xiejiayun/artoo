@@ -53,6 +53,11 @@
 
   /* Controls --------------------------------------------------------------- */
   --control-border-hover: #c2c8d0;
+  --skeleton-shine: #e7eaee;
+  --state-error-border: #f3c9c5;
+  --tooltip-bg: var(--text);
+  --tooltip-text: var(--on-accent);
+  --modal-overlay: rgba(16, 24, 40, 0.45);
 
   /* Spacing (4px grid) ----------------------------------------------------- */
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;

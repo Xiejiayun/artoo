@@ -41,17 +41,17 @@ export function Badge({ tone = "neutral", icon, dot = false, children, className
 const TASK_STATUS_TONE: Record<string, Tone> = {
   backlog: "neutral", ready: "info", assigned: "neutral", running: "info",
   awaiting_approval: "warning", blocked: "danger", review: "warning",
-  done: "success", cancelled: "neutral",
+  done: "success", cancelled: "danger",
 };
 const PRIORITY_TONE: Record<string, Tone> = { p0: "danger", p1: "warning", p2: "accent", p3: "neutral" };
 const RUN_STATUS_TONE: Record<string, Tone> = {
   queued: "neutral", starting: "info", running: "info", awaiting_input: "warning",
-  paused: "warning", completed: "success", failed: "danger", cancelled: "neutral",
+  paused: "warning", completed: "success", failed: "danger", cancelled: "danger",
 };
 const PRESENCE_TONE: Record<string, Tone> = { online: "success", stale: "warning", offline: "neutral" };
 const TRUST_TONE: Record<string, Tone> = { active: "success", revoked: "danger" };
 const APPROVAL_TONE: Record<string, Tone> = {
-  pending: "warning", approved: "success", rejected: "danger", needs_more_info: "info", expired: "neutral",
+  pending: "warning", approved: "success", rejected: "danger", needs_more_info: "warning", expired: "neutral",
 };
 const RISK_TONE: Record<string, Tone> = { low: "neutral", medium: "warning", high: "danger" };
 

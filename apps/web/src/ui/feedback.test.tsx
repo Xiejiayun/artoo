@@ -1,25 +1,31 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { useEffect } from "react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PriorityBadge, StatusBadge, toneFor } from "./Badge.js";
-import { EmptyState, ErrorState, Modal, OfflineBanner } from "./feedback.js";
+import { EmptyState, ErrorState, Modal, OfflineBanner, ToastProvider, useToast } from "./feedback.js";
 import { Button } from "./forms.js";
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("ui feedback + badges (#68)", () => {
   it("toneFor maps the full domain vocabulary to semantic tones", () => {
     expect(toneFor.taskStatus("done")).toBe("success");
     expect(toneFor.taskStatus("blocked")).toBe("danger");
     expect(toneFor.taskStatus("review")).toBe("warning");
-    expect(toneFor.taskStatus("cancelled")).toBe("neutral");
+    expect(toneFor.taskStatus("cancelled")).toBe("danger");
     expect(toneFor.runStatus("awaiting_input")).toBe("warning");
+    expect(toneFor.runStatus("cancelled")).toBe("danger");
     expect(toneFor.priority("p0")).toBe("danger");
     expect(toneFor.priority("p2")).toBe("accent");
     expect(toneFor.presence("online")).toBe("success");
+    expect(toneFor.approval("needs_more_info")).toBe("warning");
     expect(toneFor.approval("expired")).toBe("neutral");
     // unknown -> neutral fallback (never crashes)
     expect(toneFor.taskStatus("brand_new_status")).toBe("neutral");
@@ -57,10 +63,36 @@ describe("ui feedback + badges (#68)", () => {
         body
       </Modal>,
     );
-    expect(screen.getByRole("dialog")).toHaveAttribute("aria-modal", "true");
+    expect(screen.getByRole("dialog", { name: "Confirm" })).toHaveAttribute("aria-modal", "true");
+    await userEvent.click(screen.getByRole("button", { name: "OK" }));
+    await userEvent.tab();
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
     await userEvent.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalledTimes(2);
   });
+
+  it("ToastProvider auto-dismisses non-danger toasts but keeps danger toasts sticky", () => {
+    vi.useFakeTimers();
+    render(
+      <ToastProvider>
+        <ToastPusher tone="success" message="Saved" />
+        <ToastPusher tone="danger" message="Failed" />
+      </ToastProvider>,
+    );
+    expect(screen.getByText("Saved")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Failed");
+    act(() => vi.advanceTimersByTime(4000));
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Failed");
+  });
 });
+
+function ToastPusher({ tone, message }: { tone: "success" | "danger"; message: string }): null {
+  const toast = useToast();
+  useEffect(() => {
+    toast.push({ tone, message });
+  }, [message, toast, tone]);
+  return null;
+}

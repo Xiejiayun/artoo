@@ -9,6 +9,8 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -102,7 +104,7 @@ export interface ToastItem {
   id: string;
   tone?: Tone;
   message: ReactNode;
-  /** Auto-dismiss after ms; failures persist (omit for sticky). */
+  /** Override auto-dismiss. By default non-danger toasts dismiss and danger persists. */
   durationMs?: number;
 }
 
@@ -145,10 +147,12 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
   const push = useCallback((t: Omit<ToastItem, "id">) => {
     seq.current += 1;
     const id = `t${seq.current}`;
-    setItems((xs) => [...xs, { ...t, id }]);
+    const durationMs = t.durationMs ?? (t.tone === "danger" ? undefined : 4000);
+    setItems((xs) => [...xs, { ...t, durationMs, id }]);
   }, []);
+  const api = useMemo(() => ({ push }), [push]);
   return (
-    <ToastContext.Provider value={{ push }}>
+    <ToastContext.Provider value={api}>
       {children}
       <div className="ui-toast-viewport" aria-live="polite">
         {items.map((t) => (
@@ -197,6 +201,7 @@ export function Modal({ open, onClose, title, children, footer }: {
   footer?: ReactNode;
 }): React.ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
   useEffect(() => {
     if (!open) {
       return;
@@ -204,6 +209,10 @@ export function Modal({ open, onClose, title, children, footer }: {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") {
         onClose();
+        return;
+      }
+      if (e.key === "Tab" && panelRef.current) {
+        trapFocus(e, panelRef.current);
       }
     };
     document.addEventListener("keydown", onKey);
@@ -215,18 +224,46 @@ export function Modal({ open, onClose, title, children, footer }: {
   }
   return (
     <div className="ui-modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="ui-modal" role="dialog" aria-modal="true" tabIndex={-1} ref={panelRef}>
-        {title != null ? (
-          <div className="ui-modal__header">
-            <span className="ui-modal__title">{title}</span>
-            <button type="button" className="ui-modal__close" aria-label="Close" onClick={onClose}>
-              <Icon icon={X} size={16} />
-            </button>
-          </div>
-        ) : null}
+      <div
+        className="ui-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={title != null ? titleId : undefined}
+        aria-label={title == null ? "Dialog" : undefined}
+        tabIndex={-1}
+        ref={panelRef}
+      >
+        <div className="ui-modal__header">
+          {title != null ? <span className="ui-modal__title" id={titleId}>{title}</span> : <span className="ui-modal__title" />}
+          <button type="button" className="ui-modal__close" aria-label="Close" onClick={onClose}>
+            <Icon icon={X} size={16} />
+          </button>
+        </div>
         <div className="ui-modal__body">{children}</div>
         {footer != null ? <div className="ui-modal__footer">{footer}</div> : null}
       </div>
     </div>
   );
+}
+
+function trapFocus(e: KeyboardEvent, root: HTMLElement): void {
+  const focusables = Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  );
+  if (focusables.length === 0) {
+    e.preventDefault();
+    root.focus();
+    return;
+  }
+  const first = focusables[0]!;
+  const last = focusables[focusables.length - 1]!;
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
 }
