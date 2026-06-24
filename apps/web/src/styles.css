@@ -160,7 +160,8 @@ label {
 .workspace-loading-label[role="status"],
 .task-list-loading-label[role="status"],
 .detail-loading-label[role="status"],
-.task-room-loading-label[role="status"] {
+.task-room-loading-label[role="status"],
+.board-loading-label[role="status"] {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -414,6 +415,9 @@ label {
   font-weight: 700;
 }
 .board-card {
+  width: 100%;
+  text-align: left;
+  align-items: stretch;
   padding: var(--space-3);
   margin-bottom: var(--space-2);
   display: flex;
@@ -429,6 +433,43 @@ label {
 .board-card:active {
   transform: translateY(1px);
 }
+.board-card__title {
+  font-size: var(--text-small);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+}
+.board-card__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.board-card__assignee {
+  font-size: var(--text-caption);
+  color: var(--text-subtle);
+}
+.board-column__list {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.board-column__empty {
+  font-size: var(--text-caption);
+  color: var(--text-subtle);
+  padding: var(--space-2);
+  text-align: center;
+}
+.board-filter .ui-field__label { white-space: nowrap; }
+.board-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 50%;
+  padding: var(--space-6);
+}
+.board-empty > * { max-width: 380px; width: 100%; }
 
 /* ---------------------------------------------------------------------------
  * Task detail + run timeline + approvals (right pane)
