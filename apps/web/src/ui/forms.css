@@ -1,0 +1,109 @@
+/**
+ * Form control styles (#67). Token-only. Every control defines hover/active/
+ * focus/disabled; inputs add error; button adds loading. Stable dimensions so
+ * state changes don't resize layout (gate §8).
+ */
+
+/* Button ---------------------------------------------------------------- */
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
+  user-select: none;
+}
+.ui-btn--md { height: 32px; padding: 0 12px; font-size: var(--text-small); }
+.ui-btn--sm { height: 26px; padding: 0 10px; font-size: var(--text-caption); }
+.ui-btn > svg { flex: none; }
+
+.ui-btn--primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.ui-btn--primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+.ui-btn--secondary { background: var(--surface); border-color: var(--border-strong); color: var(--text); }
+.ui-btn--secondary:hover { background: var(--surface-3); }
+
+.ui-btn--ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
+.ui-btn--ghost:hover { background: var(--surface-3); color: var(--text); }
+
+.ui-btn--danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.ui-btn--danger:hover { filter: brightness(0.94); }
+
+.ui-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.ui-btn.is-loading { cursor: progress; }
+.ui-btn__spinner { animation: ui-spin 0.7s linear infinite; }
+@keyframes ui-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .ui-btn__spinner { animation-duration: 1.4s; }
+}
+
+/* Field shell ----------------------------------------------------------- */
+.ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.ui-field__label {
+  font-size: var(--text-caption);
+  font-weight: var(--fw-medium);
+  color: var(--text-muted);
+}
+.ui-field__msg {
+  font-size: var(--text-caption);
+  color: var(--text-subtle);
+}
+.ui-field__msg--error { color: var(--danger); }
+
+/* Inputs ---------------------------------------------------------------- */
+.ui-input {
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  font-family: inherit;
+  font-size: var(--text-small);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+.ui-input::placeholder { color: var(--text-subtle); }
+.ui-input:hover { border-color: #c2c8d0; }
+.ui-input:disabled { background: var(--surface-3); color: var(--text-subtle); cursor: not-allowed; }
+.ui-input[aria-invalid="true"] { border-color: var(--danger); }
+.ui-textarea { height: auto; padding: 7px 9px; line-height: var(--lh-body); resize: vertical; }
+.ui-select { appearance: auto; cursor: pointer; }
+
+/* Search ---------------------------------------------------------------- */
+.ui-search { position: relative; display: flex; align-items: center; min-width: 0; }
+.ui-search__icon {
+  position: absolute;
+  left: 9px;
+  color: var(--text-subtle);
+  pointer-events: none;
+}
+.ui-search__input { padding-left: 30px; padding-right: 28px; }
+.ui-search__input::-webkit-search-cancel-button { appearance: none; }
+.ui-search__clear {
+  position: absolute;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.ui-search__clear:hover { background: var(--surface-3); color: var(--text); }
