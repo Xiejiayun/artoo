@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { Button } from "../ui/index.js";
+import { LogOut } from "../ui/Icon.js";
 
 /**
  * Sign-out control (#34). Renders only when a session is cached — i.e. auth is
@@ -31,13 +33,15 @@ export function LogoutButton(): React.ReactNode {
   }
 
   return (
-    <button
-      type="button"
+    <Button
+      variant="ghost"
+      size="sm"
+      iconLeft={LogOut}
       className="logout"
-      disabled={logout.isPending}
+      loading={logout.isPending}
       onClick={() => logout.mutate()}
     >
       Sign out
-    </button>
+    </Button>
   );
 }

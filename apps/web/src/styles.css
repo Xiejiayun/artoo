@@ -1178,7 +1178,7 @@ label {
 }
 
 /* ---------------------------------------------------------------------------
- * Login page
+ * Login page + auth states (#78)
  * ------------------------------------------------------------------------- */
 .login-page {
   min-height: 100%;
@@ -1186,17 +1186,48 @@ label {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-4);
+  padding: var(--space-6);
+}
+.login-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  width: min(380px, 100%);
   padding: var(--space-6);
   text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
 }
-.login-page h1 {
-  font-size: 24px;
+.login-brand {
+  font-weight: var(--fw-bold);
+  font-size: var(--text-h2);
+  color: var(--accent);
+  letter-spacing: 0;
 }
-.login-google {
-  font-size: 14px;
-  padding: 10px 20px;
+.login-card h1 { margin: 0; }
+.login-lede {
+  margin: 0;
+  max-width: 30ch;
 }
+.login-submit {
+  width: 100%;
+  margin-top: var(--space-2);
+}
+.login-foot {
+  margin: 0;
+  max-width: 34ch;
+}
+.auth-state {
+  min-height: 60vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+}
+.auth-state > * { max-width: 380px; width: 100%; }
 
 /* ---------------------------------------------------------------------------
  * Responsive — keep desktop package and narrow web viewports sane

@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 import { ApiClientError } from "../api/client.js";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { Button, ErrorState } from "../ui/index.js";
 import { LoginPage } from "./LoginPage.js";
 
 /**
@@ -35,7 +36,11 @@ function AuthGuard({ children }: { children: React.ReactNode }): React.ReactNode
   });
 
   if (session.isLoading) {
-    return <p role="status">Loading…</p>;
+    return (
+      <div className="auth-state">
+        <p role="status">Loading…</p>
+      </div>
+    );
   }
 
   // Only a clean 401 means "not signed in" → start the login flow. Anything
@@ -60,11 +65,16 @@ function AuthGuard({ children }: { children: React.ReactNode }): React.ReactNode
 /** Retryable error state for a failed/unusable `/auth/session` probe. */
 function SessionError({ onRetry }: { onRetry: () => void }): React.ReactNode {
   return (
-    <div role="alert" className="auth-error">
-      <p>We couldn’t verify your session. Please try again.</p>
-      <button type="button" onClick={onRetry}>
-        Retry
-      </button>
+    <div className="auth-state">
+      <ErrorState
+        title="Couldn’t verify your session"
+        description="Please try again."
+        action={
+          <Button variant="primary" onClick={onRetry}>
+            Retry
+          </Button>
+        }
+      />
     </div>
   );
 }
