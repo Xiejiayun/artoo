@@ -3,17 +3,20 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Task } from "@artoo/domain";
 
 import { newIdempotencyKey } from "../api/idempotency.js";
-import { useApi } from "../app/ApiContext.js";
+import { useApi, useCommands } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 
 /**
  * Status-aware task lifecycle controls. Drives the happy path from the UI:
  * backlog → Mark ready → ready → Assign → running …; blocked → Retry. Each
- * mutation carries a fresh idempotency key and refreshes the task snapshot +
- * project list.
+ * mutation runs through the canonical @artoo/client command queue (#27 dogfood)
+ * with a stable idempotency key, so a flaky/offline send is queued and replayed
+ * once on reconnect rather than lost or double-applied. Then it refreshes the
+ * task snapshot + project list.
  */
 export function TaskActions({ task }: { task: Task }): React.ReactNode {
   const api = useApi();
+  const commands = useCommands();
   const queryClient = useQueryClient();
 
   const invalidate = async (): Promise<void> => {
@@ -22,15 +25,24 @@ export function TaskActions({ task }: { task: Task }): React.ReactNode {
   };
 
   const ready = useMutation({
-    mutationFn: () => api.markReady(task.id, newIdempotencyKey()),
+    mutationFn: () => {
+      const key = newIdempotencyKey();
+      return commands.submit(() => api.markReady(task.id, key), { key });
+    },
     onSuccess: invalidate,
   });
   const assign = useMutation({
-    mutationFn: () => api.assignTask(task.id, { mode: "auto" }, newIdempotencyKey()),
+    mutationFn: () => {
+      const key = newIdempotencyKey();
+      return commands.submit(() => api.assignTask(task.id, { mode: "auto" }, key), { key });
+    },
     onSuccess: invalidate,
   });
   const retry = useMutation({
-    mutationFn: () => api.retryTask(task.id, {}, newIdempotencyKey()),
+    mutationFn: () => {
+      const key = newIdempotencyKey();
+      return commands.submit(() => api.retryTask(task.id, {}, key), { key });
+    },
     onSuccess: invalidate,
   });
 
