@@ -97,6 +97,7 @@ export const tasks = pgTable("tasks", {
   roomId: text("room_id"),
   goalId: text("goal_id").references((): AnyPgColumn => goals.id),
   sourcePlanId: text("source_plan_id"),
+  sourcePlanSpecRef: text("source_plan_spec_ref"),
   title: text("title").notNull(),
   description: text("description").notNull().default(""),
   status: text("status").notNull(),
@@ -122,6 +123,9 @@ export const tasks = pgTable("tasks", {
   index("tasks_project_status_updated_idx").on(t.projectId, t.status, t.updatedAt),
   index("tasks_parent_idx").on(t.parentTaskId),
   index("tasks_goal_idx").on(t.goalId),
+  // #115 P1d: DB-level dedup so a plan→DAG materialization retry cannot create
+  // duplicate tasks for the same plan spec. NULLs (non-plan tasks) don't collide.
+  unique("tasks_source_plan_spec_uniq").on(t.sourcePlanId, t.sourcePlanSpecRef),
 ]);
 
 export const taskDependencies = pgTable("task_dependencies", {

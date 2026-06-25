@@ -55,6 +55,8 @@ CREATE TABLE "checkpoints" (
 --> statement-breakpoint
 ALTER TABLE "tasks" ADD COLUMN "goal_id" text;--> statement-breakpoint
 ALTER TABLE "tasks" ADD COLUMN "source_plan_id" text;--> statement-breakpoint
+ALTER TABLE "tasks" ADD COLUMN "source_plan_spec_ref" text;--> statement-breakpoint
+ALTER TABLE "tasks" ADD CONSTRAINT "tasks_source_plan_spec_uniq" UNIQUE("source_plan_id","source_plan_spec_ref");--> statement-breakpoint
 ALTER TABLE "event_log" ADD COLUMN "goal_id" text;--> statement-breakpoint
 ALTER TABLE "rooms" ADD COLUMN "goal_id" text;--> statement-breakpoint
 ALTER TABLE "rooms" DROP CONSTRAINT "rooms_type_chk";--> statement-breakpoint
