@@ -14,8 +14,20 @@
  *  - identity is explicit: activity is recorded only for an authenticated DEVICE
  *    token (node or control), never the dev escape.
  */
-import { devices } from "@artoo/db";
-import { derivePresenceState, type DevicePresence, type DevicePresenceState, type PresenceWindows } from "@artoo/domain";
+import { agentInstances, agentRuntimes, computers, devices, runs, tasks } from "@artoo/db";
+import {
+  derivePresenceState,
+  isActiveRunStatus,
+  synthesizeAgentInstancePresence,
+  synthesizeComputerPresence,
+  type AgentInstancePresence,
+  type AgentInstancePresenceFacts,
+  type ComputerPresence,
+  type ComputerPresenceFacts,
+  type DevicePresence,
+  type DevicePresenceState,
+  type PresenceWindows,
+} from "@artoo/domain";
 import { and, eq } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
@@ -179,4 +191,162 @@ export async function devicePresence(
   }
   const state = derivePresenceState(device.lastSeenAt, ctx.clock.nowIso(), config.windows);
   return { device_id: deviceId, state, last_seen_at: lastSeenIso };
+}
+
+// ---------------------------------------------------------------------------
+// Agent-instance + computer presence (#113). Server-synthesized at read time
+// from runs/tasks/agent_runtimes/computers/devices + live-connection info passed
+// from the app layer. The domain `synthesize*` helpers (and the shared
+// `isSchedulable` eligibility used by the scheduler) hold the logic — this layer
+// only gathers facts. NEVER selects or returns a token/secret.
+// ---------------------------------------------------------------------------
+
+const ISO = (v: string | null): string | null => (v === null ? null : new Date(v).toISOString());
+
+/** Live-connection predicate the app layer supplies (e.g. nodeRegistry.get(id) !== undefined). */
+export type LiveConnection = (computerId: string) => boolean;
+
+async function activeRunsForInstance(
+  ctx: ServerContext,
+  agentInstanceId: string,
+): Promise<Array<{ runStatus: string; taskStatus: string }>> {
+  const rows = await ctx.db.db
+    .select({ runStatus: runs.status, taskStatus: tasks.status })
+    .from(runs)
+    .innerJoin(tasks, eq(runs.taskId, tasks.id))
+    .where(and(eq(runs.organizationId, ctx.organizationId), eq(runs.agentInstanceId, agentInstanceId)));
+  return rows.filter((r) => isActiveRunStatus(r.runStatus));
+}
+
+async function instanceFacts(
+  ctx: ServerContext,
+  inst: { id: string; agentId: string; computerId: string; runtime: string; config: Record<string, unknown> | null },
+  isLive: LiveConnection,
+): Promise<AgentInstancePresenceFacts> {
+  const runtimeRow = (
+    await ctx.db.db
+      .select()
+      .from(agentRuntimes)
+      .where(and(eq(agentRuntimes.computerId, inst.computerId), eq(agentRuntimes.runtime, inst.runtime)))
+  )[0];
+  const computer = (await ctx.db.db.select().from(computers).where(eq(computers.id, inst.computerId)))[0];
+  const device = (await ctx.db.db.select().from(devices).where(eq(devices.computerId, inst.computerId)))[0];
+  const active = await activeRunsForInstance(ctx, inst.id);
+  const limitRaw = (inst.config ?? {})["concurrency_limit"];
+  const concurrencyLimit = typeof limitRaw === "number" && limitRaw > 0 ? limitRaw : 1;
+  return {
+    agentInstanceId: inst.id,
+    agentId: inst.agentId,
+    computerId: inst.computerId,
+    hasLiveConnection: isLive(inst.computerId),
+    deviceTrust: (device?.trust as "active" | "revoked" | undefined) ?? null,
+    lastSeenAt: ISO(runtimeRow?.lastSeenAt ?? computer?.lastHeartbeatAt ?? null),
+    runtimeStatus: (runtimeRow?.status as AgentInstancePresenceFacts["runtimeStatus"]) ?? null,
+    concurrencyLimit,
+    activeRuns: active.map((r) => ({
+      runStatus: r.runStatus as AgentInstancePresenceFacts["activeRuns"][number]["runStatus"],
+      taskStatus: r.taskStatus as AgentInstancePresenceFacts["activeRuns"][number]["taskStatus"],
+    })),
+  };
+}
+
+export async function agentInstancePresence(
+  ctx: ServerContext,
+  instanceId: string,
+  isLive: LiveConnection,
+  config: PresenceConfig = DEFAULT_PRESENCE_CONFIG,
+): Promise<AgentInstancePresence | null> {
+  const inst = (
+    await ctx.db.db
+      .select()
+      .from(agentInstances)
+      .where(and(eq(agentInstances.id, instanceId), eq(agentInstances.organizationId, ctx.organizationId)))
+  )[0];
+  if (inst === undefined) return null;
+  const facts = await instanceFacts(
+    ctx,
+    { id: inst.id, agentId: inst.agentId, computerId: inst.computerId, runtime: inst.runtime, config: inst.config as Record<string, unknown> | null },
+    isLive,
+  );
+  return synthesizeAgentInstancePresence(facts, ctx.clock.nowIso(), config.windows);
+}
+
+export async function listAgentInstancePresence(
+  ctx: ServerContext,
+  isLive: LiveConnection,
+  config: PresenceConfig = DEFAULT_PRESENCE_CONFIG,
+): Promise<AgentInstancePresence[]> {
+  const insts = await ctx.db.db
+    .select()
+    .from(agentInstances)
+    .where(eq(agentInstances.organizationId, ctx.organizationId));
+  const out: AgentInstancePresence[] = [];
+  for (const inst of insts) {
+    const facts = await instanceFacts(
+      ctx,
+      { id: inst.id, agentId: inst.agentId, computerId: inst.computerId, runtime: inst.runtime, config: inst.config as Record<string, unknown> | null },
+      isLive,
+    );
+    out.push(synthesizeAgentInstancePresence(facts, ctx.clock.nowIso(), config.windows));
+  }
+  return out;
+}
+
+async function computerFacts(
+  ctx: ServerContext,
+  computer: { id: string; lastHeartbeatAt: string | null },
+  isLive: LiveConnection,
+): Promise<ComputerPresenceFacts> {
+  const device = (await ctx.db.db.select().from(devices).where(eq(devices.computerId, computer.id)))[0];
+  const rtRows = await ctx.db.db.select().from(agentRuntimes).where(eq(agentRuntimes.computerId, computer.id));
+  const runRows = await ctx.db.db
+    .select({ status: runs.status })
+    .from(runs)
+    .where(and(eq(runs.organizationId, ctx.organizationId), eq(runs.computerId, computer.id)));
+  const active = runRows.filter((r) => isActiveRunStatus(r.status));
+  const queueDepth = runRows.filter((r) => r.status === "queued" || r.status === "starting").length;
+  return {
+    computerId: computer.id,
+    hasLiveConnection: isLive(computer.id),
+    deviceTrust: (device?.trust as "active" | "revoked" | undefined) ?? null,
+    lastHeartbeatAt: ISO(computer.lastHeartbeatAt),
+    runtimes: rtRows.map((r) => ({
+      runtime: r.runtime,
+      status: r.status as ComputerPresenceFacts["runtimes"][number]["status"],
+      lastSeenAt: ISO(r.lastSeenAt),
+    })),
+    activeRuns: active.length,
+    queueDepth,
+  };
+}
+
+export async function computerPresence(
+  ctx: ServerContext,
+  computerId: string,
+  isLive: LiveConnection,
+  config: PresenceConfig = DEFAULT_PRESENCE_CONFIG,
+): Promise<ComputerPresence | null> {
+  const computer = (
+    await ctx.db.db
+      .select()
+      .from(computers)
+      .where(and(eq(computers.id, computerId), eq(computers.organizationId, ctx.organizationId)))
+  )[0];
+  if (computer === undefined) return null;
+  const facts = await computerFacts(ctx, { id: computer.id, lastHeartbeatAt: computer.lastHeartbeatAt }, isLive);
+  return synthesizeComputerPresence(facts, ctx.clock.nowIso(), config.windows);
+}
+
+export async function listComputerPresence(
+  ctx: ServerContext,
+  isLive: LiveConnection,
+  config: PresenceConfig = DEFAULT_PRESENCE_CONFIG,
+): Promise<ComputerPresence[]> {
+  const rows = await ctx.db.db.select().from(computers).where(eq(computers.organizationId, ctx.organizationId));
+  const out: ComputerPresence[] = [];
+  for (const computer of rows) {
+    const facts = await computerFacts(ctx, { id: computer.id, lastHeartbeatAt: computer.lastHeartbeatAt }, isLive);
+    out.push(synthesizeComputerPresence(facts, ctx.clock.nowIso(), config.windows));
+  }
+  return out;
 }
