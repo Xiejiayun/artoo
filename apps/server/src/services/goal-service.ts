@@ -54,8 +54,8 @@ export interface CreateGoalInput {
   objective?: string;
   priority?: Goal["priority"];
   acceptance_criteria?: string[];
-  stop_conditions?: StopConditions;
-  budgets?: GoalBudgets;
+  stop_conditions?: Partial<StopConditions>;
+  budgets?: Partial<GoalBudgets>;
 }
 
 /** Create a draft goal + its auto-created goal room. The goal↔room link is
