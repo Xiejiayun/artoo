@@ -98,6 +98,42 @@ describe("collaboration-service", () => {
     expect(await eventsOfType("decision.proposed")).toHaveLength(1);
   });
 
+  it("rejects collaboration records for a room outside the org scope", async () => {
+    await expect(
+      createDecision(server.ctx, {
+        room_id: "room_missing",
+        actor_type: "agent",
+        actor_id: "SkywalkerClaude",
+        summary: "wrong room",
+      }),
+    ).rejects.toMatchObject({ httpStatus: 404 });
+  });
+
+  it("rejects decision promotion when source_message_id belongs to another room", async () => {
+    const { ctx, db } = server;
+    const now = ctx.clock.nowIso();
+    await db.db.insert(messages).values({
+      id: "msg_other_room",
+      organizationId: "org_default",
+      roomId: OTHER_ROOM,
+      actorType: "agent",
+      actorId: "SkywalkerClaude",
+      kind: "decision",
+      body: "wrong room",
+      createdAt: now,
+    });
+
+    await expect(
+      createDecision(ctx, {
+        room_id: ROOM,
+        source_message_id: "msg_other_room",
+        actor_type: "agent",
+        actor_id: "SkywalkerClaude",
+        summary: "Promote from wrong room",
+      }),
+    ).rejects.toMatchObject({ httpStatus: 400 });
+  });
+
   it("transitions a decision to accepted and emits decision.accepted", async () => {
     const { ctx } = server;
     const dec = await createDecision(ctx, {
@@ -177,5 +213,19 @@ describe("collaboration-service", () => {
     expect(resolved?.status).toBe("resolved");
     expect((await eventsOfType("blocker.mitigated"))[0]).toMatchObject({ to: "mitigated" });
     expect((await eventsOfType("blocker.resolved"))[0]).toMatchObject({ to: "resolved" });
+  });
+
+  it("emits blocker.accepted_risk when a blocker is accepted as risk", async () => {
+    const { ctx } = server;
+    const blk = await createBlocker(ctx, {
+      room_id: ROOM,
+      type: "policy",
+      owner_type: "user",
+      owner_id: "user_owner",
+      summary: "dogfood-only risk",
+    });
+    const accepted = await setBlockerStatus(ctx, blk.id, "accepted_risk", { mitigation: "documented dogfood boundary" });
+    expect(accepted?.status).toBe("accepted_risk");
+    expect((await eventsOfType("blocker.accepted_risk"))[0]).toMatchObject({ from: "open", to: "accepted_risk" });
   });
 });

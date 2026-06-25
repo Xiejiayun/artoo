@@ -1,4 +1,4 @@
-import { blockers, decisionRecords, handoffs, appendEvent } from "@artoo/db";
+import { appendEvent, blockers, decisionRecords, handoffs, messages, rooms, runs, tasks } from "@artoo/db";
 import {
   type Assignment,
   type BlockerRecord,
@@ -15,6 +15,7 @@ import {
 import { and, desc, eq } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
+import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 
 /**
@@ -119,6 +120,62 @@ interface RecordLinks {
   plan_id?: string | null;
 }
 
+async function requireRoom(ctx: ServerContext, roomId: string): Promise<typeof rooms.$inferSelect> {
+  const room = (
+    await ctx.db.db
+      .select()
+      .from(rooms)
+      .where(and(eq(rooms.id, roomId), eq(rooms.organizationId, ctx.organizationId)))
+  )[0];
+  if (room === undefined) {
+    throw AppError.notFound(`room not found: ${roomId}`, { room_id: roomId });
+  }
+  return room;
+}
+
+async function assertOptionalLinks(ctx: ServerContext, input: RecordLinks & { source_message_id?: string | null }): Promise<void> {
+  await requireRoom(ctx, input.room_id);
+  if (input.task_id != null) {
+    const task = (
+      await ctx.db.db
+        .select({ id: tasks.id })
+        .from(tasks)
+        .where(and(eq(tasks.id, input.task_id), eq(tasks.organizationId, ctx.organizationId)))
+    )[0];
+    if (task === undefined) {
+      throw AppError.notFound(`task not found: ${input.task_id}`, { task_id: input.task_id });
+    }
+  }
+  if (input.run_id != null) {
+    const run = (
+      await ctx.db.db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(and(eq(runs.id, input.run_id), eq(runs.organizationId, ctx.organizationId)))
+    )[0];
+    if (run === undefined) {
+      throw AppError.notFound(`run not found: ${input.run_id}`, { run_id: input.run_id });
+    }
+  }
+  if (input.source_message_id != null && input.source_message_id !== "") {
+    const message = (
+      await ctx.db.db
+        .select({ id: messages.id, roomId: messages.roomId })
+        .from(messages)
+        .where(and(eq(messages.id, input.source_message_id), eq(messages.organizationId, ctx.organizationId)))
+    )[0];
+    if (message === undefined) {
+      throw AppError.notFound(`message not found: ${input.source_message_id}`, { message_id: input.source_message_id });
+    }
+    if (message.roomId !== input.room_id) {
+      throw AppError.validation("source_message_id must belong to the target room", {
+        room_id: input.room_id,
+        source_message_id: input.source_message_id,
+      });
+    }
+  }
+}
+
 // ------------------------------------------------------------------------- decisions
 
 export interface CreateDecisionInput extends RecordLinks {
@@ -135,6 +192,7 @@ export interface CreateDecisionInput extends RecordLinks {
 /** Create a decision, or — when promoting a message — return the existing record
  *  for that source message (idempotent: a message can't make duplicate records). */
 export async function createDecision(ctx: ServerContext, input: CreateDecisionInput): Promise<DecisionRecord> {
+  await assertOptionalLinks(ctx, input);
   if (input.source_message_id != null && input.source_message_id !== "") {
     const existing = (
       await ctx.db.db
@@ -209,6 +267,7 @@ export async function getDecision(ctx: ServerContext, id: string): Promise<Decis
 }
 
 export async function listDecisions(ctx: ServerContext, roomId: string): Promise<DecisionRecord[]> {
+  await requireRoom(ctx, roomId);
   const rows = await ctx.db.db
     .select()
     .from(decisionRecords)
@@ -231,6 +290,7 @@ export interface CreateHandoffInput extends RecordLinks {
 }
 
 export async function createHandoff(ctx: ServerContext, input: CreateHandoffInput): Promise<HandoffRecord> {
+  await assertOptionalLinks(ctx, input);
   const now = ctx.clock.nowIso();
   const id = ctx.idGen.generate(ID_PREFIXES.handoff);
   await ctx.db.db.insert(handoffs).values({
@@ -302,6 +362,7 @@ export async function getHandoff(ctx: ServerContext, id: string): Promise<Handof
 }
 
 export async function listHandoffs(ctx: ServerContext, roomId: string): Promise<HandoffRecord[]> {
+  await requireRoom(ctx, roomId);
   const rows = await ctx.db.db
     .select()
     .from(handoffs)
@@ -313,6 +374,9 @@ export async function listHandoffs(ctx: ServerContext, roomId: string): Promise<
 /** Who-waits-on-whom from open handoff RECORDS (not thread scraping). Org-scoped;
  *  optionally narrowed to one room. */
 export async function whoWaitsOnWhom(ctx: ServerContext, roomId?: string): Promise<WaitEdge[]> {
+  if (roomId !== undefined) {
+    await requireRoom(ctx, roomId);
+  }
   const where =
     roomId === undefined
       ? eq(handoffs.organizationId, ctx.organizationId)
@@ -335,6 +399,7 @@ export interface CreateBlockerInput extends RecordLinks {
 }
 
 export async function createBlocker(ctx: ServerContext, input: CreateBlockerInput): Promise<BlockerRecord> {
+  await assertOptionalLinks(ctx, input);
   const now = ctx.clock.nowIso();
   const id = ctx.idGen.generate(ID_PREFIXES.blocker);
   await ctx.db.db.insert(blockers).values({
@@ -385,7 +450,14 @@ export async function setBlockerStatus(
       updatedAt: now,
     })
     .where(and(eq(blockers.id, id), eq(blockers.organizationId, ctx.organizationId)));
-  const eventType = status === "mitigated" ? "blocker.mitigated" : status === "resolved" ? "blocker.resolved" : "blocker.opened";
+  const eventType =
+    status === "mitigated"
+      ? "blocker.mitigated"
+      : status === "resolved"
+        ? "blocker.resolved"
+        : status === "accepted_risk"
+          ? "blocker.accepted_risk"
+          : "blocker.opened";
   await emit(ctx, eventType, id, existing.room_id, { blocker_id: id, from: existing.status, to: status });
   return getBlocker(ctx, id);
 }
@@ -429,6 +501,7 @@ export async function getBlocker(ctx: ServerContext, id: string): Promise<Blocke
 }
 
 export async function listBlockers(ctx: ServerContext, roomId: string): Promise<BlockerRecord[]> {
+  await requireRoom(ctx, roomId);
   const rows = await ctx.db.db
     .select()
     .from(blockers)

@@ -149,7 +149,12 @@ export async function resolveApproval(
       });
     }
     const toStatus = applyApprovalTransition(fromStatus, approvalTrigger);
-    const task = (await tx.select().from(tasks).where(eq(tasks.id, approval.taskId)))[0];
+    const task = (
+      await tx
+        .select()
+        .from(tasks)
+        .where(and(eq(tasks.id, approval.taskId), eq(tasks.organizationId, ctx.organizationId)))
+    )[0];
     if (task === undefined) {
       throw new Error("resolveApproval: task missing for approval");
     }

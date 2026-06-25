@@ -272,6 +272,9 @@ export function auditBundleFixture(partial: Partial<TaskAuditBundle> = {}): Task
     approvals: [],
     scheduler_decisions: [],
     events: [],
+    decisions: [],
+    handoffs: [],
+    blockers: [],
     ...partial,
   };
 }

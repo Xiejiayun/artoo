@@ -27,6 +27,7 @@ describe("#114 collaboration taxonomy", () => {
       "handoff.opened",
       "handoff.completed",
       "blocker.opened",
+      "blocker.accepted_risk",
       "blocker.resolved",
       "message.mention",
     ]) {

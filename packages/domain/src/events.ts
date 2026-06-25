@@ -57,6 +57,7 @@ export const CoreEventTypeSchema = z.enum([
   "handoff.expired",
   "blocker.opened",
   "blocker.mitigated",
+  "blocker.accepted_risk",
   "blocker.resolved",
   "message.mention",
 ]);
