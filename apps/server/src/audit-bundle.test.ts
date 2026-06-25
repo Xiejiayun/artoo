@@ -134,6 +134,44 @@ describe("task audit bundle", () => {
     expect(second.json().bundle).toEqual(bundle);
   });
 
+  it("includes #114 decisions/handoffs/blockers linked to the task", async () => {
+    server = await buildTestServer();
+    const { taskId, roomId } = await createTask(server);
+
+    await server.app.inject({
+      method: "POST",
+      url: `/api/v1/rooms/${roomId}/decisions`,
+      payload: { task_id: taskId, actor_type: "agent", actor_id: "SkywalkerCodex", summary: "use migration 0012" },
+    });
+    await server.app.inject({
+      method: "POST",
+      url: `/api/v1/rooms/${roomId}/handoffs`,
+      payload: {
+        task_id: taskId,
+        sender_type: "agent",
+        sender_id: "SkywalkerClaude",
+        recipient_type: "agent",
+        recipient_id: "SkywalkerCodex",
+        expected_action: "review",
+      },
+    });
+    await server.app.inject({
+      method: "POST",
+      url: `/api/v1/rooms/${roomId}/blockers`,
+      payload: { task_id: taskId, type: "dependency", owner_type: "agent", owner_id: "SkywalkerClaude", summary: "needs #115" },
+    });
+
+    const res = await server.app.inject({ method: "GET", url: `/api/v1/tasks/${taskId}/audit-bundle` });
+    expect(res.statusCode).toBe(200);
+    const bundle = res.json().bundle;
+    expect(bundle.decisions).toHaveLength(1);
+    expect(bundle.decisions[0].summary).toBe("use migration 0012");
+    expect(bundle.handoffs).toHaveLength(1);
+    expect(bundle.handoffs[0].recipient_id).toBe("SkywalkerCodex");
+    expect(bundle.blockers).toHaveLength(1);
+    expect(bundle.blockers[0].summary).toBe("needs #115");
+  });
+
   it("redacts credential-shaped values from the exported bundle", async () => {
     server = await buildTestServer();
     const { taskId, roomId } = await createTask(server);

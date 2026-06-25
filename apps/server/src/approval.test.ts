@@ -119,4 +119,70 @@ describe("approval platform-gate", () => {
     expect(approved.json().approval.status).toBe("approved");
     expect(await status(server, taskId)).toBe("running");
   });
+
+  it("auto-resolves a linked blocker when the approval is decided (#114)", async () => {
+    server = await buildTestServer();
+    const created = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/tasks",
+      payload: {
+        project_id: "proj_artoo",
+        title: "blocked-by-approval task",
+        acceptance_criteria: ["ok"],
+        required_capabilities: ["code.modify"],
+      },
+    });
+    const taskId = created.json().task.id as string;
+    const roomId = created.json().room.id as string;
+    await server.app.inject({ method: "POST", url: `/api/v1/tasks/${taskId}/ready` });
+    const assigned = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/tasks/${taskId}/assign`,
+      payload: { mode: "auto" },
+    });
+    const runId = assigned.json().run.id as string;
+    await ingestRunEvent(server.ctx, {
+      runId,
+      nodeId: "computer_local_mock",
+      sequence: 0,
+      event: { kind: "lifecycle", phase: "started" },
+    });
+    const requested = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/dev/tasks/${taskId}/request-approval`,
+      payload: { action: "git.push", risk: "high", summary: "Push branch", run_id: runId },
+    });
+    const approvalId = requested.json().approval.id as string;
+
+    // A blocker explicitly linked to this approval as its deterministic source.
+    const blockerRes = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/rooms/${roomId}/blockers`,
+      payload: {
+        task_id: taskId,
+        type: "approval",
+        owner_type: "agent",
+        owner_id: "SkywalkerClaude",
+        source_kind: "approval",
+        source_id: approvalId,
+        summary: "waiting on git.push approval",
+      },
+    });
+    const blockerId = blockerRes.json().blocker.id as string;
+    expect(blockerRes.json().blocker.status).toBe("open");
+
+    await server.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${approvalId}/resolve`,
+      payload: { decision: "approved", comment: "ok" },
+    });
+
+    const blockers = await server.app.inject({ method: "GET", url: `/api/v1/rooms/${roomId}/blockers` });
+    const blocker = (blockers.json().blockers as { id: string; status: string }[]).find((b) => b.id === blockerId);
+    expect(blocker?.status).toBe("resolved");
+
+    // And the audit bundle carries the decision-trail record for the task.
+    const bundle = await server.app.inject({ method: "GET", url: `/api/v1/tasks/${taskId}/audit-bundle` });
+    expect((bundle.json().bundle.blockers as { id: string }[]).map((b) => b.id)).toContain(blockerId);
+  });
 });

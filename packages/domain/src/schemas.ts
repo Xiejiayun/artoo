@@ -6,6 +6,7 @@
 import { z } from "zod";
 
 import { CapabilitySchema } from "./capabilities.js";
+import { BlockerRecordSchema, DecisionRecordSchema, HandoffRecordSchema } from "./collaboration.js";
 import { EventEnvelopeSchema } from "./events.js";
 import { ArtifactTypeSchema } from "./node-payloads.js";
 import { ApprovalStatusSchema, RunStatusSchema, TaskStatusSchema } from "./state.js";
@@ -345,6 +346,11 @@ export const TaskAuditBundleSchema = z.object({
   approvals: z.array(ApprovalSchema),
   scheduler_decisions: z.array(SchedulerDecisionSchema),
   events: z.array(AuditEventSchema),
+  // V3 #114 — team discussion records linked to this task (default [] keeps the
+  // bundle backward-compatible for pre-#114 callers/fixtures).
+  decisions: z.array(DecisionRecordSchema).default([]),
+  handoffs: z.array(HandoffRecordSchema).default([]),
+  blockers: z.array(BlockerRecordSchema).default([]),
 });
 export type TaskAuditBundle = z.infer<typeof TaskAuditBundleSchema>;
 

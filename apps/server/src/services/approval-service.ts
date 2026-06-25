@@ -14,6 +14,7 @@ import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { mapApproval } from "../mappers.js";
+import { resolveBlockersForSource } from "./collaboration-service.js";
 import { transitionTask } from "./transition-service.js";
 
 export interface RequestApprovalParams {
@@ -131,7 +132,7 @@ export async function resolveApproval(
   const approvalTrigger =
     req.decision === "approved" ? "approve" : req.decision === "rejected" ? "reject" : "need_more_info";
 
-  return ctx.db.transaction(async (tx) => {
+  const resolved = await ctx.db.transaction(async (tx) => {
     const approval = (
       await tx
         .select()
@@ -198,4 +199,13 @@ export async function resolveApproval(
     }
     return mapApproval(row);
   });
+
+  // V3 #114 — deterministic unblock: once the approval is decided (approved or
+  // rejected, i.e. no longer pending), auto-resolve any blocker that linked to
+  // it as its source. Runs post-commit because resolveBlockersForSource opens
+  // its own transaction for the blocker.resolved events.
+  if (req.decision === "approved" || req.decision === "rejected") {
+    await resolveBlockersForSource(ctx, "approval", approvalId);
+  }
+  return resolved;
 }

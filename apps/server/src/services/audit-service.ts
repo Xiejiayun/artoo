@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import {
   artifacts,
   approvals,
+  blockers,
+  decisionRecords,
   eventLog,
+  handoffs,
   messages,
   rooms,
   runs,
@@ -30,6 +33,7 @@ import {
   mapSchedulerDecision,
   mapTask,
 } from "../mappers.js";
+import { mapBlocker, mapDecision, mapHandoff } from "./collaboration-service.js";
 import { redactTaskAuditBundle } from "./redaction.js";
 
 /** GET /api/v1/tasks/:id/audit-bundle — deterministic read-only task evidence. */
@@ -90,6 +94,23 @@ export async function getTaskAuditBundle(ctx: ServerContext, taskId: string): Pr
     )
     .orderBy(asc(eventLog.position));
 
+  // V3 #114 — team discussion records linked to this task.
+  const decisionRows = await db
+    .select()
+    .from(decisionRecords)
+    .where(and(eq(decisionRecords.organizationId, ctx.organizationId), eq(decisionRecords.taskId, taskId)))
+    .orderBy(asc(decisionRecords.createdAt), asc(decisionRecords.id));
+  const handoffRows = await db
+    .select()
+    .from(handoffs)
+    .where(and(eq(handoffs.organizationId, ctx.organizationId), eq(handoffs.taskId, taskId)))
+    .orderBy(asc(handoffs.createdAt), asc(handoffs.id));
+  const blockerRows = await db
+    .select()
+    .from(blockers)
+    .where(and(eq(blockers.organizationId, ctx.organizationId), eq(blockers.taskId, taskId)))
+    .orderBy(asc(blockers.createdAt), asc(blockers.id));
+
   const bundle = TaskAuditBundleSchema.parse({
     task: mapTask(taskRow),
     room: roomRow !== undefined ? mapRoom(roomRow) : null,
@@ -99,6 +120,9 @@ export async function getTaskAuditBundle(ctx: ServerContext, taskId: string): Pr
     approvals: approvalRows.map(mapApproval),
     scheduler_decisions: schedulerDecisionRows.map(mapSchedulerDecision),
     events: eventRows.map(mapAuditEvent),
+    decisions: decisionRows.map(mapDecision),
+    handoffs: handoffRows.map(mapHandoff),
+    blockers: blockerRows.map(mapBlocker),
   });
   return redactTaskAuditBundle(bundle);
 }

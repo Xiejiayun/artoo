@@ -27,7 +27,7 @@ import { buildEvent } from "../events.js";
 
 // ----------------------------------------------------------------- row -> api mappers
 
-function mapDecision(r: typeof decisionRecords.$inferSelect): DecisionRecord {
+export function mapDecision(r: typeof decisionRecords.$inferSelect): DecisionRecord {
   return {
     id: r.id,
     organization_id: r.organizationId,
@@ -51,7 +51,7 @@ function mapDecision(r: typeof decisionRecords.$inferSelect): DecisionRecord {
   };
 }
 
-function mapHandoff(r: typeof handoffs.$inferSelect): HandoffRecord {
+export function mapHandoff(r: typeof handoffs.$inferSelect): HandoffRecord {
   return {
     id: r.id,
     organization_id: r.organizationId,
@@ -76,7 +76,7 @@ function mapHandoff(r: typeof handoffs.$inferSelect): HandoffRecord {
   };
 }
 
-function mapBlocker(r: typeof blockers.$inferSelect): BlockerRecord {
+export function mapBlocker(r: typeof blockers.$inferSelect): BlockerRecord {
   return {
     id: r.id,
     organization_id: r.organizationId,
