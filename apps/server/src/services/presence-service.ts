@@ -43,12 +43,36 @@ export interface PresenceConfig {
   throttleMs: number;
 }
 
-/** Default presence windows + throttle. Heartbeats are ~30s, so a 15s throttle
- *  coalesces the common case to at most one write per heartbeat. */
-export const DEFAULT_PRESENCE_CONFIG: PresenceConfig = {
+const PRESENCE_THROTTLE_MS = 15_000;
+
+const runtimeOnlineWithinMs = ((): number => {
+  const raw = process.env.ARTOO_RUNTIME_STALE_MS;
+  if (raw !== undefined) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 30_000;
+})();
+
+/** Default device windows + throttle. Device activity is coarser than runtime
+ *  heartbeats, so the device dot tolerates several missed refreshes. */
+export const DEFAULT_DEVICE_PRESENCE_CONFIG: PresenceConfig = {
   windows: { onlineWithinMs: 90_000, staleWithinMs: 300_000 },
-  throttleMs: 15_000,
+  throttleMs: PRESENCE_THROTTLE_MS,
 };
+
+/** Default agent/computer read-model windows. Runtime freshness deliberately
+ *  matches scheduler eligibility (`ARTOO_RUNTIME_STALE_MS`, default 30s) so the
+ *  roster does not show a runtime as available after scheduling would exclude it. */
+export const DEFAULT_AGENT_PRESENCE_CONFIG: PresenceConfig = {
+  windows: { onlineWithinMs: runtimeOnlineWithinMs, staleWithinMs: 300_000 },
+  throttleMs: PRESENCE_THROTTLE_MS,
+};
+
+/** Back-compat export for device presence callers/tests. */
+export const DEFAULT_PRESENCE_CONFIG: PresenceConfig = DEFAULT_DEVICE_PRESENCE_CONFIG;
 
 export interface PresenceTransition {
   transitioned: boolean;
@@ -140,7 +164,7 @@ export async function recordDeviceActivity(
   ctx: ServerContext,
   deviceId: string,
   source: PresenceSource,
-  config: PresenceConfig = DEFAULT_PRESENCE_CONFIG,
+  config: PresenceConfig = DEFAULT_DEVICE_PRESENCE_CONFIG,
 ): Promise<PresenceTransition> {
   const nowIso = ctx.clock.nowIso();
   const device = (
@@ -183,7 +207,7 @@ export async function markDeviceOffline(
   ctx: ServerContext,
   deviceId: string,
   reason: "disconnect" | "revoked",
-  config: PresenceConfig = DEFAULT_PRESENCE_CONFIG,
+  config: PresenceConfig = DEFAULT_DEVICE_PRESENCE_CONFIG,
 ): Promise<PresenceTransition> {
   const nowIso = ctx.clock.nowIso();
   const device = (
@@ -228,7 +252,7 @@ export async function devicePresence(
   ctx: ServerContext,
   deviceId: string,
   input: PresenceReadInput,
-  config: PresenceConfig = DEFAULT_PRESENCE_CONFIG,
+  config: PresenceConfig = DEFAULT_DEVICE_PRESENCE_CONFIG,
 ): Promise<DevicePresence> {
   const device = (
     await ctx.db.db
@@ -253,15 +277,22 @@ export async function devicePresence(
 // ---------------------------------------------------------------------------
 // Agent-instance + computer presence (#113). Server-synthesized at read time
 // from runs/tasks/agent_runtimes/computers/devices + live-connection info passed
-// from the app layer. The domain `synthesize*` helpers (and the shared
-// `isSchedulable` eligibility used by the scheduler) hold the logic — this layer
-// only gathers facts. NEVER selects or returns a token/secret.
+// from the app layer. The domain `synthesize*` helpers hold the read-model logic;
+// scheduler uses domain DB-fact eligibility helpers because it has no live socket
+// dimension and preserves the missing-runtime compatibility fallback. NEVER
+// selects or returns a token/secret.
 // ---------------------------------------------------------------------------
 
 const ISO = (v: string | null): string | null => (v === null ? null : new Date(v).toISOString());
 
 /** Live-connection predicate the app layer supplies (e.g. nodeRegistry.get(id) !== undefined). */
 export type LiveConnection = (computerId: string) => boolean;
+
+function deviceTrustForComputer(rows: Array<{ trust: string }>): "active" | "revoked" | null {
+  if (rows.some((d) => d.trust === "revoked")) return "revoked";
+  if (rows.some((d) => d.trust === "active")) return "active";
+  return null;
+}
 
 async function activeRunsForInstance(
   ctx: ServerContext,
@@ -284,10 +315,22 @@ async function instanceFacts(
     await ctx.db.db
       .select()
       .from(agentRuntimes)
-      .where(and(eq(agentRuntimes.computerId, inst.computerId), eq(agentRuntimes.runtime, inst.runtime)))
+      .where(and(
+        eq(agentRuntimes.organizationId, ctx.organizationId),
+        eq(agentRuntimes.computerId, inst.computerId),
+        eq(agentRuntimes.runtime, inst.runtime),
+      ))
   )[0];
-  const computer = (await ctx.db.db.select().from(computers).where(eq(computers.id, inst.computerId)))[0];
-  const device = (await ctx.db.db.select().from(devices).where(eq(devices.computerId, inst.computerId)))[0];
+  const computer = (
+    await ctx.db.db
+      .select()
+      .from(computers)
+      .where(and(eq(computers.id, inst.computerId), eq(computers.organizationId, ctx.organizationId)))
+  )[0];
+  const deviceRows = await ctx.db.db
+    .select({ trust: devices.trust })
+    .from(devices)
+    .where(and(eq(devices.computerId, inst.computerId), eq(devices.organizationId, ctx.organizationId)));
   const active = await activeRunsForInstance(ctx, inst.id);
   const limitRaw = (inst.config ?? {})["concurrency_limit"];
   const concurrencyLimit = typeof limitRaw === "number" && limitRaw > 0 ? limitRaw : 1;
@@ -296,8 +339,9 @@ async function instanceFacts(
     agentId: inst.agentId,
     computerId: inst.computerId,
     hasLiveConnection: isLive(inst.computerId),
-    deviceTrust: (device?.trust as "active" | "revoked" | undefined) ?? null,
-    lastSeenAt: ISO(runtimeRow?.lastSeenAt ?? computer?.lastHeartbeatAt ?? null),
+    deviceTrust: deviceTrustForComputer(deviceRows),
+    lastSeenAt: ISO(computer?.lastHeartbeatAt ?? null),
+    runtimeLastSeenAt: ISO(runtimeRow?.lastSeenAt ?? null),
     runtimeStatus: (runtimeRow?.status as AgentInstancePresenceFacts["runtimeStatus"]) ?? null,
     concurrencyLimit,
     activeRuns: active.map((r) => ({
@@ -311,7 +355,7 @@ export async function agentInstancePresence(
   ctx: ServerContext,
   instanceId: string,
   isLive: LiveConnection,
-  config: PresenceConfig = DEFAULT_PRESENCE_CONFIG,
+  config: PresenceConfig = DEFAULT_AGENT_PRESENCE_CONFIG,
 ): Promise<AgentInstancePresence | null> {
   const inst = (
     await ctx.db.db
@@ -331,7 +375,7 @@ export async function agentInstancePresence(
 export async function listAgentInstancePresence(
   ctx: ServerContext,
   isLive: LiveConnection,
-  config: PresenceConfig = DEFAULT_PRESENCE_CONFIG,
+  config: PresenceConfig = DEFAULT_AGENT_PRESENCE_CONFIG,
 ): Promise<AgentInstancePresence[]> {
   const insts = await ctx.db.db
     .select()
@@ -354,8 +398,14 @@ async function computerFacts(
   computer: { id: string; lastHeartbeatAt: string | null },
   isLive: LiveConnection,
 ): Promise<ComputerPresenceFacts> {
-  const device = (await ctx.db.db.select().from(devices).where(eq(devices.computerId, computer.id)))[0];
-  const rtRows = await ctx.db.db.select().from(agentRuntimes).where(eq(agentRuntimes.computerId, computer.id));
+  const deviceRows = await ctx.db.db
+    .select({ trust: devices.trust })
+    .from(devices)
+    .where(and(eq(devices.computerId, computer.id), eq(devices.organizationId, ctx.organizationId)));
+  const rtRows = await ctx.db.db
+    .select()
+    .from(agentRuntimes)
+    .where(and(eq(agentRuntimes.computerId, computer.id), eq(agentRuntimes.organizationId, ctx.organizationId)));
   const runRows = await ctx.db.db
     .select({ status: runs.status })
     .from(runs)
@@ -365,7 +415,7 @@ async function computerFacts(
   return {
     computerId: computer.id,
     hasLiveConnection: isLive(computer.id),
-    deviceTrust: (device?.trust as "active" | "revoked" | undefined) ?? null,
+    deviceTrust: deviceTrustForComputer(deviceRows),
     lastHeartbeatAt: ISO(computer.lastHeartbeatAt),
     runtimes: rtRows.map((r) => ({
       runtime: r.runtime,
@@ -381,7 +431,7 @@ export async function computerPresence(
   ctx: ServerContext,
   computerId: string,
   isLive: LiveConnection,
-  config: PresenceConfig = DEFAULT_PRESENCE_CONFIG,
+  config: PresenceConfig = DEFAULT_AGENT_PRESENCE_CONFIG,
 ): Promise<ComputerPresence | null> {
   const computer = (
     await ctx.db.db
@@ -397,7 +447,7 @@ export async function computerPresence(
 export async function listComputerPresence(
   ctx: ServerContext,
   isLive: LiveConnection,
-  config: PresenceConfig = DEFAULT_PRESENCE_CONFIG,
+  config: PresenceConfig = DEFAULT_AGENT_PRESENCE_CONFIG,
 ): Promise<ComputerPresence[]> {
   const rows = await ctx.db.db.select().from(computers).where(eq(computers.organizationId, ctx.organizationId));
   const out: ComputerPresence[] = [];

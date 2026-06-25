@@ -84,6 +84,9 @@ describe("deriveRuntime", () => {
   it("stale last_seen => stale", () => {
     expect(r({ lastSeenAt: ago(200) })).toBe("stale");
   });
+  it("uses runtime heartbeat for runtime freshness, not the computer heartbeat", () => {
+    expect(r({ lastSeenAt: ago(5), runtimeLastSeenAt: ago(200) })).toBe("stale");
+  });
   it("fresh + available + spare capacity => available", () => {
     expect(r({})).toBe("available");
   });
@@ -119,6 +122,7 @@ describe("deriveHealthReason — priority", () => {
     expect(deriveHealthReason({ connection: "revoked", work: "idle", runtime: "missing" })).toBe("device_revoked");
     expect(deriveHealthReason({ connection: "online", work: "idle", runtime: "missing" })).toBe("runtime_missing");
     expect(deriveHealthReason({ connection: "stale", work: "idle", runtime: "available" })).toBe("heartbeat_timeout");
+    expect(deriveHealthReason({ connection: "online", work: "idle", runtime: "stale" })).toBe("heartbeat_timeout");
     expect(deriveHealthReason({ connection: "online", work: "idle", runtime: "available", daemonRestarting: true })).toBe(
       "daemon_restarting",
     );
@@ -132,7 +136,7 @@ describe("deriveHealthReason — priority", () => {
   });
 });
 
-describe("isSchedulable — shared eligibility (single source of truth)", () => {
+describe("isSchedulable — live presence eligibility", () => {
   it("eligible when online + fresh available runtime + spare capacity", () => {
     expect(isSchedulable(facts(), NOW, WINDOWS)).toBe(true);
   });
@@ -217,6 +221,13 @@ describe("synthesizeAgentInstancePresence", () => {
     const p = synthesizeAgentInstancePresence(facts({ deviceTrust: "revoked" }), NOW, WINDOWS);
     expect(p.connection).toBe("revoked");
     expect(p.health_reason).toBe("device_revoked");
+  });
+  it("keeps connection and runtime freshness separate", () => {
+    const p = synthesizeAgentInstancePresence(facts({ lastSeenAt: ago(5), runtimeLastSeenAt: ago(200) }), NOW, WINDOWS);
+    expect(p.connection).toBe("online");
+    expect(p.runtime).toBe("stale");
+    expect(p.health_reason).toBe("heartbeat_timeout");
+    expect(p.age_ms).toBe(200_000);
   });
 });
 

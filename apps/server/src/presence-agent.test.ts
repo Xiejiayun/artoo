@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { agentRuntimes } from "@artoo/db";
+import { and, eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -65,6 +67,20 @@ describe("presence-service #113", () => {
     expect(p!.active_runs).toBe(1);
     expect(p!.work).toBe("queued");
     expect(p!.runtime).toBe("busy"); // 1 active >= limit 1
+  });
+
+  it("runtime stale window matches scheduler while connection can remain online", async () => {
+    srv = await buildTestServer();
+    const staleRuntime = new Date(Date.parse(srv.ctx.clock.nowIso()) - 45_000).toISOString();
+    await srv.db.db
+      .update(agentRuntimes)
+      .set({ lastSeenAt: staleRuntime })
+      .where(and(eq(agentRuntimes.computerId, "computer_local_mock"), eq(agentRuntimes.runtime, "mock")));
+
+    const p = await agentInstancePresence(srv.ctx, "instance_mock_coder", LIVE);
+    expect(p!.connection).toBe("online");
+    expect(p!.runtime).toBe("stale");
+    expect(p!.health_reason).toBe("heartbeat_timeout");
   });
 
   it("computer presence rolls up runtimes + active_runs + queue_depth", async () => {

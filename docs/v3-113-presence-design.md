@@ -12,9 +12,11 @@ v1 work-state is **derived-on-read** from `runs + tasks + agent_runtimes +
 computers + devices/live-connection` — we do NOT trust `agent_instances.status`
 (not reliably maintained by run/task lifecycle) and add NO presence cache table.
 
-The **same domain eligibility helper** powers both presence synthesis and
-scheduler candidate filtering, so there is one source of truth for
-stale/revoked/busy/missing — never two copies.
+The domain package owns both live read-model helpers and scheduler DB-fact
+eligibility helpers, so stale/revoked/busy/missing semantics stay in one package.
+The scheduler does not call the live `isSchedulable` helper directly because it
+has no socket-registry dimension and must preserve the legacy missing-runtime-row
+fallback.
 
 ## 2. State vocabulary (per `v3-product-plan.md`)
 
@@ -59,7 +61,7 @@ nodeRegistry — passed in, never stored in domain), `agent_runtimes` heartbeat,
 `runs`/`tasks` state, `computers.last_heartbeat_at`, `devices.trust`/last_seen,
 freshness windows.
 
-- **connection**: live socket + device trust + last_seen window. `revoked` when
+- **connection**: live socket + device trust + computer/node heartbeat window. `revoked` when
   device trust ≠ active (or node credential/`node_id` mismatch — exposed only as
   a generic `runtime_missing`/`heartbeat_timeout`-class reason, never raw secret).
   Else `online | stale | offline` from the freshness window.
@@ -67,7 +69,7 @@ freshness windows.
   run `queued/starting`→`queued`; run `running`→`running`; task `awaiting_approval`
   →`awaiting_approval`; run `awaiting_input`→`awaiting_input`; task `blocked`
   →`blocked`; run/task `paused`→`paused`; none→`idle`.
-- **runtime**: from `agent_runtimes` row — fresh + `available` → `available`;
+- **runtime**: from the specific `agent_runtimes` row — fresh + `available` → `available`;
   has active run → `busy`; `disabled`; last_seen beyond window → `stale`;
   no row → `missing`.
 - **capacity**: `concurrency_limit` = `agent_instances.config.concurrency_limit`
@@ -79,13 +81,14 @@ freshness windows.
 - **source + age**: each dimension records which input produced it + the age of
   the freshest relevant timestamp (UI must show source + age, not only state).
 
-## 5. Scheduler eligibility (single source of truth)
+## 5. Scheduler eligibility (DB-fact source of truth)
 
-`scheduler.ts` does NOT call HTTP/API presence. It reuses the domain
-`isSchedulable(candidate, now, windows)` helper. A runtime is schedulable iff:
-fresh (last_seen within window) + non-disabled + connection online + device not
-revoked + `active_runs < concurrency_limit`. The existing "missing runtime row"
-compatibility behavior is preserved unless explicitly changed.
+`scheduler.ts` does NOT call HTTP/API presence. It reuses the domain DB-fact
+eligibility helpers for admin status, capacity, runtime freshness, and device
+trust. Live socket connection stays app-layer/read-model only. A runtime row is
+schedulable iff fresh (last_seen within scheduler window) + non-disabled +
+device not revoked + `active_runs < concurrency_limit`. The existing "missing
+runtime row" compatibility behavior is preserved.
 
 ## 6. Read API (thin routes)
 
@@ -94,28 +97,33 @@ compatibility behavior is preserved unless explicitly changed.
 - `GET /api/v1/computers/presence` (list)
 - `GET /api/v1/computers/:id/presence`
 - `GET /api/v1/devices/:id/presence` — **unchanged shape + additive fields only**
-- Realtime: `agent.presence_changed` / `computer.presence_changed` over WS.
+- Realtime in #113: `agent.presence_changed` / `computer.presence_changed` over
+  WS for explicit connection edges. Work/runtime transition push is a fast-follow
+  boundary for #116/#119 unless implemented in a later slice.
 
 ## 7. Event-log + redaction
 
 `agent.presence_changed` / `computer.presence_changed` payload allows ONLY
 `{ dimension, from, to, reason, agent_instance_id|computer_id, source, as_of }`
-metadata — never token/lookup/raw node-id-mismatch secret. Emit on **explicit
-edges only**: socket connect/disconnect/revoke, runtime heartbeat/state change,
-run/task status → work change. Plain reads do NOT write events for age-threshold
-expiry; the read API still returns correct stale/offline. A pure-time sweeper for
-stale/offline transition events is deferred to #115 / a future presence sweeper.
+metadata — never token/lookup/raw node-id-mismatch secret. #113 emits on
+**explicit connection edges only**: socket connect/disconnect/revoke. Plain reads
+do NOT write events for age-threshold expiry; the read API still returns correct
+stale/offline. Runtime heartbeat/state and run/task status push events, plus a
+pure-time sweeper for stale/offline transition events, are deferred to #116/#119
+product/release boundaries or a future presence sweeper.
 
 ## 8. Implementation locations
 
 - NEW `packages/domain/src/presence.ts` (export from `index.ts`): pure types,
   enums, age/window helpers, `healthReasonPriority`, work/capacity synthesis
-  helpers, `isSchedulable` eligibility helper. No DB, no nodeRegistry.
+  helpers, live `isSchedulable` helper, and scheduler DB-fact helpers. No DB, no
+  nodeRegistry.
 - `apps/server/src/services/presence-service.ts`: add `synthesizeAgentInstancePresence`
   / `synthesizeComputerPresence` (+ list variants), receiving live-connection info
   from the app layer.
 - `apps/server/src/app.ts`: thin routes only.
-- `apps/server/src/services/scheduler.ts`: reuse the domain eligibility helper.
+- `apps/server/src/services/scheduler.ts`: reuse the domain DB-fact eligibility
+  helpers while preserving missing-runtime-row fallback.
 
 ## 9. Test gate
 

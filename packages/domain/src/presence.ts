@@ -8,8 +8,9 @@ import { RunStatusSchema, TaskStatusSchema } from "./state.js";
  * V3 #113 — Agent presence model (PURE domain). Server-synthesized read model,
  * not a stored dot. `now` + windows + already-gathered "facts" are injected; this
  * module performs NO IO, holds NO DB/nodeRegistry handle, and NEVER carries a
- * token/secret. The same {@link isSchedulable} eligibility helper powers both
- * presence synthesis and scheduler candidate filtering (one source of truth).
+ * token/secret. Live presence synthesis uses the helpers below; scheduler uses
+ * the DB-fact eligibility helpers because it has no live socket dimension and
+ * preserves the missing-runtime compatibility fallback.
  *
  * Work-state is derived-on-read from the instance's non-terminal runs + their
  * tasks — we do NOT trust `agent_instances.status`. See docs/v3-113-presence-design.md.
@@ -107,8 +108,10 @@ export interface AgentInstancePresenceFacts {
   hasLiveConnection: boolean;
   /** Trust of the device hosting this computer; null when no device row. */
   deviceTrust: z.infer<typeof DeviceTrustSchema> | null;
-  /** Freshest relevant last-seen (runtime/computer heartbeat), ISO or null. */
+  /** Computer/node heartbeat last-seen used for the connection dimension. */
   lastSeenAt: string | null;
+  /** Runtime heartbeat last-seen used for the runtime dimension. */
+  runtimeLastSeenAt?: string | null;
   /** The instance's runtime row status; null when no runtime row. */
   runtimeStatus: z.infer<typeof AgentRuntimeStatusSchema> | null;
   /** config.concurrency_limit (default 1). */
@@ -162,14 +165,14 @@ export function deriveConnection(
 
 /** runtime: missing(no row) > disabled > busy(at capacity) > stale(beyond window) > available. */
 export function deriveRuntime(
-  facts: Pick<AgentInstancePresenceFacts, "runtimeStatus" | "lastSeenAt" | "concurrencyLimit" | "activeRuns">,
+  facts: Pick<AgentInstancePresenceFacts, "runtimeStatus" | "lastSeenAt" | "runtimeLastSeenAt" | "concurrencyLimit" | "activeRuns">,
   nowIso: string,
   windows: PresenceWindows,
 ): RuntimePresenceState {
   if (facts.runtimeStatus == null || facts.runtimeStatus === "missing") return "missing";
   if (facts.runtimeStatus === "disabled") return "disabled";
   if (facts.activeRuns.length >= facts.concurrencyLimit) return "busy";
-  if (derivePresenceState(facts.lastSeenAt, nowIso, windows) !== "online") return "stale";
+  if (derivePresenceState(facts.runtimeLastSeenAt ?? facts.lastSeenAt, nowIso, windows) !== "online") return "stale";
   return "available";
 }
 
@@ -197,7 +200,7 @@ export function deriveHealthReason(input: {
 }): HealthReason | null {
   if (input.connection === "revoked") return "device_revoked";
   if (input.runtime === "missing") return "runtime_missing";
-  if (input.connection === "stale" || input.connection === "offline") return "heartbeat_timeout";
+  if (input.connection === "stale" || input.connection === "offline" || input.runtime === "stale") return "heartbeat_timeout";
   if (input.daemonRestarting === true) return "daemon_restarting";
   if (input.work === "awaiting_approval") return "approval_required";
   if (input.leaseConflict === true) return "lease_conflict";
@@ -205,10 +208,11 @@ export function deriveHealthReason(input: {
 }
 
 /**
- * Shared scheduler eligibility — the SINGLE source of truth reused by both
- * presence synthesis and `scheduler.ts`. A runtime is schedulable iff it has a
- * live online connection (not revoked/stale/offline), a fresh non-disabled
- * runtime row, and spare capacity.
+ * Live presence eligibility helper. The scheduler uses the DB-fact helpers below
+ * rather than this function because it has no socket registry and must preserve
+ * the missing-runtime-row fallback for seeded/dev/pre-heartbeat candidates.
+ * A live runtime is schedulable iff it has an online connection (not revoked/
+ * stale/offline), a fresh non-disabled runtime row, and spare capacity.
  */
 export function isSchedulable(
   facts: AgentInstancePresenceFacts,
@@ -279,8 +283,8 @@ export function synthesizeAgentInstancePresence(
     health_reason,
     concurrency_limit: facts.concurrencyLimit,
     active_runs: facts.activeRuns.length,
-    last_seen_at: facts.lastSeenAt,
-    age_ms: ageMs(facts.lastSeenAt, nowIso),
+    last_seen_at: facts.runtimeLastSeenAt ?? facts.lastSeenAt,
+    age_ms: ageMs(facts.runtimeLastSeenAt ?? facts.lastSeenAt, nowIso),
     source: { connection: "device+socket+heartbeat", work: "runs+tasks", runtime: "agent_runtimes" },
     as_of: nowIso,
   };
