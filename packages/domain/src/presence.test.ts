@@ -3,11 +3,15 @@ import { describe, expect, it } from "vitest";
 import type { PresenceWindows } from "./device.js";
 import {
   ageMs,
+  concurrencyLimitFromConfig,
   deriveConnection,
   deriveHealthReason,
   deriveRuntime,
   deriveWork,
+  hasSpareCapacity,
   isActiveRunStatus,
+  isDeviceTrustEligible,
+  isInstanceAdminAvailable,
   isSchedulable,
   synthesizeAgentInstancePresence,
   synthesizeComputerPresence,
@@ -149,6 +153,35 @@ describe("isSchedulable — shared eligibility (single source of truth)", () => 
     expect(
       isSchedulable(facts({ concurrencyLimit: 2, activeRuns: [{ runStatus: "running", taskStatus: "running" }] }), NOW, WINDOWS),
     ).toBe(true);
+  });
+});
+
+describe("scheduler DB-fact eligibility helpers (#113 slice 5)", () => {
+  it("isInstanceAdminAvailable: admin guard only (disabled/stopping/failed excluded; idle/queued/running allowed)", () => {
+    expect(isInstanceAdminAvailable("idle")).toBe(true);
+    expect(isInstanceAdminAvailable("queued")).toBe(true);
+    expect(isInstanceAdminAvailable("running")).toBe(true);
+    expect(isInstanceAdminAvailable("disabled")).toBe(false);
+    expect(isInstanceAdminAvailable("stopping")).toBe(false);
+    expect(isInstanceAdminAvailable("failed")).toBe(false);
+  });
+  it("hasSpareCapacity: active_runs < limit (limit floored at 1)", () => {
+    expect(hasSpareCapacity(0, 1)).toBe(true);
+    expect(hasSpareCapacity(1, 1)).toBe(false);
+    expect(hasSpareCapacity(1, 2)).toBe(true);
+    expect(hasSpareCapacity(2, 2)).toBe(false);
+    expect(hasSpareCapacity(0, 0)).toBe(true); // floored to 1
+  });
+  it("isDeviceTrustEligible: revoked device excludes (fail-closed)", () => {
+    expect(isDeviceTrustEligible(false)).toBe(true);
+    expect(isDeviceTrustEligible(true)).toBe(false);
+  });
+  it("concurrencyLimitFromConfig: reads config, defaults 1", () => {
+    expect(concurrencyLimitFromConfig({ concurrency_limit: 3 })).toBe(3);
+    expect(concurrencyLimitFromConfig({})).toBe(1);
+    expect(concurrencyLimitFromConfig(null)).toBe(1);
+    expect(concurrencyLimitFromConfig({ concurrency_limit: 0 })).toBe(1);
+    expect(concurrencyLimitFromConfig({ concurrency_limit: "x" })).toBe(1);
   });
 });
 

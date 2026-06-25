@@ -221,6 +221,37 @@ export function isSchedulable(
   return runtime === "available";
 }
 
+// --------------------------------------------------------------------------- scheduler DB-fact eligibility (#113 slice 5)
+// These are DB-fact based (NO live-connection dimension) so the scheduler — which
+// runs in the persistence layer with no socket awareness — can reuse the same
+// stale/disabled/capacity/admin/trust judgments as presence. The connection
+// dimension stays presence/app-layer only.
+
+/** agent_instances.status is an ADMIN availability guard only (not busy/idle
+ *  truth). Excludes administratively-unavailable instances; stale `queued`/
+ *  `running` values are NOT treated as busy by themselves (capacity decides). */
+export function isInstanceAdminAvailable(adminStatus: string): boolean {
+  return adminStatus !== "disabled" && adminStatus !== "stopping" && adminStatus !== "failed";
+}
+
+/** Capacity from derived active (non-terminal) runs vs the configured limit. */
+export function hasSpareCapacity(activeRuns: number, concurrencyLimit: number): boolean {
+  return activeRuns < Math.max(1, concurrencyLimit);
+}
+
+/** Device trust gate: no bound device => eligible; a bound revoked device =>
+ *  excluded (fail-closed). `hasRevokedDevice` is computed by the caller via an
+ *  exists/aggregate to avoid duplicating candidates across device rows. */
+export function isDeviceTrustEligible(hasRevokedDevice: boolean): boolean {
+  return !hasRevokedDevice;
+}
+
+/** Read `concurrency_limit` from an agent_instances.config blob (default 1). */
+export function concurrencyLimitFromConfig(config: Record<string, unknown> | null | undefined): number {
+  const raw = (config ?? {})["concurrency_limit"];
+  return typeof raw === "number" && raw > 0 ? raw : 1;
+}
+
 // --------------------------------------------------------------------------- synthesis
 
 export function synthesizeAgentInstancePresence(

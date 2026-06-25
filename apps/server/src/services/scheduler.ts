@@ -1,7 +1,12 @@
-import { agentInstances, agentRuntimes, agents, computers, skillInstalls } from "@artoo/db";
+import { agentInstances, agentRuntimes, agents, computers, devices, runs, skillInstalls } from "@artoo/db";
 import {
   SkillManifestSchema,
+  concurrencyLimitFromConfig,
   contributedCapabilities,
+  hasSpareCapacity,
+  isActiveRunStatus,
+  isDeviceTrustEligible,
+  isInstanceAdminAvailable,
   isRuntimeStale,
   matchCapabilities,
   type Capability,
@@ -106,6 +111,7 @@ export async function scheduleTask(
       modelProfileId: agentInstances.modelProfileId,
       effortProfileId: agentInstances.effortProfileId,
       instanceStatus: agentInstances.status,
+      instanceConfig: agentInstances.config,
       computerStatus: computers.status,
       agentCaps: agents.capabilities,
       computerCaps: computers.capabilities,
@@ -128,8 +134,48 @@ export async function scheduleTask(
     .where(eq(agentInstances.organizationId, ctx.organizationId));
 
   const now = ctx.clock.nowIso();
+
+  // #113 slice 5 — INTENTIONAL behavior change: busy/idle is now derived from
+  // capacity (active non-terminal runs vs concurrency_limit), NOT from the
+  // possibly-stale `agent_instances.status`; and a bound REVOKED device excludes
+  // the candidate. `agent_instances.status` is kept only as an admin guard
+  // (disabled/stopping/failed). The missing-runtime-row fallback is UNCHANGED.
+
+  // Active (non-terminal) runs per instance, for capacity. One query; counted in JS.
+  const activeRunRows = await tx
+    .select({ agentInstanceId: runs.agentInstanceId, status: runs.status })
+    .from(runs)
+    .where(eq(runs.organizationId, ctx.organizationId));
+  const activeRunsByInstance = new Map<string, number>();
+  for (const r of activeRunRows) {
+    if (isActiveRunStatus(r.status)) {
+      activeRunsByInstance.set(r.agentInstanceId, (activeRunsByInstance.get(r.agentInstanceId) ?? 0) + 1);
+    }
+  }
+
+  // Computers with a bound REVOKED device (exists/aggregate, so multiple device
+  // rows for one computer never duplicate or split a candidate). No device row
+  // or an active device leaves the computer eligible.
+  const revokedRows = await tx
+    .select({ computerId: devices.computerId })
+    .from(devices)
+    .where(and(eq(devices.organizationId, ctx.organizationId), eq(devices.trust, "revoked")));
+  const revokedComputerIds = new Set<string>();
+  for (const d of revokedRows) {
+    if (d.computerId !== null) revokedComputerIds.add(d.computerId);
+  }
+
   const candidates: SchedulerCandidate[] = rows
-    .filter((r) => r.instanceStatus === "idle" && r.computerStatus === "online")
+    .filter(
+      (r) =>
+        isInstanceAdminAvailable(r.instanceStatus) &&
+        r.computerStatus === "online" &&
+        hasSpareCapacity(
+          activeRunsByInstance.get(r.instanceId) ?? 0,
+          concurrencyLimitFromConfig(r.instanceConfig as Record<string, unknown> | null),
+        ) &&
+        isDeviceTrustEligible(revokedComputerIds.has(r.computerId)),
+    )
     .filter(
       (r) =>
         opts.mode !== "manual" ||
