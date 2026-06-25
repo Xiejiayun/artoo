@@ -18,6 +18,7 @@ import {
   MentionSchema,
 } from "./collaboration.js";
 import { ActorTypeSchema } from "./events.js";
+import { GoalBudgetsSchema, StopConditionsSchema, TaskSpecSchema } from "./goal.js";
 import { MemoryScopeSchema } from "./memory.js";
 import {
   DependencyTypeSchema,
@@ -337,3 +338,24 @@ export const UpdateBlockerRequestSchema = z.object({
   next_action: z.string().nullish(),
 });
 export type UpdateBlockerRequest = z.infer<typeof UpdateBlockerRequestSchema>;
+
+// ------------------------------------------------------------------ V3 #115 goals
+export const CreateGoalRequestSchema = z.object({
+  project_id: z.string(),
+  title: z.string().min(1),
+  objective: z.string().default(""),
+  priority: PrioritySchema.default("p2"),
+  acceptance_criteria: z.array(z.string()).default([]),
+  stop_conditions: StopConditionsSchema.optional(),
+  budgets: GoalBudgetsSchema.optional(),
+});
+export type CreateGoalRequest = z.infer<typeof CreateGoalRequestSchema>;
+
+/** POST /goals/:id/plans — propose a plan version. Author defaults to the
+ *  requesting user server-side; task_specs are validated structurally here and
+ *  graph-validated (refs/cycles) in the service. */
+export const ProposePlanRequestSchema = z.object({
+  rationale: z.string().default(""),
+  task_specs: z.array(TaskSpecSchema).min(1),
+});
+export type ProposePlanRequest = z.infer<typeof ProposePlanRequestSchema>;

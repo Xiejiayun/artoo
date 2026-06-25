@@ -6,6 +6,7 @@ import {
   CreateBlockerRequestSchema,
   CreateDecisionRequestSchema,
   CreateDependencyRequestSchema,
+  CreateGoalRequestSchema,
   CreateHandoffRequestSchema,
   CreateTaskRequestSchema,
   type DevicePlatform,
@@ -17,6 +18,7 @@ import {
   MemoryTransitionRequestSchema,
   type MemoryTrigger,
   ProposeMemoryRequestSchema,
+  ProposePlanRequestSchema,
   ResolveApprovalRequestSchema,
   RetryRequestSchema,
   ReviewRequestSchema,
@@ -39,10 +41,12 @@ import * as approvalService from "./services/approval-service.js";
 import * as collaborationService from "./services/collaboration-service.js";
 import * as dagService from "./services/dag-service.js";
 import * as deviceService from "./services/device-service.js";
+import * as goalService from "./services/goal-service.js";
 import * as leaseService from "./services/lease-service.js";
 import * as lifecycle from "./services/lifecycle-service.js";
 import * as memoryService from "./services/memory-service.js";
 import * as messageService from "./services/message-service.js";
+import * as planService from "./services/plan-service.js";
 import * as presenceService from "./services/presence-service.js";
 import * as runService from "./services/run-service.js";
 import * as runtimeRegistry from "./services/runtime-registry-service.js";
@@ -369,6 +373,83 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       throw AppError.notFound(`blocker ${id} not found`);
     }
     return { blocker };
+  });
+
+  // V3 #115 — persistent goals: a goal owns a versioned plan that materializes
+  // into a task DAG. Human overrides (pause/resume/cancel) and plan accept/reject
+  // are thin handlers over goal-service / plan-service; all state transitions and
+  // the single-tx idempotent materialization live in the services.
+  app.post("/api/v1/goals", async (req, reply) => {
+    const parsed = CreateGoalRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw AppError.validation("invalid goal payload", { issues: parsed.error.issues });
+    }
+    const goal = await goalService.createGoal(rc(req), parsed.data);
+    void reply.status(201);
+    return { goal };
+  });
+  app.get("/api/v1/goals", async (req) => {
+    const query = req.query as { project_id?: string; status?: string };
+    return { goals: await goalService.listGoals(rc(req), { projectId: query.project_id, status: query.status }) };
+  });
+  app.get("/api/v1/goals/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const goal = await goalService.getGoal(rc(req), id);
+    if (goal === null) {
+      void reply.status(404);
+      throw AppError.notFound(`goal not found: ${id}`);
+    }
+    return { goal };
+  });
+  for (const action of ["pause", "resume", "cancel"] as const) {
+    app.post(`/api/v1/goals/:id/${action}`, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const fn = action === "pause" ? goalService.pauseGoal : action === "resume" ? goalService.resumeGoal : goalService.cancelGoal;
+      const goal = await fn(rc(req), id);
+      if (goal === null) {
+        void reply.status(404);
+        throw AppError.notFound(`goal not found: ${id}`);
+      }
+      return { goal };
+    });
+  }
+
+  app.post("/api/v1/goals/:id/plans", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = ProposePlanRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw AppError.validation("invalid plan payload", { issues: parsed.error.issues });
+    }
+    const plan = await planService.proposePlan(rc(req), id, parsed.data);
+    void reply.status(201);
+    return { plan };
+  });
+  app.get("/api/v1/goals/:id/plans", async (req) => {
+    const { id } = req.params as { id: string };
+    return { plans: await planService.listPlans(rc(req), id) };
+  });
+  app.get("/api/v1/plans/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const plan = await planService.getPlan(rc(req), id);
+    if (plan === null) {
+      void reply.status(404);
+      throw AppError.notFound(`plan not found: ${id}`);
+    }
+    return { plan };
+  });
+  app.post("/api/v1/plans/:id/accept", async (req) => {
+    const { id } = req.params as { id: string };
+    const result = await planService.acceptPlan(rc(req), id);
+    return { plan: result.plan, task_ids: result.task_ids };
+  });
+  app.post("/api/v1/plans/:id/reject", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const plan = await planService.rejectPlan(rc(req), id);
+    if (plan === null) {
+      void reply.status(404);
+      throw AppError.notFound(`plan not found: ${id}`);
+    }
+    return { plan };
   });
 
   // Revoke a device: both its credentials flip to revoked AND every live socket
