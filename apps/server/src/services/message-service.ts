@@ -45,6 +45,12 @@ export async function postMessage(
   return ctx.db.transaction(async (tx) => {
     const room = await requireRoom(ctx, tx, roomId);
     const messageId = ctx.idGen.generate(ID_PREFIXES.message);
+    // Fold structured mentions/assignments into the stored payload (only when
+    // present) so they persist + render alongside the message body.
+    const hasRefs = req.mentions.length > 0 || req.assignments.length > 0;
+    const payload = hasRefs
+      ? { ...req.payload, mentions: req.mentions, assignments: req.assignments }
+      : req.payload;
     await tx.insert(messages).values({
       id: messageId,
       organizationId: ctx.organizationId,
@@ -54,7 +60,7 @@ export async function postMessage(
       actorId: ctx.actorUserId,
       kind: req.kind,
       body: req.body,
-      payload: req.payload,
+      payload,
       createdAt: now,
     });
     await appendEvent(
@@ -70,6 +76,23 @@ export async function postMessage(
         payload: { message_id: messageId, kind: req.kind },
       }),
     );
+    // Metadata-only notification edge: who was @mentioned / assigned an action.
+    // Carries only actor refs + the message id — never the message body.
+    if (hasRefs) {
+      await appendEvent(
+        tx,
+        buildEvent(ctx, {
+          type: "message.mention",
+          actorType: "user",
+          actorId: ctx.actorUserId,
+          correlationId: room.taskId ?? roomId,
+          projectId: room.projectId,
+          taskId: room.taskId,
+          roomId,
+          payload: { message_id: messageId, mentions: req.mentions, assignments: req.assignments },
+        }),
+      );
+    }
     const row = (await tx.select().from(messages).where(eq(messages.id, messageId)))[0];
     if (row === undefined) {
       throw new Error("postMessage: message missing after insert");

@@ -9,11 +9,13 @@ import { z } from "zod";
 
 import { CapabilitySchema } from "./capabilities.js";
 import {
+  AssignmentSchema,
   BlockerSourceKindSchema,
   BlockerStatusSchema,
   BlockerTypeSchema,
   DecisionStatusSchema,
   HandoffStatusSchema,
+  MentionSchema,
 } from "./collaboration.js";
 import { ActorTypeSchema } from "./events.js";
 import { MemoryScopeSchema } from "./memory.js";
@@ -197,6 +199,10 @@ export const SendMessageRequestSchema = z.object({
   kind: z.string().default("text"),
   body: z.string().default(""),
   payload: z.record(z.unknown()).default({}),
+  /** Structured @mentions and action assignments (#114). Persisted in the
+   *  message payload and surfaced via a metadata-only message.mention event. */
+  mentions: z.array(MentionSchema).default([]),
+  assignments: z.array(AssignmentSchema).default([]),
 });
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>;
 
