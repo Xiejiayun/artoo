@@ -46,6 +46,19 @@ export const CoreEventTypeSchema = z.enum([
   "memory.accepted",
   "memory.rejected",
   "memory.superseded",
+  "decision.proposed",
+  "decision.accepted",
+  "decision.rejected",
+  "decision.superseded",
+  "handoff.opened",
+  "handoff.accepted",
+  "handoff.completed",
+  "handoff.cancelled",
+  "handoff.expired",
+  "blocker.opened",
+  "blocker.mitigated",
+  "blocker.resolved",
+  "message.mention",
 ]);
 export const CORE_EVENT_TYPES = CoreEventTypeSchema.options;
 export type CoreEventType = z.infer<typeof CoreEventTypeSchema>;
@@ -100,9 +113,12 @@ export function parseEvent(raw: unknown): ParseEventResult {
 export const MessageKindSchema = z.enum([
   "text",
   "task_update",
+  "status_update",
   "run_event",
   "agent_question",
   "agent_proposal",
+  "decision",
+  "blocker",
   "approval_request",
   "approval_result",
   "artifact",
