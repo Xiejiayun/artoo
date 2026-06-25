@@ -80,6 +80,55 @@ async function emitPresenceEvent(
   });
 }
 
+const AGENT_PRESENCE_EVENT = "agent.presence_changed";
+const COMPUTER_PRESENCE_EVENT = "computer.presence_changed";
+
+/**
+ * #113 slice 4 — emit agent/computer `presence_changed` on a CONNECTION edge
+ * (a device's node/control socket connecting or its last socket dropping /
+ * revoke). Mirrors the device transition that already fired. Payload is
+ * metadata-only — dimension/from/to/reason/id/source/as_of — NEVER a token,
+ * lookup, or raw node-id-mismatch detail. Not emitted on plain reads.
+ */
+async function emitConnectionPresenceEvents(
+  ctx: ServerContext,
+  computerId: string | null,
+  from: string,
+  to: "online" | "offline" | "revoked",
+  reason: string | null,
+): Promise<void> {
+  if (computerId === null) return;
+  const asOf = ctx.clock.nowIso();
+  const instances = await ctx.db.db
+    .select({ id: agentInstances.id })
+    .from(agentInstances)
+    .where(and(eq(agentInstances.organizationId, ctx.organizationId), eq(agentInstances.computerId, computerId)));
+  await ctx.db.transaction(async (tx) => {
+    await appendEvent(
+      tx,
+      buildEvent(ctx, {
+        type: COMPUTER_PRESENCE_EVENT,
+        actorType: "system",
+        actorId: "system",
+        correlationId: computerId,
+        payload: { dimension: "connection", from, to, reason, computer_id: computerId, source: "socket", as_of: asOf },
+      }),
+    );
+    for (const inst of instances) {
+      await appendEvent(
+        tx,
+        buildEvent(ctx, {
+          type: AGENT_PRESENCE_EVENT,
+          actorType: "system",
+          actorId: "system",
+          correlationId: inst.id,
+          payload: { dimension: "connection", from, to, reason, agent_instance_id: inst.id, source: "socket", as_of: asOf },
+        }),
+      );
+    }
+  });
+}
+
 /**
  * Record authenticated device activity (an accepted node/control connection or a
  * node heartbeat). Throttled: while already online within `throttleMs` it is a
@@ -118,6 +167,7 @@ export async function recordDeviceActivity(
     .where(and(eq(devices.id, deviceId), eq(devices.organizationId, ctx.organizationId)));
   if (from !== "online") {
     await emitPresenceEvent(ctx, deviceId, from, "online", { source });
+    await emitConnectionPresenceEvents(ctx, device.computerId, from, "online", null);
     return { transitioned: true, from, to: "online" };
   }
   return { transitioned: false, from: "online", to: "online" };
@@ -150,6 +200,13 @@ export async function markDeviceOffline(
     return { transitioned: false, from, to: "offline" };
   }
   await emitPresenceEvent(ctx, deviceId, from, "offline", { reason });
+  await emitConnectionPresenceEvents(
+    ctx,
+    device.computerId,
+    from,
+    reason === "revoked" ? "revoked" : "offline",
+    reason === "revoked" ? "device_revoked" : null,
+  );
   return { transitioned: true, from, to: "offline" };
 }
 
