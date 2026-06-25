@@ -230,6 +230,35 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     return { presence: await presenceService.devicePresence(rc(req), id, { hasLiveConnection }) };
   });
 
+  // Agent/computer presence (#113): server-synthesized read model. A computer's
+  // live connection is its registered daemon node (nodeRegistry); the service
+  // gathers the rest from runs/tasks/runtime/computer/device facts.
+  const isLive = (computerId: string): boolean => nodeRegistry.get(computerId) !== undefined;
+  app.get("/api/v1/agent-instances/presence", async (req) => ({
+    presence: await presenceService.listAgentInstancePresence(rc(req), isLive),
+  }));
+  app.get("/api/v1/agent-instances/:id/presence", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const presence = await presenceService.agentInstancePresence(rc(req), id, isLive);
+    if (presence === null) {
+      void reply.status(404);
+      throw AppError.notFound(`agent instance ${id} not found`);
+    }
+    return { presence };
+  });
+  app.get("/api/v1/computers/presence", async (req) => ({
+    presence: await presenceService.listComputerPresence(rc(req), isLive),
+  }));
+  app.get("/api/v1/computers/:id/presence", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const presence = await presenceService.computerPresence(rc(req), id, isLive);
+    if (presence === null) {
+      void reply.status(404);
+      throw AppError.notFound(`computer ${id} not found`);
+    }
+    return { presence };
+  });
+
   // Revoke a device: both its credentials flip to revoked AND every live socket
   // (node + control) it holds is closed — revocation is immediate, not just a
   // future-reconnect rejection.
