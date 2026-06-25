@@ -18,6 +18,7 @@ export interface EventInput {
   taskId?: string | null;
   roomId?: string | null;
   runId?: string | null;
+  goalId?: string | null;
   correlationId: string;
   idempotencyKey?: string | null;
   /** Per-run sequence (resets per run); distinct from the global `position`. */
@@ -52,6 +53,7 @@ export async function appendEvent(tx: DrizzleDb, input: EventInput): Promise<Eve
       taskId: input.taskId ?? null,
       roomId: input.roomId ?? null,
       runId: input.runId ?? null,
+      goalId: input.goalId ?? null,
       correlationId: input.correlationId,
       idempotencyKey: input.idempotencyKey ?? null,
       sequence: input.sequence ?? null,

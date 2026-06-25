@@ -60,6 +60,18 @@ export const CoreEventTypeSchema = z.enum([
   "blocker.accepted_risk",
   "blocker.resolved",
   "message.mention",
+  "goal.created",
+  "goal.status_changed",
+  "goal.plan_proposed",
+  "goal.plan_accepted",
+  "goal.plan_rejected",
+  "goal.plan_materialized",
+  "goal.checkpoint_created",
+  "goal.paused",
+  "goal.resumed",
+  "goal.cancelled",
+  "goal.completed",
+  "goal.budget_exceeded",
 ]);
 export const CORE_EVENT_TYPES = CoreEventTypeSchema.options;
 export type CoreEventType = z.infer<typeof CoreEventTypeSchema>;

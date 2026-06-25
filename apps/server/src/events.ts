@@ -12,6 +12,7 @@ export interface EventSpec {
   taskId?: string | null;
   roomId?: string | null;
   runId?: string | null;
+  goalId?: string | null;
   /** Per-run sequence; distinct from the global event_log position. */
   sequence?: number | null;
   payload?: Record<string, unknown>;
@@ -34,6 +35,7 @@ export function buildEvent(ctx: ServerContext, spec: EventSpec): EventInput {
     taskId: spec.taskId ?? null,
     roomId: spec.roomId ?? null,
     runId: spec.runId ?? null,
+    goalId: spec.goalId ?? null,
     correlationId: spec.correlationId,
     sequence: spec.sequence ?? null,
     payload: spec.payload ?? {},
