@@ -37,6 +37,9 @@ export const ID_PREFIXES = {
   userIdentity: "uid",
   session: "sess",
   oauthFlow: "oauth",
+  decision: "dec",
+  handoff: "ho",
+  blocker: "blk",
 } as const;
 
 export type IdPrefixName = keyof typeof ID_PREFIXES;
