@@ -10,6 +10,7 @@ import {
   jsonb,
   numeric,
   pgTable,
+  real,
   text,
   timestamp,
   unique,
@@ -94,6 +95,8 @@ export const tasks = pgTable("tasks", {
     .references(() => projects.id),
   parentTaskId: text("parent_task_id").references((): AnyPgColumn => tasks.id),
   roomId: text("room_id"),
+  goalId: text("goal_id").references((): AnyPgColumn => goals.id),
+  sourcePlanId: text("source_plan_id"),
   title: text("title").notNull(),
   description: text("description").notNull().default(""),
   status: text("status").notNull(),
@@ -118,6 +121,7 @@ export const tasks = pgTable("tasks", {
   check("tasks_created_by_type_chk", sql`${t.createdByType} in ('user','agent','system')`),
   index("tasks_project_status_updated_idx").on(t.projectId, t.status, t.updatedAt),
   index("tasks_parent_idx").on(t.parentTaskId),
+  index("tasks_goal_idx").on(t.goalId),
 ]);
 
 export const taskDependencies = pgTable("task_dependencies", {
@@ -560,11 +564,12 @@ export const rooms = pgTable("rooms", {
     .references(() => organizations.id),
   projectId: text("project_id").references(() => projects.id),
   taskId: text("task_id"),
+  goalId: text("goal_id").references((): AnyPgColumn => goals.id),
   type: text("type").notNull(),
   name: text("name").notNull(),
   createdAt: ts("created_at").notNull(),
 }, (t) => [
-  check("rooms_type_chk", sql`${t.type} in ('dm','project','sprint','task','agent_team','incident')`),
+  check("rooms_type_chk", sql`${t.type} in ('dm','project','sprint','task','agent_team','incident','goal')`),
 ]);
 
 export const messages = pgTable("messages", {
@@ -684,6 +689,7 @@ export const eventLog = pgTable("event_log", {
   taskId: text("task_id"),
   roomId: text("room_id"),
   runId: text("run_id"),
+  goalId: text("goal_id"),
   correlationId: text("correlation_id").notNull(),
   idempotencyKey: text("idempotency_key"),
   sequence: integer("sequence"),
@@ -692,6 +698,7 @@ export const eventLog = pgTable("event_log", {
 }, (t) => [
   index("event_log_correlation_idx").on(t.correlationId, t.occurredAt),
   index("event_log_task_idx").on(t.taskId, t.occurredAt),
+  index("event_log_goal_idx").on(t.goalId, t.occurredAt),
 ]);
 
 // Attempt/run-scoped dedup for ingested node run events (Round 18): a composite
@@ -806,4 +813,94 @@ export const blockers = pgTable("blockers", {
   check("blockers_status_chk", sql`${t.status} in ('open','mitigated','accepted_risk','resolved')`),
   index("blockers_room_idx").on(t.roomId),
   index("blockers_source_idx").on(t.sourceKind, t.sourceId),
+]);
+
+// ---------------------------------------------------------------------------
+// V3 #115 — persistent goals: Goal owns a versioned Plan; the accepted plan
+// materializes into a task DAG; Checkpoints are reference-based markers on safe
+// boundaries for explain/replay. `organization_id` is explicit on plans/
+// checkpoints for direct org-scoping (review note 3); plans carry DB
+// idempotency anchors (review note 4) for plan→DAG materialization.
+// ---------------------------------------------------------------------------
+
+export const goals = pgTable("goals", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id),
+  roomId: text("room_id").references(() => rooms.id),
+  ownerUserId: text("owner_user_id")
+    .notNull()
+    .references(() => users.id),
+  title: text("title").notNull(),
+  objective: text("objective").notNull().default(""),
+  priority: text("priority").notNull().default("p2"),
+  status: text("status").notNull().default("draft"),
+  acceptanceCriteria: jsonbArray("acceptance_criteria"),
+  stopConditions: jsonb("stop_conditions").notNull().default(sql`'{"rules":[]}'::jsonb`),
+  budgets: jsonb("budgets").notNull().default(sql`'{}'::jsonb`),
+  currentPlanId: text("current_plan_id"),
+  runningSince: ts("running_since"),
+  elapsedCostUsd: real("elapsed_cost_usd"),
+  retryCount: integer("retry_count").notNull().default(0),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+}, (t) => [
+  check(
+    "goals_status_chk",
+    sql`${t.status} in ('draft','planned','running','awaiting_approval','paused','blocked','completed','cancelled','archived')`,
+  ),
+  check("goals_priority_chk", sql`${t.priority} in ('p0','p1','p2','p3')`),
+  index("goals_project_status_idx").on(t.projectId, t.status),
+  index("goals_owner_idx").on(t.ownerUserId),
+]);
+
+export const plans = pgTable("plans", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  goalId: text("goal_id")
+    .notNull()
+    .references(() => goals.id),
+  version: integer("version").notNull(),
+  authorType: text("author_type").notNull(),
+  authorId: text("author_id").notNull(),
+  rationale: text("rationale").notNull().default(""),
+  status: text("status").notNull().default("proposed"),
+  taskSpecs: jsonb("task_specs").notNull().default(sql`'[]'::jsonb`),
+  materializedAt: ts("materialized_at"),
+  materializationEventId: text("materialization_event_id"),
+  createdAt: ts("created_at").notNull(),
+  acceptedAt: ts("accepted_at"),
+}, (t) => [
+  check("plans_status_chk", sql`${t.status} in ('proposed','accepted','rejected','superseded')`),
+  check("plans_author_type_chk", sql`${t.authorType} in ('user','agent','system','bridge')`),
+  unique("plans_goal_version_uniq").on(t.goalId, t.version),
+  index("plans_goal_idx").on(t.goalId),
+]);
+
+export const checkpoints = pgTable("checkpoints", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organizations.id),
+  goalId: text("goal_id")
+    .notNull()
+    .references(() => goals.id),
+  planId: text("plan_id").references(() => plans.id),
+  type: text("type").notNull(),
+  triggerEventId: text("trigger_event_id"),
+  stateRefs: jsonb("state_refs").notNull().default(sql`'{}'::jsonb`),
+  summary: text("summary").notNull().default(""),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check(
+    "checkpoints_type_chk",
+    sql`${t.type} in ('plan_accepted','dag_materialized','approval_decided','run_terminal','artifact_accepted','paused','resumed')`,
+  ),
+  index("checkpoints_goal_idx").on(t.goalId, t.createdAt),
 ]);
