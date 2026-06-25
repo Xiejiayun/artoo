@@ -40,6 +40,9 @@ export const ID_PREFIXES = {
   decision: "dec",
   handoff: "ho",
   blocker: "blk",
+  goal: "goal",
+  plan: "plan",
+  checkpoint: "ckpt",
 } as const;
 
 export type IdPrefixName = keyof typeof ID_PREFIXES;

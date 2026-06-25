@@ -13,6 +13,7 @@ export * from "./state.js";
 export * from "./events.js";
 export * from "./collaboration.js";
 export * from "./context-pack.js";
+export * from "./goal.js";
 export * from "./node-payloads.js";
 export * from "./schemas.js";
 export * from "./api.js";
