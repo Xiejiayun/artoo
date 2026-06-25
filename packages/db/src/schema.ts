@@ -715,3 +715,95 @@ export const idempotencyKeys = pgTable("idempotency_keys", {
   createdAt: ts("created_at").notNull(),
   expiresAt: ts("expires_at"),
 }, (t) => [unique("idempotency_keys_pk").on(t.scope, t.key)]);
+
+// ---------------------------------------------------------------------------
+// V3 #114 — team discussion records (decision / handoff / blocker). First-class,
+// auditable collaboration objects. `goal_id`/`plan_id` are nullable TEXT WITHOUT
+// FK constraints for now (the canonical goals/plans tables land in #115/migration
+// 0011); FK constraints are added in a later migration once both exist.
+// ---------------------------------------------------------------------------
+export const decisionRecords = pgTable("decision_records", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  roomId: text("room_id").notNull().references(() => rooms.id),
+  taskId: text("task_id").references(() => tasks.id),
+  runId: text("run_id").references(() => runs.id),
+  goalId: text("goal_id"),
+  planId: text("plan_id"),
+  sourceMessageId: text("source_message_id").references(() => messages.id),
+  status: text("status").notNull(),
+  actorType: text("actor_type").notNull(),
+  actorId: text("actor_id").notNull(),
+  summary: text("summary").notNull(),
+  rationale: text("rationale"),
+  alternatives: jsonbArray("alternatives"),
+  evidenceRefs: jsonbArray("evidence_refs"),
+  impactSummary: text("impact_summary"),
+  supersededById: text("superseded_by_id"),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+}, (t) => [
+  check("decision_records_status_chk", sql`${t.status} in ('proposed','accepted','rejected','superseded')`),
+  check("decision_records_actor_type_chk", sql`${t.actorType} in ('user','agent','system','bridge')`),
+  index("decision_records_room_idx").on(t.roomId),
+  // Idempotent promotion: at most one decision per source message (NULLs unconstrained).
+  unique("decision_records_source_message").on(t.sourceMessageId),
+]);
+
+export const handoffs = pgTable("handoffs", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  roomId: text("room_id").notNull().references(() => rooms.id),
+  taskId: text("task_id").references(() => tasks.id),
+  runId: text("run_id").references(() => runs.id),
+  goalId: text("goal_id"),
+  planId: text("plan_id"),
+  senderType: text("sender_type").notNull(),
+  senderId: text("sender_id").notNull(),
+  recipientType: text("recipient_type").notNull(),
+  recipientId: text("recipient_id").notNull(),
+  expectedAction: text("expected_action").notNull(),
+  blockingCondition: text("blocking_condition"),
+  priority: text("priority"),
+  dueAt: ts("due_at"),
+  status: text("status").notNull(),
+  nextAction: text("next_action"),
+  latestStatus: text("latest_status"),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+}, (t) => [
+  check("handoffs_status_chk", sql`${t.status} in ('open','accepted','completed','cancelled','expired')`),
+  check("handoffs_sender_type_chk", sql`${t.senderType} in ('user','agent','system','bridge')`),
+  check("handoffs_recipient_type_chk", sql`${t.recipientType} in ('user','agent','system','bridge')`),
+  index("handoffs_room_idx").on(t.roomId),
+  index("handoffs_recipient_idx").on(t.recipientType, t.recipientId),
+]);
+
+export const blockers = pgTable("blockers", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  roomId: text("room_id").notNull().references(() => rooms.id),
+  taskId: text("task_id").references(() => tasks.id),
+  runId: text("run_id").references(() => runs.id),
+  goalId: text("goal_id"),
+  planId: text("plan_id"),
+  type: text("type").notNull(),
+  ownerType: text("owner_type").notNull(),
+  ownerId: text("owner_id").notNull(),
+  sourceKind: text("source_kind"),
+  sourceId: text("source_id"),
+  summary: text("summary").notNull(),
+  mitigation: text("mitigation"),
+  nextAction: text("next_action"),
+  status: text("status").notNull(),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+}, (t) => [
+  check(
+    "blockers_type_chk",
+    sql`${t.type} in ('approval','dependency','lease_conflict','offline_agent','stale_runtime','policy','budget','failed_run','missing_artifact','human_input')`,
+  ),
+  check("blockers_status_chk", sql`${t.status} in ('open','mitigated','accepted_risk','resolved')`),
+  index("blockers_room_idx").on(t.roomId),
+  index("blockers_source_idx").on(t.sourceKind, t.sourceId),
+]);
