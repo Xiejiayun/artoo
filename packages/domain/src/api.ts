@@ -8,6 +8,14 @@
 import { z } from "zod";
 
 import { CapabilitySchema } from "./capabilities.js";
+import {
+  BlockerSourceKindSchema,
+  BlockerStatusSchema,
+  BlockerTypeSchema,
+  DecisionStatusSchema,
+  HandoffStatusSchema,
+} from "./collaboration.js";
+import { ActorTypeSchema } from "./events.js";
 import { MemoryScopeSchema } from "./memory.js";
 import {
   DependencyTypeSchema,
@@ -251,3 +259,75 @@ export const InstallSkillRequestSchema = z.object({
   enabled: z.boolean().default(true),
 });
 export type InstallSkillRequest = z.infer<typeof InstallSkillRequestSchema>;
+
+// ---------------------------------------------------------------- V3 #114 collaboration
+// room_id always comes from the path, never the body; the rest mirror the
+// collaboration-service Create*/Set* inputs.
+
+export const CreateDecisionRequestSchema = z.object({
+  task_id: z.string().nullish(),
+  run_id: z.string().nullish(),
+  goal_id: z.string().nullish(),
+  plan_id: z.string().nullish(),
+  source_message_id: z.string().nullish(),
+  actor_type: ActorTypeSchema,
+  actor_id: z.string().min(1),
+  summary: z.string().min(1),
+  rationale: z.string().nullish(),
+  alternatives: z.array(z.string()).default([]),
+  evidence_refs: z.array(z.string()).default([]),
+  impact_summary: z.string().nullish(),
+});
+export type CreateDecisionRequest = z.infer<typeof CreateDecisionRequestSchema>;
+
+export const UpdateDecisionRequestSchema = z.object({
+  status: DecisionStatusSchema,
+  superseded_by_id: z.string().nullish(),
+});
+export type UpdateDecisionRequest = z.infer<typeof UpdateDecisionRequestSchema>;
+
+export const CreateHandoffRequestSchema = z.object({
+  task_id: z.string().nullish(),
+  run_id: z.string().nullish(),
+  goal_id: z.string().nullish(),
+  plan_id: z.string().nullish(),
+  sender_type: ActorTypeSchema,
+  sender_id: z.string().min(1),
+  recipient_type: ActorTypeSchema,
+  recipient_id: z.string().min(1),
+  expected_action: z.string().min(1),
+  blocking_condition: z.string().nullish(),
+  priority: z.enum(["low", "normal", "high"]).nullish(),
+  due_at: z.string().nullish(),
+});
+export type CreateHandoffRequest = z.infer<typeof CreateHandoffRequestSchema>;
+
+export const UpdateHandoffRequestSchema = z.object({
+  status: HandoffStatusSchema,
+  next_action: z.string().nullish(),
+  latest_status: z.string().nullish(),
+});
+export type UpdateHandoffRequest = z.infer<typeof UpdateHandoffRequestSchema>;
+
+export const CreateBlockerRequestSchema = z.object({
+  task_id: z.string().nullish(),
+  run_id: z.string().nullish(),
+  goal_id: z.string().nullish(),
+  plan_id: z.string().nullish(),
+  type: BlockerTypeSchema,
+  owner_type: ActorTypeSchema,
+  owner_id: z.string().min(1),
+  source_kind: BlockerSourceKindSchema.nullish(),
+  source_id: z.string().nullish(),
+  summary: z.string().min(1),
+  mitigation: z.string().nullish(),
+  next_action: z.string().nullish(),
+});
+export type CreateBlockerRequest = z.infer<typeof CreateBlockerRequestSchema>;
+
+export const UpdateBlockerRequestSchema = z.object({
+  status: BlockerStatusSchema,
+  mitigation: z.string().nullish(),
+  next_action: z.string().nullish(),
+});
+export type UpdateBlockerRequest = z.infer<typeof UpdateBlockerRequestSchema>;
