@@ -21,3 +21,4 @@ export * from "./lease.js";
 export * from "./memory.js";
 export * from "./runtime.js";
 export * from "./device.js";
+export * from "./presence.js";
