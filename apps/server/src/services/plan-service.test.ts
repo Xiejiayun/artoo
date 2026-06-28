@@ -13,8 +13,8 @@ import {
 } from "./plan-service.js";
 
 const TWO_SPECS = [
-  { title: "build", dependencies: [], required_capabilities: ["code.modify"] },
-  { title: "test", dependencies: [{ ref: "0", type: "blocks" }] },
+  { title: "build", acceptance_criteria: ["build completes"], dependencies: [], required_capabilities: ["code.modify"] },
+  { title: "test", acceptance_criteria: ["tests pass"], dependencies: [{ ref: "0", type: "blocks" }] },
 ];
 
 describe("plan-service #115 P1d", () => {
@@ -70,6 +70,7 @@ describe("plan-service #115 P1d", () => {
       expect(t.sourcePlanId).toBe(plan.id);
       expect(t.status).toBe("backlog");
       expect(t.createdByType).toBe("system");
+      expect(t.acceptanceCriteria).toHaveLength(1);
     }
     const refs = taskRows.map((t) => t.sourcePlanSpecRef).sort();
     expect(refs).toEqual(["0", "1"]);
@@ -80,6 +81,12 @@ describe("plan-service #115 P1d", () => {
     const deps = await db.db.select().from(taskDependencies).where(eq(taskDependencies.toTaskId, task1.id));
     expect(deps).toHaveLength(1);
     expect(deps[0]!.fromTaskId).toBe(task0.id);
+
+    // Materialized tasks are ordinary task-lifecycle tasks: acceptance criteria
+    // are copied from the plan, so an unblocked task can be marked ready.
+    const ready = await server.app.inject({ method: "POST", url: `/api/v1/tasks/${task0.id}/ready` });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json().task.status).toBe("ready");
 
     // Provenance event links goal + plan + created task ids.
     const matEvents = await db.db
@@ -115,8 +122,8 @@ describe("plan-service #115 P1d", () => {
   it("fails closed on a cyclic plan (rejected at propose, nothing persisted)", async () => {
     const { ctx } = server;
     const cyclic = [
-      { title: "a", dependencies: [{ ref: "1", type: "blocks" }] },
-      { title: "b", dependencies: [{ ref: "0", type: "blocks" }] },
+      { title: "a", acceptance_criteria: ["a done"], dependencies: [{ ref: "1", type: "blocks" }] },
+      { title: "b", acceptance_criteria: ["b done"], dependencies: [{ ref: "0", type: "blocks" }] },
     ];
     await expect(proposePlan(ctx, goalId, { task_specs: cyclic })).rejects.toThrow(/cycle/i);
     expect(await listPlans(ctx, goalId)).toHaveLength(0);
@@ -124,8 +131,17 @@ describe("plan-service #115 P1d", () => {
 
   it("fails closed on an unknown dependency ref", async () => {
     const { ctx } = server;
-    const bad = [{ title: "a", dependencies: [{ ref: "5", type: "blocks" }] }];
+    const bad = [{ title: "a", acceptance_criteria: ["a done"], dependencies: [{ ref: "5", type: "blocks" }] }];
     await expect(proposePlan(ctx, goalId, { task_specs: bad })).rejects.toThrow(/unknown dependency ref/i);
+  });
+
+  it("rejects task specs without acceptance criteria", async () => {
+    const { ctx } = server;
+    await expect(
+      proposePlan(ctx, goalId, {
+        task_specs: [{ title: "untriageable", acceptance_criteria: [], dependencies: [] }],
+      }),
+    ).rejects.toThrow(/acceptance_criteria/i);
   });
 
   it("enforces plan/goal state boundaries", async () => {
@@ -159,5 +175,6 @@ describe("plan-service #115 P1d", () => {
     await proposePlan(ctx, goalId, { task_specs: TWO_SPECS });
     const otherGoal = await createGoal(ctx, { project_id: "proj_artoo", title: "G2" });
     expect(await listPlans(ctx, otherGoal.id)).toHaveLength(0);
+    await expect(listPlans(ctx, "goal_nope")).rejects.toThrow(/goal not found/i);
   });
 });

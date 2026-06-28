@@ -29,8 +29,8 @@ describe("goal + plan routes #115", () => {
   }
 
   const TWO_SPECS = [
-    { title: "build", dependencies: [] },
-    { title: "test", dependencies: [{ ref: "0", type: "blocks" }] },
+    { title: "build", acceptance_criteria: ["build completes"], dependencies: [] },
+    { title: "test", acceptance_criteria: ["tests pass"], dependencies: [{ ref: "0", type: "blocks" }] },
   ];
 
   it("creates, lists, and gets a goal", async () => {
@@ -47,6 +47,16 @@ describe("goal + plan routes #115", () => {
 
   it("rejects an invalid goal payload with 400", async () => {
     const res = await server.app.inject({ method: "POST", url: "/api/v1/goals", payload: { project_id: "proj_artoo" } });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("rejects an invalid plan payload with 400", async () => {
+    const goalId = await createGoal("bad plan");
+    const res = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/goals/${goalId}/plans`,
+      payload: { task_specs: [{ title: "missing criteria", dependencies: [] }] },
+    });
     expect(res.statusCode).toBe(400);
   });
 
@@ -74,6 +84,11 @@ describe("goal + plan routes #115", () => {
     expect(plans.json().plans).toHaveLength(1);
     const detail = await server.app.inject({ method: "GET", url: `/api/v1/plans/${planId}` });
     expect(detail.json().plan.status).toBe("accepted");
+
+    const firstTaskId = (accepted.json().task_ids as string[])[0]!;
+    const ready = await server.app.inject({ method: "POST", url: `/api/v1/tasks/${firstTaskId}/ready` });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json().task.status).toBe("ready");
   });
 
   it("rejects a plan via the route", async () => {
@@ -100,5 +115,6 @@ describe("goal + plan routes #115", () => {
   it("404s pause/accept on unknown ids", async () => {
     expect((await server.app.inject({ method: "POST", url: "/api/v1/goals/goal_nope/pause" })).statusCode).toBe(404);
     expect((await server.app.inject({ method: "POST", url: "/api/v1/plans/plan_nope/accept" })).statusCode).toBe(404);
+    expect((await server.app.inject({ method: "GET", url: "/api/v1/goals/goal_nope/plans" })).statusCode).toBe(404);
   });
 });

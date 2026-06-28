@@ -140,8 +140,16 @@ describe("goal/plan schemas", () => {
       rationale: "first plan",
       status: "proposed",
       task_specs: [
-        { title: "scaffold", dependencies: [], required_capabilities: ["code.modify"], approval_gates: [], write_scopes: [], expected_artifacts: [] },
-        { title: "wire", dependencies: [{ ref: "0", type: "blocks" }] },
+        {
+          title: "scaffold",
+          acceptance_criteria: ["scaffold compiles"],
+          dependencies: [],
+          required_capabilities: ["code.modify"],
+          approval_gates: [],
+          write_scopes: [],
+          expected_artifacts: [],
+        },
+        { title: "wire", acceptance_criteria: ["wire works"], dependencies: [{ ref: "0", type: "blocks" }] },
       ],
       materialized_at: null,
       materialization_event_id: null,

@@ -104,6 +104,7 @@ function buildEdges(specs: TaskSpec[], idForIndex: (i: number) => string): { fro
 export interface ProposePlanSpecInput {
   title: string;
   description?: string;
+  acceptance_criteria: string[];
   required_capabilities?: string[];
   dependencies?: { ref: string; type: string }[];
   approval_gates?: string[];
@@ -185,12 +186,15 @@ export async function getPlan(ctx: ServerContext, id: string): Promise<Plan | nu
 }
 
 export async function listPlans(ctx: ServerContext, goalId: string): Promise<Plan[]> {
-  const rows = await ctx.db.db
-    .select()
-    .from(plans)
-    .where(and(eq(plans.organizationId, ctx.organizationId), eq(plans.goalId, goalId)))
-    .orderBy(desc(plans.version));
-  return rows.map(mapPlan);
+  return ctx.db.transaction(async (tx) => {
+    await requireGoalInOrg(ctx, tx, goalId);
+    const rows = await tx
+      .select()
+      .from(plans)
+      .where(and(eq(plans.organizationId, ctx.organizationId), eq(plans.goalId, goalId)))
+      .orderBy(desc(plans.version));
+    return rows.map(mapPlan);
+  });
 }
 
 export async function rejectPlan(ctx: ServerContext, planId: string): Promise<Plan | null> {
@@ -282,7 +286,7 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
       status: "backlog",
       priority: goal.priority,
       requiredCapabilities: spec.required_capabilities,
-      acceptanceCriteria: [],
+      acceptanceCriteria: spec.acceptance_criteria,
       createdByType: "system",
       createdById: "plan_materializer",
       createdAt: now,

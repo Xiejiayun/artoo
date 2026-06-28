@@ -89,7 +89,7 @@ Plan {
   author_id: string
   rationale: string       // why this plan/revision
   status: PlanStatus
-  task_specs: TaskSpec[]  // JSONB: planned tasks with deps, caps, expected artifacts
+  task_specs: TaskSpec[]  // JSONB: planned tasks with deps, criteria, caps, expected artifacts
   created_at: string
   accepted_at: string | null
 }
@@ -97,8 +97,9 @@ Plan {
 TaskSpec {
   title: string
   description: string
+  acceptance_criteria: string[]
   required_capabilities: string[]
-  dependencies: { ref: string, type: DependencyType }[]  // ref = index or title
+  dependencies: { ref: string, type: DependencyType }[]  // ref = 0-based task-spec index string
   approval_gates: string[]
   write_scopes: string[]
   expected_artifacts: { type: ArtifactType, description: string }[]
@@ -111,7 +112,7 @@ When a plan is `accepted`, the system materializes:
 1. Creates one `task` per `TaskSpec`, linking to `goal_id`
 2. Creates `task_dependencies` edges from the spec's dependencies
 3. Marks the goal as `planned → running` via `dag_materialized` trigger
-4. Creates a checkpoint (type: `dag_materialized`)
+4. Phase 2 checkpoint-service creates a checkpoint (type: `dag_materialized`)
 5. Emits `goal.plan_materialized` event
 
 **Mutation rule:** A new plan version can only be proposed when:
@@ -185,7 +186,7 @@ On resume (after daemon/server restart or human `resume`):
 7. If goal was `paused`: scheduler can pick up `ready` tasks again
 
 ### v3.0 Scope
-- **Must-have:** Checkpoint creation on all 6 trigger types, reference-based storage, latest checkpoint read API, resume evaluation logic
+- **Must-have:** Checkpoint creation on all 7 trigger types, reference-based storage, latest checkpoint read API, resume evaluation logic
 - **Later:** Checkpoint diff (show what changed between two checkpoints), checkpoint-based rollback, cross-goal checkpoint correlation
 - **Retention (v3.0):** Keep all checkpoints while goal is active; enforce cap of latest 200 + terminal/latest-accepted-plan checkpoints on completed/cancelled goals
 

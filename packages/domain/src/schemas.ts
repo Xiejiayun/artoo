@@ -47,7 +47,7 @@ export const IntegrationQueueStatusSchema = z.enum([
 export type IntegrationQueueStatus = z.infer<typeof IntegrationQueueStatusSchema>;
 
 export const RiskSchema = z.enum(["low", "medium", "high"]);
-export const RoomTypeSchema = z.enum(["dm", "project", "sprint", "task", "agent_team", "incident"]);
+export const RoomTypeSchema = z.enum(["dm", "project", "sprint", "task", "agent_team", "incident", "goal"]);
 
 export const AgentKindSchema = z.enum([
   "coding",

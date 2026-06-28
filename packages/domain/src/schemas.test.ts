@@ -77,11 +77,11 @@ describe("entity schemas", () => {
       RoomSchema.parse({
         id: "room_1",
         organization_id: "org_default",
-        type: "task",
-        name: "task room",
+        type: "goal",
+        name: "goal room",
         created_at: "2026-06-13T00:00:00Z",
       }).type,
-    ).toBe("task");
+    ).toBe("goal");
 
     expect(
       MessageSchema.parse({

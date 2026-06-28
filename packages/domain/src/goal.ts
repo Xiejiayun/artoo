@@ -172,6 +172,9 @@ export function canProposePlan(goalStatus: GoalStatus, hasAcceptedPlan: boolean)
 export const TaskSpecSchema = z.object({
   title: z.string().min(1),
   description: z.string().default(""),
+  // Plan materialization creates ordinary backlog tasks, and the existing task
+  // lifecycle requires non-empty criteria before a task can be marked ready.
+  acceptance_criteria: z.array(z.string().min(1)).min(1),
   required_capabilities: z.array(z.string()).default([]),
   dependencies: z
     .array(z.object({ ref: z.string(), type: DependencyTypeSchema }))
