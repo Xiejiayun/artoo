@@ -101,6 +101,26 @@ describe("goal + plan routes #115", () => {
     expect(rejected.json().plan.status).toBe("rejected");
   });
 
+  it("exposes goal checkpoints via the read routes (#115 P2-S1)", async () => {
+    const goalId = await createGoal("checkpoint me");
+    const planId = (
+      await server.app.inject({ method: "POST", url: `/api/v1/goals/${goalId}/plans`, payload: { task_specs: TWO_SPECS } })
+    ).json().plan.id as string;
+    await server.app.inject({ method: "POST", url: `/api/v1/plans/${planId}/accept` });
+
+    const list = await server.app.inject({ method: "GET", url: `/api/v1/goals/${goalId}/checkpoints` });
+    expect(list.statusCode).toBe(200);
+    const cps = list.json().checkpoints as { id: string; type: string }[];
+    expect(cps.some((c) => c.type === "dag_materialized")).toBe(true);
+
+    const one = await server.app.inject({ method: "GET", url: `/api/v1/checkpoints/${cps[0]!.id}` });
+    expect(one.statusCode).toBe(200);
+    expect(one.json().checkpoint.id).toBe(cps[0]!.id);
+
+    expect((await server.app.inject({ method: "GET", url: "/api/v1/checkpoints/ckpt_nope" })).statusCode).toBe(404);
+    expect((await server.app.inject({ method: "GET", url: "/api/v1/goals/goal_nope/checkpoints" })).statusCode).toBe(404);
+  });
+
   it("cancel works on a draft goal; pause on a draft goal is an invalid-state error", async () => {
     const goalId = await createGoal("cancel me");
     const cancelled = await server.app.inject({ method: "POST", url: `/api/v1/goals/${goalId}/cancel` });

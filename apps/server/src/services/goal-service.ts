@@ -16,6 +16,7 @@ import { and, desc, eq } from "drizzle-orm";
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
+import { createCheckpointInTx } from "./checkpoint-service.js";
 
 /**
  * V3 #115 P1c — goal lifecycle service. A goal sits above the task/run/DAG
@@ -196,19 +197,27 @@ export async function transitionGoal(
         updatedAt: now,
       })
       .where(and(eq(goals.id, id), eq(goals.organizationId, ctx.organizationId)));
-    await appendEvent(
-      tx,
-      buildEvent(ctx, {
-        type: eventTypeForTrigger(trigger, to),
-        actorType: "user",
-        actorId: ctx.actorUserId,
-        correlationId: id,
-        projectId: existing.project_id,
-        roomId: existing.room_id,
-        goalId: id,
-        payload: { goal_id: id, from: existing.status, to, trigger },
-      }),
-    );
+    const transitionEvent = buildEvent(ctx, {
+      type: eventTypeForTrigger(trigger, to),
+      actorType: "user",
+      actorId: ctx.actorUserId,
+      correlationId: id,
+      projectId: existing.project_id,
+      roomId: existing.room_id,
+      goalId: id,
+      payload: { goal_id: id, from: existing.status, to, trigger },
+    });
+    await appendEvent(tx, transitionEvent);
+    // P2-S1: a pause/resume override is a safe boundary — write a checkpoint in
+    // the same tx, linked to the transition event (so the marker is associated
+    // with goal.paused / goal.resumed). Reflects the post-transition goal row.
+    if (trigger === "pause" || trigger === "resume") {
+      const goalRow = (await tx.select().from(goals).where(eq(goals.id, id)))[0]!;
+      await createCheckpointInTx(ctx, tx, goalRow, trigger === "pause" ? "paused" : "resumed", {
+        triggerEventId: transitionEvent.id,
+        summary: trigger === "pause" ? "Goal paused" : "Goal resumed",
+      });
+    }
   });
   return getGoal(ctx, id);
 }

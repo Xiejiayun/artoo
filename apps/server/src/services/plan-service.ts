@@ -20,6 +20,7 @@ import type { DrizzleDb } from "@artoo/storage";
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
+import { createCheckpointInTx, hasMaterializeCheckpoint } from "./checkpoint-service.js";
 
 /**
  * V3 #115 P1d — plan versioning + plan→DAG materialization.
@@ -341,6 +342,19 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
   });
   await tx.update(plans).set({ materializedAt: now, materializationEventId: matEvent.id }).where(eq(plans.id, planId));
   await appendEvent(tx, matEvent);
+
+  // P2-S1: a dag_materialized checkpoint, atomic with the transition and linked
+  // to the materialization event. Guarded so a materialize retry (which is
+  // already short-circuited by materialized_at) can never create a duplicate.
+  if (!(await hasMaterializeCheckpoint(ctx, tx, planId))) {
+    await createCheckpointInTx(
+      ctx,
+      tx,
+      { ...goal, status: applyGoalTransition("planned", "dag_materialized") },
+      "dag_materialized",
+      { planId, triggerEventId: matEvent.id, summary: `Materialized plan into ${taskIds.length} task(s)` },
+    );
+  }
 
   const updated = (await tx.select().from(plans).where(eq(plans.id, planId)))[0]!;
   return { plan: mapPlan(updated), task_ids: taskIds };

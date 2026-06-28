@@ -38,6 +38,7 @@ import { createClaimLimiter, DEFAULT_CLAIM_LIMIT, type ClaimLimiter } from "./cl
 import { registerIdempotency } from "./idempotency-middleware.js";
 import * as auditService from "./services/audit-service.js";
 import * as approvalService from "./services/approval-service.js";
+import * as checkpointService from "./services/checkpoint-service.js";
 import * as collaborationService from "./services/collaboration-service.js";
 import * as dagService from "./services/dag-service.js";
 import * as deviceService from "./services/device-service.js";
@@ -450,6 +451,22 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       throw AppError.notFound(`plan not found: ${id}`);
     }
     return { plan };
+  });
+
+  // V3 #115 P2-S1 — goal checkpoints (read-only surface; checkpoints are written
+  // by the materialize / pause / resume hooks, never directly via the API).
+  app.get("/api/v1/goals/:id/checkpoints", async (req) => {
+    const { id } = req.params as { id: string };
+    return { checkpoints: await checkpointService.listCheckpoints(rc(req), id) };
+  });
+  app.get("/api/v1/checkpoints/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const checkpoint = await checkpointService.getCheckpoint(rc(req), id);
+    if (checkpoint === null) {
+      void reply.status(404);
+      throw AppError.notFound(`checkpoint not found: ${id}`);
+    }
+    return { checkpoint };
   });
 
   // Revoke a device: both its credentials flip to revoked AND every live socket
