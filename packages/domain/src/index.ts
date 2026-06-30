@@ -15,6 +15,7 @@ export * from "./collaboration.js";
 export * from "./context-pack.js";
 export * from "./goal.js";
 export * from "./resume.js";
+export * from "./budget.js";
 export * from "./node-payloads.js";
 export * from "./schemas.js";
 export * from "./api.js";
