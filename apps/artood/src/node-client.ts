@@ -5,6 +5,7 @@ import type {
   RunEventMessage,
   RunStartCommand,
   RunStopCommand,
+  RunResumeCommand,
   RuntimeAdapter,
   ServerToNodeMessage,
   Unsubscribe
@@ -172,6 +173,19 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     }
   }
 
+  // #115 P2-S3b: resume an already-active run after a reconnect. This NEVER
+  // rebuilds or starts a process — it only reports whether the run's handle is
+  // still live here. Alive → ack accepted (the existing streamEvents loop keeps
+  // flowing, so nothing else is needed). Lost → ack rejected(process_exited), and
+  // the server maps that to the daemon_disconnect failure path.
+  async function onRunResume(command: RunResumeCommand): Promise<void> {
+    if (runs.has(command.payload.run_id)) {
+      await ackAccepted(command.id);
+    } else {
+      await ackRejected(command.id, "process_exited", `run ${command.payload.run_id} is not active on this node`);
+    }
+  }
+
   async function dispatch(message: ServerToNodeMessage): Promise<void> {
     switch (message.type) {
       case "run.start":
@@ -180,6 +194,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         return onRunStop(message);
       case "artifact.collect":
         return ackAccepted(message.id);
+      case "run.resume":
+        return onRunResume(message);
     }
   }
 

@@ -118,7 +118,7 @@ export function registerNodeWsRoute(
         if (currentAuth.mode === "device") {
           void recordDeviceActivity(ctx, currentAuth.deviceId, "node").catch(() => {});
         }
-        binding = attachNodeBinding(ctx, transport);
+        binding = attachNodeBinding(ctx, transport, nodeId);
         registry.register(nodeId, binding);
         // #115 P2-S3: a reconnect within the grace window cancels the pending
         // failure and resumes only the disconnect snapshot, re-verified by

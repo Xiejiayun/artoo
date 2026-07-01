@@ -15,6 +15,7 @@ import { and, eq } from "drizzle-orm";
 
 import type { ServerContext } from "./context.js";
 import {
+  failRunDaemonDisconnect,
   failRunStart,
   ingestRunEvent,
   type IngestEnvelope,
@@ -44,8 +45,13 @@ export interface NodeBinding {
  * apply in order. A real artood swaps the in-process transport for a WebSocket;
  * this binding is unchanged.
  */
-export function attachNodeBinding(ctx: ServerContext, transport: NodeTransport): NodeBinding {
-  const pendingCommandRun = new Map<string, string>(); // command_id -> run_id
+export function attachNodeBinding(
+  ctx: ServerContext,
+  transport: NodeTransport,
+  computerId?: string,
+): NodeBinding {
+  const pendingCommandRun = new Map<string, string>(); // command_id -> run_id (run.start)
+  const pendingResumeRun = new Map<string, string>(); // command_id -> run_id (run.resume, #115 P2-S3b)
   let tail: Promise<void> = Promise.resolve();
   const enqueue = (work: () => Promise<unknown>): void => {
     tail = tail.then(work, work).then(
@@ -61,13 +67,26 @@ export function attachNodeBinding(ctx: ServerContext, transport: NodeTransport):
         enqueue(() => ingestRunEvent(ctx, envelope));
       }
     } else if (message.kind === "command.ack" && message.status === "rejected") {
-      const runId = pendingCommandRun.get(message.command_id);
-      if (runId !== undefined) {
+      const startRunId = pendingCommandRun.get(message.command_id);
+      if (startRunId !== undefined) {
         pendingCommandRun.delete(message.command_id);
-        enqueue(() => failRunStart(ctx, runId, message.error_code, message.message));
+        enqueue(() => failRunStart(ctx, startRunId, message.error_code, message.message));
+        return;
+      }
+      // #115 P2-S3b: a rejected run.resume (node no longer has the process) maps to
+      // the same auditable daemon_disconnect failure path — idempotent, and only
+      // for a starting/running run on this connected computer.
+      const resumeRunId = pendingResumeRun.get(message.command_id);
+      if (resumeRunId !== undefined) {
+        pendingResumeRun.delete(message.command_id);
+        if (computerId !== undefined) {
+          enqueue(() => failRunDaemonDisconnect(ctx, resumeRunId, computerId));
+        }
       }
     } else if (message.kind === "command.ack") {
+      // Accepted: no server-side transition (resume just continues the live run).
       pendingCommandRun.delete(message.command_id);
+      pendingResumeRun.delete(message.command_id);
     }
   });
 
@@ -143,9 +162,11 @@ export function attachNodeBinding(ctx: ServerContext, transport: NodeTransport):
     // brief disconnect grace window. Only the run id is sent; the node continues
     // the live process or acks rejected (daemon handling is the S3b gate).
     async dispatchRunResume(runId: string): Promise<void> {
+      const commandId = ctx.idGen.generate("cmd");
+      pendingResumeRun.set(commandId, runId);
       const command: RunResumeCommand = {
         kind: "command",
-        id: ctx.idGen.generate("cmd"),
+        id: commandId,
         idempotency_key: `${runId}:resume`,
         type: "run.resume",
         payload: { run_id: runId },
