@@ -170,6 +170,10 @@ describe("resume-service #115 P2-S2", () => {
   });
 
   it("unknown / cross-org goal → 404", async () => {
+    const { goalId } = await runningGoal();
+    await expect(reconcileGoalFromCheckpoint({ ...server.ctx, organizationId: "org_other" }, goalId)).rejects.toThrow(
+      /goal not found/i,
+    );
     await expect(reconcileGoalFromCheckpoint(server.ctx, "goal_nope")).rejects.toThrow(/goal not found/i);
   });
 });

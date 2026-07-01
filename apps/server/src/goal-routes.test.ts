@@ -121,6 +121,22 @@ describe("goal + plan routes #115", () => {
     expect((await server.app.inject({ method: "GET", url: "/api/v1/goals/goal_nope/checkpoints" })).statusCode).toBe(404);
   });
 
+  it("reconciles a goal from its latest checkpoint via the route (#115 P2-S2)", async () => {
+    const goalId = await createGoal("reconcile me");
+    const planId = (
+      await server.app.inject({ method: "POST", url: `/api/v1/goals/${goalId}/plans`, payload: { task_specs: TWO_SPECS } })
+    ).json().plan.id as string;
+    await server.app.inject({ method: "POST", url: `/api/v1/plans/${planId}/accept` });
+
+    const res = await server.app.inject({ method: "POST", url: `/api/v1/goals/${goalId}/reconcile` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().reconciled).toBe(true);
+    expect(res.json().checkpoint_id).not.toBeNull();
+    expect(res.json().opened_blocker_ids).toEqual([]);
+
+    expect((await server.app.inject({ method: "POST", url: "/api/v1/goals/goal_nope/reconcile" })).statusCode).toBe(404);
+  });
+
   it("cancel works on a draft goal; pause on a draft goal is an invalid-state error", async () => {
     const goalId = await createGoal("cancel me");
     const cancelled = await server.app.inject({ method: "POST", url: `/api/v1/goals/${goalId}/cancel` });
