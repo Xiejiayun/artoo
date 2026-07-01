@@ -3,12 +3,13 @@
 Status: #126 planning input for #116 UX/UI maturity and #119 release gates.
 
 This note updates the accepted #117 Apple client plan after the concrete #113,
-#114, and #115 Phase 1 contracts landed on `main=e61952e`. It is a UX/API/
-evidence impact map only. It does not authorize broad iOS or Mac implementation.
+#114, and #115 Phase 1 plus P2-S1/P2-S2 contracts landed on `main=001ac00`.
+It is a UX/API/evidence impact map only. It does not authorize broad iOS or Mac
+implementation.
 
 ## Contract Baseline
 
-Available on `main=e61952e`:
+Available on `main=001ac00`:
 
 - #113 Agent Presence: server-synthesized agent-instance and computer presence
   read models, capacity-backed scheduler eligibility, device-trust exclusion,
@@ -18,12 +19,20 @@ Available on `main=e61952e`:
   inclusion.
 - #115 Phase 1: Goal and Plan domain/service/routes, goal rooms, plan
   versioning, and atomic first-plan acceptance plus plan-to-DAG materialization.
+- #115 P2-S1/P2-S2: checkpoint create/list/get, materialize/pause/resume
+  checkpoint hooks, latest-checkpoint reconciliation, `event_cursor` stale-run
+  detection, idempotent run-sourced blockers for failed/stale/missing runs, and
+  running-goal to blocked derivation.
 
 Still conditional:
 
-- #115 P2 checkpoint/resume service is in review. Until it lands, checkpoint
-  and "what changed since I was away" UI should be specified as required V3
-  behavior, but not claimed as implemented.
+- #115 P2-S3 run.resume protocol, grace window, and daemon handler remain
+  unmerged. Until S3 lands, daemon restart/reconnect resume should be specified
+  as required V3 behavior, but not claimed as implemented.
+- "What changed since I was away" remains a product/read-model requirement on
+  top of checkpoints, decisions, handoffs, blockers, approvals, artifacts, and
+  run events; do not imply a dedicated Apple-facing summary API exists until a
+  follow-up lands it.
 - Presence push events currently cover connection edges only. Work/runtime
   changes are correct through read APIs, but live push for those dimensions is a
   release-boundary item for #116/#119 unless a follow-up lands it.
@@ -187,7 +196,7 @@ Goal rows on iOS and Mac should show:
 - open blocker count and resume state;
 - latest checkpoint summary when available.
 
-Safe mobile actions today from Phase 1:
+Safe mobile actions available from current server APIs:
 
 - create goal;
 - inspect goal;
@@ -195,6 +204,9 @@ Safe mobile actions today from Phase 1:
 - propose plan;
 - accept/reject plan;
 - inspect materialized tasks under the goal.
+- inspect goal checkpoints;
+- invoke checkpoint reconciliation only through a product-approved recovery
+  flow, not as an unexplained raw maintenance button.
 
 Action constraints:
 
@@ -206,7 +218,7 @@ Action constraints:
 
 ### Checkpoints And "What Changed"
 
-Checkpoint UX is required for V3 but conditional on #115 P2:
+Checkpoint UX is required for V3 and is partially backed by #115 P2-S1/P2-S2:
 
 - show latest checkpoint type, summary, age, plan_id, event cursor, and
   reference counts;
@@ -216,8 +228,10 @@ Checkpoint UX is required for V3 but conditional on #115 P2:
   runtime/offline agent/stale daemon;
 - make pause/resume/cancel sheets include the checkpoint consequence.
 
-Until P2 lands, iOS/Mac should present checkpoint surfaces in static/source
-planning only and should not claim live checkpoint recovery.
+S1/S2 allow checkpoint reads and checkpoint-based reconciliation claims. They do
+not prove daemon restart/reconnect resume, `run.resume` protocol handling, or a
+dedicated changed-since-away summary API; those remain S3/follow-up release
+boundaries.
 
 ## Server-Backed State Rules
 
@@ -314,8 +328,10 @@ Minimum Mac gate:
 - prove darwin bridge;
 - prove server read/write against temp or staging server;
 - prove goal list/detail, presence read, decision/handoff/blocker read, approval
-  action, artifact read, and checkpoint read if P2 has landed;
-- prove local daemon/computer/agent health separation when #118/#115 support it.
+  action, artifact read, checkpoint read, and checkpoint reconciliation against
+  the P2-S1/P2-S2 APIs;
+- prove local daemon/computer/agent health separation when #118/#115 support it;
+- prove daemon restart/reconnect resume only after S3 lands.
 
 Not included unless separately proven: DMG quality, signing, notarization,
 auto-update, update trust chain, public-production sandbox/security.
@@ -350,6 +366,7 @@ Not a valid V3 claim:
 
 - "iOS is live-verified" from static screenshots alone.
 - "Presence is fully realtime" if work/runtime changes only update on polling.
-- "Goal resume is proven" before checkpoint/resume P2 passes.
+- "Daemon restart/reconnect resume is proven" before S3 protocol/grace-window/
+  daemon-handler evidence passes.
 - "Mac is production-ready" without signing/notarization/update trust/security
   hardening evidence.
