@@ -49,6 +49,7 @@ import * as memoryService from "./services/memory-service.js";
 import * as messageService from "./services/message-service.js";
 import * as planService from "./services/plan-service.js";
 import * as presenceService from "./services/presence-service.js";
+import * as resumeService from "./services/resume-service.js";
 import * as runService from "./services/run-service.js";
 import * as runtimeRegistry from "./services/runtime-registry-service.js";
 import * as skillService from "./services/skill-service.js";
@@ -467,6 +468,15 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       throw AppError.notFound(`checkpoint not found: ${id}`);
     }
     return { checkpoint };
+  });
+
+  // V3 #115 P2-S2 — reconcile a goal against its latest checkpoint (resume
+  // evaluation: continue/complete runs, open blockers for failed/stale runs, and
+  // re-derive the goal to blocked while active blockers exist). The daemon/restart
+  // auto-trigger + run.resume protocol are the separate S3 gate.
+  app.post("/api/v1/goals/:id/reconcile", async (req) => {
+    const { id } = req.params as { id: string };
+    return resumeService.reconcileGoalFromCheckpoint(rc(req), id);
   });
 
   // Revoke a device: both its credentials flip to revoked AND every live socket
