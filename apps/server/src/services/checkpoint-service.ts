@@ -6,7 +6,7 @@ import {
   CheckpointSchema,
   ID_PREFIXES,
 } from "@artoo/domain";
-import { and, desc, eq, inArray, max, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, max, notInArray } from "drizzle-orm";
 
 import type { DrizzleDb } from "@artoo/storage";
 
@@ -60,7 +60,8 @@ export async function synthesizeRefsInTx(
   const taskRows = await tx
     .select({ id: tasks.id, status: tasks.status })
     .from(tasks)
-    .where(and(eq(tasks.organizationId, ctx.organizationId), eq(tasks.goalId, goal.id)));
+    .where(and(eq(tasks.organizationId, ctx.organizationId), eq(tasks.goalId, goal.id)))
+    .orderBy(asc(tasks.id));
   const taskIds = taskRows.map((t) => t.id);
 
   const activeRunRows =
@@ -75,7 +76,8 @@ export async function synthesizeRefsInTx(
               inArray(runs.taskId, taskIds),
               notInArray(runs.status, [...TERMINAL_RUN_STATUSES]),
             ),
-          );
+          )
+          .orderBy(asc(runs.id));
 
   const pendingApprovalRows =
     taskIds.length === 0
@@ -89,7 +91,8 @@ export async function synthesizeRefsInTx(
               inArray(approvals.taskId, taskIds),
               eq(approvals.status, "pending"),
             ),
-          );
+          )
+          .orderBy(asc(approvals.id));
 
   const openBlockerRows = await tx
     .select({ id: blockers.id })
@@ -100,7 +103,8 @@ export async function synthesizeRefsInTx(
         eq(blockers.goalId, goal.id),
         inArray(blockers.status, [...ACTIVE_BLOCKER_STATUSES]),
       ),
-    );
+    )
+    .orderBy(asc(blockers.id));
 
   let planVersion = 0;
   if (goal.currentPlanId != null) {
@@ -150,6 +154,9 @@ export async function createCheckpointInTx(
   type: CheckpointType,
   opts: CreateCheckpointOptions = {},
 ): Promise<Checkpoint> {
+  if (goal.organizationId !== ctx.organizationId) {
+    throw AppError.notFound(`goal not found: ${goal.id}`, { goal_id: goal.id });
+  }
   const now = ctx.clock.nowIso();
   const id = ctx.idGen.generate(ID_PREFIXES.checkpoint);
   const refs = await synthesizeRefsInTx(ctx, tx, goal);
@@ -177,7 +184,9 @@ export async function createCheckpointInTx(
       payload: { goal_id: goal.id, checkpoint_id: id, checkpoint_type: type, trigger_event_id: opts.triggerEventId ?? null },
     }),
   );
-  const row = (await tx.select().from(checkpoints).where(eq(checkpoints.id, id)))[0]!;
+  const row = (
+    await tx.select().from(checkpoints).where(and(eq(checkpoints.id, id), eq(checkpoints.organizationId, ctx.organizationId)))
+  )[0]!;
   return mapCheckpoint(row);
 }
 
@@ -200,13 +209,19 @@ export async function hasMaterializeCheckpoint(ctx: ServerContext, tx: Tx, planI
 }
 
 export async function getCheckpoint(ctx: ServerContext, id: string): Promise<Checkpoint | null> {
-  const row = (
-    await ctx.db.db
-      .select()
-      .from(checkpoints)
-      .where(and(eq(checkpoints.id, id), eq(checkpoints.organizationId, ctx.organizationId)))
-  )[0];
-  return row === undefined ? null : mapCheckpoint(row);
+  return ctx.db.transaction(async (tx) => {
+    const row = (
+      await tx
+        .select()
+        .from(checkpoints)
+        .where(and(eq(checkpoints.id, id), eq(checkpoints.organizationId, ctx.organizationId)))
+    )[0];
+    if (row === undefined) return null;
+    const goal = (
+      await tx.select({ id: goals.id }).from(goals).where(and(eq(goals.id, row.goalId), eq(goals.organizationId, ctx.organizationId)))
+    )[0];
+    return goal === undefined ? null : mapCheckpoint(row);
+  });
 }
 
 /** List a goal's checkpoints, latest first. Verifies the goal is in-org. */

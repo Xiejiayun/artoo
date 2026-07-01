@@ -116,6 +116,10 @@ describe("checkpoint-service #115 P2-S1", () => {
     // Another goal's checkpoints are not visible here.
     const other = await createGoal(ctx, { project_id: "proj_artoo", title: "G2" });
     expect(await listCheckpoints(ctx, other.id)).toHaveLength(0);
+
+    const otherOrgCtx = { ...ctx, organizationId: "org_other" };
+    expect(await getCheckpoint(otherOrgCtx, list[0]!.id)).toBeNull();
+    await expect(listCheckpoints(otherOrgCtx, goalId)).rejects.toThrow(/goal not found/i);
   });
 
   it("listCheckpoints 404s an unknown goal", async () => {

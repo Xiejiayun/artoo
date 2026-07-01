@@ -212,7 +212,9 @@ export async function transitionGoal(
     // the same tx, linked to the transition event (so the marker is associated
     // with goal.paused / goal.resumed). Reflects the post-transition goal row.
     if (trigger === "pause" || trigger === "resume") {
-      const goalRow = (await tx.select().from(goals).where(eq(goals.id, id)))[0]!;
+      const goalRow = (
+        await tx.select().from(goals).where(and(eq(goals.id, id), eq(goals.organizationId, ctx.organizationId)))
+      )[0]!;
       await createCheckpointInTx(ctx, tx, goalRow, trigger === "pause" ? "paused" : "resumed", {
         triggerEventId: transitionEvent.id,
         summary: trigger === "pause" ? "Goal paused" : "Goal resumed",
