@@ -13,6 +13,7 @@ import type { ServerContext } from "./context.js";
 import { createEventPublisher, type EventPublisher } from "./ws/event-publisher.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
 import type { ClientWsHooks } from "./ws/client-ws.js";
+import type { GraceWindowManager } from "./ws/grace-window.js";
 import { createWsHub, type WsHub } from "./ws/ws-hub.js";
 
 const FIXED_ISO = "2026-06-13T00:00:00.000Z";
@@ -70,6 +71,8 @@ export interface BuildTestServerOptions {
   claimLimiter?: ClaimLimiter;
   /** Enable packaged-desktop CORS for targeted route tests. */
   desktopCors?: DesktopCorsOptions;
+  /** Inject a node disconnect grace manager for WS reconnect tests. */
+  graceWindow?: GraceWindowManager;
 }
 
 /** A fully wired server over an embedded, migrated, seeded database. */
@@ -104,6 +107,7 @@ export async function buildTestServer(
     clientWsHooks: options.clientWsHooks,
     claimLimiter: options.claimLimiter,
     desktopCors: options.desktopCors,
+    graceWindow: options.graceWindow,
   });
   const publisher = createEventPublisher(ctx, wsHub);
   await app.ready();

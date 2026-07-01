@@ -2,7 +2,7 @@ import { eventLog, runs, tasks } from "@artoo/db";
 import { and, eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { activeRunIdsForComputer, failRunDaemonDisconnect } from "./run-service.js";
+import { activeRunIdsForComputer, activeSnapshotRunIdsForComputer, failRunDaemonDisconnect } from "./run-service.js";
 import { ingestRunEvent } from "./run-service.js";
 import { buildTestServer, type TestServer } from "../test-support.js";
 
@@ -47,6 +47,21 @@ describe("run daemon-disconnect grace failure (#115 P2-S3)", () => {
     const { runId } = await runningRun();
     expect(await activeRunIdsForComputer(server.ctx, COMPUTER)).toEqual([runId]);
     expect(await activeRunIdsForComputer(server.ctx, "computer_other")).toEqual([]);
+  });
+
+  it("activeSnapshotRunIdsForComputer filters a disconnect snapshot by current run state", async () => {
+    const terminal = await runningRun();
+    await ingestRunEvent(server.ctx, {
+      runId: terminal.runId,
+      nodeId: COMPUTER,
+      sequence: 1,
+      event: { kind: "lifecycle", phase: "completed" },
+    });
+    const active = await runningRun();
+
+    await expect(
+      activeSnapshotRunIdsForComputer(server.ctx, COMPUTER, [terminal.runId, active.runId, "run_missing"]),
+    ).resolves.toEqual([active.runId]);
   });
 
   it("fails a running run with daemon_disconnect and blocks the task", async () => {

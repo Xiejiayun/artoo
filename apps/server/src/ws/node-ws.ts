@@ -7,7 +7,7 @@ import type { ServerContext } from "../context.js";
 import { attachNodeBinding, type NodeBinding } from "../node-binding.js";
 import { resolveNodeToken } from "../services/device-service.js";
 import { recordDeviceActivity } from "../services/presence-service.js";
-import { activeRunIdsForComputer } from "../services/run-service.js";
+import { activeRunIdsForComputer, activeSnapshotRunIdsForComputer } from "../services/run-service.js";
 import { recordHeartbeatRuntimes } from "../services/runtime-registry-service.js";
 import type { GraceWindowManager } from "./grace-window.js";
 import type { NodeRegistry } from "./node-registry.js";
@@ -121,14 +121,14 @@ export function registerNodeWsRoute(
         binding = attachNodeBinding(ctx, transport);
         registry.register(nodeId, binding);
         // #115 P2-S3: a reconnect within the grace window cancels the pending
-        // failure and resumes the runs still active on this computer (re-verified
-        // by org/computer/status, so terminal runs are never resumed).
-        if (graceWindow !== undefined && graceWindow.isArmed(nodeId)) {
-          graceWindow.disarm(nodeId);
+        // failure and resumes only the disconnect snapshot, re-verified by
+        // org/computer/status so terminal or newly-created runs are not resumed.
+        const resumeSnapshot = graceWindow?.disarm(nodeId) ?? [];
+        if (resumeSnapshot.length > 0) {
           const resumeNodeId = nodeId;
           const resumeBinding = binding;
           void (async (): Promise<void> => {
-            const active = await activeRunIdsForComputer(ctx, resumeNodeId);
+            const active = await activeSnapshotRunIdsForComputer(ctx, resumeNodeId, resumeSnapshot);
             for (const runId of active) {
               await resumeBinding.dispatchRunResume(runId).catch(() => {});
             }

@@ -1,13 +1,15 @@
 import { createNodeClient, createWebSocketTransport } from "@artoo/artood";
-import { computers, devices, deviceTokens } from "@artoo/db";
-import type { NodeHello } from "@artoo/protocol";
+import { agentInstances, computers, devices, deviceTokens } from "@artoo/db";
+import type { NodeHello, ServerToNodeMessage } from "@artoo/protocol";
 import { createMockAdapter } from "@artoo/testkit";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { testDeviceAuthConfig } from "./config/device-auth.js";
 import { generateDeviceToken } from "./services/device-credential.js";
+import { ingestRunEvent } from "./services/run-service.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
+import type { GraceWindowManager } from "./ws/grace-window.js";
 
 const NODE_ID = "computer_local_mock";
 
@@ -46,6 +48,34 @@ async function status(server: TestServer, taskId: string): Promise<string> {
   return snap.json().task.status as string;
 }
 
+async function createRunningRun(server: TestServer, title: string): Promise<string> {
+  const created = await server.app.inject({
+    method: "POST",
+    url: "/api/v1/tasks",
+    payload: {
+      project_id: "proj_artoo",
+      title,
+      acceptance_criteria: ["ok"],
+      required_capabilities: ["code.modify"],
+    },
+  });
+  const taskId = created.json().task.id as string;
+  await server.app.inject({ method: "POST", url: `/api/v1/tasks/${taskId}/ready` });
+  const assigned = await server.app.inject({
+    method: "POST",
+    url: `/api/v1/tasks/${taskId}/assign`,
+    payload: { mode: "auto" },
+  });
+  const runId = assigned.json().run.id as string;
+  await ingestRunEvent(server.ctx, {
+    runId,
+    nodeId: NODE_ID,
+    sequence: 0,
+    event: { kind: "lifecycle", phase: "started" },
+  });
+  return runId;
+}
+
 async function computerStatus(server: TestServer): Promise<string> {
   const row = (
     await server.ctx.db.db.select().from(computers).where(eq(computers.id, NODE_ID))
@@ -72,6 +102,13 @@ async function advertisedRuntimeIds(server: TestServer, computerId: string): Pro
     url: `/api/v1/computers/${computerId}/runtimes`,
   });
   return (res.json().runtimes as Array<{ runtime: string }>).map((runtime) => runtime.runtime);
+}
+
+async function setMockInstanceConcurrency(server: TestServer, concurrencyLimit: number): Promise<void> {
+  await server.db.db
+    .update(agentInstances)
+    .set({ config: { concurrency_limit: concurrencyLimit } })
+    .where(eq(agentInstances.id, "instance_mock_coder"));
 }
 
 describe("node WS endpoint (real WebSocket loopback)", () => {
@@ -232,6 +269,50 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
     );
     expect(await advertisedRuntimeIds(server, spoofedNodeId)).toEqual([]);
     socket.close();
+  });
+
+  it("resumes only the disconnect snapshot on reconnect", async () => {
+    let snapshotRunIds: string[] = [];
+    const graceWindow: GraceWindowManager = {
+      arm: () => {},
+      disarm: (computerId) => (computerId === NODE_ID ? [...snapshotRunIds] : []),
+      isArmed: (computerId) => computerId === NODE_ID && snapshotRunIds.length > 0,
+    };
+    server = await buildTestServer({ graceWindow });
+    await setMockInstanceConcurrency(server, 4);
+    const snapshotRunId = await createRunningRun(server, "snapshot run");
+    const newRunId = await createRunningRun(server, "new active run");
+    snapshotRunIds = [snapshotRunId];
+    const port = await listen(server);
+
+    const commands: ServerToNodeMessage[] = [];
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=dev`);
+    try {
+      socket.addEventListener("message", (event) => {
+        if (typeof event.data === "string") {
+          commands.push(JSON.parse(event.data) as ServerToNodeMessage);
+        }
+      });
+      await new Promise<void>((resolve) => {
+        socket.addEventListener("open", () => {
+          socket.send(JSON.stringify(hello(NODE_ID)));
+          resolve();
+        });
+      });
+      await waitFor(
+        () => commands.some((command) => command.type === "run.resume"),
+        "resume command sent",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const resumeRunIds = commands.flatMap((command) =>
+        command.type === "run.resume" ? [command.payload.run_id] : [],
+      );
+      expect(resumeRunIds).toEqual([snapshotRunId]);
+      expect(resumeRunIds).not.toContain(newRunId);
+    } finally {
+      socket.close();
+    }
   });
 });
 

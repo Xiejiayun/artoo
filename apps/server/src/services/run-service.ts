@@ -425,6 +425,35 @@ export async function activeRunIdsForComputer(ctx: ServerContext, computerId: st
 }
 
 /**
+ * #115 P2-S3 — re-check a disconnect snapshot before sending run.resume. This
+ * intentionally filters the snapshot instead of re-listing all active runs on
+ * the computer, so a run created after the disconnect is not resumed as if it
+ * belonged to the interrupted daemon process set.
+ */
+export async function activeSnapshotRunIdsForComputer(
+  ctx: ServerContext,
+  computerId: string,
+  runIds: readonly string[],
+): Promise<string[]> {
+  if (runIds.length === 0) {
+    return [];
+  }
+  const rows = await ctx.db.db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.organizationId, ctx.organizationId),
+        eq(runs.computerId, computerId),
+        inArray(runs.status, ["starting", "running"]),
+        inArray(runs.id, [...runIds]),
+      ),
+    );
+  const active = new Set(rows.map((r) => r.id));
+  return runIds.filter((runId) => active.has(runId));
+}
+
+/**
  * Dev-only: drive a queued run through the happy path (started -> output ->
  * artifact -> completed) or a failure path (started -> output -> failed),
  * simulating what a node/adapter would stream. Proves the server-side run loop
