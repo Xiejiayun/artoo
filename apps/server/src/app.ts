@@ -56,6 +56,7 @@ import * as skillService from "./services/skill-service.js";
 import * as syncService from "./services/sync-service.js";
 import * as taskService from "./services/task-service.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
+import { createGraceWindowManager, type GraceWindowManager } from "./ws/grace-window.js";
 import { createDeviceConnectionRegistry } from "./ws/device-connections.js";
 import { registerNodeWsRoute } from "./ws/node-ws.js";
 import { registerClientWsRoute, type ClientWsHooks } from "./ws/client-ws.js";
@@ -76,6 +77,9 @@ export interface BuildAppOptions {
   claimLimiter?: ClaimLimiter;
   /** Allow packaged desktop renderers (file:// -> Origin: null) to call the API. */
   desktopCors?: DesktopCorsOptions;
+  /** Inject a disconnect grace-window manager (#115 P2-S3) so tests can drive a
+   *  controllable scheduler + short window. Defaults to a real-timer manager. */
+  graceWindow?: GraceWindowManager;
 }
 
 export interface DesktopCorsOptions {
@@ -90,6 +94,19 @@ export interface DesktopCorsOptions {
 export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: false });
   const nodeRegistry = options.nodeRegistry ?? createNodeRegistry();
+  // #115 P2-S3: on node disconnect, fail this computer's snapshot runs only after
+  // the grace window expires (in-memory dogfood timer; server-restart recovery is
+  // the S2 checkpoint reconciliation). Each snapshot run is re-verified at fire.
+  const graceWindow =
+    options.graceWindow ??
+    createGraceWindowManager({
+      graceMs: NODE_DISCONNECT_GRACE_MS,
+      onExpire: async (computerId, runIds) => {
+        for (const runId of runIds) {
+          await runService.failRunDaemonDisconnect(ctx, runId, computerId).catch(() => {});
+        }
+      },
+    });
   const wsHub = options.wsHub ?? createWsHub();
   // Index of live device sockets (node + control) so a revoke can close them.
   // When a device's last live socket drops, emit a presence offline transition
@@ -115,7 +132,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   void app.register(websocket);
   void app.register(async (instance) => {
-    registerNodeWsRoute(instance, ctx, nodeRegistry, deviceConnections);
+    registerNodeWsRoute(instance, ctx, nodeRegistry, deviceConnections, graceWindow);
     registerClientWsRoute(instance, ctx, wsHub, options.clientWsHooks, deviceConnections);
   });
 
@@ -886,7 +903,9 @@ function readBaseVersion(body: unknown): number | undefined {
 
 /** Pairing code lifetime (#28 4b): short and single-use. */
 const DEVICE_PAIRING_TTL_MS = 10 * 60 * 1000;
-
+// #115 P2-S3: how long a disconnected node's active runs are protected before
+// being failed with `daemon_disconnect`. In-memory (dogfood); see grace-window.ts.
+const NODE_DISCONNECT_GRACE_MS = 30 * 1000;
 /** Rate-limit key for a claim attempt: the request source IP (fallback "unknown"). */
 function claimSource(req: FastifyRequest): string {
   return req.ip && req.ip !== "" ? req.ip : "unknown";

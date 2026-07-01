@@ -7,6 +7,7 @@ import type {
   NodeToServerMessage,
   NodeTransport,
   RunEventMessage,
+  RunResumeCommand,
   RunStartCommand,
   Unsubscribe,
 } from "@artoo/protocol";
@@ -25,6 +26,8 @@ const FALLBACK_WORKSPACE_ROOT = join(tmpdir(), "artoo-workspace");
 export interface NodeBinding {
   /** Build + send run.start for a queued run over the node transport. */
   dispatchRunStart(runId: string): Promise<void>;
+  /** Build + send run.resume for an already-active run (#115 P2-S3 reconnect). */
+  dispatchRunResume(runId: string): Promise<void>;
   /** Resolves once all received run-events have been ingested (test sync point). */
   drain(): Promise<void>;
   close(): void;
@@ -132,6 +135,20 @@ export function attachNodeBinding(ctx: ServerContext, transport: NodeTransport):
           },
           artifact_rules: { paths: ["artifacts/**", "*.patch"] },
         },
+      };
+      await transport.send(command);
+    },
+
+    // #115 P2-S3: ask a reconnected node to continue an already-active run after a
+    // brief disconnect grace window. Only the run id is sent; the node continues
+    // the live process or acks rejected (daemon handling is the S3b gate).
+    async dispatchRunResume(runId: string): Promise<void> {
+      const command: RunResumeCommand = {
+        kind: "command",
+        id: ctx.idGen.generate("cmd"),
+        idempotency_key: `${runId}:resume`,
+        type: "run.resume",
+        payload: { run_id: runId },
       };
       await transport.send(command);
     },

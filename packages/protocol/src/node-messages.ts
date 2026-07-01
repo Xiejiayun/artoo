@@ -115,6 +115,17 @@ export const artifactCollectCommandSchema = z.object({
   })
 });
 
+// run.resume (#115 P2-S3): sent to a reconnected node to continue an
+// already-active run after a brief disconnect grace window. Minimal payload —
+// just the run id; the node either continues the live process or acks rejected.
+export const runResumeCommandSchema = z.object({
+  ...commandEnvelope,
+  type: z.literal("run.resume"),
+  payload: z.object({
+    run_id: z.string().min(1)
+  })
+});
+
 // run.start carries the domain RunStartPayload (imported, not redefined — the
 // payload is owned by @artoo/domain). The wire envelope (id/idempotency_key/
 // deadline_at) is owned here.
@@ -128,7 +139,8 @@ export const runStartCommandSchema = z.object({
 export const commandSchema = z.discriminatedUnion("type", [
   runStartCommandSchema,
   runStopCommandSchema,
-  artifactCollectCommandSchema
+  artifactCollectCommandSchema,
+  runResumeCommandSchema
 ]);
 
 // --- Node -> Server: run.event --------------------------------------------
@@ -157,6 +169,7 @@ export type CommandAck = z.infer<typeof commandAckSchema>;
 export type RunStopCommand = z.infer<typeof runStopCommandSchema>;
 export type ArtifactCollectCommand = z.infer<typeof artifactCollectCommandSchema>;
 export type RunStartCommand = z.infer<typeof runStartCommandSchema>;
+export type RunResumeCommand = z.infer<typeof runResumeCommandSchema>;
 export type Command = z.infer<typeof commandSchema>;
 /** A single adapter-emitted event (domain payload), framed by run.event. */
 export type RunEvent = z.infer<typeof runEventBodySchema>;

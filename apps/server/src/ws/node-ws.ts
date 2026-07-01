@@ -7,7 +7,9 @@ import type { ServerContext } from "../context.js";
 import { attachNodeBinding, type NodeBinding } from "../node-binding.js";
 import { resolveNodeToken } from "../services/device-service.js";
 import { recordDeviceActivity } from "../services/presence-service.js";
+import { activeRunIdsForComputer } from "../services/run-service.js";
 import { recordHeartbeatRuntimes } from "../services/runtime-registry-service.js";
+import type { GraceWindowManager } from "./grace-window.js";
 import type { NodeRegistry } from "./node-registry.js";
 import type { DeviceConnectionRegistry } from "./device-connections.js";
 import { createServerNodeTransport, type RawServerSocket } from "./ws-node-transport.js";
@@ -69,6 +71,7 @@ export function registerNodeWsRoute(
   ctx: ServerContext,
   registry: NodeRegistry,
   deviceConnections?: DeviceConnectionRegistry,
+  graceWindow?: GraceWindowManager,
 ): void {
   app.get("/api/v1/node", { websocket: true }, (socket: unknown, req: FastifyRequest) => {
     const raw = socket as RawServerSocket;
@@ -117,6 +120,20 @@ export function registerNodeWsRoute(
         }
         binding = attachNodeBinding(ctx, transport);
         registry.register(nodeId, binding);
+        // #115 P2-S3: a reconnect within the grace window cancels the pending
+        // failure and resumes the runs still active on this computer (re-verified
+        // by org/computer/status, so terminal runs are never resumed).
+        if (graceWindow !== undefined && graceWindow.isArmed(nodeId)) {
+          graceWindow.disarm(nodeId);
+          const resumeNodeId = nodeId;
+          const resumeBinding = binding;
+          void (async (): Promise<void> => {
+            const active = await activeRunIdsForComputer(ctx, resumeNodeId);
+            for (const runId of active) {
+              await resumeBinding.dispatchRunResume(runId).catch(() => {});
+            }
+          })().catch(() => {});
+        }
       } else if (message.kind === "node.heartbeat") {
         const sessionNodeId = nodeId;
         if (sessionNodeId === undefined) {
@@ -203,6 +220,17 @@ export function registerNodeWsRoute(
         const removedCurrent = registry.unregister(nodeId, binding);
         if (removedCurrent) {
           void setComputerOffline(ctx, nodeId);
+          // #115 P2-S3: don't fail this computer's active runs immediately — arm a
+          // grace window over a snapshot of them. Reconnect disarms + resumes;
+          // expiry fails them (daemon_disconnect). Presence still goes offline
+          // (grace only delays run failure, #113 unchanged).
+          if (graceWindow !== undefined) {
+            const closedNodeId = nodeId;
+            void (async (): Promise<void> => {
+              const snapshot = await activeRunIdsForComputer(ctx, closedNodeId);
+              graceWindow.arm(closedNodeId, snapshot);
+            })().catch(() => {});
+          }
         }
       }
     });

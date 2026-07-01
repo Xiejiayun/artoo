@@ -8,7 +8,7 @@ import {
   type RunStatus,
   type TaskStatus,
 } from "@artoo/domain";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -334,6 +334,94 @@ export async function failRunStart(
     );
     await releaseRunLeases(ctx, tx, runId);
   });
+}
+
+/**
+ * #115 P2-S3 — fail a run whose node did not reconnect within the disconnect
+ * grace window. Idempotent and auditable: re-verifies the run is still on this
+ * computer and non-terminal (compare-and-set on run status), then fails it with
+ * `failureReason="daemon_disconnect"`, matching the existing running/starting
+ * failure task-transitions. Repeated close/timeout calls are safe no-ops once the
+ * run has left starting/running. Returns whether it actually failed the run.
+ *
+ * NOTE (dogfood boundary): the grace timer that calls this is in-memory only. On
+ * a server restart un-fired timers are lost; recovery is then handled by the
+ * #115 S2 resume-service checkpoint reconciliation (a run with no event past the
+ * checkpoint's cursor is detected as stale and blocked). A DB-backed grace timer
+ * is a later/release-path item, not implemented here.
+ */
+export async function failRunDaemonDisconnect(
+  ctx: ServerContext,
+  runId: string,
+  computerId: string,
+): Promise<{ failed: boolean }> {
+  const now = ctx.clock.nowIso();
+  const REASON = "daemon_disconnect";
+  return ctx.db.transaction(async (tx) => {
+    const run = (
+      await tx.select().from(runs).where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)))
+    )[0];
+    // Gone, moved to another computer, or already terminal/other → idempotent no-op.
+    if (run === undefined || run.computerId !== computerId) return { failed: false };
+    const status = run.status as RunStatus;
+    if (status !== "starting" && status !== "running") return { failed: false };
+
+    const taskRow = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
+    const emitFailed = async (): Promise<void> => {
+      await appendEvent(
+        tx,
+        buildEvent(ctx, {
+          type: "run.failed",
+          actorType: "system",
+          actorId: "control_plane",
+          correlationId: run.taskId,
+          projectId: taskRow?.projectId ?? null,
+          taskId: run.taskId,
+          roomId: taskRow?.roomId ?? null,
+          runId,
+          payload: { run_id: runId, failure_reason: REASON, recoverable: true },
+        }),
+      );
+      await releaseRunLeases(ctx, tx, runId);
+    };
+
+    if (status === "running") {
+      const result = await transitionRun(tx, ctx, { runId, from: "running", trigger: "run_failed", patch: { endedAt: now, failureReason: REASON } });
+      if (!result.changed) return { failed: false }; // lost the race → no duplicate event
+      const taskBlocked = await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_failed", now });
+      await emitFailed();
+      if (taskBlocked.changed) {
+        await dagService.propagateBlocked(ctx, tx, run.taskId, `run_failed: ${REASON}`);
+      }
+      return { failed: true };
+    }
+    // starting
+    const result = await transitionRun(tx, ctx, { runId, from: "starting", trigger: "start_failed", patch: { endedAt: now, failureReason: REASON } });
+    if (!result.changed) return { failed: false };
+    await transitionTask(tx, ctx, { taskId: run.taskId, from: "assigned", trigger: "assign_failed_retryable", now });
+    await emitFailed();
+    return { failed: true };
+  });
+}
+
+/**
+ * #115 P2-S3 — snapshot the ids of runs that were active (starting/running) on a
+ * computer at disconnect time. The grace window operates on this snapshot;
+ * `failRunDaemonDisconnect` re-verifies each at fire time so runs that reached a
+ * terminal state or moved are never double-failed.
+ */
+export async function activeRunIdsForComputer(ctx: ServerContext, computerId: string): Promise<string[]> {
+  const rows = await ctx.db.db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.organizationId, ctx.organizationId),
+        eq(runs.computerId, computerId),
+        inArray(runs.status, ["starting", "running"]),
+      ),
+    );
+  return rows.map((r) => r.id);
 }
 
 /**
