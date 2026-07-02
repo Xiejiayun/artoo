@@ -2,6 +2,7 @@ import type {
   CommandAck,
   NodeToServerMessage,
   RunEventMessage,
+  RunResumeCommand,
   RunStartCommand,
   RunStopCommand,
   RuntimeAdapter
@@ -36,6 +37,14 @@ const runStopCommand: RunStopCommand = {
   idempotency_key: "run_1:stop",
   type: "run.stop",
   payload: { run_id: "run_1", reason: "user_cancelled" }
+};
+
+const runResumeCommand: RunResumeCommand = {
+  kind: "command",
+  id: "cmd_resume_1",
+  idempotency_key: "run_1:resume",
+  type: "run.resume",
+  payload: { run_id: "run_1" }
 };
 
 function isRunEvent(m: NodeToServerMessage): m is RunEventMessage {
@@ -175,6 +184,90 @@ describe("artood node client (mock loop)", () => {
         status: "rejected",
         error_code: "process_start_failed",
         message: "workspace missing"
+      }
+    ]);
+  });
+
+  it("accepts run.resume only while the run handle is still live", async () => {
+    const channel = createInProcessChannel();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const adapter: RuntimeAdapter = {
+      runtimeId: "gated",
+      async start(config) {
+        return { runId: config.runId };
+      },
+      async *streamEvents() {
+        yield { type: "run.lifecycle", payload: { phase: "started" } };
+        await gate;
+        yield { type: "run.lifecycle", payload: { phase: "completed" } };
+      },
+      async stop() {},
+      async collectArtifacts() {
+        return [];
+      }
+    };
+    const client = createNodeClient({ nodeId: "computer_1", transport: channel.node, adapter });
+    client.start();
+
+    const received: NodeToServerMessage[] = [];
+    const started = new Promise<void>((resolve) => {
+      channel.serverTransport.subscribe((m) => {
+        received.push(m);
+        if (isRunEvent(m) && m.event.type === "run.lifecycle" && m.event.payload.phase === "started") {
+          resolve();
+        }
+      });
+    });
+    await channel.serverTransport.send(runStartCommand);
+    await started;
+
+    const resumed = new Promise<void>((resolve) => {
+      channel.serverTransport.subscribe((m) => {
+        received.push(m);
+        if (isAck(m) && m.command_id === "cmd_resume_1") {
+          resolve();
+        }
+      });
+    });
+    await channel.serverTransport.send(runResumeCommand);
+    await resumed;
+    release?.();
+    await client.stop();
+
+    expect(received.filter(isAck).find((ack) => ack.command_id === "cmd_resume_1")).toMatchObject({
+      status: "accepted"
+    });
+  });
+
+  it("rejects run.resume with process_exited when the run handle is not live", async () => {
+    const channel = createInProcessChannel();
+    const client = createNodeClient({ nodeId: "computer_1", transport: channel.node, adapter: createMockAdapter() });
+    client.start();
+
+    const received: NodeToServerMessage[] = [];
+    const rejected = new Promise<void>((resolve) => {
+      channel.serverTransport.subscribe((m) => {
+        received.push(m);
+        if (isAck(m) && m.command_id === "cmd_resume_1") {
+          resolve();
+        }
+      });
+    });
+    await channel.serverTransport.send(runResumeCommand);
+    await rejected;
+    await client.stop();
+
+    expect(received.filter(isAck)).toEqual([
+      {
+        kind: "command.ack",
+        node_id: "computer_1",
+        command_id: "cmd_resume_1",
+        status: "rejected",
+        error_code: "process_exited",
+        message: "run run_1 is not active on this node"
       }
     ]);
   });

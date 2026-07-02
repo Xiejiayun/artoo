@@ -33,6 +33,8 @@ import {
  *             -> stream RunEvents as run.event with a per-run monotonic sequence
  *   run.stop  -> command.ack(accepted) -> adapter.stop (the run streams to a
  *               cancelled lifecycle and ends)
+ *   run.resume -> command.ack(accepted) only when this client still tracks the
+ *                live handle; otherwise command.ack(rejected/process_exited).
  *
  * This is transport- and adapter-agnostic: testkit's in-process channel + mock
  * adapter exercise it here; task #7 swaps in a WebSocket transport + the Codex
@@ -173,11 +175,12 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     }
   }
 
-  // #115 P2-S3b: resume an already-active run after a reconnect. This NEVER
-  // rebuilds or starts a process — it only reports whether the run's handle is
-  // still live here. Alive → ack accepted (the existing streamEvents loop keeps
-  // flowing, so nothing else is needed). Lost → ack rejected(process_exited), and
-  // the server maps that to the daemon_disconnect failure path.
+  // #115 P2-S3b: resume an already-active run after a reconnect. This handler is
+  // deliberately narrow: it does not implement WebSocket reconnect or outbound
+  // event buffering, and it NEVER rebuilds or starts a process. It only reports
+  // whether the run's handle is still live in this client. Alive → ack accepted
+  // (the existing streamEvents loop keeps flowing). Lost → ack rejected
+  // (process_exited), and the server maps that to the daemon_disconnect path.
   async function onRunResume(command: RunResumeCommand): Promise<void> {
     if (runs.has(command.payload.run_id)) {
       await ackAccepted(command.id);

@@ -36,9 +36,10 @@ export interface NodeBinding {
 
 /**
  * Server side of the node protocol. Owns a {@link NodeTransport}: dispatches
- * run.start commands, and ingests Node->Server messages — run.event through the
- * same {@link ingestRunEvent} path the dev mock-execute uses, and a rejected
- * command.ack (e.g. process_start_failed) through {@link failRunStart} recovery.
+ * run.start / run.resume commands, and ingests Node->Server messages — run.event
+ * through the same {@link ingestRunEvent} path the dev mock-execute uses,
+ * rejected run.start command.ack through {@link failRunStart} recovery, and
+ * rejected run.resume command.ack through the daemon_disconnect failure path.
  *
  * Incoming run-events are serialized (the in-process transport delivers them
  * synchronously and the node streams in sequence order) so run/task transitions
@@ -159,8 +160,9 @@ export function attachNodeBinding(
     },
 
     // #115 P2-S3: ask a reconnected node to continue an already-active run after a
-    // brief disconnect grace window. Only the run id is sent; the node continues
-    // the live process or acks rejected (daemon handling is the S3b gate).
+    // brief disconnect grace window. Only the run id is sent; accepted means no
+    // server transition, rejected means the node lost the process and the server
+    // fails the run through the daemon_disconnect path.
     async dispatchRunResume(runId: string): Promise<void> {
       const commandId = ctx.idGen.generate("cmd");
       pendingResumeRun.set(commandId, runId);

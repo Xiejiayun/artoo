@@ -131,5 +131,15 @@ describe("run.resume daemon handler (#115 P2-S3b)", () => {
       .from(eventLog)
       .where(and(eq(eventLog.organizationId, "org_default"), eq(eventLog.type, "run.failed"), eq(eventLog.runId, runId)));
     expect(failed).toHaveLength(1); // idempotent: exactly one run.failed
+
+    await binding.dispatchRunResume(runId);
+    await new Promise((r) => setTimeout(r, 50)); // duplicate rejected ack round-trip
+    await binding.drain();
+
+    const afterDuplicate = await server.db.db
+      .select()
+      .from(eventLog)
+      .where(and(eq(eventLog.organizationId, "org_default"), eq(eventLog.type, "run.failed"), eq(eventLog.runId, runId)));
+    expect(afterDuplicate).toHaveLength(1);
   });
 });
