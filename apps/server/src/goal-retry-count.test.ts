@@ -1,11 +1,12 @@
 // @vitest-environment node
-import { goals } from "@artoo/db";
+import { goals, organizations, tasks } from "@artoo/db";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { buildTestServer, type TestServer } from "./test-support.js";
 import { createGoal } from "./services/goal-service.js";
 import { acceptPlan, proposePlan } from "./services/plan-service.js";
+import { failRunStart } from "./services/run-service.js";
 
 const SPECS = [
   { title: "build", acceptance_criteria: ["ok"], required_capabilities: ["code.modify"], dependencies: [] },
@@ -39,6 +40,11 @@ describe("goal retry_count tracking #115 P3b-2", () => {
   async function retryCount(goalId: string): Promise<number> {
     const row = (await server.db.db.select().from(goals).where(eq(goals.id, goalId)))[0]!;
     return row.retryCount;
+  }
+
+  async function taskStatus(taskId: string): Promise<string> {
+    const row = (await server.db.db.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, taskId)))[0]!;
+    return row.status;
   }
 
   const ready = (taskId: string) =>
@@ -134,5 +140,41 @@ describe("goal retry_count tracking #115 P3b-2", () => {
     expect(res.json().task.status).toBe("ready");
     // The goal-less retry cannot bump any goal's counter.
     expect(await retryCount(goalId)).toBe(0);
+  });
+
+  it("does NOT increment on assign_failed_retryable infrastructure recovery", async () => {
+    const { goalId, taskId } = await goalTask();
+    await ready(taskId);
+    const runId = (await assign(taskId)).json().run.id as string;
+
+    await failRunStart(server.ctx, runId, "process_start_failed", "adapter rejected");
+
+    expect(await taskStatus(taskId)).toBe("ready");
+    expect(await retryCount(goalId)).toBe(0);
+  });
+
+  it("does NOT increment a cross-org goal referenced by task.goal_id", async () => {
+    const { taskId } = await goalTask();
+    const now = server.ctx.clock.nowIso();
+    await server.db.db.insert(organizations).values({ id: "org_other", name: "Other Org", createdAt: now });
+    await server.db.db.insert(goals).values({
+      id: "goal_cross_org_retry",
+      organizationId: "org_other",
+      projectId: "proj_artoo",
+      ownerUserId: "user_owner",
+      title: "cross-org",
+      objective: "",
+      status: "running",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await server.db.db.update(tasks).set({ goalId: "goal_cross_org_retry" }).where(eq(tasks.id, taskId));
+
+    await toBlocked(taskId);
+    const res = await retry(taskId);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().task.status).toBe("ready");
+    expect(await retryCount("goal_cross_org_retry")).toBe(0);
   });
 });
