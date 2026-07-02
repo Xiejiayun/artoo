@@ -19,7 +19,7 @@ import {
   type Task,
   type TaskStatus,
 } from "@artoo/domain";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -366,6 +366,11 @@ export async function reviewTask(
     if (!result.changed) {
       throw AppError.conflict("task is no longer in review");
     }
+    // #115 P3b-2: a `request_changes` review sends the task back to ready — a
+    // real retry that consumes the linked goal's retry budget. `accept` does not.
+    if (trigger === "request_changes" && row.goalId !== null) {
+      await incrementLinkedGoalRetryCount(ctx, tx, row.goalId, now);
+    }
     // On accept (-> done), auto-unlock downstream dependents whose gating
     // prerequisites are now all satisfied (emits dag.node.ready per unlock).
     if (req.outcome === "accepted") {
@@ -384,6 +389,26 @@ export async function reviewTask(
  * (blocked -> ready). Reassignment then creates a NEW run (runs are never
  * reused). Guarantees a blocked task is never stuck (the ack/timeout invariant).
  */
+/**
+ * #115 P3b-2 — a genuine task retry (explicit `retry`, or review `request_changes`)
+ * on a goal-linked task consumes the goal's retry budget. Increments the linked
+ * goal's retry_count atomically within the caller's transaction, org-scoped. Call
+ * ONLY after the task retry transition's compare-and-set actually changed, so a
+ * duplicate/stale retry never double-counts. `assign_failed_retryable` and
+ * ordinary failed runs are not retries and never reach here.
+ */
+async function incrementLinkedGoalRetryCount(
+  ctx: ServerContext,
+  tx: ServerContext["db"]["db"],
+  goalId: string,
+  now: string,
+): Promise<void> {
+  await tx
+    .update(goals)
+    .set({ retryCount: sql`${goals.retryCount} + 1`, updatedAt: now })
+    .where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId)));
+}
+
 export async function retryTask(ctx: ServerContext, taskId: string): Promise<Task> {
   const now = ctx.clock.nowIso();
   return ctx.db.transaction(async (tx) => {
@@ -399,7 +424,7 @@ export async function retryTask(ctx: ServerContext, taskId: string): Promise<Tas
     if (!canTransitionTask(row.status as TaskStatus, "retry")) {
       throw AppError.invalidState(`cannot retry from '${row.status}'`, { status: row.status });
     }
-    await transitionTask(tx, ctx, {
+    const transition = await transitionTask(tx, ctx, {
       taskId,
       from: row.status as TaskStatus,
       trigger: "retry",
@@ -417,6 +442,10 @@ export async function retryTask(ctx: ServerContext, taskId: string): Promise<Tas
         }),
       ],
     });
+    // A real retry that actually happened consumes the linked goal's retry budget.
+    if (transition.changed && row.goalId !== null) {
+      await incrementLinkedGoalRetryCount(ctx, tx, row.goalId, now);
+    }
     const updated = (await tx.select().from(tasks).where(eq(tasks.id, taskId)))[0];
     if (updated === undefined) {
       throw new Error("retryTask: task missing after transition");
