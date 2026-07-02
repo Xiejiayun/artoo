@@ -56,6 +56,13 @@ export interface ScheduleOptions {
   mode: "auto" | "manual";
   projectId: string;
   agentInstanceId?: string | null;
+  /**
+   * #115 P3b: the linked goal's budget `allowed_runtimes`. When provided (a goal
+   * with an allowed_runtimes budget), only candidates whose runtime is in the list
+   * survive — applied AFTER #113 DB-fact eligibility, before selection. Absent
+   * (no goal / no budget) leaves scheduling behaviour unchanged.
+   */
+  allowedRuntimes?: string[] | null;
 }
 
 async function loadEnabledSkillInstallStates(
@@ -165,7 +172,7 @@ export async function scheduleTask(
     if (d.computerId !== null) revokedComputerIds.add(d.computerId);
   }
 
-  const candidates: SchedulerCandidate[] = rows
+  const eligible = rows
     .filter(
       (r) =>
         isInstanceAdminAvailable(r.instanceStatus) &&
@@ -205,7 +212,19 @@ export async function scheduleTask(
         ...runtimeCaps,
         ...skillCaps,
       ]);
-    })
+    });
+
+  // #115 P3b-1: goal budget `allowed_runtimes` filter — applied AFTER the #113
+  // DB-fact eligibility above and BEFORE selection. A null list (no goal / no
+  // budget) leaves the eligible set (and the decision reason) unchanged.
+  const allowedRuntimes = opts.allowedRuntimes ?? null;
+  const permitted =
+    allowedRuntimes === null ? eligible : eligible.filter((r) => allowedRuntimes.includes(r.runtime));
+  // Distinguish "the goal budget emptied the candidates" from ordinary
+  // no-eligible-instance, so the failure is explainable rather than generic.
+  const emptiedByGoalBudget = allowedRuntimes !== null && eligible.length > 0 && permitted.length === 0;
+
+  const candidates: SchedulerCandidate[] = permitted
     .map((r) => ({
       agent_instance_id: r.instanceId,
       agent_id: r.agentId,
@@ -220,6 +239,14 @@ export async function scheduleTask(
 
   const selected = candidates[0];
   if (selected === undefined) {
+    if (emptiedByGoalBudget) {
+      throw new AppError(
+        "runtime_unavailable",
+        "no eligible agent instance is permitted by the goal's allowed_runtimes budget",
+        409,
+        { reason: "goal_allowed_runtimes", allowed_runtimes: opts.allowedRuntimes },
+      );
+    }
     const anyOnline = rows.some((r) => r.computerStatus === "online");
     if (!anyOnline) {
       throw new AppError("computer_offline", "no online computer is available", 409);

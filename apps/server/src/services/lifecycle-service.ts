@@ -1,6 +1,7 @@
 import {
   agentInstances,
   appendEvent,
+  goals,
   runs,
   schedulerDecisions,
   taskDependencies,
@@ -9,6 +10,7 @@ import {
 import {
   canTransitionTask,
   type DagEdge,
+  GoalBudgetsSchema,
   ID_PREFIXES,
   type AssignRequest,
   type Capability,
@@ -135,10 +137,27 @@ export async function assignTask(
       });
     }
 
+    // #115 P3b-1: if the task is linked to a goal, apply that goal's
+    // allowed_runtimes budget to candidate selection. Read the goal org-scoped —
+    // never trust task.goal_id alone; a missing/cross-org goal → no restriction.
+    let allowedRuntimes: string[] | null = null;
+    if (row.goalId !== null) {
+      const goalRow = (
+        await tx
+          .select({ budgets: goals.budgets })
+          .from(goals)
+          .where(and(eq(goals.id, row.goalId), eq(goals.organizationId, ctx.organizationId)))
+      )[0];
+      if (goalRow !== undefined) {
+        allowedRuntimes = GoalBudgetsSchema.parse(goalRow.budgets ?? {}).allowed_runtimes;
+      }
+    }
+
     const outcome = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], {
       mode: req.mode,
       projectId: row.projectId,
       agentInstanceId: req.agent_instance_id ?? null,
+      allowedRuntimes,
     });
 
     const decisionId = ctx.idGen.generate(ID_PREFIXES.schedulerDecision);
