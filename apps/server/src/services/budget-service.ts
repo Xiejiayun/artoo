@@ -8,7 +8,8 @@ import {
   GoalBudgetsSchema,
   StopConditionsSchema,
   applyGoalTransition,
-  evaluateBudgetAction,
+  budgetStopAction,
+  evaluateBudget,
 } from "@artoo/domain";
 import { and, eq, inArray, notInArray } from "drizzle-orm";
 
@@ -38,6 +39,10 @@ import { createCheckpointInTx } from "./checkpoint-service.js";
 type Tx = DrizzleDb;
 
 const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled"] as const;
+const P3A_ENFORCED_BUDGETS: ReadonlySet<BudgetViolation["budget"]> = new Set([
+  "max_elapsed_ms",
+  "max_retries",
+]);
 
 export interface EnforceBudgetResult {
   enforced: boolean;
@@ -86,8 +91,13 @@ export async function enforceGoalBudget(ctx: ServerContext, goalId: string): Pro
     const budgets: GoalBudgets = GoalBudgetsSchema.parse(goal.budgets ?? {});
     const stopConditions: StopConditions = StopConditionsSchema.parse(goal.stopConditions ?? { rules: [] });
     const usage = await computeUsageInTx(ctx, tx, goal);
-    const { violations, action } = evaluateBudgetAction(budgets, usage, stopConditions);
-    // P3a only actions `pause`.
+    const violations = evaluateBudget(budgets, usage).filter((violation) =>
+      P3A_ENFORCED_BUDGETS.has(violation.budget),
+    );
+    const action = budgetStopAction(violations, stopConditions);
+    // P3a only actions elapsed/retry violations with a `pause` action. The pure
+    // domain helper may report cost/concurrent violations too, but those need
+    // tracking/filtering work in later slices and must not pause goals here.
     if (action !== "pause" || violations.length === 0) return { enforced: false };
 
     // Pause via compare-and-set; only emit if the row actually changed.

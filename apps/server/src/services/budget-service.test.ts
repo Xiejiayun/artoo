@@ -1,4 +1,4 @@
-import { checkpoints, eventLog, goals } from "@artoo/db";
+import { checkpoints, eventLog, goals, runs } from "@artoo/db";
 import { and, eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -21,9 +21,12 @@ describe("budget-service #115 P3a", () => {
   });
 
   /** A running goal (draft→planned→running via first-plan accept) with budgets. */
-  async function runningGoal(budgets: Record<string, unknown>): Promise<{ goalId: string; taskIds: string[] }> {
+  async function runningGoal(
+    budgets: Record<string, unknown>,
+    taskSpecs = SPECS,
+  ): Promise<{ goalId: string; taskIds: string[] }> {
     const goal = await createGoal(server.ctx, { project_id: "proj_artoo", title: "G", budgets });
-    const plan = await proposePlan(server.ctx, goal.id, { task_specs: SPECS });
+    const plan = await proposePlan(server.ctx, goal.id, { task_specs: taskSpecs });
     const result = await acceptPlan(server.ctx, plan.id);
     return { goalId: goal.id, taskIds: result.task_ids };
   }
@@ -79,6 +82,48 @@ describe("budget-service #115 P3a", () => {
     expect(res.enforced).toBe(false);
     expect((await getGoal(ctx, goalId))?.status).toBe("running");
     expect(await budgetEvents(goalId)).toHaveLength(0);
+  });
+
+  it("does not enforce cost or concurrent budgets in the P3a service", async () => {
+    const { ctx } = server;
+    const cost = await runningGoal({ max_cost_usd: 1 });
+    await server.db.db.update(goals).set({ elapsedCostUsd: 10 }).where(eq(goals.id, cost.goalId));
+    expect((await enforceGoalBudget(ctx, cost.goalId)).enforced).toBe(false);
+    expect((await getGoal(ctx, cost.goalId))?.status).toBe("running");
+    expect(await budgetEvents(cost.goalId)).toHaveLength(0);
+
+    const concurrent = await runningGoal(
+      { max_concurrent_runs: 1 },
+      [
+        { title: "a", acceptance_criteria: ["ok"], required_capabilities: ["code.modify"], dependencies: [] },
+        { title: "b", acceptance_criteria: ["ok"], required_capabilities: ["code.modify"], dependencies: [] },
+      ],
+    );
+    await server.db.db.insert(runs).values([
+      {
+        id: "run_budget_concurrent_1",
+        organizationId: "org_default",
+        taskId: concurrent.taskIds[0]!,
+        computerId: "computer_local_mock",
+        agentInstanceId: "agent_instance_local_mock",
+        runtimeId: "mock",
+        status: "running",
+        createdAt: ctx.clock.nowIso(),
+      },
+      {
+        id: "run_budget_concurrent_2",
+        organizationId: "org_default",
+        taskId: concurrent.taskIds[1]!,
+        computerId: "computer_local_mock",
+        agentInstanceId: "agent_instance_local_mock",
+        runtimeId: "mock",
+        status: "queued",
+        createdAt: ctx.clock.nowIso(),
+      },
+    ]);
+    expect((await enforceGoalBudget(ctx, concurrent.goalId)).enforced).toBe(false);
+    expect((await getGoal(ctx, concurrent.goalId))?.status).toBe("running");
+    expect(await budgetEvents(concurrent.goalId)).toHaveLength(0);
   });
 
   it("no-op for a paused or terminal goal", async () => {
