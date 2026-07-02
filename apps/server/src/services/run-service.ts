@@ -14,6 +14,7 @@ import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { mapRun } from "../mappers.js";
+import { enforceGoalBudget } from "./budget-service.js";
 import * as dagService from "./dag-service.js";
 import { enqueueArtifactForIntegration } from "./integration-service.js";
 import { releaseRunLeases } from "./lease-service.js";
@@ -131,7 +132,11 @@ export async function ingestRunEvent(
   env: IngestEnvelope,
 ): Promise<IngestResult> {
   const now = ctx.clock.nowIso();
-  return ctx.db.transaction(async (tx) => {
+  // #115 P3a: captured inside the tx; a terminal run event on a goal-linked task
+  // triggers budget enforcement AFTER the ingest commits (below), so a budget
+  // hook failure can never break the already-committed run ingest.
+  let budgetGoalId: string | null = null;
+  const result = await ctx.db.transaction(async (tx) => {
     const run = (
       await tx
         .select()
@@ -271,6 +276,12 @@ export async function ingestRunEvent(
       createdAt: now,
     });
 
+    // A terminal run lifecycle on a goal-linked task changes budget usage
+    // (retries/cost/concurrency); enforce after commit.
+    if (ev.kind === "lifecycle" && ev.phase !== "started") {
+      budgetGoalId = taskRow.goalId ?? null;
+    }
+
     const finalRun = (await tx.select().from(runs).where(eq(runs.id, env.runId)))[0];
     const finalTask = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
     return {
@@ -279,6 +290,12 @@ export async function ingestRunEvent(
       taskStatus: (finalTask?.status ?? taskRow.status) as TaskStatus,
     };
   });
+  // Post-commit budget enforcement (#115 P3a). Best-effort: a failure here must
+  // not undo the committed run ingest.
+  if (budgetGoalId !== null) {
+    await enforceGoalBudget(ctx, budgetGoalId).catch(() => {});
+  }
+  return result;
 }
 
 /**
