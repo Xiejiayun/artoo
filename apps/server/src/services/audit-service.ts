@@ -4,10 +4,13 @@ import {
   artifacts,
   approvals,
   blockers,
+  checkpoints,
   decisionRecords,
   eventLog,
+  goals,
   handoffs,
   messages,
+  plans,
   rooms,
   runs,
   schedulerDecisions,
@@ -15,8 +18,12 @@ import {
 } from "@artoo/db";
 import {
   AuditBundleExportSchema,
+  GoalAuditBundleExportSchema,
+  GoalAuditBundleSchema,
   TaskAuditBundleSchema,
   type AuditBundleExport,
+  type GoalAuditBundle,
+  type GoalAuditBundleExport,
   type TaskAuditBundle,
 } from "@artoo/domain";
 import { and, asc, eq, or } from "drizzle-orm";
@@ -33,8 +40,11 @@ import {
   mapSchedulerDecision,
   mapTask,
 } from "../mappers.js";
+import { mapCheckpoint } from "./checkpoint-service.js";
 import { mapBlocker, mapDecision, mapHandoff } from "./collaboration-service.js";
-import { redactTaskAuditBundle } from "./redaction.js";
+import { mapGoal } from "./goal-service.js";
+import { mapPlan } from "./plan-service.js";
+import { redactGoalAuditBundle, redactTaskAuditBundle } from "./redaction.js";
 
 /** GET /api/v1/tasks/:id/audit-bundle — deterministic read-only task evidence. */
 export async function getTaskAuditBundle(ctx: ServerContext, taskId: string): Promise<TaskAuditBundle> {
@@ -131,6 +141,99 @@ export async function getTaskAuditBundle(ctx: ServerContext, taskId: string): Pr
 export async function exportTaskAuditBundle(ctx: ServerContext, taskId: string): Promise<AuditBundleExport> {
   const bundle = await getTaskAuditBundle(ctx, taskId);
   return AuditBundleExportSchema.parse({
+    schema_version: "v1alpha1",
+    exported_at: ctx.clock.nowIso(),
+    bundle_sha256: sha256(stableJson(bundle)),
+    bundle,
+    signature: null,
+    signing: {
+      status: "deferred",
+      reason: "v1 does not manage signing keys yet",
+    },
+  });
+}
+
+/**
+ * GET /api/v1/goals/:id/audit-bundle — deterministic read-only goal evidence
+ * (V3 #140 / deferred P4). Consolidates the goal row (lifecycle + budgets +
+ * retry_count + provenance), its plans and checkpoints, the full per-task audit
+ * bundle for each child task, and the goal's own ordered event stream. Every
+ * query is org-scoped on `organizationId` + the FK, so a cross-org goal_id is
+ * never mounted. Child audit bundles come through `getTaskAuditBundle`
+ * (already org-scoped + redacted); the goal/plan/checkpoint/event layer is
+ * redacted here. This is a consolidated goal-level proof, not a replacement for
+ * the per-task bundles it composes.
+ */
+export async function getGoalAuditBundle(ctx: ServerContext, goalId: string): Promise<GoalAuditBundle> {
+  const db = ctx.db.db;
+  const goalRow = (
+    await db
+      .select()
+      .from(goals)
+      .where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId)))
+  )[0];
+  if (goalRow === undefined) {
+    throw AppError.notFound(`goal not found: ${goalId}`, { goal_id: goalId });
+  }
+
+  const roomRow =
+    goalRow.roomId != null
+      ? (
+          await db
+            .select()
+            .from(rooms)
+            .where(and(eq(rooms.id, goalRow.roomId), eq(rooms.organizationId, ctx.organizationId)))
+        )[0]
+      : undefined;
+  const planRows = await db
+    .select()
+    .from(plans)
+    .where(and(eq(plans.organizationId, ctx.organizationId), eq(plans.goalId, goalId)))
+    .orderBy(asc(plans.version), asc(plans.id));
+  const checkpointRows = await db
+    .select()
+    .from(checkpoints)
+    .where(and(eq(checkpoints.organizationId, ctx.organizationId), eq(checkpoints.goalId, goalId)))
+    .orderBy(asc(checkpoints.createdAt), asc(checkpoints.id));
+  const childTaskRows = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(and(eq(tasks.organizationId, ctx.organizationId), eq(tasks.goalId, goalId)))
+    .orderBy(asc(tasks.createdAt), asc(tasks.id));
+  // Compose the existing per-task audit bundle for each child (org-scoped + redacted).
+  const childBundles: TaskAuditBundle[] = [];
+  for (const child of childTaskRows) {
+    childBundles.push(await getTaskAuditBundle(ctx, child.id));
+  }
+  // The goal's own lifecycle event stream (goal.* events threaded with goal_id or
+  // correlated on the goal id). Child task/run event detail lives inside each
+  // child bundle above, so this stays the goal-level slice without duplication.
+  const eventRows = await db
+    .select()
+    .from(eventLog)
+    .where(
+      and(
+        eq(eventLog.organizationId, ctx.organizationId),
+        or(eq(eventLog.goalId, goalId), eq(eventLog.correlationId, goalId)),
+      ),
+    )
+    .orderBy(asc(eventLog.position));
+
+  const bundle = GoalAuditBundleSchema.parse({
+    goal: mapGoal(goalRow),
+    room: roomRow !== undefined ? mapRoom(roomRow) : null,
+    plans: planRows.map(mapPlan),
+    checkpoints: checkpointRows.map(mapCheckpoint),
+    tasks: childBundles,
+    events: eventRows.map(mapAuditEvent),
+  });
+  return redactGoalAuditBundle(bundle);
+}
+
+/** Exportable v1alpha1 goal-level evidence envelope. Unsigned until key management exists. */
+export async function exportGoalAuditBundle(ctx: ServerContext, goalId: string): Promise<GoalAuditBundleExport> {
+  const bundle = await getGoalAuditBundle(ctx, goalId);
+  return GoalAuditBundleExportSchema.parse({
     schema_version: "v1alpha1",
     exported_at: ctx.clock.nowIso(),
     bundle_sha256: sha256(stableJson(bundle)),
