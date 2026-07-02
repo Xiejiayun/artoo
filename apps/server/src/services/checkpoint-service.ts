@@ -31,7 +31,7 @@ type Tx = DrizzleDb;
 const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled"] as const;
 const ACTIVE_BLOCKER_STATUSES = ["open", "mitigated"] as const;
 
-function mapCheckpoint(row: typeof checkpoints.$inferSelect): Checkpoint {
+export function mapCheckpoint(row: typeof checkpoints.$inferSelect): Checkpoint {
   return CheckpointSchema.parse({
     id: row.id,
     organization_id: row.organizationId,

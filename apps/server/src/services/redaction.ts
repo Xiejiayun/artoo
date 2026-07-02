@@ -1,4 +1,9 @@
-import { TaskAuditBundleSchema, type TaskAuditBundle } from "@artoo/domain";
+import {
+  GoalAuditBundleSchema,
+  TaskAuditBundleSchema,
+  type GoalAuditBundle,
+  type TaskAuditBundle,
+} from "@artoo/domain";
 
 const REDACTED_SECRET = "<redacted:secret>";
 
@@ -57,4 +62,8 @@ function redactUnknown(value: unknown): unknown {
 
 export function redactTaskAuditBundle(bundle: TaskAuditBundle): TaskAuditBundle {
   return TaskAuditBundleSchema.parse(redactUnknown(bundle));
+}
+
+export function redactGoalAuditBundle(bundle: GoalAuditBundle): GoalAuditBundle {
+  return GoalAuditBundleSchema.parse(redactUnknown(bundle));
 }

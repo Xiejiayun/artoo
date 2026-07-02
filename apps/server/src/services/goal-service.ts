@@ -26,7 +26,7 @@ import { createCheckpointInTx } from "./checkpoint-service.js";
  * later slices. Every read/write is org-scoped.
  */
 
-function mapGoal(row: typeof goals.$inferSelect): Goal {
+export function mapGoal(row: typeof goals.$inferSelect): Goal {
   return GoalSchema.parse({
     id: row.id,
     organization_id: row.organizationId,

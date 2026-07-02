@@ -41,7 +41,7 @@ import { createCheckpointInTx, hasMaterializeCheckpoint } from "./checkpoint-ser
 
 type Tx = DrizzleDb;
 
-function mapPlan(row: typeof plans.$inferSelect): Plan {
+export function mapPlan(row: typeof plans.$inferSelect): Plan {
   return PlanSchema.parse({
     id: row.id,
     organization_id: row.organizationId,

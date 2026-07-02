@@ -477,6 +477,14 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     const { id } = req.params as { id: string };
     return { checkpoints: await checkpointService.listCheckpoints(rc(req), id) };
   });
+  app.get("/api/v1/goals/:id/audit-bundle", async (req) => {
+    const { id } = req.params as { id: string };
+    return { bundle: await auditService.getGoalAuditBundle(rc(req), id) };
+  });
+  app.get("/api/v1/goals/:id/audit-bundle/export", async (req) => {
+    const { id } = req.params as { id: string };
+    return { export: await auditService.exportGoalAuditBundle(rc(req), id) };
+  });
   app.get("/api/v1/checkpoints/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
     const checkpoint = await checkpointService.getCheckpoint(rc(req), id);

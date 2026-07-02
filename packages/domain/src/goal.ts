@@ -12,7 +12,7 @@
 import { z } from "zod";
 
 import { ActorTypeSchema } from "./events.js";
-import { DependencyTypeSchema, PrioritySchema } from "./schemas.js";
+import { AuditEventSchema, DependencyTypeSchema, PrioritySchema, RoomSchema, TaskAuditBundleSchema } from "./schemas.js";
 
 export class InvalidGoalTransitionError extends Error {
   constructor(
@@ -329,3 +329,38 @@ export function deriveGoalStatusFromChildren(facts: ChildStateFacts): GoalStatus
   if (facts.openBlockers > 0) return "blocked";
   return "running";
 }
+
+// ---------------------------------------------------------------------------
+// Goal-level audit bundle (V3 #140 / deferred P4) — a read-only, deterministic
+// consolidation of a goal's full evidence chain. Composes the existing per-task
+// audit bundle for each child task, so child runs/artifacts/approvals/blockers/
+// messages/events come through unchanged, and adds the goal row (lifecycle +
+// budgets + retry_count + provenance), its plans (versioned), checkpoints, and
+// the goal's own ordered event stream. This is a consolidated goal-level proof,
+// NOT a replacement for per-task audit bundles.
+// ---------------------------------------------------------------------------
+
+export const GoalAuditBundleSchema = z.object({
+  goal: GoalSchema,
+  room: RoomSchema.nullable(),
+  plans: z.array(PlanSchema),
+  checkpoints: z.array(CheckpointSchema),
+  /** Full per-task audit bundle for each child task (already redacted). */
+  tasks: z.array(TaskAuditBundleSchema),
+  /** The goal's own lifecycle event stream (goal.* events), ordered by position. */
+  events: z.array(AuditEventSchema),
+});
+export type GoalAuditBundle = z.infer<typeof GoalAuditBundleSchema>;
+
+export const GoalAuditBundleExportSchema = z.object({
+  schema_version: z.literal("v1alpha1"),
+  exported_at: z.string(),
+  bundle_sha256: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  bundle: GoalAuditBundleSchema,
+  signature: z.null(),
+  signing: z.object({
+    status: z.literal("deferred"),
+    reason: z.literal("v1 does not manage signing keys yet"),
+  }),
+});
+export type GoalAuditBundleExport = z.infer<typeof GoalAuditBundleExportSchema>;
