@@ -12,6 +12,7 @@ import {
   type DagEdge,
   GoalBudgetsSchema,
   ID_PREFIXES,
+  applyGoalTransition,
   type AssignRequest,
   type Capability,
   type ReviewRequest,
@@ -375,6 +376,9 @@ export async function reviewTask(
     // prerequisites are now all satisfied (emits dag.node.ready per unlock).
     if (req.outcome === "accepted") {
       await dagService.unlockDownstream(ctx, tx, taskId);
+      if (row.goalId !== null) {
+        await completeGoalIfAllTasksDone(ctx, tx, row.goalId, now);
+      }
     }
     const updated = (await tx.select().from(tasks).where(eq(tasks.id, taskId)))[0];
     if (updated === undefined) {
@@ -382,6 +386,58 @@ export async function reviewTask(
     }
     return mapTask(updated);
   });
+}
+
+/**
+ * #138 hardening: when the final materialized task of a running goal is accepted,
+ * close the goal with the existing `all_tasks_terminal` transition. The check is
+ * org-scoped, same-transaction, and only runs after the accepted review changed
+ * the task to `done`, so partial DAGs or stale accepts cannot complete a goal.
+ */
+async function completeGoalIfAllTasksDone(
+  ctx: ServerContext,
+  tx: ServerContext["db"]["db"],
+  goalId: string,
+  now: string,
+): Promise<void> {
+  const goal = (
+    await tx
+      .select()
+      .from(goals)
+      .where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId), eq(goals.status, "running")))
+  )[0];
+  if (goal === undefined) {
+    return;
+  }
+  const childTasks = await tx
+    .select({ status: tasks.status })
+    .from(tasks)
+    .where(and(eq(tasks.organizationId, ctx.organizationId), eq(tasks.goalId, goalId)));
+  if (childTasks.length === 0 || childTasks.some((task) => task.status !== "done")) {
+    return;
+  }
+  const to = applyGoalTransition("running", "all_tasks_terminal");
+  const changed = await tx
+    .update(goals)
+    .set({ status: to, updatedAt: now })
+    .where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId), eq(goals.status, "running")))
+    .returning({ id: goals.id });
+  if (changed.length === 0) {
+    return;
+  }
+  await appendEvent(
+    tx,
+    buildEvent(ctx, {
+      type: "goal.completed",
+      actorType: "system",
+      actorId: "goal_aggregator",
+      correlationId: goalId,
+      projectId: goal.projectId,
+      roomId: goal.roomId,
+      goalId,
+      payload: { goal_id: goalId, from: "running", to, trigger: "all_tasks_terminal" },
+    }),
+  );
 }
 
 /**
