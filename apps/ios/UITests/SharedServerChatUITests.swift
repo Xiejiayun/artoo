@@ -26,61 +26,71 @@ final class SharedServerChatUITests: XCTestCase {
         if app.tabBars.buttons["More"].waitForExistence(timeout: 3) {
             app.tabBars.buttons["More"].tap()
             let signOut = app.buttons["signOut"]
-            reveal(signOut)
+            try reveal(signOut)
             signOut.tap()
         }
         let origin = app.textFields["serverURL"]
-        XCTAssertTrue(origin.waitForExistence(timeout: 15), "Live pairing screen must be visible")
-        replace(origin, with: fixture.serverURL.absoluteString)
-        replace(app.textFields["pairingDeviceName"], with: "Native CI \(suffix)")
-        replace(app.textFields["pairingCode"], with: fixture.pairingCode)
+        try require(origin.waitForExistence(timeout: 15), "Live pairing screen must be visible")
         let localHTTP = app.switches["allowLocalHTTP"]
-        reveal(localHTTP)
-        if fixture.serverURL.scheme == "http", localHTTP.value as? String != "1" { localHTTP.tap() }
+        if fixture.serverURL.scheme == "http" {
+            // SwiftUI exposes both the row and the UISwitch as switches. Tap
+            // the actual control before opening the keyboard, then verify it.
+            try reveal(localHTTP)
+            if localHTTP.value as? String != "1" {
+                let control = localHTTP.switches.firstMatch
+                (control.exists ? control : localHTTP).tap()
+            }
+            let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1"), object: localHTTP)
+            try require(XCTWaiter.wait(for: [enabled], timeout: 5) == .completed, "Local HTTP must be enabled through the onboarding switch")
+        }
+        try replace(origin, with: fixture.serverURL.absoluteString)
+        try replace(app.textFields["pairingDeviceName"], with: "Native CI \(suffix)")
+        try replace(app.textFields["pairingCode"], with: fixture.pairingCode)
         let pair = app.buttons["pairDevice"]
-        reveal(pair)
+        try reveal(pair)
+        try require(pair.isEnabled, "Pairing must be enabled after completing the form")
         pair.tap()
         let channelsTab = app.tabBars.buttons["Channels"]
-        XCTAssertTrue(channelsTab.waitForExistence(timeout: 20), "The app must authenticate and load the real server bootstrap")
+        try require(channelsTab.waitForExistence(timeout: 20), "The app must authenticate and load the real server bootstrap")
         channelsTab.tap()
         let channel = app.buttons["channel.\(fixture.channelId)"]
-        XCTAssertTrue(channel.waitForExistence(timeout: 15), "The server fixture channel must appear in the selected project")
+        try require(channel.waitForExistence(timeout: 15), "The server fixture channel must appear in the selected project")
         channel.tap()
-        waitForLiveConnection()
+        try waitForLiveConnection()
 
-        send(rootBody)
+        try send(rootBody)
         let roots = try await peerMessages()
         let root = try XCTUnwrap(roots.first { $0.body == rootBody }, "Native root must be persisted on the real server")
         XCTAssertEqual(roots.filter { $0.body == rootBody }.count, 1)
         XCTAssertNil(root.threadRootId)
         let thread = app.buttons["thread.\(root.id)"]
-        reveal(thread)
+        try reveal(thread)
         thread.tap()
-        send(replyBody)
+        try send(replyBody)
         let nativeReplies = try await peerMessages(root: root.id)
         let reply = try XCTUnwrap(nativeReplies.first { $0.body == replyBody })
         XCTAssertEqual(reply.threadRootId, root.id)
         XCTAssertEqual(nativeReplies.filter { $0.body == replyBody }.count, 1)
-        waitForLiveConnection()
+        try waitForLiveConnection()
 
         // The real browser waits for nativeReply, then sends browserReply through
         // its own composer. This test never substitutes an API write for it.
         // The reply must appear promptly without a manual refresh while the
         // authenticated socket is connected. A send-triggered REST refresh may
         // overlap this exchange, so this alone does not isolate the WS path.
-        XCTAssertTrue(app.staticTexts[liveBody].waitForExistence(timeout: 12), "Web UI reply must appear without a manual refresh")
+        try require(app.staticTexts[liveBody].waitForExistence(timeout: 12), "Web UI reply must appear without a manual refresh")
         let repliesAfterBrowser = try await peerMessages(root: root.id)
         let live = try XCTUnwrap(repliesAfterBrowser.first { $0.body == liveBody })
         XCTAssertEqual(live.threadRootId, root.id)
-        waitForLiveConnection()
+        try waitForLiveConnection()
 
         XCUIDevice.shared.press(.home)
-        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 10))
+        try require(app.wait(for: .runningBackground, timeout: 10) || app.state == .runningBackgroundSuspended, "The app must enter the background")
         let background = try await peerSend(catchUpBody, root: root.id)
         app.activate()
-        XCTAssertTrue(app.staticTexts[catchUpBody].waitForExistence(timeout: 15), "Foreground must reconcile the message written while backgrounded")
+        try require(app.staticTexts[catchUpBody].waitForExistence(timeout: 15), "Foreground must reconcile the message written while backgrounded")
         XCTAssertEqual(background.threadRootId, root.id)
-        waitForLiveConnection()
+        try waitForLiveConnection()
         let finalReplies = try await peerMessages(root: root.id)
         for body in [replyBody, liveBody, catchUpBody] {
             XCTAssertEqual(finalReplies.filter { $0.body == body }.count, 1, "A logical send must be persisted once")
@@ -88,13 +98,13 @@ final class SharedServerChatUITests: XCTestCase {
         XCTAssertTrue(finalReplies.allSatisfy { $0.threadRootId == root.id })
         app.terminate()
         app.launch()
-        XCTAssertTrue(channelsTab.waitForExistence(timeout: 20), "Relaunch must restore the saved Keychain connection")
+        try require(channelsTab.waitForExistence(timeout: 20), "Relaunch must restore the saved Keychain connection")
         channelsTab.tap()
-        XCTAssertTrue(channel.waitForExistence(timeout: 15))
+        try require(channel.waitForExistence(timeout: 15), "The saved channel must be available after relaunch")
         channel.tap()
-        XCTAssertTrue(app.staticTexts[rootBody].waitForExistence(timeout: 15), "Channel history must survive app relaunch")
-        reveal(thread); thread.tap()
-        XCTAssertTrue(app.staticTexts[catchUpBody].waitForExistence(timeout: 15), "Thread history must survive app relaunch")
+        try require(app.staticTexts[rootBody].waitForExistence(timeout: 15), "Channel history must survive app relaunch")
+        try reveal(thread); thread.tap()
+        try require(app.staticTexts[catchUpBody].waitForExistence(timeout: 15), "Thread history must survive app relaunch")
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Native real-server thread after foreground catch-up"
         screenshot.lifetime = .keepAlways
@@ -106,21 +116,21 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func send(_ body: String) {
+    private func send(_ body: String) throws {
         let composer = app.descendants(matching: .any).matching(identifier: "messageComposer").firstMatch
-        reveal(composer)
-        replace(composer, with: body)
+        try reveal(composer)
+        try replace(composer, with: body)
         let button = app.buttons["sendMessage"]
-        reveal(button)
-        XCTAssertTrue(button.isEnabled)
+        try reveal(button)
+        try require(button.isEnabled, "The message send control must be enabled")
         button.tap()
-        XCTAssertTrue(app.staticTexts[body].waitForExistence(timeout: 15), "The native send must complete against the real server")
+        try require(app.staticTexts[body].waitForExistence(timeout: 15), "The native send must complete against the real server")
     }
 
     @MainActor
-    private func replace(_ field: XCUIElement, with text: String) {
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
-        reveal(field)
+    private func replace(_ field: XCUIElement, with text: String) throws {
+        try require(field.waitForExistence(timeout: 10), "Required text field must exist")
+        try reveal(field)
         field.tap()
         if let current = field.value as? String, !current.isEmpty, current != field.placeholderValue {
             field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
@@ -129,7 +139,7 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func reveal(_ element: XCUIElement) {
+    private func reveal(_ element: XCUIElement) throws {
         for _ in 0..<5 {
             if element.exists && element.isHittable { return }
             app.swipeUp()
@@ -138,15 +148,26 @@ final class SharedServerChatUITests: XCTestCase {
             if element.exists && element.isHittable { return }
             app.swipeDown()
         }
-        XCTAssertTrue(element.exists && element.isHittable, "Required control must be reachable")
+        try require(element.exists && element.isHittable, "Required control must be reachable")
     }
 
     @MainActor
-    private func waitForLiveConnection() {
+    private func waitForLiveConnection() throws {
         let status = app.descendants(matching: .any).matching(identifier: "realtimeStatus").firstMatch
-        reveal(status)
+        try reveal(status)
         let connected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "connected"), object: status)
-        XCTAssertEqual(XCTWaiter.wait(for: [connected], timeout: 15), .completed, "The native client must establish an authenticated WebSocket")
+        try require(XCTWaiter.wait(for: [connected], timeout: 15) == .completed, "The native client must establish an authenticated WebSocket")
+    }
+
+    @MainActor
+    private func require(_ condition: Bool, _ message: String) throws {
+        guard condition else {
+            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            screenshot.name = "Native UI failure"; screenshot.lifetime = .keepAlways; add(screenshot)
+            // XCTest assertions in async tests can continue despite
+            // continueAfterFailure=false. Throw to stop dependent UI actions.
+            throw NSError(domain: "ArtooUITestAssertion", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        }
     }
 
     private func peerMessages(root: String? = nil) async throws -> [ServerMessage] {
