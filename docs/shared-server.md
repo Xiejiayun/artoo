@@ -193,6 +193,17 @@ Artoo context packs and checks two provider answers and recorded usage, while
 the server/node transport and identity remain in-process fixtures. It does not
 change persistent CLI settings or configure the installed Windows worker.
 
+For a separate real planning discussion, enable
+`ARTOO_CODEX_DISCUSSION_SMOKE=1` and run
+`npx vitest run apps/server/src/codex-discussion-smoke.test.ts --maxWorkers=1`.
+It accepts the same `ARTOO_CODEX_CHAT_*` provider settings and spends three
+provider turns: two distinct agent instances contribute, then the first
+synthesizes their discussion into a plan. The gate checks actual prior answers
+in each context, zero child tasks before human acceptance, and the accepted
+tasks' criteria/dependency. It writes `artifacts/live/codex-discussion.json`.
+Authentication and node transport remain fixtures; task implementation and
+physical-device interaction are outside this gate.
+
 For the locally tested Aerial 0.3.3 GitHub Copilot route, the base URL is
 `http://127.0.0.1:18181/v1` and the model is `gpt-5.4-mini`. The observed catalog
 exposes Responses-compatible models but no `/v1/messages` model route. Claude

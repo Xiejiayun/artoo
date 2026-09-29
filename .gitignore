@@ -15,4 +15,5 @@ apps/web/playwright-report/
 artifacts/preview-gate/
 artifacts/ios/
 artifacts/live/
+artifacts/notification-navigation-*/
 apps/ios/Artoo.xcodeproj/

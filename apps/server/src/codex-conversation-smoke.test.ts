@@ -55,21 +55,27 @@ describe.skipIf(!enabled)("gated real Codex conversation", () => {
   let completedReport: Record<string, unknown> | undefined;
 
   afterEach(async () => {
-    try {
-      await dispatcher?.stop();
-    } finally {
-      // Even dispatcher failure must stop the real CLI before storage/cleanup.
-      await node?.stop(true);
-      await binding?.drain();
-      binding?.close();
-      await server?.close();
-      if (workspace) {
-        const target = realpathSync(workspace);
+    const failures: string[] = [];
+    let nodeStopped = node === undefined;
+    async function cleanup(stage: string, action: () => unknown | Promise<unknown>) {
+      try { await action(); } catch { failures.push(stage); }
+    }
+    await cleanup("dispatcher", () => dispatcher?.stop());
+    await cleanup("node", async () => { await node?.stop(true); nodeStopped = true; });
+    // A possibly live CLI can still emit indefinitely or need its context file.
+    if (nodeStopped) await cleanup("binding drain", () => binding?.drain());
+    await cleanup("binding close", () => binding?.close());
+    await cleanup("server", () => server?.close());
+    if (workspace && nodeStopped) {
+      const isolatedWorkspace = workspace;
+      await cleanup("workspace", () => {
+        const target = realpathSync(isolatedWorkspace);
         const parent = realpathSync(tmpdir());
         if (!target.startsWith(`${parent}${sep}artoo-codex-chat-`)) throw new Error("Refusing cleanup outside the isolated chat workspace");
         rmSync(target, { recursive: true, force: true });
-      }
+      });
     }
+    if (failures.length) throw new Error(`Live conversation cleanup failed at: ${failures.join(", ")}`);
     // A failed cleanup leaves the initial passed:false report in place.
     if (completedReport && evidencePath) {
       const report = { ...completedReport, cleanup_complete: true };

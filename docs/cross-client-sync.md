@@ -312,3 +312,50 @@ are in-process fixtures, so this establishes real model conversation through
 Artoo's dispatcher and process adapter, not public deployment or real Google
 OAuth. Aerial's observed catalog had no Anthropic Messages-compatible route;
 the existing Claude live gate therefore remains unverified with that proxy.
+
+The refreshed Windows installed-package smoke passed all seven checks at
+`2026-09-29T05:54:00.965Z`, including pairing, encrypted credentials, single
+instance startup, worker controls, fixture execution/artifact review, restart,
+revocation and uninstall. The unsigned installer SHA-256 is
+`cea143dabba547f02c445d8174da2e6b4865592e773571aad5f04caac85cd925`.
+The installed `app.asar` matches the packaged build, and its renderer matches
+the current Web code apart from the expected browser-versus-desktop authentication
+build default. The screenshot was inspected and shows the executing agent's
+name rather than its instance ID. The worker fixture is separate from the live
+Codex conversation gate above. Temporary installation/process cleanup passed.
+
+The separate opt-in real Codex discussion gate also passed on its first live
+attempt, starting at `2026-09-29T05:57:26.980Z`. It used the same Aerial/Copilot
+route and requested model, two distinct agent instances, and three independent
+provider sessions. The reviewer and final synthesis reused a code invented by
+the first model response; every context was checked against the actual prior
+answers. The production proposal parser accepted the synthesis, and explicit
+acceptance created exactly two tasks with the expected criteria and blocking
+dependency. There were no goal child tasks before proposal or before acceptance.
+No model-written files or live test processes remained after successful cleanup.
+Evidence is retained locally in `artifacts/live/codex-discussion.json`.
+
+The three turns reported input/output/cached token counts of
+31,311/9,107/28,928; 31,726/9,303/28,928; and 32,115/2,061/28,928. All reported
+costs remain `null`. This establishes real multi-agent discussion and proposal
+materialization through the production dispatcher/adapter logic, with fixture
+authentication and in-process node transport. It does not establish task-writing
+execution, deployed WebSockets, physical-device interaction, or that the installed
+worker has been configured to use this temporary provider.
+
+The local shared gate passed 1,134 tests with 17 opt-in/platform skips, all 13
+browser workflows and all six authentication workflows. Type checking, the
+production preview build, native API contracts and whitespace checks passed;
+the production dependency audit found zero vulnerabilities. The newly added
+real discussion gate was checked separately with its explicit opt-in and with
+the normal skip behavior; it was not part of that earlier full-suite discovery.
+
+The documentation-only `08e5dc2` main rerun exposed a historical-notification
+E2E race: after the test removed its 503 interceptor, a legitimate reconnect
+refresh could load the exact message and remove the Retry button before the
+test clicked it. A controlled offline/online reproduction confirmed that the
+target message had loaded and become read before the old click timed out.
+The test now keeps the lookup failure active until the actual retry click,
+also checks reconnect failures retain unread state, and preserves all historical
+message, pagination and reload assertions. The complete notification-navigation
+spec passed all three scenarios after the change; production code was unchanged.

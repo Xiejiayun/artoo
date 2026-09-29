@@ -47,7 +47,15 @@ test("old unread notifications remain reachable beyond 100 and display the exact
   // The ordinary server seeds and serves every message. Only the exact lookup
   // is temporarily failed to prove a failed navigation cannot consume a notice.
   const targetUrl = `**/api/v1/rooms/${channel.id}/messages/${mentioned.id}`;
-  await page.route(targetUrl, (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "unavailable", message: "Temporary message lookup failure" } }) }));
+  let failedLookups = 0;
+  await page.route(targetUrl, async (route) => {
+    const retryClicked = await page.evaluate(() => document.documentElement.dataset.notificationRetryClicked === "true");
+    if (retryClicked) await route.continue();
+    else {
+      failedLookups++;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "unavailable", message: "Temporary message lookup failure" } }) });
+    }
+  });
   await page.goto("/channels?mentions=1");
   await expect(page.getByRole("button", { name: "Mentions, 1 unread", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Exact historical reply/ })).toHaveCount(0);
@@ -59,9 +67,25 @@ test("old unread notifications remain reachable beyond 100 and display the exact
   await expect(thread.getByRole("button", { name: "Retry opening message", exact: true })).toBeVisible();
   expect((await inbox(request)).find((item) => item.id === old.id)?.read_at).toBeNull();
   await expect(page.getByRole("button", { name: "Mentions, 1 unread", exact: true })).toBeVisible();
-  await page.unroute(targetUrl);
+  // Reconnection may refetch an errored query before Playwright activates its
+  // retry button. Keep the fault active through that background request.
+  const failuresBeforeReconnect = failedLookups;
+  await page.context().setOffline(true);
+  await page.context().setOffline(false);
+  await expect.poll(() => failedLookups).toBeGreaterThan(failuresBeforeReconnect);
+  await expect(thread.getByRole("button", { name: "Retry opening message", exact: true })).toBeVisible();
+  expect((await inbox(request)).find((item) => item.id === old.id)?.read_at).toBeNull();
+  // Release the fault in the actual click event, before React starts the lookup.
+  // A delegated listener survives a background refetch replacing the button.
+  await page.evaluate(() => {
+    document.addEventListener("click", (event) => {
+      const button = event.target instanceof Element ? event.target.closest("button") : null;
+      if (button?.textContent?.trim() === "Retry opening message") document.documentElement.dataset.notificationRetryClicked = "true";
+    }, { capture: true });
+  });
   await thread.getByRole("button", { name: "Retry opening message", exact: true }).click();
   await expect(thread.getByRole("region", { name: "Mentioned reply", exact: true })).toContainText(mentioned.body!);
+  await page.unroute(targetUrl);
   await expect(thread.getByRole("list", { name: "Messages", exact: true })).not.toContainText(mentioned.body!);
   await expect.poll(async () => (await inbox(request)).find((item) => item.id === old.id)?.read_at).not.toBeNull();
   await expect(page.getByRole("button", { name: "Mentions, 0 unread", exact: true })).toBeVisible();

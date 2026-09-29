@@ -129,7 +129,12 @@ The repository-level `npm run verify:ios` automates XcodeGen, simulator selectio
 build and XCTest and retains `.xcresult` bundles. It also runs the Release app
 through XCUITest against an isolated real server and an authenticated Chromium
 client: pairing, channel/thread sending, receiving a reply from the Web composer,
-foreground catch-up and Keychain/history restoration after app relaunch. Install
+foreground catch-up and Keychain/history restoration after app relaunch. Separate
+scenarios stop/restart an authenticated daemon and drive a two-agent discussion
+through proposal review and acceptance. The latter verifies named participants,
+three process-backed answers, visible dependency names and criteria, no child
+tasks before acceptance, and exactly two dependent tasks afterward. The agent
+responses are deterministic subprocess fixtures, not live model inference. Install
 the Playwright Chromium browser from `apps/web` before running the gate. See
 [`docs/shared-server.md`](../../docs/shared-server.md) for CI and prerequisites.
 
