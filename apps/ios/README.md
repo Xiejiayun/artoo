@@ -189,6 +189,24 @@ native plan-card results and the installed Windows provider settings and live
 inference checks. Physical devices, other native UI workflows, deployed Google
 OAuth/TLS/WebSockets and signing remain separate acceptance checks.
 
+The latest [native workflow job](https://github.com/Xiejiayun/artoo/actions/runs/36546082531/job/109332698586)
+passed at `f3358c4ff38d1c555bd19233073aa16dea7d2218` with Xcode 16.4 (16F6), SDK
+18.5 and an iPhone 17 Pro simulator running iOS 26.2. Debug/Release builds, all
+77 unit XCTest cases and all three Release UI scenarios passed. The plan-card
+scenario checks the exact original response through expansion/collapse, no
+automatic proposals/tasks, and explicit acceptance creating two tasks with the
+original criteria and blocking dependency. Seven native screenshots and the
+browser synchronization screenshot were inspected, and cleanup flags passed.
+The [native artifact](https://github.com/Xiejiayun/artoo/actions/runs/36546082531/artifacts/11024150088)
+has verified SHA-256
+`aca03af0894d79b9227d2767e220093a6768cc11713be8de926cc51cd4a4d18f`.
+The enclosing workflow failed in its separate shared job on a Web component-test
+race; the test fix at `bf2813f` then passed the complete local shared gate. Native
+product code, tests and workflow are unchanged between these revisions. This
+native gate uses deterministic subprocess responses, not live model inference.
+Detailed failure history, evidence scope and current release gaps remain in
+[the collaboration record](../../docs/cross-client-sync.md).
+
 ```bash
 brew install xcodegen
 cd apps/ios

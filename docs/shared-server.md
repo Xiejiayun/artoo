@@ -119,15 +119,21 @@ shared and macOS suites on main pushes and pull requests. Installed Windows
 smoke is opt-in on a separately configured isolated interactive self-hosted
 runner labeled `artoo-desktop`; no such runner is provisioned by these files.
 
-For `eae1166`, the hosted shared gate passed 1,132 unit/integration tests with
-20 opt-in/platform skips, all 13 browser workflows and six authentication
-workflows. The refreshed installed Windows smoke passed all seven checks.
-The macOS gate passed Debug and Release builds, all 71 unit XCTest cases and
-all three Release UI scenarios with zero failures, using Xcode 16.4 and an
-iPhone 17 Pro simulator running iOS 26.2. The UI scenarios cover pairing,
+For `bf2813f`, the complete local shared gate passed all eight checks, including
+1,172 unit/integration tests with 18 skips, 14 browser workflows and six
+authentication workflows; the production dependency audit found no vulnerabilities.
+Two bundled-worker cases ran locally using the existing Windows bundle and were
+skipped in hosted CI. The separately scoped macOS native job passed at `f3358c4`:
+Debug and Release builds, all 77 unit XCTest cases and all three Release UI
+scenarios, using Xcode 16.4 and an iPhone 17 Pro simulator running iOS 26.2.
+Native product code, tests and workflow are unchanged between these revisions.
+That workflow's shared job failed on the Web test race fixed by `bf2813f`; the
+later passing local shared gate completes this validation. The UI scenarios cover
+pairing,
 channel/thread exchange with Chromium, foreground catch-up, Keychain/history
 restoration after relaunch, real daemon stop/recovery, and discussion with
-proposal review and acceptance. CI links, retained evidence and earlier results are
+plan-card/original-response review, proposal and acceptance. CI links, retained
+evidence and earlier results are
 listed in [the collaboration milestone record](cross-client-sync.md).
 
 CI uses deterministic subprocess fixtures. Separate local real Codex conversation

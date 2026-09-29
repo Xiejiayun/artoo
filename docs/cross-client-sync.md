@@ -102,8 +102,10 @@ user-wide CLI settings. The observed Aerial catalog did not expose an Anthropic
 Messages route, so Claude remains unverified on that proxy.
 
 Native Xcode builds, XCTest and simulator UI evidence are recorded below by exact
-revision. The discussion synchronization fix passed all 71 unit cases and
-three native UI scenarios; subsequent plan-card evidence is recorded separately.
+revision. The latest native gate at `f3358c4` passed Debug/Release builds, all
+77 unit cases and three UI scenarios, including plan-card review and acceptance.
+The complete local shared gate at `bf2813f` passed all eight checks; the only
+subsequent changes from the native source are a Web test and documentation.
 Signing, distribution, physical iOS devices, external
 Google OAuth and public DNS/TLS deployment remain separate release gates.
 
@@ -653,3 +655,67 @@ and remounts the conversation. The follow-up keeps the creation arguments and
 conversation assertions, but queries the current heading and enabled composer
 together inside the wait callback after the room lookup starts. It changes only
 the test, with no product or native-test changes from `f3358c4`.
+
+## Completed plan-card milestone, 2026-09-29
+
+The [native job](https://github.com/Xiejiayun/artoo/actions/runs/36546082531/job/109332698586)
+passed for `f3358c4ff38d1c555bd19233073aa16dea7d2218`: Debug and Release builds,
+all 77 unit XCTest cases and all three Release UI scenarios passed. The scenarios
+cover daemon stop/recovery (46.532 seconds), discussion and plan review/acceptance
+(123.325 seconds), and channel/thread synchronization (73.330 seconds). All four
+native gate checks passed using Xcode 16.4 (16F6), SDK 18.5 and an iPhone 17 Pro
+simulator running iOS 26.2. The enclosing workflow failed because of the separate
+shared-test failure recorded above; only the native job is successful in that run.
+
+The native test verifies Collapsed → Expanded → Collapsed with real button taps,
+the exact unchanged original response, zero automatic proposals or tasks, and
+zero tasks after proposal. Human acceptance creates exactly two tasks with the
+original criteria and the intended `blocks` dependency. Seven native screenshots
+and the browser synchronization screenshot were inspected. The report confirms
+resources closed and temporary data removed. Native discussions use deterministic
+CLI subprocesses over the production authenticated server and node WebSocket;
+they do not validate live provider inference.
+
+The [native artifact](https://github.com/Xiejiayun/artoo/actions/runs/36546082531/artifacts/11024150088)
+was downloaded and its source and GitHub digest verified; SHA-256 is
+`aca03af0894d79b9227d2767e220093a6768cc11713be8de926cc51cd4a4d18f`.
+The local audit is retained in
+`%TEMP%/artoo-native-ci-36546082531/xctest-summary.json`, and the reviewed visual
+summary is `artifacts/ios/native-milestone-proof.png` in the verification checkout.
+
+After the Web test fix, the complete `npm run verify:preview` gate passed from
+clean source `bf2813fe8b091676775646c52108685a5ac005e1` on Windows with Node
+24.14.0 and npm 11.9.0, starting at `2026-09-29T09:17:31.546Z`. All eight checks
+passed: type checking, production build, 1,172 unit/integration cases with 18 skips
+(181 passing files and eight skipped files), native static API contracts,
+14 browser workflows, six authentication workflows, production dependency audit
+with zero vulnerabilities, and whitespace checks. Both Playwright run records
+report success with no failed tests. Desktop-width and phone-width plan screenshots
+were inspected; criteria and dependency names remain readable at both widths.
+
+The two extra passing cases compared with the earlier successful hosted shared
+gate are conditional Windows bundled-worker tests in
+`apps/server/src/desktop-worker.test.ts`: IPC shutdown waits for CLI/descendant
+exit, and the independent guardian terminates a crashed daemon's CLI process
+tree. Both environments are Windows, but the local ignored
+`apps/desktop/daemon/artood.mjs` bundle already existed before this run; the hosted
+runner skipped these two cases because that bundle was absent. The skip condition,
+fresh local file-level result and totals were cross-checked. This does not claim
+that this gate rebuilt the desktop package or performed live model calls.
+
+Local evidence is preserved under `artifacts/preview-gate` in the verification
+checkout. SHA-256 digests:
+
+| File | SHA-256 |
+| --- | --- |
+| `shared-local-bf2813f.json` | `d607f45214b9285ac33c3885b874009be0b48ecae0badeb415e83ef71188a08f` |
+| `shared-local-bf2813f.log` | `96609095c9820174d9a6250c0522b06a3def1f475b24b28ea1c7fa3ae0079eef` |
+| `shared-local-bf2813f-source.json` | `b075bce72da3405b992f738987b2d0deca7b4d53bf5de77bf13626ae1b0279c6` |
+
+This milestone combines separately scoped evidence: native product code, tests
+and workflow are unchanged between `f3358c4` and `bf2813f`; server, Web and Windows
+runtime product code is unchanged since the installed Windows build at `bd0ee48`.
+The final follow-up records these results in documentation only. Windows live
+chat and discussion passed in the two separate attempts described above. Physical
+iOS devices, signing/TestFlight, Windows signing/update delivery, real Google
+OAuth and an actual shared host with public DNS/TLS remain release checks.

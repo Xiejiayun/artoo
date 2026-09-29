@@ -72,10 +72,15 @@ one passing five-turn run. The Web owner cookie is test-provisioned and the
 server runs on loopback. Live Claude execution, task-writing model execution
 and production deployment remain unverified.
 
-At `eae1166`, native Debug and Release builds passed, with all 71 unit XCTest
-cases and three Release UI scenarios passing without failures. The UI scenarios
-cover chat synchronization, daemon recovery and discussion/proposal/acceptance;
-the native discussion uses deterministic subprocess fixtures. Physical iOS
-devices, signing and distribution need separate validation. See the
+At `f3358c4`, the native job passed Debug and Release builds, all 77 unit XCTest
+cases and three Release UI scenarios. These cover chat synchronization, daemon
+recovery and discussion/plan-card/proposal/acceptance. The plan scenario verifies
+original-response expansion and collapse without changing its text, no automatic
+proposals or tasks, and exactly two tasks with their criteria and dependency only
+after human acceptance. Native discussion uses deterministic subprocess fixtures
+over the authenticated server and node WebSocket. The complete local shared gate
+passed at `bf2813f`, whose only changes after the native source are a Web test and
+documentation. Physical iOS devices, signing and distribution need separate
+validation. See the
 [acceptance record](cross-client-sync.md) for evidence by revision and the
 [live gate instructions](shared-server.md#optional-live-conversation-gate).
