@@ -47,12 +47,12 @@ private struct DiscussionPlanDraftView: View {
                     Spacer()
                     Image(systemName: showsOriginal ? "chevron.down" : "chevron.right")
                         .foregroundStyle(.tint)
+                        .accessibilityHidden(true)
                 }
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityElement(children: .ignore)
             .accessibilityLabel(showsOriginal ? "Hide original reply" : "Show original reply")
             .accessibilityValue(showsOriginal ? "Expanded" : "Collapsed")
             .accessibilityIdentifier("message.plan.original.\(message.id)")

@@ -558,3 +558,40 @@ control, exact original response, collapse, zero automatic proposals/tasks and
 human acceptance with the original dependency, and now also checks the button's
 accessible state. Static API contracts pass locally; only a subsequent macOS
 run can establish the fix's build and UI results.
+
+The optional Windows WASM Swift parser did not complete successfully: it emitted
+a V8 `Fatal process out of memory: Zone` under both installed Node 24 runtimes.
+One attempt printed that all 35 files parsed first, but its failing process exit
+is not counted as a passing check. Xcode remains the native build/type-check gate.
+
+## Native plan-card follow-up validation, 2026-09-29
+
+The [shared gate](https://github.com/Xiejiayun/artoo/actions/runs/36541057108/job/109316302144)
+passed for native fix `e92e01d485610a7a3330fd8d7fe2fda360ca7df6`: 1,170 tests
+passed with 20 opt-in/platform skips (180 passing files and nine skipped files),
+all 14 browser and six authentication workflows passed, and the production
+dependency audit found zero vulnerabilities. All eight shared checks passed.
+The [shared artifact](https://github.com/Xiejiayun/artoo/actions/runs/36541057108/artifacts/11020874032)
+was downloaded and its source and GitHub digest verified; SHA-256 is
+`229ea34dfc607155a834efd121f31b6009a4578be9031b121cc0a36b6675b0a1`.
+Desktop-width and phone-width plan screenshots were inspected. This follow-up
+does not change the server, execution runtime or Windows/Web product code used
+by the installed live checks above.
+
+The [native follow-up](https://github.com/Xiejiayun/artoo/actions/runs/36541057108/job/109316302290)
+again built Debug/Release and passed 77 unit cases, daemon recovery (60.657
+seconds) and chat synchronization (79.202 seconds). The plan screenshot confirms
+that the long criterion now wraps completely and the 44-point original-reply
+control is visible. However, the planning test's typed button query did not find
+that control, so it stopped before expanding the reply or accepting the plan.
+The final failure accessibility snapshot was captured after scrolling away and
+does not establish the missing control's actual accessibility type.
+
+The [native artifact](https://github.com/Xiejiayun/artoo/actions/runs/36541057108/artifacts/11020694854)
+was source/digest verified with SHA-256
+`f076a93819977d1e9ac06d01073a0b8c0e5e4b97cacb26346e0f7c6e526087c1`.
+Cleanup completed. The follow-up retains the full-row button and restored
+wrapping, removes the redundant accessibility container around the button,
+and hides only the decorative chevron from accessibility. The typed-button
+query and all expansion, collapse and acceptance assertions remain required;
+the next native run must confirm its accessibility behavior.

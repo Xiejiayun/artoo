@@ -233,6 +233,9 @@ final class SharedServerChatUITests: XCTestCase {
         try reveal(draftDependency)
         XCTAssertEqual(draftDependency.label, "Depends on: 1. \(fixture.task1Title)", "The draft must resolve its standard dependency to the numbered task name")
         attachScreenshot("Native suggested plan card before proposal")
+        let planHierarchy = XCTAttachment(string: app.debugDescription)
+        planHierarchy.name = "Native suggested plan accessibility before original reply"
+        planHierarchy.lifetime = .keepAlways; add(planHierarchy)
         let originalToggle = app.buttons["message.plan.original.\(synthesis.id)"]
         try reveal(originalToggle)
         try waitForValue(originalToggle, "Collapsed", message: "The original-reply button must expose its collapsed state")
