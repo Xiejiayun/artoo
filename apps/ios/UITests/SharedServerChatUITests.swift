@@ -65,8 +65,9 @@ final class SharedServerChatUITests: XCTestCase {
 
         // The real browser waits for nativeReply, then sends browserReply through
         // its own composer. This test never substitutes an API write for it.
-        // Less than the connected 60s fallback interval: another client's write
-        // must reach the visible native thread via realtime invalidation.
+        // The reply must appear promptly without a manual refresh while the
+        // authenticated socket is connected. A send-triggered REST refresh may
+        // overlap this exchange, so this alone does not isolate the WS path.
         XCTAssertTrue(app.staticTexts[liveBody].waitForExistence(timeout: 12), "Web UI reply must appear without a manual refresh")
         let repliesAfterBrowser = try await peerMessages(root: root.id)
         let live = try XCTUnwrap(repliesAfterBrowser.first { $0.body == liveBody })
