@@ -44,7 +44,23 @@ have per-channel private membership or Slack/Discord federation. Decomposition
 still needs human review, and does not automatically assign every resulting
 task or guarantee the quality of a model's plan.
 
-Validation combines real server/scheduler/database tests, fixture CLI subprocess
-tests, browser workflows and native contract checks. A fixture reply is not a
-live model session. Real provider credentials, native iOS execution and production
-deployment must be verified in the corresponding environment before release.
+Validation combines server/scheduler/database tests, fixture CLI subprocesses,
+browser workflows and native simulator tests. Separate local Codex gates passed
+using Aerial 0.3.3's GitHub Copilot route with requested model `gpt-5.4-mini`:
+a two-turn conversation reused the first answer, and a three-turn discussion
+between two agent instances reused the actual prior replies and materialized
+the proposed tasks, criteria and dependency only after explicit acceptance.
+Provider token usage was recorded; costs remain unknown.
+
+These live checks use temporary process-level provider settings, fixture
+authentication and in-process node transport. They do not configure or verify
+the installed Windows worker's persistent provider setup. Live Claude execution,
+task-writing model execution and production deployment remain unverified.
+
+At `eae1166`, native Debug and Release builds passed, with all 71 unit XCTest
+cases and three Release UI scenarios passing without failures. The UI scenarios
+cover chat synchronization, daemon recovery and discussion/proposal/acceptance;
+the native discussion uses deterministic subprocess fixtures. Physical iOS
+devices, signing and distribution need separate validation. See the
+[acceptance record](cross-client-sync.md) for evidence by revision and the
+[live gate instructions](shared-server.md#optional-live-conversation-gate).

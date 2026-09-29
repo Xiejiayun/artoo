@@ -163,6 +163,26 @@ and agent metadata, structured mentions, database timestamp normalization and
 mention lookup/read-retry identity and lifecycle boundaries. Both synchronization
 screenshots were inspected; broader native workflow coverage remains separate.
 
+The latest [native workflow gate](https://github.com/Xiejiayun/artoo/actions/runs/36533157993/job/109291170779)
+verified `eae116666beb76b5ca96ef9bd2ad3f3e39bfc02e` with the same Xcode and
+simulator versions: Debug/Release builds, all 71 unit XCTest cases and all three
+Release UI scenarios passed with zero failures. The additional UI scenarios
+stop/reconnect a real authenticated daemon, then complete a two-agent discussion,
+review its criteria and named dependency, and explicitly accept the plan before
+two tasks are created. The discussion completion regression verifies the final
+three-of-three progress, while two new unit cases cover concurrent refreshes
+arriving during an older load, including failure/caller cancellation.
+
+The [retained result bundles and UI evidence](https://github.com/Xiejiayun/artoo/actions/runs/36533157993/artifacts/11018180444)
+were downloaded and their archive digest verified. All six native screenshots
+were inspected, including Offline/Online daemon states and the proposed/accepted
+task lists; the synchronization report confirms cleanup. Native agent responses
+are deterministic subprocess fixtures. Separate real Aerial/Copilot conversation
+and discussion evidence, with its authentication/transport limits, is recorded
+in [the collaboration record](../../docs/cross-client-sync.md). Physical devices,
+other native UI workflows, installed-worker provider setup, deployed Google
+OAuth/TLS/WebSockets and signing remain separate acceptance checks.
+
 ```bash
 brew install xcodegen
 cd apps/ios

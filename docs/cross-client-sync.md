@@ -5,39 +5,29 @@ same server authority, expose consistent workflows, and recover reliably from
 network and process interruptions. The existing Fastify server is the shared
 service; clients do not keep competing copies of task or conversation state.
 
-## Required outcomes and acceptance evidence
+## Implementation and acceptance evidence
 
-- [ ] Task and goal conversations on Web, Windows and iOS: history, sending,
-  stable retry identity, drafts, errors and account isolation.
-- [ ] Bounded message pagination and incremental synchronization, authenticated
-  realtime subscriptions, reconnect/foreground catch-up without missing messages.
-- [ ] Actual assistant conversations: explicit discussion versus assistant intent,
-  durable turns, history in model context, visible assistant answers and follow-up,
-  execution/approval/cancellation policies preserved.
-- [ ] Server restart and node disconnect recovery for ordinary and goal tasks;
-  no duplicate execution and no lease release without confirmed process exit.
-- [ ] Bounded backup restoration and practical storage capacity handling.
-- [ ] Usage/cost visibility and deliverable verification with honest distinctions
-  between known usage, unavailable prices, warnings and enforced limits.
-- [ ] A reproducible shared-server deployment, health checks, TLS/WebSocket
-  configuration, backup/recovery and cross-device connectivity instructions.
-- [ ] A unified preview validation entry point and CI for supported platforms;
-  refreshed Windows install and native-client integration evidence.
-- [ ] Platform distribution readiness: signing/update configuration and clear
-  operator setup; actual external credentials/certificates must not be invented.
-- [ ] Explicit Agent Daemon online/offline/reconnect/stale status, last heartbeat
-  and separate runtime availability on every client. Client connection failures
-  must display unknown/stale data rather than inventing daemon offline state.
-- [ ] Slack/Discord-style project channels and message threads, real member
-  selection for @mentions, durable personal notifications and cross-client deep links.
-- [ ] Project objective decomposition into reviewable tasks, dependencies and
-  acceptance criteria; multiple agents can discuss in the shared conversation,
-  with visible attribution, bounded rounds/budgets, intervention and cancellation.
+The table separates implemented behavior from the remaining environment checks.
+Exact revisions, commands, test totals and evidence boundaries are recorded below.
 
-Completion requires verifying the current revision on the relevant platforms.
+| Outcome | Implementation and available evidence | Remaining acceptance |
+| --- | --- | --- |
+| Task/goal conversations on all three clients | History, sending, retry identity, drafts, errors and account isolation; browser and native channel/thread synchronization tested | Complete task/goal UI walkthrough and physical devices |
+| Bounded pagination and synchronization | Cursor APIs, authenticated subscriptions, replay, reconnect and foreground reconciliation; regression for final discussion events to project subscribers | Deployed TLS/WebSockets and independently isolated realtime delivery |
+| Actual assistant conversation | Durable turns, explicit agent intent, actual Codex/Copilot follow-up context, exactly-once replies and recorded usage | Installed worker's provider setup, Claude route and deployed authentication/transport |
+| Restart/disconnect recovery | Server/node recovery regressions preserve process-exit boundaries; native daemon and installed Windows scenarios passed | Deployed failure/recovery drill |
+| Backup restoration and capacity | Artifact restore streams to staging and discards failed checksums | Database backup still uses a buffer; capacity limits and deployed restore drill |
+| Usage, cost and deliverables | Actual provider token measurements; unavailable prices remain null; Windows artifact download/review tested | Real pricing and model-produced deliverables; monetary spending caps are not implemented |
+| Shared deployment | Service/TLS templates, health checks, backup/recovery and connectivity instructions | Actual host, DNS/TLS, Google OAuth and cross-device deployment |
+| Repeatable validation | Shared CI, 71 native unit/three UI cases and all seven Windows installed-package checks passed for the final code revision | Repeat on subsequent code changes; platform/device/deployment checks retain their own scope |
+| Platform distribution | Windows install/control/restart/uninstall exercised; native simulator Debug/Release builds passed | Windows signing/update delivery; iOS device signing, provisioning and distribution |
+| Agent Daemon status | Three clients distinguish daemon presence from runtime availability; heartbeat/activity and Unknown/stale behavior covered; native disconnect/recovery UI passed | Physical-device recovery |
+| Channels, threads, mentions and notifications | Project channels, scoped threads, real-member mentions, durable paginated notifications and exact destinations implemented and covered by API/browser/native tests | Native notification deep-link UI and physical-device coverage |
+| Agent discussion and task decomposition | Real three-turn Copilot discussion, prior-answer context, validated proposal and accepted criteria/dependencies verified; native proposal/acceptance UI passed with subprocess fixtures | Installed worker provider and deployed/device interaction |
+
 Windows-side Swift parsing or contract checks do not prove an iOS build/device
-flow. Fixture subprocesses do not prove a real model session. Those gates remain
-open until direct evidence is available.
+flow. Simulator evidence does not certify physical devices. Deterministic fixture
+subprocesses and the separately verified live model sessions have distinct scopes.
 
 ## Shared message API
 
@@ -100,16 +90,19 @@ including processes whose database run failed before the node confirmed exit.
 Artifact restore streams into unpublished staging and discards partial restores
 on a late checksum failure. The database archive still uses PGlite's buffer API.
 
-The latest 2026-09-29 local provider check found both CLIs installed. Codex is
-not logged in; Claude reports an authenticated configuration, but its configured
-local proxy rejects the default model as unsupported. A process-local override
-to a model advertised by that proxy also returned "no model endpoints available
-given user constraints". No machine configuration was changed. Successful live
-model execution remains unverified; a logged-in CLI alone does not establish it.
-Windows-side native Swift syntax/contract checks do not replace Xcode builds,
-XCTest, simulator or device evidence. Signing, distribution, external Google
-OAuth credentials and public DNS/TLS deployment remain environment-specific
-release gates.
+The initial 2026-09-29 provider checks failed with the existing CLI settings.
+After selecting the user's Aerial GitHub Copilot route, real Codex conversation
+and multi-agent discussion gates passed using requested model `gpt-5.4-mini`.
+They verify actual responses and prior-answer context through Artoo's production
+dispatcher/adapters, with fixture authentication and in-process node transport.
+Temporary process-level provider settings did not change the machine's persistent
+configuration or configure the installed worker. The observed Aerial catalog did
+not expose an Anthropic Messages route, so Claude remains unverified on that proxy.
+
+Native Xcode builds, XCTest and simulator UI evidence are recorded below by exact
+revision. The final discussion synchronization fix passed all 71 unit cases and
+three native UI scenarios. Signing, distribution, physical iOS devices, external
+Google OAuth and public DNS/TLS deployment remain separate release gates.
 
 ## Milestone validation, 2026-09-29
 
@@ -244,9 +237,9 @@ Runtime failures now preserve the provider's structured error even when the CLI
 exits nonzero and its final JSON record has no newline. Both Codex and Claude
 subprocess regressions reproduced the prior generic `exit 1` result before the
 fix. The opt-in live conversation gate is documented in
-[shared-server.md](shared-server.md#optional-live-conversation-gate); the local
-provider configuration currently fails before an answer, so this milestone does
-not claim successful live model conversation or multi-agent model execution.
+[shared-server.md](shared-server.md#optional-live-conversation-gate). At that
+milestone, the local provider configuration failed before an answer; successful
+live Copilot conversation and discussion were verified later, as recorded below.
 
 The local shared gate passed 1,130 tests (16 opt-in/platform skips), all 13
 browser workflows, all six authentication workflows and a production audit
@@ -377,8 +370,8 @@ label. The failure screenshot shows both adjustment controls. The test now
 scopes its query to the identified stepper, locates the two actual buttons by
 their left-to-right frames, and checks the displayed value after every tap.
 This changes only the test interaction; the one-round/five-minute server
-assertions and proposal acceptance checks remain intact. A successful rerun is
-required before this scenario can be reported as verified.
+assertions and proposal acceptance checks remain intact. The subsequent runs
+below record the remaining product fix and eventual successful verification.
 
 The subsequent [shared rerun](https://github.com/Xiejiayun/artoo/actions/runs/36530506335/job/109282907669)
 passed for `70112f320b97a4802439d778475f720f1daa962c`: 1,132 unit/integration
@@ -406,4 +399,54 @@ lose its invalidation. The workspace model now coalesces overlapping requests
 and fetches again after the old response, with all callers awaiting completion.
 Two native regressions cover a delayed stale discussion response, multiple final
 invalidations, request failure and cancellation of the original caller. The
-original UI assertions remain unchanged; macOS execution of this fix is pending.
+original UI assertions remain unchanged; macOS results for this fix are below.
+
+The installed Windows smoke was refreshed against the rebuilt server at
+`eae116666beb76b5ca96ef9bd2ad3f3e39bfc02e` and passed all seven checks at
+`2026-09-29T06:53:11.529Z`. The unchanged installer retains the SHA-256 recorded
+above (`cea143d…cd925`); the smoke imported the newly built server containing the
+discussion event fix. Its screenshot was inspected. The current temporary
+installation, processes and listening ports were cleaned up; pre-existing test
+directories were preserved. This remains fixture execution and an unsigned
+Windows package, separate from the successful live Copilot checks.
+
+## Discussion completion synchronization validation, 2026-09-29
+
+The [shared gate](https://github.com/Xiejiayun/artoo/actions/runs/36533157993/job/109291170573)
+passed for `eae116666beb76b5ca96ef9bd2ad3f3e39bfc02e`: 1,132 unit/integration
+tests passed and 20 opt-in/platform cases were skipped (178 passing files and
+nine skipped files); all 13 browser and six authentication scenarios passed.
+Type checking, production preview build, native API contracts and whitespace
+checks passed, and the production dependency audit found zero vulnerabilities.
+The [retained shared artifact](https://github.com/Xiejiayun/artoo/actions/runs/36533157993/artifacts/11016833986)
+was downloaded, its source revision checked and its SHA-256 verified before
+inspecting the passing suite report. Installed Windows validation for the same
+server revision is recorded immediately above.
+
+The [native gate](https://github.com/Xiejiayun/artoo/actions/runs/36533157993/job/109291170779)
+passed for the same `eae1166` source using Xcode 16.4 (16F6), an iPhone 17 Pro
+simulator and iOS 26.2. Debug and Release builds succeeded. All 71 unit XCTest
+cases passed, including both new refresh-coalescing regressions, and all three
+Release UI scenarios passed with zero failures: real daemon disconnect/recovery
+(52.008 seconds), discussion/proposal/human acceptance (109.303 seconds), and
+pairing/channel/thread/foreground/relaunch synchronization (81.333 seconds).
+
+The discussion UI reached the final three-of-three progress assertion, displayed
+named participants and prior answers, and reviewed two proposed tasks with
+criteria and a named prerequisite. The pre-acceptance screenshot has an empty
+task list and the explicit acceptance button; the subsequent screenshot shows
+the accepted plan and exactly two tasks. Production API checks confirm the
+three process-backed turns' thread-scoped contexts and the materialized `blocks`
+dependency. Daemon evidence records an actual authenticated node disconnect and
+reconnect, with matching native Offline/Online screens.
+
+The [native artifact](https://github.com/Xiejiayun/artoo/actions/runs/36533157993/artifacts/11018180444)
+retains both XCTest bundles, six native screenshots, stepper accessibility
+attachments, message/workflow identities and the passing synchronization report.
+It was downloaded and its SHA-256 verified:
+`99e55e87b44c8cf01519cbee5688b40fcd4bd08f9dad3ea567d54e072d2f0725`.
+All native screenshots were inspected. The report confirms resources closed and
+the temporary directory removed. These native discussions use deterministic
+subprocess fixtures; the separate real Copilot gates above establish actual
+model inference. Neither gate establishes public deployment, installed-worker
+provider setup, physical iOS behavior or distribution signing.

@@ -119,16 +119,24 @@ shared and macOS suites on main pushes and pull requests. Installed Windows
 smoke is opt-in on a separately configured isolated interactive self-hosted
 runner labeled `artoo-desktop`; no such runner is provisioned by these files.
 
-The hosted Windows shared gate and macOS simulator build/XCTest/UI gate passed
-on 2026-09-29; exact revisions, test totals and CI links are recorded in
-[the collaboration milestone record](cross-client-sync.md). Native UI coverage
-includes pairing, channel/thread exchange with Chromium, foreground catch-up
-and Keychain/history restoration after relaunch. The installed Windows smoke
-also passed locally. Deployment templates still require an actual host run.
-CI uses deterministic local providers; real Codex/Claude credentials, real
-Google OAuth, deployed TLS and WebSockets, other native UI workflows, physical
-iOS device behavior, distribution signing, provisioning and TestFlight remain
-separate checks.
+For `eae1166`, the hosted shared gate passed 1,132 unit/integration tests with
+20 opt-in/platform skips, all 13 browser workflows and six authentication
+workflows. The refreshed installed Windows smoke passed all seven checks.
+The macOS gate passed Debug and Release builds, all 71 unit XCTest cases and
+all three Release UI scenarios with zero failures, using Xcode 16.4 and an
+iPhone 17 Pro simulator running iOS 26.2. The UI scenarios cover pairing,
+channel/thread exchange with Chromium, foreground catch-up, Keychain/history
+restoration after relaunch, real daemon stop/recovery, and discussion with
+proposal review and acceptance. CI links, retained evidence and earlier results are
+listed in [the collaboration milestone record](cross-client-sync.md).
+
+CI uses deterministic subprocess fixtures. Separate local real Codex conversation
+and discussion gates passed through Aerial's GitHub Copilot route, as described
+below. Those checks use fixture authentication and in-process node transport;
+they do not configure the installed worker's persistent provider settings.
+Live Claude execution, real Google OAuth, public TLS/WebSockets, physical iOS devices,
+distribution signing, provisioning and TestFlight remain separate checks.
+Deployment templates still require an actual host run.
 
 The native UI fixture runs an isolated persistent server on loopback with
 production authentication, no development credentials and no model execution.
@@ -204,10 +212,18 @@ tasks' criteria/dependency. It writes `artifacts/live/codex-discussion.json`.
 Authentication and node transport remain fixtures; task implementation and
 physical-device interaction are outside this gate.
 
-For the locally tested Aerial 0.3.3 GitHub Copilot route, the base URL is
-`http://127.0.0.1:18181/v1` and the model is `gpt-5.4-mini`. The observed catalog
-exposes Responses-compatible models but no `/v1/messages` model route. Claude
-CLI uses the latter protocol, and Aerial's messages handler does not translate
+Both Codex gates passed locally on 2026-09-29 through Aerial 0.3.3's GitHub Copilot
+route with requested model `gpt-5.4-mini`: two actual conversation answers and
+three discussion turns across two distinct agent instances. The discussion used
+three independent provider sessions, verified actual prior-answer context, and
+created the expected tasks, criteria and blocking dependency after acceptance.
+Both reports record successful cleanup and provider token usage; costs remain
+unknown. These results establish model conversation and planning through Artoo's
+dispatcher/process adapter, with the fixture and deployment limits above.
+
+For that local Aerial route, the base URL is `http://127.0.0.1:18181/v1`. The
+observed catalog exposes Responses-compatible models but no `/v1/messages`
+model route. Claude CLI uses the latter protocol, and Aerial's messages handler does not translate
 it to Responses; changing only the Claude model name cannot fix that mismatch.
 The Codex custom-provider fields follow the
 [official configuration reference](https://developers.openai.com/codex/config-advanced/).
