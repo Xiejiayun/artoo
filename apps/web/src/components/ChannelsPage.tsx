@@ -60,7 +60,9 @@ export function ChannelsPage(): React.ReactNode {
     {!projectReady && <p role={bootstrap.data && !projectKnown ? "alert" : "status"}>{bootstrap.data && !projectKnown ? "This notification's project is unavailable. Select an available project to continue." : "Opening the notification's project…"}</p>}
     {projectReady && <div className={`channels-layout${threadRootId ? " has-thread" : ""}`}><nav className="product-list" aria-label="Channel list">{channels.data?.channels.map((channel) => <button key={channel.id} aria-current={channel.id === roomId ? "page" : undefined} className={channel.id === roomId ? "is-selected" : ""} onClick={() => openRoom(channel.id)}># {channel.name}</button>)}</nav>
       {roomId && roomReady ? <article className="channel-main u-stack"><header><h2>{selected || room?.type === "project" ? "# " : ""}{selected?.name ?? room?.name ?? "Shared discussion"}</h2>{selected?.description && <p className="t-subtle">{selected.description}</p>}</header><RoomConversation key={roomId} roomId={roomId} onOpenThread={(id) => openRoom(roomId, id)} /></article> : !roomId && <EmptyState title="No channels yet" description="Create a channel for your project team to share ideas and discuss work in threads." />}
-      {roomId && roomReady && threadRootId && <ThreadPanel key={`${roomId}:${threadRootId}`} roomId={roomId} threadRootId={threadRootId} focusedMessageId={search.get("message") ?? undefined} notificationId={search.get("notification") ?? undefined} onClose={() => openRoom(roomId)} />}
+      {/* Read attempts and errors belong to one notification, including when
+          several notifications point into the same thread. */}
+      {roomId && roomReady && threadRootId && <ThreadPanel key={`${roomId}:${threadRootId}:${search.get("notification") ?? ""}`} roomId={roomId} threadRootId={threadRootId} focusedMessageId={search.get("message") ?? undefined} notificationId={search.get("notification") ?? undefined} onClose={() => openRoom(roomId)} />}
     </div>}
   </section>;
 }

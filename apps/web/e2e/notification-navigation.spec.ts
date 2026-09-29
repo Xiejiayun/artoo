@@ -113,3 +113,46 @@ test("project switching clears the old thread and cross-project mentions restore
   expect(new URL(page.url()).searchParams.get("project")).toBe(second.id);
   await expect.poll(async () => (await inbox(request)).find((item) => item.id === notification.id)?.read_at).not.toBeNull();
 });
+
+test("a failed read can recover after visiting another notification in the same thread", async ({ page, request }) => {
+  const bootstrap = await (await request.get("/api/v1/bootstrap")).json();
+  const channel = await createChannel(request, bootstrap.projects[0].id, `read-retry-${Date.now()}`);
+  const root = await send(request, channel.id, "One thread with two independent mentions");
+  const first = await send(request, channel.id, "Mention A must recover after a failed read", root.id, bootstrap.user.id);
+  const second = await send(request, channel.id, "Mention B can be read independently", root.id, bootstrap.user.id);
+  const notices = await inbox(request);
+  const firstNotice = notices.find((item) => item.message_id === first.id)!;
+  const secondNotice = notices.find((item) => item.message_id === second.id)!;
+  let firstReadRequests = 0;
+  await page.route(`**/api/v1/notifications/${firstNotice.id}/read`, async (route) => {
+    firstReadRequests++;
+    if (firstReadRequests === 1) await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "unavailable", message: "Temporary read failure" } }) });
+    else await route.continue();
+  });
+  await page.goto("/channels?mentions=1");
+  await page.getByRole("button", { name: /Mention A must recover/ }).click();
+  const thread = page.getByRole("complementary", { name: "Thread", exact: true });
+  await expect(thread.getByRole("region", { name: "Mentioned reply", exact: true })).toContainText(first.body!);
+  await expect(thread.getByRole("button", { name: "Retry marking notification read", exact: true })).toBeVisible();
+  expect((await inbox(request)).find((item) => item.id === firstNotice.id)?.read_at).toBeNull();
+  await thread.getByLabel("Message", { exact: true }).fill("Draft must survive notification navigation");
+  const openMentions = async (): Promise<void> => {
+    const panel = page.locator("details.notifications-panel");
+    if (await panel.getAttribute("open") === null) await panel.locator("summary").click();
+  };
+  // Use the inline list without leaving this room/thread. A full page or route
+  // reset would hide the failed-notification state leak this test guards.
+  await openMentions();
+  await page.getByRole("button", { name: /Mention B can be read independently/ }).click();
+  await expect(thread.getByRole("region", { name: "Mentioned reply", exact: true })).toContainText(second.body!);
+  await expect.poll(async () => (await inbox(request)).find((item) => item.id === secondNotice.id)?.read_at).not.toBeNull();
+  expect((await inbox(request)).find((item) => item.id === firstNotice.id)?.read_at).toBeNull();
+  await expect(thread.getByLabel("Message", { exact: true })).toHaveValue("Draft must survive notification navigation");
+  await openMentions();
+  await page.getByRole("button", { name: /Mention A must recover/ }).click();
+  await expect(thread.getByRole("region", { name: "Mentioned reply", exact: true })).toContainText(first.body!);
+  await expect.poll(async () => (await inbox(request)).find((item) => item.id === firstNotice.id)?.read_at).not.toBeNull();
+  expect(firstReadRequests).toBe(2);
+  await expect(thread.getByRole("button", { name: "Retry marking notification read", exact: true })).toHaveCount(0);
+  await expect(thread.getByLabel("Message", { exact: true })).toHaveValue("Draft must survive notification navigation");
+});

@@ -86,6 +86,45 @@ describe("notification history", () => {
     expect(await screen.findByText("The selected message does not belong to this thread.")).toBeInTheDocument();
     expect(readNotification).not.toHaveBeenCalled();
   });
+
+  it("retries an unread notification after another notification in the same thread succeeds", async () => {
+    const firstNotice = notice();
+    const secondNotice = notice({ id: "notification_second", message_id: "reply_second", body_preview: "Second mention in the same thread" });
+    const readIds = new Set<string>();
+    let firstFailed = false;
+    const readNotification = vi.fn<ApiClient["readNotification"]>().mockImplementation(async (id) => {
+      if (id === firstNotice.id && !firstFailed) {
+        firstFailed = true;
+        throw new ApiClientError("network_error", "Temporary read failure", 0);
+      }
+      readIds.add(id);
+      return { notification: { ...(id === firstNotice.id ? firstNotice : secondNotice), read_at: "2026-09-29" }, unread_count: 2 - readIds.size };
+    });
+    renderWithProviders(<ChannelsPage />, { client: api({
+      listNotifications: async () => ({ notifications: [firstNotice, secondNotice].map((item) => ({ ...item, read_at: readIds.has(item.id) ? "2026-09-29" : null })), unread_count: 2 - readIds.size }),
+      getMessage: async (_, id) => ({ message: id === root.id ? root : { ...reply, id, body: id === reply.id ? reply.body : "Exact second reply" } }),
+      readNotification,
+    }), route: "/channels?mentions=1" });
+    await userEvent.click(await screen.findByRole("button", { name: /Open historical mention/ }));
+    expect(await screen.findByRole("button", { name: "Retry marking notification read" })).toBeInTheDocument();
+    const panel = screen.getByRole("complementary", { name: "Thread" });
+    await userEvent.type(await within(panel).findByLabelText("Message", { exact: true }), "Keep this thread draft");
+    const openMentions = async (): Promise<void> => {
+      const summary = screen.getByText(/^@ Mentions ·/);
+      if (!(summary.parentElement as HTMLDetailsElement).open) await userEvent.click(summary);
+    };
+    await openMentions();
+    await userEvent.click(screen.getByRole("button", { name: /Second mention in the same thread/ }));
+    await waitFor(() => expect(readIds.has(secondNotice.id)).toBe(true));
+    expect(readIds.has(firstNotice.id)).toBe(false);
+    expect(await within(screen.getByRole("complementary", { name: "Thread" })).findByLabelText("Message", { exact: true })).toHaveValue("Keep this thread draft");
+    await openMentions();
+    await userEvent.click(screen.getByRole("button", { name: /Open historical mention/ }));
+    expect(await screen.findByRole("region", { name: "Mentioned reply" })).toHaveTextContent(reply.body!);
+    await waitFor(() => expect(readIds.has(firstNotice.id)).toBe(true));
+    expect(readNotification.mock.calls.map(([id]) => id)).toEqual([firstNotice.id, secondNotice.id, firstNotice.id]);
+    expect(await within(screen.getByRole("complementary", { name: "Thread" })).findByLabelText("Message", { exact: true })).toHaveValue("Keep this thread draft");
+  });
 });
 
 describe("channel project navigation", () => {
