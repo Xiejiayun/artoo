@@ -86,7 +86,10 @@ reported as proof that a computer is offline.
 
 Under More → Goals, open a goal and choose Discuss and break down with agents.
 The server owns the bounded multi-agent discussion; the phone displays its
-actual progress and thread. A ready discussion can create a plan proposal;
+actual progress and thread. A validated final reply appears as a suggested-plan
+card with task criteria and named dependencies. Show original reply expands the
+unchanged response; viewing either representation creates no proposals or tasks.
+A ready discussion can create a plan proposal;
 human plan acceptance is a separate action and uses the existing goal controls.
 Planning threads accept human team replies; their agent turns and stop action
 are managed from the goal so direct agent requests cannot bypass round/time limits.
@@ -120,8 +123,10 @@ npm install --prefix $parserDir --no-save --package-lock=false --ignore-scripts 
 npx --yes --package=node@22 node apps/ios/scripts/check-swift-syntax.cjs $parserDir
 ```
 
-Use Node 22 for this legacy parser runtime; Node 24's WebAssembly optimizer can
-crash on parser teardown. Syntax parsing is not Swift type checking.
+The command selects Node 22 for this legacy parser runtime. Local attempts under
+Node 24 failed with V8 `Fatal process out of memory: Zone`; the cause was not
+established and those attempts do not count as passing validation. Syntax parsing
+is not Swift type checking; the Xcode gate is authoritative.
 
 ## Mac verification gate
 

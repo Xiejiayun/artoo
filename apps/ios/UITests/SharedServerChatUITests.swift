@@ -334,10 +334,14 @@ final class SharedServerChatUITests: XCTestCase {
         // Onboarding is visible but disabled while Keychain restoration or
         // logout is pending. Its mere existence does not mean it is ready.
         let deadline = Date().addingTimeInterval(30)
-        let origin = app.textFields["serverURL"]
+        // Restoration can replace onboarding between separate exists and
+        // isEnabled reads. Match XCTest's enabled snapshot attribute inside
+        // the query, so a disappearing field is simply not a ready match.
+        let readyOrigin = app.textFields.matching(identifier: "serverURL")
+            .matching(NSPredicate(format: "enabled == true")).firstMatch
         while Date() < deadline {
             if allowAuthenticated && app.tabBars.buttons["More"].exists { return }
-            if origin.exists && origin.isEnabled { return }
+            if readyOrigin.exists { return }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         try require(false, "Saved connection restoration or sign-out must settle before pairing")

@@ -595,3 +595,41 @@ wrapping, removes the redundant accessibility container around the button,
 and hides only the decorative chevron from accessibility. The typed-button
 query and all expansion, collapse and acceptance assertions remain required;
 the next native run must confirm its accessibility behavior.
+
+## Native button semantics verification, 2026-09-29
+
+The [shared gate](https://github.com/Xiejiayun/artoo/actions/runs/36543392566/job/109323916787)
+passed for `ef19a98520cf5c466e6ae44fc8706e5d94dd98c4`: all eight checks passed,
+including 1,170 unit/integration tests with 20 opt-in/platform skips (180 passing
+files and nine skipped files), 14 browser workflows and six authentication
+workflows. The production dependency audit found zero vulnerabilities. The
+[shared artifact](https://github.com/Xiejiayun/artoo/actions/runs/36543392566/artifacts/11022193113)
+was downloaded and its source and GitHub digest verified; SHA-256 is
+`0b40c3dd6c0fe59654655f94c48757925a35ceca47c34368b77cf6edc7fa5a92`.
+Both desktop-width and phone-width suggested-plan screenshots were inspected.
+
+The [native gate](https://github.com/Xiejiayun/artoo/actions/runs/36543392566/job/109323917488)
+built Debug and Release and passed all 77 unit XCTest cases. Daemon recovery
+(136.271 seconds) and the complete planning scenario (147.553 seconds) passed.
+The original-reply control is now exposed as a real 314-by-44-point button;
+the UI test verified Collapsed, Expanded and Collapsed states, the exact original
+response, zero automatic proposals/tasks, human acceptance, and two tasks with
+their original criteria and blocking dependency. The plan, expanded-response,
+proposal and accepted-task screenshots were inspected; the long criterion wraps
+fully without truncation.
+
+The suite still failed because the third, chat-synchronization scenario stopped
+while waiting for launch restoration, before pairing or sending messages. The
+wait helper checked the onboarding field's existence and enabled state in two
+separate accessibility queries. Between those queries, Keychain restoration
+replaced onboarding with the authenticated Today/Inbox screen. The failure
+hierarchy confirms the authenticated tabs and no onboarding field. The follow-up
+changes only the test's readiness query to match an enabled field in one query;
+it retains the authenticated-state alternative and all chat workflow assertions.
+
+The [native artifact](https://github.com/Xiejiayun/artoo/actions/runs/36543392566/artifacts/11022485963)
+was downloaded and its source and GitHub digest verified; SHA-256 is
+`65c8ec5e1a3cb9d070f477384dddda3b7b9d4ca8ef614635b6fe7f088dfc3610`.
+The failed suite's report confirms resources closed and temporary data removed.
+This run validates the native plan-card fix, but does not count as a passing
+three-scenario native gate.
