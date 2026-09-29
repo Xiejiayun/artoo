@@ -15,16 +15,29 @@ public final class WorkspaceViewModel: ObservableObject {
     @Published public private(set) var state: ViewState<JSONValue> = .idle
     @Published public private(set) var actionError: String?
     @Published public private(set) var busy = false
-    private var loading = false
+    private var loadTask: Task<Void, Never>?
+    private var reloadPending = false
     public let client: ApiClientProtocol
     public let path: String
     public init(client: ApiClientProtocol, path: String) { self.client = client; self.path = path }
     public func load() async {
-        guard !loading else { return }; loading = true
-        defer { loading = false }
-        if state.value == nil { state = .loading }
-        do { state = .loaded(try await client.resource(path: path)) }
-        catch { if state.value == nil { state = .failed(String(describing: error)) } else { actionError = String(describing: error) } }
+        // A realtime update can arrive while a command or pull-to-refresh is
+        // loading an older snapshot. Keep that invalidation and fetch again.
+        reloadPending = true
+        if let current = loadTask { await current.value; return }
+        let task = Task { [self] in
+            defer { loadTask = nil }
+            while reloadPending {
+                reloadPending = false
+                if state.value == nil { state = .loading }
+                do { state = .loaded(try await client.resource(path: path)) }
+                catch { if state.value == nil { state = .failed(String(describing: error)) } else { actionError = String(describing: error) } }
+            }
+        }
+        // The model owns the fetch so cancelling one caller does not discard
+        // a refresh another active caller has already requested.
+        loadTask = task
+        await task.value
     }
     @discardableResult
     public func perform(path: String, method: String = "POST", body: JSONValue = .object([:])) async -> Bool {

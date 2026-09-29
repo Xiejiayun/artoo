@@ -8,6 +8,8 @@ import { createGoal } from "./goal-service.js";
 import { failRunDaemonDisconnect, ingestRunEvent } from "./run-service.js";
 import { AppError } from "../errors.js";
 import { acceptPlan } from "./plan-service.js";
+import { collectCatchUp, createEventPublisher, type EventFrame } from "../ws/event-publisher.js";
+import { createWsHub } from "../ws/ws-hub.js";
 
 const participants = [{ agent_instance_id: "instance_mock_coder", role: "Implementation design" }, { agent_instance_id: "instance_reviewer", role: "Test and risk review" }];
 const output = JSON.stringify({ rationale: "Separate implementation from verification", task_specs: [
@@ -61,9 +63,25 @@ describe("bounded agent discussion and reviewable task decomposition", () => {
     expect(pack.conversation.thread_root_id).toBe(discussion.thread_root_id);
     await restarted.pump();
     current = await getDiscussion(server.ctx, discussion.id);
+    // The native planning screen subscribes to its project, before the human
+    // opens the discussion room. Its final progress must reach that subscriber.
+    const frames: EventFrame[] = [];
+    const hub = createWsHub();
+    const client = { send(data: string) { frames.push(JSON.parse(data) as EventFrame); } };
+    hub.subscribe(client, ["project:proj_artoo"]);
+    const publisher = createEventPublisher(server.ctx, hub);
+    await publisher.pumpOnce();
+    frames.length = 0;
     await finishTurn(current.active_turn_id!, output);
     await restarted.pump(); await restarted.pump();
     expect(await getDiscussion(server.ctx, discussion.id)).toMatchObject({ status: "ready", current_step: 3, total_steps: 3 });
+    await publisher.pumpOnce();
+    const finalUpdates = frames.filter((frame) => frame.event.type === "discussion.updated" && frame.event.payload.status === "ready");
+    expect(finalUpdates).toHaveLength(1);
+    expect(finalUpdates[0]).toMatchObject({ topic: "project:proj_artoo", event: { project_id: "proj_artoo",
+      payload: { discussion_id: discussion.id, status: "ready", current_step: 3 } } });
+    const replay = await collectCatchUp(server.ctx, 0, ["project:proj_artoo"]);
+    expect(replay.find((frame) => frame.event.id === finalUpdates[0]!.event.id)).toEqual(finalUpdates[0]);
     expect(await server.db.db.select().from(assistantTurns)).toHaveLength(3);
     expect(await server.db.db.select().from(tasks).where(eq(tasks.goalId, goal.id))).toHaveLength(0);
     const proposed = await proposeDiscussionPlan(server.ctx, discussion.id);

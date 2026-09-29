@@ -1,5 +1,10 @@
 # Artoo v1 Release-Candidate Audit
 
+This is the historical v1 audit. The current Web, Windows and iOS preview uses
+[the collaboration milestone record](cross-client-sync.md) and
+[shared-server verification guide](shared-server.md); its evidence supersedes
+the platform and environment status recorded here.
+
 This is the v1 release-decision summary. It separates work proved by automated
 or gated evidence from platform work explicitly deferred from the v1 installable
 promise.

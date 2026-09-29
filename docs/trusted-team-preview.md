@@ -1,5 +1,10 @@
 # Trusted small-team preview delivery
 
+This is a historical 2026-09-28 delivery record. For subsequent native Xcode,
+cross-client and live Aerial/Copilot verification, use
+[the current collaboration milestone record](cross-client-sync.md). The
+environment limitations below describe this earlier delivery.
+
 This is the implementation and acceptance record for the Web, Windows and iOS
 preview, verified on Windows on 2026-09-28. The supported
 deployment is one trusted organization per server, with explicitly admitted

@@ -379,3 +379,31 @@ their left-to-right frames, and checks the displayed value after every tap.
 This changes only the test interaction; the one-round/five-minute server
 assertions and proposal acceptance checks remain intact. A successful rerun is
 required before this scenario can be reported as verified.
+
+The subsequent [shared rerun](https://github.com/Xiejiayun/artoo/actions/runs/36530506335/job/109282907669)
+passed for `70112f320b97a4802439d778475f720f1daa962c`: 1,132 unit/integration
+tests passed, 20 opt-in/platform tests were skipped, and all 13 browser and six
+authentication workflows passed. This includes the corrected historical-message
+retry scenario. Type checking, production build, native contracts, whitespace
+and the production audit passed, with zero production vulnerabilities. The
+[retained shared artifact](https://github.com/Xiejiayun/artoo/actions/runs/36530506335/artifacts/11017085098)
+was downloaded and its SHA-256 verified before inspecting its passing report.
+
+The [native rerun](https://github.com/Xiejiayun/artoo/actions/runs/36530506335/job/109282907546)
+again passed 69 unit tests and both chat/daemon UI scenarios. The stepper
+interaction passed, but the planning scenario exposed a real synchronization
+gap: the server was `ready` at step 3 while the native screenshot and accessible
+value still showed `running`, step 2. Discussion updates lacked `project_id`,
+so their final event did not reach a planning screen subscribed only to its
+project/inbox. Discussion events now carry the owning goal's organization-scoped
+project ID. A regression with an actual discussion and project-only subscriber
+failed on the old implementation and passed after the fix, including replay of
+the same final event; all seven discussion service tests passed.
+
+An independent native refresh race was also corrected: a direct load started
+after a command could cause a concurrent realtime refresh to return early and
+lose its invalidation. The workspace model now coalesces overlapping requests
+and fetches again after the old response, with all callers awaiting completion.
+Two native regressions cover a delayed stale discussion response, multiple final
+invalidations, request failure and cancellation of the original caller. The
+original UI assertions remain unchanged; macOS execution of this fix is pending.

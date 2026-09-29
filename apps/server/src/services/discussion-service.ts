@@ -29,8 +29,12 @@ async function requireDiscussion(ctx: ServerContext, tx: DrizzleDb, id: string, 
   return row;
 }
 async function changed(ctx: ServerContext, tx: DrizzleDb, row: Row) {
+  const [goal] = await tx.select({ projectId: goals.projectId }).from(goals)
+    .where(and(eq(goals.id, row.goalId), eq(goals.organizationId, ctx.organizationId)));
+  if (!goal) throw AppError.notFound("Discussion goal not found");
   await appendEvent(tx, buildEvent(ctx, { type: "discussion.updated", actorType: "system", actorId: "discussion-coordinator",
-    correlationId: row.id, roomId: row.roomId, goalId: row.goalId, taskId: row.taskId,
+    // Planning screens watch their project before opening the discussion room.
+    correlationId: row.id, projectId: goal.projectId, roomId: row.roomId, goalId: row.goalId, taskId: row.taskId,
     payload: { discussion_id: row.id, status: row.status, current_step: row.currentStep, active_turn_id: row.activeTurnId } }));
 }
 async function update(ctx: ServerContext, tx: DrizzleDb, row: Row, patch: Partial<typeof discussions.$inferInsert>): Promise<Row> {
