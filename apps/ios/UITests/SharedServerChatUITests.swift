@@ -302,10 +302,25 @@ final class SharedServerChatUITests: XCTestCase {
     private func setStepper(_ id: String, from initial: Int, to target: Int) throws {
         let stepper = app.steppers[id]
         try reveal(stepper)
-        let control = stepper.buttons[target < initial ? "Decrement" : "Increment"]
-        try require(control.exists, "The native stepper must expose its adjustment controls")
-        for _ in 0..<abs(target - initial) { control.tap() }
-        try waitForValue(stepper, "\(target)", message: "The selected discussion limit must be reflected in the native control")
+        try waitForValue(stepper, "\(initial)", message: "The discussion limit must begin at its displayed default")
+        let hierarchy = XCTAttachment(string: stepper.debugDescription)
+        hierarchy.name = "\(id) accessibility hierarchy"; hierarchy.lifetime = .keepAlways; add(hierarchy)
+        let direction = target < initial ? -1 : 1
+        var expected = initial
+        for _ in 0..<abs(target - initial) {
+            // This English/LTR UI shows the native minus and plus segments
+            // from left to right. Scope to this stepper's actual buttons
+            // instead of relying on OS-provided accessibility names.
+            let controls = stepper.buttons.allElementsBoundByIndex.sorted { $0.frame.midX < $1.frame.midX }
+            try require(controls.count == 2, "The native stepper must expose exactly two adjustment buttons; found \(controls.count)")
+            try require(!controls[0].frame.isEmpty && !controls[1].frame.isEmpty && controls[0].frame.midX < controls[1].frame.midX,
+                        "The stepper's minus and plus buttons must have distinct visible frames")
+            let control = controls[direction < 0 ? 0 : 1]
+            try require(control.isEnabled && control.isHittable, "The requested stepper adjustment must be available")
+            control.tap()
+            expected += direction
+            try waitForValue(stepper, "\(expected)", message: "Each real stepper tap must update the displayed discussion limit")
+        }
     }
 
     @MainActor
@@ -375,6 +390,8 @@ final class SharedServerChatUITests: XCTestCase {
         guard condition else {
             let screenshot = XCTAttachment(screenshot: app.screenshot())
             screenshot.name = "Native UI failure"; screenshot.lifetime = .keepAlways; add(screenshot)
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "Native UI failure accessibility hierarchy"; hierarchy.lifetime = .keepAlways; add(hierarchy)
             // XCTest assertions in async tests can continue despite
             // continueAfterFailure=false. Throw to stop dependent UI actions.
             throw NSError(domain: "ArtooUITestAssertion", code: 1, userInfo: [NSLocalizedDescriptionKey: message])

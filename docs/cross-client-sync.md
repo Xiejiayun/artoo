@@ -359,3 +359,23 @@ The test now keeps the lookup failure active until the actual retry click,
 also checks reconnect failures retain unread state, and preserves all historical
 message, pagination and reload assertions. The complete notification-navigation
 spec passed all three scenarios after the change; production code was unchanged.
+
+The [hosted shared gate](https://github.com/Xiejiayun/artoo/actions/runs/36528301572/job/109276087605)
+passed for `8a8ba3ed120cdbce007a2d9e0f5df56166148dda`, including all 13 browser
+and six authentication scenarios, 1,132 unit/integration tests (19 skips), type
+checking, production build, native API
+contracts, whitespace and a production audit with zero vulnerabilities. The
+subsequent commit adds the separately verified live discussion gate, strengthens
+test cleanup and the notification fault timing, and updates evidence; it does
+not change the production Web, Windows or iOS code validated by that run.
+
+The native job in that run passed 69 unit XCTest cases, Debug/Release builds,
+the chat synchronization UI scenario and the real daemon recovery UI scenario.
+The new planning scenario stopped before starting its discussion because the
+test assumed the native stepper's decrement button had an English accessibility
+label. The failure screenshot shows both adjustment controls. The test now
+scopes its query to the identified stepper, locates the two actual buttons by
+their left-to-right frames, and checks the displayed value after every tap.
+This changes only the test interaction; the one-round/five-minute server
+assertions and proposal acceptance checks remain intact. A successful rerun is
+required before this scenario can be reported as verified.
