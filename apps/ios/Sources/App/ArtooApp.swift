@@ -158,26 +158,30 @@ struct ArtooApp: App {
     var body: some Scene { WindowGroup { RootView().environmentObject(container) } }
 }
 
+private enum RootTab: Hashable { case inbox, tasks, channels, team, more }
+
 public struct RootView: View {
     @EnvironmentObject private var container: AppContainer
     @Environment(\.scenePhase) private var scenePhase
+    @State private var selectedTab = RootTab.inbox
     public init() {}
     public var body: some View {
         Group {
             if container.isAuthenticated {
-                TabView {
-                    InboxView(client: container.client).tabItem { Label("Inbox", systemImage: "tray.full") }.badge(container.notificationBadge)
+                TabView(selection: $selectedTab) {
+                    InboxView(client: container.client).tabItem { Label("Inbox", systemImage: "tray.full") }.badge(container.notificationBadge).tag(RootTab.inbox)
                     TasksView(client: container.client, projectId: container.projectId)
-                        .id(container.projectId).tabItem { Label("Tasks", systemImage: "checklist") }
+                        .id("tasks.\(container.projectId)").tabItem { Label("Tasks", systemImage: "checklist") }.tag(RootTab.tasks)
                     ChannelsView(client: container.client, projectId: container.projectId)
-                        .id(container.projectId).tabItem { Label("Channels", systemImage: "number") }
-                    TeamView(client: container.client).tabItem { Label("Team", systemImage: "desktopcomputer") }
-                    WorkspaceSettingsView().tabItem { Label("More", systemImage: "ellipsis.circle") }
+                        .id("channels.\(container.projectId)").tabItem { Label("Channels", systemImage: "number") }.tag(RootTab.channels)
+                    TeamView(client: container.client).tabItem { Label("Team", systemImage: "desktopcomputer") }.tag(RootTab.team)
+                    WorkspaceSettingsView().tabItem { Label("More", systemImage: "ellipsis.circle") }.tag(RootTab.more)
                 }.id(container.sessionGeneration).liveRefresh(interval: 30, realtime: false) { await container.validateConnection() }
                     .liveRefresh { await container.refreshNotificationCount() }
             } else { PairDeviceView() }
         }
         .task { await container.restore() }
+        .onChange(of: container.sessionGeneration) { _, _ in selectedTab = .inbox }
         .onChange(of: scenePhase) { _, phase in container.realtime.setActive(phase == .active) }
         .onReceive(NotificationCenter.default.publisher(for: .artooAuthenticationExpired).receive(on: RunLoop.main)) { notification in
             container.authenticationExpired(session: notification.object as? String)

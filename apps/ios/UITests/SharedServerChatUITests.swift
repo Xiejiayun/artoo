@@ -53,6 +53,7 @@ final class SharedServerChatUITests: XCTestCase {
         let channelsTab = app.tabBars.buttons["Channels"]
         try require(channelsTab.waitForExistence(timeout: 20), "The app must authenticate and load the real server bootstrap")
         channelsTab.tap()
+        try require(app.navigationBars["Channels"].waitForExistence(timeout: 10), "Selecting Channels must show the channel page")
         let channel = app.buttons["channel.\(fixture.channelId)"]
         try require(channel.waitForExistence(timeout: 15), "The server fixture channel must appear in the selected project")
         channel.tap()
@@ -100,6 +101,7 @@ final class SharedServerChatUITests: XCTestCase {
         app.launch()
         try require(channelsTab.waitForExistence(timeout: 20), "Relaunch must restore the saved Keychain connection")
         channelsTab.tap()
+        try require(app.navigationBars["Channels"].waitForExistence(timeout: 10), "Selecting Channels after relaunch must show the channel page")
         try require(channel.waitForExistence(timeout: 15), "The saved channel must be available after relaunch")
         channel.tap()
         try require(app.staticTexts[rootBody].waitForExistence(timeout: 15), "Channel history must survive app relaunch")
