@@ -95,7 +95,11 @@ npm run verify:desktop
 - `verify:preview`: TypeScript, production preview build, unit/integration tests,
   native API static contracts, browser workflows, local test-provider auth E2E,
   production dependency audit and whitespace. It runs on Windows CI.
-- `verify:ios`: domain build/contracts, XcodeGen, simulator build and XCTest.
+- `verify:ios`: production server/Web build, native contracts, XcodeGen,
+  simulator build/XCTest, and a Release-app XCUITest against the shared server
+  with an independent Chromium client. The UI flow pairs through onboarding,
+  exchanges channel/thread messages with the Web composer, reconciles a reply
+  written while backgrounded and restores Keychain/history after app relaunch.
   Requires macOS, full Xcode with an installed iOS simulator, and XcodeGen.
   The script selects an available iPhone; `ARTOO_IOS_SIMULATOR_UDID` can select
   another installed iPhone. Simulator tests use ad-hoc signing with local
@@ -106,7 +110,7 @@ npm run verify:desktop
 
 The unified script also accepts `--suite=shared|ios|desktop` and `--list`.
 It writes the selected suite's pass/fail record to `artifacts/preview-gate`;
-native runs retain `.xcresult` bundles under `artifacts/ios`. A passed suite
+native runs retain `.xcresult` bundles and UI evidence under `artifacts/ios`. A passed suite
 does not imply that another suite ran. `.github/workflows/preview.yml` runs the
 shared and macOS suites on main pushes and pull requests. Installed Windows
 smoke is opt-in on a separately configured isolated interactive self-hosted
@@ -120,3 +124,12 @@ host run. CI uses deterministic local providers; real Codex/Claude credentials,
 real Google OAuth, deployed TLS and WebSockets, simulator UI walkthroughs,
 physical iOS device behavior, distribution signing, provisioning and TestFlight
 remain separate checks.
+
+The native UI fixture runs an isolated persistent server on loopback with
+production authentication, no development credentials and no model execution.
+Only the fixture Web owner's session is provisioned directly; the native app
+claims its credential through the normal one-time pairing screen. Temporary
+codes, API peer credentials and test-runner manifests are removed after the
+run. No fixture endpoint or authentication shortcut is added to the app/server.
+On Windows, `node scripts/ios-ui-e2e.mjs --self-check` checks only this fixture
+and the real Web composer using an API peer. It does not execute or certify iOS.

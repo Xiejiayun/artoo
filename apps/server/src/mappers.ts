@@ -172,6 +172,7 @@ export function mapRoom(row: typeof rooms.$inferSelect): Room {
     organization_id: row.organizationId,
     project_id: row.projectId,
     task_id: row.taskId,
+    goal_id: row.goalId,
     type: row.type,
     name: row.name,
     created_at: row.createdAt,

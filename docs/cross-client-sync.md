@@ -123,7 +123,11 @@ physical-device flows and live cross-device/provider acceptance remain open.
 The gate commands and deployment templates are described in
 [shared-server.md](shared-server.md).
 
-Notifications currently return the latest 100 records; the badge counts unread
-records within that window. Historical pagination and an all-history unread
-count remain follow-up work. Planning runtime restrictions and inherited MCP
-capability limits are documented in [agent-planning.md](agent-planning.md).
+Notifications now use bounded cursor pages and a server-calculated unread count
+across the recipient's entire history. Web/Windows and iOS expose older pages,
+refresh read status across clients, and distinguish a failed count refresh from
+an actual zero. Opening a mention fetches its exact message and thread before
+marking it read, including replies outside the newest message page. Room metadata
+supplies the authoritative project context for channel and notification links.
+Planning runtime restrictions and inherited MCP capability limits are documented
+in [agent-planning.md](agent-planning.md).

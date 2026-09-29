@@ -20,6 +20,82 @@ private final class APIProtocol: URLProtocol {
 
 final class ApiClientTests: XCTestCase {
     private var session: URLSession!
+
+    @MainActor
+    func testNotificationPagesRetainOlderUnreadAndUseWholeInboxCount() async throws {
+        var phase = 0
+        var oldRead = false
+        var cursors: [String?] = []
+        func row(_ id: String, read: Bool = false) -> [String: Any] {
+            ["id": id, "created_at": "2026-09-29T00:00:00Z", "read_at": read ? "2026-09-29T01:00:00Z" : NSNull(),
+             "project_id": "project_other", "room_id": "room_other", "body_preview": id]
+        }
+        APIProtocol.handler = { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first { $0.name == "limit" }?.value, "50")
+            let cursor = query?.first { $0.name == "before" }?.value
+            cursors.append(cursor)
+            let rows: [[String: Any]]
+            let next: Any
+            if cursor == nil {
+                rows = phase == 2 ? [row("n8"), row("n7")] : (phase == 1 ? [row("n4"), row("n3")] : [row("n3"), row("n2")])
+                next = "opaque +/="
+            } else if phase == 2 && cursor == "opaque +/=" {
+                rows = [row("n6"), row("n5")]; next = "tail"
+            } else {
+                rows = phase == 2 ? [row("n4"), row("n3"), row("n2"), row("n1", read: oldRead)] : [row("n2"), row("n1", read: oldRead)]
+                next = NSNull()
+            }
+            let response: [String: Any] = ["notifications": rows, "next_before": next,
+                                           "has_more": next is String, "unread_count": oldRead ? 135 + phase : 136]
+            return (200, try JSONSerialization.data(withJSONObject: response))
+        }
+        let model = NotificationInboxViewModel(client: client())
+        await model.refresh()
+        XCTAssertEqual(model.unreadCount, 136); XCTAssertEqual(model.notifications.count, 2)
+        await model.loadEarlier()
+        XCTAssertEqual(cursors[1], "opaque +/=")
+        XCTAssertEqual(model.notifications.map(\.id), ["n3", "n2", "n1"])
+        XCTAssertFalse(model.hasMore)
+        oldRead = true; phase = 1; await model.refresh()
+        XCTAssertEqual(model.notifications.map(\.id), ["n4", "n3", "n2", "n1"])
+        XCTAssertNotEqual(model.notifications.last?["read_at"], .null, "A read on another device must update the loaded older page")
+        XCTAssertEqual(model.unreadCount, 136)
+        XCTAssertFalse(model.hasMore)
+        phase = 2; await model.refresh()
+        XCTAssertEqual(model.notifications.map(\.id), ["n8", "n7", "n6", "n5"])
+        XCTAssertTrue(model.hasMore, "New bursts must retain a cursor for rows that moved beyond the refreshed window")
+        await model.loadEarlier()
+        XCTAssertEqual(cursors.last!, "tail")
+        XCTAssertEqual(model.notifications.map(\.id), ["n8", "n7", "n6", "n5", "n4", "n3", "n2", "n1"])
+        XCTAssertEqual(model.unreadCount, 137)
+        XCTAssertFalse(model.hasMore)
+        let readValue = try JSONDecoder().decode(JSONValue.self, from: JSONSerialization.data(withJSONObject: row("n8", read: true)))
+        model.recordRead(try XCTUnwrap(WorkspaceRecord(readValue)), unreadCount: 136)
+        XCTAssertEqual(model.unreadCount, 136)
+        XCTAssertNotEqual(model.notifications.first?["read_at"], .null)
+    }
+
+    @MainActor
+    func testUnreadBadgeDistinguishesUnknownFailedAndMeasuredZero() async throws {
+        let container = AppContainer(client: client())
+        XCTAssertNil(container.unreadNotificationCount)
+        XCTAssertEqual(container.notificationBadge, "?")
+        APIProtocol.handler = { _ in (200, Data(#"{"notifications":[],"next_before":null,"has_more":false,"unread_count":136}"#.utf8)) }
+        await container.refreshNotificationCount()
+        XCTAssertEqual(container.unreadNotificationCount, 136)
+        XCTAssertEqual(container.notificationBadge, "136")
+        APIProtocol.handler = { _ in throw ApiError.transport("offline") }
+        await container.refreshNotificationCount()
+        XCTAssertEqual(container.unreadNotificationCount, 136)
+        XCTAssertEqual(container.notificationBadge, "?")
+        XCTAssertTrue(container.notificationCountSummary.contains("Last known: 136"))
+        APIProtocol.handler = { _ in (200, Data(#"{"notifications":[],"next_before":null,"has_more":false,"unread_count":0}"#.utf8)) }
+        await container.refreshNotificationCount()
+        XCTAssertEqual(container.unreadNotificationCount, 0)
+        XCTAssertNil(container.notificationBadge)
+        XCTAssertNil(container.notificationCountError)
+    }
     override func setUp() {
         super.setUp()
         let configuration = URLSessionConfiguration.ephemeral

@@ -24,6 +24,16 @@ const createReq: CreateTaskRequest = {
 };
 
 describe("ApiClient", () => {
+  it("preserves opaque notification cursors and the server's global unread count", async () => {
+    server.use(http.get(`${BASE}/notifications`, ({ request }) => {
+      const search = new URL(request.url).searchParams;
+      expect(search.get("limit")).toBe("50");
+      expect(search.get("before")).toBe("opaque/+= ?&");
+      return HttpResponse.json({ notifications: [], next_before: "next/+= ?&", has_more: true, unread_count: 127 });
+    }));
+    expect(await client.listNotifications({ limit: 50, before: "opaque/+= ?&" })).toEqual({ notifications: [], next_before: "next/+= ?&", has_more: true, unread_count: 127 });
+  });
+
   it("requests assistant turn history for the selected thread instead of the room root", async () => {
     const seen: Array<string | null> = [];
     server.use(http.get(`${BASE}/rooms/room_1/assistant-turns`, ({ request }) => {

@@ -22,6 +22,8 @@ public final class AppContainer: ObservableObject {
     @Published public var selectedProjectId: String = ""
     @Published public private(set) var serverURL = ""
     @Published public private(set) var sessionGeneration = UUID()
+    @Published public private(set) var unreadNotificationCount: Int?
+    @Published public private(set) var notificationCountError: String?
     public let realtime = RealtimeConnection()
     private let credentials: CredentialStore
     private var restored = false
@@ -39,6 +41,20 @@ public final class AppContainer: ObservableObject {
     }
     public var projectId: String { selectedProjectId.isEmpty ? (bootstrap.value?.projects.first?.id ?? config.projectId) : selectedProjectId }
     public var isAdministrator: Bool { identity?.isAdministrator ?? false }
+    public var notificationBadge: String? {
+        guard notificationCountError == nil, let count = unreadNotificationCount else { return "?" }
+        return count > 0 ? String(count) : nil
+    }
+    public var mentionsTitle: String {
+        guard let count = unreadNotificationCount else { return "Mentions (?)" }
+        return notificationCountError == nil ? "Mentions (\(count))" : "Mentions (last known \(count))"
+    }
+    public var notificationCountSummary: String {
+        if let count = unreadNotificationCount {
+            return notificationCountError == nil ? "\(count) unread across all projects" : "Last known: \(count) unread. The latest count could not be retrieved."
+        }
+        return notificationCountError == nil ? "Checking unread mentions…" : "Unread count unavailable. Open Mentions to retry."
+    }
 
     public func restore() async {
         guard !restored else { return }; restored = true; isConnecting = true
@@ -66,6 +82,7 @@ public final class AppContainer: ObservableObject {
     private func connect(_ stored: StoredConnection) async throws {
         realtime.stop(); (client as? ApiClient)?.invalidate()
         sessionGeneration = UUID(); isAuthenticated = false
+        unreadNotificationCount = nil; notificationCountError = nil
         let generation = sessionGeneration
         let url = try ServerAddress.validate(stored.serverURL, allowLocalHTTP: true)
         let live = ApiClient(baseURL: url, authToken: stored.controlToken)
@@ -99,10 +116,25 @@ public final class AppContainer: ObservableObject {
             identity = current; connectionError = nil
         } catch { if generation == sessionGeneration { connectionError = String(describing: error) } }
     }
+    public func refreshNotificationCount() async {
+        guard isAuthenticated, let live = client as? ApiClient else { return }
+        do {
+            let value = try await live.resource(path: "/api/v1/notifications?limit=1")
+            let page = try ArtooJSON.decoder().decode(NativeNotificationPage.self, from: JSONEncoder().encode(value))
+            acceptNotificationCount(page.unreadCount, session: live.sessionID)
+        } catch {
+            if live.sessionID == (client as? ApiClient)?.sessionID { notificationCountError = String(describing: error) }
+        }
+    }
+    public func acceptNotificationCount(_ count: Int, session: String?) {
+        guard isAuthenticated, let session, session == (client as? ApiClient)?.sessionID else { return }
+        unreadNotificationCount = count; notificationCountError = nil
+    }
     public func authenticationExpired(session: String?) {
         guard session == (client as? ApiClient)?.sessionID else { return }
         realtime.stop(); (client as? ApiClient)?.invalidate(); sessionGeneration = UUID()
         isAuthenticated = false; identity = nil; bootstrap = .idle
+        unreadNotificationCount = nil; notificationCountError = nil
         connectionError = "Your device connection expired or was revoked. Pair this device again."
         do { try credentials.clear() } catch { connectionError = String(describing: error) }
     }
@@ -112,6 +144,7 @@ public final class AppContainer: ObservableObject {
         let live = client as? ApiClient
         realtime.stop(); sessionGeneration = UUID()
         isAuthenticated = false; identity = nil; bootstrap = .idle; connectionError = nil
+        unreadNotificationCount = nil; notificationCountError = nil
         selectedProjectId = ""; serverURL = ""
         do { try credentials.clear() } catch { connectionError = String(describing: error) }
         do { try await live?.revokeAndInvalidate() }
@@ -133,7 +166,7 @@ public struct RootView: View {
         Group {
             if container.isAuthenticated {
                 TabView {
-                    InboxView(client: container.client).tabItem { Label("Inbox", systemImage: "tray.full") }
+                    InboxView(client: container.client).tabItem { Label("Inbox", systemImage: "tray.full") }.badge(container.notificationBadge)
                     TasksView(client: container.client, projectId: container.projectId)
                         .id(container.projectId).tabItem { Label("Tasks", systemImage: "checklist") }
                     ChannelsView(client: container.client, projectId: container.projectId)
@@ -141,6 +174,7 @@ public struct RootView: View {
                     TeamView(client: container.client).tabItem { Label("Team", systemImage: "desktopcomputer") }
                     WorkspaceSettingsView().tabItem { Label("More", systemImage: "ellipsis.circle") }
                 }.id(container.sessionGeneration).liveRefresh(interval: 30, realtime: false) { await container.validateConnection() }
+                    .liveRefresh { await container.refreshNotificationCount() }
             } else { PairDeviceView() }
         }
         .task { await container.restore() }
@@ -164,18 +198,19 @@ private struct PairDeviceView: View {
                     Text("Sign in to your team's Web app. Ask an owner or admin to create an iOS pairing code in Settings, then enter it here.")
                     TextField("https://artoo.example.com", text: $server).keyboardType(.URL)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("serverURL")
-                    TextField("Device name", text: $deviceName)
+                    TextField("Device name", text: $deviceName).accessibilityIdentifier("pairingDeviceName")
                     TextField("One-time pairing code", text: $code).textInputAutocapitalization(.characters)
                         .autocorrectionDisabled().accessibilityIdentifier("pairingCode")
                     Button("Connect") { Task { await container.pair(server: server, code: code, displayName: deviceName, allowLocalHTTP: localHTTP); code = "" } }
                         .disabled(container.isConnecting || server.isEmpty || code.isEmpty)
+                        .accessibilityIdentifier("pairDevice")
                     if container.isConnecting { ProgressView("Connecting…") }
                 }
                 if let error = container.connectionError {
                     Section { Text(error).foregroundStyle(.red); Button("Retry saved connection") { Task { await container.retryConnection() } } }
                 }
                 Section("Local development") {
-                    Toggle("Allow localhost or .local HTTP", isOn: $localHTTP)
+                    Toggle("Allow localhost or .local HTTP", isOn: $localHTTP).accessibilityIdentifier("allowLocalHTTP")
                     Text("Use HTTPS for a shared team server. On a phone, localhost refers to the phone itself.").font(.caption)
                 }
             }.navigationTitle("Welcome to Artoo")
@@ -201,14 +236,19 @@ private struct WorkspaceSettingsView: View {
                 }
                 Section("Work") {
                     NavigationLink("Goals") { WorkspaceListView(kind: .goals, client: container.client, projectId: container.projectId, embedded: true) }
-                    NavigationLink("Mentions") { MentionsView(client: container.client) }
+                    NavigationLink { MentionsView(client: container.client) } label: {
+                        VStack(alignment: .leading) {
+                            Text(container.mentionsTitle)
+                            Text(container.notificationCountSummary).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     NavigationLink("Run history") { RunsOverviewView(client: container.client, projectId: container.projectId) }
                     NavigationLink("Memory") { WorkspaceListView(kind: .memories, client: container.client, projectId: container.projectId, embedded: true) }
                     NavigationLink("Skills") { WorkspaceListView(kind: .skills, client: container.client, projectId: container.projectId, embedded: true) }
                     NavigationLink("Devices") { DevicesView(client: container.client) }
                 }
                 if let error = container.connectionError { Section { Text(error).foregroundStyle(.red) } }
-                Section { Button("Sign out", role: .destructive) { Task { await container.logout() } }.disabled(container.isConnecting) }
+                Section { Button("Sign out", role: .destructive) { Task { await container.logout() } }.disabled(container.isConnecting).accessibilityIdentifier("signOut") }
             }.navigationTitle("More")
         }
     }

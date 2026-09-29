@@ -72,6 +72,13 @@ Opening a notification resolves the exact message/root directly, even outside
 the latest history page. Sending to an agent inside a thread preserves its
 thread scope. Mention metadata alone does not run an agent.
 
+Mentions load in cursor pages of 50 with a Load earlier notifications action.
+The global badge uses the server's total unread count, including unloaded
+history. Refresh reconciles read state across the loaded pages so a read on
+another client is reflected here. A failed count refresh displays an unknown
+indicator and labels any retained count as last known. Opening a mention selects
+its project and marks it read only after its exact message and thread load.
+
 Daemon rows on Team and computer detail calibrate every five seconds. A failed
 request or more than twelve seconds without a confirmed snapshot displays
 Unknown, retaining clearly labeled last-known activity. Network failure is not
@@ -119,7 +126,11 @@ crash on parser teardown. Syntax parsing is not Swift type checking.
 ## Mac verification gate
 
 The repository-level `npm run verify:ios` automates XcodeGen, simulator selection,
-build and XCTest and retains an `.xcresult` bundle. See
+build and XCTest and retains `.xcresult` bundles. It also runs the Release app
+through XCUITest against an isolated real server and an authenticated Chromium
+client: pairing, channel/thread sending, receiving a reply from the Web composer,
+foreground catch-up and Keychain/history restoration after app relaunch. Install
+the Playwright Chromium browser from `apps/web` before running the gate. See
 [`docs/shared-server.md`](../../docs/shared-server.md) for CI and prerequisites.
 
 The 2026-09-29 [macOS CI run](https://github.com/Xiejiayun/artoo/actions/runs/36514981285/job/109235150122)

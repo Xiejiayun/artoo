@@ -4,6 +4,7 @@ import SwiftUI
 /// triage agent escalations. Lists pending approvals; each row opens a detail
 /// with approve/reject.
 public struct InboxView: View {
+    @EnvironmentObject private var container: AppContainer
     @StateObject private var model: InboxViewModel
     private let client: ApiClientProtocol
 
@@ -18,8 +19,8 @@ public struct InboxView: View {
                 if approvals.isEmpty {
                     EmptyStateView(
                         systemImage: "checkmark.seal",
-                        title: "Inbox zero",
-                        message: "No pending approvals. Agent escalations will appear here."
+                        title: "No pending approvals",
+                        message: "Agent escalations will appear here. Mentions are available from the @ button."
                     )
                 } else {
                     List {
@@ -45,7 +46,10 @@ public struct InboxView: View {
                 }
             }
             .navigationTitle("Today")
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { NavigationLink { MentionsView(client: client) } label: { Label("Mentions", systemImage: "at") } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { NavigationLink { MentionsView(client: client) } label: {
+                Label(container.mentionsTitle, systemImage: "at")
+                    .accessibilityHint(container.notificationCountSummary)
+            } } }
             .navigationDestination(for: Approval.self) { approval in
                 ApprovalDetailView(approval: approval, model: model)
             }
@@ -205,7 +209,7 @@ public struct ApprovalDetailView: View {
 #if DEBUG
 struct InboxView_Previews: PreviewProvider {
     static var previews: some View {
-        InboxView(client: MockApiClient.demo())
+        InboxView(client: MockApiClient.demo()).environmentObject(AppContainer(config: AppConfig(useMock: true)))
     }
 }
 #endif

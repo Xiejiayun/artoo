@@ -14,6 +14,7 @@ import type {
   Artifact,
   Memory,
   Message,
+  Notification,
   Computer,
   EffortProfile,
   ModelProfile,
@@ -84,6 +85,15 @@ export interface MessagesResponse {
 }
 
 export interface MessagePageOptions { limit?: number; before?: string; after?: string; thread_root_id?: string }
+
+export interface NotificationPageOptions { limit?: number; before?: string }
+export interface NotificationsResponse {
+  notifications: Notification[];
+  next_before?: string | null;
+  has_more?: boolean;
+  /** Omitted only by older servers; a partial page is not an unread count. */
+  unread_count?: number;
+}
 
 export interface DaemonPresence {
   computer_id: string; display_name: string;

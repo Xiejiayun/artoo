@@ -11,7 +11,7 @@ async function main() {
   const parser = new Parser();
   parser.setLanguage(await Parser.Language.load(path.resolve(runtime, "node_modules/tree-sitter-wasms/out/tree-sitter-swift.wasm")));
   const root = path.resolve(__dirname, "..");
-  const files = ["Sources", "Tests"].flatMap((dir) => fs.readdirSync(path.join(root, dir), { recursive: true })
+  const files = ["Sources", "Tests", "UITests"].flatMap((dir) => fs.readdirSync(path.join(root, dir), { recursive: true })
     .filter((file) => file.endsWith(".swift")).map((file) => path.join(root, dir, file)));
   let errors = 0;
   for (const file of files) {

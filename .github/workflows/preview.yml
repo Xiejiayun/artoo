@@ -48,6 +48,8 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - run: npx playwright install chromium
+        working-directory: apps/web
       - name: Ensure XcodeGen
         run: command -v xcodegen >/dev/null || brew install xcodegen
       - run: npm run verify:ios
@@ -58,6 +60,9 @@ jobs:
           path: |
             artifacts/preview-gate/*.json
             artifacts/ios/*.xcresult
+            artifacts/ios/*.json
+            artifacts/ios/*.png
+            artifacts/ios/ui-attachments/
           if-no-files-found: ignore
           retention-days: 14
   windows-desktop:

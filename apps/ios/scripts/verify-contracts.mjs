@@ -29,6 +29,9 @@ const messagePage = JSON.parse(await readFile(join(ios, "Tests/Fixtures/message-
 for (const message of messagePage.messages) assert.equal(domain.MessageSchema.safeParse(message).success, true, "Native message response drifted");
 for (const key of ["next_before", "next_after"]) assert.equal(typeof messagePage[key], "string");
 assert.equal(typeof messagePage.has_more, "boolean");
+const notificationPage = JSON.parse(await readFile(join(ios, "Tests/Fixtures/notification-page.json"), "utf8"));
+assert.equal(domain.NotificationPageSchema.safeParse(notificationPage).success, true, "Native notification pagination response drifted");
+assert.ok(notificationPage.unread_count > notificationPage.notifications.length, "Unread count must cover the whole inbox, not the loaded page");
 const files = (await readdir(join(ios, "Sources"), { recursive: true })).filter((name) => name.endsWith(".swift"));
 const source = (await Promise.all(files.map((name) => readFile(join(ios, "Sources", name), "utf8")))).join("\n");
 const routeFiles = ["app.ts", "auth/auth-routes.ts", "project-routes.ts", "resource-routes.ts", "artifact-routes.ts", "ws/client-ws.ts", "assistant-routes.ts", "channel-routes.ts", "discussion-routes.ts"];
@@ -61,5 +64,5 @@ for (const image of catalog.images) {
   assert.equal(png.toString("ascii", 1, 4), "PNG");
   assert.equal(png.readUInt32BE(16), 1024); assert.equal(png.readUInt32BE(20), 1024);
 }
-console.log(`iOS static contracts: ${samples.length} request specimens match server schemas; execution approval, assignment, assistant turns, discussions and paginated messages match domain fields; ${routes.length} required routes exist; native realtime, scoped drafts, stable sends, live onboarding, Keychain policy and icon dimensions checked.`);
+console.log(`iOS static contracts: ${samples.length} request specimens match server schemas; execution approval, assignment, assistant turns, discussions, paginated messages and notifications match domain fields; ${routes.length} required routes exist; native realtime, scoped drafts, stable sends, live onboarding, Keychain policy and icon dimensions checked.`);
 console.log("This is a Windows static check. Xcode type checking, XCTest, device pairing and UI execution still require the Mac verification gate.");

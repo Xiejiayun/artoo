@@ -4,14 +4,14 @@ import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Channel, Notification } from "@artoo/domain";
 import { ApiClient, ApiClientError } from "../api/client.js";
-import { bootstrapFixture, createTestQueryClient, fakeApi, messageFixture, renderWithProviders } from "../test/utils.js";
+import { bootstrapFixture, createTestQueryClient, fakeApi, messageFixture, renderWithProviders, roomFixture } from "../test/utils.js";
 import { ChannelsPage } from "./ChannelsPage.js";
 import { DaemonBadge } from "./DaemonBadge.js";
 import { queryKeys } from "../app/queryKeys.js";
 
 const channel: Channel = { id: "channel_1", project_id: "proj_artoo", name: "engineering", description: "Coordinate implementation", created_at: "2026-09-29" };
 function api(overrides: Partial<ApiClient> = {}): ApiClient {
-  return fakeApi({ bootstrap: async () => bootstrapFixture(), listChannels: async () => ({ channels: [channel] }), listMembers: async () => ({ members: [{ id: "colleague", display_name: "Jane" }] }), listNotifications: async () => ({ notifications: [] }), listAssistantTurns: async () => ({ turns: [] }), listMessages: async () => ({ messages: [] }), ...overrides });
+  return fakeApi({ bootstrap: async () => bootstrapFixture(), listChannels: async () => ({ channels: [channel] }), getRoom: async (id) => ({ room: roomFixture({ id, project_id: channel.project_id, type: "project", name: channel.name }) }), listMembers: async () => ({ members: [{ id: "colleague", display_name: "Jane" }] }), listNotifications: async () => ({ notifications: [] }), listAssistantTurns: async () => ({ turns: [] }), listMessages: async () => ({ messages: [] }), ...overrides });
 }
 afterEach(() => localStorage.clear());
 
@@ -62,14 +62,16 @@ describe("channel collaboration", () => {
   });
 
   it("opens a mentioned historical thread directly and marks only that notification read", async () => {
-    const notification: Notification = { id: "notification_1", room_id: channel.id, message_id: "reply_old", thread_root_id: "root_old", actor_id: "colleague", body_preview: "Your review is needed", read_at: null, created_at: "2026-09-29" };
-    const getMessage = vi.fn<ApiClient["getMessage"]>().mockResolvedValue({ message: messageFixture({ id: "root_old", kind: "text", body: "Archived conversation", room_id: channel.id }) });
+    const notification: Notification = { id: "notification_1", room_id: channel.id, message_id: "reply_old", thread_root_id: "root_old", actor_id: "colleague", body_preview: "Your review is needed", read_at: null, created_at: "2026-09-29", project_id: channel.project_id, room_type: "project", room_name: channel.name, channel_id: channel.id, task_id: null, goal_id: null };
+    const getMessage = vi.fn<ApiClient["getMessage"]>().mockImplementation(async (_, id) => ({ message: messageFixture({ id, kind: "text", body: id === "root_old" ? "Archived conversation" : "Exact historical mention", room_id: channel.id, thread_root_id: id === "root_old" ? null : "root_old" }) }));
     const readNotification = vi.fn<ApiClient["readNotification"]>().mockResolvedValue({ notification: { ...notification, read_at: "2026-09-29" } });
     renderWithProviders(<ChannelsPage />, { client: api({ listNotifications: async () => ({ notifications: [notification] }), getMessage, readNotification }), route: "/channels?mentions=1" });
     await userEvent.click(await screen.findByRole("button", { name: /Your review is needed/ }));
     expect(await screen.findByText("Archived conversation")).toBeInTheDocument();
+    expect(await screen.findByText("Exact historical mention")).toBeInTheDocument();
     expect(getMessage).toHaveBeenCalledWith(channel.id, "root_old");
-    expect(readNotification).toHaveBeenCalledWith(notification.id, expect.any(String));
+    expect(getMessage).toHaveBeenCalledWith(channel.id, "reply_old");
+    await waitFor(() => expect(readNotification).toHaveBeenCalledWith(notification.id, expect.any(String)));
   });
 });
 

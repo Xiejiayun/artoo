@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { appendEvent, messages, notifications, rooms, users } from "@artoo/db";
-import { ID_PREFIXES, type Message, type SendMessageRequest } from "@artoo/domain";
+import { ID_PREFIXES, type Message, type Room, type SendMessageRequest } from "@artoo/domain";
 import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
-import { mapMessage } from "../mappers.js";
+import { mapMessage, mapRoom } from "../mappers.js";
 
 async function requireRoom(
   ctx: ServerContext,
@@ -23,6 +23,11 @@ async function requireRoom(
     throw AppError.notFound(`room not found: ${roomId}`, { room_id: roomId });
   }
   return room;
+}
+
+/** Authoritative room context for deep links, with the same scope as messages. */
+export async function getRoom(ctx: ServerContext, roomId: string): Promise<Room> {
+  return mapRoom(await requireRoom(ctx, ctx.db.db, roomId));
 }
 
 /** GET /api/v1/rooms/:id/messages — chronological message list for a room. */

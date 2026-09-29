@@ -281,6 +281,7 @@ export const RoomSchema = z.object({
   organization_id: z.string(),
   project_id: z.string().nullish(),
   task_id: z.string().nullish(),
+  goal_id: z.string().nullish(),
   type: RoomTypeSchema,
   name: z.string(),
   created_at: z.string(),

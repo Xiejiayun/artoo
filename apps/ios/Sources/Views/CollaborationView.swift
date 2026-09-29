@@ -34,12 +34,12 @@ struct CollaborationView: View {
                 if chat.hasOlder { Button("Load earlier messages") { Task { await chat.loadOlder() } }.disabled(chat.loading) }
                 ForEach(chat.messages.filter { $0.id != focusedMessage?.id }) { item in
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(item.body).textSelection(.enabled)
+                        Text(item.body).textSelection(.enabled).accessibilityIdentifier("message.\(item.id)")
                         Text("\(item.actorType == "agent" ? "Agent" : "Team") · \(item.actorId) · \(item.createdAt ?? "")").font(.caption).foregroundStyle(.secondary)
                         if threadRoot == nil {
                             NavigationLink("\(item.replyCount ?? 0) replies · Open thread") {
                                 CollaborationView(client: model.client, roomId: roomId, taskId: taskId, threadRoot: item)
-                            }
+                            }.accessibilityIdentifier("thread.\(item.id)")
                         }
                     }
                 }
@@ -63,6 +63,7 @@ struct CollaborationView: View {
                 }
                 TextField(chat.allowsAssistantRequests && chat.draft.target == "assistant" ? "Ask the agent" : "Message the team", text: $chat.draft.text, axis: .vertical).lineLimit(2...6)
                     .disabled(chat.sending || chat.draft.pending != nil)
+                    .accessibilityIdentifier("messageComposer")
                 if !chat.allowsAssistantRequests || chat.draft.target != "assistant" {
                     Menu("@ Mention a teammate") {
                         ForEach(members) { member in
@@ -75,7 +76,7 @@ struct CollaborationView: View {
                 }
                 Button(chat.allowsAssistantRequests && chat.draft.target == "assistant" ? "Send to agent" : "Send to team") { Task {
                     await chat.send()
-                } }.disabled(chat.sending || chat.draft.pending != nil || chat.draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } }.disabled(chat.sending || chat.draft.pending != nil || chat.draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityIdentifier("sendMessage")
                 if chat.draft.pending != nil {
                     if chat.unsupportedPendingAssistant {
                         Text("An earlier agent request has unconfirmed delivery. Check this discussion's activity before keeping its text as a team reply.").font(.caption)
@@ -206,6 +207,7 @@ private struct RealtimeStatusView: View {
     var body: some View {
         Label(connection.connected ? "Live updates connected" : "Reconnecting · drafts saved on this phone", systemImage: connection.connected ? "bolt.horizontal.circle" : "wifi.exclamationmark")
             .font(.caption).foregroundStyle(.secondary)
+            .accessibilityIdentifier("realtimeStatus").accessibilityValue(connection.connected ? "connected" : "reconnecting")
     }
 }
 

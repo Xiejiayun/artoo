@@ -74,6 +74,24 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.artoo.tests
         GENERATE_INFOPLIST_FILE: "YES"
 
+  ArtooUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: Artoo
+    info:
+      path: Configuration/UITests-Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.artoo.uitests
+        TEST_TARGET_NAME: Artoo
+        GENERATE_INFOPLIST_FILE: "NO"
+
 schemes:
   Artoo:
     build:
@@ -83,3 +101,13 @@ schemes:
     test:
       targets:
         - ArtooTests
+
+  ArtooUI:
+    build:
+      targets:
+        Artoo: all
+        ArtooUITests: [test]
+    test:
+      config: Release
+      targets:
+        - ArtooUITests

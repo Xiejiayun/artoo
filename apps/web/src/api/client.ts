@@ -15,7 +15,7 @@ import type {
   ReviewRequest,
   SendMessageRequest,
   SendAssistantTurnRequest,
-  Channel, CreateChannelRequest, Member, Notification,
+  Channel, CreateChannelRequest, Member, Notification, Room,
   Discussion, StartDiscussionRequest,
   Task,
   Message,
@@ -39,6 +39,8 @@ import type {
   MemoryResponse,
   MessagesResponse,
   MessagePageOptions,
+  NotificationPageOptions,
+  NotificationsResponse,
   AssistantTurn,
   DaemonPresence,
   RetryResponse,
@@ -249,8 +251,14 @@ export class ApiClient {
   proposeDiscussionPlan(id: string, key: string): Promise<{ discussion: Discussion; plan: Plan }> { return this.request("POST", `/discussions/${encodeURIComponent(id)}/propose-plan`, { idempotencyKey: key }); }
   createChannel(body: CreateChannelRequest, key: string): Promise<{ channel: Channel }> { return this.request("POST", "/channels", { body, idempotencyKey: key }); }
   listMembers(): Promise<{ members: Member[] }> { return this.request("GET", "/members"); }
-  listNotifications(): Promise<{ notifications: Notification[] }> { return this.request("GET", "/notifications"); }
-  readNotification(id: string, key: string): Promise<{ notification: Notification }> { return this.request("POST", `/notifications/${encodeURIComponent(id)}/read`, { idempotencyKey: key }); }
+  listNotifications(options: NotificationPageOptions = {}): Promise<NotificationsResponse> {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.before !== undefined) params.set("before", options.before);
+    return this.request("GET", `/notifications${params.size ? `?${params}` : ""}`);
+  }
+  readNotification(id: string, key: string): Promise<{ notification: Notification; unread_count?: number }> { return this.request("POST", `/notifications/${encodeURIComponent(id)}/read`, { idempotencyKey: key }); }
+  getRoom(roomId: string): Promise<{ room: Room }> { return this.request("GET", `/rooms/${encodeURIComponent(roomId)}`); }
   getMessage(roomId: string, messageId: string): Promise<{ message: Message }> { return this.request("GET", `/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(messageId)}`); }
   listDaemons(): Promise<{ daemons: DaemonPresence[] }> { return this.request("GET", "/daemons"); }
 

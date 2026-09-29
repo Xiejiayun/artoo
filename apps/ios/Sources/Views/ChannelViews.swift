@@ -19,7 +19,7 @@ struct ChannelsView: View {
                                 Label(channel["name"].text, systemImage: "number")
                                 if !channel["description"].text.isEmpty { Text(channel["description"].text).font(.caption).foregroundStyle(.secondary) }
                             }
-                        }
+                        }.accessibilityIdentifier("channel.\(channel.id)")
                     }
                     if model.state.value?["channels"].array.isEmpty == true { Text("Create a channel for your project's discussions.") }
                 }
@@ -38,25 +38,35 @@ struct ChannelsView: View {
 }
 
 struct MentionsView: View {
-    @StateObject private var model: WorkspaceViewModel
-    init(client: ApiClientProtocol) { _model = StateObject(wrappedValue: WorkspaceViewModel(client: client, path: "/api/v1/notifications")) }
+    @EnvironmentObject private var container: AppContainer
+    @StateObject private var model: NotificationInboxViewModel
+    init(client: ApiClientProtocol) { _model = StateObject(wrappedValue: NotificationInboxViewModel(client: client)) }
     var body: some View {
         List {
-            ForEach(model.state.value?["notifications"].records ?? []) { item in
-                NavigationLink { MentionDestination(client: model.client, notification: item) } label: {
+            Text(container.notificationCountSummary).font(.caption).foregroundStyle(.secondary)
+            ForEach(model.notifications) { item in
+                NavigationLink { MentionDestination(client: model.client, notification: item) { updated, unreadCount in
+                    model.recordRead(updated, unreadCount: unreadCount)
+                    container.acceptNotificationCount(unreadCount, session: (model.client as? ApiClient)?.sessionID)
+                } } label: {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             if item["read_at"] == .null { Image(systemName: "circle.fill").foregroundStyle(.blue).font(.caption2) }
                             Text(item["body_preview"].text).lineLimit(3)
                         }
                         Text("\(item["actor_id"].text) · \(item["created_at"].text)").font(.caption).foregroundStyle(.secondary)
+                        if !item["room_name"].text.isEmpty { Text(item["room_name"].text).font(.caption).foregroundStyle(.secondary) }
                     }
                 }
             }
-            if model.state.value?["notifications"].array.isEmpty == true { Text("No mentions yet.") }
-            if model.state.isLoading { ProgressView() }
-            if let error = model.actionError ?? model.state.errorMessage { Text(error).foregroundStyle(.red) }
-        }.navigationTitle("Mentions").refreshable { await model.load() }.liveRefresh { await model.load() }
+            if model.notifications.isEmpty && !model.loading { Text("No mentions yet.") }
+            if model.hasMore { Button("Load earlier mentions") { Task { await model.loadEarlier() } }.disabled(model.loading) }
+            if model.loading { ProgressView() }
+            if let error = model.error ?? container.notificationCountError { Text(error).foregroundStyle(.red) }
+        }.navigationTitle("Mentions").refreshable { await model.refresh(); await container.refreshNotificationCount() }.liveRefresh { await model.refresh() }
+        .onChange(of: model.unreadCount) { _, count in
+            if let count { container.acceptNotificationCount(count, session: (model.client as? ApiClient)?.sessionID) }
+        }
     }
 }
 
@@ -84,8 +94,10 @@ struct RoomThreadView: View {
 }
 
 private struct MentionDestination: View {
+    @EnvironmentObject private var container: AppContainer
     let client: ApiClientProtocol
     let notification: WorkspaceRecord
+    let onRead: (WorkspaceRecord, Int) -> Void
     @State private var root: Message?
     @State private var focus: Message?
     @State private var error: String?
@@ -102,6 +114,8 @@ private struct MentionDestination: View {
     }
     private func load() async {
         do {
+            let projectId = notification["project_id"].text
+            if !projectId.isEmpty, container.bootstrap.value?.projects.contains(where: { $0.id == projectId }) == true { container.selectedProjectId = projectId }
             let room = apiPart(notification["room_id"].text)
             let selected = try await client.resource(path: "/api/v1/rooms/\(room)/messages/\(apiPart(notification["message_id"].text))")
             let message = try ArtooJSON.decoder().decode(MessageEnvelope.self, from: JSONEncoder().encode(selected)).message
@@ -110,7 +124,8 @@ private struct MentionDestination: View {
                 root = try ArtooJSON.decoder().decode(MessageEnvelope.self, from: JSONEncoder().encode(response)).message
             } else { root = message }
             focus = message; error = nil
-            _ = try await client.command(path: "/api/v1/notifications/\(apiPart(notification.id))/read", method: "POST", body: .object([:]))
+            let read = try await client.command(path: "/api/v1/notifications/\(apiPart(notification.id))/read", method: "POST", body: .object([:]))
+            if let updated = WorkspaceRecord(read["notification"]), let count = Int(read["unread_count"].text) { onRead(updated, count) }
         } catch { self.error = String(describing: error) }
     }
 }

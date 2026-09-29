@@ -22,7 +22,7 @@ export function RoomSkeleton(): React.ReactNode {
 
 /** All room surfaces use the same ordered, paginated server history. Refetches
  * catch up from the newest cursor without replacing pages the user has opened. */
-export function RoomConversation({ roomId, taskId, goalId, threadRootId, onOpenThread, allowAssistant = true }: { roomId: string; taskId?: string; goalId?: string; threadRootId?: string; onOpenThread?: (messageId: string) => void; allowAssistant?: boolean }): React.ReactNode {
+export function RoomConversation({ roomId, taskId, goalId, threadRootId, onOpenThread, allowAssistant = true, hiddenMessageId }: { roomId: string; taskId?: string; goalId?: string; threadRootId?: string; onOpenThread?: (messageId: string) => void; allowAssistant?: boolean; hiddenMessageId?: string }): React.ReactNode {
   const api = useApi();
   const query = useQueryClient();
   const key = queryKeys.messages(roomId, threadRootId);
@@ -78,7 +78,7 @@ export function RoomConversation({ roomId, taskId, goalId, threadRootId, onOpenT
     <ActionError error={messages.error ?? earlier.error} />
     {messages.error && <Button size="sm" onClick={() => void messages.refetch()}>Retry message sync</Button>}
     {messages.data.has_more && messages.data.next_before && <Button loading={earlier.isPending} onClick={() => earlier.mutate()}>Load earlier messages</Button>}
-    {items.length === 0 ? <div className="task-room--empty"><EmptyState icon={Inbox} title={threadRootId ? "No replies yet" : "No activity yet"} description="Messages, run events, and approvals will appear here." /></div> : <ul aria-label="Messages" className="messages">{items.map((message) => <li key={message.id}><MessageCard message={message} actorName={actorName(message, identity, people)} mentionNames={mentionNames(message, people, identity)} />{onOpenThread && !threadRootId && <Button size="sm" variant="ghost" onClick={() => onOpenThread(message.id)}>{message.reply_count ? `${message.reply_count} replies` : "Reply in thread"}</Button>}</li>)}</ul>}
+    {items.length === 0 ? <div className="task-room--empty"><EmptyState icon={Inbox} title={threadRootId ? "No replies yet" : "No activity yet"} description="Messages, run events, and approvals will appear here." /></div> : <ul aria-label="Messages" className="messages">{items.filter((message) => message.id !== hiddenMessageId).map((message) => <li key={message.id}><MessageCard message={message} actorName={actorName(message, identity, people)} mentionNames={mentionNames(message, people, identity)} />{onOpenThread && !threadRootId && <Button size="sm" variant="ghost" onClick={() => onOpenThread(message.id)}>{message.reply_count ? `${message.reply_count} replies` : "Reply in thread"}</Button>}</li>)}</ul>}
     {storageKey && identity ? <MessageComposer key={`${storageKey}:${allowAssistant}`} roomId={roomId} threadRootId={threadRootId} storageKey={storageKey} bootstrap={identity} people={people} peopleError={members.error} allowAssistant={allowAssistant} /> : <div><ActionError error={bootstrap.error} /><p role="status">Loading your account before composing a message…</p>{bootstrap.error && <Button onClick={() => void bootstrap.refetch()}>Retry account</Button>}</div>}
     <AssistantTurns roomId={roomId} threadRootId={threadRootId} messages={items} allowActions={allowAssistant} />
     {!threadRootId && (taskId || goalId) && <CollaborationPanel key={`collaboration:${roomId}`} roomId={roomId} taskId={taskId} goalId={goalId} />}

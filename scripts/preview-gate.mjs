@@ -26,9 +26,10 @@ const checks = {
     { name: "diff whitespace", command: "git", args: ["diff", "--check"] },
   ],
   ios: [
-    runNpm("build native contract dependency", "run", "build", "--workspace", "@artoo/domain"),
+    runNpm("production server and browser build", "run", "build:preview"),
     runNode("native static API contracts", "apps/ios/scripts/verify-contracts.mjs"),
     runNode("Xcode build and XCTest", "apps/ios/scripts/test-macos.mjs"),
+    runNode("native and browser UI synchronization", "scripts/ios-ui-e2e.mjs"),
   ],
   desktop: [runNpm("Windows installed package smoke", "run", "smoke:win", "--workspace", "@artoo/desktop")],
 }[suite];

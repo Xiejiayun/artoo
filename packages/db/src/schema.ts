@@ -621,7 +621,8 @@ export const notifications = pgTable("notifications", {
   createdAt: ts("created_at").notNull(),
 }, (t) => [
   unique("notifications_user_message_unique").on(t.userId, t.messageId),
-  index("notifications_user_created_idx").on(t.organizationId, t.userId, t.createdAt),
+  index("notifications_user_created_idx").on(t.organizationId, t.userId, t.createdAt, t.id),
+  index("notifications_user_unread_idx").on(t.organizationId, t.userId).where(sql`${t.readAt} IS NULL`),
 ]);
 
 export const assistantTurns = pgTable("assistant_turns", {
