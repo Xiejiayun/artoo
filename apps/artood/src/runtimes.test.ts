@@ -10,11 +10,12 @@ import type {
   RunStartCommand
 } from "@artoo/protocol";
 import { createInProcessChannel } from "@artoo/testkit";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createAdapterRegistry } from "./adapter-registry.js";
 import { createNodeClient } from "./node-client.js";
 import { claudeCodeRuntime, codexRuntime } from "./runtimes.js";
+import * as processAdapter from "./process-adapter.js";
 
 const mockAgent = fileURLToPath(new URL("../test-fixtures/mock-agent.mjs", import.meta.url));
 // Deterministic stand-in for the real CLI: same command both presets use in tests.
@@ -47,6 +48,22 @@ function isAck(m: NodeToServerMessage): m is CommandAck {
 }
 
 describe("runtime presets", () => {
+  it("uses real CLI read-only controls for planning discussions even on a trusted node", () => {
+    const create = vi.spyOn(processAdapter, "createProcessAdapter");
+    try {
+      codexRuntime({ allowedRoots: ["/ws"], trustedExecution: true });
+      claudeCodeRuntime({ allowedRoots: ["/ws"], trustedExecution: true });
+      const codex = create.mock.calls[0]![0];
+      const claude = create.mock.calls[1]![0];
+      expect(codex.discussionCommand).toEqual(expect.arrayContaining(["exec", "--json", "-s", "read-only"]));
+      expect(codex.discussionCommand).not.toContain("workspace-write");
+      expect(claude.discussionCommand).toEqual(expect.arrayContaining(["--permission-mode", "dontAsk", "--tools", "Read,Glob,Grep", "--disallowedTools", "mcp__*", "--disable-slash-commands"]));
+      expect(claude.discussionCommand).not.toContain("bypassPermissions");
+      codexRuntime({ allowedRoots: ["/ws"], command: mockCommand });
+      expect(create.mock.calls[2]![0].discussionCommand).toBeUndefined();
+    } finally { create.mockRestore(); }
+  });
+
   it("declares codex + claude-code runtimes with capability tags", () => {
     const registry = createAdapterRegistry([
       codexRuntime({ allowedRoots: ["/ws"] }),

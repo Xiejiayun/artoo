@@ -299,6 +299,9 @@ private struct AssignSheet: View {
 public struct RunSummaryView: View {
     @State private var run: Run
     @State private var loadError: String?
+    @State private var usage: RunUsage?
+    @State private var usageError: String?
+    @State private var usageLoaded = false
     private let client: ApiClientProtocol?
 
     public init(run: Run, client: ApiClientProtocol? = nil) { _run = State(initialValue: run); self.client = client }
@@ -346,6 +349,20 @@ public struct RunSummaryView: View {
                 if let endedAt = run.endedAt { LabeledContent("Ended", value: endedAt) }
                 if let sequence = run.sequence { LabeledContent("Sequence", value: String(sequence)) }
             }
+            Section("Provider usage") {
+                if let usage {
+                    LabeledContent("Input tokens", value: usage.inputTokens.map(String.init) ?? "Unavailable")
+                    LabeledContent("Output tokens", value: usage.outputTokens.map(String.init) ?? "Unavailable")
+                    LabeledContent("Cached input tokens", value: usage.cachedInputTokens.map(String.init) ?? "Unavailable")
+                    LabeledContent("Cost (USD)", value: usage.costUsd.map { String(format: "%.6f", $0) } ?? "Unavailable")
+                    Text("Reported by the provider · \(usage.updatedAt)").font(.caption).foregroundStyle(.secondary)
+                } else if !usageLoaded && client != nil {
+                    ProgressView("Loading usage…")
+                } else {
+                    Text("Usage unavailable. The provider has not supplied verified measurements.").foregroundStyle(.secondary)
+                }
+                if let usageError { Text(usageError).font(.caption).foregroundStyle(.red) }
+            }
             if let loadError { Section { Text(loadError).foregroundStyle(.red) } }
         }
         .listStyle(.insetGrouped)
@@ -355,6 +372,12 @@ public struct RunSummaryView: View {
             guard let client else { return }
             do { run = try await client.getRun(runId: run.id); loadError = nil }
             catch { loadError = String(describing: error) }
+            do {
+                let value = try await client.resource(path: "/api/v1/runs/\(apiPart(run.id))/usage")
+                usage = try ArtooJSON.decoder().decode(RunUsageResponse.self, from: JSONEncoder().encode(value)).usage
+                usageError = nil
+            } catch { usage = nil; usageError = "Usage could not be confirmed: \(error)" }
+            usageLoaded = true
         }
     }
 }

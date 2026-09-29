@@ -1,0 +1,7 @@
+{
+  "id": "discussion_1", "goal_id": "goal_1", "room_id": "room_channel", "thread_root_id": "message_root",
+  "participants": [{"agent_instance_id":"instance_1","role":"Planner"},{"agent_instance_id":"instance_2","role":"Reviewer"}],
+  "rounds": 2, "max_minutes": 15, "status": "ready", "current_step": 5, "total_steps": 5,
+  "active_turn_id": null, "plan_id": null, "error": null,
+  "created_at": "2026-09-29T00:00:00.000Z", "updated_at": "2026-09-29T00:03:00.000Z", "deadline_at": "2026-09-29T00:15:00.000Z"
+}

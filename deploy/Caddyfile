@@ -1,0 +1,9 @@
+# Replace this host with the team's DNS name. Caddy obtains and renews TLS
+# certificates; ports 80/443 must reach this machine. Keep port 4000 private.
+artoo.example.com {
+    encode zstd gzip
+    header Strict-Transport-Security "max-age=15552000"
+    # Caddy forwards WebSocket upgrades and bearer/cookie authorization.
+    # Do not add a short stream timeout: clients and execution nodes stay online.
+    reverse_proxy 127.0.0.1:4000
+}

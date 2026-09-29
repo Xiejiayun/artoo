@@ -49,6 +49,8 @@ export interface TestServer {
 }
 
 export interface BuildTestServerOptions {
+  assistantDispatcher?: boolean;
+  resetPresenceOnStart?: boolean;
   budgetMonitorIntervalMs?: number | false;
   enableDevRoutes?: boolean;
   artifactDir?: string;
@@ -104,6 +106,8 @@ export async function buildTestServer(
   const nodeRegistry = createNodeRegistry();
   const wsHub = createWsHub();
   const app = buildApp(ctx, {
+    assistantDispatcher: options.assistantDispatcher ?? false,
+    resetPresenceOnStart: options.resetPresenceOnStart ?? false,
     budgetMonitorIntervalMs: options.budgetMonitorIntervalMs ?? false,
     enableDevRoutes: options.enableDevRoutes ?? true,
     artifactDir: options.artifactDir,

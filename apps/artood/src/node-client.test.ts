@@ -289,6 +289,36 @@ describe("artood node client (mock loop)", () => {
       }
     ]);
   });
+
+  it("waits for an in-flight start before answering a reconnect process probe", async () => {
+    const channel = createInProcessChannel();
+    let releaseStart!: () => void;
+    let releaseRun!: () => void;
+    const starting = new Promise<void>((resolve) => { releaseStart = resolve; });
+    const running = new Promise<void>((resolve) => { releaseRun = resolve; });
+    const adapter: RuntimeAdapter = {
+      ...createMockAdapter(),
+      async start(config) { await starting; return { runId: config.runId }; },
+      async *streamEvents() { yield { type: "run.lifecycle", payload: { phase: "started" } }; await running; },
+    };
+    const client = createNodeClient({ nodeId: "computer_1", transport: channel.node, adapter });
+    const received: NodeToServerMessage[] = [];
+    let resumeAnswered!: () => void;
+    const answered = new Promise<void>((resolve) => { resumeAnswered = resolve; });
+    channel.serverTransport.subscribe((message) => {
+      received.push(message);
+      if (isAck(message) && message.command_id === runResumeCommand.id) resumeAnswered();
+    });
+    client.start();
+    await channel.serverTransport.send(runStartCommand);
+    await channel.serverTransport.send(runResumeCommand);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(received.filter(isAck).some((ack) => ack.command_id === runResumeCommand.id)).toBe(false);
+    releaseStart();
+    await answered;
+    expect(received.filter(isAck).find((ack) => ack.command_id === runResumeCommand.id)?.status).toBe("accepted");
+    releaseRun(); await client.stop();
+  });
 });
 
 describe("artood node client (multi-runtime registry)", () => {

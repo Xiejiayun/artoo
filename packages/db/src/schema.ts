@@ -5,6 +5,7 @@ import {
   bigserial,
   boolean,
   check,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -94,6 +95,7 @@ export const tasks = pgTable("tasks", {
     .notNull()
     .references(() => projects.id),
   parentTaskId: text("parent_task_id").references((): AnyPgColumn => tasks.id),
+  executionPolicyTaskId: text("execution_policy_task_id").references((): AnyPgColumn => tasks.id),
   roomId: text("room_id"),
   goalId: text("goal_id").references((): AnyPgColumn => goals.id),
   sourcePlanId: text("source_plan_id"),
@@ -571,6 +573,7 @@ export const rooms = pgTable("rooms", {
   goalId: text("goal_id").references((): AnyPgColumn => goals.id),
   type: text("type").notNull(),
   name: text("name").notNull(),
+  description: text("description").notNull().default(""),
   createdAt: ts("created_at").notNull(),
 }, (t) => [
   check("rooms_type_chk", sql`${t.type} in ('dm','project','sprint','task','agent_team','incident','goal')`),
@@ -578,6 +581,7 @@ export const rooms = pgTable("rooms", {
 
 export const messages = pgTable("messages", {
   id: text("id").primaryKey(),
+  position: bigserial("position", { mode: "number" }).notNull().unique(),
   organizationId: text("organization_id")
     .notNull()
     .references(() => organizations.id),
@@ -586,6 +590,10 @@ export const messages = pgTable("messages", {
     .references(() => rooms.id),
   taskId: text("task_id").references(() => tasks.id),
   runId: text("run_id").references(() => runs.id),
+  threadRootId: text("thread_root_id").references((): AnyPgColumn => messages.id),
+  replyCount: integer("reply_count").notNull().default(0),
+  clientRequestId: text("client_request_id"),
+  clientRequestHash: text("client_request_hash"),
   actorType: text("actor_type").notNull(),
   actorId: text("actor_id").notNull(),
   kind: text("kind").notNull(),
@@ -595,6 +603,65 @@ export const messages = pgTable("messages", {
 }, (t) => [
   check("messages_actor_type_chk", sql`${t.actorType} in ('user','agent','system','bridge')`),
   index("messages_room_created_idx").on(t.roomId, t.createdAt),
+  index("messages_room_position_idx").on(t.roomId, t.position),
+  index("messages_thread_position_idx").on(t.threadRootId, t.position),
+  unique("messages_client_request_unique").on(t.organizationId, t.roomId, t.actorType, t.actorId, t.clientRequestId),
+]);
+
+export const notifications = pgTable("notifications", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  userId: text("user_id").notNull().references(() => users.id),
+  roomId: text("room_id").notNull().references(() => rooms.id),
+  messageId: text("message_id").notNull().references(() => messages.id),
+  threadRootId: text("thread_root_id").references(() => messages.id),
+  actorId: text("actor_id").notNull(),
+  bodyPreview: text("body_preview").notNull(),
+  readAt: ts("read_at"),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  unique("notifications_user_message_unique").on(t.userId, t.messageId),
+  index("notifications_user_created_idx").on(t.organizationId, t.userId, t.createdAt),
+]);
+
+export const assistantTurns = pgTable("assistant_turns", {
+  id: text("id").primaryKey(),
+  position: bigserial("position", { mode: "number" }).notNull().unique(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  roomId: text("room_id").notNull().references(() => rooms.id),
+  threadRootId: text("thread_root_id").references(() => messages.id),
+  taskId: text("task_id").notNull().references(() => tasks.id),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id),
+  clientRequestId: text("client_request_id").notNull(),
+  agentInstanceId: text("agent_instance_id"),
+  userMessageId: text("user_message_id").notNull().references(() => messages.id),
+  responseMessageId: text("response_message_id").references(() => messages.id),
+  runId: text("run_id").references(() => runs.id),
+  status: text("status").notNull(),
+  error: text("error"),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+}, (t) => [
+  unique("assistant_turns_request_unique").on(t.organizationId, t.roomId, t.actorUserId, t.clientRequestId),
+  check("assistant_turns_status_chk", sql`${t.status} in ('queued','waiting','running','completed','failed','cancelled')`),
+  index("assistant_turns_room_position_idx").on(t.roomId, t.position),
+  index("assistant_turns_status_idx").on(t.organizationId, t.status),
+]);
+
+/** Latest provider-reported aggregate per run; NULL means unreported. */
+export const runUsage = pgTable("run_usage", {
+  runId: text("run_id").primaryKey().references(() => runs.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  inputTokens: bigint("input_tokens", { mode: "number" }),
+  outputTokens: bigint("output_tokens", { mode: "number" }),
+  cachedInputTokens: bigint("cached_input_tokens", { mode: "number" }),
+  costUsd: doublePrecision("cost_usd"),
+  currency: text("currency"),
+  providerSessionId: text("provider_session_id"),
+  updatedAt: ts("updated_at").notNull(),
+}, (t) => [
+  check("run_usage_nonnegative_chk", sql`(${t.inputTokens} IS NULL OR ${t.inputTokens} >= 0) AND (${t.outputTokens} IS NULL OR ${t.outputTokens} >= 0) AND (${t.cachedInputTokens} IS NULL OR ${t.cachedInputTokens} >= 0) AND (${t.costUsd} IS NULL OR ${t.costUsd} >= 0)`),
+  check("run_usage_currency_chk", sql`${t.currency} IS NULL OR ${t.currency} = 'USD'`),
 ]);
 
 export const approvals = pgTable("approvals", {
@@ -907,4 +974,31 @@ export const checkpoints = pgTable("checkpoints", {
     sql`${t.type} in ('plan_accepted','dag_materialized','approval_decided','run_terminal','artifact_accepted','paused','resumed')`,
   ),
   index("checkpoints_goal_idx").on(t.goalId, t.createdAt),
+]);
+
+export const discussions = pgTable("discussions", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  goalId: text("goal_id").notNull().references(() => goals.id),
+  roomId: text("room_id").notNull().references(() => rooms.id),
+  threadRootId: text("thread_root_id").notNull().references(() => messages.id),
+  taskId: text("task_id").notNull().references(() => tasks.id),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id),
+  participants: jsonbArray("participants"),
+  rounds: integer("rounds").notNull(),
+  maxMinutes: integer("max_minutes").notNull(),
+  status: text("status").notNull(),
+  currentStep: integer("current_step").notNull().default(0),
+  activeTurnId: text("active_turn_id").references(() => assistantTurns.id),
+  finalMessageId: text("final_message_id").references(() => messages.id),
+  planId: text("plan_id").references(() => plans.id),
+  error: text("error"),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+  deadlineAt: ts("deadline_at").notNull(),
+}, (t) => [
+  check("discussions_status_chk", sql`${t.status} in ('running','stopping','ready','failed','cancelled')`),
+  check("discussions_rounds_chk", sql`${t.rounds} between 1 and 3`),
+  check("discussions_minutes_chk", sql`${t.maxMinutes} between 2 and 60`),
+  index("discussions_goal_idx").on(t.organizationId, t.goalId, t.createdAt),
 ]);

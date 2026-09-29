@@ -4,11 +4,13 @@ import { Icon, Activity, Bot, Brain, LayoutGrid, ListTodo, Puzzle, Server } from
 import "../ui/nav.css";
 import { LogoutButton } from "./LogoutButton.js";
 import { ProjectPicker } from "./ProjectPicker.js";
+import { NotificationsButton } from "./NotificationsPanel.js";
 
 const LINKS = [
   { to: "/", label: "Workspace", end: true, icon: ListTodo },
   { to: "/board", label: "Board", end: false, icon: LayoutGrid },
   { to: "/goals", label: "Goals", end: false, icon: ListTodo },
+  { to: "/channels", label: "Channels", end: false, icon: ListTodo },
   { to: "/runs", label: "Runs", end: false, icon: Activity },
   { to: "/memory", label: "Memory", end: false, icon: Brain },
   { to: "/agents", label: "Agents", end: false, icon: Bot },
@@ -43,6 +45,7 @@ export function Nav(): React.ReactNode {
         ))}
       </ul>
       <span className="app-nav__spacer" />
+      <NotificationsButton />
       <LogoutButton />
     </nav>
   );

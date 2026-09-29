@@ -1,6 +1,7 @@
 import {
   agentInstances,
   appendEvent,
+  assistantTurns,
   goals,
   plans,
   runs,
@@ -31,6 +32,7 @@ import { mapRun, mapTask } from "../mappers.js";
 import * as dagService from "./dag-service.js";
 import * as contextPackService from "./context-pack-service.js";
 import * as leaseService from "./lease-service.js";
+import { unconfirmedDisconnectRunIds } from "./execution-state.js";
 import { scheduleTask } from "./scheduler.js";
 import { assertFreshTaskBaseVersion } from "./sync-service.js";
 import { transitionTask } from "./transition-service.js";
@@ -38,6 +40,7 @@ import { supportedGoalPolicy } from "./budget-policy.js";
 import { assertExecutionApprovalGranted, bindExecutionApprovalToRun } from "./approval-service.js";
 import { unsettledGoalRunIds } from "./execution-state.js";
 import { assertSupportedPlanTaskControls } from "./plan-policy.js";
+import { assertInheritedApprovalRequired, inheritedWritePaths, resolveExecutionPolicyTask } from "./task-execution-policy.js";
 
 /** Restored/older accepted plans must pass the same policy gate as new plans. */
 async function assertTaskPlanControlsSupported(ctx: ServerContext, tx: DrizzleDb, task: typeof tasks.$inferSelect): Promise<void> {
@@ -168,6 +171,7 @@ export async function assignTask(
   ctx: ServerContext,
   taskId: string,
   req: AssignRequest,
+  assistantTurnId?: string,
 ): Promise<AssignResult> {
   const now = ctx.clock.nowIso();
   const result = await ctx.db.transaction(async (tx) => {
@@ -186,9 +190,23 @@ export async function assignTask(
         status: row.status,
       });
     }
-    const allowedRuntimes = await assertGoalAllowsExecution(ctx, tx, row.goalId, "assign", row.sourcePlanId);
-    await assertTaskPlanControlsSupported(ctx, tx, row);
+    if (assistantTurnId) {
+      const turn = (await tx.select().from(assistantTurns).where(and(eq(assistantTurns.id, assistantTurnId),
+        eq(assistantTurns.taskId, taskId), eq(assistantTurns.organizationId, ctx.organizationId))).for("update"))[0];
+      if (!turn || !["queued", "waiting"].includes(turn.status) || turn.runId !== null) throw AppError.conflict("Assistant turn was cancelled, changed, or already dispatched");
+      const active = await tx.select({ id: assistantTurns.id }).from(assistantTurns).where(and(
+        eq(assistantTurns.roomId, turn.roomId), turn.threadRootId ? eq(assistantTurns.threadRootId, turn.threadRootId) : isNull(assistantTurns.threadRootId), eq(assistantTurns.status, "running")));
+      if (active.length) throw AppError.conflict("Another assistant turn is still running in this room");
+    }
+    const policyTask = await resolveExecutionPolicyTask(ctx, tx, row);
+    const allowedRuntimes = await assertGoalAllowsExecution(ctx, tx, policyTask.goalId, "assign", policyTask.sourcePlanId);
+    if ((await unconfirmedDisconnectRunIds(ctx, tx, { taskId })).length > 0) {
+      throw AppError.conflict("execution node has not confirmed the previous process stopped; reconnect it before assigning this task again");
+    }
+    await assertTaskPlanControlsSupported(ctx, tx, policyTask);
+    await assertInheritedApprovalRequired(ctx, tx, row, policyTask);
     await assertExecutionApprovalGranted(ctx, tx, taskId);
+    const writePaths = req.write_paths ?? (assistantTurnId || row.executionPolicyTaskId ? await inheritedWritePaths(ctx, tx, row, policyTask) : []);
 
     const outcome = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], {
       mode: req.mode,
@@ -256,7 +274,8 @@ export async function assignTask(
       runId,
       task: row,
       workspaceRoot,
-      writePaths: req.write_paths ?? [],
+      writePaths,
+      assistantTurnId,
     });
 
     await tx.insert(runs).values({
@@ -276,6 +295,12 @@ export async function assignTask(
       createdAt: now,
     });
     await bindExecutionApprovalToRun(ctx, tx, taskId, runId);
+    if (assistantTurnId) {
+      await tx.update(assistantTurns).set({ runId, status: "running", error: null, updatedAt: now }).where(eq(assistantTurns.id, assistantTurnId));
+      await appendEvent(tx, buildEvent(ctx, { type: "assistant.turn.updated", actorType: "user", actorId: ctx.actorUserId,
+        correlationId: assistantTurnId, projectId: row.projectId, taskId, roomId: row.roomId, runId,
+        payload: { turn_id: assistantTurnId, status: "running", run_id: runId } }));
+    }
 
     // Reserve write leases for the run's declared paths (#20). A conflict throws,
     // rolling back this whole transaction: no run, no assignment, task stays ready.
@@ -283,7 +308,7 @@ export async function assignTask(
       taskId,
       runId,
       projectId: row.projectId,
-      paths: req.write_paths ?? [],
+      paths: writePaths,
     });
 
     await tx
@@ -358,8 +383,9 @@ export async function reviewTask(
       });
     }
     if (trigger === "request_changes") {
-      await assertGoalAllowsExecution(ctx, tx, row.goalId, "retry", row.sourcePlanId);
-      await assertTaskPlanControlsSupported(ctx, tx, row);
+      const policyTask = await resolveExecutionPolicyTask(ctx, tx, row);
+      await assertGoalAllowsExecution(ctx, tx, policyTask.goalId, "retry", policyTask.sourcePlanId);
+      await assertTaskPlanControlsSupported(ctx, tx, policyTask);
     }
     // Aggregate review: a parent cannot be accepted (-> done) until every child
     // task is done or cancelled. Otherwise accepting a parent would mark a tree
@@ -523,8 +549,9 @@ export async function retryTask(ctx: ServerContext, taskId: string): Promise<Tas
     if (!canTransitionTask(row.status as TaskStatus, "retry")) {
       throw AppError.invalidState(`cannot retry from '${row.status}'`, { status: row.status });
     }
-    await assertGoalAllowsExecution(ctx, tx, row.goalId, "retry", row.sourcePlanId);
-    await assertTaskPlanControlsSupported(ctx, tx, row);
+    const policyTask = await resolveExecutionPolicyTask(ctx, tx, row);
+    await assertGoalAllowsExecution(ctx, tx, policyTask.goalId, "retry", policyTask.sourcePlanId);
+    await assertTaskPlanControlsSupported(ctx, tx, policyTask);
     const transition = await transitionTask(tx, ctx, {
       taskId,
       from: row.status as TaskStatus,

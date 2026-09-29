@@ -77,10 +77,36 @@ export interface RetryResponse {
 
 export interface MessagesResponse {
   messages: Message[];
+  /** Opaque cursors: clients must return them unchanged. */
+  next_before?: string | null;
+  next_after?: string | null;
+  has_more?: boolean;
 }
+
+export interface MessagePageOptions { limit?: number; before?: string; after?: string; thread_root_id?: string }
+
+export interface DaemonPresence {
+  computer_id: string; display_name: string;
+  status: "online" | "reconnecting" | "offline" | "stale" | "disabled";
+  connected: boolean; last_heartbeat_at: string | null; heartbeat_age_ms: number | null;
+  active_runs: number; runtimes: AgentRuntime[];
+}
+
+export type { AssistantTurn } from "@artoo/domain";
 
 export interface RunResponse {
   run: Run;
+}
+
+export interface RunUsage {
+  run_id: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_input_tokens: number | null;
+  cost_usd: number | null;
+  currency: string | null;
+  provider_session_id: string | null;
+  updated_at: string;
 }
 
 export interface ApprovalsResponse {

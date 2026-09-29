@@ -1,5 +1,6 @@
 /**
- * V3 #115 P2-S3 — in-memory disconnect grace window.
+ * Disconnect grace scheduling. Durable run rows are the recovery source of
+ * truth: execution-recovery-service reconstructs these windows before startup.
  *
  * When a node's socket closes, the server does NOT immediately fail that
  * computer's active runs; it arms a grace window (a snapshot of the run ids that
@@ -7,11 +8,9 @@
  * window is disarmed and the server resumes those runs. If it expires, the
  * snapshot runs are failed (`daemon_disconnect`, re-verified at fire time).
  *
- * DOGFOOD BOUNDARY: timer state lives only in this process. On a server restart
- * un-fired timers are lost; recovery is then handled by the #115 S2 resume-service
- * checkpoint reconciliation (a run with no event past the checkpoint cursor is
- * detected as stale and blocked). A DB-backed grace timer is an explicit
- * later/release-path item and is intentionally NOT implemented here.
+ * Timer handles are local to this process, but losing them cannot strand a run:
+ * startup reconstructs a fresh bounded window for every unfinished durable run,
+ * including standalone tasks and queued dispatches with no checkpoint.
  *
  * The window is keyed by `computerId` (node identity): each computer has at most
  * one pending window, and only that computer's snapshot runs are affected.
@@ -35,6 +34,8 @@ export interface GraceWindowManager {
   disarm(computerId: string): string[];
   /** Whether a window is currently pending for a computer (inspection/tests). */
   isArmed(computerId: string): boolean;
+  /** Cancel local handles at shutdown; durable runs remain recoverable. */
+  close?(): void;
 }
 
 export interface GraceWindowOptions {
@@ -48,9 +49,11 @@ export interface GraceWindowOptions {
 export function createGraceWindowManager(opts: GraceWindowOptions): GraceWindowManager {
   const scheduler = opts.scheduler ?? realScheduler;
   const pending = new Map<string, { runIds: string[]; handle: unknown }>();
+  let closed = false;
 
   return {
     arm(computerId, runIds) {
+      if (closed) return;
       const existing = pending.get(computerId);
       if (existing !== undefined) scheduler.cancel(existing.handle);
       if (runIds.length === 0) {
@@ -73,6 +76,11 @@ export function createGraceWindowManager(opts: GraceWindowOptions): GraceWindowM
     },
     isArmed(computerId) {
       return pending.has(computerId);
+    },
+    close() {
+      closed = true;
+      for (const entry of pending.values()) scheduler.cancel(entry.handle);
+      pending.clear();
     },
   };
 }

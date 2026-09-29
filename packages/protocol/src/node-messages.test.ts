@@ -6,8 +6,19 @@ import {
   nodeHeartbeatSchema,
   nodeHelloSchema,
   runStopCommandSchema,
+  runEventBodySchema,
   runtimeStatusSchema
 } from "./node-messages.js";
+
+describe("structured runtime results", () => {
+  it("accepts final answers and partial provider usage while rejecting invalid quantities", () => {
+    expect(runEventBodySchema.safeParse({ type: "run.answer", payload: { text: "Final answer" } }).success).toBe(true);
+    expect(runEventBodySchema.safeParse({ type: "run.usage", payload: { input_tokens: 12 } }).success).toBe(true);
+    expect(runEventBodySchema.safeParse({ type: "run.usage", payload: { cost_usd: -1 } }).success).toBe(false);
+    expect(runEventBodySchema.safeParse({ type: "run.usage", payload: { input_tokens: 1.5 } }).success).toBe(false);
+    expect(runEventBodySchema.safeParse({ type: "run.answer", payload: { text: "x".repeat(200_001) } }).success).toBe(false);
+  });
+});
 
 describe("node.hello", () => {
   const valid = {

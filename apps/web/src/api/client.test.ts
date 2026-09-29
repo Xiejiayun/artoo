@@ -24,6 +24,30 @@ const createReq: CreateTaskRequest = {
 };
 
 describe("ApiClient", () => {
+  it("requests assistant turn history for the selected thread instead of the room root", async () => {
+    const seen: Array<string | null> = [];
+    server.use(http.get(`${BASE}/rooms/room_1/assistant-turns`, ({ request }) => {
+      const thread = new URL(request.url).searchParams.get("thread_root_id");
+      seen.push(thread);
+      return HttpResponse.json({ turns: [{ id: thread ? "thread_turn" : "room_turn", thread_root_id: thread }] });
+    }));
+    expect((await client.listAssistantTurns("room_1")).turns[0]!.id).toBe("room_turn");
+    expect((await client.listAssistantTurns("room_1", "root/+= ?&")).turns[0]!.id).toBe("thread_turn");
+    expect(seen).toEqual([null, "root/+= ?&"]);
+  });
+
+  it("passes opaque room history cursors without changing their value", async () => {
+    const seen: string[] = [];
+    server.use(http.get(`${BASE}/rooms/room_1/messages`, ({ request }) => {
+      const query = new URL(request.url).searchParams;
+      seen.push(query.get("before") ?? query.get("after") ?? "");
+      expect(query.get("limit")).toBe("50");
+      return HttpResponse.json({ messages: [], next_before: null, next_after: null, has_more: false });
+    }));
+    await client.listMessages("room_1", { limit: 50, before: "opaque/+= cursor" });
+    await client.listMessages("room_1", { limit: 50, after: "opaque?&:cursor" });
+    expect(seen).toEqual(["opaque/+= cursor", "opaque?&:cursor"]);
+  });
   it.each(["task", "session", "artifact"] as const)("refuses redirects for authenticated %s requests", async (kind) => {
     let redirected = 0;
     const paths = { task: `${BASE}/tasks/task_redirect`, session: "http://localhost/auth/session", artifact: `${BASE}/artifacts/artifact_redirect/content` };

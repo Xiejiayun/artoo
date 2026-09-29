@@ -149,7 +149,7 @@ async function expectDetailStatus(page: Page, status: string): Promise<void> {
   await expect(page.locator(".task-detail .ui-badge--status", { hasText: label })).toBeVisible();
 }
 
-async function connectManualNode(request: APIRequestContext): Promise<{
+async function connectManualNode(request: APIRequestContext, acknowledgeOnly = false): Promise<{
   waitForRunStart: () => Promise<RunStartCommand>;
   startRun: (command: RunStartCommand) => void;
   completeRun: (command: RunStartCommand) => void;
@@ -163,6 +163,7 @@ async function connectManualNode(request: APIRequestContext): Promise<{
   socket.addEventListener("message", (event) => {
     const parsed = JSON.parse(String(event.data)) as unknown;
     if (isRunStartCommand(parsed)) {
+      if (acknowledgeOnly) sendNodeMessage(socket, { kind: "command.ack", node_id: NODE_ID, command_id: parsed.id, status: "accepted" });
       const waiter = waiters.shift();
       if (waiter !== undefined) {
         waiter(parsed);
@@ -255,10 +256,12 @@ function isRunStartCommand(value: unknown): value is RunStartCommand {
  * create → ready → assign (UI) → drive the run server-side via dev mock-execute
  * → WS realtime refreshes the UI to review + artifact → accept → done.
  *
- * No real agent/node is connected; `dev/runs/:id/mock-execute` simulates the run
- * server-side (workspace-safe).
+ * A fixture node advertises live presence and acknowledges dispatch;
+ * `dev/runs/:id/mock-execute` simulates execution server-side (workspace-safe).
  */
 test("create → ready → assign → mock run → review → accept → done", async ({ page, request }) => {
+  const node = await connectManualNode(request, true);
+  try {
   await page.goto("/");
 
   // Workspace loads with the seeded project.
@@ -287,9 +290,12 @@ test("create → ready → assign → mock run → review → accept → done", 
   // Accept → done.
   await page.getByRole("button", { name: "Accept", exact: true }).click();
   await expectDetailStatus(page, "done");
+  } finally { node.close(); }
 });
 
 test("request changes returns ready, and retry recovers a failed run", async ({ page, request }) => {
+  const node = await connectManualNode(request, true);
+  try {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "artoo", level: 1 })).toBeVisible();
 
@@ -318,12 +324,15 @@ test("request changes returns ready, and retry recovers a failed run", async ({ 
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expectDetailStatus(page, "ready");
   await waitForTaskStatus(request, taskId, "ready");
+  } finally { node.close(); }
 });
 
 test("DAG unlock marks a dependent task ready after its prerequisite is accepted", async ({
   page,
   request,
 }) => {
+  const node = await connectManualNode(request, true);
+  try {
   const prereqTitle = uniqueTitle("E2E DAG prerequisite");
   const dependentTitle = uniqueTitle("E2E DAG dependent");
   const prereqId = await createTaskViaApi(request, prereqTitle);
@@ -365,6 +374,7 @@ test("DAG unlock marks a dependent task ready after its prerequisite is accepted
   await selectTask(page, dependentTitle);
   await expectDetailStatus(page, "ready");
   await expect(page.getByRole("button", { name: "Assign", exact: true })).toBeVisible();
+  } finally { node.close(); }
 });
 
 test("approval gate moves a running task to awaiting approval and back to running", async ({

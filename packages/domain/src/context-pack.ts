@@ -8,6 +8,12 @@
 import { z } from "zod";
 
 export const ContextPackSchema = z.object({
+  conversation: z.object({
+    room_id: z.string(), turn_id: z.string(), current_request: z.string(),
+    thread_root_id: z.string().nullable().optional(),
+    messages: z.array(z.object({ id: z.string(), role: z.enum(["user", "assistant"]), body: z.string(), actor_id: z.string().optional() })),
+    history_truncated: z.boolean(),
+  }).optional(),
   task: z.object({
     id: z.string(),
     title: z.string(),
@@ -24,6 +30,7 @@ export const ContextPackSchema = z.object({
     file_scope: z.array(z.string()),
   }),
   policy: z.object({
+    execution_mode: z.literal("discussion").optional(),
     filesystem_write_scope: z.array(z.string()),
     requires_approval: z.array(z.string()),
   }),

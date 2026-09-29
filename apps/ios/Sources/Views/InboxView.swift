@@ -5,8 +5,10 @@ import SwiftUI
 /// with approve/reject.
 public struct InboxView: View {
     @StateObject private var model: InboxViewModel
+    private let client: ApiClientProtocol
 
     public init(client: ApiClientProtocol) {
+        self.client = client
         _model = StateObject(wrappedValue: InboxViewModel(client: client))
     }
 
@@ -43,6 +45,7 @@ public struct InboxView: View {
                 }
             }
             .navigationTitle("Today")
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { NavigationLink { MentionsView(client: client) } label: { Label("Mentions", systemImage: "at") } } }
             .navigationDestination(for: Approval.self) { approval in
                 ApprovalDetailView(approval: approval, model: model)
             }

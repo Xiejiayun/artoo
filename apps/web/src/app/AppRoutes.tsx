@@ -9,6 +9,7 @@ import { WorkspaceLayout } from "../components/WorkspaceLayout.js";
 import { ConnectionStatus } from "../components/ConnectionStatus.js";
 import { GoalsPage } from "../components/GoalsPage.js";
 import { SettingsPage } from "../components/SettingsPage.js";
+import { ChannelsPage } from "../components/ChannelsPage.js";
 
 /**
  * Product nav + route surface (no router/providers — App supplies BrowserRouter;
@@ -25,6 +26,7 @@ export function AppRoutes(): React.ReactNode {
           <Route path="/" element={<WorkspaceLayout />} />
           <Route path="/board" element={<BoardView />} />
           <Route path="/goals" element={<GoalsPage />} />
+          <Route path="/channels" element={<ChannelsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/computers" element={<ComputersPage />} />
           <Route path="/agents" element={<AgentsPage />} />

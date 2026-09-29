@@ -4,6 +4,8 @@ import { createContext, useContext, useEffect, useRef, type ReactNode } from "re
 import { RealtimeClient, type SocketFactory } from "../ws/realtimeClient.js";
 import { invalidationsForEvent } from "./invalidation.js";
 import { queryKeys } from "./queryKeys.js";
+import { appendRunOutput, type RunOutputChunk } from "./runOutputs.js";
+import type { MessagesResponse } from "../api/types.js";
 
 const RealtimeContext = createContext<RealtimeClient | null>(null);
 
@@ -37,6 +39,16 @@ export function RealtimeProvider({
       reconnectDelayMs,
       tokenProvider,
       onEvent: (topic, event) => {
+        if (event.type === "sync.required") { void queryClient.invalidateQueries(); return; }
+        if (event.room_id && typeof event.payload.thread_root_id === "string") {
+          const rootId = event.payload.thread_root_id;
+          const count = event.payload.root_reply_count;
+          if (typeof count === "number") queryClient.setQueriesData<MessagesResponse>({ queryKey: queryKeys.messages(event.room_id) }, (current) => current ? { ...current, messages: current.messages.map((message) => message.id === rootId ? { ...message, reply_count: Math.max(count, message.reply_count ?? 0) } : message) } : current);
+          void queryClient.invalidateQueries({ queryKey: ["message", event.room_id, rootId] });
+        }
+        if (event.type === "run.output" && event.task_id) {
+          queryClient.setQueryData<RunOutputChunk[]>(queryKeys.runOutputs(event.task_id), (previous) => appendRunOutput(previous, event));
+        }
         for (const key of invalidationsForEvent(topic, event)) {
           void queryClient.invalidateQueries({ queryKey: key });
         }

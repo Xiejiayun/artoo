@@ -1,10 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { ApiClientError } from "../api/client.js";
 import { useApi, useCommands } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { clearRoomDrafts } from "../app/roomDrafts.js";
 import { Button, ErrorState } from "../ui/index.js";
 import { LoginPage } from "./LoginPage.js";
 import { DesktopSetup } from "./DesktopSetup.js";
@@ -31,6 +32,8 @@ export function AuthGate({
 function AuthGuard({ children }: { children: React.ReactNode }): React.ReactNode {
   const api = useApi();
   const commands = useCommands();
+  const queryClient = useQueryClient();
+  const [accountId, setAccountId] = useState<string | null>(null);
   const location = useLocation();
   const [reconnect, setReconnect] = useState(false);
   const session = useQuery({
@@ -40,8 +43,24 @@ function AuthGuard({ children }: { children: React.ReactNode }): React.ReactNode
     enabled: !reconnect,
   });
   useEffect(() => {
-    if (session.error instanceof ApiClientError && session.error.status === 401) commands.cancelPending();
-  }, [commands, session.error]);
+    if (session.error instanceof ApiClientError && session.error.status === 401) {
+      commands.cancelPending();
+      clearRoomDrafts();
+      queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "session" });
+      setAccountId(null);
+    }
+  }, [commands, session.error, queryClient]);
+  useEffect(() => {
+    const nextAccount = session.data?.user?.id;
+    if (!session.error && nextAccount && nextAccount !== accountId) {
+      if (accountId !== null) {
+        commands.cancelPending();
+        clearRoomDrafts();
+        queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "session" });
+      }
+      setAccountId(nextAccount);
+    }
+  }, [session.data?.user?.id, session.error, accountId, commands, queryClient]);
   if (reconnect) return <DesktopSetup />;
 
   if (session.isLoading) {
@@ -71,6 +90,7 @@ function AuthGuard({ children }: { children: React.ReactNode }): React.ReactNode
     return <SessionError onRetry={() => void session.refetch()} />;
   }
 
+  if (accountId !== session.data.user.id) return <div className="auth-state" role="status">Loading your account…</div>;
   return <>{children}</>;
 }
 

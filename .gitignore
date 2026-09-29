@@ -12,3 +12,6 @@ apps/web/test-results-auth/
 apps/web/playwright-report/
 *.log
 *.tsbuildinfo
+artifacts/preview-gate/
+artifacts/ios/
+apps/ios/Artoo.xcodeproj/

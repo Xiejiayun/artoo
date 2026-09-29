@@ -26,3 +26,6 @@ export * from "./memory.js";
 export * from "./runtime.js";
 export * from "./device.js";
 export * from "./presence.js";
+export * from "./assistant.js";
+export * from "./discussion.js";
+export * from "./channels.js";

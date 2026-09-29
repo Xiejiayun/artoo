@@ -4,6 +4,16 @@ import XCTest
 final class ModelsTests: XCTestCase {
     private let decoder = ArtooJSON.decoder()
 
+    func testProviderUsageDistinguishesUnknownFromMeasuredZero() throws {
+        let missing = try decoder.decode(RunUsageResponse.self, from: Data(#"{"usage":null}"#.utf8))
+        XCTAssertNil(missing.usage)
+        let reported = try decoder.decode(RunUsageResponse.self, from: Data(#"{"usage":{"run_id":"r","input_tokens":23,"output_tokens":0,"cached_input_tokens":null,"cost_usd":null,"currency":null,"provider_session_id":null,"updated_at":"2026-09-29T00:00:00Z"}}"#.utf8))
+        XCTAssertEqual(reported.usage?.inputTokens, 23)
+        XCTAssertEqual(reported.usage?.outputTokens, 0)
+        XCTAssertNil(reported.usage?.cachedInputTokens)
+        XCTAssertNil(reported.usage?.costUsd)
+    }
+
     func testDecodesTaskListWithSnakeCaseKeys() throws {
         let json = """
         {

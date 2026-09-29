@@ -35,6 +35,10 @@ import type { ServerContext } from "./context.js";
 import { registerProjectRoutes } from "./project-routes.js";
 import { registerResourceRoutes } from "./resource-routes.js";
 import { registerArtifactRoutes } from "./artifact-routes.js";
+import { registerAssistantRoutes } from "./assistant-routes.js";
+import { registerChannelRoutes } from "./channel-routes.js";
+import { registerDiscussionRoutes } from "./discussion-routes.js";
+import { listDaemons } from "./services/daemon-service.js";
 import { registerApiAuthGuard, registerAuthRoutes, requestContext } from "./auth/auth-routes.js";
 import { AppError } from "./errors.js";
 import { createClaimLimiter, DEFAULT_CLAIM_LIMIT, type ClaimLimiter } from "./claim-rate-limit.js";
@@ -47,6 +51,7 @@ import * as dagService from "./services/dag-service.js";
 import * as deviceService from "./services/device-service.js";
 import * as goalService from "./services/goal-service.js";
 import { startGoalBudgetMonitor } from "./services/budget-service.js";
+import { recoverInterruptedRuns } from "./services/execution-recovery-service.js";
 import * as leaseService from "./services/lease-service.js";
 import * as lifecycle from "./services/lifecycle-service.js";
 import * as memoryService from "./services/memory-service.js";
@@ -68,6 +73,9 @@ import { createWsHub, type WsHub } from "./ws/ws-hub.js";
 import { registerWebStatic } from "./web-static.js";
 
 export interface BuildAppOptions {
+  assistantDispatcher?: boolean;
+  /** Production startup invalidates stale persisted presence before listening. */
+  resetPresenceOnStart?: boolean;
   /** Live elapsed-budget checks. Defaults to 1 second; false is for deterministic tests. */
   budgetMonitorIntervalMs?: number | false;
   /** Explicit local testing only. Disabled by default, including production. */
@@ -111,9 +119,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     app.addHook("onClose", async () => { await budgetMonitor?.stop(); });
   }
   const nodeRegistry = options.nodeRegistry ?? createNodeRegistry();
-  // #115 P2-S3: on node disconnect, fail this computer's snapshot runs only after
-  // the grace window expires (in-memory dogfood timer; server-restart recovery is
-  // the S2 checkpoint reconciliation). Each snapshot run is re-verified at fire.
+  // Recover from durable run rows before accepting new client/node connections.
   const graceWindow =
     options.graceWindow ??
     createGraceWindowManager({
@@ -124,6 +130,8 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
         }
       },
     });
+  app.addHook("onReady", async () => { await recoverInterruptedRuns(ctx, graceWindow, { resetPresence: options.resetPresenceOnStart ?? true }); });
+  app.addHook("onClose", async () => { graceWindow.close?.(); });
   const wsHub = options.wsHub ?? createWsHub();
   // Index of live device sockets (node + control) so a revoke can close them.
   // When a device's last live socket drops, emit a presence offline transition
@@ -171,6 +179,16 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   // guard enforced auth); falls back to the base ctx otherwise. REST handlers use
   // `rc(req)` so services attribute to the logged-in user, never a shared actor.
   const rc = (req: FastifyRequest): ServerContext => requestContext(ctx, req);
+  const stopProcess = async (requestCtx: ServerContext, runId: string): Promise<void> => {
+    const run = await runService.getRun(requestCtx, runId);
+    const binding = nodeRegistry.get(run.computer_id);
+    if (binding) return binding.dispatchRunStop(runId);
+    if (options.enableDevRoutes === true && run.runtime_id === "mock") return;
+    throw AppError.conflict("Execution computer is offline; process stop cannot be confirmed");
+  };
+  registerAssistantRoutes(app, ctx, { enabled: options.assistantDispatcher, stopProcess });
+  registerChannelRoutes(app, ctx);
+  registerDiscussionRoutes(app, ctx, { enabled: options.assistantDispatcher, stopProcess });
 
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof AppError) {
@@ -295,6 +313,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   // live connection is its registered daemon node (nodeRegistry); the service
   // gathers the rest from runs/tasks/runtime/computer/device facts.
   const isLive = (computerId: string): boolean => nodeRegistry.get(computerId) !== undefined;
+  app.get("/api/v1/daemons", async (req) => ({ daemons: await listDaemons(rc(req), isLive, (id) => graceWindow.isArmed(id)) }));
   app.get("/api/v1/agent-instances/presence", async (req) => ({
     presence: await presenceService.listAgentInstancePresence(rc(req), isLive),
   }));
@@ -672,7 +691,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   app.get("/api/v1/rooms/:id/messages", async (req) => {
     const { id } = req.params as { id: string };
-    return { messages: await messageService.listMessages(rc(req), id) };
+    return messageService.listMessagePage(rc(req), id, req.query as { limit?: string; before?: string; after?: string; thread_root_id?: string });
   });
 
   app.post("/api/v1/rooms/:id/messages", async (req, reply) => {
@@ -690,6 +709,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     const { id } = req.params as { id: string };
     return { run: await runService.getRun(rc(req), id) };
   });
+  app.get("/api/v1/runs/:id/usage", async (req) => ({ usage: await runService.getRunUsage(rc(req), (req.params as { id: string }).id) }));
 
   // Runtime registry (#15 Part 2): the runtimes a computer last advertised via
   // heartbeat, with status + last_seen_at for the scheduler to filter (Part 3).

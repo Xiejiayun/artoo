@@ -146,11 +146,12 @@ export function registerClientWsRoute(
         return;
       }
       if (frame.type === "subscribe") {
+        const allowedTopics = frame.topics.filter((topic) => !topic.startsWith("inbox:") || topic === `inbox:${connectionContext.actorUserId}`);
         // Subscribe to live delivery FIRST so nothing is missed during the async
         // catch-up; the client dedupes any boundary overlap by cursor.
-        hub.subscribe(raw, frame.topics);
+        hub.subscribe(raw, allowedTopics);
         if (frame.since_cursor !== undefined) {
-          void replayCatchUp(raw, connectionContext, frame.since_cursor, frame.topics);
+          void replayCatchUp(raw, connectionContext, frame.since_cursor, allowedTopics);
         }
       } else {
         hub.unsubscribe(raw, frame.topics);
@@ -297,8 +298,8 @@ function parseClientFrame(data: unknown): ClientFrame | null {
   const sinceCursor = (raw as { since_cursor?: unknown }).since_cursor;
   if (
     (type === "subscribe" || type === "unsubscribe") &&
-    Array.isArray(topics) &&
-    topics.every((topic) => typeof topic === "string")
+    Array.isArray(topics) && topics.length <= 100 &&
+    topics.every((topic) => typeof topic === "string" && topic.length <= 256)
   ) {
     const frame: ClientFrame = { type, topics: topics as string[] };
     if (type === "subscribe" && typeof sinceCursor === "number" && Number.isFinite(sinceCursor)) {

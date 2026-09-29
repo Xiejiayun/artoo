@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Button, Input, Textarea } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
+import { clearRoomDrafts } from "../app/roomDrafts.js";
 
 export function DesktopGate({ children }: { children: React.ReactNode }): React.ReactNode {
   const bridge = window.artooDesktop;
@@ -19,6 +20,7 @@ export function DesktopSetup({ initialError }: { initialError?: unknown } = {}):
   const [name, setName] = useState("My Windows computer");
   const [code, setCode] = useState("");
   const mutation = useMutation({ mutationFn: async () => {
+    clearRoomDrafts();
     await bridge.configureServer!(server.trim());
     await bridge.pairDevice!({ code: code.trim(), displayName: name.trim() });
     window.location.reload();
@@ -44,7 +46,7 @@ export function DesktopSettings(): React.ReactNode {
     {daemon.data && <DaemonForm config={daemon.data.config} onSave={(config) => action.mutate(() => bridge.configureDaemon!(config))} busy={action.isPending} />}
     <div className="action-row"><Button disabled={action.isPending} onClick={() => action.mutate(() => bridge.startDaemon!())}>Start worker</Button><Button disabled={action.isPending} onClick={() => action.mutate(() => bridge.stopDaemon!())}>Stop worker</Button><Button disabled={action.isPending} onClick={() => action.mutate(() => bridge.restartDaemon!())}>Restart worker</Button></div>
     <p className="t-subtle">After starting the worker, register its runtime and workspace on the Computers page so tasks can be assigned.</p>
-    {confirmDisconnect ? <div className="u-stack-sm"><p>Disconnect this app from the server and clear its stored credentials?</p><div className="action-row"><Button variant="danger" loading={action.isPending} onClick={() => action.mutate(async () => { await bridge.logout!(); window.location.reload(); })}>Confirm disconnect</Button><Button onClick={() => setConfirmDisconnect(false)}>Keep connection</Button></div></div> : <Button variant="danger" onClick={() => setConfirmDisconnect(true)}>Disconnect this app</Button>}
+    {confirmDisconnect ? <div className="u-stack-sm"><p>Disconnect this app from the server and clear its stored credentials?</p><div className="action-row"><Button variant="danger" loading={action.isPending} onClick={() => action.mutate(async () => { clearRoomDrafts(); await bridge.logout!(); window.location.reload(); })}>Confirm disconnect</Button><Button onClick={() => setConfirmDisconnect(false)}>Keep connection</Button></div></div> : <Button variant="danger" onClick={() => setConfirmDisconnect(true)}>Disconnect this app</Button>}
   </section>;
 }
 

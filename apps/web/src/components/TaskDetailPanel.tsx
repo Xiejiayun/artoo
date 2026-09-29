@@ -2,10 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import type { RunOutputChunk } from "../app/runOutputs.js";
 import { Button, ErrorState, PriorityBadge, Skeleton, StatusBadge } from "../ui/index.js";
 import { ApprovalInbox } from "./ApprovalInbox.js";
 import { ArtifactReview } from "./ArtifactReview.js";
 import { RunTimeline } from "./RunTimeline.js";
+import { RunUsageSummary } from "./RunUsageSummary.js";
 import { TaskActions } from "./TaskActions.js";
 import { CancelRun } from "./CancelRun.js";
 import { TaskDependencies } from "./TaskDependencies.js";
@@ -41,6 +43,9 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
     queryKey: queryKeys.task(taskId),
     queryFn: () => api.getTask(taskId),
   });
+  const outputs = useQuery<RunOutputChunk[]>({ queryKey: queryKeys.runOutputs(taskId), queryFn: async () => [], enabled: false });
+  const outputsByRun: Record<string, string[]> = {};
+  for (const chunk of outputs.data ?? []) (outputsByRun[chunk.runId] ??= []).push(chunk.text);
 
   if (snapshot.isLoading) {
     return <DetailSkeleton />;
@@ -102,7 +107,7 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
       <ApprovalInbox taskId={task.id} taskStatus={task.status} approvals={approvals} />
       <section className="task-detail__section" aria-label="Runs">
         <h3 className="task-detail__section-title">Runs</h3>
-        <RunTimeline runs={runs} />
+        <RunTimeline runs={runs} outputsByRun={outputsByRun} renderUsage={(run) => <RunUsageSummary run={run} />} />
       </section>
       <ArtifactReview key={`review:${task.id}`} task={task} artifacts={artifacts} versionCursor={snapshot.data.version_cursor} />
       <TaskDependencies key={task.id} task={task} />

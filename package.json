@@ -17,6 +17,9 @@
     "demo:v1": "node scripts/v1-demo.mjs",
     "e2e:auth": "node scripts/auth-e2e.mjs",
     "verify:v1": "node scripts/v1-gate.mjs",
+    "verify:preview": "node scripts/preview-gate.mjs",
+    "verify:ios": "node scripts/preview-gate.mjs --suite=ios",
+    "verify:desktop": "node scripts/preview-gate.mjs --suite=desktop",
     "dev": "npm run dev --workspace @artoo/server",
     "dev:web": "npm run dev --workspace @artoo/web",
     "dev:artood": "npm run dev --workspace @artoo/artood"

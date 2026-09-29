@@ -6,6 +6,7 @@ export interface RunTimelineProps {
   runs: Run[];
   /** run_id -> stdout/stderr lines, derived from run.output events. */
   outputsByRun?: Record<string, string[]>;
+  renderUsage?: (run: Run) => React.ReactNode;
 }
 
 /**
@@ -14,7 +15,7 @@ export interface RunTimelineProps {
  * reasons surface inline and output is collapsed by default so high-frequency
  * stdout never floods the panel.
  */
-export function RunTimeline({ runs, outputsByRun = {} }: RunTimelineProps): React.ReactNode {
+export function RunTimeline({ runs, outputsByRun = {}, renderUsage }: RunTimelineProps): React.ReactNode {
   if (runs.length === 0) {
     return <p className="no-runs">No runs yet.</p>;
   }
@@ -33,6 +34,7 @@ export function RunTimeline({ runs, outputsByRun = {} }: RunTimelineProps): Reac
               <RunStatusBadge status={run.status} />
             </header>
             {failed ? <p className="run-failure">{run.failure_reason}</p> : null}
+            {renderUsage?.(run)}
             {output.length > 0 ? (
               <details className="run-output">
                 <summary>{output.length} output lines</summary>

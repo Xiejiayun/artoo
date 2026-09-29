@@ -3,11 +3,12 @@ import { agentInstances, computers, devices, deviceTokens } from "@artoo/db";
 import type { NodeHello, ServerToNodeMessage } from "@artoo/protocol";
 import { createMockAdapter } from "@artoo/testkit";
 import { eq } from "drizzle-orm";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { testDeviceAuthConfig } from "./config/device-auth.js";
 import { generateDeviceToken } from "./services/device-credential.js";
 import { ingestRunEvent } from "./services/run-service.js";
+import * as runService from "./services/run-service.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 import type { GraceWindowManager } from "./ws/grace-window.js";
 
@@ -313,6 +314,37 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
     } finally {
       socket.close();
     }
+  });
+
+  it("reconciles a fast reconnect while its disconnect snapshot database read is still pending", async () => {
+    const arm = vi.fn();
+    server = await buildTestServer({ graceWindow: { arm, disarm: () => [], isArmed: () => false } });
+    const port = await listen(server);
+    const first = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=dev`);
+    await new Promise<void>((resolve) => first.addEventListener("open", () => { first.send(JSON.stringify(hello(NODE_ID))); resolve(); }));
+    await waitFor(() => server?.nodeRegistry.get(NODE_ID) !== undefined, "initial connection");
+    const runId = await createRunningRun(server, "pending snapshot");
+    let release!: () => void;
+    let snapshotStarted = false;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const original = runService.activeRunIdsForComputer;
+    const read = vi.spyOn(runService, "activeRunIdsForComputer").mockImplementationOnce(async (ctx, id) => {
+      snapshotStarted = true; await gate; return original(ctx, id);
+    });
+    let second: WebSocket | undefined;
+    try {
+      first.close();
+      await waitFor(() => snapshotStarted, "snapshot query started");
+      const commands: ServerToNodeMessage[] = [];
+      second = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=dev`);
+      second.addEventListener("message", (event) => { commands.push(JSON.parse(String(event.data)) as ServerToNodeMessage); });
+      await new Promise<void>((resolve) => second!.addEventListener("open", () => { second!.send(JSON.stringify(hello(NODE_ID))); resolve(); }));
+      await waitFor(() => server?.nodeRegistry.get(NODE_ID) !== undefined, "reconnected before snapshot resolved");
+      release();
+      await waitFor(() => commands.some((command) => command.type === "run.resume" && command.payload.run_id === runId), "pending snapshot resumed");
+      expect(arm).not.toHaveBeenCalled();
+      expect(commands.some((command) => command.type === "run.start")).toBe(false);
+    } finally { release(); read.mockRestore(); first.close(); second?.close(); }
   });
 });
 

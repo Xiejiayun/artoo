@@ -1,5 +1,6 @@
 import type { RuntimeRegistration } from "./adapter-registry.js";
 import { createProcessAdapter, type ArtifactSpec } from "./process-adapter.js";
+import type { ProcessOutputFormat } from "./structured-output.js";
 
 /**
  * Runtime presets: ready-to-register {@link RuntimeRegistration}s for the
@@ -16,17 +17,24 @@ export interface RuntimePresetOptions {
   allowedRoots: string[];
   /** Override the spawn command (defaults to the CLI below). */
   command?: string[];
+  /** Custom commands must explicitly provide their restricted discussion form. */
+  discussionCommand?: string[];
   artifacts?: ArtifactSpec[];
   capabilities?: readonly string[];
   /** Local operator opt-in; never read from a server-supplied task policy. */
   trustedExecution?: boolean;
+  outputFormat?: ProcessOutputFormat;
 }
 
 const DEFAULT_ARTIFACTS: ArtifactSpec[] = [{ type: "patch", path: "changes.patch" }];
 
 const TASK_PROMPT =
-  "Read the file {{context_pack_path}}. Implement the task in this directory only, " +
-  "do not access the network, create changes.patch as the run artifact, then finish.";
+  "Read the file {{context_pack_path}}. If its payload contains conversation, respond to " +
+  "conversation.current_request using its message history and the task context; otherwise implement the task. " +
+  "Perform only the requested work in this directory, do not access the network, and give an explicit final " +
+  "user-facing answer explaining the result. If policy.execution_mode is discussion, only read and reason: " +
+  "do not modify files or run commands with side effects; follow the assigned discussion role and requested JSON synthesis format. " +
+  "Otherwise create changes.patch when you change files; conversation may have no file changes.";
 
 export function codexRuntime(options: RuntimePresetOptions): RuntimeRegistration {
   return {
@@ -41,6 +49,7 @@ export function codexRuntime(options: RuntimePresetOptions): RuntimeRegistration
       command: options.command ?? [
         "codex",
         "exec",
+        "--json",
         "--skip-git-repo-check",
         "--ephemeral",
         "-s",
@@ -50,6 +59,10 @@ export function codexRuntime(options: RuntimePresetOptions): RuntimeRegistration
         TASK_PROMPT,
       ],
       allowedRoots: options.allowedRoots,
+      discussionCommand: options.discussionCommand ?? (options.command ? undefined : [
+        "codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-C", "{{workspace_root}}", TASK_PROMPT,
+      ]),
+      outputFormat: options.outputFormat ?? (options.command ? "plain" : "codex-json"),
       artifacts: options.artifacts ?? DEFAULT_ARTIFACTS,
     }),
   };
@@ -68,10 +81,18 @@ export function claudeCodeRuntime(options: RuntimePresetOptions): RuntimeRegistr
         "claude",
         "-p",
         TASK_PROMPT,
+        "--output-format",
+        "stream-json",
+        "--verbose",
         "--permission-mode",
         options.trustedExecution === true ? "bypassPermissions" : "dontAsk",
       ],
       allowedRoots: options.allowedRoots,
+      discussionCommand: options.discussionCommand ?? (options.command ? undefined : [
+        "claude", "-p", TASK_PROMPT, "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
+        "--tools", "Read,Glob,Grep", "--disallowedTools", "mcp__*", "--disable-slash-commands",
+      ]),
+      outputFormat: options.outputFormat ?? (options.command ? "plain" : "claude-json"),
       artifacts: options.artifacts ?? DEFAULT_ARTIFACTS,
     }),
   };

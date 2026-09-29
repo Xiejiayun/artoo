@@ -45,12 +45,20 @@ public protocol ApiClientProtocol: Sendable {
     func listApprovals(status: String?) async throws -> [Approval]
     func resolveApproval(approvalId: String, request: ResolveApprovalRequest) async throws -> Approval
     func listMessages(roomId: String) async throws -> [Message]
+    func messagePage(roomId: String, before: String?, after: String?, threadRootId: String?) async throws -> MessagesResponse
     func resource(path: String) async throws -> JSONValue
     func command(path: String, method: String, body: JSONValue) async throws -> JSONValue
+    func command(path: String, method: String, body: JSONValue, idempotencyKey: String) async throws -> JSONValue
     func downloadArtifact(artifact: Artifact) async throws -> URL
 }
 
 public extension ApiClientProtocol {
+    func messagePage(roomId: String, before: String? = nil, after: String? = nil, threadRootId: String? = nil) async throws -> MessagesResponse {
+        MessagesResponse(messages: try await listMessages(roomId: roomId))
+    }
+    func command(path: String, method: String = "POST", body: JSONValue, idempotencyKey: String) async throws -> JSONValue {
+        try await command(path: path, method: method, body: body)
+    }
     func resource(path: String) async throws -> JSONValue { throw ApiError.notImplemented("This preview fixture has no workspace resources") }
     func command(path: String, method: String = "POST", body: JSONValue = .object([:])) async throws -> JSONValue {
         throw ApiError.notImplemented("This preview fixture has no workspace commands")
@@ -83,6 +91,18 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
     private let baseURL: URL
     private let session: URLSession
     private let authToken: String?
+    public let sessionID = UUID().uuidString
+    private let stateLock = NSLock()
+    private var invalidated = false
+
+    public func invalidate() {
+        stateLock.lock(); invalidated = true; stateLock.unlock()
+        session.invalidateAndCancel()
+    }
+    private func requireActive() throws {
+        stateLock.lock(); defer { stateLock.unlock() }
+        if invalidated { throw CancellationError() }
+    }
 
     public init(baseURL: URL, session: URLSession? = nil, authToken: String? = nil) {
         self.baseURL = baseURL
@@ -193,11 +213,15 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
     }
 
     public func listMessages(roomId: String) async throws -> [Message] {
-        let response: MessagesResponse = try await send(
-            path: "/api/v1/rooms/\(escape(roomId))/messages",
-            method: "GET"
-        )
-        return response.messages
+        try await messagePage(roomId: roomId, before: nil, after: nil).messages
+    }
+
+    public func messagePage(roomId: String, before: String? = nil, after: String? = nil, threadRootId: String? = nil) async throws -> MessagesResponse {
+        var path = "/api/v1/rooms/\(escape(roomId))/messages?limit=50"
+        if let before { path += "&before=\(escape(before))" }
+        if let after { path += "&after=\(escape(after))" }
+        if let threadRootId { path += "&thread_root_id=\(escape(threadRootId))" }
+        return try await send(path: path, method: "GET")
     }
 
     public func currentSession() async throws -> SessionIdentity {
@@ -215,10 +239,22 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
         let _: EmptyResponse = try await send(path: "/auth/logout", method: "POST", body: EmptyBody())
     }
 
+    public func revokeAndInvalidate() async throws {
+        // End local authority before awaiting a potentially offline server.
+        invalidate()
+        let revoker = ApiClient(baseURL: baseURL, authToken: authToken)
+        defer { revoker.invalidate() }
+        try await revoker.logout()
+    }
+
     public func resource(path: String) async throws -> JSONValue { try await send(path: path, method: "GET") }
 
     public func command(path: String, method: String = "POST", body: JSONValue = .object([:])) async throws -> JSONValue {
         try await send(path: path, method: method, body: body, idempotent: true)
+    }
+
+    public func command(path: String, method: String = "POST", body: JSONValue, idempotencyKey: String) async throws -> JSONValue {
+        try await perform(path: path, method: method, bodyData: ArtooJSON.encoder().encode(body), idempotent: true, idempotencyKey: idempotencyKey)
     }
 
     public func downloadArtifact(artifact: Artifact) async throws -> URL {
@@ -267,9 +303,10 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
         path: String,
         method: String,
         bodyData: Data?,
-        idempotent: Bool
+        idempotent: Bool,
+        idempotencyKey: String? = nil
     ) async throws -> Response {
-        let (data, _) = try await requestData(path: path, method: method, bodyData: bodyData, idempotent: idempotent)
+        let (data, _) = try await requestData(path: path, method: method, bodyData: bodyData, idempotent: idempotent, idempotencyKey: idempotencyKey)
         if data.isEmpty {
             if let empty = EmptyResponse() as? Response { return empty }
             if let empty = JSONValue.null as? Response { return empty }
@@ -278,7 +315,8 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
         catch { throw ApiError.decoding("\(error)") }
     }
 
-    private func requestData(path: String, method: String, bodyData: Data?, idempotent: Bool) async throws -> (Data, HTTPURLResponse) {
+    private func requestData(path: String, method: String, bodyData: Data?, idempotent: Bool, idempotencyKey: String? = nil) async throws -> (Data, HTTPURLResponse) {
+        try requireActive()
         guard path.hasPrefix("/"), !path.hasPrefix("//"), let url = URL(string: path, relativeTo: baseURL)?.absoluteURL,
               url.scheme == baseURL.scheme, url.host == baseURL.host, url.port == baseURL.port else {
             throw ApiError.invalidURL(baseURL.absoluteString + path)
@@ -295,7 +333,7 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         if idempotent {
-            request.setValue(UUID().uuidString, forHTTPHeaderField: "Idempotency-Key")
+            request.setValue(idempotencyKey ?? UUID().uuidString, forHTTPHeaderField: "Idempotency-Key")
         }
 
         let data: Data
@@ -305,13 +343,14 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
         } catch {
             throw ApiError.transport(error.localizedDescription)
         }
+        try requireActive()
 
         guard let http = response as? HTTPURLResponse else {
             throw ApiError.transport("Non-HTTP response")
         }
         guard (200..<300).contains(http.statusCode) else {
             if http.statusCode == 401, authToken != nil {
-                NotificationCenter.default.post(name: .artooAuthenticationExpired, object: baseURL.absoluteString)
+                NotificationCenter.default.post(name: .artooAuthenticationExpired, object: sessionID)
             }
             let errorBody = try? JSONDecoder().decode(JSONValue.self, from: data)
             let body = errorBody?["error"]["message"].text ?? "Request failed"
@@ -324,7 +363,7 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
 /// Placeholder used when a 2xx response carries no body.
 private struct EmptyResponse: Decodable {}
 
-private final class SameOriginRedirectPolicy: NSObject, URLSessionTaskDelegate {
+final class SameOriginRedirectPolicy: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         // The API has no redirect endpoints. Rejecting redirects also prevents

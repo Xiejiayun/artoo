@@ -2,9 +2,11 @@ import { z } from "zod";
 
 import {
   ArtifactPayloadSchema,
+  RunAnswerPayloadSchema,
   RunLifecyclePayloadSchema,
   RunOutputPayloadSchema,
-  RunStartPayloadSchema
+  RunStartPayloadSchema,
+  RunUsagePayloadSchema
 } from "@artoo/domain";
 
 import { nodeErrorCodeSchema } from "./errors.js";
@@ -160,6 +162,8 @@ export const commandSchema = z.discriminatedUnion("type", [
 // idempotent ingest (see RunEventDeduper).
 export const runEventBodySchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.output"), payload: RunOutputPayloadSchema }),
+  z.object({ type: z.literal("run.answer"), payload: RunAnswerPayloadSchema }),
+  z.object({ type: z.literal("run.usage"), payload: RunUsagePayloadSchema }),
   z.object({ type: z.literal("run.lifecycle"), payload: RunLifecyclePayloadSchema }),
   z.object({ type: z.literal("artifact.created"), payload: ArtifactPayloadSchema })
 ]);

@@ -42,6 +42,12 @@ async function until(predicate, message, timeout = 45_000) {
   }
   throw new Error(message);
 }
+async function bounded(promise, label, timeout = 10_000) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} did not respond within ${timeout}ms`)), timeout); })]);
+  } finally { clearTimeout(timer); }
+}
 async function freePort() {
   const socket = net.createServer();
   await new Promise((resolve, reject) => { socket.once("error", reject); socket.listen(0, "127.0.0.1", resolve); });
@@ -95,6 +101,8 @@ console.log('Packaged Codex adapter fixture completed');
   let server, browser, electronApp, page, appExe, ownerCookie;
   let uninstalled = false;
   const checks = [];
+  const captures = [];
+  let rendererCrashed = false;
   const check = (description) => { checks.push(description); console.log(`[smoke] PASS ${description}`); };
   const ownerApi = async (route) => {
     const response = await fetch(`${baseUrl}${route}`, { headers: { Cookie: ownerCookie } });
@@ -104,9 +112,55 @@ console.log('Packaged Codex adapter fixture completed');
   async function launchApp() {
     electronApp = await electron.launch({ executablePath: appExe, env: appEnv, timeout: 45_000 });
     page = await electronApp.firstWindow({ timeout: 30_000 }); page.setDefaultTimeout(30_000);
+    rendererCrashed = false;
+    page.on("crash", () => { rendererCrashed = true; console.error("[renderer] Renderer process crashed"); });
     page.on("pageerror", (error) => console.error(`[renderer] ${error.message}`));
     page.on("requestfailed", (request) => console.error(`[renderer] ${request.method()} ${new URL(request.url()).pathname}: ${request.failure()?.errorText}`));
     await page.waitForLoadState("domcontentloaded");
+  }
+  async function captureEvidence(filename, taskId) {
+    const screenshotPath = join(artifactDir, filename);
+    // Workspace panes scroll independently. Capture the actual native viewport;
+    // fullPage does not reveal their offscreen content and adds layout work.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const record = { attempt, method: "playwright-viewport", filename, startedAt: new Date().toISOString() };
+      captures.push(record);
+      try {
+        assert.equal(rendererCrashed, false, "Renderer crashed before evidence capture");
+        assert.equal(page.isClosed(), false, "App window closed before evidence capture");
+        record.window = await bounded(electronApp.evaluate(({ BrowserWindow }) => {
+          const window = BrowserWindow.getAllWindows()[0];
+          if (!window || window.isDestroyed() || window.webContents.isDestroyed()) throw new Error("Native app window is unavailable");
+          const before = { visible: window.isVisible(), minimized: window.isMinimized(), focused: window.isFocused() };
+          if (window.isMinimized()) window.restore();
+          window.show(); window.focus();
+          return { before, visible: window.isVisible(), minimized: window.isMinimized(), focused: window.isFocused() };
+        }), "Native window activation");
+        await bounded(page.bringToFront(), "Renderer activation");
+        const health = await bounded(page.evaluate(async () => {
+          const [connection, worker] = await Promise.all([window.artooDesktop.getConnection(), window.artooDesktop.daemonStatus()]);
+          return { paired: connection.paired, worker: worker.state, taskStatus: document.querySelector(".task-detail__header .ui-badge--status")?.textContent?.trim() };
+        }), "Renderer and native IPC health probe");
+        assert.equal(health.paired, true, "App lost its native connection during evidence capture");
+        assert.equal(health.worker, "running", "Worker stopped during evidence capture");
+        assert.equal(health.taskStatus, "done", "Renderer lost the reviewed task state");
+        assert.equal((await bounded(ownerApi(`/api/v1/tasks/${taskId}`), "Server task health probe")).task.status, "done");
+        await expect(page.getByText("Live updates connected", { exact: true })).toBeVisible({ timeout: 10_000 });
+        record.health = health;
+        const png = await page.screenshot({ path: screenshotPath, fullPage: false, animations: "disabled", timeout: 30_000 });
+        assert.ok(png.length > 0, "Screenshot was empty");
+        record.result = "pass";
+        console.log(`[smoke] Evidence capture ${attempt}/2 passed (${record.method})`);
+        return screenshotPath;
+      } catch (error) {
+        record.result = "fail"; record.error = error instanceof Error ? error.message : String(error);
+        console.error(`[smoke] Evidence capture ${attempt}/2 failed (${record.method}): ${record.error}`);
+        // A real functional failure is never retried. A transient Chromium
+        // screenshot timeout gets one attempt after all health probes pass again.
+        if (error?.name !== "TimeoutError" || !record.health || attempt === 2) throw error;
+      } finally { record.finishedAt = new Date().toISOString(); }
+    }
+    throw new Error("Evidence capture did not complete");
   }
   async function workerState(expected) {
     await until(async () => (await page.evaluate(() => window.artooDesktop.daemonStatus())).state === expected, `Worker did not reach ${expected}`);
@@ -233,7 +287,7 @@ console.log('Packaged Codex adapter fixture completed');
     await page.getByLabel("Review comment", { exact: true }).fill("Downloaded patch bytes verified by packaged authenticated smoke");
     await page.getByRole("button", { name: "Accept", exact: true }).click();
     await expect(page.locator(".task-detail__header .ui-badge--status")).toHaveText("done");
-    await page.screenshot({ path: join(artifactDir, "windows-desktop-smoke.png"), fullPage: true });
+    await captureEvidence("windows-desktop-smoke.png", taskId);
     check("Native UI creates and approves task; bundled daemon runs Codex fixture; artifact downloads and review completes");
 
     await electronApp.close(); electronApp = undefined; page = undefined;
@@ -253,12 +307,12 @@ console.log('Packaged Codex adapter fixture completed');
     await electronApp.close(); electronApp = undefined; page = undefined;
     uninstall(); await until(() => !existsSync(appExe), "NSIS uninstall left the app executable", 30_000); uninstalled = true;
     check("Sign out clears credentials and revokes access; NSIS uninstall removes the app");
-    const report = { result: "pass", checkedAt: new Date().toISOString(), installer, installerSha256: createHash("sha256").update(readFileSync(installer)).digest("hex"), checks, screenshot: join(artifactDir, "windows-desktop-smoke.png"), downloaded, modelExecution: "Temporary CLI fixture through production Codex adapter; no real model quality claim", ownerAuthentication: "Test-provisioned owner cookie; native pairing and authorization use production endpoints" };
+    const report = { result: "pass", checkedAt: new Date().toISOString(), installer, installerSha256: createHash("sha256").update(readFileSync(installer)).digest("hex"), checks, captures, screenshot: join(artifactDir, "windows-desktop-smoke.png"), downloaded, modelExecution: "Temporary CLI fixture through production Codex adapter; no real model quality claim", ownerAuthentication: "Test-provisioned owner cookie; native pairing and authorization use production endpoints" };
     writeFileSync(join(artifactDir, "windows-desktop-smoke.json"), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2));
   } catch (error) {
-    writeFileSync(join(artifactDir, "windows-desktop-smoke.json"), JSON.stringify({ result: "fail", checkedAt: new Date().toISOString(), installer, installerSha256: createHash("sha256").update(readFileSync(installer)).digest("hex"), checks, error: error instanceof Error ? error.message : String(error) }, null, 2));
+    writeFileSync(join(artifactDir, "windows-desktop-smoke.json"), JSON.stringify({ result: "fail", checkedAt: new Date().toISOString(), installer, installerSha256: createHash("sha256").update(readFileSync(installer)).digest("hex"), checks, captures, error: error instanceof Error ? error.message : String(error) }, null, 2));
     if (page && !page.isClosed()) {
-      await page.screenshot({ path: join(artifactDir, "windows-desktop-smoke-failure.png"), fullPage: true }).catch(() => {});
+      await page.screenshot({ path: join(artifactDir, "windows-desktop-smoke-failure.png"), fullPage: false, timeout: 5000 }).catch((captureError) => console.error(`[smoke] Failure screenshot unavailable: ${captureError.message}`));
       console.error(`[smoke] Visible app state:\n${await page.locator("body").innerText().catch(() => "unavailable")}`);
     }
     throw error;

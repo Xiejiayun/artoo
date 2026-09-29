@@ -75,7 +75,7 @@ export class RealtimeClient {
   private generation = 0;
 
   private socket: WebSocketLike | null = null;
-  private readonly topics = new Set<string>();
+  private readonly topics = new Map<string, number>();
   private open = false;
   private closedByUser = false;
   /** Set once the server closes 1008; suppresses all further reconnects. */
@@ -113,7 +113,7 @@ export class RealtimeClient {
       this.setStatus("connected");
       // (Re)subscribe to the full current topic set.
       if (this.topics.size > 0) {
-        this.sendFrame({ type: "subscribe", topics: [...this.topics] });
+        this.sendFrame({ type: "subscribe", topics: [...this.topics.keys()] });
       }
     };
     socket.onclose = (event) => {
@@ -147,8 +147,8 @@ export class RealtimeClient {
 
   subscribe(topics: string[]): void {
     const added = topics.filter((topic) => !this.topics.has(topic));
-    for (const topic of added) {
-      this.topics.add(topic);
+    for (const topic of new Set(topics)) {
+      this.topics.set(topic, (this.topics.get(topic) ?? 0) + 1);
     }
     if (this.open && added.length > 0) {
       this.sendFrame({ type: "subscribe", topics: added });
@@ -156,9 +156,11 @@ export class RealtimeClient {
   }
 
   unsubscribe(topics: string[]): void {
-    const removed = topics.filter((topic) => this.topics.has(topic));
-    for (const topic of removed) {
-      this.topics.delete(topic);
+    const removed: string[] = [];
+    for (const topic of new Set(topics)) {
+      const count = this.topics.get(topic) ?? 0;
+      if (count > 1) this.topics.set(topic, count - 1);
+      else if (count === 1) { this.topics.delete(topic); removed.push(topic); }
     }
     if (this.open && removed.length > 0) {
       this.sendFrame({ type: "unsubscribe", topics: removed });

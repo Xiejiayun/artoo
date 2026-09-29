@@ -238,8 +238,11 @@ export function mapArtifact(row: typeof artifacts.$inferSelect): Artifact {
 export function mapMessage(row: typeof messages.$inferSelect): Message {
   return MessageSchema.parse({
     id: row.id,
+    sequence: row.position,
     organization_id: row.organizationId,
     room_id: row.roomId,
+    thread_root_id: row.threadRootId,
+    reply_count: row.replyCount,
     task_id: row.taskId,
     run_id: row.runId,
     actor_type: row.actorType,

@@ -9,23 +9,25 @@ import { Badge, type Tone } from "../ui/index.js";
  * lifecycle state here (codex guardrail). Unknown kinds degrade to a system
  * notice via normalizeMessageKind.
  */
-export function MessageCard({ message }: { message: Message }): React.ReactNode {
+export function MessageCard({ message, actorName, mentionNames = [] }: { message: Message; actorName?: string; mentionNames?: string[] }): React.ReactNode {
   const kind = normalizeMessageKind(message.kind);
-  const actor = `${message.actor_type}:${message.actor_id}`;
+  const actor = actorName ?? `${message.actor_type}:${message.actor_id}`;
   return (
     <article className="msg" data-kind={kind} aria-label={`${kind} message`}>
       <span className="msg__avatar" aria-hidden="true">
-        {initials(message.actor_id, message.actor_type)}
+        {initials(actorName ?? message.actor_id, message.actor_type)}
       </span>
       <div className="msg__main">
         <header className="msg__meta">
           <span className="msg__actor">{actor}</span>
           {kindBadge(kind)}
+          {typeof message.payload["assistant_turn_id"] === "string" && <Badge tone="accent">{message.actor_type === "agent" ? "Agent reply" : "Agent request"}</Badge>}
           <time className="msg__time" dateTime={message.created_at}>
             {formatTime(message.created_at)}
           </time>
         </header>
         {renderBody(kind, message)}
+        {mentionNames.length > 0 && <p className="msg__mentions" aria-label="Mentioned people">{mentionNames.map((name) => `@${name}`).join(" ")}</p>}
       </div>
     </article>
   );

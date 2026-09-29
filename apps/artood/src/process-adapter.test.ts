@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { createProcessAdapter } from "./process-adapter.js";
 
 const fixture = fileURLToPath(new URL("../test-fixtures/mock-agent.mjs", import.meta.url));
+const structuredFixture = fileURLToPath(new URL("../test-fixtures/structured-agent.mjs", import.meta.url));
 
 function makeWorkspace(): string {
   return mkdtempSync(join(tmpdir(), "artoo-proc-"));
@@ -63,6 +64,64 @@ function isOutput(e: RunEvent): e is Extract<RunEvent, { type: "run.output" }> {
 const cmd = [process.execPath, fixture, "--workspace", "{{workspace_root}}", "--context", "{{context_pack_path}}"];
 
 describe("createProcessAdapter", () => {
+  it("refuses discussion before writing context when the custom runtime has no restricted command", async () => {
+    const ws = makeWorkspace();
+    try {
+      const config = makeConfig(ws);
+      config.runStart.context_pack.payload!.policy.execution_mode = "discussion";
+      const adapter = createProcessAdapter({ command: cmd, allowedRoots: [ws] });
+      await expect(adapter.start(config)).rejects.toThrow("read-only discussion command");
+      expect(existsSync(join(ws, "context_pack.md"))).toBe(false);
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+  });
+
+  it("selects the restricted discussion command and never publishes stale workspace artifacts", async () => {
+    const ws = makeWorkspace();
+    try {
+      writeFileSync(join(ws, "changes.patch"), "stale patch from earlier work");
+      const config = makeConfig(ws);
+      config.runStart.context_pack.payload!.policy.execution_mode = "discussion";
+      const adapter = createProcessAdapter({ command: ["unrestricted-command-must-not-run"],
+        discussionCommand: [process.execPath, structuredFixture, "codex"], outputFormat: "codex-json",
+        allowedRoots: [ws], artifacts: [{ type: "patch", path: "changes.patch" }] });
+      const handle = await adapter.start(config);
+      const events = await drain(adapter.streamEvents(handle));
+      expect(events.some((event) => event.type === "run.answer")).toBe(true);
+      expect(events.at(-1)).toMatchObject({ type: "run.lifecycle", payload: { phase: "completed" } });
+      expect(events.some((event) => event.type === "artifact.created")).toBe(false);
+      expect(await adapter.collectArtifacts(handle)).toEqual([]);
+      expect(readFileSync(join(ws, "changes.patch"), "utf8")).toBe("stale patch from earlier work");
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+  });
+
+  it.each(["codex", "claude"] as const)("extracts the %s final answer and usage from a real JSONL subprocess", async (provider) => {
+    const ws = makeWorkspace();
+    try {
+      const adapter = createProcessAdapter({ command: [process.execPath, structuredFixture, provider],
+        outputFormat: provider === "codex" ? "codex-json" : "claude-json", allowedRoots: [ws] });
+      const events = await drain(adapter.streamEvents(await adapter.start(makeConfig(ws))));
+      expect(events.filter((event) => event.type === "run.answer")).toEqual([{ type: "run.answer", payload: { text: "已完成你的请求，测试通过。" } }]);
+      const usage = events.find((event) => event.type === "run.usage");
+      expect(usage).toMatchObject({ payload: { input_tokens: provider === "codex" ? 101 : 91, provider_session_id: `fixture_${provider}` } });
+      if (provider === "codex") expect(usage!.payload).not.toHaveProperty("cost_usd");
+      else expect(usage!.payload).toHaveProperty("cost_usd", 0.005);
+      expect(events.filter(isOutput).some((event) => event.payload.text.includes("Inspecting files"))).toBe(true);
+      expect(events.at(-1)).toMatchObject({ type: "run.lifecycle", payload: { phase: "completed" } });
+      expect(events.findIndex((event) => event.type === "run.answer")).toBeLessThan(events.length - 1);
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+  });
+
+  it("fails a provider error result even when the CLI exits zero and preserves reported spend", async () => {
+    const ws = makeWorkspace();
+    try {
+      const adapter = createProcessAdapter({ command: [process.execPath, structuredFixture, "error"], outputFormat: "claude-json", allowedRoots: [ws] });
+      const events = await drain(adapter.streamEvents(await adapter.start(makeConfig(ws))));
+      expect(events.some((event) => event.type === "run.answer")).toBe(false);
+      expect(events.find((event) => event.type === "run.usage")).toMatchObject({ payload: { cost_usd: 0.002 } });
+      expect(events.at(-1)).toEqual({ type: "run.lifecycle", payload: { phase: "failed", reason: "Turn limit reached" } });
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+  });
+
   it("spawns, streams stdout/stderr, collects the artifact, and completes", async () => {
     const ws = makeWorkspace();
     try {

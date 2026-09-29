@@ -1,14 +1,17 @@
-import { appendEvent, artifacts, messages, runEventIngest, runs, tasks } from "@artoo/db";
+import { appendEvent, artifacts, assistantTurns, messages, runEventIngest, runs, runUsage, tasks } from "@artoo/db";
 import {
   canTransitionRun,
   canTransitionTask,
   ID_PREFIXES,
+  RunAnswerPayloadSchema,
+  RunUsagePayloadSchema,
   type ArtifactType,
   type Run,
   type RunStatus,
+  type RunUsagePayload,
   type TaskStatus,
 } from "@artoo/domain";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -33,6 +36,15 @@ export async function getRun(ctx: ServerContext, runId: string): Promise<Run> {
     throw AppError.notFound(`run not found: ${runId}`, { run_id: runId });
   }
   return mapRun(row);
+}
+
+/** Provider measurements remain explicitly unknown until the runtime reports them. */
+export async function getRunUsage(ctx: ServerContext, runId: string) {
+  await getRun(ctx, runId);
+  const row = (await ctx.db.db.select().from(runUsage).where(and(eq(runUsage.runId, runId), eq(runUsage.organizationId, ctx.organizationId))))[0];
+  return row ? { run_id: runId, input_tokens: row.inputTokens, output_tokens: row.outputTokens,
+    cached_input_tokens: row.cachedInputTokens, cost_usd: row.costUsd, currency: row.currency,
+    provider_session_id: row.providerSessionId, updated_at: row.updatedAt } : null;
 }
 
 /** POST /api/v1/runs/:id/cancel — cancel a non-terminal run; emits run.cancelled. */
@@ -115,6 +127,8 @@ export async function cancelRun(ctx: ServerContext, runId: string, stopProcess: 
 export type RunIngestEvent =
   | { kind: "lifecycle"; phase: "started" | "completed" | "failed" | "cancelled"; failureReason?: string }
   | { kind: "output"; stream: "stdout" | "stderr"; text: string }
+  | { kind: "answer"; text: string }
+  | { kind: "usage"; usage: RunUsagePayload }
   | { kind: "artifact"; artifactType: ArtifactType; uri: string; checksum?: string | null };
 
 export interface IngestEnvelope {
@@ -268,6 +282,38 @@ export async function ingestRunEvent(
         eventId = await emit("run.cancelled", { run_id: env.runId }, { kind: "run_event", body: "Run cancelled" });
         await releaseRunLeases(ctx, tx, env.runId);
       }
+    } else if (ev.kind === "answer") {
+      const parsed = RunAnswerPayloadSchema.safeParse({ text: ev.text });
+      if (!parsed.success) throw AppError.validation("invalid assistant answer");
+      const turn = (await tx.select().from(assistantTurns).where(and(eq(assistantTurns.runId, env.runId), eq(assistantTurns.organizationId, ctx.organizationId))).for("update"))[0];
+      const responseRoomId = turn?.roomId ?? roomId;
+      if (!responseRoomId || turn?.responseMessageId || ["failed", "cancelled"].includes(run.status)) {
+        eventId = await emit("run.answer.discarded", { run_id: env.runId, reason: "settled_or_already_answered" });
+      } else {
+        const messageId = ctx.idGen.generate(ID_PREFIXES.message);
+        const payload = { run_id: env.runId, ...(turn ? { assistant_turn_id: turn.id, intent: "assistant" } : {}) };
+        await tx.insert(messages).values({ id: messageId, organizationId: ctx.organizationId,
+          threadRootId: turn?.threadRootId ?? null,
+          roomId: responseRoomId, taskId: run.taskId, runId: env.runId, actorType: "agent", actorId: run.agentInstanceId,
+          kind: "text", body: parsed.data.text, payload, createdAt: now });
+        if (turn) await tx.update(assistantTurns).set({ responseMessageId: messageId, updatedAt: now }).where(eq(assistantTurns.id, turn.id));
+        const updatedRoot = turn?.threadRootId ? (await tx.update(messages).set({ replyCount: sql`${messages.replyCount} + 1` }).where(eq(messages.id, turn.threadRootId)).returning({ replyCount: messages.replyCount }))[0] : undefined;
+        const event = buildEvent(ctx, { type: "message.created", actorType: "agent", actorId: run.agentInstanceId,
+          correlationId: turn?.id ?? run.taskId, projectId: taskRow.projectId, taskId: run.taskId, roomId: responseRoomId,
+          runId: env.runId, sequence: env.sequence, payload: { message_id: messageId, kind: "text", ...payload, ...(turn?.threadRootId ? { thread_root_id: turn.threadRootId, root_reply_count: updatedRoot!.replyCount } : {}) } });
+        await appendEvent(tx, event);
+        eventId = event.id;
+      }
+    } else if (ev.kind === "usage") {
+      const parsed = RunUsagePayloadSchema.safeParse(ev.usage);
+      if (!parsed.success) throw AppError.validation("invalid provider usage");
+      const value = parsed.data;
+      const measured = { inputTokens: value.input_tokens, outputTokens: value.output_tokens,
+        cachedInputTokens: value.cached_input_tokens, costUsd: value.cost_usd, currency: value.currency,
+        providerSessionId: value.provider_session_id, updatedAt: now };
+      await tx.insert(runUsage).values({ runId: env.runId, organizationId: ctx.organizationId, ...measured })
+        .onConflictDoUpdate({ target: runUsage.runId, set: measured });
+      eventId = await emit("run.usage", { ...value });
     } else if (ev.kind === "output") {
       eventId = await emit("run.output", { stream: ev.stream, text: ev.text });
     } else {
@@ -397,11 +443,9 @@ export async function failRunStart(
  * failure task-transitions. Repeated close/timeout calls are safe no-ops once the
  * run has left starting/running. Returns whether it actually failed the run.
  *
- * NOTE (dogfood boundary): the grace timer that calls this is in-memory only. On
- * a server restart un-fired timers are lost; recovery is then handled by the
- * #115 S2 resume-service checkpoint reconciliation (a run with no event past the
- * checkpoint's cursor is detected as stale and blocked). A DB-backed grace timer
- * is a later/release-path item, not implemented here.
+ * Startup recovery reconstructs grace windows from durable run rows; it does
+ * not depend on a goal or checkpoint. A timeout never proves process exit, so
+ * leases remain held until the owning node confirms absence or completes stop.
  */
 export async function failRunDaemonDisconnect(
   ctx: ServerContext,
@@ -429,7 +473,7 @@ export async function failRunDaemonDisconnect(
       }
       return { failed: false };
     }
-    if (status !== "queued" && status !== "starting" && status !== "running") return { failed: false };
+    if (!["queued", "starting", "running", "paused", "awaiting_input"].includes(status)) return { failed: false };
 
     const taskRow = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
     const emitFailed = async (): Promise<void> => {
@@ -450,10 +494,13 @@ export async function failRunDaemonDisconnect(
       if (processExitConfirmed) await releaseRunLeases(ctx, tx, runId);
     };
 
-    if (status === "running") {
-      const result = await transitionRun(tx, ctx, { runId, from: "running", trigger: "run_failed", patch: { endedAt: now, failureReason: REASON } });
+    if (status === "running" || status === "paused" || status === "awaiting_input") {
+      const result = await transitionRun(tx, ctx, { runId, from: status, trigger: "run_failed", patch: { endedAt: now, failureReason: REASON } });
       if (!result.changed) return { failed: false }; // lost the race → no duplicate event
-      const taskBlocked = await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_failed", now });
+      const taskStatus = taskRow?.status as TaskStatus;
+      const taskBlocked = canTransitionTask(taskStatus, "run_failed")
+        ? await transitionTask(tx, ctx, { taskId: run.taskId, from: taskStatus, trigger: "run_failed", now })
+        : { changed: false };
       await emitFailed();
       if (taskBlocked.changed) {
         await dagService.propagateBlocked(ctx, tx, run.taskId, `run_failed: ${REASON}`);
@@ -471,7 +518,7 @@ export async function failRunDaemonDisconnect(
 }
 
 /**
- * #115 P2-S3 — snapshot the ids of runs that were active (starting/running) on a
+ * Snapshot the ids of runs that were active (queued/starting/running) on a
  * computer at disconnect time. The grace window operates on this snapshot;
  * `failRunDaemonDisconnect` re-verifies each at fire time so runs that reached a
  * terminal state or moved are never double-failed.
@@ -484,7 +531,7 @@ export async function activeRunIdsForComputer(ctx: ServerContext, computerId: st
       and(
         eq(runs.organizationId, ctx.organizationId),
         eq(runs.computerId, computerId),
-        inArray(runs.status, ["starting", "running"]),
+        inArray(runs.status, ["queued", "starting", "running", "paused", "awaiting_input"]),
       ),
     );
   return rows.map((r) => r.id);
@@ -516,7 +563,7 @@ export async function activeSnapshotRunIdsForComputer(
       and(
         eq(runs.organizationId, ctx.organizationId),
         eq(runs.computerId, computerId),
-        inArray(runs.status, ["starting", "running"]),
+        inArray(runs.status, ["queued", "starting", "running", "paused", "awaiting_input"]),
         inArray(runs.id, [...runIds]),
       ),
     );

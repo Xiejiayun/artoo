@@ -66,6 +66,24 @@ final class NativeConnectionTests: XCTestCase {
         draft.risk = "low"; draft.summary = String(repeating: "x", count: 4001); XCTAssertFalse(draft.valid)
     }
 
+    func testAgentDiscussionRequiresDistinctParticipantsAndBoundedRoundsAndTime() {
+        var draft = AgentDiscussionDraft()
+        XCTAssertFalse(draft.valid)
+        draft.participants[0].agentInstanceId = "instance_1"
+        draft.participants[1].agentInstanceId = "instance_1"
+        XCTAssertFalse(draft.valid)
+        draft.participants[1].agentInstanceId = "instance_2"
+        XCTAssertTrue(draft.valid)
+        XCTAssertEqual(draft.body["participants"].array.first?["role"].text, "Planner")
+        XCTAssertEqual(draft.body["rounds"].text, "2")
+        XCTAssertEqual(draft.body["max_minutes"].text, "15")
+        XCTAssertEqual(draft.body["room_id"], .null)
+        draft.roomId = "room_channel"; XCTAssertEqual(draft.body["room_id"].text, "room_channel")
+        draft.rounds = 4; XCTAssertFalse(draft.valid)
+        draft.rounds = 2; draft.maxMinutes = 61; XCTAssertFalse(draft.valid)
+        draft.maxMinutes = 15; draft.participants[1].role = " "; XCTAssertFalse(draft.valid)
+    }
+
     func testKeychainRoundTripAndRevocationClearsOnlyTestCredential() throws {
         let store = KeychainCredentialStore(service: "dev.artoo.test.\(UUID().uuidString)")
         defer { try? store.clear() }

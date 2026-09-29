@@ -16,6 +16,12 @@ import { queryKeys } from "./queryKeys.js";
 export function invalidationsForEvent(topic: string, event: EventEnvelope): QueryKey[] {
   const keys: QueryKey[] = [];
 
+  // Output chunks stream directly into the run timeline. They do not alter
+  // task state, chat messages, or collaboration records.
+  if (event.type === "run.output") return keys;
+
+  if (event.type.startsWith("run.") && typeof event.run_id === "string") keys.push(queryKeys.runUsage(event.run_id));
+
   if (typeof event.task_id === "string") {
     keys.push(queryKeys.task(event.task_id));
     // Any task activity (runs, approvals, messages, events) changes its audit bundle.
@@ -23,8 +29,13 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
   }
   if (typeof event.room_id === "string") {
     keys.push(queryKeys.messages(event.room_id));
+    // Room-prefix invalidation also refreshes every independently cached thread.
+    keys.push(queryKeys.assistantTurns(event.room_id));
     keys.push(["collaboration", event.room_id]);
   }
+  if (event.type.startsWith("channel.")) keys.push(["channels"]);
+  if (event.type === "message.mention" || event.type.startsWith("notification.")) keys.push(queryKeys.notifications);
+  if (event.type.startsWith("computer.") || event.type.startsWith("daemon.") || event.type.startsWith("agent.")) keys.push(queryKeys.daemons);
   if (event.type.startsWith("goal.") || event.type.startsWith("plan.") || event.type.startsWith("checkpoint.")) {
     keys.push(["goals"], ["plans"], ["checkpoints"]);
   }

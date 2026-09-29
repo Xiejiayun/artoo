@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useApi, useCommands } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { clearRoomDrafts } from "../app/roomDrafts.js";
 import { Button } from "../ui/index.js";
 import { LogOut } from "../ui/Icon.js";
 import { ActionError } from "./ActionError.js";
@@ -25,6 +26,7 @@ export function LogoutButton(): React.ReactNode {
   const logout = useMutation({
     mutationFn: async () => {
       commands.cancelPending();
+      clearRoomDrafts();
       if (window.artooDesktop?.logout) { await window.artooDesktop.logout(); window.location.reload(); }
       else await api.logout();
     },

@@ -8,7 +8,8 @@ import { useSelection } from "../app/SelectionContext.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { Badge, Button, EmptyState, Input, Textarea } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
-import { CollaborationPanel } from "./CollaborationPanel.js";
+import { RoomConversation } from "./RoomConversation.js";
+import { GoalDiscussion } from "./GoalDiscussion.js";
 
 const lines = (text: string): string[] => text.split("\n").map((line) => line.trim()).filter(Boolean);
 
@@ -77,6 +78,7 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
     </div>
     {confirmCancel && <div className="product-card"><p>Cancel this goal and its remaining work?</p><div className="action-row"><Button variant="danger" loading={action.isPending} onClick={() => action.mutate("cancel")}>Confirm cancel goal</Button><Button onClick={() => setConfirmCancel(false)}>Keep goal</Button></div></div>}
     <ActionError error={action.error ?? planAction.error ?? audit.error} />
+    <GoalDiscussion goal={goal} />
     <section className="u-stack" aria-label="Plans"><h3>Plans</h3><ActionError error={plans.error} />
       {plans.isLoading && <p role="status">Loading plans…</p>}
       {canProposePlan(goal.status, !!goal.current_plan_id) && <Button onClick={() => setProposing(!proposing)}>{proposing ? "Close plan editor" : "Propose plan"}</Button>}
@@ -89,7 +91,7 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
       </article>)}
     </section>
     <section className="u-stack-sm" aria-label="Checkpoints"><h3>Checkpoints</h3><ActionError error={checkpoints.error} />{checkpoints.isLoading && <p role="status">Loading checkpoints…</p>}{checkpoints.data?.checkpoints.length === 0 && <p>No checkpoints yet.</p>}{checkpoints.data?.checkpoints.map((checkpoint) => <details className="product-card" key={checkpoint.id}><summary>{checkpoint.type.replaceAll("_", " ")} · {new Date(checkpoint.created_at).toLocaleString()}</summary><p>{checkpoint.summary}</p><p>{checkpoint.state_refs.active_runs.length} active runs · {checkpoint.state_refs.open_blockers.length} blockers · {checkpoint.state_refs.pending_approvals.length} approvals</p><ul>{checkpoint.state_refs.task_statuses.map((task) => <li key={task.task_id}><Button size="sm" onClick={() => { setSelectedTaskId(task.task_id); navigate("/"); }}>Open task {task.task_id}</Button> {task.status}</li>)}</ul></details>)}</section>
-    {goal.room_id && <CollaborationPanel roomId={goal.room_id} goalId={goal.id} />}
+    {goal.room_id && <RoomConversation key={goal.room_id} roomId={goal.room_id} goalId={goal.id} />}
   </article>;
 }
 

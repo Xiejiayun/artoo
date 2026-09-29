@@ -73,6 +73,9 @@ export function registerNodeWsRoute(
   deviceConnections?: DeviceConnectionRegistry,
   graceWindow?: GraceWindowManager,
 ): void {
+  // A database snapshot can outlive the socket-close callback. Reconnect must
+  // consume that pending read as well as a timer already armed from it.
+  const disconnectSnapshots = new Map<string, Promise<string[]>>();
   app.get("/api/v1/node", { websocket: true }, (socket: unknown, req: FastifyRequest) => {
     const raw = socket as RawServerSocket;
     const token = (req.query as { token?: string }).token;
@@ -124,13 +127,17 @@ export function registerNodeWsRoute(
         // failure and resumes only the disconnect snapshot, re-verified by
         // org/computer/status so terminal or newly-created runs are not resumed.
         const resumeSnapshot = graceWindow?.disarm(nodeId) ?? [];
+        const pendingSnapshot = disconnectSnapshots.get(nodeId);
+        disconnectSnapshots.delete(nodeId);
         {
           const resumeNodeId = nodeId;
           const resumeBinding = binding;
           void (async (): Promise<void> => {
-            const active = await activeSnapshotRunIdsForComputer(ctx, resumeNodeId, resumeSnapshot);
+            const captured = pendingSnapshot === undefined ? [] : await pendingSnapshot;
+            const active = await activeSnapshotRunIdsForComputer(ctx, resumeNodeId, [...new Set([...resumeSnapshot, ...captured])]);
             const uncertain = await unconfirmedProcessRunIdsForComputer(ctx, resumeNodeId);
             for (const runId of [...new Set([...active, ...uncertain])]) {
+              if (registry.get(resumeNodeId) !== resumeBinding) break;
               await resumeBinding.dispatchRunResume(runId).catch(() => {});
             }
           })().catch(() => {});
@@ -230,9 +237,16 @@ export function registerNodeWsRoute(
           // (grace only delays run failure, #113 unchanged).
           if (graceWindow !== undefined) {
             const closedNodeId = nodeId;
+            const capture = activeRunIdsForComputer(ctx, closedNodeId);
+            disconnectSnapshots.set(closedNodeId, capture);
             void (async (): Promise<void> => {
-              const snapshot = await activeRunIdsForComputer(ctx, closedNodeId);
-              graceWindow.arm(closedNodeId, snapshot);
+              const snapshot = await capture;
+              // A reconnect can complete while the DB snapshot is pending. Do
+              // not arm a stale disconnect timer over the new live binding;
+              // that connection now owns/awaits this snapshot.
+              if (disconnectSnapshots.get(closedNodeId) !== capture) return;
+              disconnectSnapshots.delete(closedNodeId);
+              if (registry.get(closedNodeId) === undefined) graceWindow.arm(closedNodeId, snapshot);
             })().catch(() => {});
           }
         }

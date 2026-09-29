@@ -89,6 +89,208 @@ final class ApiClientTests: XCTestCase {
         catch { XCTAssertTrue(error is ApiError) }
     }
 
+    func testRoomPaginationEscapesOpaqueCursorsAndDecodesSequence() async throws {
+        APIProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/rooms/room_1/messages")
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first { $0.name == "limit" }?.value, "50")
+            XCTAssertEqual(query?.first { $0.name == "after" }?.value, "opaque+/=&cursor")
+            return (200, Data(#"{"messages":[{"id":"m","room_id":"room_1","actor_type":"user","actor_id":"u","body":"Hello","sequence":123}],"next_before":"older","next_after":"newer","has_more":true}"#.utf8))
+        }
+        let page = try await client().messagePage(roomId: "room_1", after: "opaque+/=&cursor")
+        XCTAssertEqual(page.messages.first?.sequence, 123)
+        XCTAssertEqual(page.nextAfter, "newer"); XCTAssertEqual(page.nextBefore, "older"); XCTAssertEqual(page.hasMore, true)
+    }
+
+    func testInvalidatedClientCannotSendUnderAnOldIdentity() async {
+        APIProtocol.handler = { _ in XCTFail("An invalidated session must not issue requests"); return (200, Data()) }
+        let old = client(); old.invalidate()
+        do { _ = try await old.command(path: "/api/v1/rooms/r/messages", body: .object(["body": .string("old")]), idempotencyKey: "old-send"); XCTFail("Old session accepted") }
+        catch { XCTAssertTrue(error is CancellationError) }
+    }
+
+    @MainActor
+    func testRoomDraftSurvivesRelaunchAndUnknownDeliveryRetriesSameBodyAndKey() async throws {
+        let suite = "artoo.drafts.test.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
+        let store = RoomDraftStore(defaults: defaults)
+        let api = client()
+        var attempts: [String] = []
+        APIProtocol.handler = { request in
+            if request.httpMethod == "GET" { return (200, Data(#"{"messages":[],"next_before":null,"next_after":null,"has_more":false}"#.utf8)) }
+            attempts.append(try XCTUnwrap(request.value(forHTTPHeaderField: "Idempotency-Key")))
+            XCTAssertEqual(try Self.body(request)["body"].text, "Keep my draft")
+            if attempts.count == 1 { throw URLError(.timedOut) }
+            return (201, Data(#"{"message":{"id":"m"}}"#.utf8))
+        }
+        let first = RoomMessagesViewModel(client: api, roomId: "room_1", drafts: store)
+        first.configureDraft(server: "https://team.example.com", user: "user_1")
+        first.draft.text = "Keep my draft"
+        let failed = await first.send(); XCTAssertFalse(failed)
+        XCTAssertEqual(first.draft.text, "Keep my draft"); XCTAssertNotNil(first.draft.pending)
+        let restored = RoomMessagesViewModel(client: api, roomId: "room_1", drafts: store)
+        restored.configureDraft(server: "https://team.example.com/", user: "user_1")
+        XCTAssertEqual(restored.draft, first.draft)
+        let succeeded = await restored.submitPending(); XCTAssertTrue(succeeded)
+        XCTAssertEqual(attempts.count, 2); XCTAssertEqual(attempts[0], attempts[1])
+        XCTAssertTrue(restored.draft.text.isEmpty); XCTAssertNil(restored.draft.pending)
+        for scope in [("https://other.example.com", "user_1", "room_1"), ("https://team.example.com", "user_2", "room_1"), ("https://team.example.com", "user_1", "room_2")] {
+            XCTAssertEqual(store.load(key: RoomDraftStore.key(server: scope.0, user: scope.1, room: scope.2)), RoomDraft())
+        }
+    }
+
+    @MainActor
+    func testRoomPagesMergeWithoutDuplicatesInSequenceOrder() async throws {
+        APIProtocol.handler = { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let older = query.contains { $0.name == "before" }
+            let newer = query.contains { $0.name == "after" }
+            let ids = older ? [1, 2, 3] : newer ? [4, 5] : [3, 4]
+            let messages = ids.map { n in JSONValue.object(["id": .string("m_\(n)"), "room_id": .string("r"), "actor_type": .string("user"), "actor_id": .string("u"), "body": .string("Message \(n)"), "sequence": .number(Double(n)), "created_at": .string(n == 5 ? "2020" : "2026")]) }
+            return (200, try JSONEncoder().encode(JSONValue.object(["messages": .array(messages), "next_before": older ? .null : .string("old"), "next_after": .string(newer ? "new5" : "new4"), "has_more": .bool(!older && !newer)])))
+        }
+        let model = RoomMessagesViewModel(client: client(), roomId: "r")
+        await model.refresh(); XCTAssertEqual(model.messages.map(\.id), ["m_3", "m_4"]); XCTAssertTrue(model.hasOlder)
+        await model.loadOlder(); XCTAssertFalse(model.hasOlder)
+        await model.refresh(); XCTAssertEqual(model.messages.map(\.id), ["m_1", "m_2", "m_3", "m_4", "m_5"])
+    }
+
+    @MainActor
+    func testAssistantUsesStableLogicalRequestIdAndRetainsWaitingAndFailureStates() async throws {
+        let suite = "artoo.assistant.test.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
+        let store = RoomDraftStore(defaults: defaults)
+        let fixtureURL = try XCTUnwrap(Bundle(for: ApiClientTests.self).url(forResource: "assistant-turns", withExtension: "json"))
+        let fixture = try Data(contentsOf: fixtureURL)
+        var keys: [String] = []
+        APIProtocol.handler = { request in
+            if request.httpMethod == "GET" {
+                return (200, request.url?.path.hasSuffix("assistant-turns") == true ? fixture : Data(#"{"messages":[],"has_more":false}"#.utf8))
+            }
+            XCTAssertEqual(request.url?.path, "/api/v1/rooms/room_1/assistant-turns")
+            let body = try Self.body(request)
+            let key = try XCTUnwrap(request.value(forHTTPHeaderField: "Idempotency-Key"))
+            XCTAssertEqual(body["client_request_id"].text, key)
+            XCTAssertEqual(body["agent_instance_id"].text, "agent_1")
+            XCTAssertEqual(body["body"].text, "Explain the change")
+            keys.append(key)
+            if keys.count == 1 { throw URLError(.networkConnectionLost) }
+            return (201, Data(#"{"turn":{"id":"turn_1"},"message":{"id":"message_1"}}"#.utf8))
+        }
+        let model = RoomMessagesViewModel(client: client(), roomId: "room_1", drafts: store)
+        model.configureDraft(server: "https://team.example.com", user: "user_1")
+        model.draft.text = "Explain the change"; model.draft.target = "assistant"; model.draft.agentInstanceId = "agent_1"
+        let first = await model.send(); XCTAssertFalse(first)
+        let second = await model.submitPending(); XCTAssertTrue(second)
+        XCTAssertEqual(keys.count, 2); XCTAssertEqual(keys.first, keys.last)
+        XCTAssertEqual(model.turns.map(\.status), ["waiting", "failed"])
+        XCTAssertEqual(model.turns.last?.error, "Runtime unavailable")
+        XCTAssertEqual(model.turns.first?.taskId, "task_1")
+    }
+
+    @MainActor
+    func testThreadDraftAndSendAreScopedToRootWithRealUserMentions() async throws {
+        let suite = "artoo.thread.test.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
+        let store = RoomDraftStore(defaults: defaults)
+        APIProtocol.handler = { request in
+            if request.httpMethod == "GET" {
+                let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+                XCTAssertEqual(query?.first { $0.name == "thread_root_id" }?.value, "message_root")
+                return (200, Data(#"{"messages":[],"has_more":false}"#.utf8))
+            }
+            let body = try Self.body(request)
+            XCTAssertEqual(body["thread_root_id"].text, "message_root")
+            XCTAssertEqual(body["client_request_id"].text, request.value(forHTTPHeaderField: "Idempotency-Key"))
+            XCTAssertEqual(body["mentions"].array.first?["actor_type"].text, "user")
+            XCTAssertEqual(body["mentions"].array.first?["actor_id"].text, "user_teammate")
+            return (201, Data(#"{"message":{"id":"reply"}}"#.utf8))
+        }
+        let model = RoomMessagesViewModel(client: client(), roomId: "r", threadRootId: "message_root", drafts: store)
+        model.configureDraft(server: "https://team.example.com", user: "u")
+        model.draft.text = "Please review"; model.draft.mentionedUserIds = ["user_teammate"]
+        XCTAssertTrue(store.load(key: RoomDraftStore.key(server: "https://team.example.com", user: "u", room: "r")).text.isEmpty)
+        XCTAssertEqual(store.load(key: RoomDraftStore.key(server: "https://team.example.com", user: "u", room: "r", threadRootId: "message_root")).text, "Please review")
+        let result = await model.send(); XCTAssertTrue(result)
+    }
+
+    @MainActor
+    func testAgentThreadSendAndTurnListPreserveThreadIsolation() async throws {
+        let suite = "artoo.agent-thread.test.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
+        let fixtureURL = try XCTUnwrap(Bundle(for: ApiClientTests.self).url(forResource: "assistant-turns", withExtension: "json"))
+        let turns = try Data(contentsOf: fixtureURL)
+        APIProtocol.handler = { request in
+            if request.httpMethod == "GET" {
+                let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+                XCTAssertEqual(query?.first { $0.name == "thread_root_id" }?.value, "message_root")
+                return (200, request.url?.path.hasSuffix("assistant-turns") == true ? turns : Data(#"{"messages":[],"has_more":false}"#.utf8))
+            }
+            XCTAssertEqual(request.url?.path, "/api/v1/rooms/room_1/assistant-turns")
+            XCTAssertEqual(try Self.body(request)["thread_root_id"].text, "message_root")
+            return (201, Data(#"{"turn":{"id":"turn_thread"},"message":{"id":"message_thread"}}"#.utf8))
+        }
+        let model = RoomMessagesViewModel(client: client(), roomId: "room_1", threadRootId: "message_root", drafts: RoomDraftStore(defaults: defaults))
+        model.configureDraft(server: "https://team.example.com", user: "u")
+        model.draft.text = "Review this thread"; model.draft.target = "assistant"
+        let result = await model.send(); XCTAssertTrue(result)
+        XCTAssertEqual(model.turns.map(\.id), ["turn_thread"])
+        XCTAssertEqual(model.turns.first?.threadRootId, "message_root")
+    }
+
+    @MainActor
+    func testPlanningThreadRetainsUnknownIntentButOnlyAllowsTeamReply() async throws {
+        let suite = "artoo.planning-thread.test.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
+        let store = RoomDraftStore(defaults: defaults)
+        var draft = RoomDraft(); draft.text = "Add acceptance checks"; draft.target = "assistant"
+        draft.pending = RoomDraft.Submission(key: "original", text: draft.text, path: "/api/v1/rooms/r/assistant-turns", body: .object(["body": .string(draft.text)]))
+        store.save(draft, key: RoomDraftStore.key(server: "https://team.example.com", user: "u", room: "r", threadRootId: "root"))
+        let model = RoomMessagesViewModel(client: client(), roomId: "r", threadRootId: "root", drafts: store, allowsAssistantRequests: false)
+        model.configureDraft(server: "https://team.example.com", user: "u")
+        APIProtocol.handler = { _ in XCTFail("A planning thread must not replay a direct agent request"); throw URLError(.badURL) }
+        let blocked = await model.submitPending(); XCTAssertFalse(blocked)
+        XCTAssertEqual(model.draft.pending?.key, "original")
+        model.keepPendingTextAsTeamReply()
+        XCTAssertEqual(model.draft.text, draft.text); XCTAssertEqual(model.draft.target, "team"); XCTAssertNil(model.draft.pending)
+        APIProtocol.handler = { request in
+            if request.httpMethod == "GET" { return (200, Data(#"{"messages":[],"has_more":false}"#.utf8)) }
+            XCTAssertEqual(request.url?.path, "/api/v1/rooms/r/messages")
+            XCTAssertEqual(try Self.body(request)["thread_root_id"].text, "root")
+            return (201, Data(#"{"message":{"id":"reply"}}"#.utf8))
+        }
+        let sent = await model.send(); XCTAssertTrue(sent)
+        let root = Message(id: "root", roomId: "r", actorType: "user", actorId: "u", body: "Goal", payload: .object(["discussion_id": .string("discussion_1")]))
+        XCTAssertTrue(root.isPlanningDiscussion)
+    }
+
+    @MainActor
+    func testDaemonFailureAndStaleSnapshotAreUnknownRatherThanOffline() async throws {
+        var disconnected = false
+        APIProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/daemons")
+            if disconnected { throw URLError(.notConnectedToInternet) }
+            return (200, Data(#"{"daemons":[{"computer_id":"c","display_name":"Workstation","status":"online","connected":true,"last_heartbeat_at":"2026-09-29T00:00:00Z","heartbeat_age_ms":200,"active_runs":2,"runtimes":[]}] }"#.utf8))
+        }
+        let model = DaemonStatusViewModel(client: client())
+        await model.load(); XCTAssertEqual(model.status(computerId: "c"), "online")
+        XCTAssertEqual(model.status(computerId: "c", now: Date().addingTimeInterval(13)), "unknown")
+        disconnected = true; await model.load()
+        XCTAssertEqual(model.status(computerId: "c"), "unknown")
+        XCTAssertEqual(model.daemons.first?.activeRuns, 2); XCTAssertNotNil(model.error)
+    }
+
+    @MainActor
+    func testThreadReplyCountDoesNotRegressWhenReplayFollowsNewerLiveEvent() async {
+        APIProtocol.handler = { _ in (200, Data(#"{"messages":[{"id":"root","room_id":"r","actor_type":"user","actor_id":"u","body":"Topic","sequence":1,"reply_count":0}],"has_more":false}"#.utf8)) }
+        let model = RoomMessagesViewModel(client: client(), roomId: "r")
+        await model.refresh()
+        for count in [3, 1] {
+            model.applyRealtime([.object(["event": .object(["room_id": .string("r"), "payload": .object(["thread_root_id": .string("root"), "root_reply_count": .number(Double(count))])])])])
+        }
+        XCTAssertEqual(model.messages.first?.replyCount, 3)
+    }
+
     @MainActor
     func testFailedWorkspaceCommandRetainsLoadedDataAndReportsFailure() async {
         APIProtocol.handler = { request in

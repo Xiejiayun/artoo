@@ -109,6 +109,17 @@ describe("RealtimeClient", () => {
     expect(fake.lastFrame()).toEqual({ type: "unsubscribe", topics: ["task:1"] });
   });
 
+  it("keeps shared room subscriptions alive when the thread panel closes", () => {
+    const fake = new FakeSocket();
+    const client = new RealtimeClient({ url: "ws://x", onEvent: () => undefined, socketFactory: () => fake });
+    client.connect(); fake.open();
+    client.subscribe(["room:1"]); client.subscribe(["room:1"]);
+    client.unsubscribe(["room:1"]);
+    expect(fake.sent).toHaveLength(1);
+    client.unsubscribe(["room:1"]);
+    expect(fake.lastFrame()).toEqual({ type: "unsubscribe", topics: ["room:1"] });
+  });
+
   it("re-subscribes the current topic set after reconnect", () => {
     const sockets: FakeSocket[] = [];
     const factory = (): FakeSocket => {

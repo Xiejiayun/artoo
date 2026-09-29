@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { idempotencyKeys } from "@artoo/db";
+import { SendMessageRequestSchema } from "@artoo/domain";
 import { and, eq } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
@@ -52,6 +53,16 @@ export function registerIdempotency(
     const path = req.url.split("?")[0] ?? "";
     if (exemptPaths.has(path)) {
       return;
+    }
+    // This endpoint commits a durable client_request_id with the turn/message in
+    // one transaction. A separate response-cache reservation could survive a
+    // crash and permanently block replay of an already accepted conversation.
+    if (req.method === "POST" && req.routeOptions.url === "/api/v1/rooms/:id/assistant-turns") return;
+    if (req.method === "POST" && req.routeOptions.url === "/api/v1/rooms/:id/messages") {
+      const message = SendMessageRequestSchema.safeParse(req.body);
+      // Modern messages persist their identity/hash in the message transaction.
+      // Keep header-only deduplication for legacy clients without a valid body ID.
+      if (message.success && message.data.client_request_id !== undefined) return;
     }
     const actor = requestContext(ctx, req).actorUserId;
     const scope = `${ctx.organizationId}:${actor}:${req.method}:${req.url}`;

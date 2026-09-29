@@ -512,6 +512,19 @@ public struct Room: Codable, Equatable, Identifiable {
     }
 }
 
+public struct RunUsage: Codable, Equatable {
+    public let runId: String
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let cachedInputTokens: Int?
+    public let costUsd: Double?
+    public let currency: String?
+    public let providerSessionId: String?
+    public let updatedAt: String
+}
+
+public struct RunUsageResponse: Codable, Equatable { public let usage: RunUsage? }
+
 public struct Message: Codable, Equatable, Identifiable {
     public let id: String
     public let roomId: String
@@ -520,6 +533,11 @@ public struct Message: Codable, Equatable, Identifiable {
     public let kind: String?
     public let body: String
     public let createdAt: String?
+    public let sequence: Int?
+    public let threadRootId: String?
+    public var replyCount: Int?
+    public let payload: JSONValue?
+    public var isPlanningDiscussion: Bool { !(payload?["discussion_id"].text ?? "").isEmpty }
 
     public init(
         id: String,
@@ -528,7 +546,11 @@ public struct Message: Codable, Equatable, Identifiable {
         actorId: String,
         kind: String? = nil,
         body: String,
-        createdAt: String? = nil
+        createdAt: String? = nil,
+        sequence: Int? = nil,
+        threadRootId: String? = nil,
+        replyCount: Int? = nil,
+        payload: JSONValue? = nil
     ) {
         self.id = id
         self.roomId = roomId
@@ -537,6 +559,10 @@ public struct Message: Codable, Equatable, Identifiable {
         self.kind = kind
         self.body = body
         self.createdAt = createdAt
+        self.sequence = sequence
+        self.threadRootId = threadRootId
+        self.replyCount = replyCount
+        self.payload = payload
     }
 }
 
@@ -617,7 +643,12 @@ public struct ApprovalResponse: Codable, Equatable {
 
 public struct MessagesResponse: Codable, Equatable {
     public let messages: [Message]
-    public init(messages: [Message]) { self.messages = messages }
+    public let nextBefore: String?
+    public let nextAfter: String?
+    public let hasMore: Bool?
+    public init(messages: [Message], nextBefore: String? = nil, nextAfter: String? = nil, hasMore: Bool = false) {
+        self.messages = messages; self.nextBefore = nextBefore; self.nextAfter = nextAfter; self.hasMore = hasMore
+    }
 }
 
 // MARK: - Request bodies

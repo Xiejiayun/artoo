@@ -1,8 +1,9 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { agentInstances } from "@artoo/db";
 import { eq } from "drizzle-orm";
@@ -19,7 +20,23 @@ async function until(predicate: () => boolean | Promise<boolean>): Promise<void>
   }
   throw new Error("desktop worker verification timeout");
 }
-const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const alive = (pid: number) => {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; }
+};
+const execute = promisify(execFile);
+
+/** Observe the independently spawned guardian without changing its lifecycle. */
+async function guardianPid(workerPid: number): Promise<number> {
+  const { stdout } = await execute(join(process.env.SystemRoot ?? "C:/Windows", "System32/WindowsPowerShell/v1.0/powershell.exe"), [
+    "-NoProfile", "-NonInteractive", "-Command",
+    `Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${workerPid}' | Where-Object { $_.CommandLine -like '*let disarmed=false;*' } | Select-Object -ExpandProperty ProcessId`,
+  ], { windowsHide: true, timeout: 10_000 });
+  const ids = stdout.trim().split(/\s+/).filter(Boolean).map(Number);
+  expect(ids, "worker must have one independently running process guardian").toHaveLength(1);
+  expect(Number.isSafeInteger(ids[0]) && ids[0]! > 0).toBe(true);
+  return ids[0]!;
+}
 
 // Build with npm run bundle-daemon --workspace @artoo/desktop before this gate.
 // Uses a temporary npm Codex shim; no real AI binary/model/network is invoked.
@@ -28,11 +45,16 @@ describe.skipIf(process.platform !== "win32" || !existsSync(bundle))("bundled Wi
   let worker: ChildProcess | undefined;
   let workspace: string | undefined;
   let pids: number[] = [];
+  let workerClosed = true;
   afterEach(async () => {
     if (worker && worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL");
-    if (pids.length > 0) await until(() => pids.every((pid) => !alive(pid)));
-    await server?.close();
-    if (workspace) rmSync(workspace, { recursive: true, force: true });
+    try {
+      // Process assertions precede filesystem retries, so a leaked guardian or
+      // CLI still fails the test instead of being hidden by cleanup retries.
+      if (pids.length > 0) await until(() => pids.every((pid) => !alive(pid)));
+      await until(() => workerClosed);
+    } finally { await server?.close(); }
+    if (workspace) rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     server = undefined; worker = undefined; workspace = undefined; pids = [];
   });
 
@@ -55,6 +77,8 @@ else {writeFileSync('parent.pid',String(process.pid));spawn(process.execPath,[fi
       ARTOO_NODE_URL: `${address.replace("http:", "ws:")}/api/v1/node?token=dev`, ARTOO_NODE_ID: COMPUTER,
       ARTOO_ALLOWED_ROOTS: workspace, ARTOO_RUNTIMES: "codex", ARTOO_HEARTBEAT_INTERVAL_MS: "25",
     } });
+    workerClosed = false;
+    worker.once("close", () => { workerClosed = true; });
     let diagnostic = "";
     worker.stderr?.on("data", (data: Buffer) => { diagnostic += data.toString(); });
     const exit = new Promise<number | null>((resolve) => worker!.once("exit", resolve));
@@ -70,6 +94,7 @@ else {writeFileSync('parent.pid',String(process.pid));spawn(process.execPath,[fi
     expect(assigned.statusCode, assigned.body).toBe(200);
     await until(() => existsSync(join(workspace!, "parent.log")) && existsSync(join(workspace!, "child.log")));
     pids = ["parent.pid", "child.pid"].map((name) => Number(readFileSync(join(workspace!, name), "utf8")));
+    pids.push(await guardianPid(worker.pid!));
     return { runId: assigned.json().run.id as string, exit };
   }
 
@@ -77,7 +102,8 @@ else {writeFileSync('parent.pid',String(process.pid));spawn(process.execPath,[fi
     const { runId, exit } = await launch();
     worker!.send({ type: "shutdown" });
     expect(await exit).toBe(0);
-    expect(pids.every((pid) => !alive(pid))).toBe(true);
+    expect(pids.slice(0, 2).every((pid) => !alive(pid))).toBe(true);
+    await until(() => pids.every((pid) => !alive(pid)));
     await until(async () => (await server!.app.inject({ method: "GET", url: `/api/v1/runs/${runId}` })).json().run.status === "cancelled");
   });
 

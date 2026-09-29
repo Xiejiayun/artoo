@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { StringDecoder } from "node:string_decoder";
 
 import type { ArtifactPayload, ArtifactType } from "@artoo/domain";
 import type {
@@ -15,6 +16,7 @@ import type {
 } from "@artoo/protocol";
 import { assertWorkspaceScope } from "@artoo/protocol";
 import { resolveCliCommand } from "./cli-resolver.js";
+import { createStructuredOutput, type ProcessOutputFormat } from "./structured-output.js";
 
 /**
  * Process-based {@link RuntimeAdapter} (design §5.2 minimal model). Runs a CLI
@@ -41,17 +43,22 @@ export interface ProcessAdapterOptions {
   runtimeId?: string;
   /** argv template; supports {{workspace_root}} and {{context_pack_path}}. */
   command: string[];
+  /** Explicit operator-configured read-only command for discussion sessions. */
+  discussionCommand?: string[];
   /** Workspace allowlist enforced before spawn. */
   allowedRoots: string[];
   /** Artifacts collected from the workspace after the run completes. */
   artifacts?: ArtifactSpec[];
   contextPackFilename?: string;
+  /** Recognized CLI JSONL output; overrides/fixtures default to plain logs. */
+  outputFormat?: ProcessOutputFormat;
 }
 
 interface RunState {
   queue: AsyncEventQueue<RunEvent>;
   kill: () => Promise<void>;
   workspaceRoot: string;
+  discussion: boolean;
   stopReason?: StopReason;
 }
 
@@ -158,9 +165,10 @@ function makeLineEmitter(onLine: (text: string) => void): {
   flush(): void;
 } {
   let buffer = "";
+  const decoder = new StringDecoder("utf8");
   return {
     feed(chunk): void {
-      buffer += chunk.toString();
+      buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
       let index = buffer.indexOf("\n");
       while (index >= 0) {
         onLine(buffer.slice(0, index).replace(/\r$/, ""));
@@ -169,6 +177,7 @@ function makeLineEmitter(onLine: (text: string) => void): {
       }
     },
     flush(): void {
+      buffer += decoder.end();
       if (buffer.length > 0) {
         onLine(buffer.replace(/\r$/, ""));
         buffer = "";
@@ -272,11 +281,14 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
       assertWorkspaceScope(config.workspaceRoot, options.allowedRoots);
       assertRealWorkspaceScope(config.workspaceRoot, options.allowedRoots);
 
+      const discussion = config.runStart.context_pack.payload?.policy.execution_mode === "discussion";
+      if (discussion && !options.discussionCommand) throw new Error("runtime has no explicitly configured read-only discussion command");
+
       const contextPackPath = workspacePath(config.workspaceRoot, contextPackFilename);
       artifactPaths(config.workspaceRoot);
       writeFileSync(contextPackPath, renderContextPack(config));
 
-      const argv = options.command.map((part) =>
+      const argv = (discussion ? options.discussionCommand! : options.command).map((part) =>
         part
           .replaceAll("{{workspace_root}}", config.workspaceRoot)
           .replaceAll("{{context_pack_path}}", contextPackPath)
@@ -301,10 +313,12 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
       const closed = new Promise<void>((resolveClose) => { resolveClosed = resolveClose; });
       let termination: Promise<void> | undefined;
       let guardian: ChildProcess | undefined;
+      const structured = createStructuredOutput(options.outputFormat ?? "plain");
 
-      const stdout = makeLineEmitter((text) =>
-        queue.push({ type: "run.output", payload: { stream: "stdout", text } })
-      );
+      const stdout = makeLineEmitter((text) => {
+        queue.push({ type: "run.output", payload: { stream: "stdout", text } });
+        structured.consume(text);
+      });
       const stderr = makeLineEmitter((text) =>
         queue.push({ type: "run.output", payload: { stream: "stderr", text } })
       );
@@ -314,6 +328,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
       const state: RunState = {
         queue,
         workspaceRoot: config.workspaceRoot,
+        discussion,
         kill: async () => {
           if (finalized) return;
           termination ??= child.pid === undefined ? Promise.resolve() : stopProcessTree(child.pid);
@@ -329,6 +344,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
         finalized = true;
         stdout.flush();
         stderr.flush();
+        for (const measured of structured.finish(false)) queue.push(measured);
         queue.push(event);
         queue.end();
         resolveClosed();
@@ -353,8 +369,14 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
         }
 
         if (code === 0) {
+          stdout.flush();
+          stderr.flush();
+          if (structured.failureReason() !== undefined) {
+            finishWith({ type: "run.lifecycle", payload: { phase: "failed", reason: structured.failureReason() } });
+            return;
+          }
           let descriptors: ArtifactDescriptor[];
-          try { descriptors = collectDescriptors(config.workspaceRoot); }
+          try { descriptors = discussion ? [] : collectDescriptors(config.workspaceRoot); }
           catch (error) {
             finishWith({ type: "run.lifecycle", payload: { phase: "failed", reason: error instanceof Error ? error.message : "artifact collection failed" } });
             return;
@@ -365,6 +387,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
           for (const descriptor of descriptors) {
             queue.push({ type: "artifact.created", payload: descriptor.payload });
           }
+          for (const measured of structured.finish(true)) queue.push(measured);
           queue.push({ type: "run.lifecycle", payload: { phase: "completed", reason: null } });
           queue.end();
           resolveClosed();
@@ -431,7 +454,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
 
     async collectArtifacts(handle: AgentInstanceHandle): Promise<ArtifactDescriptor[]> {
       const state = runs.get(handle.runId);
-      return state ? collectDescriptors(state.workspaceRoot) : [];
+      return state && !state.discussion ? collectDescriptors(state.workspaceRoot) : [];
     }
   };
 }

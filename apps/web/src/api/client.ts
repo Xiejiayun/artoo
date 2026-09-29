@@ -14,6 +14,9 @@ import type {
   RetryRequest,
   ReviewRequest,
   SendMessageRequest,
+  SendAssistantTurnRequest,
+  Channel, CreateChannelRequest, Member, Notification,
+  Discussion, StartDiscussionRequest,
   Task,
   Message,
   Approval,
@@ -35,8 +38,12 @@ import type {
   MemoryContextResponse,
   MemoryResponse,
   MessagesResponse,
+  MessagePageOptions,
+  AssistantTurn,
+  DaemonPresence,
   RetryResponse,
   RunResponse,
+  RunUsage,
   SessionResponse,
   SkillInstallsResponse,
   SupersedeMemoryResponse,
@@ -139,6 +146,11 @@ export class ApiClient {
     return this.request<BootstrapResponse>("GET", "/bootstrap");
   }
 
+  /** Non-secret identity for scoping local drafts to this server. */
+  getStorageScope(): string {
+    return new URL(this.baseUrl, globalThis.location?.href ?? "http://localhost/").href;
+  }
+
   createProject(body: { name: string; default_workspace?: string | null }, key: string): Promise<{ project: BootstrapResponse["projects"][number] }> {
     return this.request("POST", "/projects", { body, idempotencyKey: key });
   }
@@ -220,9 +232,27 @@ export class ApiClient {
     });
   }
 
-  listMessages(roomId: string): Promise<MessagesResponse> {
-    return this.request<MessagesResponse>("GET", `/rooms/${encodeURIComponent(roomId)}/messages`);
+  listMessages(roomId: string, options: MessagePageOptions = {}): Promise<MessagesResponse> {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.before !== undefined) params.set("before", options.before);
+    if (options.after !== undefined) params.set("after", options.after);
+    if (options.thread_root_id !== undefined) params.set("thread_root_id", options.thread_root_id);
+    const query = params.toString();
+    return this.request<MessagesResponse>("GET", `/rooms/${encodeURIComponent(roomId)}/messages${query ? `?${query}` : ""}`);
   }
+
+  listChannels(projectId: string): Promise<{ channels: Channel[] }> { return this.request("GET", `/channels?project_id=${encodeURIComponent(projectId)}`); }
+  listDiscussions(goalId: string): Promise<{ discussions: Discussion[] }> { return this.request("GET", `/goals/${encodeURIComponent(goalId)}/discussions`); }
+  startDiscussion(goalId: string, body: StartDiscussionRequest, key: string): Promise<{ discussion: Discussion }> { return this.request("POST", `/goals/${encodeURIComponent(goalId)}/discussions`, { body, idempotencyKey: key }); }
+  cancelDiscussion(id: string, key: string): Promise<{ discussion: Discussion }> { return this.request("POST", `/discussions/${encodeURIComponent(id)}/cancel`, { idempotencyKey: key }); }
+  proposeDiscussionPlan(id: string, key: string): Promise<{ discussion: Discussion; plan: Plan }> { return this.request("POST", `/discussions/${encodeURIComponent(id)}/propose-plan`, { idempotencyKey: key }); }
+  createChannel(body: CreateChannelRequest, key: string): Promise<{ channel: Channel }> { return this.request("POST", "/channels", { body, idempotencyKey: key }); }
+  listMembers(): Promise<{ members: Member[] }> { return this.request("GET", "/members"); }
+  listNotifications(): Promise<{ notifications: Notification[] }> { return this.request("GET", "/notifications"); }
+  readNotification(id: string, key: string): Promise<{ notification: Notification }> { return this.request("POST", `/notifications/${encodeURIComponent(id)}/read`, { idempotencyKey: key }); }
+  getMessage(roomId: string, messageId: string): Promise<{ message: Message }> { return this.request("GET", `/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(messageId)}`); }
+  listDaemons(): Promise<{ daemons: DaemonPresence[] }> { return this.request("GET", "/daemons"); }
 
   sendMessage(
     roomId: string,
@@ -236,8 +266,25 @@ export class ApiClient {
     );
   }
 
+  listAssistantTurns(roomId: string, threadRootId?: string): Promise<{ turns: AssistantTurn[] }> {
+    const query = threadRootId ? `?thread_root_id=${encodeURIComponent(threadRootId)}` : "";
+    return this.request("GET", `/rooms/${encodeURIComponent(roomId)}/assistant-turns${query}`);
+  }
+
+  sendToAssistant(roomId: string, body: SendAssistantTurnRequest, key: string): Promise<{ turn: AssistantTurn; message: Message }> {
+    return this.request("POST", `/rooms/${encodeURIComponent(roomId)}/assistant-turns`, { body, idempotencyKey: key });
+  }
+
+  assistantTurnAction(id: string, action: "cancel" | "retry", key: string): Promise<{ turn: AssistantTurn }> {
+    return this.request("POST", `/assistant-turns/${encodeURIComponent(id)}/${action}`, { idempotencyKey: key });
+  }
+
   getRun(runId: string): Promise<RunResponse> {
     return this.request<RunResponse>("GET", `/runs/${encodeURIComponent(runId)}`);
+  }
+
+  getRunUsage(runId: string): Promise<{ usage: RunUsage | null }> {
+    return this.request("GET", `/runs/${encodeURIComponent(runId)}/usage`);
   }
 
   listComputerRuntimes(computerId: string): Promise<ComputerRuntimesResponse> {

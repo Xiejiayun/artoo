@@ -68,7 +68,8 @@ describe("trusted preview controls", () => {
   it("retains a rejected message draft and clears it only after a successful retry", async () => {
     const sendMessage = vi.fn().mockRejectedValueOnce(new ApiClientError("validation_error", "Message was rejected", 400)).mockResolvedValueOnce({ message: messageFixture({ id: "message_1", kind: "text", body: "Keep this context" }) });
     const listMessages = vi.fn().mockResolvedValue({ messages: [] });
-    renderWithProviders(<TaskRoom taskId="task_1" />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), getTask: async () => ({ task: taskFixture({ id: "task_1", title: "Task", status: "ready" }), room: roomFixture({ id: "room_1" }), runs: [], approvals: [], artifacts: [] }), listMessages, sendMessage, listDecisions: async () => ({ decisions: [] }), listHandoffs: async () => ({ handoffs: [] }), listBlockers: async () => ({ blockers: [] }) }) });
+    const listAssistantTurns = vi.fn().mockResolvedValue({ turns: [] });
+    renderWithProviders(<TaskRoom taskId="task_1" />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), getTask: async () => ({ task: taskFixture({ id: "task_1", title: "Task", status: "ready" }), room: roomFixture({ id: "room_1" }), runs: [], approvals: [], artifacts: [] }), listMessages, listAssistantTurns, sendMessage, listDecisions: async () => ({ decisions: [] }), listHandoffs: async () => ({ handoffs: [] }), listBlockers: async () => ({ blockers: [] }) }) });
     await userEvent.type(await screen.findByLabelText("Message"), "Keep this context");
     await userEvent.click(screen.getByRole("button", { name: "Send message" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Message was rejected");

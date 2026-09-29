@@ -1,4 +1,4 @@
-import { contextPacks, memories, projects, tasks } from "@artoo/db";
+import { assistantTurns, contextPacks, discussions, memories, messages, projects, tasks } from "@artoo/db";
 import {
   ContextPackSchema,
   ID_PREFIXES,
@@ -8,13 +8,15 @@ import {
   type Memory,
 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, lte, ne, or } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { mapMemory } from "../mappers.js";
+import { AppError } from "../errors.js";
 
 export interface BuildContextPackParams {
   runId: string;
+  assistantTurnId?: string;
   task: typeof tasks.$inferSelect;
   /** The run's bound workspace root (#20), else falls back to project default. */
   workspaceRoot: string | null;
@@ -87,7 +89,36 @@ export async function buildRunContextPack(
   const filesystemWriteScope =
     writePaths.length > 0 ? [...writePaths] : workspaceRoot === "" ? [] : [workspaceRoot];
 
+  let conversation: ContextPack["conversation"];
+  const discussion = (await tx.select({ id: discussions.id, status: discussions.status, deadlineAt: discussions.deadlineAt }).from(discussions)
+    .where(and(eq(discussions.taskId, task.id), eq(discussions.organizationId, ctx.organizationId))).limit(1))[0];
+  if (discussion && (discussion.status !== "running" || ctx.clock.now().getTime() >= Date.parse(discussion.deadlineAt))) {
+    throw AppError.invalidState("This planning discussion has stopped or reached its time limit");
+  }
+  if (params.assistantTurnId) {
+    const turn = (await tx.select().from(assistantTurns).where(and(eq(assistantTurns.id, params.assistantTurnId), eq(assistantTurns.taskId, task.id), eq(assistantTurns.organizationId, ctx.organizationId))))[0];
+    const request = turn ? (await tx.select().from(messages).where(eq(messages.id, turn.userMessageId)))[0] : undefined;
+    if (!turn || !request) throw new Error("Assistant conversation context is missing");
+    const history = await tx.select().from(messages).where(and(eq(messages.roomId, turn.roomId),
+      turn.threadRootId ? or(eq(messages.threadRootId, turn.threadRootId), eq(messages.id, turn.threadRootId)) : isNull(messages.threadRootId),
+      eq(messages.organizationId, ctx.organizationId), eq(messages.kind, "text"), ne(messages.id, request.id),
+      // A prior turn's answer can arrive after an already-queued follow-up. Include
+      // it, while excluding future user requests from this turn's instructions.
+      or(and(eq(messages.actorType, "user"), lte(messages.position, request.position)), eq(messages.actorType, "agent")),
+    )).orderBy(desc(messages.position)).limit(101);
+    const selected: { id: string; role: "user" | "assistant"; body: string; actor_id: string }[] = [];
+    let remaining = 80000;
+    let truncated = history.length > 100;
+    for (const message of history.slice(0, 100)) {
+      if (message.body.length > remaining) { truncated = true; break; }
+      selected.push({ id: message.id, role: message.actorType === "agent" ? "assistant" : "user", body: message.body, actor_id: message.actorId });
+      remaining -= message.body.length;
+    }
+    conversation = { room_id: turn.roomId, thread_root_id: turn.threadRootId, turn_id: turn.id, current_request: request.body, messages: selected.reverse(), history_truncated: truncated };
+  }
+
   const payload: ContextPack = ContextPackSchema.parse({
+    ...(conversation ? { conversation } : {}),
     task: {
       id: task.id,
       title: task.title,
@@ -101,7 +132,8 @@ export async function buildRunContextPack(
     },
     workspace: { root: workspaceRoot, file_scope: [] },
     policy: {
-      filesystem_write_scope: filesystemWriteScope,
+      ...(discussion ? { execution_mode: "discussion" as const } : {}),
+      filesystem_write_scope: discussion ? [] : filesystemWriteScope,
       requires_approval: ["git.push", "external.post"],
     },
     memory: {

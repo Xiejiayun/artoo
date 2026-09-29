@@ -289,8 +289,11 @@ export type Room = z.infer<typeof RoomSchema>;
 
 export const MessageSchema = z.object({
   id: z.string(),
+  sequence: z.number().int().positive().optional(),
   organization_id: z.string(),
   room_id: z.string(),
+  thread_root_id: z.string().nullable().optional(),
+  reply_count: z.number().int().nonnegative().optional(),
   task_id: z.string().nullish(),
   run_id: z.string().nullish(),
   actor_type: z.enum(["user", "agent", "system", "bridge"]),

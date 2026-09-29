@@ -232,6 +232,10 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   // (the existing streamEvents loop keeps flowing). Lost → ack rejected
   // (process_exited), and the server maps that to the daemon_disconnect path.
   async function onRunResume(command: RunResumeCommand): Promise<void> {
+    // Workspace/materialization or adapter.start may still be in flight after
+    // reconnect. Absence from the live map is not proof of exit until that
+    // start has either installed its process handle or definitively failed.
+    await starting.get(command.payload.run_id);
     if (runs.has(command.payload.run_id)) {
       await ackAccepted(command.id);
     } else {

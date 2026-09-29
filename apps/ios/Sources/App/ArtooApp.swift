@@ -21,6 +21,8 @@ public final class AppContainer: ObservableObject {
     @Published public var connectionError: String?
     @Published public var selectedProjectId: String = ""
     @Published public private(set) var serverURL = ""
+    @Published public private(set) var sessionGeneration = UUID()
+    public let realtime = RealtimeConnection()
     private let credentials: CredentialStore
     private var restored = false
 
@@ -62,28 +64,44 @@ public final class AppContainer: ObservableObject {
     }
     public func retryConnection() async { restored = false; await restore() }
     private func connect(_ stored: StoredConnection) async throws {
+        realtime.stop(); (client as? ApiClient)?.invalidate()
+        sessionGeneration = UUID(); isAuthenticated = false
+        let generation = sessionGeneration
         let url = try ServerAddress.validate(stored.serverURL, allowLocalHTTP: true)
         let live = ApiClient(baseURL: url, authToken: stored.controlToken)
         let authenticated = try await live.currentSession()
         let initial = try await live.bootstrap()
+        guard generation == sessionGeneration else { live.invalidate(); throw CancellationError() }
         client = live; identity = authenticated; serverURL = stored.serverURL
         bootstrap = .loaded(initial); isAuthenticated = true; connectionError = nil
         if !initial.projects.contains(where: { $0.id == selectedProjectId }) { selectedProjectId = initial.projects.first?.id ?? "" }
+        try realtime.configure(origin: url, controlToken: stored.controlToken, sessionID: live.sessionID,
+            topics: initial.projects.map { "project:\($0.id)" } + ["inbox:\(authenticated.user.id)"])
     }
     public func loadBootstrap() async {
+        let generation = sessionGeneration
         if bootstrap.value == nil { bootstrap = .loading }
         do {
-            let value = try await client.bootstrap(); bootstrap = .loaded(value)
+            let value = try await client.bootstrap()
+            guard generation == sessionGeneration else { return }
+            bootstrap = .loaded(value)
             if !value.projects.contains(where: { $0.id == selectedProjectId }) { selectedProjectId = value.projects.first?.id ?? "" }
-        } catch { bootstrap = .failed(String(describing: error)) }
+            if let user = identity?.user.id { realtime.updateTopics(value.projects.map { "project:\($0.id)" } + ["inbox:\(user)"]) }
+        } catch { if generation == sessionGeneration { bootstrap = .failed(String(describing: error)) } }
     }
     public func validateConnection() async {
         guard isAuthenticated, let live = client as? ApiClient else { return }
-        do { identity = try await live.currentSession(); connectionError = nil }
-        catch { connectionError = String(describing: error) }
+        let generation = sessionGeneration
+        do {
+            let current = try await live.currentSession()
+            guard generation == sessionGeneration else { return }
+            guard current.user.id == identity?.user.id else { authenticationExpired(session: live.sessionID); return }
+            identity = current; connectionError = nil
+        } catch { if generation == sessionGeneration { connectionError = String(describing: error) } }
     }
-    public func authenticationExpired(server: String?) {
-        guard server == serverURL || serverURL.isEmpty else { return }
+    public func authenticationExpired(session: String?) {
+        guard session == (client as? ApiClient)?.sessionID else { return }
+        realtime.stop(); (client as? ApiClient)?.invalidate(); sessionGeneration = UUID()
         isAuthenticated = false; identity = nil; bootstrap = .idle
         connectionError = "Your device connection expired or was revoked. Pair this device again."
         do { try credentials.clear() } catch { connectionError = String(describing: error) }
@@ -91,12 +109,13 @@ public final class AppContainer: ObservableObject {
     public func logout() async {
         guard !isConnecting else { return }; isConnecting = true
         defer { isConnecting = false }
-        do {
-            if let live = client as? ApiClient { try await live.logout() }
-            try credentials.clear()
-            isAuthenticated = false; identity = nil; bootstrap = .idle; connectionError = nil
-            selectedProjectId = ""; serverURL = ""
-        } catch { connectionError = "Sign out could not be confirmed. Reconnect and try again. \(error)" }
+        let live = client as? ApiClient
+        realtime.stop(); sessionGeneration = UUID()
+        isAuthenticated = false; identity = nil; bootstrap = .idle; connectionError = nil
+        selectedProjectId = ""; serverURL = ""
+        do { try credentials.clear() } catch { connectionError = String(describing: error) }
+        do { try await live?.revokeAndInvalidate() }
+        catch { connectionError = "Signed out on this phone. Server revocation could not be confirmed; revoke this device from Web if needed. \(error)" }
     }
 }
 
@@ -108,6 +127,7 @@ struct ArtooApp: App {
 
 public struct RootView: View {
     @EnvironmentObject private var container: AppContainer
+    @Environment(\.scenePhase) private var scenePhase
     public init() {}
     public var body: some View {
         Group {
@@ -116,16 +136,17 @@ public struct RootView: View {
                     InboxView(client: container.client).tabItem { Label("Inbox", systemImage: "tray.full") }
                     TasksView(client: container.client, projectId: container.projectId)
                         .id(container.projectId).tabItem { Label("Tasks", systemImage: "checklist") }
-                    WorkspaceListView(kind: .goals, client: container.client, projectId: container.projectId)
-                        .id(container.projectId).tabItem { Label("Goals", systemImage: "target") }
+                    ChannelsView(client: container.client, projectId: container.projectId)
+                        .id(container.projectId).tabItem { Label("Channels", systemImage: "number") }
                     TeamView(client: container.client).tabItem { Label("Team", systemImage: "desktopcomputer") }
                     WorkspaceSettingsView().tabItem { Label("More", systemImage: "ellipsis.circle") }
-                }.liveRefresh(interval: 30) { await container.validateConnection() }
+                }.id(container.sessionGeneration).liveRefresh(interval: 30, realtime: false) { await container.validateConnection() }
             } else { PairDeviceView() }
         }
         .task { await container.restore() }
+        .onChange(of: scenePhase) { _, phase in container.realtime.setActive(phase == .active) }
         .onReceive(NotificationCenter.default.publisher(for: .artooAuthenticationExpired).receive(on: RunLoop.main)) { notification in
-            container.authenticationExpired(server: notification.object as? String)
+            container.authenticationExpired(session: notification.object as? String)
         }
     }
 }
@@ -179,6 +200,8 @@ private struct WorkspaceSettingsView: View {
                     if container.isAdministrator { NavigationLink("Manage projects") { ProjectsView() } }
                 }
                 Section("Work") {
+                    NavigationLink("Goals") { WorkspaceListView(kind: .goals, client: container.client, projectId: container.projectId, embedded: true) }
+                    NavigationLink("Mentions") { MentionsView(client: container.client) }
                     NavigationLink("Run history") { RunsOverviewView(client: container.client, projectId: container.projectId) }
                     NavigationLink("Memory") { WorkspaceListView(kind: .memories, client: container.client, projectId: container.projectId, embedded: true) }
                     NavigationLink("Skills") { WorkspaceListView(kind: .skills, client: container.client, projectId: container.projectId, embedded: true) }
@@ -204,22 +227,45 @@ private struct RunsOverviewView: View {
     }
 }
 
+@MainActor
+private final class RefreshCoordinator: ObservableObject {
+    private var running = false
+    private var pending = false
+    func perform(_ action: @MainActor () async -> Void) async {
+        if running { pending = true; return }
+        running = true
+        repeat { pending = false; await action() } while pending && !Task.isCancelled
+        running = false
+    }
+}
+
 private struct LiveRefresh: ViewModifier {
     @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var container: AppContainer
+    @StateObject private var coordinator = RefreshCoordinator()
+    @State private var visible = false
     let interval: Double
+    let realtime: Bool
     let action: @MainActor () async -> Void
     func body(content: Content) -> some View {
         content.task(id: scenePhase) {
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
-                await action()
-                do { try await Task.sleep(for: .seconds(interval)) } catch { return }
+                await coordinator.perform(action)
+                let delay = container.realtime.connected ? interval : min(interval, 15)
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
             }
+        }
+        .onAppear { visible = true }
+        .onDisappear { visible = false }
+        .onReceive(NotificationCenter.default.publisher(for: .artooRealtimeChanged).receive(on: RunLoop.main)) { notification in
+            guard realtime, visible, scenePhase == .active, notification.object as? String == (container.client as? ApiClient)?.sessionID else { return }
+            Task { await coordinator.perform(action) }
         }
     }
 }
 extension View {
-    func liveRefresh(interval: Double = 8, _ action: @escaping @MainActor () async -> Void) -> some View {
-        modifier(LiveRefresh(interval: interval, action: action))
+    func liveRefresh(interval: Double = 60, realtime: Bool = true, _ action: @escaping @MainActor () async -> Void) -> some View {
+        modifier(LiveRefresh(interval: interval, realtime: realtime, action: action))
     }
 }

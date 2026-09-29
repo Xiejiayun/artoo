@@ -21,12 +21,15 @@ describe("db migrations", () => {
     const res = await client.db.execute(
       sql`select count(*)::int as c from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'`,
     );
-    // 37 domain tables (25 v1 core + devices/device_tokens/pairing_codes from
+    // 41 domain tables (25 v1 core + devices/device_tokens/pairing_codes from
     // #28 + user_identities/sessions/oauth_flows from #34 + decision_records/
-    // handoffs/blockers from V3 #114 + goals/plans/checkpoints from V3 #115).
+    // handoffs/blockers from V3 #114 + goals/plans/checkpoints from V3 #115
+    // + assistant_turns/run_usage/notifications/discussions).
     // Drizzle adds its own bookkeeping table only when using its migrator; we
     // apply raw statements, so exactly the schema tables exist.
-    expect((res.rows[0] as { c: number }).c).toBe(37);
+    expect((res.rows[0] as { c: number }).c).toBe(41);
+    const collaboration = await client.db.execute(sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('assistant_turns','run_usage','notifications','discussions') ORDER BY table_name`);
+    expect(collaboration.rows.map((row: { table_name: string }) => row.table_name)).toEqual(["assistant_turns", "discussions", "notifications", "run_usage"]);
   });
 
   it("is idempotent enough to re-run check queries after migration", async () => {

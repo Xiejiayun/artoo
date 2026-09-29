@@ -84,4 +84,14 @@ describe("grace window manager (#115 P2-S3)", () => {
     scheduler.fireAll();
     expect(expired).toEqual(["comp_b"]); // only the un-disarmed computer fails
   });
+
+  it("shutdown cancels pending timers and prevents late database reads from rearming them", () => {
+    const scheduler = fakeScheduler();
+    const expired: string[] = [];
+    const gw = createGraceWindowManager({ graceMs: 1, scheduler, onExpire: (computer) => { expired.push(computer); } });
+    gw.arm("comp_a", ["run_1"]); gw.close?.();
+    gw.arm("comp_a", ["run_2"]); scheduler.fireAll();
+    expect(scheduler.pendingCount()).toBe(0);
+    expect(expired).toEqual([]);
+  });
 });

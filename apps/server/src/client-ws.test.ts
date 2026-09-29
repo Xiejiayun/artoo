@@ -64,6 +64,17 @@ describe("client WS realtime", () => {
     socket = undefined;
   });
 
+  it("never subscribes an authenticated client to another person's inbox", async () => {
+    server = await buildTestServer();
+    const port = await listen(server);
+    const conn = await connect(`ws://127.0.0.1:${port}/api/v1/ws`, ["inbox:user_owner", "inbox:colleague"]);
+    socket = conn.socket;
+    server.wsHub.publish("inbox:colleague", { type: "event", topic: "inbox:colleague", event: { type: "private.notification" } });
+    server.wsHub.publish("inbox:user_owner", { type: "event", topic: "inbox:user_owner", event: { type: "own.notification" } });
+    await waitFor(() => conn.frames.some((frame) => frame.event?.type === "own.notification"), "own inbox push");
+    expect(conn.frames.some((frame) => frame.topic === "inbox:colleague")).toBe(false);
+  });
+
   it("pushes task.created to project subscribers with project_id", async () => {
     server = await buildTestServer();
     const port = await listen(server);

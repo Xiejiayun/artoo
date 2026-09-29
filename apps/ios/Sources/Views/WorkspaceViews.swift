@@ -152,6 +152,7 @@ struct GoalDetailView: View {
                     ForEach(Array(goal["acceptance_criteria"].array.enumerated()), id: \.offset) { _, item in Label(item.text, systemImage: "checkmark.circle") }
                 }
                 Section("Actions") {
+                    NavigationLink("Discuss and break down with agents") { AgentDiscussionView(client: model.client, goalId: goalId, projectId: projectId) }
                     if ["draft", "paused", "blocked"].contains(goal["status"].text) { Button("Propose a plan") { planning = true } }
                     if ["running", "awaiting_approval", "blocked"].contains(goal["status"].text) { goalAction("Pause", "pause") }
                     if goal["status"].text == "paused" { goalAction("Resume", "resume") }

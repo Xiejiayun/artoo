@@ -17,6 +17,9 @@ function event(partial: Partial<EventEnvelope> & Pick<EventEnvelope, "type">): E
 }
 
 describe("invalidationsForEvent", () => {
+  it("does not refetch room, task or collaboration snapshots for streamed output", () => {
+    expect(invalidationsForEvent("room:room_1", event({ type: "run.output", task_id: "task_1", room_id: "room_1", run_id: "run_1" }))).toEqual([]);
+  });
   it("invalidates the task snapshot and its audit bundle for an event carrying task_id", () => {
     const keys = invalidationsForEvent("task:task_1", event({ type: "run.completed", task_id: "task_1" }));
     expect(keys).toContainEqual(["task", "task_1"]);

@@ -131,6 +131,11 @@ export interface ProposePlanInput {
  *  mutation rule (re-plan only after pause/block) is enforced via canProposePlan;
  *  the dependency graph is validated here so an invalid plan never persists. */
 export async function proposePlan(ctx: ServerContext, goalId: string, input: ProposePlanInput): Promise<Plan> {
+  return ctx.db.transaction((tx) => proposePlanInTx(ctx, tx, goalId, input));
+}
+
+/** Allows an orchestrator to link its proposal atomically; acceptance remains a separate human action. */
+export async function proposePlanInTx(ctx: ServerContext, tx: Tx, goalId: string, input: ProposePlanInput): Promise<Plan> {
   const specs = input.task_specs.map((s) => TaskSpecSchema.parse(s));
   specs.forEach(assertSupportedPlanTaskControls);
   if (specs.length === 0) {
@@ -139,7 +144,6 @@ export async function proposePlan(ctx: ServerContext, goalId: string, input: Pro
   buildEdges(specs, (i) => String(i)); // fail closed on invalid/cyclic deps before persisting
   const now = ctx.clock.nowIso();
   const planId = ctx.idGen.generate(ID_PREFIXES.plan);
-  return ctx.db.transaction(async (tx) => {
     const goal = await requireGoalInOrg(ctx, tx, goalId);
     const existing = await tx
       .select({ version: plans.version, status: plans.status })
@@ -184,7 +188,6 @@ export async function proposePlan(ctx: ServerContext, goalId: string, input: Pro
     );
     const row = (await tx.select().from(plans).where(eq(plans.id, planId)))[0]!;
     return mapPlan(row);
-  });
 }
 
 export async function getPlan(ctx: ServerContext, id: string): Promise<Plan | null> {

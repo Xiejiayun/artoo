@@ -91,6 +91,7 @@ export const TASK_TRANSITIONS: readonly TaskTransition[] = [
   { from: "awaiting_approval", to: "blocked", trigger: "approval_rejected", reentrant: false },
   { from: "running", to: "review", trigger: "run_completed", reentrant: false },
   { from: "running", to: "blocked", trigger: "run_failed", reentrant: false },
+  { from: "awaiting_approval", to: "blocked", trigger: "run_failed", reentrant: false },
   // recovery: driven by POST /tasks/:id/retry.
   { from: "blocked", to: "ready", trigger: "retry", reentrant: true },
   { from: "review", to: "done", trigger: "accept", reentrant: false },
@@ -200,9 +201,11 @@ export const RUN_TRANSITIONS: readonly RunTransition[] = [
   { from: "running", to: "awaiting_input", trigger: "input_requested" },
   { from: "awaiting_input", to: "running", trigger: "input_provided" },
   { from: "awaiting_input", to: "cancelled", trigger: "cancel" },
+  { from: "awaiting_input", to: "failed", trigger: "run_failed" },
   { from: "running", to: "paused", trigger: "pause" },
   { from: "paused", to: "running", trigger: "resume" },
   { from: "paused", to: "cancelled", trigger: "cancel" },
+  { from: "paused", to: "failed", trigger: "run_failed" },
 ];
 
 export function isRunTerminal(status: RunStatus): boolean {

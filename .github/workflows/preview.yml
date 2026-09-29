@@ -1,0 +1,90 @@
+name: Preview gates
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      windows_desktop:
+        description: Run installed Windows smoke on an operator-managed interactive runner
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: preview-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  shared:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install chromium
+        working-directory: apps/web
+      - run: npm run verify:preview
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shared-gate-results
+          path: |
+            artifacts/preview-gate/*.json
+            apps/web/test-results/
+            apps/web/test-results-auth/
+          if-no-files-found: ignore
+          retention-days: 14
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Ensure XcodeGen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+      - run: npm run verify:ios
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-xctest-results
+          path: |
+            artifacts/preview-gate/*.json
+            artifacts/ios/*.xcresult
+          if-no-files-found: ignore
+          retention-days: 14
+  windows-desktop:
+    if: github.event_name == 'workflow_dispatch' && inputs.windows_desktop
+    # Configure an isolated, logged-in runner with this label. Do not run PR code
+    # on a personal workstation or run the runner as a noninteractive service.
+    runs-on: [self-hosted, Windows, X64, artoo-desktop]
+    timeout-minutes: 45
+    env:
+      ARTOO_DESKTOP_INTERACTIVE: '1'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install chromium
+        working-directory: apps/web
+      - run: npm run verify:desktop
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-installed-smoke
+          path: |
+            artifacts/preview-gate/*.json
+            apps/desktop/release/smoke-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14

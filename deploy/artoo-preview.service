@@ -1,0 +1,28 @@
+[Unit]
+Description=Artoo shared trusted-team preview
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=artoo
+Group=artoo
+WorkingDirectory=/opt/artoo/current
+EnvironmentFile=/etc/artoo/artoo.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/artoo/current/scripts/start-preview.mjs
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=90
+StateDirectory=artoo
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/artoo
+
+[Install]
+WantedBy=multi-user.target

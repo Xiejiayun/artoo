@@ -200,6 +200,8 @@ export const SendMessageRequestSchema = z.object({
   kind: z.string().default("text"),
   body: z.string().default(""),
   payload: z.record(z.unknown()).default({}),
+  thread_root_id: z.string().min(1).optional(),
+  client_request_id: z.string().min(8).max(128).regex(/^[A-Za-z0-9_-]+$/).optional(),
   /** Structured @mentions and action assignments (#114). Persisted in the
    *  message payload and surfaced via a metadata-only message.mention event. */
   mentions: z.array(MentionSchema).default([]),

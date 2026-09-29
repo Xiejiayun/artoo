@@ -2,12 +2,14 @@
 import "@testing-library/jest-dom/vitest";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { useQuery } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { WebSocketLike } from "../ws/realtimeClient.js";
 import { queryKeys } from "./queryKeys.js";
 import { RealtimeProvider, useSubscription } from "./RealtimeContext.js";
+import type { RunOutputChunk } from "./runOutputs.js";
 
 afterEach(() => {
   cleanup();
@@ -42,6 +44,22 @@ function Subscriber({ topics }: { topics: string[] }): null {
 }
 
 describe("RealtimeProvider", () => {
+  it("renders streamed run output once without refetching chat or task snapshots", async () => {
+    const socket = new FakeSocket();
+    const queryClient = new QueryClient();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+    function OutputProbe() {
+      const output = useQuery<RunOutputChunk[]>({ queryKey: queryKeys.runOutputs("task_1"), queryFn: async () => [], enabled: false });
+      return <pre>{output.data?.map((chunk) => chunk.text).join("\n")}</pre>;
+    }
+    render(<QueryClientProvider client={queryClient}><RealtimeProvider socketFactory={() => socket} reconnectDelayMs={0}><OutputProbe /></RealtimeProvider></QueryClientProvider>);
+    act(() => socket.open()); invalidate.mockClear();
+    const event = { id: "output_1", type: "run.output", schema_version: "2026-06-11", organization_id: "org_default", actor: { type: "agent", id: "agent_1" }, occurred_at: "2026-06-13T00:00:00Z", correlation_id: "corr_1", task_id: "task_1", room_id: "room_1", run_id: "run_1", payload: { stream: "stdout", text: "streamed output" } };
+    act(() => { socket.emit(JSON.stringify({ type: "event", topic: "task:task_1", event })); socket.emit(JSON.stringify({ type: "event", topic: "room:room_1", event })); });
+    expect(await screen.findByText("streamed output")).toBeInTheDocument();
+    expect(queryClient.getQueryData<RunOutputChunk[]>(queryKeys.runOutputs("task_1"))).toHaveLength(1);
+    expect(invalidate).not.toHaveBeenCalled();
+  });
   it("subscribes mounted topics and invalidates queries on a matching push", async () => {
     let socket: FakeSocket | undefined;
     const queryClient = new QueryClient();

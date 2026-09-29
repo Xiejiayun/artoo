@@ -6,6 +6,7 @@ import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { Badge, ErrorState, Skeleton, type Tone } from "../ui/index.js";
 import { AgentEnabledControl, AgentRegistration, SkillInstallForm } from "./InventorySetup.js";
+import { DaemonBadge } from "./DaemonBadge.js";
 
 function list(values: readonly string[] | undefined): string {
   return values !== undefined && values.length > 0 ? values.join(", ") : "none";
@@ -100,6 +101,7 @@ export function ComputersPage(): React.ReactNode {
                 <h2 className="t-h3">{computer.display_name}</h2>
                 <StatusBadgeInv status={computer.status} />
               </header>
+              <DaemonBadge computerId={computer.id} />
               <dl className="inv-meta">
                 <Row label="Host">
                   <span className="t-mono">{computer.hostname}</span>
@@ -181,6 +183,7 @@ export function AgentsPage(): React.ReactNode {
                 <h2 className="t-h3">{agent?.display_name ?? instance.id}</h2>
                 <StatusBadgeInv status={instance.status} />
               </header>
+              <DaemonBadge computerId={instance.computer_id} />
               <dl className="inv-meta">
                 <Row label="Instance">
                   <span className="t-mono">{instance.id}</span>

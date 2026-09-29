@@ -3,9 +3,11 @@ import SwiftUI
 struct TeamView: View {
     @EnvironmentObject private var container: AppContainer
     @StateObject private var model: WorkspaceViewModel
-    @State private var presence: JSONValue = .null
-    @State private var error: String?
-    init(client: ApiClientProtocol) { _model = StateObject(wrappedValue: WorkspaceViewModel(client: client, path: "/api/v1/bootstrap")) }
+    @StateObject private var daemons: DaemonStatusViewModel
+    init(client: ApiClientProtocol) {
+        _model = StateObject(wrappedValue: WorkspaceViewModel(client: client, path: "/api/v1/bootstrap"))
+        _daemons = StateObject(wrappedValue: DaemonStatusViewModel(client: client))
+    }
     var body: some View {
         NavigationStack {
             StateView(state: model.state, retry: { Task { await refresh() } }) { data in
@@ -16,9 +18,7 @@ struct TeamView: View {
                             NavigationLink { ComputerDetailView(computer: computer, client: model.client) } label: {
                                 VStack(alignment: .leading) {
                                     RecordRow(item: computer)
-                                    if let status = presence["presence"].array.first(where: { $0["computer_id"].text == computer.id }) {
-                                        Text("\(status["connection"].text) · \(status["active_runs"].text) active runs").font(.caption)
-                                    }
+                                    DaemonStatusRow(model: daemons, computerId: computer.id)
                                 }
                             }
                         }
@@ -36,15 +36,15 @@ struct TeamView: View {
                             }
                         }
                     }
-                    if let message = error ?? model.actionError { Text(message).foregroundStyle(.red) }
+                    if let message = daemons.error ?? model.actionError { Text(message).foregroundStyle(.red) }
                 }
-            }.navigationTitle("Team").refreshable { await refresh() }.liveRefresh { await refresh() }
+            }.navigationTitle("Team").refreshable { await refresh() }.liveRefresh { await model.load() }
+                .liveRefresh(interval: 5) { await daemons.load() }
         }
     }
     private func refresh() async {
         await model.load()
-        do { presence = try await model.client.resource(path: "/api/v1/computers/presence"); error = nil }
-        catch { self.error = String(describing: error) }
+        await daemons.load()
     }
 }
 
@@ -52,6 +52,7 @@ private struct ComputerDetailView: View {
     @EnvironmentObject private var container: AppContainer
     let computer: WorkspaceRecord
     @StateObject private var model: WorkspaceViewModel
+    @StateObject private var daemons: DaemonStatusViewModel
     @State private var runtime = ""
     @State private var name = ""
     @State private var workspace = ""
@@ -59,10 +60,16 @@ private struct ComputerDetailView: View {
     init(computer: WorkspaceRecord, client: ApiClientProtocol) {
         self.computer = computer
         _model = StateObject(wrappedValue: WorkspaceViewModel(client: client, path: "/api/v1/computers/\(apiPart(computer.id))/runtimes"))
+        _daemons = StateObject(wrappedValue: DaemonStatusViewModel(client: client))
     }
     var body: some View {
         Form {
             Section("Computer") { RecordRow(item: computer); Text("\(computer["os"].text) · \(computer["arch"].text)") }
+            Section("Execution daemon") {
+                DaemonStatusRow(model: daemons, computerId: computer.id)
+                Text("Status is confirmed by the server every five seconds while this screen is visible.").font(.caption)
+                if let error = daemons.error { Text(error).foregroundStyle(.red) }
+            }
             Section("Advertised runtimes") {
                 ForEach(model.state.value?["runtimes"].records ?? []) { runtime in RecordRow(item: runtime) }
                 if model.state.isLoading { ProgressView() }
@@ -82,7 +89,30 @@ private struct ComputerDetailView: View {
                 }
             }
             if let error = model.actionError ?? model.state.errorMessage { Text(error).foregroundStyle(.red) }
-        }.navigationTitle(computer.title).liveRefresh { await model.load() }
+        }.navigationTitle(computer.title).liveRefresh { await model.load() }.liveRefresh(interval: 5) { await daemons.load() }
+    }
+}
+
+private struct DaemonStatusRow: View {
+    @ObservedObject var model: DaemonStatusViewModel
+    let computerId: String
+    var body: some View {
+        TimelineView(.periodic(from: Date(), by: 1)) { context in
+            let status = model.status(computerId: computerId, now: context.date)
+            let value = model.daemons.first { $0.computerId == computerId }
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Daemon: \(status.capitalized)", systemImage: status == "online" ? "checkmark.circle" : status == "unknown" ? "questionmark.circle" : "exclamationmark.circle")
+                    .foregroundStyle(status == "online" ? Color.green : status == "unknown" ? Color.secondary : Color.orange)
+                if let value {
+                    Text("\(status == "unknown" ? "Last known: " : "")\(value.activeRuns) active runs").font(.caption)
+                    if let heartbeat = value.lastHeartbeatAt { Text("Last heartbeat: \(heartbeat)").font(.caption) }
+                    ForEach(Array(value.runtimes.enumerated()), id: \.offset) { _, runtime in
+                        Text("\(runtime["runtime"].text): \(runtime["status"].text)").font(.caption)
+                    }
+                }
+                if status == "unknown" { Text("Unable to confirm the daemon. This does not mean the computer is offline.").font(.caption) }
+            }
+        }
     }
 }
 

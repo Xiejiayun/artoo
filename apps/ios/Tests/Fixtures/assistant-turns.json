@@ -1,0 +1,21 @@
+{
+  "turns": [
+    {
+      "id": "turn_1", "room_id": "room_1", "task_id": "task_1", "run_id": null,
+      "user_message_id": "message_1", "response_message_id": null,
+      "status": "waiting", "error": null,
+      "created_at": "2026-09-29T00:00:00.000Z", "updated_at": "2026-09-29T00:00:01.000Z"
+    },
+    {
+      "id": "turn_2", "room_id": "room_1", "task_id": "task_2", "run_id": "run_2",
+      "user_message_id": "message_2", "response_message_id": null,
+      "status": "failed", "error": "Runtime unavailable",
+      "created_at": "2026-09-29T00:00:02.000Z", "updated_at": "2026-09-29T00:00:03.000Z"
+    },
+    {
+      "id": "turn_thread", "room_id": "room_1", "thread_root_id": "message_root", "task_id": "task_thread", "run_id": null,
+      "user_message_id": "message_thread", "response_message_id": null, "status": "queued", "error": null,
+      "created_at": "2026-09-29T00:00:04.000Z", "updated_at": "2026-09-29T00:00:04.000Z"
+    }
+  ]
+}

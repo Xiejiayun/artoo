@@ -69,6 +69,21 @@ export const RunOutputPayloadSchema = z.object({
 });
 export type RunOutputPayload = z.infer<typeof RunOutputPayloadSchema>;
 
+/** User-facing final answer, separated from audit stdout/tool output. */
+export const RunAnswerPayloadSchema = z.object({ text: z.string().min(1).max(200_000) });
+export type RunAnswerPayload = z.infer<typeof RunAnswerPayloadSchema>;
+
+/** Provider-reported measurements only. Omitted fields are unknown, not zero. */
+export const RunUsagePayloadSchema = z.object({
+  input_tokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  output_tokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  cached_input_tokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  cost_usd: z.number().finite().nonnegative().optional(),
+  currency: z.literal("USD").optional(),
+  provider_session_id: z.string().min(1).max(500).optional(),
+});
+export type RunUsagePayload = z.infer<typeof RunUsagePayloadSchema>;
+
 export const RunLifecyclePayloadSchema = z.object({
   phase: z.enum(["started", "completed", "failed", "cancelled", "paused", "resumed"]),
   reason: z.string().nullish(),
