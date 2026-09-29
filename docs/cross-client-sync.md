@@ -219,3 +219,60 @@ authenticated socket connected; send-triggered REST refreshes can overlap, so
 it does not independently isolate WebSocket delivery. Public TLS/WebSocket
 deployment, real Google login/model providers, other native UI workflows,
 physical iOS devices and distribution signing remain separate release checks.
+
+## Conversation recovery and daemon freshness milestone, 2026-09-29
+
+Changes through `9715f0de189173539e5756d2d43a9581c26e6a65` unify conversation
+attribution on Web/Windows and iOS. Timeline messages, thread roots and exact
+historical mention targets use the same member/agent names, current-user marker,
+system label and typed missing-identity fallback. iOS also renders structured
+mentions and formats database/ISO timestamps in the device's locale and time zone.
+
+iOS separates message lookup failures from failed read confirmations. A read
+retry keeps the loaded thread and its composer, validates the exact notification,
+room, message and root, and rejects stale responses after navigation. Tests cover
+mismatched destinations, old responses, single-flight retry and invalid receipts.
+
+Web/Windows no longer treats a cached online daemon sample as current when the
+browser is offline, a request is paused, the server returns an error, or no fresh
+sample arrives within 12 seconds. Reopening the page requires a new successful
+sample; reconnecting the browser alone is insufficient. Previously known run
+counts remain explicitly labeled as historical, and connection failure is
+reported as unknown rather than an invented daemon-offline state.
+
+Runtime failures now preserve the provider's structured error even when the CLI
+exits nonzero and its final JSON record has no newline. Both Codex and Claude
+subprocess regressions reproduced the prior generic `exit 1` result before the
+fix. The opt-in live conversation gate is documented in
+[shared-server.md](shared-server.md#optional-live-conversation-gate); the local
+provider configuration currently fails before an answer, so this milestone does
+not claim successful live model conversation or multi-agent model execution.
+
+The local shared gate passed 1,130 tests (16 opt-in/platform skips), all 13
+browser workflows, all six authentication workflows and a production audit
+with zero vulnerabilities. The
+[hosted shared gate](https://github.com/Xiejiayun/artoo/actions/runs/36525442804/job/109267348803)
+passed for the same code revision with 1,128 tests and 18 skips, 13 browser and
+six authentication workflows. The hosted environment does not include the
+locally packaged worker checks. Type checking, production build, native API
+contracts and whitespace checks passed in both environments.
+
+The [macOS gate](https://github.com/Xiejiayun/artoo/actions/runs/36525442804/job/109267348499)
+passed using Xcode 16.4 and the iPhone 17 Pro/iOS 26.2 simulator. Debug and Release
+builds succeeded, all 67 unit XCTest cases passed, and the existing Release
+pairing/channel/thread/background/relaunch XCUITest passed in 86.763 seconds.
+This includes the 12 new conversation metadata and mention recovery tests.
+The [retained native evidence](https://github.com/Xiejiayun/artoo/actions/runs/36525442804/artifacts/11014995916)
+includes both result bundles, the passing synchronization report and native/Web
+screenshots. Both screenshots were inspected; they show resolved current-user
+names and readable dates in the synchronized thread. The UI coverage and
+WebSocket isolation limits described in the preceding milestone still apply.
+
+The rebuilt Windows installer passed all seven installed-package checks at
+`2026-09-29T05:33:34.404Z`. Its SHA-256 is
+`2ae0fc31a1e88c5d8570c8f59ec29731e9ea9d179549c6fa14772effb1e54b9f`;
+it remains unsigned. Screenshot review exposed a remaining name-resolution
+gap: actual runtime answers carry an agent-instance ID, while the current name
+resolver directly looks up agent IDs. They retain an explicit typed-ID fallback.
+The following native workflow milestone addresses that gap and the duplicate
+inventory-status label found during real node recovery testing.

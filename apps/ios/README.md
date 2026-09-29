@@ -150,6 +150,14 @@ refreshes mean it does not isolate WebSocket delivery. Other native UI flows,
 physical-device behavior and the public phone/server deployment remain separate
 acceptance checks.
 
+The subsequent [conversation recovery gate](https://github.com/Xiejiayun/artoo/actions/runs/36525442804/job/109267348499)
+verified `9715f0de189173539e5756d2d43a9581c26e6a65` on the same Xcode/simulator
+versions: 67 unit XCTest cases and the Release channel/thread XCUITest passed,
+with Debug and Release builds succeeding. The 12 added unit cases cover member
+and agent metadata, structured mentions, database timestamp normalization and
+mention lookup/read-retry identity and lifecycle boundaries. Both synchronization
+screenshots were inspected; broader native workflow coverage remains separate.
+
 ```bash
 brew install xcodegen
 cd apps/ios
