@@ -2,13 +2,15 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveCliCommand } from "./cli-resolver.js";
+import { resolveCliCommand, runtimeAvailable } from "./cli-resolver.js";
 
 describe("safe runtime executable resolution", () => {
   it("reports missing binaries and never searches a task-relative PATH entry", () => {
     expect(resolveCliCommand("artoo-not-installed", "")).toBeUndefined();
     expect(resolveCliCommand("artoo-not-installed", ".")).toBeUndefined();
     expect(resolveCliCommand(process.execPath)).toEqual([process.execPath]);
+    expect(runtimeAvailable("artoo-not-installed", process.execPath)).toBe(true);
+    expect(runtimeAvailable("codex", join(tmpdir(), "artoo-nonexistent-program.exe"))).toBe(false);
   });
 
   it.runIf(process.platform === "win32")("resolves an npm cmd shim to Node argv without executing its shell text", () => {

@@ -23,6 +23,94 @@ function encryption() {
 }
 
 describe("desktop secure connection and worker lifecycle", () => {
+  it("persists only encrypted provider keys and rejects invalid edits without replacing saved settings", async () => {
+    const root = await temporary(); const secure = encryption();
+    const options = { directory: root, safeStorage: secure };
+    const controller = createDesktopController(options);
+    const base = { allowedRoots: [root], runtimes: ["codex"], trustedExecution: false };
+    const codex = { mode: "responses", binaryPath: process.execPath, model: "test-model", baseUrl: "http://127.0.0.1:18181/v1", authMode: "api-key", apiKey: "provider-sentinel-secret" };
+    await controller.configureDaemon({ ...base, codex });
+    const status = await controller.daemonStatus();
+    expect(status.config.codex).toEqual({ ...codex, apiKey: undefined, hasKey: true });
+    expect(JSON.stringify(status)).not.toContain(codex.apiKey);
+    const saved = await readFile(join(root, "connection.json"), "utf8");
+    expect(saved).not.toContain(codex.apiKey);
+    expect(JSON.parse(saved).daemon.codex).not.toHaveProperty("apiKey");
+    const reopened = createDesktopController(options); await reopened.initialize();
+    expect((await reopened.daemonStatus()).config.codex.hasKey).toBe(true);
+    for (const patch of [{ binaryPath: "relative.exe" }, { binaryPath: join(root, "missing.exe") }, { baseUrl: "http://remote.example/v1" },
+      { baseUrl: "https://user:provider-sentinel-secret@example.test/v1" }, { baseUrl: "https://example.test/v1?key=provider-sentinel-secret" }, { model: "" }]) {
+      let error;
+      try { await reopened.configureDaemon({ ...base, codex: { ...codex, ...patch } }); } catch (caught) { error = caught; }
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).not.toContain(codex.apiKey);
+      expect(await readFile(join(root, "connection.json"), "utf8")).toBe(saved);
+    }
+    await reopened.configureDaemon({ ...base, codex: { ...codex, apiKey: undefined, model: "other-model" } });
+    expect((await reopened.daemonStatus()).config.codex.hasKey).toBe(true);
+    await expect(reopened.configureDaemon({ ...base, codex: { ...codex, apiKey: undefined, baseUrl: "https://new.example/v1" } })).rejects.toThrow("Enter an API key");
+    await reopened.configureDaemon({ ...base, codex: { ...codex, authMode: "none", apiKey: undefined } });
+    expect((await reopened.daemonStatus()).config.codex.hasKey).toBe(false);
+    expect(JSON.parse(await readFile(join(root, "connection.json"), "utf8")).encryptedCodexApiKey).toBeNull();
+    await reopened.configureDaemon({ ...base, codex });
+    await reopened.configureDaemon({ ...base, codex: { mode: "default" } });
+    expect((await reopened.daemonStatus()).config.codex).toEqual({ mode: "default", authMode: "none", hasKey: false });
+  });
+
+  it.each(["logout", "server"])("clears provider credentials on %s while retaining non-secret connection metadata", async (action) => {
+    const root = await temporary(); const secure = encryption();
+    const controller = createDesktopController({ directory: root, safeStorage: secure, fetch: async () => new Response("{}") });
+    await controller.configureDaemon({ allowedRoots: [root], runtimes: ["codex"], trustedExecution: false,
+      codex: { mode: "responses", model: "test-model", baseUrl: "https://example.test/v1", authMode: "api-key", apiKey: "clear-me" } });
+    if (action === "logout") await controller.logout(); else await controller.configureServer("https://other.example");
+    const reopened = createDesktopController({ directory: root, safeStorage: secure }); await reopened.initialize();
+    expect((await reopened.daemonStatus()).config.codex).toMatchObject({ model: "test-model", hasKey: false });
+    expect(JSON.parse(await readFile(join(root, "connection.json"), "utf8")).encryptedCodexApiKey).toBeNull();
+  });
+
+  it("fails closed when OS encryption is unavailable without overwriting the prior worker configuration", async () => {
+    const root = await temporary(); const secure = encryption();
+    const controller = createDesktopController({ directory: root, safeStorage: secure });
+    const base = { allowedRoots: [root], runtimes: ["codex"], trustedExecution: false };
+    await controller.configureDaemon(base);
+    const before = await readFile(join(root, "connection.json"), "utf8");
+    secure.isEncryptionAvailable = () => false;
+    await expect(controller.configureDaemon({ ...base, codex: { mode: "responses", model: "test", baseUrl: "https://example.test/v1", authMode: "api-key", apiKey: "never-store-plaintext" } })).rejects.toThrow("secure credential storage");
+    expect(await readFile(join(root, "connection.json"), "utf8")).toBe(before);
+  });
+
+  it("launches saved provider settings through worker env and removes inherited settings when switched off", async () => {
+    const root = await temporary(); const entry = join(root, "daemon.mjs"); await writeFile(entry, "");
+    const secure = encryption(); const store = createConnectionStore(root, secure);
+    await store.pair("d", "control", "node"); await store.setComputer("c");
+    const spawned: any[] = [];
+    const options = { directory: root, safeStorage: secure, executable: "electron", daemonEntry: entry,
+      fetch: async () => new Response("{}"), spawn: (_exe: string, args: string[], config: any) => {
+        const child: any = Object.assign(new EventEmitter(), { connected: true, pid: 1, send: () => queueMicrotask(() => child.emit("exit", 0)) });
+        spawned.push({ args, config }); return child;
+      } };
+    const base = { allowedRoots: [root], runtimes: ["codex"], trustedExecution: false };
+    const controller = createDesktopController(options); await controller.initialize();
+    const codex = { mode: "responses", binaryPath: process.execPath, model: "test-model", baseUrl: "http://127.0.0.1:18181/v1", authMode: "api-key", apiKey: "local-only-key" };
+    await controller.configureDaemon({ ...base, codex });
+    const reopened = createDesktopController(options); await reopened.initialize();
+    vi.stubEnv("ARTOO_CODEX_PROVIDER_KEY", "inherited-key");
+    vi.stubEnv("ARTOO_CODEX_PROVIDER_URL", "https://unwanted.example/v1");
+    vi.stubEnv("ARTOO_CODEX_MODEL", "unwanted-model");
+    try {
+      await reopened.startDaemon(); await reopened.stopDaemon();
+      expect(spawned[0].config.env).toMatchObject({ ARTOO_CODEX_BINARY: process.execPath, ARTOO_CODEX_MODEL: "test-model", ARTOO_CODEX_PROVIDER_URL: codex.baseUrl, ARTOO_CODEX_PROVIDER_KEY: "local-only-key" });
+      expect(JSON.stringify(spawned[0].args)).not.toContain("local-only-key");
+      await reopened.configureDaemon({ ...base, codex: { ...codex, authMode: "none", apiKey: undefined } });
+      await reopened.startDaemon(); await reopened.stopDaemon();
+      expect(spawned[1].config.env.ARTOO_CODEX_PROVIDER_KEY).toBeUndefined();
+      expect(spawned[1].config.env.ARTOO_CODEX_PROVIDER_URL).toBe(codex.baseUrl);
+      await reopened.configureDaemon(base);
+      await reopened.startDaemon(); await reopened.stopDaemon();
+      for (const name of ["BINARY", "MODEL", "PROVIDER_URL", "PROVIDER_KEY"]) expect(spawned[2].config.env[`ARTOO_CODEX_${name}`]).toBeUndefined();
+    } finally { vi.unstubAllEnvs(); await reopened.stopDaemon(); }
+  });
+
   it("stores encrypted tokens, restores configuration, and clears credentials on server change", async () => {
     const root = await temporary(); const secure = encryption();
     const store = createConnectionStore(root, secure);

@@ -23,6 +23,7 @@ import { enqueueArtifactForIntegration } from "./integration-service.js";
 import { releaseRunLeases } from "./lease-service.js";
 import { transitionRun, transitionTask } from "./transition-service.js";
 import { unconfirmedDisconnectRunIds } from "./execution-state.js";
+import { previewForActiveSynthesis } from "./discussion-plan.js";
 
 /** GET /api/v1/runs/:id — run snapshot. */
 export async function getRun(ctx: ServerContext, runId: string): Promise<Run> {
@@ -291,7 +292,9 @@ export async function ingestRunEvent(
         eventId = await emit("run.answer.discarded", { run_id: env.runId, reason: "settled_or_already_answered" });
       } else {
         const messageId = ctx.idGen.generate(ID_PREFIXES.message);
-        const payload = { run_id: env.runId, ...(turn ? { assistant_turn_id: turn.id, intent: "assistant" } : {}) };
+        const planPreview = turn ? await previewForActiveSynthesis(ctx, tx, turn, parsed.data.text, run.agentInstanceId) : undefined;
+        const payload = { run_id: env.runId, ...(turn ? { assistant_turn_id: turn.id, intent: "assistant" } : {}),
+          ...(planPreview ? { discussion_plan: planPreview } : {}) };
         await tx.insert(messages).values({ id: messageId, organizationId: ctx.organizationId,
           threadRootId: turn?.threadRootId ?? null,
           roomId: responseRoomId, taskId: run.taskId, runId: env.runId, actorType: "agent", actorId: run.agentInstanceId,
@@ -300,7 +303,9 @@ export async function ingestRunEvent(
         const updatedRoot = turn?.threadRootId ? (await tx.update(messages).set({ replyCount: sql`${messages.replyCount} + 1` }).where(eq(messages.id, turn.threadRootId)).returning({ replyCount: messages.replyCount }))[0] : undefined;
         const event = buildEvent(ctx, { type: "message.created", actorType: "agent", actorId: run.agentInstanceId,
           correlationId: turn?.id ?? run.taskId, projectId: taskRow.projectId, taskId: run.taskId, roomId: responseRoomId,
-          runId: env.runId, sequence: env.sequence, payload: { message_id: messageId, kind: "text", ...payload, ...(turn?.threadRootId ? { thread_root_id: turn.threadRootId, root_reply_count: updatedRoot!.replyCount } : {}) } });
+          runId: env.runId, sequence: env.sequence, payload: { message_id: messageId, kind: "text", run_id: env.runId,
+            ...(turn ? { assistant_turn_id: turn.id, intent: "assistant" } : {}),
+            ...(turn?.threadRootId ? { thread_root_id: turn.threadRootId, root_reply_count: updatedRoot!.replyCount } : {}) } });
         await appendEvent(tx, event);
         eventId = event.id;
       }

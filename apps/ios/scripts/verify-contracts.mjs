@@ -25,6 +25,14 @@ const turnFixture = JSON.parse(await readFile(join(ios, "Tests/Fixtures/assistan
 for (const turn of turnFixture.turns) assert.equal(domain.AssistantTurnSchema.safeParse(turn).success, true, "Native assistant response drifted");
 const discussionFixture = JSON.parse(await readFile(join(ios, "Tests/Fixtures/discussion.json"), "utf8"));
 assert.equal(domain.DiscussionSchema.safeParse(discussionFixture).success, true, "Native discussion response drifted");
+// The same complete reply is decoded by DiscussionPlanDraftTests on macOS.
+const planMessage = JSON.parse(await readFile(join(ios, "Tests/Fixtures/discussion-plan-message.json"), "utf8"));
+assert.equal(domain.MessageSchema.safeParse(planMessage).success, true, "Native suggested-plan message response drifted");
+const planPreview = domain.DiscussionPlanPreviewSchema.parse(planMessage.payload.discussion_plan);
+assert.deepEqual(planPreview, planMessage.payload.discussion_plan, "Native metadata fixture must include normalized TaskSpec defaults");
+const originalPlan = JSON.parse(planMessage.body.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i, "$1"));
+assert.equal(planPreview.rationale, originalPlan.rationale);
+assert.deepEqual(planPreview.task_specs, originalPlan.task_specs.map((spec) => domain.TaskSpecSchema.parse(spec)), "The exact original reply and suggested-plan metadata must describe the same tasks");
 const messagePage = JSON.parse(await readFile(join(ios, "Tests/Fixtures/message-page.json"), "utf8"));
 for (const message of messagePage.messages) assert.equal(domain.MessageSchema.safeParse(message).success, true, "Native message response drifted");
 for (const key of ["next_before", "next_after"]) assert.equal(typeof messagePage[key], "string");
@@ -64,5 +72,5 @@ for (const image of catalog.images) {
   assert.equal(png.toString("ascii", 1, 4), "PNG");
   assert.equal(png.readUInt32BE(16), 1024); assert.equal(png.readUInt32BE(20), 1024);
 }
-console.log(`iOS static contracts: ${samples.length} request specimens match server schemas; execution approval, assignment, assistant turns, discussions, paginated messages and notifications match domain fields; ${routes.length} required routes exist; native realtime, scoped drafts, stable sends, live onboarding, Keychain policy and icon dimensions checked.`);
+console.log(`iOS static contracts: ${samples.length} request specimens match server schemas; execution approval, assignment, assistant turns, discussions, suggested plans, paginated messages and notifications match domain fields; ${routes.length} required routes exist; native realtime, scoped drafts, stable sends, live onboarding, Keychain policy and icon dimensions checked.`);
 console.log("This is a Windows static check. Xcode type checking, XCTest, device pairing and UI execution still require the Mac verification gate.");

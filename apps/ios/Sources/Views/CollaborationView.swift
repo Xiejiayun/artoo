@@ -157,7 +157,7 @@ struct CollaborationView: View {
             currentUserId: container.identity?.user.id ?? container.bootstrap.value?.user.id,
             currentUserName: container.identity?.user.name ?? container.bootstrap.value?.user.displayName)
         return VStack(alignment: .leading, spacing: 5) {
-            Text(message.body).textSelection(.enabled).accessibilityIdentifier("message.\(message.id)")
+            MessageBodyView(message: message)
             ConversationMetadataView(actorType: message.actorType, actorId: message.actorId, createdAt: message.createdAt,
                                      members: members, agents: agents, agentInstances: agentInstances)
                 .accessibilityIdentifier("messageAuthor.\(message.id)")

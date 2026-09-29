@@ -32,6 +32,6 @@ export function resolveCliCommand(command: string, searchPath = process.env.PATH
   return undefined;
 }
 
-export function runtimeAvailable(runtime: string): boolean {
-  return resolveCliCommand(runtime === "claude-code" ? "claude" : runtime) !== undefined;
+export function runtimeAvailable(runtime: string, binaryPath?: string): boolean {
+  return resolveCliCommand(binaryPath ?? (runtime === "claude-code" ? "claude" : runtime)) !== undefined;
 }

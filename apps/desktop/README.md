@@ -22,6 +22,36 @@ authenticates the worker. Revocation removes server access; sign-out clears loca
 credentials and stops the managed worker. Changing servers clears the paired
 identity and resets the local trusted-execution opt-in.
 
+### Use Aerial with GitHub Copilot
+
+In Aerial, sign in to GitHub Copilot and start its local Responses API. In Artoo
+Settings, stop the worker and choose **Aerial or another Responses API** under
+**Model connection**. Enter the API address (normally
+`http://127.0.0.1:18181/v1`), the exact model name offered by Aerial, and its local
+API key. **Choose Codex program** locates the installed `codex.exe` or npm
+`codex.cmd` when it is absent from the desktop's PATH. No program location or
+model is hardcoded into Artoo. Save, then start the worker.
+
+The model connection applies to both tasks and read-only discussions. It is
+local to this computer and does not modify global Codex configuration. The
+default **Use existing Codex settings** mode remains available. **No API key**
+supplies no provider credential and removes any saved key; use it only for an
+API that explicitly allows unauthenticated requests. Remote APIs require HTTPS;
+HTTP is accepted only for loopback addresses.
+
+Keys are encrypted with OS `safeStorage`, never returned by the settings status
+API, and supplied through a private worker environment variable rather than
+command arguments. Saving a different API address requires a new key. Switching
+to existing CLI settings, choosing no API key, signing out, or changing the
+Artoo server clears the saved provider key. Restarting the app with the same
+connection preserves it. Runtime output redacts the active key before sending
+logs, answers or failure details to the server.
+
+Saving validates the local configuration and an explicitly chosen program's
+existence. It does not contact Aerial or verify inference. A running worker and
+an available CLI likewise do not prove that a model API is authenticated or
+supports the selected model; a completed assistant reply is separate evidence.
+
 The worker is bundled at `resources/app.asar.unpacked/daemon/artood.mjs` and runs
 through the packaged Electron executable in Node mode. Settings exposes its
 status, start, stop, and restart controls. A second app launch uses the existing
@@ -62,8 +92,11 @@ enforced and development routes disabled. A test owner cookie provisions access
 to the Web pairing UI; native device claims and all task mutations use real UI
 and production endpoints.
 
-The execution fixture is a temporary npm-shaped `codex.cmd` shim resolved by the
-ordinary Codex adapter. It writes a deterministic patch and exits. This proves
+The execution fixture is a temporary npm-shaped `codex.cmd` shim selected by
+absolute path through desktop Settings, with the app's PATH empty. The same UI
+saves a synthetic Responses connection and OS-encrypted test key. The shim
+asserts that the selected key reaches the process, writes a deterministic patch,
+and emits the test key in stderr to verify that runtime output redacts it. This proves
 packaged execution and transport without claiming real model quality or a live
 Google OIDC login.
 
@@ -72,6 +105,8 @@ The smoke checks:
 - Anonymous API rejection, Web pairing-code generation, native pairing and
   enrollment, authenticated REST and realtime, and encrypted stored credentials.
 - Worker settings, start/stop/restart, and rejection of duplicate app launches.
+- Local model settings, explicit program selection without PATH, encrypted test
+  key persistence across restart, output redaction, and key removal on sign-out.
 - Agent registration, task creation, execution approval, assignment, the actual
   bundled worker, and a layout check using real generated identifiers.
 - Authenticated artifact download with byte-for-byte verification and task review.
@@ -82,6 +117,15 @@ Evidence is written to `release/smoke-artifacts`: a JSON result with installer
 SHA-256 and timestamp, a desktop screenshot, and downloaded patches before and
 after restart. Electron's actual `will-download` event supplies the automated
 save destination; the renderer initiates the normal authenticated download.
+The final result also records whether the app, browser and server closed,
+uninstall completed, and the temporary data directory was removed. Cleanup
+failure makes the gate fail.
+
+The optional installed-worker verification runs two real chat turns and a
+three-contribution planning discussion through Aerial / GitHub Copilot after
+the deterministic fixture succeeds. See the
+[Windows Copilot verification guide](../../docs/windows-copilot-verification.md)
+for the explicit opt-in settings, credential-file handling, evidence and limits.
 
 ## Release boundary
 

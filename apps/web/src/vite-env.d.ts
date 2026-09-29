@@ -21,14 +21,24 @@ interface Window {
     pairDevice?(input: { code: string; displayName: string }): Promise<DesktopConnection>;
     logout?(): Promise<void>;
     daemonStatus?(): Promise<{ state: string; pid?: number; lastError?: string; config: DesktopDaemonConfig }>;
-    configureDaemon?(config: DesktopDaemonConfig): Promise<void>;
+    configureDaemon?(config: DesktopDaemonInput): Promise<void>;
     startDaemon?(): Promise<void>;
     stopDaemon?(): Promise<void>;
     restartDaemon?(): Promise<void>;
     chooseDirectory?(): Promise<string | null>;
+    chooseExecutable?(): Promise<string | null>;
     openExternal?(url: string): Promise<void>;
   };
 }
 
 interface DesktopConnection { serverUrl: string; paired: boolean; deviceId: string | null; computerId: string | null }
-interface DesktopDaemonConfig { allowedRoots: string[]; runtimes: string[]; worktreeBaseRepo?: string; trustedExecution: boolean }
+interface DesktopCodexConfig {
+  mode: "default" | "responses";
+  binaryPath?: string;
+  model?: string;
+  baseUrl?: string;
+  authMode: "none" | "api-key";
+  hasKey: boolean;
+}
+interface DesktopDaemonConfig { allowedRoots: string[]; runtimes: string[]; worktreeBaseRepo?: string; trustedExecution: boolean; codex?: DesktopCodexConfig }
+type DesktopDaemonInput = Omit<DesktopDaemonConfig, "codex"> & { codex?: Omit<DesktopCodexConfig, "hasKey"> & { apiKey?: string } };

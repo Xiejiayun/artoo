@@ -314,13 +314,48 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
       let termination: Promise<void> | undefined;
       let guardian: ChildProcess | undefined;
       const structured = createStructuredOutput(options.outputFormat ?? "plain");
+      // CLI diagnostics may echo authentication headers. Parse original JSON
+      // first: a short key such as "type" must not alter protocol field names.
+      // Redact log text separately and redact parsed values before publishing.
+      const secret = process.env.ARTOO_CODEX_PROVIDER_KEY;
+      const secretForms = secret ? [secret] : [];
+      let allFormsKnown = !secret;
+      const redact = (text: string): string => {
+        // A provider can embed a JSON response inside another JSON diagnostic.
+        // Cover every possible repeated JSON escaping level that fits in this
+        // text, rather than assuming a single log serialization boundary.
+        while (!allFormsKnown && secretForms.at(-1)!.length <= text.length) {
+          const last = secretForms.at(-1)!;
+          const escaped = JSON.stringify(last).slice(1, -1);
+          if (escaped === last) allFormsKnown = true;
+          else secretForms.push(escaped);
+        }
+        return [...secretForms].reverse().reduce((value, part) => value.replaceAll(part, "[redacted]"), text);
+      };
+      const redactLine = (raw: string): string => {
+        if (!secret) return raw;
+        // JSON may spell a secret with Unicode escapes. Normalize only records
+        // requiring redaction; this output is never used as protocol input.
+        try {
+          const normalized = JSON.stringify(JSON.parse(raw));
+          const safe = redact(normalized);
+          return safe === normalized ? redact(raw) : safe;
+        } catch { return redact(raw); }
+      };
+      const emit = (event: RunEvent): void => {
+        if (event.type === "run.answer") event = { ...event, payload: { ...event.payload, text: redact(event.payload.text) } };
+        else if (event.type === "run.lifecycle" && typeof event.payload.reason === "string") event = { ...event, payload: { ...event.payload, reason: redact(event.payload.reason) } };
+        else if (event.type === "run.usage" && event.payload.provider_session_id) event = { ...event, payload: { ...event.payload, provider_session_id: redact(event.payload.provider_session_id) } };
+        queue.push(event);
+      };
 
-      const stdout = makeLineEmitter((text) => {
+      const stdout = makeLineEmitter((raw) => {
+        const text = redactLine(raw);
         queue.push({ type: "run.output", payload: { stream: "stdout", text } });
-        structured.consume(text);
+        structured.consume(raw);
       });
       const stderr = makeLineEmitter((text) =>
-        queue.push({ type: "run.output", payload: { stream: "stderr", text } })
+        queue.push({ type: "run.output", payload: { stream: "stderr", text: redactLine(text) } })
       );
       child.stdout?.on("data", (chunk: Buffer) => stdout.feed(chunk));
       child.stderr?.on("data", (chunk: Buffer) => stderr.feed(chunk));
@@ -344,8 +379,8 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
         finalized = true;
         stdout.flush();
         stderr.flush();
-        for (const measured of structured.finish(false)) queue.push(measured);
-        queue.push(event);
+        for (const measured of structured.finish(false)) emit(measured);
+        emit(event);
         queue.end();
         resolveClosed();
       }
@@ -387,7 +422,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
           for (const descriptor of descriptors) {
             queue.push({ type: "artifact.created", payload: descriptor.payload });
           }
-          for (const measured of structured.finish(true)) queue.push(measured);
+          for (const measured of structured.finish(true)) emit(measured);
           queue.push({ type: "run.lifecycle", payload: { phase: "completed", reason: null } });
           queue.end();
           resolveClosed();

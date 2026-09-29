@@ -178,20 +178,70 @@ final class SharedServerChatUITests: XCTestCase {
         XCTAssertEqual(agentReplies.filter { $0.actorId == fixture.plannerInstanceId }.count, 2)
         XCTAssertEqual(agentReplies.filter { $0.actorId == fixture.reviewerInstanceId }.count, 1)
         XCTAssertTrue(agentReplies.allSatisfy { $0.threadRootId == discussion.threadRootId })
+        let planReplies = agentReplies.filter { $0.payload?.discussionPlan != nil }
+        try require(planReplies.count == 1, "Only the validated final synthesis may carry suggested-plan metadata")
+        let synthesis = try XCTUnwrap(planReplies.first)
+        let draft = try XCTUnwrap(synthesis.payload?.discussionPlan)
+        XCTAssertEqual(draft.version, 1)
+        XCTAssertEqual(draft.discussionId, discussion.id)
+        XCTAssertEqual(draft.goalId, fixture.goalId)
+        XCTAssertEqual(draft.taskSpecs.map(\.title), [fixture.task1Title, fixture.task2Title])
+        XCTAssertEqual(draft.taskSpecs.map(\.acceptanceCriteria), [[fixture.task1Criterion], [fixture.task2Criterion]])
+        XCTAssertEqual(draft.taskSpecs.map(\.requiredCapabilities), [["code.read"], ["code.read"]])
+        XCTAssertEqual(draft.taskSpecs.flatMap(\.expectedArtifacts).map(\.type), ["patch", "test_report"])
         let thread = app.buttons["discussion.thread.\(discussion.id)"]
         try reveal(thread); thread.tap()
         try require(app.navigationBars["Thread"].waitForExistence(timeout: 15), "The discussion must open its real conversation thread")
         for reply in agentReplies {
-            let body = app.staticTexts["message.\(reply.id)"]
-            try reveal(body)
-            XCTAssertEqual(body.label, reply.body)
+            if reply.id != synthesis.id {
+                let body = app.staticTexts["message.\(reply.id)"]
+                try reveal(body)
+                XCTAssertEqual(body.label, reply.body)
+            }
             let author = app.staticTexts["messageAuthor.\(reply.id)"]
             try reveal(author)
             let name = reply.actorId == fixture.plannerInstanceId ? fixture.plannerName : fixture.reviewerName
             let named = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH %@", "\(name) · "), object: author)
             try require(XCTWaiter.wait(for: [named], timeout: 15) == .completed, "Real agent replies must show their display name and timestamp, not an instance ID")
         }
-        attachScreenshot("Native completed fixture agent discussion thread")
+        let draftTitle = app.staticTexts["message.plan.title.\(synthesis.id)"]
+        try reveal(draftTitle); XCTAssertEqual(draftTitle.label, "Suggested plan")
+        let originalBody = app.staticTexts["message.\(synthesis.id)"]
+        XCTAssertFalse(originalBody.exists, "The original JSON must be collapsed when the suggested plan first appears")
+        let rationale = app.staticTexts["message.plan.rationale.\(synthesis.id)"]
+        try reveal(rationale); XCTAssertEqual(rationale.label, draft.rationale)
+        for (index, task) in draft.taskSpecs.enumerated() {
+            let title = app.staticTexts["message.plan.task.title.\(synthesis.id).\(index)"]
+            try reveal(title); XCTAssertEqual(title.label, "\(index + 1). \(task.title)")
+            let description = app.staticTexts["message.plan.task.description.\(synthesis.id).\(index)"]
+            try reveal(description); XCTAssertEqual(description.label, task.description)
+            for (criterionIndex, criterion) in task.acceptanceCriteria.enumerated() {
+                let label = app.staticTexts["message.plan.task.criterion.\(synthesis.id).\(index).\(criterionIndex)"]
+                try reveal(label); XCTAssertEqual(label.label, criterion)
+            }
+            if !task.requiredCapabilities.isEmpty {
+                let capabilities = app.staticTexts["message.plan.task.capabilities.\(synthesis.id).\(index)"]
+                try reveal(capabilities); XCTAssertEqual(capabilities.label, "Capabilities: \(task.requiredCapabilities.joined(separator: ", "))")
+            }
+            for (artifactIndex, artifact) in task.expectedArtifacts.enumerated() {
+                let label = app.staticTexts["message.plan.task.artifact.\(synthesis.id).\(index).\(artifactIndex)"]
+                try reveal(label)
+                XCTAssertEqual(label.label, artifact.description.isEmpty ? artifact.type : "\(artifact.type): \(artifact.description)")
+            }
+        }
+        let draftDependency = app.staticTexts["message.plan.task.dependency.\(synthesis.id).1.0"]
+        try reveal(draftDependency)
+        XCTAssertEqual(draftDependency.label, "Depends on: 1. \(fixture.task1Title)", "The draft must resolve its standard dependency to the numbered task name")
+        attachScreenshot("Native suggested plan card before proposal")
+        let originalToggle = app.descendants(matching: .any).matching(identifier: "message.plan.original.\(synthesis.id)").firstMatch
+        try reveal(originalToggle); originalToggle.tap()
+        try reveal(originalBody); XCTAssertEqual(originalBody.label, synthesis.body, "Expanding the original must preserve the exact server reply")
+        attachScreenshot("Native suggested plan with original reply expanded")
+        try reveal(originalToggle); originalToggle.tap()
+        let collapsed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: originalBody)
+        try require(XCTWaiter.wait(for: [collapsed], timeout: 5) == .completed, "The original reply must collapse without changing the suggested plan")
+        let afterPresentation = try await peerGoalBundle()
+        try require(afterPresentation.tasks.isEmpty && afterPresentation.plans.isEmpty, "Viewing the plan card or original reply must never propose a plan or create execution tasks")
         app.navigationBars["Thread"].buttons.firstMatch.tap()
 
         let propose = app.buttons["discussion.propose.\(discussion.id)"]
@@ -495,7 +545,19 @@ final class SharedServerChatUITests: XCTestCase {
 
 private struct MessagePage: Decodable { let messages: [ServerMessage] }
 private struct MessageEnvelope: Decodable { let message: ServerMessage }
-private struct ServerMessage: Decodable { let id: String; let body: String; let threadRootId: String?; let actorType: String; let actorId: String }
+private struct ServerMessage: Decodable {
+    let id: String; let body: String; let threadRootId: String?; let actorType: String; let actorId: String
+    let payload: ServerMessagePayload?
+}
+private struct ServerMessagePayload: Decodable { let discussionPlan: ServerPlanDraft? }
+private struct ServerPlanDraft: Decodable {
+    let version: Int; let discussionId: String; let goalId: String; let rationale: String; let taskSpecs: [ServerPlanTaskSpec]
+}
+private struct ServerPlanTaskSpec: Decodable {
+    let title: String; let description: String; let acceptanceCriteria: [String]; let requiredCapabilities: [String]
+    let expectedArtifacts: [ServerExpectedArtifact]
+}
+private struct ServerExpectedArtifact: Decodable { let type: String; let description: String }
 private struct PairingCode: Decodable { let code: String }
 private struct DaemonPage: Decodable { let daemons: [ServerDaemon] }
 private struct ServerDaemon: Decodable { let computerId: String; let status: String; let connected: Bool; let lastHeartbeatAt: String? }

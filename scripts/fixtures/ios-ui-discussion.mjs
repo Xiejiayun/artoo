@@ -32,8 +32,10 @@ if (synthesis) {
   assert.equal(role, "planner");
   assert.deepEqual(previous.map((message) => message.body), [plannerAnswer, reviewerAnswer], "Synthesis must receive both actual earlier answers");
   answer = JSON.stringify({ rationale: "The reviewer confirmed the dependency and observable acceptance criteria.", task_specs: [
-    { title: fixture.task_1_title, description: "Implementation proposed by the planner", acceptance_criteria: [fixture.task_1_criterion] },
-    { title: fixture.task_2_title, description: "Independent verification requested by the reviewer", acceptance_criteria: [fixture.task_2_criterion], dependencies: [{ ref: "0", type: "blocks" }] },
+    { title: fixture.task_1_title, description: "Implementation proposed by the planner", acceptance_criteria: [fixture.task_1_criterion],
+      required_capabilities: ["code.read"], expected_artifacts: [{ type: "patch", description: "Reviewed implementation" }] },
+    { title: fixture.task_2_title, description: "Independent verification requested by the reviewer", acceptance_criteria: [fixture.task_2_criterion], dependencies: [{ ref: "0", type: "blocks" }],
+      required_capabilities: ["code.read"], expected_artifacts: [{ type: "test_report", description: "Contract verification results" }] },
   ] });
 } else if (role === "planner") {
   assert.equal(previous.length, 0, "The first contribution must not inherit another discussion");

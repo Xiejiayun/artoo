@@ -1,6 +1,7 @@
 import { nodeHelloSchema } from "@artoo/protocol";
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as nodeRunner from "./node-runner.js";
 
 import {
   buildRegistry,
@@ -22,6 +23,18 @@ function configWith(overrides: Partial<ArtoodConfig> = {}): ArtoodConfig {
 }
 
 describe("loadConfigFromEnv", () => {
+  it("passes only local provider metadata and an env key name to runtime presets", () => {
+    const config = loadConfigFromEnv({ ...baseEnv, ARTOO_CODEX_BINARY: process.execPath, ARTOO_CODEX_MODEL: "copilot-test",
+      ARTOO_CODEX_PROVIDER_URL: "http://127.0.0.1:18181/v1", ARTOO_CODEX_PROVIDER_KEY: "never-in-config" });
+    expect(config.codex).toEqual({ binaryPath: process.execPath, model: "copilot-test", baseUrl: "http://127.0.0.1:18181/v1", apiKeyEnv: "ARTOO_CODEX_PROVIDER_KEY" });
+    expect(JSON.stringify(config)).not.toContain("never-in-config");
+    expect(loadConfigFromEnv({ ...baseEnv, ARTOO_CODEX_MODEL: "test", ARTOO_CODEX_PROVIDER_URL: "https://example.test/v1" }).codex?.apiKeyEnv).toBeUndefined();
+    expect(loadConfigFromEnv(baseEnv).codex).toEqual({});
+    for (const values of [{ ARTOO_CODEX_BINARY: "relative.exe" }, { ARTOO_CODEX_PROVIDER_URL: "http://remote.example/v1" },
+      { ARTOO_CODEX_PROVIDER_URL: "https://user:secret@example.test/v1" }, { ARTOO_CODEX_PROVIDER_URL: "https://example.test/v1?key=secret" }, { ARTOO_CODEX_PROVIDER_URL: "https://example.test/v1" }]) {
+      expect(() => loadConfigFromEnv({ ...baseEnv, ...values })).toThrow();
+    }
+  });
   it("requires an explicit local opt-in for trusted execution", () => {
     expect(loadConfigFromEnv(baseEnv).trustedExecution).toBe(false);
     expect(loadConfigFromEnv({ ...baseEnv, ARTOO_TRUSTED_EXECUTION: "true" }).trustedExecution).toBe(false);
@@ -98,6 +111,15 @@ describe("helloFor", () => {
 });
 
 describe("createNodeFromConfig", () => {
+  it("advertises availability from the configured executable rather than a different PATH runtime", () => {
+    const create = vi.spyOn(nodeRunner, "createArtoodNode");
+    try {
+      createNodeFromConfig(configWith({ codex: { binaryPath: process.execPath } }));
+      expect(create.mock.calls[0]![0].heartbeat!().runtimes[0]?.status).toBe("available");
+      createNodeFromConfig(configWith({ codex: { binaryPath: `${process.execPath}.missing` } }));
+      expect(create.mock.calls[1]![0].heartbeat!().runtimes[0]?.status).toBe("missing");
+    } finally { create.mockRestore(); }
+  });
   it("constructs a node (with worktree config) without connecting", () => {
     const node = createNodeFromConfig(configWith({ worktreeBaseRepo: "C:/repo" }));
     expect(typeof node.start).toBe("function");

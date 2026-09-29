@@ -1,4 +1,4 @@
-import { normalizeMessageKind, type Message } from "@artoo/domain";
+import { DiscussionPlanPreviewSchema, normalizeMessageKind, type Message } from "@artoo/domain";
 
 import { Badge, type Tone } from "../ui/index.js";
 
@@ -62,8 +62,46 @@ function readString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+const PLAN_DEPENDENCY_LABELS = [
+  ["blocks", "Depends on"],
+  ["artifact_required", "Requires artifact from"],
+  ["contract_required", "Requires contract from"],
+  ["review_required", "Requires review from"],
+  ["soft_context", "Context from"],
+] as const;
+
 function renderBody(kind: ReturnType<typeof normalizeMessageKind>, message: Message): React.ReactNode {
   const payload = message.payload as Record<string, unknown>;
+  // This is server-provided display metadata for a discussion's synthesis.
+  // Message text and user-supplied payloads never identify an agent plan.
+  if (message.actor_type === "agent" && message.kind === "text") {
+    const preview = DiscussionPlanPreviewSchema.safeParse(payload.discussion_plan);
+    if (preview.success) {
+      const plan = preview.data;
+      return <section className="msg__plan" aria-label="Suggested plan">
+        <h3>Suggested plan</h3>
+        {plan.rationale && <p className="msg__text">{plan.rationale}</p>}
+        <ol className="msg__plan-tasks" aria-label="Suggested tasks">
+          {plan.task_specs.map((spec, index) => <li key={index}>
+            <h4>{index + 1}. {spec.title}</h4>
+            {spec.description && <p className="msg__text">{spec.description}</p>}
+            <p className="msg__plan-label">Acceptance criteria</p>
+            <ul className="msg__plan-items">{spec.acceptance_criteria.map((criterion, i) => <li key={i}>{criterion}</li>)}</ul>
+            {PLAN_DEPENDENCY_LABELS.map(([type, label]) => {
+              const dependencies = spec.dependencies.filter((dependency) => dependency.type === type);
+              return dependencies.length > 0 ? <p key={type}><strong>{label}:</strong> {dependencies.map((dependency) => plan.task_specs[Number(dependency.ref)]?.title ?? dependency.ref).join(", ")}</p> : null;
+            })}
+            {spec.required_capabilities.length > 0 && <p><strong>Required capabilities:</strong> {spec.required_capabilities.join(", ")}</p>}
+            {spec.expected_artifacts.length > 0 && <>
+              <p className="msg__plan-label">Expected artifacts</p>
+              <ul className="msg__plan-items">{spec.expected_artifacts.map((artifact, i) => <li key={i}><strong>{artifact.type}</strong>{artifact.description && `: ${artifact.description}`}</li>)}</ul>
+            </>}
+          </li>)}
+        </ol>
+        <details className="msg__plan-original"><summary>Show original reply</summary><pre className="msg__code">{message.body}</pre></details>
+      </section>;
+    }
+  }
   switch (kind) {
     case "approval_request":
       return <p className="msg__text">Approval requested: {readString(payload.action) ?? message.body}</p>;

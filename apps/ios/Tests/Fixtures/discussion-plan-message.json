@@ -1,0 +1,37 @@
+{
+  "id": "message_synthesis", "organization_id": "org_1", "room_id": "room_goal", "task_id": "task_discussion",
+  "actor_type": "agent", "actor_id": "instance_planner", "kind": "text",
+  "body": "  ```json\n{\"rationale\":\"先实现，再独立验证。\",\"task_specs\":[{\"title\":\"实现接口\",\"description\":\"保留 Unicode 与多行描述。\\nReturn the documented response.\",\"acceptance_criteria\":[\"响应符合契约\",\"拒绝未认证请求\"],\"required_capabilities\":[\"code.read\"],\"expected_artifacts\":[{\"type\":\"patch\",\"description\":\"Reviewed implementation\"}]},{\"title\":\"验证接口\",\"description\":\"Independent verification\",\"acceptance_criteria\":[\"Tests pass\"],\"dependencies\":[{\"ref\":\"0\",\"type\":\"blocks\"}]}]}\n```  ",
+  "payload": {
+    "assistant_turn_id": "turn_synthesis",
+    "discussion_plan": {
+      "version": 1,
+      "discussion_id": "discussion_1",
+      "goal_id": "goal_1",
+      "rationale": "先实现，再独立验证。",
+      "task_specs": [
+        {
+          "title": "实现接口",
+          "description": "保留 Unicode 与多行描述。\nReturn the documented response.",
+          "acceptance_criteria": ["响应符合契约", "拒绝未认证请求"],
+          "required_capabilities": ["code.read"],
+          "dependencies": [],
+          "approval_gates": [],
+          "write_scopes": [],
+          "expected_artifacts": [{"type": "patch", "description": "Reviewed implementation"}]
+        },
+        {
+          "title": "验证接口",
+          "description": "Independent verification",
+          "acceptance_criteria": ["Tests pass"],
+          "required_capabilities": [],
+          "dependencies": [{"ref": "0", "type": "blocks"}],
+          "approval_gates": [],
+          "write_scopes": [],
+          "expected_artifacts": []
+        }
+      ]
+    }
+  },
+  "created_at": "2026-09-29T00:00:01.000Z", "sequence": 103, "thread_root_id": "message_discussion_root"
+}

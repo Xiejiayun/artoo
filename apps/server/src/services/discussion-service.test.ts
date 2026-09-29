@@ -10,6 +10,7 @@ import { AppError } from "../errors.js";
 import { acceptPlan } from "./plan-service.js";
 import { collectCatchUp, createEventPublisher, type EventFrame } from "../ws/event-publisher.js";
 import { createWsHub } from "../ws/ws-hub.js";
+import { getMessage, listMessagePage, postMessage } from "./message-service.js";
 
 const participants = [{ agent_instance_id: "instance_mock_coder", role: "Implementation design" }, { agent_instance_id: "instance_reviewer", role: "Test and risk review" }];
 const output = JSON.stringify({ rationale: "Separate implementation from verification", task_specs: [
@@ -73,6 +74,17 @@ describe("bounded agent discussion and reviewable task decomposition", () => {
     await publisher.pumpOnce();
     frames.length = 0;
     await finishTurn(current.active_turn_id!, output);
+    const [finalTurn] = await server.db.db.select().from(assistantTurns).where(eq(assistantTurns.id, current.active_turn_id!));
+    // The message is fetched before the dispatcher marks the discussion ready.
+    // A cursor-only client must receive its preview on this first delivery.
+    expect((await getDiscussion(server.ctx, discussion.id)).current_step).toBe(2);
+    const finalReply = await getMessage(server.ctx, discussion.room_id, finalTurn!.responseMessageId!);
+    expect(finalReply.body).toBe(output);
+    expect(finalReply.payload.discussion_plan).toMatchObject({ version: 1, discussion_id: discussion.id, goal_id: goal.id,
+      rationale: "Separate implementation from verification", task_specs: [
+        { title: "Implement API", description: "", dependencies: [], required_capabilities: [], approval_gates: [], write_scopes: [], expected_artifacts: [] },
+        { title: "Verify API", dependencies: [{ ref: "0", type: "blocks" }] },
+      ] });
     await restarted.pump(); await restarted.pump();
     expect(await getDiscussion(server.ctx, discussion.id)).toMatchObject({ status: "ready", current_step: 3, total_steps: 3 });
     await publisher.pumpOnce();
@@ -82,6 +94,16 @@ describe("bounded agent discussion and reviewable task decomposition", () => {
       payload: { discussion_id: discussion.id, status: "ready", current_step: 3 } } });
     const replay = await collectCatchUp(server.ctx, 0, ["project:proj_artoo"]);
     expect(replay.find((frame) => frame.event.id === finalUpdates[0]!.event.id)).toEqual(finalUpdates[0]);
+    expect(frames.filter((frame) => frame.event.type === "message.created").every((frame) => !frame.event.payload.discussion_plan)).toBe(true);
+    // Existing history receives the same projection through both bounded pages
+    // and exact deep links, without rewriting its original body or DB payload.
+    const { discussion_plan: ignoredPreview, ...legacyPayload } = finalReply.payload;
+    await server.db.db.update(messages).set({ payload: legacyPayload }).where(eq(messages.id, finalReply.id));
+    const historical = await listMessagePage(server.ctx, discussion.room_id, { thread_root_id: discussion.thread_root_id });
+    expect(historical.messages.find((message) => message.id === finalReply.id)?.payload.discussion_plan).toEqual(finalReply.payload.discussion_plan);
+    expect((await getMessage(server.ctx, discussion.room_id, finalReply.id)).payload.discussion_plan).toEqual(finalReply.payload.discussion_plan);
+    await expect(getMessage({ ...server.ctx, organizationId: "foreign" }, discussion.room_id, finalReply.id)).rejects.toThrow("room not found");
+    expect((await server.db.db.select().from(messages).where(eq(messages.id, finalReply.id)))[0]?.payload).toEqual(legacyPayload);
     expect(await server.db.db.select().from(assistantTurns)).toHaveLength(3);
     expect(await server.db.db.select().from(tasks).where(eq(tasks.goalId, goal.id))).toHaveLength(0);
     const proposed = await proposeDiscussionPlan(server.ctx, discussion.id);
@@ -143,6 +165,92 @@ describe("bounded agent discussion and reviewable task decomposition", () => {
     await server.db.db.update(discussions).set({ status: "ready", finalMessageId: "cycle" }).where(eq(discussions.id, discussion.id));
     await expect(proposeDiscussionPlan(server.ctx, discussion.id)).rejects.toThrow("depend on itself");
     expect(await server.db.db.select().from(plans)).toHaveLength(0);
+  });
+  it("never presents an earlier JSON-shaped reply or invalid final controls as a plan suggestion", async () => {
+    const { discussion, goal } = await begin();
+    const worker = createDiscussionDispatcher(server.ctx, stop);
+    await worker.pump();
+    let current = await getDiscussion(server.ctx, discussion.id);
+    const earlier = await finishTurn(current.active_turn_id!, output);
+    const [earlierTurn] = await server.db.db.select().from(assistantTurns).where(eq(assistantTurns.id, earlier.id));
+    expect((await getMessage(server.ctx, discussion.room_id, earlierTurn!.responseMessageId!)).payload).not.toHaveProperty("discussion_plan");
+    await worker.pump();
+    current = await getDiscussion(server.ctx, discussion.id);
+    await finishTurn(current.active_turn_id!, "Review complete");
+    await worker.pump();
+    current = await getDiscussion(server.ctx, discussion.id);
+    const invalid = JSON.stringify({ task_specs: [{ title: "Unsafe task", acceptance_criteria: ["done"], approval_gates: ["unsupported"] }] });
+    await finishTurn(current.active_turn_id!, invalid);
+    await worker.pump();
+    const page = await listMessagePage(server.ctx, discussion.room_id, { thread_root_id: discussion.thread_root_id });
+    const answer = page.messages.find((message) => message.body === invalid)!;
+    expect(answer.body).toBe(invalid);
+    expect(answer.payload).not.toHaveProperty("discussion_plan");
+    await expect(proposeDiscussionPlan(server.ctx, discussion.id)).rejects.toThrow("approval_gates");
+    expect(await server.db.db.select().from(tasks).where(eq(tasks.goalId, goal.id))).toHaveLength(0);
+    await worker.stop();
+  });
+  it("does not infer a preview from user-supplied planning identifiers or a user message linked as the final reply", async () => {
+    const { discussion, goal } = await begin();
+    const userReply = await postMessage(server.ctx, discussion.room_id, { kind: "text", body: output, thread_root_id: discussion.thread_root_id,
+      payload: { discussion_id: discussion.id, assistant_turn_id: "fake" }, mentions: [], assignments: [] });
+    await server.db.db.update(discussions).set({ status: "ready", currentStep: 3, finalMessageId: userReply.id }).where(eq(discussions.id, discussion.id));
+    expect((await getMessage(server.ctx, discussion.room_id, userReply.id)).payload).not.toHaveProperty("discussion_plan");
+    expect(await server.db.db.select().from(plans).where(eq(plans.goalId, goal.id))).toHaveLength(0);
+  });
+  it("enriches a historical agent final reply only when its run, thread and task still match the completed turn", async () => {
+    const { discussion } = await begin();
+    const worker = createDiscussionDispatcher(server.ctx, stop);
+    await worker.pump();
+    let current = await getDiscussion(server.ctx, discussion.id);
+    const first = await finishTurn(current.active_turn_id!, "Implement the API first.");
+    await worker.pump();
+    current = await getDiscussion(server.ctx, discussion.id);
+    await finishTurn(current.active_turn_id!, "Verify the contract after implementation.");
+    await worker.pump();
+    current = await getDiscussion(server.ctx, discussion.id);
+    await finishTurn(current.active_turn_id!, output);
+    const [turn] = await server.db.db.select().from(assistantTurns).where(eq(assistantTurns.id, current.active_turn_id!));
+    expect(turn?.status).toBe("completed");
+    await worker.pump(); await worker.stop();
+    expect((await getDiscussion(server.ctx, discussion.id)).status).toBe("ready");
+    const finalReply = await getMessage(server.ctx, discussion.room_id, turn!.responseMessageId!);
+    expect(finalReply.actor_type).toBe("agent");
+    expect(finalReply.payload.discussion_plan).toBeDefined();
+    const { discussion_plan: ignoredPreview, ...legacyPayload } = finalReply.payload;
+    await server.db.db.update(messages).set({ payload: legacyPayload }).where(eq(messages.id, finalReply.id));
+    const [legacyRow] = await server.db.db.select().from(messages).where(eq(messages.id, finalReply.id));
+    const otherRoot = await postMessage(server.ctx, discussion.room_id, { kind: "text", body: "Unrelated thread", payload: {}, mentions: [], assignments: [] });
+    const [task] = await server.db.db.select().from(tasks).where(eq(tasks.id, turn!.taskId));
+    const otherTaskId = "task_unrelated_history";
+    await server.db.db.insert(tasks).values({ ...task!, id: otherTaskId });
+    const messageBinding = { runId: legacyRow!.runId, threadRootId: legacyRow!.threadRootId, taskId: legacyRow!.taskId };
+    const turnBinding = { runId: turn!.runId, threadRootId: turn!.threadRootId, taskId: turn!.taskId };
+    const mismatches = [
+      { name: "message run", change: () => server.db.db.update(messages).set({ runId: first.runId }).where(eq(messages.id, finalReply.id)) },
+      { name: "message thread", threadRootId: otherRoot.id, change: () => server.db.db.update(messages).set({ threadRootId: otherRoot.id }).where(eq(messages.id, finalReply.id)) },
+      { name: "message task", change: () => server.db.db.update(messages).set({ taskId: otherTaskId }).where(eq(messages.id, finalReply.id)) },
+      { name: "turn run", change: () => server.db.db.update(assistantTurns).set({ runId: first.runId }).where(eq(assistantTurns.id, turn!.id)) },
+      { name: "turn thread", change: () => server.db.db.update(assistantTurns).set({ threadRootId: otherRoot.id }).where(eq(assistantTurns.id, turn!.id)) },
+      { name: "turn task", change: () => server.db.db.update(assistantTurns).set({ taskId: otherTaskId }).where(eq(assistantTurns.id, turn!.id)) },
+    ];
+    for (const mismatch of mismatches) {
+      await mismatch.change();
+      const [beforeRead] = await server.db.db.select().from(messages).where(eq(messages.id, finalReply.id));
+      const page = await listMessagePage(server.ctx, discussion.room_id, { limit: 10, thread_root_id: mismatch.threadRootId ?? discussion.thread_root_id });
+      const pageReply = page.messages.find((message) => message.id === finalReply.id);
+      expect(pageReply, mismatch.name).toBeDefined();
+      expect(pageReply!.body, mismatch.name).toBe(output);
+      expect(pageReply!.payload, mismatch.name).not.toHaveProperty("discussion_plan");
+      expect((await getMessage(server.ctx, discussion.room_id, finalReply.id)).payload, mismatch.name).not.toHaveProperty("discussion_plan");
+      expect((await server.db.db.select().from(messages).where(eq(messages.id, finalReply.id)))[0], mismatch.name).toEqual(beforeRead);
+      await server.db.db.update(messages).set(messageBinding).where(eq(messages.id, finalReply.id));
+      await server.db.db.update(assistantTurns).set(turnBinding).where(eq(assistantTurns.id, turn!.id));
+    }
+    const restoredPage = await listMessagePage(server.ctx, discussion.room_id, { limit: 10, thread_root_id: discussion.thread_root_id });
+    expect(restoredPage.messages.find((message) => message.id === finalReply.id)?.payload.discussion_plan).toEqual(finalReply.payload.discussion_plan);
+    expect((await getMessage(server.ctx, discussion.room_id, finalReply.id)).payload.discussion_plan).toEqual(finalReply.payload.discussion_plan);
+    expect((await server.db.db.select().from(messages).where(eq(messages.id, finalReply.id)))[0]).toEqual(legacyRow);
   });
   it("keeps failed disconnected processes stopping until node stop is acknowledged", async () => {
     const { discussion } = await begin();

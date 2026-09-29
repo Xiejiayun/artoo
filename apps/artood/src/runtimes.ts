@@ -24,6 +24,16 @@ export interface RuntimePresetOptions {
   /** Local operator opt-in; never read from a server-supplied task policy. */
   trustedExecution?: boolean;
   outputFormat?: ProcessOutputFormat;
+  /** Local operator settings, never taken from a task or server profile. */
+  codex?: CodexSettings;
+}
+
+export interface CodexSettings {
+  binaryPath?: string;
+  model?: string;
+  baseUrl?: string;
+  /** Environment variable name only; the credential is never an argument. */
+  apiKeyEnv?: string;
 }
 
 const DEFAULT_ARTIFACTS: ArtifactSpec[] = [{ type: "patch", path: "changes.patch" }];
@@ -37,6 +47,17 @@ const TASK_PROMPT =
   "Otherwise create changes.patch when you change files; conversation may have no file changes.";
 
 export function codexRuntime(options: RuntimePresetOptions): RuntimeRegistration {
+  const local = options.codex;
+  const settings: string[] = [];
+  if (local?.model) settings.push("-c", `model=${JSON.stringify(local.model)}`);
+  if (local?.baseUrl) {
+    settings.push("-c", 'model_provider="artoo_desktop"',
+      "-c", 'model_providers.artoo_desktop.name="Artoo Responses API"',
+      "-c", `model_providers.artoo_desktop.base_url=${JSON.stringify(local.baseUrl)}`,
+      "-c", 'model_providers.artoo_desktop.wire_api="responses"',
+      "-c", 'model_providers.artoo_desktop.requires_openai_auth=false');
+    if (local.apiKeyEnv) settings.push("-c", `model_providers.artoo_desktop.env_key=${JSON.stringify(local.apiKeyEnv)}`);
+  }
   return {
     runtime: "codex",
     capabilities: options.capabilities ?? ["code.read", "code.modify"],
@@ -47,7 +68,7 @@ export function codexRuntime(options: RuntimePresetOptions): RuntimeRegistration
       // `--ask-for-approval` flag on `exec` — passing it aborts with exit 2
       // ("unexpected argument"), so non-interactiveness comes from `-s` alone.
       command: options.command ?? [
-        "codex",
+        local?.binaryPath ?? "codex",
         "exec",
         "--json",
         "--skip-git-repo-check",
@@ -56,11 +77,12 @@ export function codexRuntime(options: RuntimePresetOptions): RuntimeRegistration
         "workspace-write",
         "-C",
         "{{workspace_root}}",
+        ...settings,
         TASK_PROMPT,
       ],
       allowedRoots: options.allowedRoots,
       discussionCommand: options.discussionCommand ?? (options.command ? undefined : [
-        "codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-C", "{{workspace_root}}", TASK_PROMPT,
+        local?.binaryPath ?? "codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-C", "{{workspace_root}}", ...settings, TASK_PROMPT,
       ]),
       outputFormat: options.outputFormat ?? (options.command ? "plain" : "codex-json"),
       artifacts: options.artifacts ?? DEFAULT_ARTIFACTS,

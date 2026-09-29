@@ -3,6 +3,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
 const { createConnectionStore, normalizeServerUrl } = require("./connection-store.cjs");
+const { validateCodexSettings } = require("./codex-settings.cjs");
 
 function createDesktopController(options) {
   const store = createConnectionStore(options.directory, options.safeStorage, options.serverUrl);
@@ -60,7 +61,9 @@ function createDesktopController(options) {
       worktreeBaseRepo = await fs.realpath(input.worktreeBaseRepo);
       await fs.access(path.join(worktreeBaseRepo, ".git"));
     }
-    await store.configureDaemon({ allowedRoots: [...new Set(roots)], runtimes, trustedExecution: input.trustedExecution, ...(worktreeBaseRepo ? { worktreeBaseRepo } : {}) });
+    const codex = await validateCodexSettings(input.codex, store.daemonConfig().codex);
+    await store.configureDaemon({ allowedRoots: [...new Set(roots)], runtimes, trustedExecution: input.trustedExecution,
+      codex: codex.config, ...(worktreeBaseRepo ? { worktreeBaseRepo } : {}) }, codex.keyUpdate);
   }
   async function launchWorker() {
     if (child !== null) return;
@@ -68,6 +71,7 @@ function createDesktopController(options) {
     stopRequested = false;
     const config = store.daemonConfig();
     await configureDaemon(config);
+    const codex = config.codex;
     await api("/auth/session");
     await enroll();
     await fs.access(options.daemonEntry);
@@ -84,10 +88,15 @@ function createDesktopController(options) {
     launchedAt = Date.now();
     const launched = spawnProcess(options.executable, [options.daemonEntry], {
       windowsHide: true, stdio: ["ignore", "ignore", "ignore", "ipc"],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", NODE_ENV: "production", NODE_OPTIONS: "",
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^ARTOO_CODEX_/i.test(key))), ELECTRON_RUN_AS_NODE: "1", NODE_ENV: "production", NODE_OPTIONS: "",
         ARTOO_NODE_URL: nodeUrl.toString(), ARTOO_NODE_ID: connection.computerId,
         ARTOO_ALLOWED_ROOTS: config.allowedRoots.join(";"), ARTOO_RUNTIMES: config.runtimes.join(","),
         ARTOO_WORKTREE_BASE_REPO: config.worktreeBaseRepo ?? "", ARTOO_TRUSTED_EXECUTION: config.trustedExecution ? "1" : "0",
+        // Explicitly replace inherited overrides; changing connection mode must
+        // never reuse a parent process's provider or secret.
+        ARTOO_CODEX_BINARY: codex.binaryPath, ARTOO_CODEX_MODEL: codex.model,
+        ARTOO_CODEX_PROVIDER_URL: codex.mode === "responses" ? codex.baseUrl : undefined,
+        ARTOO_CODEX_PROVIDER_KEY: codex.mode === "responses" && codex.authMode === "api-key" ? store.codexApiKey() : undefined,
       },
     });
     child = launched;

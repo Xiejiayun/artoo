@@ -15,14 +15,15 @@ function createConnectionStore(directory, safeStorage, initialServer = "http://l
   const filename = path.join(directory, "connection.json");
   let state = {
     serverUrl: normalizeServerUrl(initialServer), deviceId: null, computerId: null,
-    encryptedCredentials: null,
+    encryptedCredentials: null, encryptedCodexApiKey: null,
     daemon: { allowedRoots: [], runtimes: ["codex"], trustedExecution: false },
   };
-  async function save() {
+  async function save(next = state) {
     await fs.mkdir(directory, { recursive: true });
     const temp = `${filename}.tmp`;
-    await fs.writeFile(temp, JSON.stringify(state), { mode: 0o600 });
+    await fs.writeFile(temp, JSON.stringify(next), { mode: 0o600 });
     await fs.rename(temp, filename);
+    state = next;
   }
   function requireSecureStorage() {
     if (!safeStorage.isEncryptionAvailable() || safeStorage.getSelectedStorageBackend?.() === "basic_text") throw new Error("OS secure credential storage is unavailable; unlock your account before pairing");
@@ -40,7 +41,14 @@ function createConnectionStore(directory, safeStorage, initialServer = "http://l
       }
     },
     connection: () => ({ serverUrl: state.serverUrl, paired: !!state.encryptedCredentials, deviceId: state.deviceId, computerId: state.computerId }),
-    daemonConfig: () => ({ ...state.daemon, allowedRoots: [...state.daemon.allowedRoots], runtimes: [...state.daemon.runtimes] }),
+    daemonConfig: () => ({ ...state.daemon, allowedRoots: [...state.daemon.allowedRoots], runtimes: [...state.daemon.runtimes],
+      codex: { mode: "default", authMode: "none", ...state.daemon.codex, hasKey: !!state.encryptedCodexApiKey } }),
+    codexApiKey() {
+      if (!state.encryptedCodexApiKey) return null;
+      requireSecureStorage();
+      try { return safeStorage.decryptString(Buffer.from(state.encryptedCodexApiKey, "base64")); }
+      catch { throw new Error("Stored API key cannot be unlocked. Enter it again in Settings"); }
+    },
     credentials() {
       if (!state.encryptedCredentials) return null;
       if (!safeStorage.isEncryptionAvailable()) throw new Error("OS secure credential storage is unavailable");
@@ -50,7 +58,7 @@ function createConnectionStore(directory, safeStorage, initialServer = "http://l
     async configureServer(value) {
       const serverUrl = normalizeServerUrl(value);
       if (serverUrl !== state.serverUrl) {
-        state = { ...state, serverUrl, deviceId: null, computerId: null, encryptedCredentials: null, daemon: { ...state.daemon, trustedExecution: false } };
+        state = { ...state, serverUrl, deviceId: null, computerId: null, encryptedCredentials: null, encryptedCodexApiKey: null, daemon: { ...state.daemon, trustedExecution: false } };
         await save();
       }
     },
@@ -62,8 +70,17 @@ function createConnectionStore(directory, safeStorage, initialServer = "http://l
       await save();
     },
     async setComputer(computerId) { state = { ...state, computerId }; await save(); },
-    async configureDaemon(daemon) { state = { ...state, daemon }; await save(); },
-    async clear() { state = { ...state, deviceId: null, computerId: null, encryptedCredentials: null }; await save(); },
+    async configureDaemon(daemon, keyUpdate) {
+      let encryptedCodexApiKey = state.encryptedCodexApiKey;
+      if (keyUpdate === null) encryptedCodexApiKey = null;
+      else if (keyUpdate !== undefined) {
+        requireSecureStorage();
+        try { encryptedCodexApiKey = safeStorage.encryptString(keyUpdate).toString("base64"); }
+        catch { throw new Error("API key could not be saved in OS secure storage"); }
+      }
+      await save({ ...state, daemon, encryptedCodexApiKey });
+    },
+    async clear() { state = { ...state, deviceId: null, computerId: null, encryptedCredentials: null, encryptedCodexApiKey: null }; await save(); },
   };
 }
 

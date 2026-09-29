@@ -24,7 +24,7 @@
     "electronVersion": "44.4.3",
     "asar": true,
     "npmRebuild": false,
-    "files": ["main.cjs", "preload.cjs", "connection-store.cjs", "desktop-controller.cjs", "renderer/**", "daemon/**"],
+    "files": ["main.cjs", "preload.cjs", "connection-store.cjs", "desktop-controller.cjs", "codex-settings.cjs", "renderer/**", "daemon/**"],
     "asarUnpack": ["daemon/**"],
     "directories": { "output": "release" },
     "win": { "target": "nsis" },

@@ -7,6 +7,7 @@ import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { mapMessage, mapRoom } from "../mappers.js";
+import { withHistoricalDiscussionPreviews } from "./discussion-plan.js";
 
 async function requireRoom(
   ctx: ServerContext,
@@ -38,7 +39,7 @@ export async function listMessages(ctx: ServerContext, roomId: string): Promise<
     .from(messages)
     .where(eq(messages.roomId, roomId))
     .orderBy(asc(messages.createdAt), asc(messages.id));
-  return rows.map(mapMessage);
+  return withHistoricalDiscussionPreviews(ctx, rows.map(mapMessage));
 }
 
 export interface MessagePage {
@@ -88,7 +89,7 @@ export async function listMessagePage(ctx: ServerContext, roomId: string, query:
   const page = rows.slice(0, limit);
   if (!forward) page.reverse();
   return {
-    messages: page.map(mapMessage),
+    messages: await withHistoricalDiscussionPreviews(ctx, page.map(mapMessage)),
     next_before: page.length ? messageCursor(roomId, page[0]!.position, threadRootId) : null,
     next_after: page.length ? messageCursor(roomId, page[page.length - 1]!.position, threadRootId) : null,
     has_more: hasMore,
@@ -100,7 +101,7 @@ export async function getMessage(ctx: ServerContext, roomId: string, messageId: 
   await requireRoom(ctx, ctx.db.db, roomId);
   const [row] = await ctx.db.db.select().from(messages).where(and(eq(messages.id, messageId), eq(messages.roomId, roomId), eq(messages.organizationId, ctx.organizationId)));
   if (!row) throw AppError.notFound("message not found");
-  return mapMessage(row);
+  return (await withHistoricalDiscussionPreviews(ctx, [mapMessage(row)]))[0]!;
 }
 
 function canonical(value: unknown): unknown {

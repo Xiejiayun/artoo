@@ -48,6 +48,11 @@ function installBridge() {
     const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
+  ipcMain.handle("artoo:chooseExecutable", async (event) => {
+    checkSender(event);
+    const result = await dialog.showOpenDialog(mainWindow, { properties: ["openFile"], filters: process.platform === "win32" ? [{ name: "Codex program", extensions: ["exe", "cmd"] }] : [] });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
   ipcMain.handle("artoo:openExternal", async (event, value) => { checkSender(event); return openExternal(value); });
 }
 function createWindow() {

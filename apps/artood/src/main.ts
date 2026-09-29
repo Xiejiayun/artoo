@@ -1,4 +1,5 @@
 import { arch as osArch, hostname, platform } from "node:os";
+import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { NodeHello } from "@artoo/protocol";
@@ -8,7 +9,7 @@ import { createArtifactUploader } from "./artifact-upload.js";
 import { runtimeAvailable } from "./cli-resolver.js";
 import { createRegistryHeartbeat } from "./heartbeat.js";
 import { createArtoodNode, type ArtoodNode } from "./node-runner.js";
-import { claudeCodeRuntime, codexRuntime, type RuntimePresetOptions } from "./runtimes.js";
+import { claudeCodeRuntime, codexRuntime, type CodexSettings, type RuntimePresetOptions } from "./runtimes.js";
 
 /**
  * artood node entrypoint: an env-driven bootstrap that wires the runtime presets,
@@ -43,6 +44,25 @@ export interface ArtoodConfig {
   worktreeBaseRepo?: string;
   /** Heartbeat interval override (ms); omitted = createArtoodNode's 10s default. */
   heartbeatIntervalMs?: number;
+  codex?: CodexSettings;
+}
+
+function codexSettingsFromEnv(env: NodeJS.ProcessEnv): CodexSettings {
+  const binaryPath = env.ARTOO_CODEX_BINARY?.trim() || undefined;
+  const model = env.ARTOO_CODEX_MODEL?.trim() || undefined;
+  const baseUrl = env.ARTOO_CODEX_PROVIDER_URL?.trim() || undefined;
+  if (binaryPath && (!isAbsolute(binaryPath) || /[\u0000-\u001f\u007f]/.test(binaryPath))) throw new Error("ARTOO_CODEX_BINARY must be an absolute program path");
+  if (model && /[\u0000-\u001f\u007f]/.test(model)) throw new Error("Invalid ARTOO_CODEX_MODEL");
+  if (baseUrl) {
+    let url: URL;
+    try { url = new URL(baseUrl); } catch { throw new Error("Invalid ARTOO_CODEX_PROVIDER_URL"); }
+    if ((url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) || url.username || url.password || url.search || url.hash) {
+      throw new Error("ARTOO_CODEX_PROVIDER_URL requires HTTPS or loopback HTTP without credentials, query or fragment");
+    }
+    if (!model) throw new Error("ARTOO_CODEX_MODEL is required for a Responses API");
+  }
+  return { ...(binaryPath ? { binaryPath } : {}), ...(model ? { model } : {}), ...(baseUrl ? { baseUrl,
+    ...(env.ARTOO_CODEX_PROVIDER_KEY ? { apiKeyEnv: "ARTOO_CODEX_PROVIDER_KEY" } : {}) } : {}) };
 }
 
 function splitList(value: string | undefined, separators: RegExp = /[;,]/): string[] {
@@ -79,6 +99,7 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
     runtimes: runtimes.length > 0 ? runtimes : ["codex", "claude-code"],
     allowedRoots,
     trustedExecution: env.ARTOO_TRUSTED_EXECUTION === "1",
+    codex: codexSettingsFromEnv(env),
     worktreeBaseRepo: env.ARTOO_WORKTREE_BASE_REPO?.trim() || undefined,
     heartbeatIntervalMs: parsePositiveMs(env.ARTOO_HEARTBEAT_INTERVAL_MS)
   };
@@ -93,7 +114,7 @@ export function buildRegistry(config: ArtoodConfig): AdapterRegistry {
         `artood: unknown runtime preset '${name}' (known: ${Object.keys(RUNTIME_PRESETS).join(", ")})`
       );
     }
-    return preset({ allowedRoots: config.allowedRoots, trustedExecution: config.trustedExecution });
+    return preset({ allowedRoots: config.allowedRoots, trustedExecution: config.trustedExecution, ...(name === "codex" ? { codex: config.codex } : {}) });
   });
   return createAdapterRegistry(registrations);
 }
@@ -118,7 +139,7 @@ export function createNodeFromConfig(config: ArtoodConfig): ArtoodNode {
     registry,
     heartbeat: createRegistryHeartbeat({
       nodeId: config.nodeId, registry,
-      statusForRuntime: (runtime) => runtimeAvailable(runtime) ? "available" : "missing",
+      statusForRuntime: (runtime) => runtimeAvailable(runtime, runtime === "codex" ? config.codex?.binaryPath : undefined) ? "available" : "missing",
     }),
     uploadArtifact: createArtifactUploader(config.url, config.nodeId),
     acknowledgeRunEvents: true,

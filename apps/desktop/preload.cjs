@@ -8,5 +8,5 @@ contextBridge.exposeInMainWorld("artooDesktop", {
   configureServer: invoke("configureServer"), pairDevice: invoke("pairDevice"), logout: invoke("logout"),
   daemonStatus: invoke("daemonStatus"), configureDaemon: invoke("configureDaemon"),
   startDaemon: invoke("startDaemon"), stopDaemon: invoke("stopDaemon"), restartDaemon: invoke("restartDaemon"),
-  chooseDirectory: invoke("chooseDirectory"), openExternal: invoke("openExternal"),
+  chooseDirectory: invoke("chooseDirectory"), chooseExecutable: invoke("chooseExecutable"), openExternal: invoke("openExternal"),
 });

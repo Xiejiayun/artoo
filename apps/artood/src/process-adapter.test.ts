@@ -1,13 +1,14 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentInstanceConfig, RunEvent } from "@artoo/protocol";
 import { WorkspaceScopeError } from "@artoo/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createProcessAdapter } from "./process-adapter.js";
+import { buildRegistry, loadConfigFromEnv } from "./main.js";
 
 const fixture = fileURLToPath(new URL("../test-fixtures/mock-agent.mjs", import.meta.url));
 const structuredFixture = fileURLToPath(new URL("../test-fixtures/structured-agent.mjs", import.meta.url));
@@ -64,6 +65,81 @@ function isOutput(e: RunEvent): e is Extract<RunEvent, { type: "run.output" }> {
 const cmd = [process.execPath, fixture, "--workspace", "{{workspace_root}}", "--context", "{{context_pack_path}}"];
 
 describe("createProcessAdapter", () => {
+  it("redacts quoted keys in nested JSON error bodies before publishing diagnostics", async () => {
+    const ws = makeWorkspace();
+    vi.stubEnv("ARTOO_CODEX_PROVIDER_KEY", 'sentinel-"private"-\\key');
+    try {
+      const script = `const key=process.env.ARTOO_CODEX_PROVIDER_KEY; let body=JSON.stringify({api_key:key}); for(let i=0;i<3;i++) body=JSON.stringify({response:body}); process.stderr.write(body); console.log(JSON.stringify({type:'turn.failed',error:{message:'API error body: '+body}})); process.exitCode=1;`;
+      const adapter = createProcessAdapter({ command: [process.execPath, "-e", script], outputFormat: "codex-json", allowedRoots: [ws] });
+      const events = await drain(adapter.streamEvents(await adapter.start(makeConfig(ws))));
+      expect(JSON.stringify(events)).not.toContain("private");
+      expect(events.filter(isOutput).every((event) => event.payload.text.includes("[redacted]"))).toBe(true);
+      expect(events.at(-1)).toMatchObject({ type: "run.lifecycle", payload: { phase: "failed", reason: expect.stringContaining("[redacted]") } });
+    } finally { vi.unstubAllEnvs(); rmSync(ws, { recursive: true, force: true }); }
+  });
+  it.each(["type", "text"])("keeps the CLI protocol intact when a local key equals %s", async (secret) => {
+    const ws = makeWorkspace();
+    vi.stubEnv("ARTOO_CODEX_PROVIDER_KEY", secret);
+    try {
+      for (const fail of [false, true]) {
+        const script = `const key=process.env.ARTOO_CODEX_PROVIDER_KEY; console.log(JSON.stringify({type:'thread.started',thread_id:key})); console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Answer '+key}})); ${fail ? "console.log(JSON.stringify({type:'turn.failed',error:{message:'Rejected '+key}})); process.exitCode=1;" : "console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}));"}`;
+        const adapter = createProcessAdapter({ command: [process.execPath, "-e", script], outputFormat: "codex-json", allowedRoots: [ws] });
+        const events = await drain(adapter.streamEvents(await adapter.start(makeConfig(ws))));
+        if (fail) expect(events.at(-1)).toMatchObject({ type: "run.lifecycle", payload: { phase: "failed", reason: "Rejected [redacted]" } });
+        else {
+          expect(events).toContainEqual({ type: "run.answer", payload: { text: "Answer [redacted]" } });
+          expect(events.find((event) => event.type === "run.usage")).toMatchObject({ payload: { provider_session_id: "[redacted]", input_tokens: 1, output_tokens: 1 } });
+          expect(events.at(-1)).toMatchObject({ type: "run.lifecycle", payload: { phase: "completed" } });
+        }
+      }
+    } finally { vi.unstubAllEnvs(); rmSync(ws, { recursive: true, force: true }); }
+  });
+  it("runs local provider bootstrap through the ordinary preset with no PATH lookup or global CLI config", async () => {
+    const ws = makeWorkspace();
+    const entry = join(ws, "fixture-codex.mjs");
+    const binary = process.platform === "win32" ? join(ws, "codex.cmd") : entry;
+    writeFileSync(entry, `#!${process.execPath}\nconsole.log(JSON.stringify({fixture:true,argv:process.argv.slice(2),hasKey:!!process.env.ARTOO_CODEX_PROVIDER_KEY})); console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Fixture response'}})); console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}));`);
+    if (process.platform === "win32") writeFileSync(binary, '@ECHO off\r\n"%_prog%" "%dp0%\\fixture-codex.mjs" %*\r\n');
+    else chmodSync(entry, 0o755);
+    vi.stubEnv("PATH", "");
+    try {
+      for (const authenticated of [false, true]) {
+        vi.stubEnv("ARTOO_CODEX_PROVIDER_KEY", authenticated ? "isolated-fixture-key" : undefined);
+        const registry = buildRegistry(loadConfigFromEnv({ ...process.env, ARTOO_NODE_URL: "ws://127.0.0.1:1/api/v1/node", ARTOO_NODE_ID: "fixture", ARTOO_ALLOWED_ROOTS: ws,
+          ARTOO_RUNTIMES: "codex", ARTOO_CODEX_BINARY: binary, ARTOO_CODEX_MODEL: "fixture-model", ARTOO_CODEX_PROVIDER_URL: "http://127.0.0.1:18181/v1" }));
+        const adapter = registry.resolve("codex")!;
+        for (const discussion of [false, true]) {
+          const config = makeConfig(ws);
+          config.runId += `${authenticated}-${discussion}`;
+          if (discussion) config.runStart.context_pack.payload!.policy.execution_mode = "discussion";
+          const events = await drain(adapter.streamEvents(await adapter.start(config)));
+          expect(events).toContainEqual({ type: "run.answer", payload: { text: "Fixture response" } });
+          const invocation = events.filter(isOutput).map((event) => event.payload.text).find((line) => line.startsWith('{"fixture":true'))!;
+          const observed = JSON.parse(invocation);
+          expect(observed.hasKey).toBe(authenticated);
+          expect(observed.argv).toEqual(expect.arrayContaining(["exec", "--json", "--ephemeral", "-s", discussion ? "read-only" : "workspace-write", 'model="fixture-model"', 'model_provider="artoo_desktop"']));
+          expect(observed.argv.some((arg: string) => arg.includes("env_key"))).toBe(authenticated);
+          expect(JSON.stringify(events)).not.toContain("isolated-fixture-key");
+        }
+      }
+    } finally { vi.unstubAllEnvs(); rmSync(ws, { recursive: true, force: true }); }
+  });
+  it("redacts the local provider key from split stderr, JSON output, answers and terminal failures", async () => {
+    const ws = makeWorkspace();
+    const secret = 'sentinel-"private"-key';
+    vi.stubEnv("ARTOO_CODEX_PROVIDER_KEY", secret);
+    try {
+      for (const fail of [false, true]) {
+        const script = `const key=process.env.ARTOO_CODEX_PROVIDER_KEY; const print=(obj)=>console.log(JSON.stringify(obj).replaceAll('private',String.fromCharCode(92)+'u0070rivate')); process.stderr.write(key.slice(0,9)); setTimeout(()=>{process.stderr.write(key.slice(9)); print({type:'item.completed',item:{type:'agent_message',text:'Answer '+key}}); ${fail ? "print({type:'turn.failed',error:{message:'Rejected '+key}}); process.exitCode=1;" : "print({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}});"}},10);`;
+        const adapter = createProcessAdapter({ command: [process.execPath, "-e", script], outputFormat: "codex-json", allowedRoots: [ws] });
+        const events = await drain(adapter.streamEvents(await adapter.start(makeConfig(ws))));
+        expect(JSON.stringify(events)).not.toContain("private");
+        expect(events).toContainEqual({ type: "run.output", payload: { stream: "stderr", text: "[redacted]" } });
+        if (fail) expect(events.at(-1)).toMatchObject({ payload: { phase: "failed", reason: "Rejected [redacted]" } });
+        else expect(events).toContainEqual({ type: "run.answer", payload: { text: "Answer [redacted]" } });
+      }
+    } finally { vi.unstubAllEnvs(); rmSync(ws, { recursive: true, force: true }); }
+  });
   it("refuses discussion before writing context when the custom runtime has no restricted command", async () => {
     const ws = makeWorkspace();
     try {

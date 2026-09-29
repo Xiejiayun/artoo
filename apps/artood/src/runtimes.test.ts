@@ -48,6 +48,23 @@ function isAck(m: NodeToServerMessage): m is CommandAck {
 }
 
 describe("runtime presets", () => {
+  it("uses the configured program and Responses provider for tasks and read-only discussions without putting a key in argv", () => {
+    const create = vi.spyOn(processAdapter, "createProcessAdapter");
+    try {
+      codexRuntime({ allowedRoots: ["/ws"], codex: { binaryPath: process.execPath, model: 'model-"quoted"', baseUrl: "http://127.0.0.1:18181/v1", apiKeyEnv: "ARTOO_CODEX_PROVIDER_KEY" } });
+      const options = create.mock.calls[0]![0];
+      for (const argv of [options.command, options.discussionCommand!]) {
+        expect(argv[0]).toBe(process.execPath);
+        expect(argv).toEqual(expect.arrayContaining(["--json", "--ephemeral", 'model_provider="artoo_desktop"', 'model_providers.artoo_desktop.wire_api="responses"', 'model_providers.artoo_desktop.env_key="ARTOO_CODEX_PROVIDER_KEY"', `model=${JSON.stringify('model-"quoted"')}`]));
+      }
+      expect(options.command).toContain("workspace-write");
+      expect(options.discussionCommand).toContain("read-only");
+      expect(options.discussionCommand).not.toContain("workspace-write");
+      expect(options.outputFormat).toBe("codex-json");
+      codexRuntime({ allowedRoots: ["/ws"], codex: { model: "test", baseUrl: "https://example.test/v1" } });
+      expect(create.mock.calls[1]![0].command.some((arg) => arg.includes("env_key"))).toBe(false);
+    } finally { create.mockRestore(); }
+  });
   it("uses real CLI read-only controls for planning discussions even on a trusted node", () => {
     const create = vi.spyOn(processAdapter, "createProcessAdapter");
     try {

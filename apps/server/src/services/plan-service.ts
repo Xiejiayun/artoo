@@ -127,6 +127,15 @@ export interface ProposePlanInput {
   author_id?: string;
 }
 
+/** The same content rules apply to a rendered suggestion and a saved proposal. */
+export function validatePlanTaskSpecs(input: ProposePlanSpecInput[]): TaskSpec[] {
+  const specs = input.map((spec) => TaskSpecSchema.parse(spec));
+  specs.forEach(assertSupportedPlanTaskControls);
+  if (specs.length === 0) throw AppError.validation("a plan must contain at least one task spec");
+  buildEdges(specs, (index) => String(index));
+  return specs;
+}
+
 /** Propose a new plan version for a goal. Version is monotonic per goal; the
  *  mutation rule (re-plan only after pause/block) is enforced via canProposePlan;
  *  the dependency graph is validated here so an invalid plan never persists. */
@@ -136,12 +145,7 @@ export async function proposePlan(ctx: ServerContext, goalId: string, input: Pro
 
 /** Allows an orchestrator to link its proposal atomically; acceptance remains a separate human action. */
 export async function proposePlanInTx(ctx: ServerContext, tx: Tx, goalId: string, input: ProposePlanInput): Promise<Plan> {
-  const specs = input.task_specs.map((s) => TaskSpecSchema.parse(s));
-  specs.forEach(assertSupportedPlanTaskControls);
-  if (specs.length === 0) {
-    throw AppError.validation("a plan must contain at least one task spec", { goal_id: goalId });
-  }
-  buildEdges(specs, (i) => String(i)); // fail closed on invalid/cyclic deps before persisting
+  const specs = validatePlanTaskSpecs(input.task_specs);
   const now = ctx.clock.nowIso();
   const planId = ctx.idGen.generate(ID_PREFIXES.plan);
     const goal = await requireGoalInOrg(ctx, tx, goalId);

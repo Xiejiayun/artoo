@@ -1,8 +1,7 @@
 import { agentInstances, appendEvent, assistantTurns, discussions, goals, messages, plans, rooms, runs, tasks } from "@artoo/db";
-import { canProposePlan, DiscussionSchema, ID_PREFIXES, StartDiscussionRequestSchema, TaskSpecSchema, type Discussion, type GoalStatus, type StartDiscussionRequest } from "@artoo/domain";
+import { canProposePlan, DiscussionSchema, ID_PREFIXES, StartDiscussionRequestSchema, type Discussion, type GoalStatus, type StartDiscussionRequest } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { z } from "zod";
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
@@ -10,6 +9,8 @@ import { cancelAssistantTurn } from "./assistant-service.js";
 import { mapPlan, proposePlanInTx } from "./plan-service.js";
 import { unconfirmedDisconnectRunIds } from "./execution-state.js";
 import { failRunDaemonDisconnect } from "./run-service.js";
+import { parseDiscussionPlan } from "./discussion-plan.js";
+export { parseDiscussionPlan } from "./discussion-plan.js";
 
 type Row = typeof discussions.$inferSelect;
 type StopProcess = (ctx: ServerContext, runId: string) => Promise<void>;
@@ -179,12 +180,6 @@ export function createDiscussionDispatcher(ctx: ServerContext, stop: StopProcess
     async stop() { stopped = true; if (timer) clearInterval(timer); timer = undefined; await inFlight; } };
 }
 
-const PlanOutputSchema = z.object({ rationale: z.string().max(20000).default(""), task_specs: z.array(TaskSpecSchema).min(1).max(50) });
-export function parseDiscussionPlan(body: string) {
-  const text = body.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i, "$1");
-  try { return PlanOutputSchema.parse(JSON.parse(text)); }
-  catch { throw AppError.validation("The final agent reply is not a valid task plan. Review the discussion and create or edit a plan manually."); }
-}
 export async function proposeDiscussionPlan(ctx: ServerContext, id: string) {
   return ctx.db.transaction(async (tx) => {
     const row = await requireDiscussion(ctx, tx, id, true);

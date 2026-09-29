@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { _electron as electron, chromium } from "playwright";
 import { expect } from "@playwright/test";
@@ -58,14 +58,13 @@ async function freePort() {
 async function removeTemp(directory) {
   const canonical = resolve(directory);
   assert.ok(canonical.startsWith(`${resolve(tmpdir())}${sep}artoo-desktop-smoke-`), "Refusing cleanup outside the smoke temporary directory");
-  try { await until(() => { try { rmSync(canonical, { recursive: true, force: true }); return true; } catch { return false; } }, "Temp files remained locked", 15_000); }
-  catch { console.warn(`[smoke] Temporary files remain at ${canonical}`); }
+  await until(() => { try { rmSync(canonical, { recursive: true, force: true }); return !existsSync(canonical); } catch { return false; } }, "Smoke temporary files remained locked", 15_000);
 }
 
 async function main() {
   assert.equal(process.platform, "win32", "The packaged smoke must run on Windows");
   mkdirSync(artifactDir, { recursive: true });
-  for (const filename of ["windows-desktop-smoke.json", "windows-desktop-smoke.png", "windows-desktop-smoke-failure.png", "windows-artifact.patch", "windows-artifact-after-restart.patch"]) {
+  for (const filename of ["windows-desktop-smoke.json", "windows-desktop-smoke.png", "windows-desktop-smoke-failure.png", "windows-artifact.patch", "windows-artifact-after-restart.patch", "windows-live-copilot.json", "windows-live-copilot-plan.png"]) {
     rmSync(join(artifactDir, filename), { force: true });
   }
   runNpm(["run", "build", "--workspace", "@artoo/server"]);
@@ -75,13 +74,17 @@ async function main() {
   const tempRoot = mkdtempSync(join(tmpdir(), "artoo-desktop-smoke-"));
   const installDir = join(tempRoot, "install"), userData = join(tempRoot, "desktop-data");
   const workspace = join(tempRoot, "workspace"), fixtureBin = join(tempRoot, "fixture-bin");
+  const fixtureKey = randomBytes(24).toString("hex");
+  const fixtureProgram = join(fixtureBin, "codex.cmd");
   mkdirSync(artifactDir, { recursive: true }); mkdirSync(workspace); mkdirSync(fixtureBin);
   // npm-shaped fixture exercises ordinary Codex resolution and the real bundled
   // worker. No model/network subscription, mock adapter, or dev route is used.
-  writeFileSync(join(fixtureBin, "codex.cmd"), '@ECHO off\r\n"%_prog%" "%dp0%\\fixture-codex.mjs" %*\r\n');
+  writeFileSync(fixtureProgram, '@ECHO off\r\n"%_prog%" "%dp0%\\fixture-codex.mjs" %*\r\n');
   writeFileSync(join(fixtureBin, "fixture-codex.mjs"), `import {writeFileSync} from 'node:fs';
+if (process.env.ARTOO_CODEX_PROVIDER_KEY !== ${JSON.stringify(fixtureKey)}) throw new Error('Configured fixture key did not reach CLI');
 writeFileSync('changes.patch', ${JSON.stringify(fixturePatch)});
-writeFileSync('fixture-execution.json', JSON.stringify({argv:process.argv.slice(2), executable:process.execPath, cwd:process.cwd()}));
+writeFileSync('fixture-execution.json', JSON.stringify({argv:process.argv.slice(2), executable:process.execPath, cwd:process.cwd(), apiKeyConfigured:true}));
+console.error('Diagnostic key: ' + process.env.ARTOO_CODEX_PROVIDER_KEY);
 console.log('Packaged Codex adapter fixture completed');
 `);
   const port = await freePort(), baseUrl = `http://127.0.0.1:${port}`;
@@ -95,13 +98,23 @@ console.log('Packaged Codex adapter fixture completed');
     AUTH_ALLOWED_EMAILS: "owner@preview.test", AUTH_OWNER_EMAILS: "owner@preview.test",
   };
   const appEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^path$|^electron_run_as_node$/i.test(key)));
-  Object.assign(appEnv, { PATH: `${fixtureBin}${delimiter}${process.env.PATH ?? ""}`, ARTOO_DESKTOP_DATA_DIR: userData, ARTOO_SERVER_URL: baseUrl });
+  // Only the absolute program selected through Settings may execute. Empty PATH
+  // prevents a regression from accidentally invoking an installed live model CLI.
+  Object.assign(appEnv, { PATH: "", ARTOO_DESKTOP_DATA_DIR: userData, ARTOO_SERVER_URL: baseUrl,
+    ARTOO_CODEX_PROVIDER_KEY: "inherited-fixture-key-must-not-win" });
   const { startServer } = await import(pathToFileURL(join(repoRoot, "apps/server/dist/main.js")).href);
   const { createSession } = await import(pathToFileURL(join(repoRoot, "apps/server/dist/auth/auth-service.js")).href);
   let server, browser, electronApp, page, appExe, ownerCookie;
+  let liveReportPath, executionError;
+  let liveActive = false;
   let uninstalled = false;
   const checks = [];
   const captures = [];
+  const report = { result: "fail", checkedAt: new Date().toISOString(), installer,
+    installerSha256: createHash("sha256").update(readFileSync(installer)).digest("hex"), checks, captures,
+    cleanup_complete: false,
+    modelExecution: "Temporary CLI fixture through production Codex adapter; no real model quality claim",
+    ownerAuthentication: "Test-provisioned owner cookie; native pairing and authorization use production endpoints" };
   let rendererCrashed = false;
   const check = (description) => { checks.push(description); console.log(`[smoke] PASS ${description}`); };
   const ownerApi = async (route) => {
@@ -114,7 +127,7 @@ console.log('Packaged Codex adapter fixture completed');
     page = await electronApp.firstWindow({ timeout: 30_000 }); page.setDefaultTimeout(30_000);
     rendererCrashed = false;
     page.on("crash", () => { rendererCrashed = true; console.error("[renderer] Renderer process crashed"); });
-    page.on("pageerror", (error) => console.error(`[renderer] ${error.message}`));
+    page.on("pageerror", (error) => console.error(liveActive ? "[renderer] Renderer failure during live verification" : `[renderer] ${error.message}`));
     page.on("requestfailed", (request) => console.error(`[renderer] ${request.method()} ${new URL(request.url()).pathname}: ${request.failure()?.errorText}`));
     await page.waitForLoadState("domcontentloaded");
   }
@@ -231,9 +244,19 @@ console.log('Packaged Codex adapter fixture completed');
 
     await page.getByRole("link", { name: "Settings", exact: true }).click();
     await page.getByLabel("Allowed workspace folders").fill(workspace);
+    await page.getByLabel("Codex program (optional)").fill(fixtureProgram);
+    await page.getByLabel("Model connection", { exact: true }).selectOption("responses");
+    await page.getByLabel("Model name", { exact: true }).fill("smoke-model");
+    await page.getByLabel("Model API address", { exact: true }).fill("http://127.0.0.1:1/v1");
+    await page.getByLabel("Model API key", { exact: true }).fill(fixtureKey);
     await page.getByRole("checkbox", { name: "Allow execution of trusted team tasks on this computer" }).check();
     await page.getByRole("button", { name: "Save worker configuration" }).click();
     await until(async () => (await page.evaluate(() => window.artooDesktop.daemonStatus())).config.allowedRoots.includes(workspace), "Worker configuration was not saved");
+    const savedCodex = (await page.evaluate(() => window.artooDesktop.daemonStatus())).config.codex;
+    assert.deepEqual(savedCodex, { mode: "responses", binaryPath: fixtureProgram, model: "smoke-model", authMode: "api-key", baseUrl: "http://127.0.0.1:1/v1", hasKey: true });
+    assert.equal(readFileSync(join(userData, "connection.json"), "utf8").includes(fixtureKey), false, "Provider key persisted in plaintext");
+    assert.equal(JSON.stringify(savedCodex).includes(fixtureKey), false, "Provider key exposed in native status");
+    await expect(page.getByLabel("Model API key", { exact: true })).toHaveValue("");
     await page.getByRole("button", { name: "Start worker", exact: true }).click(); await workerState("running");
     const firstPid = (await page.evaluate(() => window.artooDesktop.daemonStatus())).pid;
     const duplicate = spawnSync(appExe, [], { cwd: repoRoot, env: appEnv, windowsHide: true, stdio: "ignore", timeout: 20_000 });
@@ -283,6 +306,14 @@ console.log('Packaged Codex adapter fixture completed');
     const execution = JSON.parse(readFileSync(join(workspace, "fixture-execution.json"), "utf8"));
     assert.equal(execution.executable.toLowerCase(), appExe.toLowerCase(), "CLI did not run through packaged Electron");
     assert.equal(execution.argv[0], "exec", "Ordinary Codex command arguments were not used");
+    assert.equal(execution.apiKeyConfigured, true);
+    assert.ok(execution.argv.includes('model="smoke-model"'));
+    assert.ok(execution.argv.includes('model_provider="artoo_desktop"'));
+    assert.ok(execution.argv.includes('model_providers.artoo_desktop.env_key="ARTOO_CODEX_PROVIDER_KEY"'));
+    assert.equal(JSON.stringify(execution).includes(fixtureKey), false, "Provider key exposed in CLI arguments");
+    await expect(page.locator(".run-output")).toContainText("Diagnostic key: [redacted]");
+    assert.equal((await page.locator(".run-output").textContent()).includes(fixtureKey), false, "Provider key exposed in runtime output");
+    check("Local Responses settings select an absolute CLI with empty PATH; key encrypted, private in argv/status and redacted from runtime output");
     const downloaded = await downloadPatch("windows-artifact.patch");
     await page.getByLabel("Review comment", { exact: true }).fill("Downloaded patch bytes verified by packaged authenticated smoke");
     await page.getByRole("button", { name: "Accept", exact: true }).click();
@@ -298,28 +329,83 @@ console.log('Packaged Codex adapter fixture completed');
     await expect(page.locator(".task-detail__header .ui-badge--status")).toHaveText("done");
     assert.deepEqual(await page.evaluate(() => window.artooDesktop.getConnection()), connection);
     assert.ok((await page.evaluate(() => window.artooDesktop.daemonStatus())).config.allowedRoots.includes(workspace));
+    assert.deepEqual((await page.evaluate(() => window.artooDesktop.daemonStatus())).config.codex, savedCodex);
     await downloadPatch("windows-artifact-after-restart.patch");
     check("App/server restart preserve device identity, worker settings, reviewed task, and downloadable artifact");
+    if (process.env.ARTOO_DESKTOP_LIVE_CODEX === "1") {
+      liveActive = true;
+      liveReportPath = join(artifactDir, "windows-live-copilot.json");
+      report.liveEvidence = liveReportPath;
+      report.modelExecution = "Deterministic CLI fixture plus opt-in real Codex turns through the installed Windows worker; see live evidence for completed turns and results";
+      const { runWindowsLiveCopilot } = await import("./windows-live-copilot.mjs");
+      const live = await runWindowsLiveCopilot({ page, workspace, userData, baseUrl, ownerCookie, artifactDir, server,
+        restartApp: async () => {
+          await electronApp.close(); electronApp = undefined; page = undefined;
+          // The fixture must use an empty PATH, while real Codex may require
+          // ordinary system tools. This only changes this isolated child app.
+          appEnv.PATH = Object.entries(process.env).find(([key]) => /^path$/i.test(key))?.[1] ?? "";
+          await launchApp();
+          return page;
+        },
+      });
+      page = live.page;
+      liveReportPath = live.reportPath;
+      check("Opt-in real provider chat, discussion, plan review and acceptance verified through the installed worker");
+    }
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Connect this computer" })).toBeVisible();
     assert.equal(await page.evaluate(() => window.artooDesktop.getToken()), null);
+    assert.equal((await page.evaluate(() => window.artooDesktop.daemonStatus())).config.codex.hasKey, false);
+    assert.equal(JSON.parse(readFileSync(join(userData, "connection.json"), "utf8")).encryptedCodexApiKey, null);
     assert.equal((await fetch(`${baseUrl}/auth/session`, { headers: { Authorization: `Bearer ${nativeToken}` } })).status, 401);
     await electronApp.close(); electronApp = undefined; page = undefined;
     uninstall(); await until(() => !existsSync(appExe), "NSIS uninstall left the app executable", 30_000); uninstalled = true;
     check("Sign out clears credentials and revokes access; NSIS uninstall removes the app");
-    const report = { result: "pass", checkedAt: new Date().toISOString(), installer, installerSha256: createHash("sha256").update(readFileSync(installer)).digest("hex"), checks, captures, screenshot: join(artifactDir, "windows-desktop-smoke.png"), downloaded, modelExecution: "Temporary CLI fixture through production Codex adapter; no real model quality claim", ownerAuthentication: "Test-provisioned owner cookie; native pairing and authorization use production endpoints" };
-    writeFileSync(join(artifactDir, "windows-desktop-smoke.json"), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2));
+    Object.assign(report, { result: "pass", screenshot: join(artifactDir, "windows-desktop-smoke.png"), downloaded });
   } catch (error) {
-    writeFileSync(join(artifactDir, "windows-desktop-smoke.json"), JSON.stringify({ result: "fail", checkedAt: new Date().toISOString(), installer, installerSha256: createHash("sha256").update(readFileSync(installer)).digest("hex"), checks, captures, error: error instanceof Error ? error.message : String(error) }, null, 2));
+    executionError = liveActive ? new Error("Installed live verification or its logout/uninstall failed; consult the sanitized live report for the last completed stage") : error;
+    report.error = executionError instanceof Error ? executionError.message : String(executionError);
     if (page && !page.isClosed()) {
-      await page.screenshot({ path: join(artifactDir, "windows-desktop-smoke-failure.png"), fullPage: false, timeout: 5000 }).catch((captureError) => console.error(`[smoke] Failure screenshot unavailable: ${captureError.message}`));
-      console.error(`[smoke] Visible app state:\n${await page.locator("body").innerText().catch(() => "unavailable")}`);
+      await page.screenshot({ path: join(artifactDir, "windows-desktop-smoke-failure.png"), fullPage: false, timeout: 5000 }).catch(() => console.error("[smoke] Failure screenshot unavailable"));
+      if (!liveActive) console.error(`[smoke] Visible app state:\n${await page.locator("body").innerText().catch(() => "unavailable")}`);
     }
-    throw error;
   } finally {
-    await electronApp?.close().catch(() => {}); await browser?.close().catch(() => {}); await server?.close().catch(() => {});
-    if (!uninstalled) { try { uninstall(); if (appExe) await until(() => !existsSync(appExe), "Cleanup uninstall did not finish", 30_000); } catch (error) { console.warn(`[smoke] ${error.message}`); } }
-    await removeTemp(tempRoot);
+    const cleanup = { app_closed: !electronApp, browser_closed: !browser, server_closed: !server, uninstalled, temporary_directory_removed: false };
+    for (const [key, resource] of [["app_closed", electronApp], ["browser_closed", browser], ["server_closed", server]]) {
+      if (!resource) continue;
+      try { await bounded(resource.close(), key, 30_000); cleanup[key] = true; }
+      catch { console.warn(`[smoke] Cleanup failed: ${key}`); }
+    }
+    if (!uninstalled) {
+      try { uninstall(); if (appExe) await until(() => !existsSync(appExe), "Cleanup uninstall did not finish", 30_000); cleanup.uninstalled = true; }
+      catch { console.warn("[smoke] Cleanup uninstall failed"); }
+    }
+    try { await removeTemp(tempRoot); cleanup.temporary_directory_removed = !existsSync(tempRoot); }
+    catch { console.warn("[smoke] Smoke temporary directory cleanup failed"); }
+    report.cleanup = cleanup;
+    report.cleanup_complete = Object.values(cleanup).every(Boolean);
+    if (!report.cleanup_complete) {
+      report.result = "fail";
+      report.error ??= "Installed smoke cleanup did not complete";
+      executionError ??= new Error(report.error);
+    }
+    if (liveReportPath && existsSync(liveReportPath)) {
+      try {
+        const liveReport = JSON.parse(readFileSync(liveReportPath, "utf8"));
+        liveReport.cleanup_complete = report.cleanup_complete;
+        liveReport.cleanup = cleanup;
+        if (report.result !== "pass") { liveReport.result = "fail"; liveReport.error ??= report.error; }
+        writeFileSync(liveReportPath, `${JSON.stringify(liveReport, null, 2)}\n`);
+      } catch {
+        report.result = "fail";
+        report.error = "Could not finalize installed live verification cleanup evidence";
+        executionError ??= new Error(report.error);
+      }
+    }
+    report.finishedAt = new Date().toISOString();
+    writeFileSync(join(artifactDir, "windows-desktop-smoke.json"), `${JSON.stringify(report, null, 2)}\n`);
+    console.log(JSON.stringify(report, null, 2));
   }
+  if (executionError) throw executionError;
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });
