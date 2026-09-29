@@ -139,6 +139,7 @@ async function mockExecute(
 }
 
 async function selectTask(page: Page, title: string): Promise<void> {
+  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption(PROJECT_ID);
   await page.getByRole("heading", { name: "artoo", level: 1 }).waitFor();
   await page.getByRole("button", { name: title, exact: false }).click();
   await expect(page.getByRole("heading", { name: title, level: 2 })).toBeVisible();
@@ -264,7 +265,9 @@ test("create → ready → assign → mock run → review → accept → done", 
   try {
   await page.goto("/");
 
-  // Workspace loads with the seeded project.
+  // The server is shared across specs, which may create projects that sort
+  // before the seed. Keep UI creation and API assertions in the same project.
+  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption(PROJECT_ID);
   await expect(page.getByRole("heading", { name: "artoo", level: 1 })).toBeVisible();
 
   // Create a uniquely-titled task.
@@ -297,6 +300,7 @@ test("request changes returns ready, and retry recovers a failed run", async ({ 
   const node = await connectManualNode(request, true);
   try {
   await page.goto("/");
+  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption(PROJECT_ID);
   await expect(page.getByRole("heading", { name: "artoo", level: 1 })).toBeVisible();
 
   const title = uniqueTitle("E2E retry path");
@@ -382,6 +386,7 @@ test("approval gate moves a running task to awaiting approval and back to runnin
   request,
 }) => {
   await page.goto("/");
+  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption(PROJECT_ID);
   await expect(page.getByRole("heading", { name: "artoo", level: 1 })).toBeVisible();
 
   const title = uniqueTitle("E2E approval gate");

@@ -14,6 +14,9 @@ async function createTask(page: Page, title: string, criteria = "Verified outcom
 test("narrow workspace supports messaging, decisions, handoffs, blockers and dependency errors", async ({ page, request }) => {
   await page.setViewportSize({ width: 900, height: 900 });
   await page.goto("/");
+  // Other specs create projects on this shared server; select the project used
+  // by the API assertions instead of relying on bootstrap's alphabetical order.
+  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption("proj_artoo");
   const prerequisite = unique("Prerequisite");
   const dependent = unique("Dependent");
   await createTask(page, prerequisite);
@@ -63,6 +66,7 @@ test("narrow workspace supports messaging, decisions, handoffs, blockers and dep
 
 test("goals materialize a reviewed dependent plan and preserve pause/resume checkpoints", async ({ page, request }) => {
   await page.goto("/goals");
+  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption("proj_artoo");
   const title = unique("Preview goal");
   await page.getByRole("button", { name: "New goal" }).click();
   await page.getByLabel("Goal title").fill(title);
