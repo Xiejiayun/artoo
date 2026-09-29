@@ -155,10 +155,11 @@ final class SharedServerChatUITests: XCTestCase {
 
     @MainActor
     private func waitForLiveConnection() throws {
-        let status = app.descendants(matching: .any).matching(identifier: "realtimeStatus").firstMatch
-        try reveal(status)
-        let connected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "connected"), object: status)
-        try require(XCTWaiter.wait(for: [connected], timeout: 15) == .completed, "The native client must establish an authenticated WebSocket")
+        // Connection status is read-only. Its decorative image need not be
+        // hittable, and scrolling here could trigger the list's manual refresh.
+        let connected = app.descendants(matching: .any).matching(identifier: "realtimeStatus")
+            .matching(NSPredicate(format: "value == %@", "connected")).firstMatch
+        try require(connected.waitForExistence(timeout: 15), "The native client must establish an authenticated WebSocket")
     }
 
     @MainActor

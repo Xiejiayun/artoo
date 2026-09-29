@@ -207,6 +207,7 @@ private struct RealtimeStatusView: View {
     var body: some View {
         Label(connection.connected ? "Live updates connected" : "Reconnecting · drafts saved on this phone", systemImage: connection.connected ? "bolt.horizontal.circle" : "wifi.exclamationmark")
             .font(.caption).foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
             .accessibilityIdentifier("realtimeStatus").accessibilityValue(connection.connected ? "connected" : "reconnecting")
     }
 }
