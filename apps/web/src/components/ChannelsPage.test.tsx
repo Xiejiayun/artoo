@@ -28,14 +28,22 @@ describe("channel collaboration", () => {
   it("creates an independent channel and opens its shared conversation", async () => {
     const channels: Channel[] = [];
     const createChannel = vi.fn<ApiClient["createChannel"]>().mockImplementation(async (body) => { const created = { ...channel, name: body.name }; channels.push(created); return { channel: created }; });
-    renderWithProviders(<ChannelsPage />, { client: api({ listChannels: async () => ({ channels: [...channels] }), createChannel }) });
+    const client = api({ listChannels: async () => ({ channels: [...channels] }), createChannel });
+    const getRoom = vi.spyOn(client, "getRoom");
+    renderWithProviders(<ChannelsPage />, { client });
     await userEvent.click(await screen.findByRole("button", { name: "New channel" }));
     await userEvent.type(screen.getByLabelText("Channel name"), "design");
     await userEvent.type(screen.getByLabelText("Channel description"), "Product ideas");
     await userEvent.click(screen.getByRole("button", { name: "Create channel" }));
-    expect(await screen.findByRole("heading", { name: "# design" })).toBeInTheDocument();
-    expect(createChannel).toHaveBeenCalledWith({ project_id: "proj_artoo", name: "design", description: "Product ideas" }, expect.any(String));
-    expect(await screen.findByLabelText("Message")).toBeInTheDocument();
+    // The list refresh can render the channel before navigation checks its room.
+    // Assert the current DOM after that check instead of retaining a replaced node.
+    await waitFor(() => {
+      expect(getRoom).toHaveBeenCalledWith(channel.id);
+      expect(screen.getByRole("heading", { name: "# design" })).toBeInTheDocument();
+      expect(createChannel).toHaveBeenCalledWith({ project_id: "proj_artoo", name: "design", description: "Product ideas" }, expect.any(String));
+      expect(screen.getByLabelText("Message")).toBeInTheDocument();
+      expect(screen.getByLabelText("Message")).toBeEnabled();
+    });
   });
 
   it("keeps root and thread drafts separate and submits real user mentions on replies", async () => {

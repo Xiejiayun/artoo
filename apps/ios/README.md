@@ -168,7 +168,7 @@ and agent metadata, structured mentions, database timestamp normalization and
 mention lookup/read-retry identity and lifecycle boundaries. Both synchronization
 screenshots were inspected; broader native workflow coverage remains separate.
 
-The latest [native workflow gate](https://github.com/Xiejiayun/artoo/actions/runs/36533157993/job/109291170779)
+An earlier fully passing [native workflow gate](https://github.com/Xiejiayun/artoo/actions/runs/36533157993/job/109291170779)
 verified `eae116666beb76b5ca96ef9bd2ad3f3e39bfc02e` with the same Xcode and
 simulator versions: Debug/Release builds, all 71 unit XCTest cases and all three
 Release UI scenarios passed with zero failures. The additional UI scenarios
@@ -184,8 +184,9 @@ were inspected, including Offline/Online daemon states and the proposed/accepted
 task lists; the synchronization report confirms cleanup. Native agent responses
 are deterministic subprocess fixtures. Separate real Aerial/Copilot conversation
 and discussion evidence, with its authentication/transport limits, is recorded
-in [the collaboration record](../../docs/cross-client-sync.md). Physical devices,
-other native UI workflows, installed-worker provider setup, deployed Google
+in [the collaboration record](../../docs/cross-client-sync.md), including newer
+native plan-card results and the installed Windows provider settings and live
+inference checks. Physical devices, other native UI workflows, deployed Google
 OAuth/TLS/WebSockets and signing remain separate acceptance checks.
 
 ```bash

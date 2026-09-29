@@ -633,3 +633,23 @@ was downloaded and its source and GitHub digest verified; SHA-256 is
 The failed suite's report confirms resources closed and temporary data removed.
 This run validates the native plan-card fix, but does not count as a passing
 three-scenario native gate.
+
+## Readiness-query follow-up, 2026-09-29
+
+The [shared run for `f3358c4`](https://github.com/Xiejiayun/artoo/actions/runs/36546082531/job/109332698909)
+passed type checking and the production preview build, but stopped in the test
+gate with 1,169 passing cases, one failure and 20 skips (179 passing files, one
+failing file and nine skipped files). Browser workflows, authentication workflows,
+native contracts, the dependency audit and whitespace gate did not run afterward.
+The [shared artifact](https://github.com/Xiejiayun/artoo/actions/runs/36546082531/artifacts/11023675845)
+was downloaded and its source and GitHub digest verified; SHA-256 is
+`d2d8a92008de9d34979ed955f3396fe18fa8adec86fb08bb688fcf1e915a1643`.
+
+The sole failure was the channel-creation component test asserting against a
+detached heading returned by an earlier asynchronous query. After creation,
+channel-list invalidation can display the first channel before navigation to
+its explicit URL; that navigation waits for authoritative room/project metadata
+and remounts the conversation. The follow-up keeps the creation arguments and
+conversation assertions, but queries the current heading and enabled composer
+together inside the wait callback after the room lookup starts. It changes only
+the test, with no product or native-test changes from `f3358c4`.
