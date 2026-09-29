@@ -1,11 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useProject } from "../app/useProject.js";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { useSubscription } from "../app/RealtimeContext.js";
-import { EmptyState, ErrorState, StatusBadge } from "../ui/index.js";
+import { Button, EmptyState, ErrorState, StatusBadge } from "../ui/index.js";
 import { AuditBundleView } from "./AuditBundleView.js";
+import { ActionError } from "./ActionError.js";
 
 /**
  * Runs & Audit (#16/#17 bridge): pick a task and inspect its server-built
@@ -16,8 +18,14 @@ export function RunsAuditPage(): React.ReactNode {
   const api = useApi();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
-  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
-  const projectId = bootstrap.data?.projects[0]?.id;
+  const { bootstrap, projectId } = useProject();
+  useEffect(() => setSelectedTaskId(null), [projectId]);
+  const download = useMutation({ mutationFn: async () => {
+    const result = await api.getTaskAuditBundleExport(selectedTaskId!);
+    const url = URL.createObjectURL(new Blob([JSON.stringify(result.export, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a"); link.href = url; link.download = `${selectedTaskId}-audit.json`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } });
   useSubscription(projectId === undefined ? [] : [`project:${projectId}`]);
 
   const tasks = useQuery({
@@ -56,7 +64,9 @@ export function RunsAuditPage(): React.ReactNode {
     <div className="runs-audit">
       <header className="runs-audit-header">
         <h1 className="t-h1">Runs &amp; Audit</h1>
+        {selectedTaskId && <Button loading={download.isPending} onClick={() => download.mutate()}>Export task evidence</Button>}
       </header>
+      <ActionError error={tasks.error ?? download.error} />
       <div className="runs-audit-body">
         <nav className="audit-task-picker" aria-label="Tasks">
           <ul>

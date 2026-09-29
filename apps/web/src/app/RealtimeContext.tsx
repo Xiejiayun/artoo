@@ -8,6 +8,7 @@ import { queryKeys } from "./queryKeys.js";
 const RealtimeContext = createContext<RealtimeClient | null>(null);
 
 export interface RealtimeProviderProps {
+  tokenProvider?: () => string | null | undefined | Promise<string | null | undefined>;
   url?: string;
   /** Injectable for tests; defaults to a real WebSocket. */
   socketFactory?: SocketFactory;
@@ -23,6 +24,7 @@ export function RealtimeProvider({
   url = "/api/v1/ws",
   socketFactory,
   reconnectDelayMs,
+  tokenProvider,
   children,
 }: RealtimeProviderProps): ReactNode {
   const queryClient = useQueryClient();
@@ -33,6 +35,7 @@ export function RealtimeProvider({
       url: resolveWsUrl(url),
       socketFactory,
       reconnectDelayMs,
+      tokenProvider,
       onEvent: (topic, event) => {
         for (const key of invalidationsForEvent(topic, event)) {
           void queryClient.invalidateQueries({ queryKey: key });
@@ -49,9 +52,12 @@ export function RealtimeProvider({
 
   useEffect(() => {
     const client = ref.current;
+    const unsubscribe = client?.subscribeStatus(() => {
+      if (client.getStatus() === "connected") void queryClient.invalidateQueries();
+    });
     client?.connect();
-    return () => client?.close();
-  }, []);
+    return () => { unsubscribe?.(); client?.close(); };
+  }, [queryClient]);
 
   return <RealtimeContext.Provider value={ref.current}>{children}</RealtimeContext.Provider>;
 }

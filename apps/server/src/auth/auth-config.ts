@@ -28,11 +28,13 @@ export interface AuthConfig {
   flowTtlMs: number;
   /** Restrict logins to a Google Workspace domain (`hd` claim) when set. */
   hostedDomain?: string | undefined;
+  /** Verified email allowlist. If a domain is also configured, both must match. */
+  allowedEmails?: string[] | undefined;
+  /** Verified identities granted owner. Required in production; never inferred. */
+  ownerEmails?: string[] | undefined;
   /** `Secure` cookie attribute — true in production / over https. */
   secureCookies: boolean;
-  /** When true, the protected-API guard requires a valid session on /api/v1 REST
-   *  routes (paired with the web `VITE_AUTH_ENABLED`). Default off so existing
-   *  unauthenticated dev/test flows keep working. */
+  /** Always true in production. Explicit opt-in retains local development fixtures. */
   enforceApiAuth: boolean;
 }
 
@@ -46,6 +48,8 @@ export interface AuthConfigEnv {
   GOOGLE_TOKEN_ENDPOINT?: string | undefined;
   GOOGLE_JWKS_URI?: string | undefined;
   GOOGLE_HOSTED_DOMAIN?: string | undefined;
+  AUTH_ALLOWED_EMAILS?: string | undefined;
+  AUTH_OWNER_EMAILS?: string | undefined;
   AUTH_SESSION_TTL_MS?: string | undefined;
   AUTH_FLOW_TTL_MS?: string | undefined;
   AUTH_SECURE_COOKIES?: string | undefined;
@@ -63,6 +67,15 @@ function positiveIntOr(value: string | undefined, fallback: number): number {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
+function emailList(value: string | undefined, key: string): string[] | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const emails = [...new Set(value.split(",").map((email) => email.trim().toLowerCase()))];
+  if (emails.some((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+    throw new Error(`${key} must contain comma-separated email addresses`);
+  }
+  return emails;
+}
+
 /** Load Google-auth config from env, failing closed without client credentials. */
 export function loadAuthConfig(env: AuthConfigEnv): AuthConfig {
   const clientId = env.GOOGLE_CLIENT_ID?.trim();
@@ -74,6 +87,21 @@ export function loadAuthConfig(env: AuthConfigEnv): AuthConfig {
     );
   }
   const isProd = env.NODE_ENV === "production";
+  const hostedDomain = env.GOOGLE_HOSTED_DOMAIN?.trim().toLowerCase() || undefined;
+  const allowedEmails = emailList(env.AUTH_ALLOWED_EMAILS, "AUTH_ALLOWED_EMAILS");
+  const ownerEmails = emailList(env.AUTH_OWNER_EMAILS, "AUTH_OWNER_EMAILS");
+  if (isProd && hostedDomain === undefined && allowedEmails === undefined) {
+    throw new Error("production requires AUTH_ALLOWED_EMAILS or GOOGLE_HOSTED_DOMAIN to restrict team access");
+  }
+  if (isProd && ownerEmails === undefined) {
+    throw new Error("production requires AUTH_OWNER_EMAILS to explicitly identify team owners");
+  }
+  if (ownerEmails?.some((email) => allowedEmails !== undefined && !allowedEmails.includes(email))) {
+    throw new Error("every AUTH_OWNER_EMAILS address must also be present in AUTH_ALLOWED_EMAILS");
+  }
+  if (ownerEmails?.some((email) => hostedDomain !== undefined && !email.endsWith(`@${hostedDomain}`))) {
+    throw new Error("every AUTH_OWNER_EMAILS address must belong to GOOGLE_HOSTED_DOMAIN when configured");
+  }
   return {
     google: {
       issuer: env.GOOGLE_ISSUER?.trim() || "https://accounts.google.com",
@@ -89,9 +117,11 @@ export function loadAuthConfig(env: AuthConfigEnv): AuthConfig {
     flowCookieName: "artoo_auth_flow",
     sessionTtlMs: positiveIntOr(env.AUTH_SESSION_TTL_MS, WEEK_MS),
     flowTtlMs: positiveIntOr(env.AUTH_FLOW_TTL_MS, TEN_MIN_MS),
-    hostedDomain: env.GOOGLE_HOSTED_DOMAIN?.trim() || undefined,
+    hostedDomain,
+    allowedEmails,
+    ownerEmails,
     secureCookies: isProd || env.AUTH_SECURE_COOKIES === "1",
-    enforceApiAuth: env.AUTH_ENFORCE_API === "1",
+    enforceApiAuth: isProd || env.AUTH_ENFORCE_API === "1",
   };
 }
 

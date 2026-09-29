@@ -25,6 +25,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Connect to your team's local Artoo server.</string>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>

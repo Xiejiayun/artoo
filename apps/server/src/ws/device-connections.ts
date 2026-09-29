@@ -14,18 +14,20 @@ export interface DeviceConnection {
   close(code: number, reason: string): void;
 }
 
+export type DeviceConnectionKind = "node" | "control";
+
 export interface DeviceConnectionRegistry {
   /**
    * Register a live socket for a device. Returns a disposer the caller MUST run
    * on socket close so the index does not leak closed sockets.
    */
-  add(deviceId: string, conn: DeviceConnection): () => void;
+  add(deviceId: string, conn: DeviceConnection, kind?: DeviceConnectionKind): () => void;
   /**
    * Close every live socket currently held for a device and forget them.
    * Returns how many were closed. Idempotent: a second call closes nothing.
    * Does NOT fire `onDeviceOffline` — the revoke caller owns that transition.
    */
-  closeForDevice(deviceId: string, code: number, reason: string): number;
+  closeForDevice(deviceId: string, code: number, reason: string, kind?: DeviceConnectionKind): number;
   /** Live socket count for a device (test/observability aid). */
   countForDevice(deviceId: string): number;
 }
@@ -42,16 +44,16 @@ export interface DeviceConnectionRegistryOptions {
 export function createDeviceConnectionRegistry(
   options: DeviceConnectionRegistryOptions = {},
 ): DeviceConnectionRegistry {
-  const byDevice = new Map<string, Set<DeviceConnection>>();
+  const byDevice = new Map<string, Map<DeviceConnection, DeviceConnectionKind>>();
 
   return {
-    add(deviceId, conn): () => void {
+    add(deviceId, conn, kind = "node"): () => void {
       let set = byDevice.get(deviceId);
       if (set === undefined) {
-        set = new Set();
+        set = new Map();
         byDevice.set(deviceId, set);
       }
-      set.add(conn);
+      set.set(conn, kind);
       return () => {
         const current = byDevice.get(deviceId);
         if (current === undefined) {
@@ -65,7 +67,7 @@ export function createDeviceConnectionRegistry(
       };
     },
 
-    closeForDevice(deviceId, code, reason): number {
+    closeForDevice(deviceId, code, reason, kind): number {
       const set = byDevice.get(deviceId);
       if (set === undefined) {
         return 0;
@@ -73,11 +75,16 @@ export function createDeviceConnectionRegistry(
       // Snapshot before closing: a socket's close handler runs its disposer,
       // mutating the set as we iterate. Deleting first means those disposers find
       // no set and do NOT fire onDeviceOffline — revoke emits offline itself.
-      const conns = [...set];
-      byDevice.delete(deviceId);
+      const conns = [...set].filter(([, connectionKind]) => kind === undefined || connectionKind === kind)
+        .map(([connection]) => connection);
+      for (const conn of conns) set.delete(conn);
+      if (set.size === 0) byDevice.delete(deviceId);
       for (const conn of conns) {
         conn.close(code, reason);
       }
+      // Selective control logout owns its offline edge. Full device revocation
+      // deliberately leaves the edge to the revoke HTTP route as before.
+      if (kind !== undefined && conns.length > 0 && set.size === 0) options.onDeviceOffline?.(deviceId);
       return conns.length;
     },
 

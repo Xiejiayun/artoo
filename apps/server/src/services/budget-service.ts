@@ -20,26 +20,16 @@ import { buildEvent } from "../events.js";
 import { createCheckpointInTx } from "./checkpoint-service.js";
 
 /**
- * V3 #115 P3a — goal budget enforcement (pause path only).
- *
- * `enforceGoalBudget` runs in a single transaction that re-reads the goal, so an
- * already paused/terminal goal is a no-op; it evaluates the goal's budget against
- * current usage and, only when the running→paused compare-and-set actually
- * changes the row, writes the S1 paused checkpoint plus goal.paused and
- * goal.budget_exceeded — never a duplicate event/checkpoint on a repeat call.
- *
- * SCOPE: only the v3.0 must-have `pause` action is enforced (elapsed/retry).
- * The pure core also recognizes cancel/notify, but this service does NOT action
- * them (no state/event claim without full coverage). The enforcement is
- * event-driven (hooked after a terminal run-event commits) with no background
- * timer, so `max_elapsed_ms` is checked opportunistically; a precise elapsed
- * timer and cost/concurrent enforcement are later/release work.
+ * Pause scheduling when elapsed/retry budgets are exceeded, while allowing
+ * active executions to drain. Assignment also checks budgets transactionally;
+ * concurrency is a scheduling capacity limit, not a reason to pause a goal.
+ * Both terminal run events and the live monitor invoke this idempotent path.
  */
 
 type Tx = DrizzleDb;
 
 const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled"] as const;
-const P3A_ENFORCED_BUDGETS: ReadonlySet<BudgetViolation["budget"]> = new Set([
+const PAUSE_BUDGETS: ReadonlySet<BudgetViolation["budget"]> = new Set([
   "max_elapsed_ms",
   "max_retries",
 ]);
@@ -82,7 +72,7 @@ export async function enforceGoalBudget(ctx: ServerContext, goalId: string): Pro
   const now = ctx.clock.nowIso();
   return ctx.db.transaction(async (tx) => {
     const goal = (
-      await tx.select().from(goals).where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId)))
+      await tx.select().from(goals).where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId))).for("update")
     )[0];
     // Idempotent / no-op: unknown, cross-org, or not currently running (already
     // paused/blocked/terminal) → nothing to enforce.
@@ -92,12 +82,15 @@ export async function enforceGoalBudget(ctx: ServerContext, goalId: string): Pro
     const stopConditions: StopConditions = StopConditionsSchema.parse(goal.stopConditions ?? { rules: [] });
     const usage = await computeUsageInTx(ctx, tx, goal);
     const violations = evaluateBudget(budgets, usage).filter((violation) =>
-      P3A_ENFORCED_BUDGETS.has(violation.budget),
+      PAUSE_BUDGETS.has(violation.budget),
     );
+    // An elapsed limit is a deadline, so its exact boundary also stops starts.
+    if (budgets.max_elapsed_ms !== null && usage.elapsed_ms === budgets.max_elapsed_ms) {
+      violations.push({ budget: "max_elapsed_ms", limit: budgets.max_elapsed_ms, actual: usage.elapsed_ms });
+    }
     const action = budgetStopAction(violations, stopConditions);
-    // P3a only actions elapsed/retry violations with a `pause` action. The pure
-    // domain helper may report cost/concurrent violations too, but those need
-    // tracking/filtering work in later slices and must not pause goals here.
+    // Unsupported rules are rejected at configuration and scheduling boundaries.
+    // Older stored data may still contain them; never claim an unperformed stop.
     if (action !== "pause" || violations.length === 0) return { enforced: false };
 
     // Pause via compare-and-set; only emit if the row actually changed.
@@ -141,4 +134,27 @@ export async function enforceGoalBudget(ctx: ServerContext, goalId: string): Pro
     );
     return { enforced: true, action: "pause", violations };
   });
+}
+
+/** One bounded, non-overlapping scan for all organizations. Shutdown drains it. */
+export function startGoalBudgetMonitor(ctx: ServerContext, options: {
+  intervalMs?: number;
+  onError?: (error: unknown) => void;
+} = {}): { stop: () => Promise<void> } {
+  let inFlight: Promise<void> | undefined;
+  let stopped = false;
+  const scan = async (): Promise<void> => {
+    const running = await ctx.db.db.select({ id: goals.id, organizationId: goals.organizationId }).from(goals).where(eq(goals.status, "running"));
+    for (const goal of running) {
+      if (stopped) break;
+      try { await enforceGoalBudget({ ...ctx, organizationId: goal.organizationId }, goal.id); }
+      catch (error) { options.onError?.(error); }
+    }
+  };
+  const timer = setInterval(() => {
+    if (stopped || inFlight) return;
+    inFlight = scan().catch((error: unknown) => options.onError?.(error)).finally(() => { inFlight = undefined; });
+  }, options.intervalMs ?? 1000);
+  timer.unref();
+  return { stop: async () => { stopped = true; clearInterval(timer); await inFlight; } };
 }

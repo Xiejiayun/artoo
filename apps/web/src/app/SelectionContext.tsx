@@ -1,6 +1,8 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 
 interface Selection {
+  selectedProjectId: string | null;
+  setSelectedProjectId: (id: string) => void;
   selectedTaskId: string | null;
   setSelectedTaskId: (id: string | null) => void;
 }
@@ -13,8 +15,10 @@ const SelectionContext = createContext<Selection | null>(null);
  */
 export function SelectionProvider({ children }: { children: ReactNode }): ReactNode {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [selectedProjectId, setProject] = useState<string | null>(null);
+  const setSelectedProjectId = (id: string): void => { setProject(id); setSelectedTaskId(null); };
   return (
-    <SelectionContext.Provider value={{ selectedTaskId, setSelectedTaskId }}>
+    <SelectionContext.Provider value={{ selectedTaskId, setSelectedTaskId, selectedProjectId, setSelectedProjectId }}>
       {children}
     </SelectionContext.Provider>
   );

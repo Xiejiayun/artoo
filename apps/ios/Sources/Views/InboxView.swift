@@ -47,7 +47,7 @@ public struct InboxView: View {
                 ApprovalDetailView(approval: approval, model: model)
             }
             .refreshable { await model.load() }
-            .task { await model.load() }
+            .liveRefresh { await model.load() }
         }
     }
 
@@ -154,15 +154,21 @@ public struct ApprovalDetailView: View {
             if let summary = approval.summary, !summary.isEmpty {
                 Section("Summary") { Text(summary) }
             }
-            Section("Comment (optional)") {
-                TextField("Add a note for the audit trail", text: $comment, axis: .vertical)
-                    .lineLimit(1...4)
+            if approval.action == "execution.start" {
+                Section { Text("This review allows one execution of the ready task. Retrying requires a new review. It does not approve individual commands during execution.").font(.caption).foregroundStyle(.secondary) }
             }
-            Section {
-                decisionButton(.approved, systemImage: "checkmark.circle.fill")
-                decisionButton(.needsMoreInfo, systemImage: "questionmark.circle.fill")
-                decisionButton(.rejected, systemImage: "xmark.circle.fill", role: .destructive)
+            if (approval.status == .pending || approval.status == .needsMoreInfo) && approval.payloadRef != "execution-gate/superseded" {
+                Section("Comment (optional)") {
+                    TextField("Add a note for the audit trail", text: $comment, axis: .vertical)
+                        .lineLimit(1...4)
+                }
+                Section {
+                    decisionButton(.approved, systemImage: "checkmark.circle.fill")
+                    if approval.status == .pending { decisionButton(.needsMoreInfo, systemImage: "questionmark.circle.fill") }
+                    decisionButton(.rejected, systemImage: "xmark.circle.fill", role: .destructive)
+                }
             }
+            if let error = model.state.errorMessage { Section { Text(error).foregroundStyle(.red) } }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Approval")
@@ -172,8 +178,7 @@ public struct ApprovalDetailView: View {
     private func decisionButton(_ decision: ApprovalDecision, systemImage: String, role: ButtonRole? = nil) -> some View {
         Button(role: role) {
             Task {
-                await model.resolve(approval, decision: decision, comment: trimmedComment)
-                dismiss()
+                if await model.resolve(approval, decision: decision, comment: trimmedComment) { dismiss() }
             }
         } label: {
             HStack {

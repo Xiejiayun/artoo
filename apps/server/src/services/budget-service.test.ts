@@ -84,13 +84,9 @@ describe("budget-service #115 P3a", () => {
     expect(await budgetEvents(goalId)).toHaveLength(0);
   });
 
-  it("does not enforce cost or concurrent budgets in the P3a service", async () => {
+  it("rejects unsupported cost budgets and leaves concurrent capacity to assignment", async () => {
     const { ctx } = server;
-    const cost = await runningGoal({ max_cost_usd: 1 });
-    await server.db.db.update(goals).set({ elapsedCostUsd: 10 }).where(eq(goals.id, cost.goalId));
-    expect((await enforceGoalBudget(ctx, cost.goalId)).enforced).toBe(false);
-    expect((await getGoal(ctx, cost.goalId))?.status).toBe("running");
-    expect(await budgetEvents(cost.goalId)).toHaveLength(0);
+    await expect(runningGoal({ max_cost_usd: 1 })).rejects.toThrow("cost metering is not available");
 
     const concurrent = await runningGoal(
       { max_concurrent_runs: 1 },
@@ -150,13 +146,13 @@ describe("budget-service #115 P3a", () => {
   it("the run-lifecycle hook enforces the budget after a terminal run event", async () => {
     const { ctx } = server;
     const { goalId, taskIds } = await runningGoal({ max_retries: 1 });
-    await server.db.db.update(goals).set({ retryCount: 5 }).where(eq(goals.id, goalId)); // over budget
 
     // Drive the goal's first task to a running run, then complete it.
     const taskId = taskIds[0]!;
     await server.app.inject({ method: "POST", url: `/api/v1/tasks/${taskId}/ready` });
     const assigned = await server.app.inject({ method: "POST", url: `/api/v1/tasks/${taskId}/assign`, payload: { mode: "auto" } });
     const runId = assigned.json().run.id as string;
+    await server.db.db.update(goals).set({ retryCount: 5 }).where(eq(goals.id, goalId)); // emulate old over-budget data after assignment
     await ingestRunEvent(ctx, { runId, nodeId: "computer_local_mock", sequence: 0, event: { kind: "lifecycle", phase: "started" } });
     await ingestRunEvent(ctx, { runId, nodeId: "computer_local_mock", sequence: 1, event: { kind: "lifecycle", phase: "completed" } });
 

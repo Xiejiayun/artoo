@@ -15,6 +15,7 @@ const WEB_DIST = process.env.ARTOO_WEB_DIST ?? resolve(here, "dist");
 
 export default defineConfig({
   testDir: "./e2e-auth",
+  outputDir: "./test-results-auth",
   timeout: 30_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,

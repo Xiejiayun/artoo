@@ -121,7 +121,7 @@ describe("ContextPack memory injection at run-start (#21 Part D)", () => {
   it("node-binding dispatch sends the persisted context_pack_id, not a fresh one", async () => {
     server = await buildTestServer();
     const channel = createInProcessChannel();
-    const binding = attachNodeBinding(server.ctx, channel.serverTransport);
+    const binding = attachNodeBinding(server.ctx, channel.serverTransport, "computer_local_mock");
     const sent: ServerToNodeMessage[] = [];
     channel.node.subscribe((msg) => {
       sent.push(msg);

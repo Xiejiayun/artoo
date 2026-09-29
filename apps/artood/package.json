@@ -7,16 +7,16 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -b",
-    "dev": "node --watch --loader ts-node/esm src/main.ts",
+    "dev": "npm run build && node --watch dist/main.js",
     "typecheck": "tsc -b"
   },
   "dependencies": {
     "@artoo/domain": "0.1.0",
-    "@artoo/protocol": "0.1.0"
+    "@artoo/protocol": "0.1.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@artoo/testkit": "0.1.0",
-    "@types/ws": "^8.5.0",
-    "ws": "^8.18.0"
+    "@types/ws": "^8.5.0"
   }
 }

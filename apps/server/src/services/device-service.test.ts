@@ -45,6 +45,18 @@ describe("device-service", () => {
     await server.close();
   });
 
+  it("expires native control credentials after the configured TTL without expiring compute credentials", async () => {
+    server.ctx.deviceAuth.controlTokenTtlMs = 1000;
+    const { code } = await createPairing(server.ctx, config, { createdByUserId: "user_owner" });
+    const { controlToken, nodeToken } = await claimPairing(server.ctx, config, {
+      code, platform: "windows", displayName: "TTL test", appVersion: "0.1.0",
+    });
+    expect(await resolveControlToken(server.ctx, controlToken)).not.toBeNull();
+    const later = { ...server.ctx, clock: fixedClock("2026-06-13T00:00:01.000Z") };
+    expect(await resolveControlToken(later, controlToken)).toBeNull();
+    expect(await resolveNodeToken(later, nodeToken)).not.toBeNull();
+  });
+
   it("createPairing returns a raw code once and stores only its HMAC", async () => {
     const { ctx, db } = server;
     const { pairing, code } = await createPairing(ctx, config, { createdByUserId: "user_owner" });

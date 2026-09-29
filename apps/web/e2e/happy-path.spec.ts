@@ -152,6 +152,7 @@ async function expectDetailStatus(page: Page, status: string): Promise<void> {
 async function connectManualNode(request: APIRequestContext): Promise<{
   waitForRunStart: () => Promise<RunStartCommand>;
   startRun: (command: RunStartCommand) => void;
+  completeRun: (command: RunStartCommand) => void;
   close: () => void;
 }> {
   const marker = e2eKey("node-ready");
@@ -228,6 +229,12 @@ async function connectManualNode(request: APIRequestContext): Promise<{
         run_id: command.payload.run_id,
         sequence: 0,
         event: { type: "run.lifecycle", payload: { phase: "started" } },
+      });
+    },
+    completeRun: (command) => {
+      sendNodeMessage(socket, {
+        kind: "run.event", node_id: NODE_ID, run_id: command.payload.run_id, sequence: 1,
+        event: { type: "run.lifecycle", payload: { phase: "completed" } },
       });
     },
     close: () => socket.close(),
@@ -396,10 +403,17 @@ test("approval gate moves a running task to awaiting approval and back to runnin
     await selectTask(page, title);
     await expectDetailStatus(page, "awaiting_approval");
     await expect(page.locator(".approval-card__summary", { hasText: "Push release branch" })).toBeVisible();
-
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByLabel("Approval comment for Push release branch").fill("Please provide the release evidence");
+    await page.getByRole("button", { name: "Need info", exact: true }).click();
+    await expect(page.getByText("Waiting for more information", { exact: true })).toBeVisible();
+    await expectDetailStatus(page, "awaiting_approval");
+    await page.getByLabel("Approval comment for Push release branch").fill("Release evidence reviewed");
     await page.getByRole("button", { name: "Approve", exact: true }).click();
     await expectDetailStatus(page, "running");
     await waitForTaskStatus(request, taskId, "running");
+    node.completeRun(command);
+    await waitForTaskStatus(request, taskId, "review");
   } finally {
     node.close();
   }

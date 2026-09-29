@@ -6,6 +6,9 @@ import { MemoryPage } from "../components/MemoryPage.js";
 import { Nav } from "../components/Nav.js";
 import { RunsAuditPage } from "../components/RunsAuditPage.js";
 import { WorkspaceLayout } from "../components/WorkspaceLayout.js";
+import { ConnectionStatus } from "../components/ConnectionStatus.js";
+import { GoalsPage } from "../components/GoalsPage.js";
+import { SettingsPage } from "../components/SettingsPage.js";
 
 /**
  * Product nav + route surface (no router/providers — App supplies BrowserRouter;
@@ -16,10 +19,13 @@ export function AppRoutes(): React.ReactNode {
   return (
     <div className="app-shell">
       <Nav />
+      <ConnectionStatus />
       <main className="app-main">
         <Routes>
           <Route path="/" element={<WorkspaceLayout />} />
           <Route path="/board" element={<BoardView />} />
+          <Route path="/goals" element={<GoalsPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
           <Route path="/computers" element={<ComputersPage />} />
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/skills" element={<SkillsPage />} />

@@ -3,5 +3,12 @@ dist/
 coverage/
 .env
 .env.*
+!.env.example
+.artoo/
+apps/desktop/release/
+apps/desktop/renderer/
+apps/web/test-results/
+apps/web/test-results-auth/
+apps/web/playwright-report/
 *.log
 *.tsbuildinfo

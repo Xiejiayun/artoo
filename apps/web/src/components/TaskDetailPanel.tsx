@@ -7,6 +7,8 @@ import { ApprovalInbox } from "./ApprovalInbox.js";
 import { ArtifactReview } from "./ArtifactReview.js";
 import { RunTimeline } from "./RunTimeline.js";
 import { TaskActions } from "./TaskActions.js";
+import { CancelRun } from "./CancelRun.js";
+import { TaskDependencies } from "./TaskDependencies.js";
 
 function DetailSkeleton(): React.ReactNode {
   return (
@@ -83,7 +85,8 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
         ) : null}
       </dl>
 
-      <TaskActions task={task} />
+      <TaskActions key={`actions:${task.id}`} task={task} />
+      <CancelRun key={`cancel:${task.id}`} runs={runs} taskId={task.id} projectId={task.project_id} />
 
       {task.acceptance_criteria.length > 0 ? (
         <section className="task-detail__section" aria-label="Acceptance criteria">
@@ -96,12 +99,13 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
         </section>
       ) : null}
 
-      <ApprovalInbox taskId={task.id} approvals={approvals} />
+      <ApprovalInbox taskId={task.id} taskStatus={task.status} approvals={approvals} />
       <section className="task-detail__section" aria-label="Runs">
         <h3 className="task-detail__section-title">Runs</h3>
         <RunTimeline runs={runs} />
       </section>
-      <ArtifactReview task={task} artifacts={artifacts} />
+      <ArtifactReview key={`review:${task.id}`} task={task} artifacts={artifacts} versionCursor={snapshot.data.version_cursor} />
+      <TaskDependencies key={task.id} task={task} />
     </div>
   );
 }

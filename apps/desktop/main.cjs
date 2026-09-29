@@ -1,123 +1,96 @@
-// Electron main process for the artoo desktop shell (spike, #30).
-//
-// Responsibilities kept to the shell seam only (not the full product):
-//  - host the web reference UI (dev: a Vite URL; packaged: the bundled renderer)
-//  - target a configurable server URL (the #28 pairing flow replaces this static
-//    URL with a paired endpoint + token)
-//  - own the lifecycle seam for a client-managed local `artood` (#29 implements
-//    the real start/stop/status/heartbeat control plane)
-const { app, BrowserWindow, session, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } = require("electron");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { fileURLToPath } = require("node:url");
+const { createDesktopController } = require("./desktop-controller.cjs");
 
-/** Server the UI talks to. #28 will replace this with a paired-device endpoint. */
-const SERVER_URL = process.env.ARTOO_SERVER_URL ?? "http://localhost:4000";
-/** When set (dev/smoke), load the live web dev server (its proxy reaches the API). */
-const DEV_URL = process.env.ARTOO_DEV_URL;
+if (process.env.ARTOO_DESKTOP_DATA_DIR) app.setPath("userData", path.resolve(process.env.ARTOO_DESKTOP_DATA_DIR));
+const primaryInstance = app.requestSingleInstanceLock();
+if (!primaryInstance) app.quit();
+const devUrl = !app.isPackaged ? process.env.ARTOO_DEV_URL : undefined;
+const rendererPath = path.join(__dirname, "renderer", "index.html");
+let mainWindow;
+let controller;
+let quitting = false;
+let shutdownPending = false;
+app.on("second-instance", () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show(); mainWindow.focus();
+});
 
-let mainWindow = null;
-/** #29 seam: handle to a supervised local artood child process. */
-let artood = null;
-
-function installDesktopCorsBridge() {
-  const serverOrigin = new URL(SERVER_URL).origin;
-  session.defaultSession.webRequest.onHeadersReceived({ urls: [`${serverOrigin}/*`] }, (details, callback) => {
-    let responseHeaders = details.responseHeaders ?? {};
-    responseHeaders = withDefaultHeader(responseHeaders, "Access-Control-Allow-Origin", "*");
-    responseHeaders = withDefaultHeader(
-      responseHeaders,
-      "Access-Control-Allow-Methods",
-      "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    );
-    responseHeaders = withDefaultHeader(
-      responseHeaders,
-      "Access-Control-Allow-Headers",
-      "Accept, Content-Type, Idempotency-Key",
-    );
-    callback({
-      responseHeaders,
-    });
-  });
+function trustedUrl(value) {
+  try {
+    const url = new URL(value);
+    if (devUrl) return url.origin === new URL(devUrl).origin;
+    return url.protocol === "file:" && path.resolve(fileURLToPath(url)) === path.resolve(rendererPath);
+  } catch { return false; }
 }
-
-function withDefaultHeader(headers, name, value) {
-  if (Object.keys(headers).some((key) => key.toLowerCase() === name.toLowerCase())) {
-    return headers;
+function checkSender(event) {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame || !trustedUrl(event.senderFrame.url)) {
+    throw new Error("Untrusted desktop request");
   }
-  return { ...headers, [name]: [value] };
 }
-
+async function openExternal(value) {
+  const url = new URL(value);
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) throw new Error("Only Web links can be opened");
+  await shell.openExternal(url.toString());
+}
+function installBridge() {
+  ipcMain.on("artoo:initial", (event) => {
+    try { checkSender(event); event.returnValue = controller.getConnection(); }
+    catch { event.returnValue = null; }
+  });
+  for (const method of ["getConnection", "getToken", "configureServer", "pairDevice", "logout", "daemonStatus", "configureDaemon", "startDaemon", "stopDaemon", "restartDaemon"]) {
+    ipcMain.handle(`artoo:${method}`, (event, input) => { checkSender(event); return controller[method](input); });
+  }
+  ipcMain.handle("artoo:chooseDirectory", async (event) => {
+    checkSender(event);
+    const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+  ipcMain.handle("artoo:openExternal", async (event, value) => { checkSender(event); return openExternal(value); });
+}
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 832,
-    title: "Artoo",
-    webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
+    width: 1280, height: 832, title: "Artoo",
+    webPreferences: { preload: path.join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
   });
-
-  if (DEV_URL) {
-    void mainWindow.loadURL(DEV_URL);
-  } else {
-    void mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
-  }
-
-  // External links open in the system browser, never in-app.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
-    return { action: "deny" };
-  });
-
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-  });
+  mainWindow.webContents.on("will-navigate", (event, url) => { if (!trustedUrl(url)) event.preventDefault(); });
+  mainWindow.webContents.on("will-attach-webview", (event) => event.preventDefault());
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => { void openExternal(url).catch(() => {}); return { action: "deny" }; });
+  mainWindow.on("closed", () => { mainWindow = null; });
+  if (devUrl) void mainWindow.loadURL(devUrl);
+  else void mainWindow.loadFile(rendererPath);
 }
 
-/**
- * #29 seam (spike stub): supervise a client-managed local `artood`. Configured
- * via ARTOO_ARTOOD_CMD; absent in the spike. The real control plane (start/stop/
- * status/restart + runtime heartbeat) is #29's slice — here we only own the seam.
- */
-function startArtoodSupervision() {
-  const command = process.env.ARTOO_ARTOOD_CMD;
-  if (!command) {
-    return;
-  }
-  const [bin, ...args] = command.split(" ");
-  artood = spawn(bin, args, { stdio: "ignore", windowsHide: true });
-  artood.on("exit", () => {
-    artood = null;
+if (primaryInstance) app.whenReady().then(async () => {
+  controller = createDesktopController({ directory: app.getPath("userData"), safeStorage,
+    serverUrl: process.env.ARTOO_SERVER_URL, executable: process.execPath,
+    daemonEntry: app.isPackaged ? path.join(process.resourcesPath, "app.asar.unpacked", "daemon", "artood.mjs") : path.join(__dirname, "daemon", "artood.mjs"), version: app.getVersion() });
+  await controller.initialize();
+  session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+  session.defaultSession.setPermissionCheckHandler(() => false);
+  // CORS is enforced by the server's explicit desktop-origin configuration.
+  // The shell never rewrites authorization or CORS response headers.
+  session.defaultSession.webRequest.onHeadersReceived({ urls: ["file://*/*"] }, (details, callback) => {
+    callback({ responseHeaders: { ...details.responseHeaders,
+      "Content-Security-Policy": ["default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src https: wss: http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; object-src 'none'; frame-src 'none'; base-uri 'none'"],
+    } });
   });
-}
-
-function stopArtoodSupervision() {
-  if (artood !== null) {
-    artood.kill();
-    artood = null;
-  }
-}
-
-app.whenReady().then(() => {
-  installDesktopCorsBridge();
-  startArtoodSupervision();
+  installBridge();
   createWindow();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
+  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+}).catch((error) => { dialog.showErrorBox("Artoo could not start", error.message); quitting = true; app.quit(); });
+
+app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+app.on("before-quit", (event) => {
+  if (quitting || !controller) return;
+  event.preventDefault();
+  if (shutdownPending) return;
+  shutdownPending = true;
+  void controller.stopDaemon().then(() => { quitting = true; app.quit(); }).catch((error) => {
+    shutdownPending = false;
+    dialog.showErrorBox("Worker is still stopping", error.message);
+    if (!mainWindow) createWindow();
   });
 });
-
-// Quit on all-windows-closed (except macOS convention); always stop the child.
-app.on("window-all-closed", () => {
-  stopArtoodSupervision();
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
-});
-app.on("before-quit", stopArtoodSupervision);
-
-module.exports = { SERVER_URL };

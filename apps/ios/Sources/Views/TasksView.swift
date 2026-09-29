@@ -86,7 +86,7 @@ public struct TasksView: View {
                 CreateTaskView(model: model)
             }
             .refreshable { await model.load() }
-            .task { await model.load() }
+            .liveRefresh { await model.load() }
         }
     }
 
@@ -151,6 +151,7 @@ public struct CreateTaskView: View {
     @State private var description = ""
     @State private var priority = "p2"
     @State private var criteriaText = ""
+    @State private var capabilities = "code.modify"
 
     private let priorities = ["p0", "p1", "p2", "p3"]
 
@@ -172,6 +173,7 @@ public struct CreateTaskView: View {
                     TextField("One per line", text: $criteriaText, axis: .vertical)
                         .lineLimit(3...6)
                 }
+                Section("Required capabilities") { TextField("Comma separated", text: $capabilities).textInputAutocapitalization(.never).autocorrectionDisabled() }
                 if let error = model.state.errorMessage {
                     Section {
                         Text(error).foregroundStyle(.red).font(.callout)
@@ -191,7 +193,8 @@ public struct CreateTaskView: View {
                                 title: title,
                                 description: description,
                                 priority: priority,
-                                acceptanceCriteria: parsedCriteria
+                                acceptanceCriteria: parsedCriteria,
+                                requiredCapabilities: capabilities.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
                             )
                             if ok { dismiss() }
                         }

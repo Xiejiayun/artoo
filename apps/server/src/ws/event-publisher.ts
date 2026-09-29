@@ -1,6 +1,6 @@
-import { eventLog } from "@artoo/db";
+import { eventLog, users } from "@artoo/db";
 import type { ActorType, EventEnvelope } from "@artoo/domain";
-import { asc, desc, gt } from "drizzle-orm";
+import { and, asc, desc, eq, gt } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import type { WsHub } from "./ws-hub.js";
@@ -59,7 +59,7 @@ export async function collectCatchUp(
   const rows = await ctx.db.db
     .select()
     .from(eventLog)
-    .where(gt(eventLog.position, sinceCursor))
+    .where(and(eq(eventLog.organizationId, ctx.organizationId), gt(eventLog.position, sinceCursor)))
     .orderBy(asc(eventLog.position));
   const frames: EventFrame[] = [];
   for (const row of rows as EventRow[]) {
@@ -113,14 +113,20 @@ export function createEventPublisher(ctx: ServerContext, hub: WsHub): EventPubli
     const rows = await ctx.db.db
       .select()
       .from(eventLog)
-      .where(gt(eventLog.position, cursor))
+      .where(and(eq(eventLog.organizationId, ctx.organizationId), gt(eventLog.position, cursor)))
       .orderBy(asc(eventLog.position));
+    const members = rows.length === 0 ? [] : await ctx.db.db.select({ id: users.id }).from(users)
+      .where(eq(users.organizationId, ctx.organizationId));
     for (const row of rows as EventRow[]) {
       if (row.position > cursor) {
         cursor = row.position;
       }
       const envelope = toEnvelope(row);
-      for (const topic of topicsForEvent(envelope, ctx.actorUserId)) {
+      const topics = new Set(topicsForEvent(envelope, ctx.actorUserId).filter((topic) => !topic.startsWith("inbox:")));
+      for (const member of members) {
+        for (const topic of topicsForEvent(envelope, member.id)) topics.add(topic);
+      }
+      for (const topic of topics) {
         hub.publish(topic, { type: "event", topic, event: envelope, cursor: row.position });
       }
     }
@@ -134,6 +140,7 @@ export function createEventPublisher(ctx: ServerContext, hub: WsHub): EventPubli
       const latest = await ctx.db.db
         .select({ position: eventLog.position })
         .from(eventLog)
+        .where(eq(eventLog.organizationId, ctx.organizationId))
         .orderBy(desc(eventLog.position))
         .limit(1);
       cursor = (latest[0] as { position: number } | undefined)?.position ?? 0;

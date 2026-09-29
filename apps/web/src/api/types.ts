@@ -47,6 +47,7 @@ export interface SkillInstallsResponse {
 
 /** Aggregated read model for a single task detail view. */
 export interface TaskSnapshot {
+  version_cursor?: number;
   task: Task;
   room: Room | null;
   runs: Run[];

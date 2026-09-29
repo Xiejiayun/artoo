@@ -17,7 +17,7 @@ export interface WebSocketLike {
   onerror: (() => void) | null;
 }
 
-export type SocketFactory = (url: string) => WebSocketLike;
+export type SocketFactory = (url: string, protocols?: string[]) => WebSocketLike;
 
 export interface RealtimeClientOptions {
   url: string;
@@ -30,6 +30,7 @@ export interface RealtimeClientOptions {
    *  (#28 3b, close code 1008). The app routes the user through the #34 auth
    *  gate; the client stops reconnecting. */
   onUnauthenticated?: () => void;
+  tokenProvider?: () => string | null | undefined | Promise<string | null | undefined>;
 }
 
 interface SubscribeFrame {
@@ -43,8 +44,8 @@ interface EventFrame {
   event: EventEnvelope;
 }
 
-function defaultSocketFactory(url: string): WebSocketLike {
-  return new WebSocket(url) as unknown as WebSocketLike;
+function defaultSocketFactory(url: string, protocols?: string[]): WebSocketLike {
+  return new WebSocket(url, protocols) as unknown as WebSocketLike;
 }
 
 /**
@@ -53,12 +54,25 @@ function defaultSocketFactory(url: string): WebSocketLike {
  * pushes, and re-subscribes the current topic set on reconnect.
  */
 export class RealtimeClient {
+  private readonly statusListeners = new Set<() => void>();
+  private status: "connecting" | "connected" | "disconnected" | "unauthenticated" = "disconnected";
+  getStatus = (): typeof this.status => this.status;
+  subscribeStatus = (listener: () => void): (() => void) => {
+    this.statusListeners.add(listener);
+    return () => { this.statusListeners.delete(listener); };
+  };
+  private setStatus(status: typeof this.status): void {
+    this.status = status;
+    this.statusListeners.forEach((listener) => listener());
+  }
   private readonly url: string;
   private readonly onEvent: (topic: string, event: EventEnvelope) => void;
   private readonly socketFactory: SocketFactory;
   private readonly reconnectDelayMs: number;
   private readonly scheduleTimeout: (handler: () => void, ms: number) => unknown;
   private readonly onUnauthenticated: () => void;
+  private readonly tokenProvider?: RealtimeClientOptions["tokenProvider"];
+  private generation = 0;
 
   private socket: WebSocketLike | null = null;
   private readonly topics = new Set<string>();
@@ -75,14 +89,28 @@ export class RealtimeClient {
     this.scheduleTimeout =
       options.setTimeoutFn ?? ((handler, ms) => setTimeout(handler, ms));
     this.onUnauthenticated = options.onUnauthenticated ?? (() => undefined);
+    this.tokenProvider = options.tokenProvider;
   }
 
   connect(): void {
+    if (this.socket !== null) return;
+    this.setStatus("connecting");
     this.closedByUser = false;
-    const socket = this.socketFactory(this.url);
+    const generation = ++this.generation;
+    if (this.tokenProvider) {
+      void Promise.resolve(this.tokenProvider()).then((token) => {
+        if (generation !== this.generation || this.closedByUser) return;
+        this.openSocket(token ? ["artoo", `artoo-auth.${token}`] : undefined);
+      }).catch(() => { if (generation === this.generation) { this.setStatus("unauthenticated"); this.onUnauthenticated(); } });
+    } else this.openSocket();
+  }
+
+  private openSocket(protocols?: string[]): void {
+    const socket = this.socketFactory(this.url, protocols);
     this.socket = socket;
     socket.onopen = () => {
       this.open = true;
+      this.setStatus("connected");
       // (Re)subscribe to the full current topic set.
       if (this.topics.size > 0) {
         this.sendFrame({ type: "subscribe", topics: [...this.topics] });
@@ -91,12 +119,14 @@ export class RealtimeClient {
     socket.onclose = (event) => {
       this.open = false;
       this.socket = null;
+      this.setStatus("disconnected");
       // Terminal auth failure (#28 3b): the server closes 1008 for any
       // missing/bad/expired/revoked credential (and pre-auth buffer overflow).
       // Do NOT reconnect — clear subscriptions and signal the app to route
       // through the #34 auth gate. Transport drops (1006/1001/…) reconnect.
       if (event.code === WS_UNAUTHENTICATED_CODE) {
         this.unauthenticated = true;
+        this.setStatus("unauthenticated");
         this.topics.clear();
         this.onUnauthenticated();
         return;
@@ -136,6 +166,8 @@ export class RealtimeClient {
   }
 
   close(): void {
+    this.generation++;
+    this.setStatus("disconnected");
     this.closedByUser = true;
     this.open = false;
     this.socket?.close();

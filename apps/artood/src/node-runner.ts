@@ -1,6 +1,7 @@
 import type { NodeHeartbeat, NodeHello, RuntimeAdapter } from "@artoo/protocol";
 
 import type { AdapterRegistry } from "./adapter-registry.js";
+import type { ArtifactUploader } from "./artifact-upload.js";
 import { createRegistryHeartbeat } from "./heartbeat.js";
 import { createNodeClient } from "./node-client.js";
 import { createWebSocketTransport } from "./ws-transport.js";
@@ -27,6 +28,9 @@ export interface ArtoodNodeOptions {
   /** Git executor for worktree materialization; defaults to the real git CLI. */
   git?: GitExecutor;
   WebSocketImpl?: typeof WebSocket;
+  uploadArtifact?: ArtifactUploader;
+  acknowledgeRunEvents?: boolean;
+  reconnectDelayMs?: number;
 }
 
 export interface ArtoodNode {
@@ -58,6 +62,9 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
         hello: options.hello,
         heartbeat,
         heartbeatIntervalMs: options.heartbeatIntervalMs,
+        acknowledgeRunEvents: options.acknowledgeRunEvents,
+        reconnectDelayMs: options.reconnectDelayMs,
+        onFatalDisconnect: () => { void client?.stop(true); },
         WebSocketImpl: options.WebSocketImpl
       });
       client = createNodeClient({
@@ -66,7 +73,8 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
         adapter: options.adapter,
         registry: options.registry,
         workspace: options.workspace,
-        git: options.git
+        git: options.git,
+        uploadArtifact: options.uploadArtifact
       });
       // Subscribe before the connection is registered for dispatch (server only
       // dispatches after node.hello), then wait for open + hello.
@@ -82,10 +90,18 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
       }
     },
     async stop(): Promise<void> {
-      await client?.stop();
-      await transport?.close();
-      client = null;
-      transport = null;
+      const activeTransport = transport;
+      // Give a live connection time to commit cancellation events before exit.
+      // A disconnected/unresponsive server cannot hold desktop shutdown open.
+      if (!activeTransport?.connected) await activeTransport?.close();
+      const deadline = setTimeout(() => { void activeTransport?.close(); }, 8000);
+      try { await client?.stop(true); }
+      finally {
+        clearTimeout(deadline);
+        await activeTransport?.close();
+        client = null;
+        transport = null;
+      }
     }
   };
 }

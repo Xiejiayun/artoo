@@ -179,8 +179,12 @@ export const TaskSpecSchema = z.object({
   dependencies: z
     .array(z.object({ ref: z.string(), type: DependencyTypeSchema }))
     .default([]),
+  // Retained in stored plan schemas for audit compatibility. The preview server
+  // rejects nonempty controls until it can enforce their declared meaning.
   approval_gates: z.array(z.string()).default([]),
   write_scopes: z.array(z.string()).default([]),
+  // Advisory expected outputs; completion/review does not automatically enforce
+  // artifact presence, type, or contents from this list.
   expected_artifacts: z
     .array(z.object({ type: z.string(), description: z.string().default("") }))
     .default([]),

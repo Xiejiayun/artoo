@@ -1,0 +1,11 @@
+{
+  "route": "/api/v1/tasks/:id/execution-approval",
+  "method": "POST",
+  "body": { "summary": "Review deployment permissions before assigning execution", "risk": "high" },
+  "approval": {
+    "id": "approval_1", "organization_id": "org_1", "task_id": "task_1",
+    "requested_by_type": "user", "requested_by_id": "user_1", "action": "execution.start",
+    "risk": "high", "summary": "Review deployment permissions before assigning execution", "payload_ref": "execution-gate/current",
+    "status": "pending", "created_at": "2026-09-28T00:00:00.000Z"
+  }
+}

@@ -37,7 +37,7 @@ public protocol ApiClientProtocol: Sendable {
     func createTask(projectId: String, request: CreateTaskRequest) async throws -> TaskResponse
     func getTask(taskId: String) async throws -> TaskSnapshot
     func markReady(taskId: String) async throws -> TaskResponse
-    func assign(taskId: String, request: AssignRequest) async throws -> TaskResponse
+    func assign(taskId: String, request: AssignRequest) async throws -> AssignResponse
     func retry(taskId: String) async throws -> TaskResponse
     func review(taskId: String, request: ReviewRequest) async throws -> TaskResponse
     func listRuns(taskId: String) async throws -> [Run]
@@ -45,6 +45,17 @@ public protocol ApiClientProtocol: Sendable {
     func listApprovals(status: String?) async throws -> [Approval]
     func resolveApproval(approvalId: String, request: ResolveApprovalRequest) async throws -> Approval
     func listMessages(roomId: String) async throws -> [Message]
+    func resource(path: String) async throws -> JSONValue
+    func command(path: String, method: String, body: JSONValue) async throws -> JSONValue
+    func downloadArtifact(artifact: Artifact) async throws -> URL
+}
+
+public extension ApiClientProtocol {
+    func resource(path: String) async throws -> JSONValue { throw ApiError.notImplemented("This preview fixture has no workspace resources") }
+    func command(path: String, method: String = "POST", body: JSONValue = .object([:])) async throws -> JSONValue {
+        throw ApiError.notImplemented("This preview fixture has no workspace commands")
+    }
+    func downloadArtifact(artifact: Artifact) async throws -> URL { throw ApiError.notImplemented("Fixture artifact download") }
 }
 
 // MARK: - JSON coders
@@ -65,25 +76,21 @@ public enum ArtooJSON {
 
 // MARK: - Live URLSession client
 //
-// UNVERIFIED: authored on Windows without an iOS SDK. The request shapes mirror
-// the REST surface exercised by apps/web, but no call here has been run against
-// a live server. Treat endpoint paths as the current best contract and reconcile
-// against the server before shipping the iOS client. See apps/ios/README.md.
+// Contracts are checked against the server on Windows; Xcode/runtime execution
+// remains a separate Mac verification gate (see README.md).
 
 public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
     private let baseURL: URL
     private let session: URLSession
-    private let decoder: JSONDecoder
-    private let encoder: JSONEncoder
-    /// Optional session token; bootstrap is unauthenticated in v0.1 embedded mode.
     private let authToken: String?
 
-    public init(baseURL: URL, session: URLSession = .shared, authToken: String? = nil) {
+    public init(baseURL: URL, session: URLSession? = nil, authToken: String? = nil) {
         self.baseURL = baseURL
-        self.session = session
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        configuration.timeoutIntervalForRequest = 30
+        self.session = session ?? URLSession(configuration: configuration, delegate: SameOriginRedirectPolicy(), delegateQueue: nil)
         self.authToken = authToken
-        self.decoder = ArtooJSON.decoder()
-        self.encoder = ArtooJSON.encoder()
     }
 
     public convenience init?(baseURLString: String, authToken: String? = nil) {
@@ -127,7 +134,7 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
         )
     }
 
-    public func assign(taskId: String, request: AssignRequest) async throws -> TaskResponse {
+    public func assign(taskId: String, request: AssignRequest) async throws -> AssignResponse {
         try await send(
             path: "/api/v1/tasks/\(escape(taskId))/assign",
             method: "POST",
@@ -155,9 +162,7 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
     }
 
     public func listRuns(taskId: String) async throws -> [Run] {
-        throw ApiError.notImplemented(
-            "The server does not expose /tasks/\(taskId)/runs; use the task snapshot or /runs/:id."
-        )
+        (try await getTask(taskId: taskId)).runs
     }
 
     public func getRun(runId: String) async throws -> Run {
@@ -195,12 +200,46 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
         return response.messages
     }
 
+    public func currentSession() async throws -> SessionIdentity {
+        try await send(path: "/auth/session", method: "GET")
+    }
+
+    public func claimPairing(code: String, displayName: String) async throws -> PairingClaim {
+        try await send(path: "/api/v1/devices/claim", method: "POST", body: JSONValue.object([
+            "code": .string(code), "platform": .string("ios"), "display_name": .string(displayName),
+            "app_version": .string(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0")
+        ]))
+    }
+
+    public func logout() async throws {
+        let _: EmptyResponse = try await send(path: "/auth/logout", method: "POST", body: EmptyBody())
+    }
+
+    public func resource(path: String) async throws -> JSONValue { try await send(path: path, method: "GET") }
+
+    public func command(path: String, method: String = "POST", body: JSONValue = .object([:])) async throws -> JSONValue {
+        try await send(path: path, method: method, body: body, idempotent: true)
+    }
+
+    public func downloadArtifact(artifact: Artifact) async throws -> URL {
+        let (data, response) = try await requestData(path: "/api/v1/artifacts/\(escape(artifact.id))/content",
+            method: "GET", bodyData: nil, idempotent: false)
+        let filename = response.suggestedFilename ?? "artifact"
+        let component = URL(fileURLWithPath: filename).lastPathComponent
+        let safeName = ["", ".", ".."].contains(component) ? "artifact" : component
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("artoo-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(safeName)
+        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        return url
+    }
+
     // MARK: Request plumbing
 
     private struct EmptyBody: Encodable {}
 
     private func escape(_ component: String) -> String {
-        component.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? component
+        component.addingPercentEncoding(withAllowedCharacters: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? component
     }
 
     /// GET helper (no body).
@@ -217,7 +256,7 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
     ) async throws -> Response {
         let data: Data
         do {
-            data = try encoder.encode(body)
+            data = try ArtooJSON.encoder().encode(body)
         } catch {
             throw ApiError.decoding("Failed to encode request body: \(error)")
         }
@@ -230,14 +269,25 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
         bodyData: Data?,
         idempotent: Bool
     ) async throws -> Response {
-        guard let url = URL(string: path, relativeTo: baseURL) else {
+        let (data, _) = try await requestData(path: path, method: method, bodyData: bodyData, idempotent: idempotent)
+        if data.isEmpty {
+            if let empty = EmptyResponse() as? Response { return empty }
+            if let empty = JSONValue.null as? Response { return empty }
+        }
+        do { return try ArtooJSON.decoder().decode(Response.self, from: data) }
+        catch { throw ApiError.decoding("\(error)") }
+    }
+
+    private func requestData(path: String, method: String, bodyData: Data?, idempotent: Bool) async throws -> (Data, HTTPURLResponse) {
+        guard path.hasPrefix("/"), !path.hasPrefix("//"), let url = URL(string: path, relativeTo: baseURL)?.absoluteURL,
+              url.scheme == baseURL.scheme, url.host == baseURL.host, url.port == baseURL.port else {
             throw ApiError.invalidURL(baseURL.absoluteString + path)
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let authToken {
+        if let authToken, path != "/api/v1/devices/claim" {
             request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         }
         if let bodyData {
@@ -260,21 +310,25 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
             throw ApiError.transport("Non-HTTP response")
         }
         guard (200..<300).contains(http.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
+            if http.statusCode == 401, authToken != nil {
+                NotificationCenter.default.post(name: .artooAuthenticationExpired, object: baseURL.absoluteString)
+            }
+            let errorBody = try? JSONDecoder().decode(JSONValue.self, from: data)
+            let body = errorBody?["error"]["message"].text ?? "Request failed"
             throw ApiError.http(status: http.statusCode, body: body)
         }
-
-        if data.isEmpty, let empty = EmptyResponse() as? Response {
-            return empty
-        }
-
-        do {
-            return try decoder.decode(Response.self, from: data)
-        } catch {
-            throw ApiError.decoding("\(error)")
-        }
+        return (data, http)
     }
 }
 
 /// Placeholder used when a 2xx response carries no body.
 private struct EmptyResponse: Decodable {}
+
+private final class SameOriginRedirectPolicy: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        // The API has no redirect endpoints. Rejecting redirects also prevents
+        // credential or download data from crossing origins or downgrading TLS.
+        completionHandler(nil)
+    }
+}

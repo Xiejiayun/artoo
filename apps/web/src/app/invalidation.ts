@@ -23,17 +23,29 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
   }
   if (typeof event.room_id === "string") {
     keys.push(queryKeys.messages(event.room_id));
+    keys.push(["collaboration", event.room_id]);
   }
-  // task.created / task.updated change the project's left-rail list.
+  if (event.type.startsWith("goal.") || event.type.startsWith("plan.") || event.type.startsWith("checkpoint.")) {
+    keys.push(["goals"], ["plans"], ["checkpoints"]);
+  }
+  if (event.type.startsWith("computer.") || event.type.startsWith("agent.") || event.type.startsWith("device.")) {
+    keys.push(queryKeys.bootstrap, ["devices"], ["computerRuntimes"]);
+  }
+  if (event.type.startsWith("lease.")) keys.push(["leases"]);
+  if (event.type.startsWith("dependency.")) keys.push(["dependencies"]);
+  // Runtime lifecycle events also transition tasks without a separate
+  // task.updated event. Keep the rail and Board aligned with task detail.
   if (
     typeof event.project_id === "string" &&
-    (event.type === "task.created" || event.type === "task.updated")
+    (event.type === "task.created" || event.type === "task.updated" ||
+      ["run.started", "run.completed", "run.failed", "run.cancelled", "approval.resolved"].includes(event.type))
   ) {
     keys.push(queryKeys.tasks(event.project_id));
   }
   // inbox activity (approvals, blocked/awaiting) refreshes the pending list + badge.
   if (topic.startsWith("inbox:") || event.type.startsWith("approval.")) {
     keys.push(queryKeys.approvals("pending"));
+    keys.push(queryKeys.approvals("needs_more_info"));
   }
   // memory curation (propose/accept/reject/supersede) refreshes the memory lists
   // and the accepted-only ContextPack context preview. Prefix keys invalidate

@@ -3,15 +3,18 @@ import { NavLink } from "react-router-dom";
 import { Icon, Activity, Bot, Brain, LayoutGrid, ListTodo, Puzzle, Server } from "../ui/Icon.js";
 import "../ui/nav.css";
 import { LogoutButton } from "./LogoutButton.js";
+import { ProjectPicker } from "./ProjectPicker.js";
 
 const LINKS = [
   { to: "/", label: "Workspace", end: true, icon: ListTodo },
   { to: "/board", label: "Board", end: false, icon: LayoutGrid },
+  { to: "/goals", label: "Goals", end: false, icon: ListTodo },
   { to: "/runs", label: "Runs", end: false, icon: Activity },
   { to: "/memory", label: "Memory", end: false, icon: Brain },
   { to: "/agents", label: "Agents", end: false, icon: Bot },
   { to: "/computers", label: "Computers", end: false, icon: Server },
   { to: "/skills", label: "Skills", end: false, icon: Puzzle },
+  { to: "/settings", label: "Settings", end: false, icon: Server },
 ];
 
 /**
@@ -24,6 +27,7 @@ export function Nav(): React.ReactNode {
   return (
     <nav className="app-nav" aria-label="Primary">
       <span className="brand">artoo</span>
+      <ProjectPicker />
       <ul className="app-nav__links">
         {LINKS.map((link) => (
           <li key={link.to}>

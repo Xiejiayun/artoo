@@ -10,3 +10,4 @@ export * from "./runtimes.js";
 export * from "./ws-transport.js";
 export * from "./node-runner.js";
 export * from "./workspace-binding.js";
+export * from "./artifact-upload.js";

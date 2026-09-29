@@ -32,6 +32,7 @@ import {
 import { and, desc, eq, isNull } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
+import { DEFAULT_CONTROL_TOKEN_TTL_MS } from "../config/device-auth.js";
 import { AppError } from "../errors.js";
 import {
   cryptoRandomSource,
@@ -283,7 +284,8 @@ function buildTokenRow(
     status: "active",
     createdAt: now,
     lastUsedAt: null,
-    expiresAt: null,
+    expiresAt: kind === "control_session"
+      ? isoPlusMs(now, ctx.deviceAuth.controlTokenTtlMs ?? DEFAULT_CONTROL_TOKEN_TTL_MS) : null,
     revokedAt: null,
   };
 }
@@ -326,7 +328,7 @@ export async function resolveDeviceToken(
         ),
       )
   )[0];
-  if (token === undefined || token.kind !== kind || token.status !== "active") {
+  if (token === undefined || token.kind !== kind || token.status !== "active" || token.revokedAt !== null) {
     return null;
   }
   if (!verifyDeviceSecret(parsed, token.tokenHash)) {
@@ -341,7 +343,7 @@ export async function resolveDeviceToken(
       .from(devices)
       .where(and(eq(devices.id, token.deviceId), eq(devices.organizationId, ctx.organizationId)))
   )[0];
-  if (device === undefined || device.trust !== "active") {
+  if (device === undefined || device.trust !== "active" || device.revokedAt !== null) {
     return null;
   }
   return { deviceId: device.id, computerId: device.computerId, kind: token.kind };

@@ -57,7 +57,7 @@ public actor MockApiClient: ApiClientProtocol {
         try transition(taskId: taskId, to: .ready)
     }
 
-    public func assign(taskId: String, request: AssignRequest) async throws -> TaskResponse {
+    public func assign(taskId: String, request: AssignRequest) async throws -> AssignResponse {
         let response = try transition(taskId: taskId, to: .assigned)
         let run = Run(
             id: "run_\(runs.count + 1)",
@@ -76,11 +76,11 @@ public actor MockApiClient: ApiClientProtocol {
             )
             snapshots[taskId] = snapshot
         }
-        return TaskResponse(task: response.task, run: run)
+        return AssignResponse(run: run, schedulerDecision: SchedulerDecisionSummary(id: "decision_\(run.id)", reason: "Preview fixture assignment", score: 1))
     }
 
     public func retry(taskId: String) async throws -> TaskResponse {
-        try transition(taskId: taskId, to: .assigned)
+        try transition(taskId: taskId, to: .ready)
     }
 
     public func review(taskId: String, request: ReviewRequest) async throws -> TaskResponse {
@@ -114,6 +114,7 @@ public actor MockApiClient: ApiClientProtocol {
             action: existing.action,
             risk: existing.risk,
             summary: existing.summary,
+            payloadRef: existing.payloadRef,
             status: request.decision == "approved" ? .approved : request.decision == "needs_more_info" ? .needsMoreInfo : .rejected,
             createdAt: existing.createdAt
         )

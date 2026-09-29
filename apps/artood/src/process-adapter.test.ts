@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,6 +140,20 @@ describe("createProcessAdapter", () => {
     } finally {
       rmSync(ws, { recursive: true, force: true });
       rmSync(join(ws, "..", escapedName), { force: true });
+    }
+  });
+
+  it("rejects a junction/symlink that escapes the local workspace root", async () => {
+    const workspace = makeWorkspace();
+    const outside = makeWorkspace();
+    try {
+      symlinkSync(outside, join(workspace, "escape"), process.platform === "win32" ? "junction" : "dir");
+      const adapter = createProcessAdapter({ command: cmd, allowedRoots: [workspace], contextPackFilename: "escape/context_pack.md" });
+      await expect(adapter.start(makeConfig(workspace))).rejects.toBeInstanceOf(WorkspaceScopeError);
+      expect(existsSync(join(outside, "context_pack.md"))).toBe(false);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
     }
   });
 

@@ -1,0 +1,12 @@
+{
+  "run": {
+    "id": "run_assigned", "organization_id": "org_1", "task_id": "task_1",
+    "computer_id": "computer_1", "agent_instance_id": "instance_1", "runtime_id": "codex",
+    "scheduler_decision_id": "decision_1", "model_profile_id": null, "effort_profile_id": null,
+    "status": "queued", "context_pack_id": "context_1", "started_at": null,
+    "ended_at": null, "failure_reason": null, "sequence": 0,
+    "workspace_root": "C:\\workspace\\preview", "workspace_branch": null,
+    "created_at": "2026-09-28T00:00:00.000Z"
+  },
+  "scheduler_decision": { "id": "decision_1", "reason": "Selected an available compatible agent", "score": 42 }
+}

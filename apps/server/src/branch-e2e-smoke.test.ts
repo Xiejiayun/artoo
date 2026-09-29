@@ -70,7 +70,7 @@ describe.skipIf(!ENABLED)("#23 gated e2e: REST assign -> node -> real git worktr
 
     // 4. Bridge the server's node binding to a REAL node-client (real git executor).
     const channel = createInProcessChannel();
-    const binding = attachNodeBinding(server.ctx, channel.serverTransport);
+    const binding = attachNodeBinding(server.ctx, channel.serverTransport, "computer_local_mock");
     server.ctx.onRunQueued = (runId) => binding.dispatchRunStart(runId);
     cleanups.push(() => binding.close());
 

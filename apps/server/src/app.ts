@@ -32,6 +32,9 @@ import { eq } from "drizzle-orm";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 
 import type { ServerContext } from "./context.js";
+import { registerProjectRoutes } from "./project-routes.js";
+import { registerResourceRoutes } from "./resource-routes.js";
+import { registerArtifactRoutes } from "./artifact-routes.js";
 import { registerApiAuthGuard, registerAuthRoutes, requestContext } from "./auth/auth-routes.js";
 import { AppError } from "./errors.js";
 import { createClaimLimiter, DEFAULT_CLAIM_LIMIT, type ClaimLimiter } from "./claim-rate-limit.js";
@@ -43,6 +46,7 @@ import * as collaborationService from "./services/collaboration-service.js";
 import * as dagService from "./services/dag-service.js";
 import * as deviceService from "./services/device-service.js";
 import * as goalService from "./services/goal-service.js";
+import { startGoalBudgetMonitor } from "./services/budget-service.js";
 import * as leaseService from "./services/lease-service.js";
 import * as lifecycle from "./services/lifecycle-service.js";
 import * as memoryService from "./services/memory-service.js";
@@ -64,6 +68,12 @@ import { createWsHub, type WsHub } from "./ws/ws-hub.js";
 import { registerWebStatic } from "./web-static.js";
 
 export interface BuildAppOptions {
+  /** Live elapsed-budget checks. Defaults to 1 second; false is for deterministic tests. */
+  budgetMonitorIntervalMs?: number | false;
+  /** Explicit local testing only. Disabled by default, including production. */
+  enableDevRoutes?: boolean;
+  /** Durable artifact storage, colocated with persistent database backups. */
+  artifactDir?: string;
   /** Inject a registry so tests can observe node registration. */
   nodeRegistry?: NodeRegistry;
   /** Inject the realtime hub so the caller owns the event publisher. */
@@ -93,6 +103,13 @@ export interface DesktopCorsOptions {
  */
 export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: false });
+  if (options.budgetMonitorIntervalMs !== false) {
+    let budgetMonitor: ReturnType<typeof startGoalBudgetMonitor> | undefined;
+    app.addHook("onReady", async () => {
+      budgetMonitor = startGoalBudgetMonitor(ctx, { intervalMs: options.budgetMonitorIntervalMs || 1000, onError: (error) => app.log.error(error, "goal budget monitor failed") });
+    });
+    app.addHook("onClose", async () => { await budgetMonitor?.stop(); });
+  }
   const nodeRegistry = options.nodeRegistry ?? createNodeRegistry();
   // #115 P2-S3: on node disconnect, fail this computer's snapshot runs only after
   // the grace window expires (in-memory dogfood timer; server-restart recovery is
@@ -130,7 +147,9 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     await nodeRegistry.get(run.computerId)?.dispatchRunStart(runId);
   };
 
-  void app.register(websocket);
+  void app.register(websocket, {
+    options: { handleProtocols: (protocols) => protocols.has("artoo") ? "artoo" : false },
+  });
   void app.register(async (instance) => {
     registerNodeWsRoute(instance, ctx, nodeRegistry, deviceConnections, graceWindow);
     registerClientWsRoute(instance, ctx, wsHub, options.clientWsHooks, deviceConnections);
@@ -143,7 +162,10 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   // Google Auth (#34): the protected-API guard (opt-in via enforceApiAuth) and
   // the /auth/* routes.
   registerApiAuthGuard(app, ctx, ctx.authConfig);
-  registerAuthRoutes(app, ctx, { config: ctx.authConfig, oidcHttp: ctx.oidcHttp });
+  registerAuthRoutes(app, ctx, {
+    config: ctx.authConfig, oidcHttp: ctx.oidcHttp,
+    onControlLogout: (deviceId) => deviceConnections.closeForDevice(deviceId, 1008, "signed out", "control"),
+  });
 
   // Per-request service context bound to the authenticated session user (when the
   // guard enforced auth); falls back to the base ctx otherwise. REST handlers use
@@ -183,6 +205,15 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   registerIdempotency(app, ctx, new Set(["/api/v1/devices/pairings", "/api/v1/devices/claim"]));
 
   app.get("/api/v1/bootstrap", async (req) => taskService.bootstrap(rc(req)));
+  registerProjectRoutes(app, ctx);
+  registerResourceRoutes(app, ctx);
+  app.get("/health/live", async () => ({ status: "ok" }));
+  app.get("/health/ready", async (_req, reply) => {
+    try {
+      if (await ctx.db.healthCheck()) return { status: "ready" };
+    } catch { /* A readiness response never exposes database details. */ }
+    return reply.status(503).send({ status: "unavailable" });
+  });
 
   // #27 v2-B slice 2a — read cursor. Clients use this as the hydration/tail
   // baseline for WS since_cursor; command base_version comes from resource reads.
@@ -423,8 +454,25 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   for (const action of ["pause", "resume", "cancel"] as const) {
     app.post(`/api/v1/goals/:id/${action}`, async (req, reply) => {
       const { id } = req.params as { id: string };
-      const fn = action === "pause" ? goalService.pauseGoal : action === "resume" ? goalService.resumeGoal : goalService.cancelGoal;
-      const goal = await fn(rc(req), id);
+      const requestCtx = rc(req);
+      const goal = action === "cancel"
+        ? await goalService.cancelGoal(requestCtx, id, async (runId) => {
+          const run = await runService.getRun(requestCtx, runId);
+          if (run.status === "cancelled" || run.status === "completed") return;
+          const binding = nodeRegistry.get(run.computer_id);
+          if (!binding) throw AppError.conflict("goal paused: an execution computer is offline; reconnect it and retry cancellation");
+          if (run.status === "failed" && run.failure_reason === "daemon_disconnect") {
+            await binding.dispatchRunStop(runId);
+            await runService.failRunDaemonDisconnect(requestCtx, runId, run.computer_id, true);
+          } else {
+            try { await runService.cancelRun(requestCtx, runId, () => binding.dispatchRunStop(runId)); }
+            catch (error) {
+              const latest = await runService.getRun(requestCtx, runId);
+              if (!["completed", "cancelled", "failed"].includes(latest.status)) throw error;
+            }
+          }
+        })
+        : await (action === "pause" ? goalService.pauseGoal : goalService.resumeGoal)(requestCtx, id);
       if (goal === null) {
         void reply.status(404);
         throw AppError.notFound(`goal not found: ${id}`);
@@ -616,7 +664,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   });
 
   // Dev-only: simulate a node/adapter executing a queued run end to end.
-  app.post("/api/v1/dev/runs/:id/mock-execute", async (req) => {
+  if (options.enableDevRoutes === true) app.post("/api/v1/dev/runs/:id/mock-execute", async (req) => {
     const { id } = req.params as { id: string };
     const query = req.query as { outcome?: "completed" | "failed" };
     return runService.mockExecuteRun(rc(req), id, query.outcome === "failed" ? "failed" : "completed");
@@ -685,12 +733,28 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   app.post("/api/v1/runs/:id/cancel", async (req) => {
     const { id } = req.params as { id: string };
-    return { run: await runService.cancelRun(rc(req), id) };
+    const requestCtx = rc(req);
+    return { run: await runService.cancelRun(requestCtx, id, async () => {
+      const run = await runService.getRun(requestCtx, id);
+      const binding = nodeRegistry.get(run.computer_id);
+      if (binding) return binding.dispatchRunStop(id);
+      // Explicit dev mocks have no external process to stop.
+      if (options.enableDevRoutes === true && run.runtime_id === "mock") return;
+      throw AppError.conflict("execution computer is offline; cancellation cannot be confirmed and write leases remain active");
+    }) };
   });
 
   app.get("/api/v1/approvals", async (req) => {
     const { status } = req.query as { status?: string };
     return { approvals: await approvalService.listApprovals(rc(req), status) };
+  });
+
+  app.post("/api/v1/tasks/:id/execution-approval", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const input = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof input.summary !== "string" || !["low", "medium", "high"].includes(String(input.risk))) throw AppError.validation("summary and risk are required");
+    const approval = await approvalService.requestExecutionApproval(rc(req), id, { summary: input.summary, risk: input.risk as "low" | "medium" | "high" });
+    return reply.status(201).send({ approval });
   });
 
   app.post("/api/v1/approvals/:id/resolve", async (req) => {
@@ -822,7 +886,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   });
 
   // Dev-only: the platform requesting a high-risk action approval on a running task.
-  app.post("/api/v1/dev/tasks/:id/request-approval", async (req, reply) => {
+  if (options.enableDevRoutes === true) app.post("/api/v1/dev/tasks/:id/request-approval", async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = (req.body ?? {}) as {
       action?: string;
@@ -842,6 +906,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   });
 
   // Static web SPA last: the API/auth/WS routes above are matched first; this only
+  if (options.artifactDir) registerArtifactRoutes(app, ctx, options.artifactDir);
   // adds file serving + an SPA navigation fallback (no-op when no built dist).
   registerWebStatic(app, options.webDistDir);
 

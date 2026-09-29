@@ -28,6 +28,7 @@ import {
 import { and, asc, eq } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
+import { effectiveTeamRole } from "../auth/request-auth.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { currentTaskVersion } from "./sync-service.js";
@@ -56,7 +57,7 @@ export interface BootstrapResponse {
   actor: { type: "user"; id: string };
 }
 
-/** GET /api/v1/bootstrap — seeded org/user/projects + current actor (no auth in v0.1). */
+/** GET /api/v1/bootstrap — organization resources and the authenticated actor. */
 export async function bootstrap(ctx: ServerContext): Promise<BootstrapResponse> {
   const db = ctx.db.db;
   const orgRow = (await db.select().from(organizations).where(eq(organizations.id, ctx.organizationId)))[0];
@@ -100,7 +101,7 @@ export async function bootstrap(ctx: ServerContext): Promise<BootstrapResponse> 
       id: userRow.id,
       email: userRow.email,
       display_name: userRow.displayName,
-      role: userRow.role,
+      role: effectiveTeamRole(ctx, userRow.email, userRow.role),
     },
     projects: projectRows.map((p) => ({
       id: p.id,

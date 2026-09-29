@@ -1,4 +1,5 @@
 import { nodeHelloSchema } from "@artoo/protocol";
+import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -6,6 +7,7 @@ import {
   createNodeFromConfig,
   helloFor,
   loadConfigFromEnv,
+  installShutdownHandlers,
   type ArtoodConfig
 } from "./main.js";
 
@@ -20,6 +22,11 @@ function configWith(overrides: Partial<ArtoodConfig> = {}): ArtoodConfig {
 }
 
 describe("loadConfigFromEnv", () => {
+  it("requires an explicit local opt-in for trusted execution", () => {
+    expect(loadConfigFromEnv(baseEnv).trustedExecution).toBe(false);
+    expect(loadConfigFromEnv({ ...baseEnv, ARTOO_TRUSTED_EXECUTION: "true" }).trustedExecution).toBe(false);
+    expect(loadConfigFromEnv({ ...baseEnv, ARTOO_TRUSTED_EXECUTION: "1" }).trustedExecution).toBe(true);
+  });
   it("parses required url + nodeId", () => {
     const config = loadConfigFromEnv({ ...baseEnv });
     expect(config.url).toBe("ws://h:4000/api/v1/node?token=dev");
@@ -95,5 +102,25 @@ describe("createNodeFromConfig", () => {
     const node = createNodeFromConfig(configWith({ worktreeBaseRepo: "C:/repo" }));
     expect(typeof node.start).toBe("function");
     expect(typeof node.stop).toBe("function");
+  });
+});
+
+describe("desktop worker shutdown", () => {
+  it("waits for node process cleanup before disconnecting and exiting, and deduplicates signals", async () => {
+    const events: string[] = [];
+    let stopped!: () => void;
+    const gate = new Promise<void>((resolve) => { stopped = resolve; });
+    const host = Object.assign(new EventEmitter(), {
+      connected: true, disconnect: () => events.push("disconnect"), exit: (code: number) => events.push(`exit:${code}`),
+    });
+    const remove = installShutdownHandlers({ start: async () => {}, stop: async () => { events.push("stop"); await gate; } }, host);
+    host.emit("message", { type: "shutdown" });
+    host.emit("SIGTERM");
+    expect(events).toEqual(["stop"]);
+    stopped();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(events).toEqual(["stop", "disconnect", "exit:0"]);
+    remove();
+    expect(host.listenerCount("message")).toBe(0);
   });
 });

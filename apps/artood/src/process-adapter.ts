@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { ArtifactPayload, ArtifactType } from "@artoo/domain";
@@ -14,6 +14,7 @@ import type {
   StopReason
 } from "@artoo/protocol";
 import { assertWorkspaceScope } from "@artoo/protocol";
+import { resolveCliCommand } from "./cli-resolver.js";
 
 /**
  * Process-based {@link RuntimeAdapter} (design §5.2 minimal model). Runs a CLI
@@ -49,10 +50,61 @@ export interface ProcessAdapterOptions {
 
 interface RunState {
   queue: AsyncEventQueue<RunEvent>;
-  kill: () => void;
+  kill: () => Promise<void>;
   workspaceRoot: string;
   stopReason?: StopReason;
 }
+
+/** Resolve existing ancestors so symlinks/junctions cannot bypass root policy. */
+export function assertRealWorkspaceScope(target: string, allowedRoots: readonly string[]): void {
+  const canonical = (path: string): string => {
+    let existing = resolve(path);
+    const suffix: string[] = [];
+    while (!existsSync(existing)) {
+      const parent = dirname(existing);
+      if (parent === existing) break;
+      suffix.unshift(basename(existing));
+      existing = parent;
+    }
+    return resolve(realpathSync(existing), ...suffix);
+  };
+  assertWorkspaceScope(canonical(target), allowedRoots.map(canonical));
+}
+
+async function stopProcessTree(pid: number): Promise<void> {
+  if (process.platform === "win32") {
+    await new Promise<void>((resolveStop, rejectStop) => {
+      const killer = spawn(resolve(process.env.SystemRoot ?? "C:/Windows", "System32", "taskkill.exe"), ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+      let output = "";
+      killer.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
+      killer.once("error", rejectStop);
+      killer.once("close", (code) => {
+        // 128 means the process already exited; no process can still be writing.
+        if (code === 0 || code === 128) resolveStop();
+        else rejectStop(new Error(`could not stop process tree (${code}): ${output}`));
+      });
+    });
+  } else {
+    try { process.kill(-pid, "SIGKILL"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  }
+}
+
+// A small independent Node process owns a pipe from the daemon. If the daemon
+// crashes (including an Electron worker kill), pipe EOF kills the CLI's process
+// tree. A normal CLI exit disarms it first. No task content becomes executable.
+const PROCESS_GUARDIAN = `
+const {spawn}=require('node:child_process');
+const pid=Number(process.argv[1]);
+let disarmed=false;
+process.stdin.on('data',()=>{disarmed=true;});
+process.stdin.on('end',()=>{
+  if(disarmed) return;
+  if(process.platform==='win32') spawn(require('node:path').resolve(process.env.SystemRoot||'C:/Windows','System32','taskkill.exe'),['/PID',String(pid),'/T','/F'],{stdio:'ignore',windowsHide:true});
+  else { try { process.kill(-pid,'SIGKILL'); } catch {} }
+});
+process.stdin.resume();
+`;
 
 class AsyncEventQueue<T> {
   private readonly items: T[] = [];
@@ -185,6 +237,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
   function workspacePath(workspaceRoot: string, relativePath: string): string {
     const absolute = resolve(workspaceRoot, relativePath);
     assertWorkspaceScope(absolute, [workspaceRoot]);
+    assertRealWorkspaceScope(absolute, [workspaceRoot]);
     return absolute;
   }
 
@@ -217,6 +270,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
     async start(config: AgentInstanceConfig): Promise<AgentInstanceHandle> {
       // Enforce the workspace allowlist before doing anything else.
       assertWorkspaceScope(config.workspaceRoot, options.allowedRoots);
+      assertRealWorkspaceScope(config.workspaceRoot, options.allowedRoots);
 
       const contextPackPath = workspacePath(config.workspaceRoot, contextPackFilename);
       artifactPaths(config.workspaceRoot);
@@ -232,7 +286,9 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
         throw new Error("process adapter command template is empty");
       }
 
-      const child = spawn(cmd, args, { cwd: config.workspaceRoot });
+      const resolved = resolveCliCommand(cmd);
+      if (!resolved) throw new Error(`runtime executable is unavailable or has an unsupported shell wrapper: ${cmd}`);
+      const child = spawn(resolved[0]!, [...resolved.slice(1), ...args], { cwd: config.workspaceRoot, detached: process.platform !== "win32", windowsHide: true });
       // The agent receives its task via the command template + context pack, not
       // stdin. Close stdin so CLIs that read it (e.g. `codex exec` prints
       // "Reading additional input from stdin...") get EOF immediately instead of
@@ -241,6 +297,10 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
       const queue = new AsyncEventQueue<RunEvent>();
       let finalized = false;
       let spawned = false;
+      let resolveClosed!: () => void;
+      const closed = new Promise<void>((resolveClose) => { resolveClosed = resolveClose; });
+      let termination: Promise<void> | undefined;
+      let guardian: ChildProcess | undefined;
 
       const stdout = makeLineEmitter((text) =>
         queue.push({ type: "run.output", payload: { stream: "stdout", text } })
@@ -254,8 +314,11 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
       const state: RunState = {
         queue,
         workspaceRoot: config.workspaceRoot,
-        kill: () => {
-          child.kill();
+        kill: async () => {
+          if (finalized) return;
+          termination ??= child.pid === undefined ? Promise.resolve() : stopProcessTree(child.pid);
+          await termination;
+          await closed;
         }
       };
 
@@ -268,16 +331,20 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
         stderr.flush();
         queue.push(event);
         queue.end();
+        resolveClosed();
       }
 
       child.on("error", (err: Error) => {
         if (!spawned) {
           return;
         }
-        finishWith({ type: "run.lifecycle", payload: { phase: "failed", reason: err.message } });
+        stderr.feed(`${err.message}\n`);
       });
-      child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+      child.on("close", async (code: number | null, signal: NodeJS.Signals | null) => {
+        guardian?.stdin?.end("disarm");
         if (state.stopReason) {
+          // A parent exit alone does not prove its descendants stopped.
+          try { await termination; } catch { resolveClosed(); return; }
           finishWith({
             type: "run.lifecycle",
             payload: { phase: "cancelled", reason: state.stopReason }
@@ -286,14 +353,21 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
         }
 
         if (code === 0) {
+          let descriptors: ArtifactDescriptor[];
+          try { descriptors = collectDescriptors(config.workspaceRoot); }
+          catch (error) {
+            finishWith({ type: "run.lifecycle", payload: { phase: "failed", reason: error instanceof Error ? error.message : "artifact collection failed" } });
+            return;
+          }
           stdout.flush();
           stderr.flush();
           finalized = true;
-          for (const descriptor of collectDescriptors(config.workspaceRoot)) {
+          for (const descriptor of descriptors) {
             queue.push({ type: "artifact.created", payload: descriptor.payload });
           }
           queue.push({ type: "run.lifecycle", payload: { phase: "completed", reason: null } });
           queue.end();
+          resolveClosed();
           return;
         }
 
@@ -316,6 +390,25 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
         });
       });
 
+      if (!finalized && child.pid !== undefined) {
+        guardian = spawn(process.execPath, ["-e", PROCESS_GUARDIAN, String(child.pid)], {
+          stdio: ["pipe", "ignore", "ignore"], windowsHide: true,
+          env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        });
+        guardian.stdin?.on("error", () => {});
+        try {
+          await new Promise<void>((resolveGuard, rejectGuard) => {
+            guardian!.once("spawn", resolveGuard);
+            guardian!.once("error", rejectGuard);
+          });
+        } catch (error) {
+          state.stopReason = "user_cancelled";
+          await state.kill();
+          throw error;
+        }
+        if (finalized) guardian.stdin?.end("disarm");
+      }
+
       runs.set(config.runId, state);
       return { runId: config.runId };
     },
@@ -332,7 +425,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
       const state = runs.get(handle.runId);
       if (state) {
         state.stopReason = reason;
-        state.kill();
+        await state.kill();
       }
     },
 

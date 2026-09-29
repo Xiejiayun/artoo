@@ -2,6 +2,6 @@
   "name": "@artoo/ios",
   "version": "0.1.0",
   "private": true,
-  "description": "Native SwiftUI iOS client. Built with Xcode/XcodeGen on macOS — intentionally NOT part of the Node/Vitest build. This package.json exists only so the root `apps/*` workspace glob does not choke on a Swift-only directory; it declares no build/test scripts.",
-  "scripts": {}
+  "description": "Native SwiftUI client. Xcode build and XCTest require macOS; static API contracts can be checked on Windows.",
+  "scripts": { "verify:contracts": "node scripts/verify-contracts.mjs" }
 }

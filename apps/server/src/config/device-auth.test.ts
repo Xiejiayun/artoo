@@ -14,6 +14,15 @@ describe("loadDeviceAuthConfig", () => {
     expect(loadDeviceAuthConfig({ ARTOO_PAIRING_PEPPER: "  s3cret  " }).pairingPepper).toBe("s3cret");
   });
 
+  it("provides a finite default control-token TTL and rejects invalid overrides", () => {
+    const base = { ARTOO_PAIRING_PEPPER: "p" };
+    expect(loadDeviceAuthConfig(base).controlTokenTtlMs).toBe(30 * 24 * 60 * 60 * 1000);
+    expect(loadDeviceAuthConfig({ ...base, ARTOO_CONTROL_TOKEN_TTL_MS: "60000" }).controlTokenTtlMs).toBe(60000);
+    for (const value of ["0", "-1", "NaN", "1.5", ""]) {
+      expect(() => loadDeviceAuthConfig({ ...base, ARTOO_CONTROL_TOKEN_TTL_MS: value })).toThrow(/positive integer/);
+    }
+  });
+
   it("enables the dev node-token escape only in non-production with the explicit flag", () => {
     const base = { ARTOO_PAIRING_PEPPER: "p" };
     // non-production + flag => escape on (default token 'dev')

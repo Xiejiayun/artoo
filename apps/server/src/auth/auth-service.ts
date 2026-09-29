@@ -16,7 +16,7 @@
  */
 import { oauthFlows, sessions, userIdentities, users } from "@artoo/db";
 import { ID_PREFIXES } from "@artoo/domain";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -163,6 +163,7 @@ export interface ProvisionInput {
   email: string;
   emailVerified: boolean;
   displayName: string;
+  hostedDomain?: string | undefined;
 }
 
 export interface ProvisionedUser {
@@ -181,6 +182,20 @@ export async function provisionUser(
   ctx: ServerContext,
   input: ProvisionInput,
 ): Promise<ProvisionedUser> {
+  // Re-check policy on every sign-in, including a known provider subject. An
+  // identity admitted yesterday must not bypass today's team allowlist.
+  if (!input.emailVerified) {
+    throw AppError.validation("provider email is not verified");
+  }
+  const email = input.email.trim().toLowerCase();
+  if (
+    (ctx.authConfig.allowedEmails !== undefined && !ctx.authConfig.allowedEmails.includes(email)) ||
+    (ctx.authConfig.hostedDomain !== undefined && input.hostedDomain !== ctx.authConfig.hostedDomain)
+  ) {
+    throw AppError.permissionDenied("this account is not allowed to join the team");
+  }
+  input = { ...input, email };
+  const isConfiguredOwner = ctx.authConfig.ownerEmails?.includes(email) === true;
   const now = ctx.clock.nowIso();
   return ctx.db.transaction(async (tx) => {
     const identity = (
@@ -196,21 +211,33 @@ export async function provisionUser(
         )
     )[0];
     if (identity !== undefined) {
+      const existingUser = (await tx.select().from(users).where(and(
+        eq(users.id, identity.userId), eq(users.organizationId, ctx.organizationId),
+      )))[0];
+      if (existingUser === undefined) throw AppError.permissionDenied("account is unavailable");
+      await tx.update(users).set({
+        email,
+        displayName: input.displayName.trim() || email,
+        role: isConfiguredOwner ? "owner" :
+          ctx.authConfig.ownerEmails !== undefined && existingUser.role === "owner" ? "member" : existingUser.role,
+      }).where(eq(users.id, existingUser.id));
+      await tx.update(userIdentities).set({ email }).where(eq(userIdentities.id, identity.id));
       return { userId: identity.userId, created: false };
     }
     // New provisioning (link OR create) requires a provider-verified email, so
     // an unverified address can never establish or attach to an account.
-    if (!input.emailVerified) {
-      throw AppError.validation("provider email is not verified");
-    }
-
     const byEmail = (
       await tx
         .select()
         .from(users)
-        .where(and(eq(users.email, input.email), eq(users.organizationId, ctx.organizationId)))
+        .where(and(sql`lower(${users.email}) = ${email}`, eq(users.organizationId, ctx.organizationId)))
     )[0];
     if (byEmail !== undefined) {
+      await tx.update(users).set({
+        email,
+        role: isConfiguredOwner ? "owner" :
+          ctx.authConfig.ownerEmails !== undefined && byEmail.role === "owner" ? "member" : byEmail.role,
+      }).where(eq(users.id, byEmail.id));
       await tx.insert(userIdentities).values(identityRow(ctx, byEmail.id, input, now));
       return { userId: byEmail.id, created: false };
     }
@@ -221,7 +248,7 @@ export async function provisionUser(
       organizationId: ctx.organizationId,
       email: input.email,
       displayName: input.displayName.trim() || input.email,
-      role: "member",
+      role: isConfiguredOwner ? "owner" : "member",
       createdAt: now,
     });
     await tx.insert(userIdentities).values(identityRow(ctx, userId, input, now));

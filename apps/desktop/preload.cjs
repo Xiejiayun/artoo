@@ -1,15 +1,12 @@
-// Preload: expose a tiny, safe bridge to the web UI. Context-isolated — no Node
-// access leaks to the renderer.
-//
-// `serverUrl` lets the web ApiClient target the desktop's configured server
-// instead of its same-origin default. The #28 pairing flow replaces this static
-// value with a paired endpoint + token handed to the renderer.
-const { contextBridge } = require("electron");
-
-const SERVER_URL = process.env.ARTOO_SERVER_URL ?? "http://localhost:4000";
-
+const { contextBridge, ipcRenderer } = require("electron");
+const initial = ipcRenderer.sendSync("artoo:initial");
+if (!initial) throw new Error("Desktop configuration is unavailable");
+const invoke = (method) => (input) => ipcRenderer.invoke(`artoo:${method}`, input);
 contextBridge.exposeInMainWorld("artooDesktop", {
-  serverUrl: SERVER_URL,
-  platform: process.platform,
-  electronVersion: process.versions.electron,
+  serverUrl: initial.serverUrl, platform: process.platform, electronVersion: process.versions.electron,
+  getConnection: invoke("getConnection"), getToken: invoke("getToken"),
+  configureServer: invoke("configureServer"), pairDevice: invoke("pairDevice"), logout: invoke("logout"),
+  daemonStatus: invoke("daemonStatus"), configureDaemon: invoke("configureDaemon"),
+  startDaemon: invoke("startDaemon"), stopDaemon: invoke("stopDaemon"), restartDaemon: invoke("restartDaemon"),
+  chooseDirectory: invoke("chooseDirectory"), openExternal: invoke("openExternal"),
 });

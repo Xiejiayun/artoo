@@ -2,6 +2,7 @@ import {
   agentInstances,
   appendEvent,
   goals,
+  plans,
   runs,
   schedulerDecisions,
   taskDependencies,
@@ -10,7 +11,6 @@ import {
 import {
   canTransitionTask,
   type DagEdge,
-  GoalBudgetsSchema,
   ID_PREFIXES,
   applyGoalTransition,
   type AssignRequest,
@@ -19,8 +19,10 @@ import {
   type Run,
   type Task,
   type TaskStatus,
+  TaskSpecSchema,
 } from "@artoo/domain";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
+import type { DrizzleDb } from "@artoo/storage";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -32,6 +34,52 @@ import * as leaseService from "./lease-service.js";
 import { scheduleTask } from "./scheduler.js";
 import { assertFreshTaskBaseVersion } from "./sync-service.js";
 import { transitionTask } from "./transition-service.js";
+import { supportedGoalPolicy } from "./budget-policy.js";
+import { assertExecutionApprovalGranted, bindExecutionApprovalToRun } from "./approval-service.js";
+import { unsettledGoalRunIds } from "./execution-state.js";
+import { assertSupportedPlanTaskControls } from "./plan-policy.js";
+
+/** Restored/older accepted plans must pass the same policy gate as new plans. */
+async function assertTaskPlanControlsSupported(ctx: ServerContext, tx: DrizzleDb, task: typeof tasks.$inferSelect): Promise<void> {
+  if (task.sourcePlanId === null) return;
+  const plan = (await tx.select({ taskSpecs: plans.taskSpecs }).from(plans).where(and(
+    eq(plans.id, task.sourcePlanId), eq(plans.organizationId, ctx.organizationId),
+  )))[0];
+  const index = Number(task.sourcePlanSpecRef);
+  if (!plan || task.sourcePlanSpecRef === null || !Number.isInteger(index) || index < 0 || String(index) !== task.sourcePlanSpecRef || !Array.isArray(plan.taskSpecs)) {
+    throw AppError.validation("Cannot verify the source plan's task controls", { source_plan_id: task.sourcePlanId });
+  }
+  const parsed = TaskSpecSchema.safeParse(plan.taskSpecs[index]);
+  if (!parsed.success) throw AppError.validation("Cannot verify the source plan's task controls", { source_plan_id: task.sourcePlanId, spec_index: index });
+  assertSupportedPlanTaskControls(parsed.data, index);
+}
+
+/** Lock the goal during scheduling/retry so pause/cancel creates a real fence. */
+async function assertGoalAllowsExecution(ctx: ServerContext, tx: DrizzleDb, goalId: string | null, operation: "assign" | "retry", sourcePlanId: string | null): Promise<string[] | null> {
+  if (!goalId) return null;
+  const goal = (await tx.select().from(goals).where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId))).for("update"))[0];
+  if (!goal) return null;
+  if (sourcePlanId !== null && sourcePlanId !== goal.currentPlanId) {
+    throw AppError.invalidState("This task belongs to a superseded plan; use the current plan's tasks", { goal_id: goalId, source_plan_id: sourcePlanId, current_plan_id: goal.currentPlanId });
+  }
+  if (["paused", "cancelled", "completed", "archived", "awaiting_approval"].includes(goal.status)) {
+    throw AppError.invalidState(`goal is '${goal.status}'; resume the goal before assigning or retrying tasks`, { goal_id: goalId, status: goal.status });
+  }
+  const { budgets } = supportedGoalPolicy(goal.budgets, goal.stopConditions);
+  if (budgets.max_elapsed_ms !== null && goal.runningSince !== null) {
+    const elapsed = Math.max(0, Date.parse(ctx.clock.nowIso()) - Date.parse(goal.runningSince));
+    if (elapsed >= budgets.max_elapsed_ms) throw AppError.conflict("Goal elapsed time budget has been reached", { goal_id: goalId, budget: "max_elapsed_ms", limit: budgets.max_elapsed_ms, actual: elapsed });
+  }
+  const retries = goal.retryCount + (operation === "retry" ? 1 : 0);
+  if (budgets.max_retries !== null && retries > budgets.max_retries) {
+    throw AppError.conflict("Goal retry budget would be exceeded", { goal_id: goalId, budget: "max_retries", limit: budgets.max_retries, actual: retries });
+  }
+  if (operation === "assign" && budgets.max_concurrent_runs !== null) {
+    const active = await unsettledGoalRunIds(ctx, tx, goalId);
+    if (active.length >= budgets.max_concurrent_runs) throw AppError.conflict("Goal concurrent run limit has been reached", { goal_id: goalId, budget: "max_concurrent_runs", limit: budgets.max_concurrent_runs, actual: active.length + 1 });
+  }
+  return budgets.allowed_runtimes;
+}
 
 /**
  * POST /tasks/:id/ready — triage backlog -> ready. Requires non-empty
@@ -128,6 +176,7 @@ export async function assignTask(
         .select()
         .from(tasks)
         .where(and(eq(tasks.id, taskId), eq(tasks.organizationId, ctx.organizationId)))
+        .for("update")
     )[0];
     if (row === undefined) {
       throw AppError.notFound(`task not found: ${taskId}`, { task_id: taskId });
@@ -137,22 +186,9 @@ export async function assignTask(
         status: row.status,
       });
     }
-
-    // #115 P3b-1: if the task is linked to a goal, apply that goal's
-    // allowed_runtimes budget to candidate selection. Read the goal org-scoped —
-    // never trust task.goal_id alone; a missing/cross-org goal → no restriction.
-    let allowedRuntimes: string[] | null = null;
-    if (row.goalId !== null) {
-      const goalRow = (
-        await tx
-          .select({ budgets: goals.budgets })
-          .from(goals)
-          .where(and(eq(goals.id, row.goalId), eq(goals.organizationId, ctx.organizationId)))
-      )[0];
-      if (goalRow !== undefined) {
-        allowedRuntimes = GoalBudgetsSchema.parse(goalRow.budgets ?? {}).allowed_runtimes;
-      }
-    }
+    const allowedRuntimes = await assertGoalAllowsExecution(ctx, tx, row.goalId, "assign", row.sourcePlanId);
+    await assertTaskPlanControlsSupported(ctx, tx, row);
+    await assertExecutionApprovalGranted(ctx, tx, taskId);
 
     const outcome = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], {
       mode: req.mode,
@@ -239,6 +275,7 @@ export async function assignTask(
       workspaceBranch,
       createdAt: now,
     });
+    await bindExecutionApprovalToRun(ctx, tx, taskId, runId);
 
     // Reserve write leases for the run's declared paths (#20). A conflict throws,
     // rolling back this whole transaction: no run, no assignment, task stays ready.
@@ -319,6 +356,10 @@ export async function reviewTask(
       throw AppError.invalidState(`task must be 'review' to review (is '${row.status}')`, {
         status: row.status,
       });
+    }
+    if (trigger === "request_changes") {
+      await assertGoalAllowsExecution(ctx, tx, row.goalId, "retry", row.sourcePlanId);
+      await assertTaskPlanControlsSupported(ctx, tx, row);
     }
     // Aggregate review: a parent cannot be accepted (-> done) until every child
     // task is done or cancelled. Otherwise accepting a parent would mark a tree
@@ -405,6 +446,7 @@ async function completeGoalIfAllTasksDone(
       .select()
       .from(goals)
       .where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId), eq(goals.status, "running")))
+      .for("update")
   )[0];
   if (goal === undefined) {
     return;
@@ -412,7 +454,8 @@ async function completeGoalIfAllTasksDone(
   const childTasks = await tx
     .select({ status: tasks.status })
     .from(tasks)
-    .where(and(eq(tasks.organizationId, ctx.organizationId), eq(tasks.goalId, goalId)));
+    .where(and(eq(tasks.organizationId, ctx.organizationId), eq(tasks.goalId, goalId),
+      goal.currentPlanId === null ? undefined : or(isNull(tasks.sourcePlanId), eq(tasks.sourcePlanId, goal.currentPlanId))));
   if (childTasks.length === 0 || childTasks.some((task) => task.status !== "done")) {
     return;
   }
@@ -480,6 +523,8 @@ export async function retryTask(ctx: ServerContext, taskId: string): Promise<Tas
     if (!canTransitionTask(row.status as TaskStatus, "retry")) {
       throw AppError.invalidState(`cannot retry from '${row.status}'`, { status: row.status });
     }
+    await assertGoalAllowsExecution(ctx, tx, row.goalId, "retry", row.sourcePlanId);
+    await assertTaskPlanControlsSupported(ctx, tx, row);
     const transition = await transitionTask(tx, ctx, {
       taskId,
       from: row.status as TaskStatus,

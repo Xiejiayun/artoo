@@ -126,6 +126,16 @@ export const runResumeCommandSchema = z.object({
   })
 });
 
+/** Receipt sent after a run event has committed, enabling safe replay. */
+export const runEventAckCommandSchema = z.object({
+  ...commandEnvelope,
+  type: z.literal("run.event.ack"),
+  payload: z.object({
+    run_id: z.string().min(1), sequence: z.number().int().nonnegative(),
+    status: z.enum(["accepted", "rejected"]), message: z.string().optional(),
+  }),
+});
+
 // run.start carries the domain RunStartPayload (imported, not redefined — the
 // payload is owned by @artoo/domain). The wire envelope (id/idempotency_key/
 // deadline_at) is owned here.
@@ -140,7 +150,8 @@ export const commandSchema = z.discriminatedUnion("type", [
   runStartCommandSchema,
   runStopCommandSchema,
   artifactCollectCommandSchema,
-  runResumeCommandSchema
+  runResumeCommandSchema,
+  runEventAckCommandSchema
 ]);
 
 // --- Node -> Server: run.event --------------------------------------------
@@ -170,6 +181,7 @@ export type RunStopCommand = z.infer<typeof runStopCommandSchema>;
 export type ArtifactCollectCommand = z.infer<typeof artifactCollectCommandSchema>;
 export type RunStartCommand = z.infer<typeof runStartCommandSchema>;
 export type RunResumeCommand = z.infer<typeof runResumeCommandSchema>;
+export type RunEventAckCommand = z.infer<typeof runEventAckCommandSchema>;
 export type Command = z.infer<typeof commandSchema>;
 /** A single adapter-emitted event (domain payload), framed by run.event. */
 export type RunEvent = z.infer<typeof runEventBodySchema>;

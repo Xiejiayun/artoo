@@ -40,6 +40,10 @@ describe("invalidationsForEvent", () => {
     expect(keys).toContainEqual(["tasks", "proj_artoo"]);
   });
 
+  it.each(["run.started", "run.completed", "run.failed", "run.cancelled"] as const)("refreshes the Board and rail when %s changes task state", (type) => {
+    expect(invalidationsForEvent("task:task_1", event({ type, task_id: "task_1", project_id: "proj_artoo" }))).toContainEqual(["tasks", "proj_artoo"]);
+  });
+
   it("invalidates pending approvals for inbox topic or approval events", () => {
     expect(
       invalidationsForEvent("inbox:user_1", event({ type: "approval.requested", task_id: "task_1" })),

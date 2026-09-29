@@ -6,5 +6,6 @@
 // pairing pepper. `??=` means a real env value (if the operator sets one) wins.
 process.env.ARTOO_PAIRING_PEPPER ??= "dev-pairing-pepper";
 process.env.ARTOO_ALLOW_DEV_NODE_TOKEN ??= "1";
+process.env.ARTOO_ENABLE_DEV_ROUTES ??= "1";
 
 await import("../dist/main.js");

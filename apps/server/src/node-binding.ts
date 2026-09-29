@@ -9,11 +9,13 @@ import type {
   RunEventMessage,
   RunResumeCommand,
   RunStartCommand,
+  RunStopCommand,
   Unsubscribe,
 } from "@artoo/protocol";
 import { and, eq } from "drizzle-orm";
 
 import type { ServerContext } from "./context.js";
+import { AppError } from "./errors.js";
 import {
   failRunDaemonDisconnect,
   failRunStart,
@@ -29,6 +31,10 @@ export interface NodeBinding {
   dispatchRunStart(runId: string): Promise<void>;
   /** Build + send run.resume for an already-active run (#115 P2-S3 reconnect). */
   dispatchRunResume(runId: string): Promise<void>;
+  /** Resolves only after the node has confirmed that the process is stopped. */
+  dispatchRunStop(runId: string): Promise<void>;
+  /** Deliver frames buffered by the WebSocket authentication handshake. */
+  receive(message: NodeToServerMessage): void;
   /** Resolves once all received run-events have been ingested (test sync point). */
   drain(): Promise<void>;
   close(): void;
@@ -49,10 +55,17 @@ export interface NodeBinding {
 export function attachNodeBinding(
   ctx: ServerContext,
   transport: NodeTransport,
-  computerId?: string,
+  computerId: string,
 ): NodeBinding {
   const pendingCommandRun = new Map<string, string>(); // command_id -> run_id (run.start)
   const pendingResumeRun = new Map<string, string>(); // command_id -> run_id (run.resume, #115 P2-S3b)
+  const pendingStops = new Map<string, { runId: string; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  const stoppingRuns = new Map<string, Promise<void>>();
+  async function ownsRun(runId: string): Promise<boolean> {
+    const run = (await ctx.db.db.select({ computerId: runs.computerId }).from(runs)
+      .where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId))))[0];
+    return run?.computerId === computerId;
+  }
   let tail: Promise<void> = Promise.resolve();
   const enqueue = (work: () => Promise<unknown>): void => {
     tail = tail.then(work, work).then(
@@ -61,17 +74,41 @@ export function attachNodeBinding(
     );
   };
 
-  const unsubscribe: Unsubscribe = transport.subscribe((message: NodeToServerMessage) => {
+  const receive = (message: NodeToServerMessage): void => {
+    // The credential-bound identity is authoritative for every inbound frame.
+    if (message.node_id !== computerId) return;
     if (message.kind === "run.event") {
       const envelope = mapRunEvent(message);
       if (envelope !== null) {
-        enqueue(() => ingestRunEvent(ctx, envelope));
+        enqueue(async () => {
+          if (!(await ownsRun(envelope.runId))) return;
+          let status: "accepted" | "rejected" = "accepted";
+          try { await ingestRunEvent(ctx, envelope); } catch { status = "rejected"; }
+          await transport.send({
+            kind: "command", id: `receipt:${envelope.runId}:${envelope.sequence}`,
+            idempotency_key: `receipt:${envelope.runId}:${envelope.sequence}`, type: "run.event.ack",
+            payload: { run_id: envelope.runId, sequence: envelope.sequence, status,
+              ...(status === "rejected" ? { message: "run event could not be accepted" } : {}),
+            },
+          });
+        });
       }
+    } else if (message.kind === "command.ack" && pendingStops.has(message.command_id)) {
+      const pending = pendingStops.get(message.command_id)!;
+      pendingStops.delete(message.command_id);
+      clearTimeout(pending.timer);
+      enqueue(async () => {
+        if (!(await ownsRun(pending.runId))) pending.reject(AppError.permissionDenied("run is not owned by this node"));
+        else if (message.status === "rejected") pending.reject(AppError.conflict(`node could not stop run: ${message.message}`));
+        else pending.resolve();
+      });
     } else if (message.kind === "command.ack" && message.status === "rejected") {
       const startRunId = pendingCommandRun.get(message.command_id);
       if (startRunId !== undefined) {
         pendingCommandRun.delete(message.command_id);
-        enqueue(() => failRunStart(ctx, startRunId, message.error_code, message.message));
+        enqueue(async () => {
+          if (await ownsRun(startRunId)) await failRunStart(ctx, startRunId, message.error_code, message.message);
+        });
         return;
       }
       // #115 P2-S3b: a rejected run.resume (node no longer has the process) maps to
@@ -81,7 +118,7 @@ export function attachNodeBinding(
       if (resumeRunId !== undefined) {
         pendingResumeRun.delete(message.command_id);
         if (computerId !== undefined) {
-          enqueue(() => failRunDaemonDisconnect(ctx, resumeRunId, computerId));
+          enqueue(() => failRunDaemonDisconnect(ctx, resumeRunId, computerId, true));
         }
       }
     } else if (message.kind === "command.ack") {
@@ -89,17 +126,20 @@ export function attachNodeBinding(
       pendingCommandRun.delete(message.command_id);
       pendingResumeRun.delete(message.command_id);
     }
-  });
+  };
+  const unsubscribe: Unsubscribe = transport.subscribe(receive);
 
   return {
+    receive,
     async dispatchRunStart(runId: string): Promise<void> {
+      if (!(await ownsRun(runId))) throw AppError.permissionDenied("run is not owned by this node");
       const run = (
         await ctx.db.db
           .select()
           .from(runs)
           .where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)))
       )[0];
-      if (run === undefined) {
+      if (run === undefined || run.status !== "queued") {
         return;
       }
       const instance = (
@@ -164,6 +204,7 @@ export function attachNodeBinding(
     // server transition, rejected means the node lost the process and the server
     // fails the run through the daemon_disconnect path.
     async dispatchRunResume(runId: string): Promise<void> {
+      if (!(await ownsRun(runId))) throw AppError.permissionDenied("run is not owned by this node");
       const commandId = ctx.idGen.generate("cmd");
       pendingResumeRun.set(commandId, runId);
       const command: RunResumeCommand = {
@@ -174,6 +215,36 @@ export function attachNodeBinding(
         payload: { run_id: runId },
       };
       await transport.send(command);
+    },
+
+    async dispatchRunStop(runId: string): Promise<void> {
+      if (!(await ownsRun(runId))) throw AppError.permissionDenied("run is not owned by this node");
+      const existing = stoppingRuns.get(runId);
+      if (existing) return existing;
+      const commandId = ctx.idGen.generate("cmd");
+      const pending = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendingStops.delete(commandId);
+          reject(AppError.conflict("node did not confirm process stop; the run and write leases remain active"));
+        }, 15_000);
+        pendingStops.set(commandId, { runId, resolve, reject, timer });
+      });
+      void pending.catch(() => {}); // disconnect may reject during transport.send
+      stoppingRuns.set(runId, pending);
+      const command: RunStopCommand = {
+        kind: "command", id: commandId, idempotency_key: `${runId}:stop`,
+        type: "run.stop", payload: { run_id: runId, reason: "user_cancelled" },
+      };
+      try {
+        try { await transport.send(command); }
+        catch (error) { pendingStops.get(commandId)?.reject(error instanceof Error ? error : new Error(String(error))); }
+        await pending;
+      } finally {
+        const entry = pendingStops.get(commandId);
+        if (entry) clearTimeout(entry.timer);
+        pendingStops.delete(commandId);
+        stoppingRuns.delete(runId);
+      }
     },
 
     async drain(): Promise<void> {
@@ -187,6 +258,11 @@ export function attachNodeBinding(
 
     close(): void {
       unsubscribe();
+      for (const pending of pendingStops.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(AppError.conflict("node disconnected before process stop was confirmed"));
+      }
+      pendingStops.clear();
     },
   };
 }

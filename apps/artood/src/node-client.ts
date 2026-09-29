@@ -13,6 +13,8 @@ import type {
 import { assertWorkspaceScope } from "@artoo/protocol";
 
 import type { AdapterRegistry } from "./adapter-registry.js";
+import { assertRealWorkspaceScope } from "./process-adapter.js";
+import type { ArtifactUploader } from "./artifact-upload.js";
 import {
   cleanupWorkspace,
   createGitCliExecutor,
@@ -52,11 +54,12 @@ export interface NodeClientOptions {
   workspace?: WorkspaceConfig;
   /** Git executor for worktree materialization; defaults to the real git CLI. */
   git?: GitExecutor;
+  uploadArtifact?: ArtifactUploader;
 }
 
 export interface NodeClient {
   start(): void;
-  stop(): Promise<void>;
+  stop(cancelRunning?: boolean): Promise<void>;
 }
 
 export function createNodeClient(options: NodeClientOptions): NodeClient {
@@ -71,6 +74,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   const workspaceConfig: WorkspaceConfig = options.workspace ?? {};
   const git: GitExecutor = options.git ?? createGitCliExecutor();
   const runs = new Map<string, { handle: AgentInstanceHandle; adapter: RuntimeAdapter }>();
+  const starting = new Map<string, Promise<void>>();
+  const finished = new Set<string>();
   const inflight = new Set<Promise<void>>();
   let unsubscribe: Unsubscribe | undefined;
 
@@ -96,6 +101,22 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   async function onRunStart(command: RunStartCommand): Promise<void> {
+    const runId = command.payload.run_id;
+    if (starting.has(runId) || runs.has(runId) || finished.has(runId)) {
+      await ackAccepted(command.id); // Retries never spawn another writer.
+      return;
+    }
+    let ready!: () => void;
+    starting.set(runId, new Promise<void>((resolve) => { ready = resolve; }));
+    try {
+      await executeStart(command, () => { starting.delete(runId); ready(); });
+    } finally {
+      starting.delete(runId);
+      ready();
+    }
+  }
+
+  async function executeStart(command: RunStartCommand, ready: () => void): Promise<void> {
     const payload = command.payload;
     const adapter = resolveAdapter(payload.runtime);
     if (!adapter) {
@@ -114,6 +135,10 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     const plan = planResult.plan;
     try {
       assertWorkspaceScope(plan.root, payload.policy_snapshot.filesystem_write_scope);
+      if (workspaceConfig.allowedRoots) {
+        assertRealWorkspaceScope(plan.root, workspaceConfig.allowedRoots);
+        if (plan.kind === "worktree") assertRealWorkspaceScope(plan.baseRepo, workspaceConfig.allowedRoots);
+      }
       await materializeWorkspace(plan, git);
     } catch (err) {
       await ackRejected(command.id, "process_start_failed", errorMessage(err));
@@ -136,11 +161,15 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       await ackRejected(command.id, "process_start_failed", errorMessage(err));
       return;
     }
-    await ackAccepted(command.id);
     runs.set(payload.run_id, { handle, adapter });
+    ready();
+    await ackAccepted(command.id);
+    let delivered = false;
+    let sequence = 0;
     try {
-      let sequence = 0;
-      for await (const event of adapter.streamEvents(handle)) {
+      for await (const rawEvent of adapter.streamEvents(handle)) {
+        const event = rawEvent.type === "artifact.created" && options.uploadArtifact
+          ? await options.uploadArtifact(payload.run_id, payload.workspace.root, rawEvent) : rawEvent;
         const message: RunEventMessage = {
           kind: "run.event",
           node_id: nodeId,
@@ -151,10 +180,21 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         sequence += 1;
         await transport.send(message);
       }
+      delivered = true;
+    } catch (error) {
+      // Preserve the worktree when a deliverable could not be safely transferred.
+      // A delivery error can occur while the process is still writing. Confirm
+      // process stop before reporting failure and allowing lease release.
+      await adapter.stop(handle, "user_cancelled");
+      await transport.send({
+        kind: "run.event", node_id: nodeId, run_id: payload.run_id, sequence,
+        event: { type: "run.lifecycle", payload: { phase: "failed", reason: errorMessage(error) } },
+      }).catch(() => {});
     } finally {
       runs.delete(payload.run_id);
-      // Terminal (completed/failed/cancelled): remove a worktree we created.
-      await safeCleanup(plan);
+      finished.add(payload.run_id);
+      // Preserve recoverable work if any output/artifact could not be delivered.
+      if (delivered) await safeCleanup(plan);
     }
   }
 
@@ -168,10 +208,20 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   async function onRunStop(command: RunStopCommand): Promise<void> {
-    await ackAccepted(command.id);
+    await starting.get(command.payload.run_id);
     const run = runs.get(command.payload.run_id);
-    if (run) {
-      await run.adapter.stop(run.handle, "user_cancelled");
+    if (!run && !finished.has(command.payload.run_id)) {
+      // A cancellation can race ahead of run.start. Record the tombstone before
+      // acknowledging absence, so a later start for this run cannot spawn.
+      finished.add(command.payload.run_id);
+      await ackAccepted(command.id);
+      return;
+    }
+    try {
+      if (run) await run.adapter.stop(run.handle, "user_cancelled");
+      await ackAccepted(command.id);
+    } catch (error) {
+      await ackRejected(command.id, "process_exited", errorMessage(error));
     }
   }
 
@@ -199,6 +249,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         return ackAccepted(message.id);
       case "run.resume":
         return onRunResume(message);
+      case "run.event.ack":
+        return; // WebSocket transport owns persisted-event acknowledgements.
     }
   }
 
@@ -207,14 +259,20 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       unsubscribe = transport.subscribe((message) => {
         const task = dispatch(message);
         inflight.add(task);
-        void task.finally(() => {
+        void task.catch(() => {}).finally(() => {
           inflight.delete(task);
         });
       });
     },
-    async stop(): Promise<void> {
+    async stop(cancelRunning = false): Promise<void> {
       unsubscribe?.();
       unsubscribe = undefined;
+      if (cancelRunning) {
+        await Promise.allSettled([...starting.values()]);
+        const stopped = await Promise.allSettled([...runs.values()].map((run) => run.adapter.stop(run.handle, "user_cancelled")));
+        const failure = stopped.find((result) => result.status === "rejected");
+        if (failure?.status === "rejected") throw failure.reason;
+      }
       await Promise.allSettled([...inflight]);
     }
   };

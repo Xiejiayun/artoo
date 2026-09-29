@@ -34,6 +34,8 @@ export interface DeviceAuthConfig {
    * connections. `false` in production: no anonymous control WS (#28 slice 3b).
    */
   devControlEscape: boolean;
+  /** Paired native control credentials expire; compute credentials are separately revoked. */
+  controlTokenTtlMs?: number;
 }
 
 /** The subset of process env this loader reads. */
@@ -42,6 +44,7 @@ export interface DeviceAuthEnv {
   ARTOO_PAIRING_PEPPER?: string | undefined;
   ARTOO_ALLOW_DEV_NODE_TOKEN?: string | undefined;
   ARTOO_DEV_NODE_TOKEN?: string | undefined;
+  ARTOO_CONTROL_TOKEN_TTL_MS?: string | undefined;
 }
 
 /**
@@ -60,8 +63,13 @@ export function loadDeviceAuthConfig(env: DeviceAuthEnv): DeviceAuthConfig {
   const escapeAllowed = env.NODE_ENV !== "production" && env.ARTOO_ALLOW_DEV_NODE_TOKEN === "1";
   const devToken = env.ARTOO_DEV_NODE_TOKEN?.trim();
   const devNodeToken = escapeAllowed ? (devToken !== undefined && devToken !== "" ? devToken : "dev") : null;
-  return { pairingPepper: pepper, devNodeToken, devControlEscape: escapeAllowed };
+  const ttl = env.ARTOO_CONTROL_TOKEN_TTL_MS === undefined ? DEFAULT_CONTROL_TOKEN_TTL_MS :
+    Number(env.ARTOO_CONTROL_TOKEN_TTL_MS);
+  if (!Number.isSafeInteger(ttl) || ttl <= 0) throw new Error("ARTOO_CONTROL_TOKEN_TTL_MS must be a positive integer");
+  return { pairingPepper: pepper, devNodeToken, devControlEscape: escapeAllowed, controlTokenTtlMs: ttl };
 }
+
+export const DEFAULT_CONTROL_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Fixed config for tests/fixtures (dev escape on, deterministic pepper). */
 export function testDeviceAuthConfig(overrides: Partial<DeviceAuthConfig> = {}): DeviceAuthConfig {

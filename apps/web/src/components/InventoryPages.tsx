@@ -5,6 +5,7 @@ import { CAPABILITIES, PERMISSION_CATEGORIES, SKILL_API_VERSION } from "@artoo/d
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { Badge, ErrorState, Skeleton, type Tone } from "../ui/index.js";
+import { AgentEnabledControl, AgentRegistration, SkillInstallForm } from "./InventorySetup.js";
 
 function list(values: readonly string[] | undefined): string {
   return values !== undefined && values.length > 0 ? values.join(", ") : "none";
@@ -63,13 +64,14 @@ function InventoryLoading({ label }: { label: string }): React.ReactNode {
 /** Read-only computer inventory from bootstrap plus heartbeat-backed runtime rows. */
 export function ComputersPage(): React.ReactNode {
   const api = useApi();
-  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
+  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(), refetchInterval: 10000 });
   const computers = bootstrap.data?.computers ?? [];
   const runtimeQueries = useQueries({
     queries: computers.map((computer) => ({
       queryKey: queryKeys.computerRuntimes(computer.id),
       queryFn: () => api.listComputerRuntimes(computer.id),
       enabled: bootstrap.data !== undefined,
+      refetchInterval: 10000,
     })),
   });
 
@@ -130,6 +132,7 @@ export function ComputersPage(): React.ReactNode {
                   ))}
                 </ul>
               </section>
+              <AgentRegistration computerId={computer.id} runtimes={runtimes} />
             </article>
           );
         })}
@@ -141,7 +144,7 @@ export function ComputersPage(): React.ReactNode {
 /** Read-only agent inventory joined client-side from bootstrap read models. */
 export function AgentsPage(): React.ReactNode {
   const api = useApi();
-  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
+  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(), refetchInterval: 10000 });
 
   if (bootstrap.isLoading) return <InventoryLoading label="Loading agents" />;
   if (bootstrap.isError || bootstrap.data === undefined) {
@@ -197,6 +200,7 @@ export function AgentsPage(): React.ReactNode {
                 </Row>
                 <Row label="Capabilities">{list(agent?.capabilities)}</Row>
               </dl>
+              <AgentEnabledControl instance={instance} />
             </article>
           );
         })}
@@ -220,6 +224,7 @@ export function SkillsPage(): React.ReactNode {
         <h1 className="t-h1">Skills</h1>
       </header>
       <section className="inventory-section" aria-label="Installed skills">
+        <SkillInstallForm />
         <h2 className="inventory-subtitle">Installed Skills</h2>
         {skillsQuery.isLoading ? <p role="status">Loading skills...</p> : null}
         {skillsQuery.isError ? <p role="alert">Failed to load skills.</p> : null}

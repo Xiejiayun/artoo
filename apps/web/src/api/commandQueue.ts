@@ -49,6 +49,9 @@ export interface ApiCommandQueue {
   flush(): Promise<void>;
   /** Commands still awaiting a successful send. */
   pendingCount(): number;
+  /** End a session without replaying its unsent commands under another identity. */
+  cancelPending(reason?: string): void;
+  subscribe(listener: () => void): () => void;
   /** Detach any listeners this queue registered (e.g. the `online` handler). */
   dispose(): void;
 }
@@ -74,8 +77,19 @@ export interface CreateApiCommandQueueOptions {
 }
 
 export function createApiCommandQueue(options: CreateApiCommandQueueOptions = {}): ApiCommandQueue {
+  const listeners = new Set<() => void>();
+  const notify = (): void => { listeners.forEach((listener) => listener()); };
   const deferreds = new Map<string, Deferred>();
   const thunks = new Map<string, () => Promise<unknown>>();
+  let generation = 0;
+  const cancelPending = (reason = "Session ended; queued command was cancelled. Refresh to check any request already sent."): void => {
+    generation += 1;
+    thunks.clear();
+    const pending = [...deferreds.values()];
+    deferreds.clear();
+    pending.forEach((deferred) => deferred.reject(new Error(reason)));
+    notify();
+  };
 
   const queue: CommandQueue = createCommandQueue({
     send: async (cmd): Promise<SendResult> => {
@@ -106,6 +120,7 @@ export function createApiCommandQueue(options: CreateApiCommandQueueOptions = {}
         return;
       }
       deferreds.delete(outcome.key);
+      notify();
       thunks.delete(outcome.key);
       if (outcome.status === "conflict") {
         deferred.reject(new CommandConflictError(outcome.conflict));
@@ -131,13 +146,15 @@ export function createApiCommandQueue(options: CreateApiCommandQueueOptions = {}
 
   return {
     submit<T>(run: () => Promise<T>, opts: SubmitOptions): Promise<T> {
-      if (deferreds.has(opts.key)) {
+      const sessionKey = `${generation}:${opts.key}`;
+      if (deferreds.has(sessionKey)) {
         return Promise.reject(new Error(`command already pending: ${opts.key}`));
       }
       return new Promise<T>((resolve, reject) => {
-        deferreds.set(opts.key, { resolve: resolve as (v: unknown) => void, reject });
-        thunks.set(opts.key, run as () => Promise<unknown>);
-        queue.enqueue({ key: opts.key, baseVersion: opts.baseVersion, payload: null });
+        deferreds.set(sessionKey, { resolve: resolve as (v: unknown) => void, reject });
+        notify();
+        thunks.set(sessionKey, run as () => Promise<unknown>);
+        queue.enqueue({ key: sessionKey, baseVersion: opts.baseVersion, payload: null });
         void queue.flush();
       });
     },
@@ -145,9 +162,15 @@ export function createApiCommandQueue(options: CreateApiCommandQueueOptions = {}
       return queue.flush().then(() => undefined);
     },
     pendingCount(): number {
-      return queue.pending().length;
+      return deferreds.size;
+    },
+    cancelPending,
+    subscribe(listener: () => void): () => void {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
     },
     dispose(): void {
+      cancelPending();
       if (attach && typeof window !== "undefined") {
         window.removeEventListener("online", onOnline);
       }

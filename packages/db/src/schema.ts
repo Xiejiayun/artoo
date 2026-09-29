@@ -618,7 +618,7 @@ export const approvals = pgTable("approvals", {
   expiresAt: ts("expires_at"),
   createdAt: ts("created_at").notNull(),
 }, (t) => [
-  check("approvals_requested_by_type_chk", sql`${t.requestedByType} in ('agent','system')`),
+  check("approvals_requested_by_type_chk", sql`${t.requestedByType} in ('user','agent','system')`),
   check("approvals_risk_chk", sql`${t.risk} in ('low','medium','high')`),
   check(
     "approvals_status_chk",

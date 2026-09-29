@@ -1,12 +1,21 @@
 import SwiftUI
+import QuickLook
 
 /// Full task view: status, acceptance criteria, lifecycle actions, runs,
 /// approvals, and artifacts. Drives the create → ready → assign → review loop.
 public struct TaskDetailView: View {
     @StateObject private var model: TaskDetailViewModel
     @State private var showingAssign = false
+    @State private var cancellingRun: Run?
+    @State private var artifactURL: URL?
+    @State private var artifactError: String?
+    @State private var downloading = false
+    @State private var reviewComment = ""
+    @State private var executionApprovalDraft = ExecutionApprovalDraft()
+    private let client: ApiClientProtocol
 
     public init(client: ApiClientProtocol, taskId: String) {
+        self.client = client
         _model = StateObject(wrappedValue: TaskDetailViewModel(client: client, taskId: taskId))
     }
 
@@ -18,28 +27,70 @@ public struct TaskDetailView: View {
                     Section("Description") { Text(description) }
                 }
                 criteriaSection(snapshot.task)
+                if snapshot.task.status == .ready { executionApprovalSection }
+                if snapshot.task.status == .review { Section("Review feedback") { TextField("Comment or requested changes", text: $reviewComment, axis: .vertical).lineLimit(2...6) } }
+                Section("Team work") {
+                    if let roomId = snapshot.room?.id ?? snapshot.task.roomId {
+                        NavigationLink("Messages, decisions and blockers") { CollaborationView(client: client, roomId: roomId, taskId: snapshot.task.id) }
+                    }
+                    NavigationLink("Dependencies") { DependenciesView(client: client, taskId: snapshot.task.id, projectId: snapshot.task.projectId) }
+                }
                 actionsSection
                 runsSection(snapshot.runs)
                 approvalsSection(snapshot.approvals)
                 artifactsSection(snapshot.artifacts)
+                if let artifactError { Section { Text(artifactError).foregroundStyle(.red) } }
             }
             .listStyle(.insetGrouped)
         }
         .navigationTitle("Task")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(for: Run.self) { run in
-            RunSummaryView(run: run)
+            RunSummaryView(run: run, client: client)
         }
         .sheet(isPresented: $showingAssign) {
-            AssignSheet { mode, agentInstanceId in
+            AssignSheet(client: client) { mode, agentInstanceId in
                 Task { await model.assign(mode: mode, agentInstanceId: agentInstanceId) }
             }
         }
         .refreshable { await model.load() }
-        .task { await model.load() }
+        .liveRefresh { await model.load() }
+        .quickLookPreview($artifactURL)
+        .confirmationDialog("Stop this execution?", isPresented: Binding(get: { cancellingRun != nil }, set: { if !$0 { cancellingRun = nil } })) {
+            Button("Stop run", role: .destructive) { if let run = cancellingRun { Task { await model.cancel(runId: run.id); cancellingRun = nil } } }
+        }
     }
 
     // MARK: Sections
+
+    private var executionApprovalSection: some View {
+        Section("Execution approval") {
+            if let approval = model.executionApproval {
+                NavigationLink { TaskApprovalDetail(approval: approval, client: client) } label: { ApprovalCard(approval: approval) }
+                if approval.status == .approved && approval.runId != nil {
+                    Text("Approved for a prior run. Submit a new review request before assigning another execution.").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text(model.executionBlocked ? "Assignment is blocked until this review is approved. The task stays Ready." : "Execution is approved. This task can now be assigned once.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Request a review before assigning work that needs human approval. Once requested, execution waits for approval.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            DisclosureGroup(model.executionApproval == nil ? "Request execution review" : "Submit an updated review request") {
+                TextField("Describe the work and its risk", text: $executionApprovalDraft.summary, axis: .vertical).lineLimit(3...8)
+                Picker("Risk", selection: $executionApprovalDraft.risk) {
+                    Text("Low").tag("low"); Text("Medium").tag("medium"); Text("High").tag("high")
+                }.pickerStyle(.segmented)
+                if model.executionApproval != nil {
+                    Text("Submitting again creates a new pending review and keeps previous decisions in the history.").font(.caption).foregroundStyle(.secondary)
+                }
+                Button("Request approval") {
+                    Task { if await model.requestExecutionApproval(executionApprovalDraft) { executionApprovalDraft = ExecutionApprovalDraft() } }
+                }.disabled(model.actionInFlight || !executionApprovalDraft.valid)
+            }
+        }
+    }
 
     private func headerSection(_ task: TaskItem) -> some View {
         Section {
@@ -130,6 +181,9 @@ public struct TaskDetailView: View {
                     NavigationLink(value: run) {
                         RunTimelineRow(run: run)
                     }
+                    if [.queued, .starting, .running, .awaitingInput, .paused].contains(run.status) {
+                        Button("Stop \(run.id)", role: .destructive) { cancellingRun = run }.disabled(model.actionInFlight)
+                    }
                 }
             }
         }
@@ -140,7 +194,7 @@ public struct TaskDetailView: View {
         if !approvals.isEmpty {
             Section("Approvals") {
                 ForEach(approvals) { approval in
-                    ApprovalCard(approval: approval)
+                    NavigationLink { TaskApprovalDetail(approval: approval, client: client) } label: { ApprovalCard(approval: approval) }
                 }
             }
         }
@@ -158,6 +212,11 @@ public struct TaskDetailView: View {
                             .font(ArtooTokens.Typography.caption)
                             .foregroundStyle(ArtooTokens.ColorToken.textMuted)
                             .lineLimit(1)
+                        if artifact.uri.hasPrefix("/api/v1/artifacts/") {
+                            Button(downloading ? "Downloading…" : "Preview or share") { Task { await download(artifact) } }.disabled(downloading)
+                        } else if let url = URL(string: artifact.uri), url.scheme == "https" {
+                            Link("Open artifact", destination: url)
+                        } else { Text("This older artifact was not uploaded to the server.").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
             }
@@ -168,19 +227,34 @@ public struct TaskDetailView: View {
         switch action {
         case .markReady: Task { await model.markReady() }
         case .retry: Task { await model.retry() }
-        case .accept: Task { await model.review(accept: true) }
-        case .requestChanges: Task { await model.review(accept: false) }
+        case .accept: Task { await model.review(accept: true, comment: reviewComment.isEmpty ? nil : reviewComment) }
+        case .requestChanges: Task { await model.review(accept: false, comment: reviewComment.isEmpty ? nil : reviewComment) }
         case .assign: showingAssign = true
         }
     }
+
+    private func download(_ artifact: Artifact) async {
+        downloading = true; artifactError = nil; defer { downloading = false }
+        do { artifactURL = try await client.downloadArtifact(artifact: artifact) }
+        catch { artifactError = String(describing: error) }
+    }
 }
 
-/// Minimal assign sheet: auto-schedule or pin an agent instance id. A richer
-/// picker over the backed Agents inventory is a product follow-up.
+private struct TaskApprovalDetail: View {
+    let approval: Approval
+    @StateObject private var model: InboxViewModel
+    init(approval: Approval, client: ApiClientProtocol) { self.approval = approval; _model = StateObject(wrappedValue: InboxViewModel(client: client)) }
+    var body: some View { ApprovalDetailView(approval: approval, model: model) }
+}
+
+/// Auto-schedule or select an available instance from the server inventory.
 private struct AssignSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var mode = "auto"
     @State private var agentInstanceId = ""
+    @State private var instances: [WorkspaceRecord] = []
+    @State private var error: String?
+    let client: ApiClientProtocol
     let onAssign: (String, String?) -> Void
 
     var body: some View {
@@ -192,9 +266,12 @@ private struct AssignSheet: View {
                 }
                 .pickerStyle(.segmented)
                 if mode == "manual" {
-                    TextField("Agent instance id", text: $agentInstanceId)
-                        .autocorrectionDisabled()
+                    Picker("Agent instance", selection: $agentInstanceId) {
+                        Text("Choose agent").tag("")
+                        ForEach(instances.filter { $0.status != "disabled" }) { instance in Text("\(instance["runtime"].text) · \(instance.id)").tag(instance.id) }
+                    }
                 }
+                if let error { Text(error).foregroundStyle(.red) }
             }
             .navigationTitle("Assign Task")
             .navigationBarTitleDisplayMode(.inline)
@@ -211,14 +288,20 @@ private struct AssignSheet: View {
                     .disabled(mode == "manual" && agentInstanceId.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+            .task {
+                do { let bootstrap = try await client.resource(path: "/api/v1/bootstrap"); instances = bootstrap["agent_instances"].records }
+                catch { self.error = String(describing: error) }
+            }
         }
     }
 }
 
 public struct RunSummaryView: View {
-    let run: Run
+    @State private var run: Run
+    @State private var loadError: String?
+    private let client: ApiClientProtocol?
 
-    public init(run: Run) { self.run = run }
+    public init(run: Run, client: ApiClientProtocol? = nil) { _run = State(initialValue: run); self.client = client }
 
     public var body: some View {
         List {
@@ -263,10 +346,16 @@ public struct RunSummaryView: View {
                 if let endedAt = run.endedAt { LabeledContent("Ended", value: endedAt) }
                 if let sequence = run.sequence { LabeledContent("Sequence", value: String(sequence)) }
             }
+            if let loadError { Section { Text(loadError).foregroundStyle(.red) } }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Run Summary")
         .navigationBarTitleDisplayMode(.inline)
+        .liveRefresh {
+            guard let client else { return }
+            do { run = try await client.getRun(runId: run.id); loadError = nil }
+            catch { loadError = String(describing: error) }
+        }
     }
 }
 

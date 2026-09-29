@@ -58,7 +58,7 @@ describe.skipIf(!ENABLED)("gated true Claude runtime smoke (real claude CLI)", (
       server = await buildTestServer({ workspaceRoot });
 
       const channel = createInProcessChannel();
-      const binding = attachNodeBinding(server.ctx, channel.serverTransport);
+      const binding = attachNodeBinding(server.ctx, channel.serverTransport, "computer_local_mock");
       server.ctx.onRunQueued = (runId) => binding.dispatchRunStart(runId);
       cleanups.push(() => binding.close());
 

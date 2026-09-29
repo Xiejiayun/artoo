@@ -1,5 +1,6 @@
 # Built web UI copied in from apps/web/dist at build time — not source.
 renderer/
+daemon/
 
 # electron-builder output
 release/

@@ -27,9 +27,26 @@ describe("loadAuthConfig", () => {
 
   it("enables enforceApiAuth + secure cookies + hosted-domain via flags / prod", () => {
     expect(loadAuthConfig({ ...CREDS, AUTH_ENFORCE_API: "1" }).enforceApiAuth).toBe(true);
-    expect(loadAuthConfig({ ...CREDS, NODE_ENV: "production" }).secureCookies).toBe(true);
+    const production = loadAuthConfig({ ...CREDS, NODE_ENV: "production",
+      AUTH_ALLOWED_EMAILS: "Owner@Example.com, member@example.com", AUTH_OWNER_EMAILS: "owner@example.com",
+      AUTH_ENFORCE_API: "0" });
+    expect(production.secureCookies).toBe(true);
+    expect(production.enforceApiAuth).toBe(true);
+    expect(production.allowedEmails).toEqual(["owner@example.com", "member@example.com"]);
     expect(loadAuthConfig({ ...CREDS, AUTH_SECURE_COOKIES: "1" }).secureCookies).toBe(true);
     expect(loadAuthConfig({ ...CREDS, GOOGLE_HOSTED_DOMAIN: "example.com" }).hostedDomain).toBe("example.com");
+  });
+
+  it("refuses a production deployment with open access or no configured owner", () => {
+    expect(() => loadAuthConfig({ ...CREDS, NODE_ENV: "production" })).toThrow(/AUTH_ALLOWED_EMAILS/);
+    expect(() => loadAuthConfig({ ...CREDS, NODE_ENV: "production", GOOGLE_HOSTED_DOMAIN: "example.com" }))
+      .toThrow(/AUTH_OWNER_EMAILS/);
+    expect(() => loadAuthConfig({ ...CREDS, NODE_ENV: "production", AUTH_OWNER_EMAILS: "owner@example.com",
+      AUTH_ALLOWED_EMAILS: "member@example.com" })).toThrow(/also be present/);
+    expect(() => loadAuthConfig({ ...CREDS, NODE_ENV: "production", AUTH_OWNER_EMAILS: "owner@other.com",
+      GOOGLE_HOSTED_DOMAIN: "example.com" })).toThrow(/must belong/);
+    expect(loadAuthConfig({ ...CREDS, NODE_ENV: "production", AUTH_OWNER_EMAILS: "owner@example.com",
+      GOOGLE_HOSTED_DOMAIN: "example.com" }).enforceApiAuth).toBe(true);
   });
 });
 

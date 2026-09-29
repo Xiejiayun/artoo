@@ -427,6 +427,7 @@ public struct Approval: Codable, Equatable, Hashable, Identifiable {
     public let action: String
     public let risk: RiskLevel
     public let summary: String?
+    public let payloadRef: String?
     public let status: ApprovalStatus
     public let createdAt: String?
 
@@ -437,6 +438,7 @@ public struct Approval: Codable, Equatable, Hashable, Identifiable {
         action: String,
         risk: RiskLevel,
         summary: String? = nil,
+        payloadRef: String? = nil,
         status: ApprovalStatus,
         createdAt: String? = nil
     ) {
@@ -446,9 +448,12 @@ public struct Approval: Codable, Equatable, Hashable, Identifiable {
         self.action = action
         self.risk = risk
         self.summary = summary
+        self.payloadRef = payloadRef
         self.status = status
         self.createdAt = createdAt
     }
+
+    public var isActiveExecutionGate: Bool { action == "execution.start" && payloadRef != "execution-gate/superseded" }
 }
 
 public struct Artifact: Codable, Equatable, Identifiable {
@@ -584,6 +589,22 @@ public struct RunResponse: Codable, Equatable {
     public init(run: Run) { self.run = run }
 }
 
+/// Assignment returns a run and scheduler decision, without a task envelope.
+public struct AssignResponse: Codable, Equatable {
+    public let run: Run
+    public let schedulerDecision: SchedulerDecisionSummary
+    public init(run: Run, schedulerDecision: SchedulerDecisionSummary) {
+        self.run = run; self.schedulerDecision = schedulerDecision
+    }
+}
+
+public struct SchedulerDecisionSummary: Codable, Equatable {
+    public let id: String
+    public let reason: String
+    public let score: Int
+    public init(id: String, reason: String, score: Int) { self.id = id; self.reason = reason; self.score = score }
+}
+
 public struct ApprovalsResponse: Codable, Equatable {
     public let approvals: [Approval]
     public init(approvals: [Approval]) { self.approvals = approvals }
@@ -607,19 +628,22 @@ public struct CreateTaskRequest: Codable, Equatable {
     public let description: String?
     public let priority: String?
     public let acceptanceCriteria: [String]?
+    public let requiredCapabilities: [String]?
 
     public init(
         projectId: String? = nil,
         title: String,
         description: String? = nil,
         priority: String? = nil,
-        acceptanceCriteria: [String]? = nil
+        acceptanceCriteria: [String]? = nil,
+        requiredCapabilities: [String]? = nil
     ) {
         self.projectId = projectId
         self.title = title
         self.description = description
         self.priority = priority
         self.acceptanceCriteria = acceptanceCriteria
+        self.requiredCapabilities = requiredCapabilities
     }
 
     public func withProjectId(_ projectId: String) -> CreateTaskRequest {
@@ -628,7 +652,8 @@ public struct CreateTaskRequest: Codable, Equatable {
             title: title,
             description: description,
             priority: priority,
-            acceptanceCriteria: acceptanceCriteria
+            acceptanceCriteria: acceptanceCriteria,
+            requiredCapabilities: requiredCapabilities
         )
     }
 }

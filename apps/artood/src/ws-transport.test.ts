@@ -116,6 +116,37 @@ class FakeClientWebSocket {
 }
 
 describe("createWebSocketTransport", () => {
+  it("reconnects and replays an unacknowledged terminal event before resolving delivery", async () => {
+    const harness = await startServer();
+    activeServer = harness.wss;
+    const events: unknown[] = [];
+    const firstFrames: unknown[] = [];
+    harness.wss.on("connection", (socket) => {
+      let first = true;
+      socket.on("message", (raw: Buffer) => {
+        const frame = JSON.parse(raw.toString()) as { kind: string; run_id: string; sequence: number };
+        if (first) { firstFrames.push(frame); first = false; }
+        if (frame.kind !== "run.event") return;
+        events.push(frame);
+        if (events.length === 1) { socket.close(1012, "temporary restart before commit receipt"); return; }
+        socket.send(JSON.stringify({
+          kind: "command", id: "receipt", idempotency_key: "receipt", type: "run.event.ack",
+          payload: { run_id: frame.run_id, sequence: frame.sequence, status: "accepted" },
+        }));
+      });
+    });
+    const transport = createWebSocketTransport({ url: harness.url, hello, acknowledgeRunEvents: true, reconnectDelayMs: 10 });
+    await transport.ready;
+    await transport.send({ kind: "run.event", node_id: hello.node_id, run_id: "run_1", sequence: 9,
+      event: { type: "run.lifecycle", payload: { phase: "completed" } },
+    });
+    expect(events).toHaveLength(2);
+    expect(events[0]).toEqual(events[1]);
+    expect(firstFrames).toHaveLength(2);
+    expect(firstFrames.every((frame) => (frame as { kind: string }).kind === "node.hello")).toBe(true);
+    await transport.close();
+  });
+
   it("sends node.hello first, relays Server->Node commands, and frames Node->Server out", async () => {
     const harness = await startServer();
     activeServer = harness.wss;

@@ -1,14 +1,17 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 
 import type { Approval, ResolveApprovalRequest } from "@artoo/domain";
 
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
-import { Badge, Button, toneFor } from "../ui/index.js";
+import { Badge, Button, Textarea, toneFor } from "../ui/index.js";
+import { ActionError } from "./ActionError.js";
 
 export interface ApprovalInboxProps {
   taskId: string;
+  taskStatus?: string;
   approvals: Approval[];
 }
 
@@ -18,20 +21,23 @@ export interface ApprovalInboxProps {
  * path implies resuming a Codex process in place. Each resolve carries a fresh
  * idempotency key. Risk is surfaced via a semantic badge.
  */
-export function ApprovalInbox({ taskId, approvals }: ApprovalInboxProps): React.ReactNode {
+export function ApprovalInbox({ taskId, taskStatus, approvals }: ApprovalInboxProps): React.ReactNode {
   const api = useApi();
   const queryClient = useQueryClient();
+  const [comments, setComments] = useState<Record<string, string>>({});
   const mutation = useMutation({
     mutationFn: (input: { id: string; body: ResolveApprovalRequest }) =>
-      api.resolveApproval(input.id, input.body, newIdempotencyKey()),
+      api.resolveApproval(input.id, { ...input.body, ...(comments[input.id]?.trim() ? { comment: comments[input.id]!.trim() } : {}) }, newIdempotencyKey()),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.task(taskId) });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.approvals("pending") });
+      await queryClient.invalidateQueries({ queryKey: ["approvals"] });
     },
+    onError: async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.task(taskId) }); },
   });
 
-  const pending = approvals.filter((approval) => approval.status === "pending");
-  if (pending.length === 0) {
+  const pending = approvals.filter((approval) => approval.payload_ref !== "execution-gate/superseded" && (approval.status === "pending" || approval.status === "needs_more_info"));
+  const consumed = taskStatus === "ready" && approvals.some((approval) => approval.action === "execution.start" && approval.payload_ref !== "execution-gate/superseded" && approval.status === "approved" && approval.run_id != null);
+  if (pending.length === 0 && !consumed) {
     return null;
   }
 
@@ -40,6 +46,9 @@ export function ApprovalInbox({ taskId, approvals }: ApprovalInboxProps): React.
   return (
     <section aria-label="Approvals" className="approval-inbox task-detail__section">
       <h3 className="task-detail__section-title">Approvals</h3>
+      <p className="t-subtle">Execution approvals gate task assignment. Other decisions are recorded for the team; runtime permissions remain controlled on the execution computer.</p>
+      {consumed && <p role="status">The execution approval was used by a previous run. Request and approve a new execution approval before assigning this task again.</p>}
+      <ActionError error={mutation.error} />
       <ul className="approval-list">
         {pending.map((approval) => (
           <li key={approval.id} className="approval-card" data-risk={approval.risk}>
@@ -48,6 +57,8 @@ export function ApprovalInbox({ taskId, approvals }: ApprovalInboxProps): React.
               <Badge tone={toneFor.risk(approval.risk)}>{approval.risk} risk</Badge>
             </div>
             <p className="approval-card__action t-mono">{approval.action}</p>
+            {approval.status === "needs_more_info" && <Badge tone="warning">Waiting for more information</Badge>}
+            <Textarea label={`Approval comment for ${approval.summary}`} value={comments[approval.id] ?? ""} onChange={(event) => setComments({ ...comments, [approval.id]: event.target.value })} disabled={busy} />
             <div className="approval-card__actions">
               <Button
                 variant="primary"
@@ -65,14 +76,14 @@ export function ApprovalInbox({ taskId, approvals }: ApprovalInboxProps): React.
               >
                 Reject
               </Button>
-              <Button
+              {approval.status === "pending" && <Button
                 variant="secondary"
                 size="sm"
                 disabled={busy}
                 onClick={() => mutation.mutate({ id: approval.id, body: { decision: "needs_more_info" } })}
               >
                 Need info
-              </Button>
+              </Button>}
             </div>
           </li>
         ))}

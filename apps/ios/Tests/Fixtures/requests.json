@@ -1,0 +1,19 @@
+[
+  {"schema":"CreateTaskRequestSchema","body":{"project_id":"project_1","title":"Implement","description":"Preview task","priority":"p2","acceptance_criteria":["Tests pass"],"required_capabilities":["code.modify"]}},
+  {"schema":"AssignRequestSchema","body":{"mode":"manual","agent_instance_id":"instance_1"}},
+  {"schema":"ReviewRequestSchema","body":{"outcome":"changes_requested","comment":"Please fix the failing check"}},
+  {"schema":"ResolveApprovalRequestSchema","body":{"decision":"needs_more_info","comment":"Explain the network access"}},
+  {"schema":"SendMessageRequestSchema","body":{"kind":"text","body":"Please review the output"}},
+  {"schema":"CreateDependencyRequestSchema","body":{"depends_on_task_id":"task_1","type":"blocks"}},
+  {"schema":"CreateGoalRequestSchema","body":{"project_id":"project_1","title":"Ship preview","objective":"Deliver a working build","acceptance_criteria":["End-to-end flow passes"]}},
+  {"schema":"ProposePlanRequestSchema","body":{"rationale":"Implement then validate","task_specs":[{"title":"Implement","acceptance_criteria":["API works"],"required_capabilities":["code.modify"],"dependencies":[]},{"title":"Verify","acceptance_criteria":["Tests pass"],"required_capabilities":["code.modify"],"dependencies":[{"ref":"0","type":"blocks"}]}]}},
+  {"schema":"CreateDecisionRequestSchema","body":{"task_id":"task_1","summary":"Use the shared API","actor_type":"user","actor_id":"user_1"}},
+  {"schema":"UpdateDecisionRequestSchema","body":{"status":"accepted"}},
+  {"schema":"CreateHandoffRequestSchema","body":{"task_id":"task_1","expected_action":"Review output","sender_type":"user","sender_id":"user_1","recipient_type":"agent","recipient_id":"agent_1"}},
+  {"schema":"UpdateHandoffRequestSchema","body":{"status":"completed"}},
+  {"schema":"CreateBlockerRequestSchema","body":{"task_id":"task_1","summary":"Need feedback","type":"human_input","owner_type":"user","owner_id":"user_1","source_kind":"manual"}},
+  {"schema":"UpdateBlockerRequestSchema","body":{"status":"resolved"}},
+  {"schema":"ProposeMemoryRequestSchema","body":{"scope":"project","project_id":"project_1","text":"The API uses explicit actor identities"}},
+  {"schema":"MemoryTransitionRequestSchema","body":{}},
+  {"schema":"InstallSkillRequestSchema","body":{"project_id":"project_1","enabled":true,"manifest":{"api_version":"v1alpha1","id":"code-search","name":"Code Search","version":"1.0.0","capabilities":["code.read"],"compatible_runtimes":["codex"]}}}
+]

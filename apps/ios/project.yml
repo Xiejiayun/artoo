@@ -10,10 +10,9 @@
 #   open Artoo.xcodeproj      # build/run in the iOS Simulator
 #   # or: xcodebuild -scheme Artoo -destination 'platform=iOS Simulator,name=iPhone 15' test
 #
-# Verification boundary: XcodeGen generation and generic iOS no-assets
-# build-for-testing have passed on macOS. Full asset-catalog build,
-# simulator/device runtime, and executed tests remain blocked/unverified.
-# See README.md.
+# Verification boundary: this revision was authored on Windows. Xcode build,
+# XCTest, full assets and device/server flows require Mac verification.
+# See README.md; earlier source-build evidence does not verify this revision.
 
 name: Artoo
 options:
@@ -48,8 +47,8 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        # Dev convenience: allow plain-http to a local server (default config
-        # talks to the in-memory mock, so this only matters when useMock=false).
+        NSLocalNetworkUsageDescription: Connect to your team's local Artoo server.
+        # Opt-in onboarding permits localhost/.local HTTP for development only.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
     settings:

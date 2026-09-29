@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { ApiClientError } from "../api/client.js";
-import { useApi } from "../app/ApiContext.js";
+import { useApi, useCommands } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { Button, ErrorState } from "../ui/index.js";
 import { LoginPage } from "./LoginPage.js";
+import { DesktopSetup } from "./DesktopSetup.js";
 
 /**
  * Gates the app behind a Google session (#34). When `enabled` is false (the
@@ -28,12 +30,19 @@ export function AuthGate({
 
 function AuthGuard({ children }: { children: React.ReactNode }): React.ReactNode {
   const api = useApi();
+  const commands = useCommands();
   const location = useLocation();
+  const [reconnect, setReconnect] = useState(false);
   const session = useQuery({
     queryKey: queryKeys.session,
     queryFn: () => api.getSession(),
     retry: false,
+    enabled: !reconnect,
   });
+  useEffect(() => {
+    if (session.error instanceof ApiClientError && session.error.status === 401) commands.cancelPending();
+  }, [commands, session.error]);
+  if (reconnect) return <DesktopSetup />;
 
   if (session.isLoading) {
     return (
@@ -50,9 +59,10 @@ function AuthGuard({ children }: { children: React.ReactNode }): React.ReactNode
   // retryable state instead of bouncing the user into a Google login.
   if (session.isError) {
     if (session.error instanceof ApiClientError && session.error.status === 401) {
+      if (window.artooDesktop?.pairDevice) return <DesktopSetup />;
       return <LoginPage returnTo={`${location.pathname}${location.search}`} />;
     }
-    return <SessionError onRetry={() => void session.refetch()} />;
+    return <SessionError onRetry={() => void session.refetch()} onReconnect={window.artooDesktop?.pairDevice ? () => setReconnect(true) : undefined} />;
   }
 
   // Successful probe with no user is a malformed response, not an unauthenticated
@@ -65,16 +75,16 @@ function AuthGuard({ children }: { children: React.ReactNode }): React.ReactNode
 }
 
 /** Retryable error state for a failed/unusable `/auth/session` probe. */
-function SessionError({ onRetry }: { onRetry: () => void }): React.ReactNode {
+function SessionError({ onRetry, onReconnect }: { onRetry: () => void; onReconnect?: () => void }): React.ReactNode {
   return (
     <div className="auth-state">
       <ErrorState
         title="Couldn’t verify your session"
         description="Please try again."
         action={
-          <Button variant="primary" onClick={onRetry}>
+          <div className="action-row"><Button variant="primary" onClick={onRetry}>
             Retry
-          </Button>
+          </Button>{onReconnect && <Button onClick={onReconnect}>Change connection</Button>}</div>
         }
       />
     </div>

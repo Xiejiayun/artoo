@@ -1,9 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
-import { parseCookies } from "../auth/cookies.js";
-import { resolveSession } from "../auth/auth-service.js";
+import { requestCredential, resolveRequestPrincipal } from "../auth/request-auth.js";
 import type { ServerContext } from "../context.js";
-import { resolveControlToken } from "../services/device-service.js";
 import { recordDeviceActivity } from "../services/presence-service.js";
 import { collectCatchUp } from "./event-publisher.js";
 import type { DeviceConnectionRegistry } from "./device-connections.js";
@@ -42,6 +40,8 @@ export interface ClientWsHooks {
    * assert the resolved identity here).
    */
   onAuthenticated?: (identity: ClientIdentity, socket: HubSocket) => void;
+  /** Bounded lifetime for an open connection after its credential is revoked. */
+  revalidateIntervalMs?: number;
 }
 
 /**
@@ -73,54 +73,24 @@ export interface ClientWsHooks {
 async function authenticateClient(
   ctx: ServerContext,
   req: FastifyRequest,
-): Promise<ClientIdentity | null> {
+): Promise<{ identity: ClientIdentity; actorUserId: string } | null> {
   // (1) The forbidden URL-token shape: any `?token=` presence is a rejected
   // credential attempt, never a dev fall-through.
   if ((req.query as { token?: unknown }).token !== undefined) {
     return null;
   }
 
-  // (2) An Authorization header, when present, MUST be a non-empty Bearer token
-  // that resolves to a device control session; any other shape is rejected.
-  const authorization = req.headers.authorization;
-  if (authorization !== undefined) {
-    const bearer = parseBearer(authorization);
-    if (bearer === null) {
-      return null;
-    }
-    const device = await resolveControlToken(ctx, bearer);
-    return device === null ? null : { kind: "device", deviceId: device.deviceId };
-  }
-
-  // (3) A session cookie, when the cookie name is present at all (even empty),
-  // is a presented credential: it must resolve or be rejected.
-  const cookies = parseCookies(req.headers.cookie);
-  if (Object.prototype.hasOwnProperty.call(cookies, ctx.authConfig.sessionCookieName)) {
-    const sessionToken = cookies[ctx.authConfig.sessionCookieName];
-    if (sessionToken === undefined || sessionToken === "") {
-      return null;
-    }
-    const session = await resolveSession(ctx, sessionToken);
-    return session === null ? null : { kind: "user", userId: session.userId };
+  if (requestCredential(ctx, req, true).supplied) {
+    const principal = await resolveRequestPrincipal(ctx, req, true);
+    if (principal === null) return null;
+    return { identity: principal.credential.kind === "device"
+      ? { kind: "device", deviceId: principal.credential.deviceId }
+      : { kind: "user", userId: principal.user.id }, actorUserId: principal.user.id };
   }
 
   // (4) Truly no auth-bearing query/header/cookie: only the explicit
   // non-production escape may accept (an anonymous dev connection).
-  return ctx.deviceAuth.devControlEscape ? { kind: "dev" } : null;
-}
-
-/** Extract the token from a case-insensitive `Bearer <token>` header, or null. */
-function parseBearer(header: string | undefined): string | null {
-  if (header === undefined) {
-    return null;
-  }
-  const trimmed = header.trim();
-  const space = trimmed.indexOf(" ");
-  if (space < 0 || trimmed.slice(0, space).toLowerCase() !== "bearer") {
-    return null;
-  }
-  const token = trimmed.slice(space + 1).trim();
-  return token.length === 0 ? null : token;
+  return ctx.deviceAuth.devControlEscape ? { identity: { kind: "dev" }, actorUserId: ctx.actorUserId } : null;
 }
 
 /**
@@ -156,6 +126,9 @@ export function registerClientWsRoute(
     let identity: ClientIdentity | undefined;
     let terminated = false;
     let releaseDeviceConn: (() => void) | undefined;
+    let revalidationTimer: ReturnType<typeof setInterval> | undefined;
+    let checkingCredential = false;
+    let connectionContext = ctx;
     const earlyFrames: ClientFrame[] = [];
 
     const close = (code: number, reason: string): void => {
@@ -163,6 +136,8 @@ export function registerClientWsRoute(
         return;
       }
       terminated = true;
+      if (revalidationTimer !== undefined) clearInterval(revalidationTimer);
+      hub.remove(raw);
       raw.close(code, reason);
     };
 
@@ -175,7 +150,7 @@ export function registerClientWsRoute(
         // catch-up; the client dedupes any boundary overlap by cursor.
         hub.subscribe(raw, frame.topics);
         if (frame.since_cursor !== undefined) {
-          void replayCatchUp(raw, ctx, frame.since_cursor, frame.topics);
+          void replayCatchUp(raw, connectionContext, frame.since_cursor, frame.topics);
         }
       } else {
         hub.unsubscribe(raw, frame.topics);
@@ -206,12 +181,13 @@ export function registerClientWsRoute(
     });
     raw.on("close", () => {
       terminated = true;
+      if (revalidationTimer !== undefined) clearInterval(revalidationTimer);
       releaseDeviceConn?.();
       hub.remove(raw);
     });
 
     void (async () => {
-      let result: ClientIdentity | null;
+      let result: Awaited<ReturnType<typeof authenticateClient>>;
       try {
         result = await authenticateClient(ctx, req);
       } catch {
@@ -230,7 +206,8 @@ export function registerClientWsRoute(
         earlyFrames.length = 0;
         return; // socket already closed during auth (e.g. queue overflow)
       }
-      identity = result;
+      identity = result.identity;
+      connectionContext = { ...ctx, actorUserId: result.actorUserId };
       // Register with the hub ONLY after authentication: until now the socket
       // holds no subscription state and is unknown to the publisher.
       hub.add(raw);
@@ -240,12 +217,25 @@ export function registerClientWsRoute(
       if (identity.kind === "device" && deviceConnections !== undefined) {
         releaseDeviceConn = deviceConnections.add(identity.deviceId, {
           close: (code, reason) => close(code, reason),
-        });
+        }, "control");
       }
       // Device-level presence (#28 4c): an accepted control-session connection is
       // authenticated device activity (control token, never the dev escape).
       if (identity.kind === "device") {
         void recordDeviceActivity(ctx, identity.deviceId, "control").catch(() => {});
+      }
+      if (identity.kind !== "dev") {
+        // Refresh permission at least every 30 seconds; this covers expiry,
+        // user logout, allowlist removal, and revocation outside this process.
+        revalidationTimer = setInterval(() => {
+          if (checkingCredential || terminated) return;
+          checkingCredential = true;
+          void authenticateClient(ctx, req).then((current) => {
+            if (current === null) close(1008, "authentication expired");
+          }).catch(() => close(1008, "authentication unavailable"))
+            .finally(() => { checkingCredential = false; });
+        }, Math.max(10, hooks.revalidateIntervalMs ?? 30_000));
+        revalidationTimer.unref();
       }
       dispatch = applyFrame;
       for (const queued of earlyFrames) {

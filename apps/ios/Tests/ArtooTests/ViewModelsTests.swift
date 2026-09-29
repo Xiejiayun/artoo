@@ -125,6 +125,52 @@ final class ViewModelsTests: XCTestCase {
         XCTAssertEqual(model.state.value?.first?.task.id, "task_1")
     }
 
+    func testExecutionGateKeepsReadyTaskUnassignableUntilApproved() async throws {
+        let bootstrap = try await MockApiClient.demo().bootstrap()
+        let task = TaskItem(id: "task_gate", projectId: "proj_artoo", title: "Reviewed execution", status: .ready)
+        let statuses: [ApprovalStatus] = [.pending, .rejected, .needsMoreInfo, .expired, .approved]
+        for status in statuses {
+            let approval = Approval(id: "approval_gate", taskId: task.id, action: "execution.start", risk: .high, payloadRef: "execution-gate/current", status: status)
+            let client = MockApiClient(bootstrap: bootstrap, tasks: [task], snapshots: [task.id: TaskSnapshot(task: task, approvals: [approval])])
+            let model = TaskDetailViewModel(client: client, taskId: task.id)
+            await model.load()
+            XCTAssertEqual(model.state.value?.task.status, .ready)
+            XCTAssertEqual(model.executionApproval?.status, status)
+            XCTAssertEqual(model.executionBlocked, status != .approved)
+            XCTAssertEqual(model.availableActions, status == .approved ? [.assign] : [])
+        }
+        let consumed = Approval(id: "approval_gate", taskId: task.id, runId: "prior_run", action: "execution.start", risk: .high, payloadRef: "execution-gate/current", status: .approved)
+        let client = MockApiClient(bootstrap: bootstrap, tasks: [task], snapshots: [task.id: TaskSnapshot(task: task, approvals: [consumed])])
+        let model = TaskDetailViewModel(client: client, taskId: task.id)
+        await model.load()
+        XCTAssertTrue(model.executionBlocked)
+        XCTAssertEqual(model.availableActions, [])
+    }
+
+    func testSupersededApprovalHistoryDoesNotBlockTheCurrentApprovedRequest() async throws {
+        let bootstrap = try await MockApiClient.demo().bootstrap()
+        let task = TaskItem(id: "task_gate", projectId: "proj_artoo", title: "New reviewed execution", status: .ready)
+        let previous = Approval(id: "old", taskId: task.id, runId: "prior_run", action: "execution.start", risk: .high, payloadRef: "execution-gate/superseded", status: .approved)
+        let current = Approval(id: "new", taskId: task.id, action: "execution.start", risk: .high, payloadRef: "execution-gate/current", status: .approved)
+        let client = MockApiClient(bootstrap: bootstrap, tasks: [task], snapshots: [task.id: TaskSnapshot(task: task, approvals: [previous, current])])
+        let model = TaskDetailViewModel(client: client, taskId: task.id)
+        await model.load()
+        XCTAssertEqual(model.executionApproval?.id, "new")
+        XCTAssertFalse(model.executionBlocked)
+        XCTAssertEqual(model.availableActions, [.assign])
+    }
+
+    func testRetryReturnsBlockedTaskToReadyWithoutCreatingARun() async throws {
+        let bootstrap = try await MockApiClient.demo().bootstrap()
+        let task = TaskItem(id: "task_retry", projectId: "proj_artoo", title: "Retry failed work", status: .blocked)
+        let model = TaskDetailViewModel(client: MockApiClient(bootstrap: bootstrap, tasks: [task]), taskId: task.id)
+        await model.load()
+        await model.retry()
+        XCTAssertEqual(model.state.value?.task.status, .ready)
+        XCTAssertEqual(model.state.value?.runs.count, 0)
+        XCTAssertEqual(model.availableActions, [.assign])
+    }
+
     func testReviewAcceptMovesTaskToDone() async {
         let model = TaskDetailViewModel(client: MockApiClient.demo(), taskId: "task_1")
 

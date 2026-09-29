@@ -19,6 +19,7 @@ export interface RegistryHeartbeatOptions {
   registry: AdapterRegistry;
   /** Status reported for each registered runtime. Defaults to "available". */
   status?: RuntimeStatus["status"];
+  statusForRuntime?: (runtime: string) => RuntimeStatus["status"];
   /** Resource sampler; defaults to zeros. */
   resources?: () => NodeHeartbeat["resources"];
   /** Active agent-instance ids; defaults to []. */
@@ -36,7 +37,7 @@ export function createRegistryHeartbeat(options: RegistryHeartbeatOptions): () =
     runtimes: options.registry.runtimes().map(
       (rt): RuntimeStatus => ({
         runtime: rt.runtime,
-        status,
+        status: options.statusForRuntime?.(rt.runtime) ?? status,
         capabilities: [...rt.capabilities]
       })
     ),

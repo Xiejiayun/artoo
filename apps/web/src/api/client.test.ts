@@ -24,6 +24,18 @@ const createReq: CreateTaskRequest = {
 };
 
 describe("ApiClient", () => {
+  it.each(["task", "session", "artifact"] as const)("refuses redirects for authenticated %s requests", async (kind) => {
+    let redirected = 0;
+    const paths = { task: `${BASE}/tasks/task_redirect`, session: "http://localhost/auth/session", artifact: `${BASE}/artifacts/artifact_redirect/content` };
+    server.use(
+      http.get(paths[kind], () => HttpResponse.redirect("http://localhost/unexpected-target", 302)),
+      http.get("http://localhost/unexpected-target", () => { redirected += 1; return HttpResponse.json({}); }),
+    );
+    const request = kind === "task" ? client.getTask("task_redirect") : kind === "session" ? client.getSession() : client.downloadArtifact("artifact_redirect");
+    await expect(request).rejects.toBeDefined();
+    expect(redirected).toBe(0);
+  });
+
   it("getSession returns the authenticated user from /auth/session (origin root)", async () => {
     server.use(
       http.get("http://localhost/auth/session", () =>

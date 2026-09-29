@@ -17,7 +17,7 @@ interface Wired {
 async function wire(adapter: RuntimeAdapter): Promise<Wired> {
   const server = await buildTestServer();
   const channel = createInProcessChannel();
-  const binding = attachNodeBinding(server.ctx, channel.serverTransport);
+  const binding = attachNodeBinding(server.ctx, channel.serverTransport, "computer_local_mock");
   // ctx is shared by reference with the built app, so wiring the hook now takes effect.
   server.ctx.onRunQueued = (runId) => binding.dispatchRunStart(runId);
   const node = createNodeClient({ nodeId: NODE_ID, transport: channel.node, adapter });

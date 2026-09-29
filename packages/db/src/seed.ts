@@ -29,6 +29,9 @@ export interface SeedOptions {
    * the live working tree.
    */
   workspaceRoot?: string;
+  /** Only explicit development/test seeds include fictitious online resources. */
+  demoResources?: boolean;
+  ownerEmail?: string;
 }
 
 /**
@@ -62,7 +65,7 @@ export async function seed(
     await tx.insert(users).values({
       id: ids.userId,
       organizationId: ids.organizationId,
-      email: "owner@artoo.dev",
+      email: options.ownerEmail ?? "owner@artoo.dev",
       displayName: "Owner",
       role: "owner",
       createdAt: now,
@@ -76,7 +79,7 @@ export async function seed(
       createdAt: now,
     });
 
-    await tx.insert(computers).values({
+    if (options.demoResources !== false) await tx.insert(computers).values({
       id: ids.computerId,
       organizationId: ids.organizationId,
       displayName: "Local Mock",
@@ -90,7 +93,7 @@ export async function seed(
       createdAt: now,
     });
 
-    await tx.insert(modelProfiles).values([
+    if (options.demoResources !== false) await tx.insert(modelProfiles).values([
       profile("model_fast_fix", "fast_fix", "low", "fast", ["code.modify"], now),
       profile("model_standard_coding", "standard_coding", "medium", "normal", ["code.modify", "test.run"], now),
       profile("model_deep_architect", "deep_architect", "premium", "slow", ["code.modify", "code.review"], now),
@@ -102,7 +105,7 @@ export async function seed(
       effort("effort_deep_architect", "deep_architect", "high", 120, now),
     ]);
 
-    await tx.insert(agents).values({
+    if (options.demoResources !== false) await tx.insert(agents).values({
       id: ids.agentId,
       organizationId: ids.organizationId,
       displayName: "Mock Coder",
@@ -112,7 +115,7 @@ export async function seed(
       createdAt: now,
     });
 
-    await tx.insert(agentRuntimes).values({
+    if (options.demoResources !== false) await tx.insert(agentRuntimes).values({
       id: "runtime_mock",
       organizationId: ids.organizationId,
       computerId: ids.computerId,
@@ -125,7 +128,7 @@ export async function seed(
       metadata: {},
     });
 
-    await tx.insert(agentInstances).values({
+    if (options.demoResources !== false) await tx.insert(agentInstances).values({
       id: ids.agentInstanceId,
       organizationId: ids.organizationId,
       computerId: ids.computerId,

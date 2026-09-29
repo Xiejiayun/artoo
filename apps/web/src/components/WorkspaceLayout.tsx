@@ -1,7 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
-
-import { useApi } from "../app/ApiContext.js";
-import { queryKeys } from "../app/queryKeys.js";
+import { useProject } from "../app/useProject.js";
 import { useSubscription } from "../app/RealtimeContext.js";
 import { useSelection } from "../app/SelectionContext.js";
 import { Button, EmptyState, ErrorState, Skeleton } from "../ui/index.js";
@@ -33,12 +30,10 @@ function RailSkeleton(): React.ReactNode {
  * deep-link into a task. Loading/error/empty states use the ui primitives.
  */
 export function WorkspaceLayout(): React.ReactNode {
-  const api = useApi();
+  const { bootstrap, project, projectId } = useProject();
   const { selectedTaskId, setSelectedTaskId } = useSelection();
-  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
 
   const userId = bootstrap.data?.user.id;
-  const projectId = bootstrap.data?.projects[0]?.id;
   useSubscription([
     ...(userId !== undefined ? [`inbox:${userId}`] : []),
     ...(projectId !== undefined ? [`project:${projectId}`] : []),
@@ -75,7 +70,6 @@ export function WorkspaceLayout(): React.ReactNode {
     );
   }
 
-  const project = bootstrap.data.projects[0];
   if (project === undefined) {
     return (
       <div className="workspace-state">

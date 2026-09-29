@@ -1,3 +1,4 @@
+import { useProject } from "../app/useProject.js";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -19,6 +20,7 @@ const COLUMNS: { status: TaskStatus; label: string }[] = [
   { status: "blocked", label: "Blocked" },
   { status: "review", label: "Review" },
   { status: "done", label: "Done" },
+  { status: "cancelled", label: "Cancelled" },
 ];
 
 const PRIORITIES = ["all", "p0", "p1", "p2", "p3"] as const;
@@ -59,8 +61,7 @@ export function BoardView(): React.ReactNode {
   const { setSelectedTaskId } = useSelection();
   const [priority, setPriority] = useState<(typeof PRIORITIES)[number]>("all");
 
-  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
-  const projectId = bootstrap.data?.projects[0]?.id;
+  const { bootstrap, projectId } = useProject();
   useSubscription(projectId === undefined ? [] : [`project:${projectId}`]);
 
   const tasks = useQuery({

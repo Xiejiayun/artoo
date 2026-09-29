@@ -154,6 +154,29 @@ describe("auth-service: provisionUser", () => {
       }),
     ).rejects.toThrow(/not verified/);
   });
+
+  it("enforces the allowlist on new and existing identities and maps only configured owners", async () => {
+    server.ctx.authConfig.allowedEmails = ["owner@example.com", "member@example.com"];
+    server.ctx.authConfig.ownerEmails = ["owner@example.com"];
+    const ownerInput = { subject: "team-owner", email: " Owner@Example.COM ", emailVerified: true, displayName: "Owner" };
+    const owner = await provisionUser(server.ctx, ownerInput);
+    expect((await server.db.db.select().from(users).where(eq(users.id, owner.userId)))[0]?.role).toBe("owner");
+    const member = await provisionUser(server.ctx, { ...ownerInput, subject: "team-member", email: "member@example.com" });
+    expect((await server.db.db.select().from(users).where(eq(users.id, member.userId)))[0]?.role).toBe("member");
+    await expect(provisionUser(server.ctx, { ...ownerInput, subject: "outsider", email: "outsider@example.com" }))
+      .rejects.toThrow(/not allowed/);
+    await expect(provisionUser(server.ctx, { ...ownerInput, emailVerified: false })).rejects.toThrow(/not verified/);
+    server.ctx.authConfig.allowedEmails = ["member@example.com"];
+    await expect(provisionUser(server.ctx, ownerInput)).rejects.toThrow(/not allowed/);
+  });
+
+  it("requires the verified hosted-domain claim instead of accepting an email suffix", async () => {
+    server.ctx.authConfig.hostedDomain = "example.com";
+    const input = { subject: "workspace", email: "member@example.com", emailVerified: true, displayName: "Member" };
+    await expect(provisionUser(server.ctx, input)).rejects.toThrow(/not allowed/);
+    await expect(provisionUser(server.ctx, { ...input, hostedDomain: "other.example" })).rejects.toThrow(/not allowed/);
+    expect((await provisionUser(server.ctx, { ...input, hostedDomain: "example.com" })).created).toBe(true);
+  });
 });
 
 describe("auth-service: sessions", () => {

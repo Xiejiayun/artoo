@@ -15,5 +15,20 @@ interface Window {
     readonly serverUrl: string;
     readonly platform: string;
     readonly electronVersion: string;
+    getToken?(): Promise<string | null>;
+    getConnection?(): Promise<DesktopConnection>;
+    configureServer?(serverUrl: string): Promise<void>;
+    pairDevice?(input: { code: string; displayName: string }): Promise<DesktopConnection>;
+    logout?(): Promise<void>;
+    daemonStatus?(): Promise<{ state: string; pid?: number; lastError?: string; config: DesktopDaemonConfig }>;
+    configureDaemon?(config: DesktopDaemonConfig): Promise<void>;
+    startDaemon?(): Promise<void>;
+    stopDaemon?(): Promise<void>;
+    restartDaemon?(): Promise<void>;
+    chooseDirectory?(): Promise<string | null>;
+    openExternal?(url: string): Promise<void>;
   };
 }
+
+interface DesktopConnection { serverUrl: string; paired: boolean; deviceId: string | null; computerId: string | null }
+interface DesktopDaemonConfig { allowedRoots: string[]; runtimes: string[]; worktreeBaseRepo?: string; trustedExecution: boolean }

@@ -5,7 +5,8 @@ import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiClientError } from "../api/client.js";
-import { useApi } from "../app/ApiContext.js";
+import { useApi, useCommands } from "../app/ApiContext.js";
+import type { ApiCommandQueue } from "../api/commandQueue.js";
 import { createQueryClient } from "../app/queryClient.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { createTestQueryClient, fakeApi, renderWithProviders } from "../test/utils.js";
@@ -35,6 +36,22 @@ function ProtectedProbe(): React.ReactNode {
 }
 
 describe("AuthGate", () => {
+  it("cancels unsent commands when the session expires", async () => {
+    let commands!: ApiCommandQueue;
+    let expire!: (reason: Error) => void;
+    function QueueProbe() { commands = useCommands(); return null; }
+    renderWithProviders(<><QueueProbe /><AuthGate enabled><div>PROTECTED APP</div></AuthGate></>, {
+      client: fakeApi({ getSession: () => new Promise((_, reject) => { expire = reject; }) }),
+    });
+    const queued = commands.submit(async () => { throw new ApiClientError("network_error", "offline", 0); }, { key: "old-session" });
+    const rejected = expect(queued).rejects.toThrow("Session ended");
+    await commands.flush();
+    expire(new ApiClientError("unknown", "expired", 401));
+    expect(await screen.findByRole("button", { name: "Sign in with Google" })).toBeInTheDocument();
+    await rejected;
+    expect(commands.pendingCount()).toBe(0);
+  });
+
   it("announces loading while the session probe is pending", () => {
     const client = fakeApi({
       getSession: () => new Promise(() => undefined),
@@ -202,6 +219,21 @@ describe("sanitizeReturnTo", () => {
 });
 
 describe("LogoutButton", () => {
+  it("discards queued commands before logging out", async () => {
+    let commands!: ApiCommandQueue;
+    function QueueProbe() { commands = useCommands(); return <LogoutButton />; }
+    const logout = vi.fn(async () => { expect(commands.pendingCount()).toBe(0); });
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(queryKeys.session, { user: { id: "u1", email: "a@b.c" } });
+    renderWithProviders(<QueueProbe />, { client: fakeApi({ logout }), queryClient });
+    const queued = commands.submit(async () => { throw new ApiClientError("network_error", "offline", 0); }, { key: "old-session" });
+    const rejected = expect(queued).rejects.toThrow("Session ended");
+    await commands.flush();
+    await userEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    await rejected;
+    expect(logout).toHaveBeenCalledOnce();
+  });
+
   it("shows Sign out when a session is cached and triggers logout", async () => {
     const logout = vi.fn(async () => {});
     const queryClient = createTestQueryClient();

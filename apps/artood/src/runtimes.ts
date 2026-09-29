@@ -18,6 +18,8 @@ export interface RuntimePresetOptions {
   command?: string[];
   artifacts?: ArtifactSpec[];
   capabilities?: readonly string[];
+  /** Local operator opt-in; never read from a server-supplied task policy. */
+  trustedExecution?: boolean;
 }
 
 const DEFAULT_ARTIFACTS: ArtifactSpec[] = [{ type: "patch", path: "changes.patch" }];
@@ -60,13 +62,14 @@ export function claudeCodeRuntime(options: RuntimePresetOptions): RuntimeRegistr
     adapter: createProcessAdapter({
       runtimeId: "claude-code",
       // claude runs in the adapter-set cwd (= workspace root); -p is non-interactive,
-      // bypassPermissions lets it write the artifact without prompting.
+      // Unattended runs fail closed on permission prompts by default. Full
+      // bypass requires an explicit trusted-node operator opt-in.
       command: options.command ?? [
         "claude",
         "-p",
         TASK_PROMPT,
         "--permission-mode",
-        "bypassPermissions",
+        options.trustedExecution === true ? "bypassPermissions" : "dontAsk",
       ],
       allowedRoots: options.allowedRoots,
       artifacts: options.artifacts ?? DEFAULT_ARTIFACTS,

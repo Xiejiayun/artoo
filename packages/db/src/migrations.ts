@@ -9,10 +9,15 @@ const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations", import.meta.url));
  * on PGlite (dev/test) and Postgres (prod). Drizzle separates statements with a
  * `--> statement-breakpoint` marker.
  */
-export async function loadMigrationStatements(): Promise<string[]> {
-  const files = (await readdir(MIGRATIONS_DIR))
+export async function loadMigrationStatements(throughFile?: string): Promise<string[]> {
+  let files = (await readdir(MIGRATIONS_DIR))
     .filter((name) => name.endsWith(".sql"))
     .sort();
+  if (throughFile !== undefined) {
+    const last = files.indexOf(throughFile);
+    if (last < 0) throw new Error("Unknown legacy migration boundary");
+    files = files.slice(0, last + 1);
+  }
   const statements: string[] = [];
   for (const file of files) {
     const contents = await readFile(`${MIGRATIONS_DIR}/${file}`, "utf8");

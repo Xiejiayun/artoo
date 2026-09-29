@@ -32,6 +32,24 @@ class FakeSocket implements WebSocketLike {
 }
 
 describe("RealtimeClient", () => {
+  it("loads native credentials asynchronously and sends them only as an auth subprotocol", async () => {
+    const socketFactory = vi.fn(() => new FakeSocket());
+    const client = new RealtimeClient({ url: "wss://example.test/api/v1/ws", onEvent: () => undefined, socketFactory, tokenProvider: async () => "sk_device_test_secret" });
+    client.connect();
+    await vi.waitFor(() => expect(socketFactory).toHaveBeenCalled());
+    expect(socketFactory).toHaveBeenCalledWith("wss://example.test/api/v1/ws", ["artoo", "artoo-auth.sk_device_test_secret"]);
+    client.close();
+  });
+
+  it("does not open a socket after unmount while the secure token is still loading", async () => {
+    let resolve!: (token: string) => void;
+    const token = new Promise<string>((done) => { resolve = done; });
+    const socketFactory = vi.fn(() => new FakeSocket());
+    const client = new RealtimeClient({ url: "wss://example.test/api/v1/ws", onEvent: () => undefined, socketFactory, tokenProvider: () => token });
+    client.connect(); client.close(); resolve("sk_device_test_secret");
+    await Promise.resolve();
+    expect(socketFactory).not.toHaveBeenCalled();
+  });
   it("sends a subscribe frame for the current topics on open", () => {
     const fake = new FakeSocket();
     const client = new RealtimeClient({ url: "ws://x", onEvent: () => undefined, socketFactory: () => fake });

@@ -49,6 +49,9 @@ export interface TestServer {
 }
 
 export interface BuildTestServerOptions {
+  budgetMonitorIntervalMs?: number | false;
+  enableDevRoutes?: boolean;
+  artifactDir?: string;
   /**
    * Override the seeded instance/project workspace root. The default seed points
    * at the live repo (`C:/workspace/artoo`), which is fine for ordinary runs (no
@@ -101,6 +104,9 @@ export async function buildTestServer(
   const nodeRegistry = createNodeRegistry();
   const wsHub = createWsHub();
   const app = buildApp(ctx, {
+    budgetMonitorIntervalMs: options.budgetMonitorIntervalMs ?? false,
+    enableDevRoutes: options.enableDevRoutes ?? true,
+    artifactDir: options.artifactDir,
     nodeRegistry,
     wsHub,
     webDistDir: options.webDistDir,

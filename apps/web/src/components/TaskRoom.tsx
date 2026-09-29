@@ -1,11 +1,15 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 
-import { useApi } from "../app/ApiContext.js";
+import { useApi, useCommands } from "../app/ApiContext.js";
+import { newIdempotencyKey } from "../api/idempotency.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { useSubscription } from "../app/RealtimeContext.js";
-import { EmptyState, ErrorState, Skeleton } from "../ui/index.js";
+import { Button, EmptyState, ErrorState, Skeleton, Textarea } from "../ui/index.js";
 import { Icon, Activity, Inbox } from "../ui/Icon.js";
 import { MessageCard } from "./MessageCard.js";
+import { ActionError } from "./ActionError.js";
+import { CollaborationPanel } from "./CollaborationPanel.js";
 
 function RoomSkeleton(): React.ReactNode {
   return (
@@ -95,6 +99,31 @@ export function TaskRoom({ taskId }: { taskId: string }): React.ReactNode {
           ))}
         </ul>
       )}
+      <MessageComposer key={roomId} roomId={roomId} />
+      <CollaborationPanel key={`collaboration:${roomId}`} roomId={roomId} taskId={taskId} />
     </div>
   );
+}
+
+function MessageComposer({ roomId }: { roomId: string }): React.ReactNode {
+  const api = useApi();
+  const commands = useCommands();
+  const queryClient = useQueryClient();
+  const [body, setBody] = useState("");
+  const mutation = useMutation({
+    mutationFn: (text: string) => {
+      const key = newIdempotencyKey();
+      return commands.submit(() => api.sendMessage(roomId, { kind: "text", body: text, payload: {}, mentions: [], assignments: [] }, key), { key });
+    },
+    onSuccess: async () => {
+      setBody("");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.messages(roomId) });
+    },
+  });
+  return <form className="message-composer" onSubmit={(event) => { event.preventDefault(); if (body.trim()) mutation.mutate(body.trim()); }}>
+    <Textarea label="Message" value={body} maxLength={20000} disabled={mutation.isPending} onChange={(event) => setBody(event.target.value)} placeholder="Share context or a progress update with your team" />
+    <p className="t-subtle">Messages are recorded in this task room. Use Stop run to interrupt active execution.</p>
+    <ActionError error={mutation.error} />
+    <Button type="submit" variant="primary" loading={mutation.isPending} disabled={!body.trim()}>Send message</Button>
+  </form>;
 }

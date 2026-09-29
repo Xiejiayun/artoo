@@ -55,6 +55,24 @@ function isAck(m: NodeToServerMessage): m is CommandAck {
 }
 
 describe("artood node client (mock loop)", () => {
+  it("tombstones a cancellation that arrives before run.start", async () => {
+    const channel = createInProcessChannel();
+    let starts = 0;
+    const mock = createMockAdapter();
+    const client = createNodeClient({ nodeId: "computer_1", transport: channel.node,
+      adapter: { ...mock, start: async (config) => { starts++; return mock.start(config); } },
+    });
+    const acks: CommandAck[] = [];
+    channel.serverTransport.subscribe((message) => { if (isAck(message)) acks.push(message); });
+    client.start();
+    await channel.serverTransport.send(runStopCommand);
+    await new Promise((resolve) => setImmediate(resolve));
+    await channel.serverTransport.send(runStartCommand);
+    await client.stop();
+    expect(starts).toBe(0);
+    expect(acks).toHaveLength(2);
+    expect(acks.every((ack) => ack.status === "accepted")).toBe(true);
+  });
   it("acks run.start and streams a monotonic run.event sequence to completion", async () => {
     const channel = createInProcessChannel();
     const adapter = createMockAdapter({ outputLines: ["compiling", "tests passed"] });
@@ -405,6 +423,28 @@ describe("artood node client (worktree materialization, task #19)", () => {
 
     expect(received.filter(isAck)[0]).toMatchObject({ status: "accepted" });
     expect(git.calls).toEqual([addCall, removeCall]);
+  });
+
+  it("retains the worktree and reports failure when artifact upload fails", async () => {
+    const channel = createInProcessChannel();
+    const git = fakeGit();
+    const client = createNodeClient({
+      nodeId: "computer_1", transport: channel.node, adapter: createMockAdapter(), git,
+      workspace: { worktreeBaseRepo: "C:/repo" },
+      uploadArtifact: async () => { throw new Error("artifact storage unavailable"); },
+    });
+    const received: NodeToServerMessage[] = [];
+    const failed = new Promise<void>((resolve) => channel.serverTransport.subscribe((message) => {
+      received.push(message);
+      if (isRunEvent(message) && message.event.type === "run.lifecycle" && message.event.payload.phase === "failed") resolve();
+    }));
+    client.start();
+    await channel.serverTransport.send(worktreeStart("task/run_1"));
+    await failed;
+    await client.stop();
+    expect(git.calls).toEqual([addCall]);
+    expect(received.filter(isRunEvent).some((event) => event.event.type === "artifact.created")).toBe(false);
+    expect(received.filter(isRunEvent).at(-1)?.event).toMatchObject({ type: "run.lifecycle", payload: { phase: "failed", reason: "artifact storage unavailable" } });
   });
 
   it("rejects a branch-backed run with process_start_failed when no base repo is configured", async () => {

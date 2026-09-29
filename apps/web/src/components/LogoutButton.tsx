@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { useApi } from "../app/ApiContext.js";
+import { useApi, useCommands } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { Button } from "../ui/index.js";
 import { LogOut } from "../ui/Icon.js";
+import { ActionError } from "./ActionError.js";
 
 /**
  * Sign-out control (#34). Renders only when a session is cached — i.e. auth is
@@ -13,6 +14,7 @@ import { LogOut } from "../ui/Icon.js";
  */
 export function LogoutButton(): React.ReactNode {
   const api = useApi();
+  const commands = useCommands();
   const queryClient = useQueryClient();
   const session = useQuery({
     queryKey: queryKeys.session,
@@ -21,7 +23,11 @@ export function LogoutButton(): React.ReactNode {
   });
 
   const logout = useMutation({
-    mutationFn: () => api.logout(),
+    mutationFn: async () => {
+      commands.cancelPending();
+      if (window.artooDesktop?.logout) { await window.artooDesktop.logout(); window.location.reload(); }
+      else await api.logout();
+    },
     onSuccess: async () => {
       queryClient.clear();
       await queryClient.invalidateQueries({ queryKey: queryKeys.session });
@@ -33,7 +39,7 @@ export function LogoutButton(): React.ReactNode {
   }
 
   return (
-    <Button
+    <><ActionError error={logout.error} /><Button
       variant="ghost"
       size="sm"
       iconLeft={LogOut}
@@ -42,6 +48,6 @@ export function LogoutButton(): React.ReactNode {
       onClick={() => logout.mutate()}
     >
       Sign out
-    </Button>
+    </Button></>
   );
 }

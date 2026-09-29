@@ -97,7 +97,7 @@ interface WiredNode {
 
 function wireNode(srv: TestServer, computerId: string, wsParent: string): WiredNode {
   const channel = createInProcessChannel();
-  const binding = attachNodeBinding(srv.ctx, channel.serverTransport);
+  const binding = attachNodeBinding(srv.ctx, channel.serverTransport, computerId);
   srv.nodeRegistry.register(computerId, binding);
   const adapter = createProcessAdapter({
     command: [
@@ -312,6 +312,11 @@ describe.skipIf(!ENABLED)("#111 daemon + multi-agent production smoke", () => {
     expect(resolved.json().approval.status).toBe("approved");
     await waitFor(async () => (await taskStatus(task)) === "running", "task resumed running");
     evid("D.resume", "approval granted -> task resumed to running");
+    // Complete the simulated execution before reusing its exclusive instance.
+    await ingestRunEvent(srv.ctx, {
+      runId: r.runId, nodeId: "computer_d", sequence: 2,
+      event: { kind: "lifecycle", phase: "completed" },
+    });
 
     // Reject path on a second gated task -> blocked.
     const task2 = await createChild(parentId, "risky op (reject)", ["doc.write"]);

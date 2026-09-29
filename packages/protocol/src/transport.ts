@@ -4,6 +4,7 @@ import type {
   NodeHeartbeat,
   NodeHello,
   RunEventMessage,
+  RunEventAckCommand,
   RunResumeCommand,
   RunStartCommand,
   RunStopCommand
@@ -21,7 +22,7 @@ import type {
  */
 export type NodeToServerMessage = NodeHello | NodeHeartbeat | CommandAck | RunEventMessage;
 
-export type ServerToNodeMessage = RunStartCommand | RunStopCommand | ArtifactCollectCommand | RunResumeCommand;
+export type ServerToNodeMessage = RunStartCommand | RunStopCommand | ArtifactCollectCommand | RunResumeCommand | RunEventAckCommand;
 
 export type Unsubscribe = () => void;
 

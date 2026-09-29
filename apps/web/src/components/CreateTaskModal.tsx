@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
-import type { CreateTaskRequest } from "@artoo/domain";
+import { CAPABILITIES, type Capability, type CreateTaskRequest, type Task } from "@artoo/domain";
 
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { useApi } from "../app/ApiContext.js";
@@ -24,6 +24,8 @@ export function CreateTaskModal({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [criteria, setCriteria] = useState("");
+  const [priority, setPriority] = useState<Task["priority"]>("p2");
+  const [capabilities, setCapabilities] = useState<Capability[]>([]);
 
   const mutation = useMutation({
     mutationFn: (request: CreateTaskRequest) => api.createTask(request, newIdempotencyKey()),
@@ -44,9 +46,9 @@ export function CreateTaskModal({
       project_id: projectId,
       title: title.trim(),
       description: description.trim(),
-      priority: "p2",
+      priority,
       acceptance_criteria,
-      required_capabilities: [],
+      required_capabilities: capabilities,
     });
   }
 
@@ -68,7 +70,9 @@ export function CreateTaskModal({
           Acceptance criteria (one per line)
           <textarea value={criteria} onChange={(event) => setCriteria(event.target.value)} />
         </label>
-        {mutation.isError ? <p role="alert">Failed to create task.</p> : null}
+        <label>Priority<select value={priority} onChange={(event) => setPriority(event.target.value as Task["priority"])}>{["p0", "p1", "p2", "p3"].map((value) => <option key={value}>{value}</option>)}</select></label>
+        <details><summary>Required capabilities</summary><div className="u-stack-sm">{CAPABILITIES.map((capability) => <label key={capability}><input type="checkbox" checked={capabilities.includes(capability)} onChange={(event) => setCapabilities(event.target.checked ? [...capabilities, capability] : capabilities.filter((value) => value !== capability))} />{capability}</label>)}</div></details>
+        {mutation.isError ? <p role="alert">Failed to create task: {mutation.error.message}</p> : null}
         <div className="actions">
           <button type="button" onClick={onClose}>
             Cancel

@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { ServerContext } from "./context.js";
+import { requestContext } from "./auth/auth-routes.js";
 import { AppError } from "./errors.js";
 
 interface PendingIdempotency {
@@ -36,7 +37,7 @@ export function registerIdempotency(
   exemptPaths: ReadonlySet<string> = new Set(),
 ): void {
   app.addHook("preHandler", async (req: FastifyRequest, reply: FastifyReply) => {
-    if (req.method !== "POST") {
+    if (!["POST", "PATCH", "DELETE"].includes(req.method)) {
       return;
     }
     const key = headerValue(req.headers["idempotency-key"]);
@@ -52,7 +53,8 @@ export function registerIdempotency(
     if (exemptPaths.has(path)) {
       return;
     }
-    const scope = `POST:${req.url}`;
+    const actor = requestContext(ctx, req).actorUserId;
+    const scope = `${ctx.organizationId}:${actor}:${req.method}:${req.url}`;
     const requestHash = hashRequest(req.body);
 
     try {

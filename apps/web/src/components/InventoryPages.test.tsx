@@ -51,7 +51,7 @@ describe("Inventory pages", () => {
     const computer = await screen.findByRole("article", { name: "Local Mock" });
     expect(computer).toHaveTextContent("online");
     expect(computer).toHaveTextContent("localhost");
-    expect(await within(computer).findByText(/mock/)).toBeInTheDocument();
+    expect(await within(computer).findByText("mock", { exact: true })).toBeInTheDocument();
     expect(computer).toHaveTextContent("available");
     expect(computer).toHaveTextContent("code.modify");
     expect(listComputerRuntimes).toHaveBeenCalledWith("computer_local_mock");

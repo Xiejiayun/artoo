@@ -1,3 +1,4 @@
+import { useProject } from "../app/useProject.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -9,6 +10,7 @@ import { queryKeys } from "../app/queryKeys.js";
 import { useSubscription } from "../app/RealtimeContext.js";
 import { Badge, EmptyState, ErrorState, Select, type Tone } from "../ui/index.js";
 import { MemoryDetail } from "./MemoryDetail.js";
+import { ActionError } from "./ActionError.js";
 
 const STATUS_FILTERS = ["all", "proposed", "accepted", "rejected", "superseded"] as const;
 const SCOPE_FILTERS = ["all", "task", "project", "organization", "code"] as const;
@@ -38,12 +40,11 @@ export function MemoryPage(): React.ReactNode {
   const [scope, setScope] = useState<(typeof SCOPE_FILTERS)[number]>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
-  const projectId = bootstrap.data?.projects[0]?.id;
+  const { bootstrap, projectId } = useProject();
   useSubscription(projectId === undefined ? [] : [`project:${projectId}`]);
 
   const memories = useQuery({
-    queryKey: queryKeys.memories({ status, scope }),
+    queryKey: queryKeys.memories({ status, scope, projectId }),
     queryFn: () =>
       api.listMemories({
         status: status === "all" ? undefined : status,
@@ -137,6 +138,7 @@ export function MemoryPage(): React.ReactNode {
           </Select>
         </div>
       </header>
+      <ActionError error={memories.error ?? context.error ?? accept.error ?? reject.error ?? supersede.error} />
 
       <div className="memory-body">
         <section className="memory-list" aria-label="Memories">

@@ -16,6 +16,37 @@ const conflictError = new ApiClientError("conflict", "stale", 409, {
 });
 
 describe("web ApiCommandQueue (canonical @artoo/client dogfood)", () => {
+  it("discards offline commands on session end and permits a new session to reuse the key", async () => {
+    const q = makeQueue();
+    let online = false;
+    let oldWrites = 0;
+    const pending = q.submit(async () => {
+      if (!online) throw new ApiClientError("network_error", "offline", 0);
+      oldWrites += 1;
+    }, { key: "same-key" });
+    const cancelled = expect(pending).rejects.toThrow("Session ended");
+    await q.flush();
+    expect(q.pendingCount()).toBe(1);
+    q.cancelPending();
+    await cancelled;
+    expect(q.pendingCount()).toBe(0);
+    online = true;
+    await expect(q.submit(async () => "new session", { key: "same-key" })).resolves.toBe("new session");
+    expect(oldWrites).toBe(0);
+  });
+
+  it("does not settle a new session command with an old in-flight response", async () => {
+    const q = makeQueue();
+    let finish!: (value: string) => void;
+    const pending = q.submit(() => new Promise<string>((resolve) => { finish = resolve; }), { key: "same-key" });
+    const cancelled = expect(pending).rejects.toThrow("Session ended");
+    q.cancelPending();
+    await cancelled;
+    const next = q.submit(async () => "new response", { key: "same-key" });
+    finish("old response");
+    await expect(next).resolves.toBe("new response");
+  });
+
   it("applies a successful mutation and resolves with its result", async () => {
     const q = makeQueue();
     const result = await q.submit(async () => ({ task: { id: "t1" } }), { key: "k1" });

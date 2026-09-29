@@ -13,32 +13,27 @@
  * Cookies are HttpOnly + SameSite=Lax (+ Secure in prod). The web client never
  * sees the authorization code or the raw tokens.
  */
-import { users } from "@artoo/db";
-import { and, eq } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { ServerContext } from "../context.js";
+import { AppError } from "../errors.js";
 import type { AuthConfig } from "./auth-config.js";
 import {
   consumeOauthFlow,
   createOauthFlow,
   createSession,
   provisionUser,
-  resolveSession,
   revokeSession,
 } from "./auth-service.js";
 import { clearCookie, parseCookies, serializeCookie } from "./cookies.js";
 import { buildAuthorizationUrl, validateIdToken, type OidcHttp } from "./oidc-client.js";
+import { mayAdministerRoute, requestCredential, resolveRequestPrincipal, revokeControlSession } from "./request-auth.js";
 
 export interface AuthDeps {
   config: AuthConfig;
   oidcHttp: OidcHttp;
-}
-
-interface SessionUser {
-  id: string;
-  email: string;
-  name: string;
+  /** Drop control sockets on native logout; the compute node remains connected. */
+  onControlLogout?: (deviceId: string) => void;
 }
 
 /** A request carrying the authenticated session user's id (set by the guard). */
@@ -61,32 +56,6 @@ function unauthorized(): { error: { code: string; message: string; details: Reco
   return { error: { code: "unauthorized", message: "authentication required", details: {} } };
 }
 
-/** Resolve the session cookie to a user, or null. */
-async function currentUser(
-  ctx: ServerContext,
-  config: AuthConfig,
-  req: FastifyRequest,
-): Promise<SessionUser | null> {
-  const raw = parseCookies(req.headers.cookie)[config.sessionCookieName];
-  if (raw === undefined) {
-    return null;
-  }
-  const resolved = await resolveSession(ctx, raw);
-  if (resolved === null) {
-    return null;
-  }
-  const row = (
-    await ctx.db.db
-      .select()
-      .from(users)
-      .where(and(eq(users.id, resolved.userId), eq(users.organizationId, ctx.organizationId)))
-  )[0];
-  if (row === undefined) {
-    return null;
-  }
-  return { id: row.id, email: row.email, name: row.displayName };
-}
-
 function redirect(reply: FastifyReply, url: string): null {
   void reply.header("location", url).status(302);
   return null;
@@ -94,6 +63,10 @@ function redirect(reply: FastifyReply, url: string): null {
 
 export function registerAuthRoutes(app: FastifyInstance, ctx: ServerContext, deps: AuthDeps): void {
   const { config, oidcHttp } = deps;
+
+  app.addHook("onRequest", async (req, reply) => {
+    if (req.url.startsWith("/auth/")) void reply.header("cache-control", "no-store");
+  });
 
   app.get("/auth/google/start", async (req, reply) => {
     const returnTo = (req.query as { return_to?: string }).return_to;
@@ -149,6 +122,7 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: ServerContext, dep
         email: claims.email,
         emailVerified: claims.email_verified,
         displayName: claims.name ?? claims.email,
+        hostedDomain: claims.hd,
       });
       const session = await createSession(ctx, { ttlMs: config.sessionTtlMs }, { userId });
       void reply.header("set-cookie", [
@@ -168,21 +142,26 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: ServerContext, dep
   });
 
   app.get("/auth/session", async (req, reply) => {
-    const user = await currentUser(ctx, config, req);
-    if (user === null) {
+    const principal = await resolveRequestPrincipal(ctx, req);
+    if (principal === null) {
       void reply.status(401);
       return unauthorized();
     }
-    return { user };
+    return { user: principal.user, ...(principal.credential.kind === "device"
+      ? { device_id: principal.credential.deviceId } : {}) };
   });
 
   app.post("/auth/logout", async (req, reply) => {
-    const raw = parseCookies(req.headers.cookie)[config.sessionCookieName];
-    if (raw !== undefined) {
-      const resolved = await resolveSession(ctx, raw);
-      if (resolved !== null) {
-        await revokeSession(ctx, resolved.sessionId);
-      }
+    const principal = await resolveRequestPrincipal(ctx, req);
+    if (principal === null && req.headers.authorization !== undefined) {
+      void reply.status(401);
+      return unauthorized();
+    }
+    if (principal?.credential.kind === "session") {
+      await revokeSession(ctx, principal.credential.sessionId);
+    } else if (principal?.credential.kind === "device") {
+      await revokeControlSession(ctx, principal.credential.tokenId);
+      deps.onControlLogout?.(principal.credential.deviceId);
     }
     void reply.header("set-cookie", clearCookie(config.sessionCookieName, { secure: config.secureCookies }));
     void reply.status(204);
@@ -199,29 +178,34 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: ServerContext, dep
  * dev/test flows keep working.
  */
 export function registerApiAuthGuard(app: FastifyInstance, ctx: ServerContext, config: AuthConfig): void {
-  if (!config.enforceApiAuth) {
-    return;
-  }
   app.addHook("onRequest", async (req, reply) => {
     const path = req.url.split("?")[0] ?? "";
-    if (!path.startsWith("/api/v1/")) {
+    if (path !== "/api/v1" && !path.startsWith("/api/v1/")) {
       return;
     }
-    if (path.startsWith("/api/v1/node") || path.startsWith("/api/v1/ws")) {
+    const route = req.routeOptions.url ?? path;
+    if (req.method === "GET" && (route === "/api/v1/node" || route === "/api/v1/ws")) {
+      return;
+    }
+    if (req.method === "PUT" && route === "/api/v1/node/runs/:id/artifacts") {
       return;
     }
     // Device pairing claim (#28 4b) is authenticated by the pairing CODE itself —
     // an unpaired device has no session yet — so this exact route is exempt from
     // the user-session guard. Every OTHER /api/v1/devices/* route stays gated.
-    if (path === "/api/v1/devices/claim") {
+    if (req.method === "POST" && route === "/api/v1/devices/claim") {
       return;
     }
-    const user = await currentUser(ctx, config, req);
-    if (user === null) {
+    if (!config.enforceApiAuth && !requestCredential(ctx, req).supplied) return;
+    const principal = await resolveRequestPrincipal(ctx, req);
+    if (principal === null) {
       await reply.status(401).send(unauthorized());
       return;
     }
     // Bind the authenticated user to the request so handlers run services as them.
-    (req as RequestWithActor).actorUserId = user.id;
+    (req as RequestWithActor).actorUserId = principal.user.id;
+    if (!await mayAdministerRoute(ctx, principal, req)) {
+      throw AppError.permissionDenied("an owner or admin is required for this action");
+    }
   });
 }

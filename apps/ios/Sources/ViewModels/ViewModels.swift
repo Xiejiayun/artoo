@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// Generic async-load state shared by every screen. `.loaded` carries data even
 /// while a refresh is in flight, so the UI never blanks during pull-to-refresh.
@@ -60,11 +61,14 @@ public final class InboxViewModel: ObservableObject {
         }
     }
 
-    public func resolve(_ approval: Approval, approve: Bool, comment: String? = nil) async {
+    @discardableResult
+    public func resolve(_ approval: Approval, approve: Bool, comment: String? = nil) async -> Bool {
         await resolve(approval, decision: approve ? .approved : .rejected, comment: comment)
     }
 
-    public func resolve(_ approval: Approval, decision: ApprovalDecision, comment: String? = nil) async {
+    @discardableResult
+    public func resolve(_ approval: Approval, decision: ApprovalDecision, comment: String? = nil) async -> Bool {
+        guard !resolving.contains(approval.id) else { return false }
         resolving.insert(approval.id)
         defer { resolving.remove(approval.id) }
         do {
@@ -73,8 +77,10 @@ public final class InboxViewModel: ObservableObject {
                 request: ResolveApprovalRequest(decision: decision.rawValue, comment: comment)
             )
             await load()
+            return true
         } catch {
             state = .failed(describe(error))
+            return false
         }
     }
 
@@ -165,7 +171,8 @@ public final class TasksViewModel: ObservableObject {
     }
 
     @discardableResult
-    public func create(title: String, description: String?, priority: String?, acceptanceCriteria: [String]) async -> Bool {
+    public func create(title: String, description: String?, priority: String?, acceptanceCriteria: [String], requiredCapabilities: [String] = []) async -> Bool {
+        guard !creating else { return false }
         creating = true
         defer { creating = false }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -180,7 +187,8 @@ public final class TasksViewModel: ObservableObject {
                     title: trimmed,
                     description: description?.isEmpty == true ? nil : description,
                     priority: priority,
-                    acceptanceCriteria: acceptanceCriteria.isEmpty ? nil : acceptanceCriteria
+                    acceptanceCriteria: acceptanceCriteria.isEmpty ? nil : acceptanceCriteria,
+                    requiredCapabilities: requiredCapabilities
                 )
             )
             await load()
@@ -239,19 +247,55 @@ public final class TaskDetailViewModel: ObservableObject {
         }
     }
 
+    public func cancel(runId: String) async {
+        guard !actionInFlight else { return }; actionInFlight = true; actionError = nil
+        defer { actionInFlight = false }
+        do { _ = try await client.command(path: "/api/v1/runs/\(apiPart(runId))/cancel", method: "POST", body: .object([:])); await load() }
+        catch { actionError = describe(error) }
+    }
+
+    public var executionApproval: Approval? {
+        state.value?.approvals.first { $0.isActiveExecutionGate }
+    }
+
+    public var executionBlocked: Bool {
+        let history = state.value?.approvals.filter { $0.action == "execution.start" } ?? []
+        let current = history.filter(\.isActiveExecutionGate)
+        return (!history.isEmpty && current.count != 1) || current.contains {
+            $0.payloadRef != "execution-gate/current" || $0.status != .approved || $0.runId != nil
+        }
+    }
+
+    @discardableResult
+    public func requestExecutionApproval(_ draft: ExecutionApprovalDraft) async -> Bool {
+        guard !actionInFlight else { return false }
+        guard state.value?.task.status == .ready, draft.valid else {
+            actionError = "A ready task, a summary of 1–4000 characters and a risk level are required."
+            return false
+        }
+        actionInFlight = true; actionError = nil
+        defer { actionInFlight = false }
+        do {
+            _ = try await client.command(path: "/api/v1/tasks/\(apiPart(taskId))/execution-approval", method: "POST", body: draft.body)
+            await load()
+            return true
+        } catch { actionError = describe(error); return false }
+    }
+
     /// Lifecycle actions a human can take given the current status.
     public var availableActions: [TaskAction] {
         guard let status = state.value?.task.status else { return [] }
         switch status {
         case .backlog: return [.markReady]
-        case .ready: return [.assign]
+        case .ready: return executionBlocked ? [] : [.assign]
         case .blocked: return [.retry]
         case .review: return [.accept, .requestChanges]
         default: return []
         }
     }
 
-    private func run(_ operation: @escaping () async throws -> TaskResponse) async {
+    private func run<Response>(_ operation: @escaping () async throws -> Response) async {
+        guard !actionInFlight else { return }
         actionInFlight = true
         actionError = nil
         defer { actionInFlight = false }

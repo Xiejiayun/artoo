@@ -17,6 +17,10 @@ import type {
   Task,
   Message,
   Approval,
+  Goal, Plan, Checkpoint, TaskDependency, FileLease, Device, DevicePlatform,
+  CreateGoalRequest, ProposePlanRequest, CreateDependencyRequest, InstallSkillRequest, SkillInstall,
+  DecisionRecord, HandoffRecord, BlockerRecord, CreateDecisionRequest, CreateHandoffRequest, CreateBlockerRequest,
+  UpdateDecisionRequest, UpdateHandoffRequest, UpdateBlockerRequest,
 } from "@artoo/domain";
 
 import type {
@@ -55,6 +59,8 @@ export class ApiClientError extends Error {
 }
 
 export interface ApiClientOptions {
+  /** Native shells provide credentials from their secure store; never localStorage. */
+  tokenProvider?: () => string | null | undefined | Promise<string | null | undefined>;
   /** Defaults to `/api/v1` (served via the Vite dev proxy / same origin). */
   baseUrl?: string;
   /** Fetch credential mode. Browser web uses cookies; desktop device smoke does not. */
@@ -74,16 +80,20 @@ export class ApiClient {
   private readonly authBaseUrl: string;
   private readonly credentials: RequestCredentials;
   private readonly fetchOverride?: typeof fetch;
+  private readonly tokenProvider?: ApiClientOptions["tokenProvider"];
 
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "/api/v1").replace(/\/$/, "");
     this.authBaseUrl = this.baseUrl.replace(/\/api\/v1$/, "");
     this.credentials = options.credentials ?? "include";
     this.fetchOverride = options.fetch;
+    this.tokenProvider = options.tokenProvider;
   }
 
   private async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
     const headers: Record<string, string> = { Accept: "application/json" };
+    const token = await this.tokenProvider?.();
+    if (token) headers.Authorization = `Bearer ${token}`;
     if (options.body !== undefined) {
       headers["Content-Type"] = "application/json";
     }
@@ -102,6 +112,7 @@ export class ApiClient {
         // Send the session cookie (#34 web auth) so the server's protected guard
         // can authenticate the request.
         credentials: this.credentials,
+        redirect: "error",
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
       });
     } catch (cause) {
@@ -109,7 +120,7 @@ export class ApiClient {
     }
 
     const text = await response.text();
-    const json: unknown = text.length > 0 ? JSON.parse(text) : undefined;
+    const json: unknown = parseResponse(text);
 
     if (!response.ok) {
       const envelope = (json as { error?: { code?: ApiErrorCode; message?: string; details?: Record<string, unknown> } } | undefined)?.error;
@@ -126,6 +137,48 @@ export class ApiClient {
 
   bootstrap(): Promise<BootstrapResponse> {
     return this.request<BootstrapResponse>("GET", "/bootstrap");
+  }
+
+  createProject(body: { name: string; default_workspace?: string | null }, key: string): Promise<{ project: BootstrapResponse["projects"][number] }> {
+    return this.request("POST", "/projects", { body, idempotencyKey: key });
+  }
+  updateProject(id: string, body: { name?: string; default_workspace?: string | null }, key: string): Promise<{ project: BootstrapResponse["projects"][number] }> {
+    return this.request("PATCH", `/projects/${encodeURIComponent(id)}`, { body, idempotencyKey: key });
+  }
+  listGoals(projectId: string): Promise<{ goals: Goal[] }> { return this.request("GET", `/goals?project_id=${encodeURIComponent(projectId)}`); }
+  createGoal(body: CreateGoalRequest, key: string): Promise<{ goal: Goal }> { return this.request("POST", "/goals", { body, idempotencyKey: key }); }
+  goalAction(id: string, action: "pause" | "resume" | "cancel" | "reconcile", key: string): Promise<unknown> { return this.request("POST", `/goals/${encodeURIComponent(id)}/${action}`, { idempotencyKey: key }); }
+  listPlans(id: string): Promise<{ plans: Plan[] }> { return this.request("GET", `/goals/${encodeURIComponent(id)}/plans`); }
+  proposePlan(id: string, body: ProposePlanRequest, key: string): Promise<{ plan: Plan }> { return this.request("POST", `/goals/${encodeURIComponent(id)}/plans`, { body, idempotencyKey: key }); }
+  planAction(id: string, action: "accept" | "reject", key: string): Promise<{ plan: Plan; task_ids?: string[] }> { return this.request("POST", `/plans/${encodeURIComponent(id)}/${action}`, { idempotencyKey: key }); }
+  listCheckpoints(id: string): Promise<{ checkpoints: Checkpoint[] }> { return this.request("GET", `/goals/${encodeURIComponent(id)}/checkpoints`); }
+  goalAuditExport(id: string): Promise<{ export: unknown }> { return this.request("GET", `/goals/${encodeURIComponent(id)}/audit-bundle/export`); }
+  listDecisions(roomId: string): Promise<{ decisions: DecisionRecord[] }> { return this.request("GET", `/rooms/${encodeURIComponent(roomId)}/decisions`); }
+  listHandoffs(roomId: string): Promise<{ handoffs: HandoffRecord[] }> { return this.request("GET", `/rooms/${encodeURIComponent(roomId)}/handoffs`); }
+  listBlockers(roomId: string): Promise<{ blockers: BlockerRecord[] }> { return this.request("GET", `/rooms/${encodeURIComponent(roomId)}/blockers`); }
+  createDecision(roomId: string, body: CreateDecisionRequest, key: string): Promise<{ decision: DecisionRecord }> { return this.request("POST", `/rooms/${encodeURIComponent(roomId)}/decisions`, { body, idempotencyKey: key }); }
+  createHandoff(roomId: string, body: CreateHandoffRequest, key: string): Promise<{ handoff: HandoffRecord }> { return this.request("POST", `/rooms/${encodeURIComponent(roomId)}/handoffs`, { body, idempotencyKey: key }); }
+  createBlocker(roomId: string, body: CreateBlockerRequest, key: string): Promise<{ blocker: BlockerRecord }> { return this.request("POST", `/rooms/${encodeURIComponent(roomId)}/blockers`, { body, idempotencyKey: key }); }
+  updateDecision(id: string, body: UpdateDecisionRequest, key: string): Promise<unknown> { return this.request("PATCH", `/decisions/${encodeURIComponent(id)}`, { body, idempotencyKey: key }); }
+  updateHandoff(id: string, body: UpdateHandoffRequest, key: string): Promise<unknown> { return this.request("PATCH", `/handoffs/${encodeURIComponent(id)}`, { body, idempotencyKey: key }); }
+  updateBlocker(id: string, body: UpdateBlockerRequest, key: string): Promise<unknown> { return this.request("PATCH", `/blockers/${encodeURIComponent(id)}`, { body, idempotencyKey: key }); }
+  listDependencies(id: string): Promise<{ dependencies: TaskDependency[] }> { return this.request("GET", `/tasks/${encodeURIComponent(id)}/dependencies`); }
+  createDependency(id: string, body: CreateDependencyRequest, key: string): Promise<unknown> { return this.request("POST", `/tasks/${encodeURIComponent(id)}/dependencies`, { body, idempotencyKey: key }); }
+  deleteDependency(id: string, dependencyId: string, key: string): Promise<unknown> { return this.request("DELETE", `/tasks/${encodeURIComponent(id)}/dependencies/${encodeURIComponent(dependencyId)}`, { idempotencyKey: key }); }
+  listLeases(projectId: string): Promise<{ leases: FileLease[] }> { return this.request("GET", `/projects/${encodeURIComponent(projectId)}/leases`); }
+  installSkill(body: InstallSkillRequest, key: string): Promise<{ skill: SkillInstall }> { return this.request("POST", "/skills/install", { body, idempotencyKey: key }); }
+  listDevices(): Promise<{ devices: Device[] }> { return this.request("GET", "/devices"); }
+  registerAgent(computerId: string, body: { runtime: string; workspace_root: string; display_name?: string; capabilities?: string[] }, key: string): Promise<unknown> { return this.request("POST", `/computers/${encodeURIComponent(computerId)}/instances`, { body, idempotencyKey: key }); }
+  setAgentEnabled(id: string, enabled: boolean, key: string): Promise<unknown> { return this.request("PATCH", `/agent-instances/${encodeURIComponent(id)}`, { body: { enabled }, idempotencyKey: key }); }
+  createPairing(platform: DevicePlatform, key: string): Promise<{ code: string; pairing: { expires_at: string } }> { return this.request("POST", "/devices/pairings", { body: { intended_platform: platform }, idempotencyKey: key }); }
+  revokeDevice(id: string, key: string): Promise<unknown> { return this.request("POST", `/devices/${encodeURIComponent(id)}/revoke`, { idempotencyKey: key }); }
+  async downloadArtifact(id: string): Promise<Blob> {
+    const headers: Record<string, string> = {};
+    const token = await this.tokenProvider?.();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await (this.fetchOverride ?? globalThis.fetch)(`${this.baseUrl}/artifacts/${encodeURIComponent(id)}/content`, { headers, credentials: this.credentials, redirect: "error" });
+    if (!response.ok) throw new ApiClientError("unknown", "Unable to download artifact. It may be unavailable or your session may have expired.", response.status);
+    return response.blob();
   }
 
   listTasks(projectId: string): Promise<TasksResponse> {
@@ -160,7 +213,7 @@ export class ApiClient {
     });
   }
 
-  reviewTask(taskId: string, body: ReviewRequest, idempotencyKey: string): Promise<{ task: Task }> {
+  reviewTask(taskId: string, body: ReviewRequest & { base_version?: number }, idempotencyKey: string): Promise<{ task: Task }> {
     return this.request<{ task: Task }>("POST", `/tasks/${encodeURIComponent(taskId)}/review`, {
       body,
       idempotencyKey,
@@ -206,6 +259,10 @@ export class ApiClient {
 
   listApprovals(status = "pending"): Promise<ApprovalsResponse> {
     return this.request<ApprovalsResponse>("GET", `/approvals?status=${encodeURIComponent(status)}`);
+  }
+
+  requestExecutionApproval(taskId: string, body: { summary: string; risk: "low" | "medium" | "high" }, key: string): Promise<{ approval: Approval }> {
+    return this.request("POST", `/tasks/${encodeURIComponent(taskId)}/execution-approval`, { body, idempotencyKey: key });
   }
 
   resolveApproval(
@@ -294,19 +351,23 @@ export class ApiClient {
   }
 
   private async authRequest<T>(method: string, path: string): Promise<T> {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    const token = await this.tokenProvider?.();
+    if (token) headers.Authorization = `Bearer ${token}`;
     const fetchImpl = this.fetchOverride ?? globalThis.fetch;
     let response: Response;
     try {
       response = await fetchImpl(`${this.authBaseUrl}${path}`, {
         method,
-        headers: { Accept: "application/json" },
+        headers,
         credentials: this.credentials,
+        redirect: "error",
       });
     } catch (cause) {
       throw new ApiClientError("network_error", `Network request failed: ${String(cause)}`, 0);
     }
     const text = await response.text();
-    const json: unknown = text.length > 0 ? JSON.parse(text) : undefined;
+    const json: unknown = parseResponse(text);
     if (!response.ok) {
       const envelope = (json as { error?: { code?: ApiErrorCode; message?: string } } | undefined)
         ?.error;
@@ -318,6 +379,12 @@ export class ApiClient {
     }
     return json as T;
   }
+}
+
+function parseResponse(text: string): unknown {
+  if (!text) return undefined;
+  try { return JSON.parse(text); }
+  catch { throw new ApiClientError("unknown", "The server returned an invalid response. Check the server address and try again.", 0); }
 }
 
 /** Filters for {@link ApiClient.listMemories}. */

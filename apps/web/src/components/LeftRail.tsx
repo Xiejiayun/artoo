@@ -31,14 +31,16 @@ export function LeftRail({
     queryFn: () => api.listApprovals("pending"),
   });
   const pendingCount = approvals.data?.approvals.length ?? 0;
+  const needsInfo = useQuery({ queryKey: queryKeys.approvals("needs_more_info"), queryFn: () => api.listApprovals("needs_more_info") });
+  const unresolvedCount = pendingCount + (needsInfo.data?.approvals.length ?? 0);
 
   return (
     <div className="left-rail u-stack">
       <header className="left-rail-header">
         <h1 className="t-h2 u-truncate">{projectName}</h1>
-        {pendingCount > 0 ? (
-          <span role="img" aria-label={`${pendingCount} pending approvals`}>
-            <Badge tone="danger">{pendingCount}</Badge>
+        {unresolvedCount > 0 ? (
+          <span role="img" aria-label={`${unresolvedCount} pending approvals`}>
+            <Badge tone="danger">{unresolvedCount}</Badge>
           </span>
         ) : null}
       </header>

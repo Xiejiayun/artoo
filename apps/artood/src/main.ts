@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import type { NodeHello } from "@artoo/protocol";
 
 import { createAdapterRegistry, type AdapterRegistry, type RuntimeRegistration } from "./adapter-registry.js";
+import { createArtifactUploader } from "./artifact-upload.js";
+import { runtimeAvailable } from "./cli-resolver.js";
+import { createRegistryHeartbeat } from "./heartbeat.js";
 import { createArtoodNode, type ArtoodNode } from "./node-runner.js";
 import { claudeCodeRuntime, codexRuntime, type RuntimePresetOptions } from "./runtimes.js";
 
@@ -36,6 +39,7 @@ export interface ArtoodConfig {
   nodeId: string;
   runtimes: string[];
   allowedRoots: string[];
+  trustedExecution?: boolean;
   worktreeBaseRepo?: string;
   /** Heartbeat interval override (ms); omitted = createArtoodNode's 10s default. */
   heartbeatIntervalMs?: number;
@@ -74,6 +78,7 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
     nodeId,
     runtimes: runtimes.length > 0 ? runtimes : ["codex", "claude-code"],
     allowedRoots,
+    trustedExecution: env.ARTOO_TRUSTED_EXECUTION === "1",
     worktreeBaseRepo: env.ARTOO_WORKTREE_BASE_REPO?.trim() || undefined,
     heartbeatIntervalMs: parsePositiveMs(env.ARTOO_HEARTBEAT_INTERVAL_MS)
   };
@@ -88,7 +93,7 @@ export function buildRegistry(config: ArtoodConfig): AdapterRegistry {
         `artood: unknown runtime preset '${name}' (known: ${Object.keys(RUNTIME_PRESETS).join(", ")})`
       );
     }
-    return preset({ allowedRoots: config.allowedRoots });
+    return preset({ allowedRoots: config.allowedRoots, trustedExecution: config.trustedExecution });
   });
   return createAdapterRegistry(registrations);
 }
@@ -106,11 +111,18 @@ export function helloFor(config: ArtoodConfig): NodeHello {
 
 /** Construct (without connecting) an {@link ArtoodNode} from config. */
 export function createNodeFromConfig(config: ArtoodConfig): ArtoodNode {
+  const registry = buildRegistry(config);
   return createArtoodNode({
     url: config.url,
     hello: helloFor(config),
-    registry: buildRegistry(config),
-    workspace: { worktreeBaseRepo: config.worktreeBaseRepo },
+    registry,
+    heartbeat: createRegistryHeartbeat({
+      nodeId: config.nodeId, registry,
+      statusForRuntime: (runtime) => runtimeAvailable(runtime) ? "available" : "missing",
+    }),
+    uploadArtifact: createArtifactUploader(config.url, config.nodeId),
+    acknowledgeRunEvents: true,
+    workspace: { worktreeBaseRepo: config.worktreeBaseRepo, allowedRoots: config.allowedRoots },
     heartbeatIntervalMs: config.heartbeatIntervalMs
   });
 }
@@ -119,8 +131,41 @@ export function createNodeFromConfig(config: ArtoodConfig): ArtoodNode {
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<ArtoodNode> {
   const config = loadConfigFromEnv(env);
   const node = createNodeFromConfig(config);
-  await node.start();
+  const removeHandlers = installShutdownHandlers(node);
+  try { await node.start(); } catch (error) { removeHandlers(); throw error; }
   return node;
+}
+
+export interface ShutdownHost {
+  on(event: string, listener: (message?: unknown) => void): unknown;
+  off(event: string, listener: (message?: unknown) => void): unknown;
+  connected?: boolean;
+  disconnect?: () => void;
+  exit(code: number): unknown;
+}
+
+/** Desktop IPC and terminal signals share the same confirmed process-tree stop. */
+export function installShutdownHandlers(node: ArtoodNode, host: ShutdownHost = process): () => void {
+  let stopping = false;
+  const shutdown = (): void => {
+    if (stopping) return;
+    stopping = true;
+    void node.stop().then(() => {
+      if (host.connected) host.disconnect?.();
+      host.exit(0);
+    }, () => host.exit(1));
+  };
+  const message = (value?: unknown): void => {
+    if (value && typeof value === "object" && "type" in value && value.type === "shutdown") shutdown();
+  };
+  host.on("message", message);
+  host.on("SIGINT", shutdown);
+  host.on("SIGTERM", shutdown);
+  return () => {
+    host.off("message", message);
+    host.off("SIGINT", shutdown);
+    host.off("SIGTERM", shutdown);
+  };
 }
 
 // Only connect when run directly (e.g. `node dist/main.js`), not when imported by tests.

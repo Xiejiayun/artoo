@@ -262,7 +262,7 @@ export const ApprovalSchema = z.object({
   organization_id: z.string(),
   task_id: z.string(),
   run_id: z.string().nullish(),
-  requested_by_type: z.enum(["agent", "system"]),
+  requested_by_type: z.enum(["user", "agent", "system"]),
   requested_by_id: z.string(),
   action: z.string(),
   risk: RiskSchema,

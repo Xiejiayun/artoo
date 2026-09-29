@@ -19,6 +19,7 @@ import * as dagService from "./dag-service.js";
 import { enqueueArtifactForIntegration } from "./integration-service.js";
 import { releaseRunLeases } from "./lease-service.js";
 import { transitionRun, transitionTask } from "./transition-service.js";
+import { unconfirmedDisconnectRunIds } from "./execution-state.js";
 
 /** GET /api/v1/runs/:id — run snapshot. */
 export async function getRun(ctx: ServerContext, runId: string): Promise<Run> {
@@ -35,7 +36,15 @@ export async function getRun(ctx: ServerContext, runId: string): Promise<Run> {
 }
 
 /** POST /api/v1/runs/:id/cancel — cancel a non-terminal run; emits run.cancelled. */
-export async function cancelRun(ctx: ServerContext, runId: string): Promise<Run> {
+export async function cancelRun(ctx: ServerContext, runId: string, stopProcess: () => Promise<void>): Promise<Run> {
+  const current = await getRun(ctx, runId);
+  if (current.status === "cancelled") return current;
+  if (!canTransitionRun(current.status, "cancel")) {
+    throw AppError.invalidState(`cannot cancel run in status '${current.status}'`, { status: current.status });
+  }
+  // Never hold a database transaction while waiting for the external process.
+  // Failed/offline stop leaves both status and exclusive write leases intact.
+  await stopProcess();
   const now = ctx.clock.nowIso();
   return ctx.db.transaction(async (tx) => {
     const run = (
@@ -48,6 +57,7 @@ export async function cancelRun(ctx: ServerContext, runId: string): Promise<Run>
       throw AppError.notFound(`run not found: ${runId}`, { run_id: runId });
     }
     const from = run.status as RunStatus;
+    if (from === "cancelled") return mapRun(run);
     if (!canTransitionRun(from, "cancel")) {
       throw AppError.invalidState(`cannot cancel run in status '${from}'`, { status: from });
     }
@@ -208,7 +218,16 @@ export async function ingestRunEvent(
 
     let eventId: string;
     const ev = env.event;
-    if (ev.kind === "lifecycle") {
+    if (ev.kind === "lifecycle" && ev.phase !== "started" && run.status === "failed" && run.failureReason === "daemon_disconnect") {
+      // A disconnect is uncertainty, not evidence of process exit. The owner's
+      // eventual terminal event closes that uncertainty and releases its leases.
+      eventId = await emit("run.reconciled", { run_id: env.runId, observed_phase: ev.phase, process_exit_confirmed: true });
+      await releaseRunLeases(ctx, tx, env.runId);
+    } else if (ev.kind === "lifecycle" && ["completed", "failed", "cancelled"].includes(run.status)) {
+      // A stop ACK or a prior terminal event may win the race. Commit a receipt
+      // for delayed lifecycle frames without changing the settled run/task.
+      eventId = await emit("run.reconciled", { run_id: env.runId, observed_phase: ev.phase, settled_status: run.status });
+    } else if (ev.kind === "lifecycle") {
       if (ev.phase === "started") {
         await transitionRun(tx, ctx, { runId: env.runId, from: "queued", trigger: "start", patch: { startedAt: now } });
         await transitionRun(tx, ctx, { runId: env.runId, from: "starting", trigger: "process_started" });
@@ -235,14 +254,31 @@ export async function ingestRunEvent(
         }
       } else {
         await transitionRun(tx, ctx, { runId: env.runId, from: run.status as RunStatus, trigger: "cancel", patch: { endedAt: now } });
+        if (canTransitionTask(taskRow.status as TaskStatus, "cancel")) {
+          await transitionTask(tx, ctx, {
+            taskId: run.taskId, from: taskRow.status as TaskStatus, trigger: "cancel", now,
+            events: (to) => [buildEvent(ctx, {
+              type: "task.updated", actorType: "agent", actorId: run.agentInstanceId,
+              correlationId: run.taskId, projectId: taskRow.projectId, taskId: run.taskId,
+              roomId, payload: { status: to, cancelled_run_id: env.runId },
+            })],
+          });
+          await dagService.propagateBlocked(ctx, tx, run.taskId, "run_cancelled");
+        }
         eventId = await emit("run.cancelled", { run_id: env.runId }, { kind: "run_event", body: "Run cancelled" });
         await releaseRunLeases(ctx, tx, env.runId);
       }
     } else if (ev.kind === "output") {
       eventId = await emit("run.output", { stream: ev.stream, text: ev.text });
     } else {
-      const artifactId = ctx.idGen.generate(ID_PREFIXES.artifact);
-      await tx.insert(artifacts).values({
+      const storedArtifact = (await tx.select().from(artifacts).where(and(
+        eq(artifacts.organizationId, ctx.organizationId), eq(artifacts.runId, env.runId), eq(artifacts.uri, ev.uri),
+      )))[0];
+      if (ev.uri.startsWith("/api/v1/artifacts/") && (!storedArtifact || storedArtifact.checksum !== ev.checksum || storedArtifact.type !== ev.artifactType)) {
+        throw AppError.validation("artifact must be uploaded by its execution node before it is announced");
+      }
+      const artifactId = storedArtifact?.id ?? ctx.idGen.generate(ID_PREFIXES.artifact);
+      if (!storedArtifact) await tx.insert(artifacts).values({
         id: artifactId,
         organizationId: ctx.organizationId,
         taskId: run.taskId,
@@ -371,6 +407,7 @@ export async function failRunDaemonDisconnect(
   ctx: ServerContext,
   runId: string,
   computerId: string,
+  processExitConfirmed = false,
 ): Promise<{ failed: boolean }> {
   const now = ctx.clock.nowIso();
   const REASON = "daemon_disconnect";
@@ -381,7 +418,18 @@ export async function failRunDaemonDisconnect(
     // Gone, moved to another computer, or already terminal/other → idempotent no-op.
     if (run === undefined || run.computerId !== computerId) return { failed: false };
     const status = run.status as RunStatus;
-    if (status !== "starting" && status !== "running") return { failed: false };
+    if (status === "failed" && run.failureReason === REASON && processExitConfirmed) {
+      await releaseRunLeases(ctx, tx, runId);
+      if ((await unconfirmedDisconnectRunIds(ctx, tx, { computerId })).includes(runId)) {
+        const task = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
+        await appendEvent(tx, buildEvent(ctx, { type: "run.reconciled", actorType: "system", actorId: "control_plane",
+          correlationId: run.taskId, projectId: task?.projectId ?? null, taskId: run.taskId, roomId: task?.roomId ?? null, runId,
+          payload: { run_id: runId, process_exit_confirmed: true, reason: "owner_confirmed_absent" },
+        }));
+      }
+      return { failed: false };
+    }
+    if (status !== "queued" && status !== "starting" && status !== "running") return { failed: false };
 
     const taskRow = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
     const emitFailed = async (): Promise<void> => {
@@ -396,10 +444,10 @@ export async function failRunDaemonDisconnect(
           taskId: run.taskId,
           roomId: taskRow?.roomId ?? null,
           runId,
-          payload: { run_id: runId, failure_reason: REASON, recoverable: true },
+          payload: { run_id: runId, failure_reason: REASON, recoverable: true, process_exit_confirmed: processExitConfirmed },
         }),
       );
-      await releaseRunLeases(ctx, tx, runId);
+      if (processExitConfirmed) await releaseRunLeases(ctx, tx, runId);
     };
 
     if (status === "running") {
@@ -412,7 +460,8 @@ export async function failRunDaemonDisconnect(
       }
       return { failed: true };
     }
-    // starting
+    if (status === "queued") await transitionRun(tx, ctx, { runId, from: "queued", trigger: "start" });
+    // starting (including a queued run whose dispatch/process state was uncertain)
     const result = await transitionRun(tx, ctx, { runId, from: "starting", trigger: "start_failed", patch: { endedAt: now, failureReason: REASON } });
     if (!result.changed) return { failed: false };
     await transitionTask(tx, ctx, { taskId: run.taskId, from: "assigned", trigger: "assign_failed_retryable", now });
@@ -439,6 +488,11 @@ export async function activeRunIdsForComputer(ctx: ServerContext, computerId: st
       ),
     );
   return rows.map((r) => r.id);
+}
+
+/** Reconcile all uncertain processes, including runs without declared leases. */
+export async function unconfirmedProcessRunIdsForComputer(ctx: ServerContext, computerId: string): Promise<string[]> {
+  return unconfirmedDisconnectRunIds(ctx, ctx.db.db, { computerId });
 }
 
 /**

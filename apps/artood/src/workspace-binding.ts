@@ -18,6 +18,8 @@ import { spawn } from "node:child_process";
  * never silently run in an unmaterialized directory.
  */
 export interface WorkspaceConfig {
+  /** Local policy applied before git can create/delete a worktree. */
+  allowedRoots?: string[];
   /** Local git repo artood creates per-run worktrees from. Absent = no worktree support. */
   worktreeBaseRepo?: string;
 }

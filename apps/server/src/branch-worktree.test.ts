@@ -99,7 +99,7 @@ describe("#23 run.start dispatch carries branch, policy_snapshot unchanged", () 
       subscribe: () => () => {},
       close: async () => {},
     };
-    const binding = attachNodeBinding(server.ctx, transport);
+    const binding = attachNodeBinding(server.ctx, transport, "computer_local_mock");
     const task = await createReadyTask(server);
     const runId = (await assign(server, task, taskBody)).json().run.id as string;
     await binding.dispatchRunStart(runId);

@@ -1,13 +1,15 @@
-import { appendEvent, goals, plans, taskDependencies, tasks } from "@artoo/db";
+import { appendEvent, goals, plans, rooms, runs, taskDependencies, tasks } from "@artoo/db";
 import {
   type DagEdge,
   type GoalStatus,
   type Plan,
   type PlanStatus,
   type TaskSpec,
+  type TaskStatus,
   applyGoalTransition,
   applyPlanTransition,
   canProposePlan,
+  canTransitionTask,
   ID_PREFIXES,
   PlanSchema,
   TaskSpecSchema,
@@ -21,6 +23,11 @@ import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { createCheckpointInTx, hasMaterializeCheckpoint } from "./checkpoint-service.js";
+import { unsettledGoalRunIds } from "./execution-state.js";
+import { transitionTask } from "./transition-service.js";
+import { propagateBlocked } from "./dag-service.js";
+import { supportedGoalPolicy } from "./budget-policy.js";
+import { assertSupportedPlanTaskControls } from "./plan-policy.js";
 
 /**
  * V3 #115 P1d — plan versioning + plan→DAG materialization.
@@ -35,8 +42,8 @@ import { createCheckpointInTx, hasMaterializeCheckpoint } from "./checkpoint-ser
  * org-scoped; the goal.plan_materialized event records goal_id + plan_id +
  * created task ids.
  *
- * Scope note: P1d implements the first-plan flow (goal draft → planned →
- * running). Re-planning an already-running goal is out of P1d (gate condition 3).
+ * First acceptance starts the goal. Replacements require a paused goal with
+ * confirmed process exit, preserve historical work, and retain the pause fence.
  */
 
 type Tx = DrizzleDb;
@@ -61,7 +68,7 @@ export function mapPlan(row: typeof plans.$inferSelect): Plan {
 
 async function requireGoalInOrg(ctx: ServerContext, tx: Tx, goalId: string): Promise<typeof goals.$inferSelect> {
   const goal = (
-    await tx.select().from(goals).where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId)))
+    await tx.select().from(goals).where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId))).for("update")
   )[0];
   if (goal === undefined) {
     throw AppError.notFound(`goal not found: ${goalId}`, { goal_id: goalId });
@@ -125,6 +132,7 @@ export interface ProposePlanInput {
  *  the dependency graph is validated here so an invalid plan never persists. */
 export async function proposePlan(ctx: ServerContext, goalId: string, input: ProposePlanInput): Promise<Plan> {
   const specs = input.task_specs.map((s) => TaskSpecSchema.parse(s));
+  specs.forEach(assertSupportedPlanTaskControls);
   if (specs.length === 0) {
     throw AppError.validation("a plan must contain at least one task spec", { goal_id: goalId });
   }
@@ -200,6 +208,9 @@ export async function listPlans(ctx: ServerContext, goalId: string): Promise<Pla
 
 export async function rejectPlan(ctx: ServerContext, planId: string): Promise<Plan | null> {
   return ctx.db.transaction(async (tx) => {
+    const lookup = (await tx.select({ goalId: plans.goalId }).from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId))))[0];
+    if (!lookup) return null;
+    const goal = await requireGoalInOrg(ctx, tx, lookup.goalId);
     const row = (
       await tx.select().from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId)))
     )[0];
@@ -209,7 +220,6 @@ export async function rejectPlan(ctx: ServerContext, planId: string): Promise<Pl
     }
     applyPlanTransition(row.status as PlanStatus, "reject");
     await tx.update(plans).set({ status: "rejected" }).where(eq(plans.id, planId));
-    const goal = await requireGoalInOrg(ctx, tx, row.goalId);
     await appendEvent(
       tx,
       buildEvent(ctx, {
@@ -236,12 +246,23 @@ export interface MaterializeResult {
 /** The materialize body, run inside a caller-provided transaction so accept +
  *  materialize are atomic. Re-entrant on materialized_at. */
 async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: string): Promise<MaterializeResult> {
+  const lookup = (await tx.select({ goalId: plans.goalId }).from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId))))[0];
+  if (!lookup) throw AppError.notFound(`plan not found: ${planId}`, { plan_id: planId });
+  const goal = await requireGoalInOrg(ctx, tx, lookup.goalId);
   const plan = (
     await tx.select().from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId)))
   )[0];
   if (plan === undefined) {
     throw AppError.notFound(`plan not found: ${planId}`, { plan_id: planId });
   }
+  if (plan.status !== "accepted") {
+    throw AppError.invalidState(`only an accepted plan can materialize (is '${plan.status}')`, { status: plan.status });
+  }
+  if (goal.currentPlanId !== planId) {
+    throw AppError.invalidState("plan is not the goal's current plan", { plan_id: planId });
+  }
+  const specs = (plan.taskSpecs as TaskSpec[]).map((s) => TaskSpecSchema.parse(s));
+  specs.forEach(assertSupportedPlanTaskControls);
   // (1) Idempotent / re-entrant: already materialized → return existing tasks.
   if (plan.materializedAt != null) {
     const existing = await tx
@@ -251,21 +272,12 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
     const ordered = [...existing].sort((a, b) => Number(a.ref) - Number(b.ref)).map((t) => t.id);
     return { plan: mapPlan(plan), task_ids: ordered };
   }
-  // (3) State boundary: only an accepted + current plan can materialize.
-  if (plan.status !== "accepted") {
-    throw AppError.invalidState(`only an accepted plan can materialize (is '${plan.status}')`, { status: plan.status });
-  }
-  const goal = await requireGoalInOrg(ctx, tx, plan.goalId);
-  if (goal.currentPlanId !== planId) {
-    throw AppError.invalidState("plan is not the goal's current plan", { plan_id: planId });
-  }
-  if (goal.status !== "planned") {
-    throw AppError.invalidState(`goal must be 'planned' to materialize (is '${goal.status}')`, {
+  if (goal.status !== "planned" && goal.status !== "paused") {
+    throw AppError.invalidState(`goal must be planned or paused to materialize (is '${goal.status}')`, {
       goal_status: goal.status,
     });
   }
 
-  const specs = (plan.taskSpecs as TaskSpec[]).map((s) => TaskSpecSchema.parse(s));
   const taskIds = specs.map(() => ctx.idGen.generate(ID_PREFIXES.task));
   // (4) Build + validate edges by stable spec index; fail closed (rollback).
   const edgeRows = buildEdges(specs, (i) => taskIds[i]!);
@@ -274,11 +286,12 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
   // provenance; the UNIQUE(source_plan_id, source_plan_spec_ref) backstops dups.
   for (let i = 0; i < specs.length; i += 1) {
     const spec = specs[i]!;
+    const roomId = ctx.idGen.generate(ID_PREFIXES.room);
     await tx.insert(tasks).values({
       id: taskIds[i]!,
       organizationId: goal.organizationId,
       projectId: goal.projectId,
-      roomId: null,
+      roomId,
       goalId: goal.id,
       sourcePlanId: planId,
       sourcePlanSpecRef: String(i),
@@ -293,6 +306,9 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
       createdAt: now,
       updatedAt: now,
     });
+    await tx.insert(rooms).values({ id: roomId, organizationId: goal.organizationId, projectId: goal.projectId,
+      taskId: taskIds[i]!, goalId: goal.id, type: "task", name: spec.title.slice(0, 200), createdAt: now,
+    });
     await appendEvent(
       tx,
       buildEvent(ctx, {
@@ -302,10 +318,14 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
         correlationId: goal.id,
         projectId: goal.projectId,
         taskId: taskIds[i]!,
+        roomId,
         goalId: goal.id,
         payload: { title: spec.title, source_plan_id: planId, source_plan_spec_ref: String(i) },
       }),
     );
+    await appendEvent(tx, buildEvent(ctx, { type: "room.created", actorType: "system", actorId: "plan_materializer",
+      correlationId: goal.id, projectId: goal.projectId, taskId: taskIds[i]!, roomId, goalId: goal.id,
+    }));
   }
   for (const e of edgeRows) {
     await tx.insert(taskDependencies).values({
@@ -318,11 +338,12 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
     });
   }
 
-  // Goal planned → running (dag_materialized); stamp running_since once.
+  // Replacing a plan keeps the explicit pause until a human resumes the goal.
+  const goalStatus = goal.status === "paused" ? "paused" : applyGoalTransition("planned", "dag_materialized");
   await tx
     .update(goals)
     .set({
-      status: applyGoalTransition("planned", "dag_materialized"),
+      status: goalStatus,
       runningSince: goal.runningSince ?? now,
       updatedAt: now,
     })
@@ -350,7 +371,7 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
     await createCheckpointInTx(
       ctx,
       tx,
-      { ...goal, status: applyGoalTransition("planned", "dag_materialized") },
+      { ...goal, status: goalStatus },
       "dag_materialized",
       { planId, triggerEventId: matEvent.id, summary: `Materialized plan into ${taskIds.length} task(s)` },
     );
@@ -364,13 +385,16 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
  * Accept a proposed plan AND materialize it into a task DAG in ONE transaction:
  * accept (proposed→accepted, supersede prior accepted, set goal current plan,
  * goal draft→planned) then materialize (goal planned→running, build DAG). A
- * materialize failure (e.g. cycle) rolls back the accept too. First-plan flow
- * only (gate condition 3). Re-running an already-accepted+materialized plan is
- * idempotent.
+ * materialize failure rolls back the whole change. A paused goal may replace
+ * its plan after all processes have stopped; prior execution history is retained.
+ * Re-running an already-accepted+materialized plan is idempotent.
  */
 export async function acceptPlan(ctx: ServerContext, planId: string): Promise<MaterializeResult> {
   const now = ctx.clock.nowIso();
   return ctx.db.transaction(async (tx) => {
+    const lookup = (await tx.select({ goalId: plans.goalId }).from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId))))[0];
+    if (!lookup) throw AppError.notFound(`plan not found: ${planId}`, { plan_id: planId });
+    const goal = await requireGoalInOrg(ctx, tx, lookup.goalId);
     const plan = (
       await tx.select().from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId)))
     )[0];
@@ -383,12 +407,34 @@ export async function acceptPlan(ctx: ServerContext, planId: string): Promise<Ma
     if (plan.status !== "proposed") {
       throw AppError.invalidState(`cannot accept a plan in status '${plan.status}'`, { status: plan.status });
     }
-    const goal = await requireGoalInOrg(ctx, tx, plan.goalId);
-    if (goal.status !== "draft") {
+    const replacement = goal.currentPlanId !== null;
+    if ((!replacement && goal.status !== "draft") || (replacement && goal.status !== "paused")) {
       throw AppError.invalidState(
-        `P1d accepts only a first plan on a draft goal (goal is '${goal.status}'); re-planning is not yet supported`,
+        replacement ? "Pause the goal before accepting a replacement plan" : `A first plan requires a draft goal (is '${goal.status}')`,
         { goal_status: goal.status },
       );
+    }
+    supportedGoalPolicy(goal.budgets, goal.stopConditions);
+    const retiredTaskIds: string[] = [];
+    if (replacement) {
+      const current = (await tx.select({ version: plans.version }).from(plans).where(and(eq(plans.id, goal.currentPlanId!), eq(plans.organizationId, ctx.organizationId))))[0];
+      if (!current || plan.version <= current.version) throw AppError.conflict("A replacement plan must be newer than the current accepted plan");
+      const unsettled = await unsettledGoalRunIds(ctx, tx, goal.id);
+      if (unsettled.length > 0) throw AppError.conflict("Cannot replace a plan until all goal executions have confirmed they stopped", { run_ids: unsettled });
+      const previous = await tx.select().from(tasks).where(and(eq(tasks.organizationId, ctx.organizationId), eq(tasks.goalId, goal.id), eq(tasks.sourcePlanId, goal.currentPlanId!)));
+      const executed = await tx.select({ taskId: runs.taskId }).from(runs).innerJoin(tasks, eq(tasks.id, runs.taskId)).where(and(eq(runs.organizationId, ctx.organizationId), eq(tasks.goalId, goal.id)));
+      const historical = new Set(executed.map((run) => run.taskId));
+      for (const task of previous) {
+        if (historical.has(task.id) || !canTransitionTask(task.status as TaskStatus, "cancel")) continue;
+        await transitionTask(tx, ctx, { taskId: task.id, from: task.status as TaskStatus, trigger: "cancel", now,
+          events: (to) => [buildEvent(ctx, { type: "task.updated", actorType: "user", actorId: ctx.actorUserId,
+            correlationId: goal.id, projectId: goal.projectId, taskId: task.id, roomId: task.roomId, goalId: goal.id,
+            payload: { status: to, reason: "plan_superseded", source_plan_id: task.sourcePlanId, replacement_plan_id: planId },
+          })],
+        });
+        retiredTaskIds.push(task.id);
+      }
+      for (const taskId of retiredTaskIds) await propagateBlocked(ctx, tx, taskId, "plan_superseded");
     }
     applyPlanTransition("proposed", "accept");
     // Supersede any prior accepted plan (invariant: at most one accepted).
@@ -399,7 +445,7 @@ export async function acceptPlan(ctx: ServerContext, planId: string): Promise<Ma
     await tx.update(plans).set({ status: "accepted", acceptedAt: now }).where(eq(plans.id, planId));
     await tx
       .update(goals)
-      .set({ status: applyGoalTransition("draft", "plan_accepted"), currentPlanId: planId, updatedAt: now })
+      .set({ status: replacement ? "paused" : applyGoalTransition("draft", "plan_accepted"), currentPlanId: planId, updatedAt: now })
       .where(eq(goals.id, plan.goalId));
     await appendEvent(
       tx,
@@ -411,7 +457,7 @@ export async function acceptPlan(ctx: ServerContext, planId: string): Promise<Ma
         projectId: goal.projectId,
         roomId: goal.roomId,
         goalId: plan.goalId,
-        payload: { goal_id: plan.goalId, plan_id: planId },
+        payload: { goal_id: plan.goalId, plan_id: planId, previous_plan_id: goal.currentPlanId, retired_task_ids: retiredTaskIds },
       }),
     );
     return materializeInTx(ctx, tx, planId, now);

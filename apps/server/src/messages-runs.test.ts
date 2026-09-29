@@ -96,8 +96,8 @@ describe("messages + runs endpoints", () => {
     expect(rows).toHaveLength(0);
   });
 
-  it("gets a run and cancels it", async () => {
-    server = await buildTestServer();
+  it("refuses to claim cancellation without confirmation from the execution node", async () => {
+    server = await buildTestServer({ enableDevRoutes: false });
     const { taskId } = await createTask(server);
     await server.app.inject({ method: "POST", url: `/api/v1/tasks/${taskId}/ready` });
     const assigned = await server.app.inject({
@@ -115,12 +115,11 @@ describe("messages + runs endpoints", () => {
       method: "POST",
       url: `/api/v1/runs/${runId}/cancel`,
     });
-    expect(cancelled.statusCode).toBe(200);
-    expect(cancelled.json().run.status).toBe("cancelled");
+    expect(cancelled.statusCode).toBe(409);
 
     const after = await server.app.inject({ method: "GET", url: `/api/v1/runs/${runId}` });
-    expect(after.json().run.status).toBe("cancelled");
+    expect(after.json().run.status).toBe("queued");
     const task = await server.app.inject({ method: "GET", url: `/api/v1/tasks/${taskId}` });
-    expect(task.json().task.status).toBe("cancelled");
+    expect(task.json().task.status).toBe("assigned");
   });
 });

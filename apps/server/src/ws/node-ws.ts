@@ -7,7 +7,7 @@ import type { ServerContext } from "../context.js";
 import { attachNodeBinding, type NodeBinding } from "../node-binding.js";
 import { resolveNodeToken } from "../services/device-service.js";
 import { recordDeviceActivity } from "../services/presence-service.js";
-import { activeRunIdsForComputer, activeSnapshotRunIdsForComputer } from "../services/run-service.js";
+import { activeRunIdsForComputer, activeSnapshotRunIdsForComputer, unconfirmedProcessRunIdsForComputer } from "../services/run-service.js";
 import { recordHeartbeatRuntimes } from "../services/runtime-registry-service.js";
 import type { GraceWindowManager } from "./grace-window.js";
 import type { NodeRegistry } from "./node-registry.js";
@@ -124,12 +124,13 @@ export function registerNodeWsRoute(
         // failure and resumes only the disconnect snapshot, re-verified by
         // org/computer/status so terminal or newly-created runs are not resumed.
         const resumeSnapshot = graceWindow?.disarm(nodeId) ?? [];
-        if (resumeSnapshot.length > 0) {
+        {
           const resumeNodeId = nodeId;
           const resumeBinding = binding;
           void (async (): Promise<void> => {
             const active = await activeSnapshotRunIdsForComputer(ctx, resumeNodeId, resumeSnapshot);
-            for (const runId of active) {
+            const uncertain = await unconfirmedProcessRunIdsForComputer(ctx, resumeNodeId);
+            for (const runId of [...new Set([...active, ...uncertain])]) {
               await resumeBinding.dispatchRunResume(runId).catch(() => {});
             }
           })().catch(() => {});
@@ -207,6 +208,9 @@ export function registerNodeWsRoute(
           break;
         }
         handleMessage(queued);
+        // Run-event replay may follow hello before async token verification
+        // finishes. Those frames predate the binding's transport subscription.
+        if (queued.kind === "run.event" || queued.kind === "command.ack") binding?.receive(queued);
       }
       earlyQueue.length = 0;
     })();
