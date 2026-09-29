@@ -122,6 +122,26 @@ describe("createProcessAdapter", () => {
     } finally { rmSync(ws, { recursive: true, force: true }); }
   });
 
+  it.each(["codex", "claude"] as const)("preserves the %s provider error when its unterminated final record exits nonzero", async (provider) => {
+    const ws = makeWorkspace();
+    const reason = "API Error: 400 The requested model is not supported.";
+    const record = provider === "claude"
+      ? { type: "result", subtype: "success", is_error: true, result: reason, total_cost_usd: 0.002 }
+      : { type: "turn.failed", error: { message: reason } };
+    try {
+      const adapter = createProcessAdapter({
+        command: [process.execPath, "-e", `process.stdout.write(${JSON.stringify(JSON.stringify(record))}); process.exitCode = 1;`],
+        outputFormat: provider === "claude" ? "claude-json" : "codex-json", allowedRoots: [ws],
+      });
+      const events = await drain(adapter.streamEvents(await adapter.start(makeConfig(ws))));
+      expect(events.some((event) => event.type === "run.answer")).toBe(false);
+      expect(events.filter((event) => event.type === "run.lifecycle" && event.payload.phase === "failed")).toEqual([
+        { type: "run.lifecycle", payload: { phase: "failed", reason } },
+      ]);
+      if (provider === "claude") expect(events.find((event) => event.type === "run.usage")).toMatchObject({ payload: { cost_usd: 0.002 } });
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+  });
+
   it("spawns, streams stdout/stderr, collects the artifact, and completes", async () => {
     const ws = makeWorkspace();
     try {

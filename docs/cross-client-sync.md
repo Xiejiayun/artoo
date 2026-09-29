@@ -100,12 +100,16 @@ including processes whose database run failed before the node confirmed exit.
 Artifact restore streams into unpublished staging and discards partial restores
 on a late checksum failure. The database archive still uses PGlite's buffer API.
 
-The 2026-09-29 local provider check found Codex CLI installed but not logged in,
-and no Claude CLI on PATH. Live model validation is therefore still pending.
+The latest 2026-09-29 local provider check found both CLIs installed. Codex is
+not logged in; Claude reports an authenticated configuration, but its configured
+local proxy rejects the default model as unsupported. A process-local override
+to a model advertised by that proxy also returned "no model endpoints available
+given user constraints". No machine configuration was changed. Successful live
+model execution remains unverified; a logged-in CLI alone does not establish it.
 Windows-side native Swift syntax/contract checks do not replace Xcode builds,
 XCTest, simulator or device evidence. Signing, distribution, external Google
-OAuth credentials, public DNS/TLS deployment and real-provider execution remain
-environment-specific release gates, not claims made by this preview milestone.
+OAuth credentials and public DNS/TLS deployment remain environment-specific
+release gates.
 
 ## Milestone validation, 2026-09-29
 

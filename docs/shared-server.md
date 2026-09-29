@@ -135,3 +135,27 @@ codes, API peer credentials and test-runner manifests are removed after the
 run. No fixture endpoint or authentication shortcut is added to the app/server.
 On Windows, `node scripts/ios-ui-e2e.mjs --self-check` checks only this fixture
 and the real Web composer using an API peer. It does not execute or certify iOS.
+
+### Optional live conversation gate
+
+`apps/server/src/claude-conversation-smoke.test.ts` is skipped unless
+`ARTOO_CLAUDE_CHAT_SMOKE=1`. It uses the real local Claude CLI configuration and
+model allowance in a temporary workspace, with customizations disabled and
+the normal unattended permission policy. It does not enable permission bypass.
+On PowerShell, after the normal build/typecheck:
+
+```powershell
+$env:ARTOO_CLAUDE_CHAT_SMOKE = '1'
+npx vitest run apps/server/src/claude-conversation-smoke.test.ts --maxWorkers=1
+Remove-Item Env:ARTOO_CLAUDE_CHAT_SMOKE
+```
+
+The gate checks two actual model answers, prior-answer context in the follow-up,
+exactly-once message persistence, provider token measurements and no model-written
+workspace files. It writes `artifacts/live/claude-conversation.json`; a new live
+attempt replaces any old success before invoking the CLI. The server/node
+transport and identity are test fixtures, so success would not prove public
+deployment, Google login, the configured model's vendor, multi-agent discussion
+or task-writing permissions. A working provider/model configuration is required;
+the local 2026-09-29 attempt failed at the proxy, as recorded in
+[the collaboration milestone record](cross-client-sync.md).

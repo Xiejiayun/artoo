@@ -394,9 +394,14 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
           return;
         }
 
+        // Parse any final unterminated JSON record before choosing the error.
+        // CLIs normally exit nonzero for model/auth/provider failures; preserve
+        // their actionable reason instead of reducing every failure to exit 1.
+        stdout.flush();
+        stderr.flush();
         finishWith({
           type: "run.lifecycle",
-          payload: { phase: "failed", reason: signal ? `signal ${signal}` : `exit ${code ?? "unknown"}` }
+          payload: { phase: "failed", reason: signal ? `signal ${signal}` : structured.failureReason() ?? `exit ${code ?? "unknown"}` }
         });
       });
 
