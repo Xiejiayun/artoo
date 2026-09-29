@@ -1,13 +1,14 @@
 import { useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import type { Notification } from "@artoo/domain";
+import type { Member, Notification } from "@artoo/domain";
 import { useSearchParams } from "react-router-dom";
 import { useApi } from "../app/ApiContext.js";
 import { useProject } from "../app/useProject.js";
 import { useSubscription } from "../app/RealtimeContext.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
-import type { NotificationsResponse } from "../api/types.js";
+import type { BootstrapResponse, NotificationsResponse } from "../api/types.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { messageIdentity } from "../app/messageIdentity.js";
 import { Button, EmptyState, Input, Textarea } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
 import { MessageCard } from "./MessageCard.js";
@@ -78,6 +79,10 @@ function ChannelForm({ projectId, onCreated, onClose }: { projectId: string; onC
 export function ThreadPanel({ roomId, threadRootId, focusedMessageId, notificationId, onClose }: { roomId: string; threadRootId: string; focusedMessageId?: string; notificationId?: string; onClose: () => void }): React.ReactNode {
   const api = useApi();
   const query = useQueryClient();
+  // RoomConversation loads these shared queries. Observe cache updates without
+  // adding identity requests when a thread or historical mention is opened.
+  const bootstrap = useQuery<BootstrapResponse>({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(), enabled: false });
+  const members = useQuery<{ members: Member[] }>({ queryKey: queryKeys.members, queryFn: () => api.listMembers(), enabled: false });
   const readAttempts = useRef(new Set<string>());
   const root = useQuery({ queryKey: ["message", roomId, threadRootId], queryFn: () => api.getMessage(roomId, threadRootId), refetchInterval: 8000 });
   const focused = useQuery({ queryKey: ["message", roomId, focusedMessageId], queryFn: () => api.getMessage(roomId, focusedMessageId!), enabled: !!focusedMessageId && focusedMessageId !== threadRootId });
@@ -104,8 +109,8 @@ export function ThreadPanel({ roomId, threadRootId, focusedMessageId, notificati
     {invalid && <p role="alert">The selected message does not belong to this thread.</p>}
     {(root.error || focused.error) && <Button onClick={() => { void root.refetch(); if (focusedMessageId && focusedMessageId !== threadRootId) void focused.refetch(); }}>Retry opening message</Button>}
     {read.error && notificationId && ready && <Button onClick={() => markRead(notificationId)}>Retry marking notification read</Button>}
-    {ready && root.data && <><MessageCard message={root.data.message} />
-      {target && target.id !== threadRootId && <section className="product-card u-stack-sm" aria-label="Mentioned reply"><h3>Mentioned reply</h3><MessageCard message={target} /></section>}
+    {ready && root.data && <><MessageCard message={root.data.message} {...messageIdentity(root.data.message, bootstrap.data, members.data?.members)} />
+      {target && target.id !== threadRootId && <section className="product-card u-stack-sm" aria-label="Mentioned reply"><h3>Mentioned reply</h3><MessageCard message={target} {...messageIdentity(target, bootstrap.data, members.data?.members)} /></section>}
       <RoomConversation key={`${roomId}:${threadRootId}`} roomId={roomId} threadRootId={threadRootId} hiddenMessageId={target?.id} allowAssistant={typeof root.data.message.payload.discussion_id !== "string"} /></>}
   </aside>;
 }

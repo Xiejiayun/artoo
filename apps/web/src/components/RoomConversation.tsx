@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import type { Member, Message } from "@artoo/domain";
+import type { Member } from "@artoo/domain";
 import { ApiClientError } from "../api/client.js";
 import type { BootstrapResponse, MessagesResponse } from "../api/types.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
@@ -8,6 +8,7 @@ import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { useSubscription } from "../app/RealtimeContext.js";
 import { appendMessages, mergeMessages } from "../app/roomMessages.js";
+import { messageIdentity } from "../app/messageIdentity.js";
 import { DRAFTS_CLEARED_EVENT, readRoomDraft, roomDraftKey, writeRoomDraft, type RoomDraft } from "../app/roomDrafts.js";
 import { Button, EmptyState, ErrorState, Select, Skeleton, Textarea } from "../ui/index.js";
 import { Icon, Activity, Inbox } from "../ui/Icon.js";
@@ -78,28 +79,11 @@ export function RoomConversation({ roomId, taskId, goalId, threadRootId, onOpenT
     <ActionError error={messages.error ?? earlier.error} />
     {messages.error && <Button size="sm" onClick={() => void messages.refetch()}>Retry message sync</Button>}
     {messages.data.has_more && messages.data.next_before && <Button loading={earlier.isPending} onClick={() => earlier.mutate()}>Load earlier messages</Button>}
-    {items.length === 0 ? <div className="task-room--empty"><EmptyState icon={Inbox} title={threadRootId ? "No replies yet" : "No activity yet"} description="Messages, run events, and approvals will appear here." /></div> : <ul aria-label="Messages" className="messages">{items.filter((message) => message.id !== hiddenMessageId).map((message) => <li key={message.id}><MessageCard message={message} actorName={actorName(message, identity, people)} mentionNames={mentionNames(message, people, identity)} />{onOpenThread && !threadRootId && <Button size="sm" variant="ghost" onClick={() => onOpenThread(message.id)}>{message.reply_count ? `${message.reply_count} replies` : "Reply in thread"}</Button>}</li>)}</ul>}
+    {items.length === 0 ? <div className="task-room--empty"><EmptyState icon={Inbox} title={threadRootId ? "No replies yet" : "No activity yet"} description="Messages, run events, and approvals will appear here." /></div> : <ul aria-label="Messages" className="messages">{items.filter((message) => message.id !== hiddenMessageId).map((message) => <li key={message.id}><MessageCard message={message} {...messageIdentity(message, identity, people)} />{onOpenThread && !threadRootId && <Button size="sm" variant="ghost" onClick={() => onOpenThread(message.id)}>{message.reply_count ? `${message.reply_count} replies` : "Reply in thread"}</Button>}</li>)}</ul>}
     {storageKey && identity ? <MessageComposer key={`${storageKey}:${allowAssistant}`} roomId={roomId} threadRootId={threadRootId} storageKey={storageKey} bootstrap={identity} people={people} peopleError={members.error} allowAssistant={allowAssistant} /> : <div><ActionError error={bootstrap.error} /><p role="status">Loading your account before composing a message…</p>{bootstrap.error && <Button onClick={() => void bootstrap.refetch()}>Retry account</Button>}</div>}
     <AssistantTurns roomId={roomId} threadRootId={threadRootId} messages={items} allowActions={allowAssistant} />
     {!threadRootId && (taskId || goalId) && <CollaborationPanel key={`collaboration:${roomId}`} roomId={roomId} taskId={taskId} goalId={goalId} />}
   </section>;
-}
-
-function actorName(message: Message, bootstrap?: BootstrapResponse, people: Member[] = []): string | undefined {
-  if (message.actor_type === "system") return "Artoo";
-  if (!bootstrap) return undefined;
-  if (message.actor_type === "user" && message.actor_id === bootstrap.user.id) return `${bootstrap.user.display_name || bootstrap.user.email} (you)`;
-  if (message.actor_type === "user") return people.find((member) => member.id === message.actor_id)?.display_name;
-  if (message.actor_type === "agent") return bootstrap.agents.find((agent) => agent.id === message.actor_id)?.display_name;
-  return undefined;
-}
-
-function mentionNames(message: Message, people: Member[], bootstrap?: BootstrapResponse): string[] {
-  const refs = Array.isArray(message.payload.mentions) ? message.payload.mentions : [];
-  return [...new Set(refs.flatMap((ref: unknown) => {
-    if (!ref || typeof ref !== "object" || !("actor_id" in ref) || typeof ref.actor_id !== "string") return [];
-    return [people.find((person) => person.id === ref.actor_id)?.display_name ?? bootstrap?.agents.find((agent) => agent.id === ref.actor_id)?.display_name ?? ref.actor_id];
-  }))];
 }
 
 function discussionDraft(draft: RoomDraft): RoomDraft {

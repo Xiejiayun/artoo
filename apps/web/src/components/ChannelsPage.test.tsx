@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Channel, Notification } from "@artoo/domain";
 import { ApiClient, ApiClientError } from "../api/client.js";
 import { bootstrapFixture, createTestQueryClient, fakeApi, messageFixture, renderWithProviders, roomFixture } from "../test/utils.js";
-import { ChannelsPage } from "./ChannelsPage.js";
+import { ChannelsPage, ThreadPanel } from "./ChannelsPage.js";
 import { DaemonBadge } from "./DaemonBadge.js";
 import { queryKeys } from "../app/queryKeys.js";
 
@@ -13,7 +13,7 @@ const channel: Channel = { id: "channel_1", project_id: "proj_artoo", name: "eng
 function api(overrides: Partial<ApiClient> = {}): ApiClient {
   return fakeApi({ bootstrap: async () => bootstrapFixture(), listChannels: async () => ({ channels: [channel] }), getRoom: async (id) => ({ room: roomFixture({ id, project_id: channel.project_id, type: "project", name: channel.name }) }), listMembers: async () => ({ members: [{ id: "colleague", display_name: "Jane" }] }), listNotifications: async () => ({ notifications: [] }), listAssistantTurns: async () => ({ turns: [] }), listMessages: async () => ({ messages: [] }), ...overrides });
 }
-afterEach(() => localStorage.clear());
+afterEach(() => { localStorage.clear(); vi.restoreAllMocks(); });
 
 describe("channel collaboration", () => {
   it("allows only team replies when a deep-linked thread belongs to an agent planning discussion", async () => {
@@ -63,15 +63,59 @@ describe("channel collaboration", () => {
 
   it("opens a mentioned historical thread directly and marks only that notification read", async () => {
     const notification: Notification = { id: "notification_1", room_id: channel.id, message_id: "reply_old", thread_root_id: "root_old", actor_id: "colleague", body_preview: "Your review is needed", read_at: null, created_at: "2026-09-29", project_id: channel.project_id, room_type: "project", room_name: channel.name, channel_id: channel.id, task_id: null, goal_id: null };
-    const getMessage = vi.fn<ApiClient["getMessage"]>().mockImplementation(async (_, id) => ({ message: messageFixture({ id, kind: "text", body: id === "root_old" ? "Archived conversation" : "Exact historical mention", room_id: channel.id, thread_root_id: id === "root_old" ? null : "root_old" }) }));
+    const payload = { mentions: [{ actor_type: "user", actor_id: "colleague" }, { actor_type: "agent", actor_id: "agent_mock_coder" }] };
+    const getMessage = vi.fn<ApiClient["getMessage"]>().mockImplementation(async (_, id) => ({ message: messageFixture({ id, kind: "text", body: id === "root_old" ? "Archived conversation" : "Exact historical mention", room_id: channel.id, thread_root_id: id === "root_old" ? null : "root_old", ...(id === "root_old" ? {} : { actor_type: "agent", actor_id: "agent_mock_coder" }), payload }) }));
+    const listMessages: ApiClient["listMessages"] = async (_, options) => ({ messages: options?.thread_root_id ? [messageFixture({ id: "reply_latest", kind: "text", body: "Current team reply", room_id: channel.id, thread_root_id: "root_old", actor_id: "colleague", payload })] : [] });
     const readNotification = vi.fn<ApiClient["readNotification"]>().mockResolvedValue({ notification: { ...notification, read_at: "2026-09-29" } });
-    renderWithProviders(<ChannelsPage />, { client: api({ listNotifications: async () => ({ notifications: [notification] }), getMessage, readNotification }), route: "/channels?mentions=1" });
+    renderWithProviders(<ChannelsPage />, { client: api({ listNotifications: async () => ({ notifications: [notification] }), getMessage, listMessages, readNotification }), route: "/channels?mentions=1" });
     await userEvent.click(await screen.findByRole("button", { name: /Your review is needed/ }));
     expect(await screen.findByText("Archived conversation")).toBeInTheDocument();
     expect(await screen.findByText("Exact historical mention")).toBeInTheDocument();
     expect(getMessage).toHaveBeenCalledWith(channel.id, "root_old");
     expect(getMessage).toHaveBeenCalledWith(channel.id, "reply_old");
     await waitFor(() => expect(readNotification).toHaveBeenCalledWith(notification.id, expect.any(String)));
+    const panel = screen.getByRole("complementary", { name: "Thread" });
+    const rootCard = within(panel).getByText("Archived conversation").closest("article")!;
+    const mentionedCard = within(panel).getByRole("region", { name: "Mentioned reply" });
+    const replyCard = (await within(panel).findByText("Current team reply")).closest("article")!;
+    expect(within(rootCard).getByText("J (you)")).toBeInTheDocument();
+    expect(within(mentionedCard).getByText("Mock Coder")).toBeInTheDocument();
+    expect(within(replyCard).getByText("Jane")).toBeInTheDocument();
+    for (const card of [rootCard, mentionedCard, replyCard]) {
+      expect(within(card).getByLabelText("Mentioned people")).toHaveTextContent("@Jane @Mock Coder");
+    }
+  });
+
+  it("updates thread identities from the shared cache and keeps missing profiles explicit without extra requests", async () => {
+    const errors = vi.spyOn(console, "error");
+    const query = createTestQueryClient();
+    query.setDefaultOptions({ queries: { staleTime: Infinity, retry: false } });
+    const identity = bootstrapFixture();
+    query.setQueryData(queryKeys.bootstrap, identity);
+    query.setQueryData(queryKeys.members, { members: [{ id: "colleague", display_name: "Jane" }] });
+    const bootstrap = vi.fn<ApiClient["bootstrap"]>();
+    const listMembers = vi.fn<ApiClient["listMembers"]>();
+    const root = messageFixture({ id: "root_1", kind: "text", body: "Cached thread root", actor_id: "colleague", room_id: channel.id });
+    const target = messageFixture({ id: "old_reply", kind: "text", body: "Reply by missing member", actor_id: "missing_member", room_id: channel.id, thread_root_id: root.id });
+    const reply = messageFixture({ id: "new_reply", kind: "text", body: "Reply by missing agent", actor_type: "agent", actor_id: "missing_agent", room_id: channel.id, thread_root_id: root.id, payload: { mentions: [{ actor_type: "user", actor_id: "missing_member" }, { actor_type: "agent", actor_id: "missing_agent" }] } });
+    renderWithProviders(<ThreadPanel roomId={channel.id} threadRootId={root.id} focusedMessageId={target.id} onClose={() => undefined} />, { queryClient: query, client: api({ bootstrap, listMembers, getMessage: async (_, id) => ({ message: id === root.id ? root : target }), listMessages: async () => ({ messages: [reply] }) }) });
+    const panel = screen.getByRole("complementary", { name: "Thread" });
+    const mentioned = await within(panel).findByRole("region", { name: "Mentioned reply" });
+    const replies = await within(panel).findByRole("region", { name: "Thread replies" });
+    expect(within(panel).getByText("Jane")).toBeInTheDocument();
+    expect(within(mentioned).getByText("user:missing_member")).toBeInTheDocument();
+    expect(await within(replies).findByText("agent:missing_agent")).toBeInTheDocument();
+    expect(within(replies).getByLabelText("Mentioned people")).toHaveTextContent("@user:missing_member @agent:missing_agent");
+    await act(async () => {
+      query.setQueryData(queryKeys.members, { members: [{ id: "colleague", display_name: "Jane" }, { id: "missing_member", display_name: "Sam" }] });
+      query.setQueryData(queryKeys.bootstrap, { ...identity, agents: [...identity.agents, { ...identity.agents[0]!, id: "missing_agent", display_name: "Release Agent" }] });
+    });
+    expect(await within(mentioned).findByText("Sam")).toBeInTheDocument();
+    expect(await within(replies).findByText("Release Agent")).toBeInTheDocument();
+    expect(within(replies).getByLabelText("Mentioned people")).toHaveTextContent("@Sam @Release Agent");
+    expect(bootstrap).not.toHaveBeenCalled();
+    expect(listMembers).not.toHaveBeenCalled();
+    expect(errors).not.toHaveBeenCalled();
   });
 });
 

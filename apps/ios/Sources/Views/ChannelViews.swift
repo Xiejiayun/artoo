@@ -40,6 +40,7 @@ struct ChannelsView: View {
 struct MentionsView: View {
     @EnvironmentObject private var container: AppContainer
     @StateObject private var model: NotificationInboxViewModel
+    @State private var members: [WorkspaceRecord] = []
     init(client: ApiClientProtocol) { _model = StateObject(wrappedValue: NotificationInboxViewModel(client: client)) }
     var body: some View {
         List {
@@ -48,13 +49,14 @@ struct MentionsView: View {
                 NavigationLink { MentionDestination(client: model.client, notification: item) { updated, unreadCount in
                     model.recordRead(updated, unreadCount: unreadCount)
                     container.acceptNotificationCount(unreadCount, session: (model.client as? ApiClient)?.sessionID)
-                } } label: {
+                }.id(item.id) } label: {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             if item["read_at"] == .null { Image(systemName: "circle.fill").foregroundStyle(.blue).font(.caption2) }
                             Text(item["body_preview"].text).lineLimit(3)
                         }
-                        Text("\(item["actor_id"].text) · \(item["created_at"].text)").font(.caption).foregroundStyle(.secondary)
+                        ConversationMetadataView(actorType: "user", actorId: item["actor_id"].text, createdAt: item["created_at"].text,
+                                                 members: members, agents: [])
                         if !item["room_name"].text.isEmpty { Text(item["room_name"].text).font(.caption).foregroundStyle(.secondary) }
                     }
                 }
@@ -63,10 +65,18 @@ struct MentionsView: View {
             if model.hasMore { Button("Load earlier mentions") { Task { await model.loadEarlier() } }.disabled(model.loading) }
             if model.loading { ProgressView() }
             if let error = model.error ?? container.notificationCountError { Text(error).foregroundStyle(.red) }
-        }.navigationTitle("Mentions").refreshable { await model.refresh(); await container.refreshNotificationCount() }.liveRefresh { await model.refresh() }
+        }.navigationTitle("Mentions").refreshable { await refresh(); await container.refreshNotificationCount() }.liveRefresh { await refresh() }
         .onChange(of: model.unreadCount) { _, count in
             if let count { container.acceptNotificationCount(count, session: (model.client as? ApiClient)?.sessionID) }
         }
+    }
+    private func refresh() async {
+        await model.refresh()
+        do {
+            let response = try await model.client.resource(path: "/api/v1/members")
+            guard !Task.isCancelled else { return }
+            members = response["members"].records
+        } catch { /* Keep known names; unresolved people retain their actual IDs. */ }
     }
 }
 
@@ -98,34 +108,33 @@ private struct MentionDestination: View {
     let client: ApiClientProtocol
     let notification: WorkspaceRecord
     let onRead: (WorkspaceRecord, Int) -> Void
-    @State private var root: Message?
-    @State private var focus: Message?
-    @State private var error: String?
+    @StateObject private var model: MentionDestinationViewModel
+    init(client: ApiClientProtocol, notification: WorkspaceRecord, onRead: @escaping (WorkspaceRecord, Int) -> Void) {
+        self.client = client; self.notification = notification; self.onRead = onRead
+        _model = StateObject(wrappedValue: MentionDestinationViewModel(client: client))
+    }
     var body: some View {
         Group {
-            if let root {
-                CollaborationView(client: client, roomId: notification["room_id"].text, taskId: nil, threadRoot: root, focusedMessage: focus)
+            if let root = model.root {
+                CollaborationView(client: client, roomId: model.roomId, taskId: nil, threadRoot: root, focusedMessage: model.focus)
                     .safeAreaInset(edge: .bottom) {
-                        if let error { Text("Read status could not be confirmed: \(error)").font(.caption).foregroundStyle(.red).padding() }
+                        if let error = model.readError {
+                            VStack(spacing: 8) {
+                                Text("Read status could not be confirmed: \(error)").font(.caption).foregroundStyle(.red)
+                                Button("Retry read") { Task { await model.retryRead(onRead: onRead) } }
+                                    .disabled(model.markingRead).accessibilityIdentifier("retryMentionRead")
+                            }.padding().frame(maxWidth: .infinity).background(.regularMaterial)
+                        } else if model.markingRead { ProgressView("Confirming read status…").padding() }
                     }
-            } else if let error { VStack { Text(error).foregroundStyle(.red); Button("Retry") { Task { await load() } } } }
+            } else if let error = model.loadError {
+                VStack { Text(error).foregroundStyle(.red); Button("Retry opening mention") { Task { await load() } }.disabled(model.loading) }
+            }
             else { ProgressView("Opening mention…") }
-        }.task { await load() }
+        }.task(id: notification.id) { await load() }.onDisappear { model.cancel() }
     }
     private func load() async {
-        do {
-            let projectId = notification["project_id"].text
-            if !projectId.isEmpty, container.bootstrap.value?.projects.contains(where: { $0.id == projectId }) == true { container.selectedProjectId = projectId }
-            let room = apiPart(notification["room_id"].text)
-            let selected = try await client.resource(path: "/api/v1/rooms/\(room)/messages/\(apiPart(notification["message_id"].text))")
-            let message = try ArtooJSON.decoder().decode(MessageEnvelope.self, from: JSONEncoder().encode(selected)).message
-            if let rootId = message.threadRootId {
-                let response = try await client.resource(path: "/api/v1/rooms/\(room)/messages/\(apiPart(rootId))")
-                root = try ArtooJSON.decoder().decode(MessageEnvelope.self, from: JSONEncoder().encode(response)).message
-            } else { root = message }
-            focus = message; error = nil
-            let read = try await client.command(path: "/api/v1/notifications/\(apiPart(notification.id))/read", method: "POST", body: .object([:]))
-            if let updated = WorkspaceRecord(read["notification"]), let count = Int(read["unread_count"].text) { onRead(updated, count) }
-        } catch { self.error = String(describing: error) }
+        let projectId = notification["project_id"].text
+        if !projectId.isEmpty, container.bootstrap.value?.projects.contains(where: { $0.id == projectId }) == true { container.selectedProjectId = projectId }
+        await model.load(notification, onRead: onRead)
     }
 }

@@ -27,15 +27,14 @@ struct CollaborationView: View {
     }
     var body: some View {
         List {
-            if let root = threadRoot { Section("Thread") { Text(root.body).textSelection(.enabled); Text(root.actorId).font(.caption) } }
-            if let focus = focusedMessage, focus.id != threadRoot?.id { Section("Mentioned reply") { Text(focus.body).textSelection(.enabled); Text(focus.actorId).font(.caption) } }
+            if let root = threadRoot { Section("Thread") { messageContent(root) } }
+            if let focus = focusedMessage, focus.id != threadRoot?.id { Section("Mentioned reply") { messageContent(focus) } }
             Section(threadRoot == nil ? "Messages" : "Replies") {
                 RealtimeStatusView(connection: container.realtime)
                 if chat.hasOlder { Button("Load earlier messages") { Task { await chat.loadOlder() } }.disabled(chat.loading) }
                 ForEach(chat.messages.filter { $0.id != focusedMessage?.id }) { item in
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(item.body).textSelection(.enabled).accessibilityIdentifier("message.\(item.id)")
-                        Text("\(item.actorType == "agent" ? "Agent" : "Team") · \(item.actorId) · \(item.createdAt ?? "")").font(.caption).foregroundStyle(.secondary)
+                        messageContent(item)
                         if threadRoot == nil {
                             NavigationLink("\(item.replyCount ?? 0) replies · Open thread") {
                                 CollaborationView(client: model.client, roomId: roomId, taskId: taskId, threadRoot: item)
@@ -153,6 +152,22 @@ struct CollaborationView: View {
             chat.applyRealtime(notification.userInfo?["events"] as? [JSONValue] ?? [])
         }
     }
+    private func messageContent(_ message: Message) -> some View {
+        let mentions = ConversationMetadata.mentionNames(message.payload, members: members, agents: agents,
+            currentUserId: container.identity?.user.id ?? container.bootstrap.value?.user.id,
+            currentUserName: container.identity?.user.name ?? container.bootstrap.value?.user.displayName)
+        return VStack(alignment: .leading, spacing: 5) {
+            Text(message.body).textSelection(.enabled).accessibilityIdentifier("message.\(message.id)")
+            ConversationMetadataView(actorType: message.actorType, actorId: message.actorId, createdAt: message.createdAt,
+                                     members: members, agents: agents)
+            if !mentions.isEmpty {
+                let labels = mentions.map { "@\($0)" }.joined(separator: " ")
+                Text(labels).font(.caption).foregroundStyle(.secondary)
+                    .accessibilityLabel("Mentioned people").accessibilityValue(labels)
+                    .accessibilityIdentifier("mentions.\(message.id)")
+            }
+        }
+    }
     private func refresh() async {
         await chat.refresh()
         await chat.refreshTurns()
@@ -199,6 +214,22 @@ struct CollaborationView: View {
         default: body.merge(["summary": .string(summary), "type": .string("human_input"), "owner_type": .string("user"), "owner_id": .string(actor), "source_kind": .string("manual")]) { _, new in new }
         }
         if await model.perform(path: "/api/v1/rooms/\(apiPart(roomId))/\(recordKind)", body: .object(body)) { summary = ""; await refresh() }
+    }
+}
+
+struct ConversationMetadataView: View {
+    @EnvironmentObject private var container: AppContainer
+    let actorType: String
+    let actorId: String
+    let createdAt: String?
+    let members: [WorkspaceRecord]
+    let agents: [WorkspaceRecord]
+    var body: some View {
+        let author = ConversationMetadata.author(actorType: actorType, actorId: actorId, members: members, agents: agents,
+            currentUserId: container.identity?.user.id ?? container.bootstrap.value?.user.id,
+            currentUserName: container.identity?.user.name ?? container.bootstrap.value?.user.displayName)
+        let timestamp = ConversationMetadata.timestamp(createdAt)
+        Text(timestamp.isEmpty ? author : "\(author) · \(timestamp)").font(.caption).foregroundStyle(.secondary)
     }
 }
 
