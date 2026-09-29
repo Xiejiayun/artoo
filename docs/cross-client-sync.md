@@ -14,16 +14,16 @@ Exact revisions, commands, test totals and evidence boundaries are recorded belo
 | --- | --- | --- |
 | Task/goal conversations on all three clients | History, sending, retry identity, drafts, errors and account isolation; browser and native channel/thread synchronization tested | Complete task/goal UI walkthrough and physical devices |
 | Bounded pagination and synchronization | Cursor APIs, authenticated subscriptions, replay, reconnect and foreground reconciliation; regression for final discussion events to project subscribers | Deployed TLS/WebSockets and independently isolated realtime delivery |
-| Actual assistant conversation | Durable turns, explicit agent intent, actual Codex/Copilot follow-up context, exactly-once replies and recorded usage | Installed worker's provider setup, Claude route and deployed authentication/transport |
+| Actual assistant conversation | Durable turns, explicit agent intent, actual Codex/Copilot follow-up context, exactly-once replies and recorded usage; installed Windows UI provider settings persist across restart and two live replies passed | Claude route and deployed authentication/transport |
 | Restart/disconnect recovery | Server/node recovery regressions preserve process-exit boundaries; native daemon and installed Windows scenarios passed | Deployed failure/recovery drill |
 | Backup restoration and capacity | Artifact restore streams to staging and discards failed checksums | Database backup still uses a buffer; capacity limits and deployed restore drill |
 | Usage, cost and deliverables | Actual provider token measurements; unavailable prices remain null; Windows artifact download/review tested | Real pricing and model-produced deliverables; monetary spending caps are not implemented |
 | Shared deployment | Service/TLS templates, health checks, backup/recovery and connectivity instructions | Actual host, DNS/TLS, Google OAuth and cross-device deployment |
-| Repeatable validation | Shared CI, 71 native unit/three UI cases and all seven Windows installed-package checks passed for the final code revision | Repeat on subsequent code changes; platform/device/deployment checks retain their own scope |
+| Repeatable validation | Shared CI, native XCTest/UI scenarios and installed Windows gates have evidence by source revision below | Repeat on subsequent product changes; live scopes, platform/device/deployment checks retain their own limits |
 | Platform distribution | Windows install/control/restart/uninstall exercised; native simulator Debug/Release builds passed | Windows signing/update delivery; iOS device signing, provisioning and distribution |
 | Agent Daemon status | Three clients distinguish daemon presence from runtime availability; heartbeat/activity and Unknown/stale behavior covered; native disconnect/recovery UI passed | Physical-device recovery |
 | Channels, threads, mentions and notifications | Project channels, scoped threads, real-member mentions, durable paginated notifications and exact destinations implemented and covered by API/browser/native tests | Native notification deep-link UI and physical-device coverage |
-| Agent discussion and task decomposition | Real three-turn Copilot discussion, prior-answer context, validated proposal and accepted criteria/dependencies verified; native proposal/acceptance UI passed with subprocess fixtures | Installed worker provider and deployed/device interaction |
+| Agent discussion and task decomposition | Real installed-worker three-turn Copilot discussion, prior-answer context, readable plan cards, validated proposal and accepted criteria/dependencies verified; native proposal/acceptance UI passed with subprocess fixtures | Deployed/device interaction; full live sequence has not passed in one uninterrupted run |
 
 Windows-side Swift parsing or contract checks do not prove an iOS build/device
 flow. Simulator evidence does not certify physical devices. Deterministic fixture
@@ -95,13 +95,16 @@ After selecting the user's Aerial GitHub Copilot route, real Codex conversation
 and multi-agent discussion gates passed using requested model `gpt-5.4-mini`.
 They verify actual responses and prior-answer context through Artoo's production
 dispatcher/adapters, with fixture authentication and in-process node transport.
-Temporary process-level provider settings did not change the machine's persistent
-configuration or configure the installed worker. The observed Aerial catalog did
-not expose an Anthropic Messages route, so Claude remains unverified on that proxy.
+Those initial process-level checks did not configure the installed worker. The
+latest milestone below adds local Windows provider settings and verifies actual
+installed-worker chat and discussion in separate live attempts, without changing
+user-wide CLI settings. The observed Aerial catalog did not expose an Anthropic
+Messages route, so Claude remains unverified on that proxy.
 
 Native Xcode builds, XCTest and simulator UI evidence are recorded below by exact
-revision. The final discussion synchronization fix passed all 71 unit cases and
-three native UI scenarios. Signing, distribution, physical iOS devices, external
+revision. The discussion synchronization fix passed all 71 unit cases and
+three native UI scenarios; subsequent plan-card evidence is recorded separately.
+Signing, distribution, physical iOS devices, external
 Google OAuth and public DNS/TLS deployment remain separate release gates.
 
 ## Milestone validation, 2026-09-29
@@ -450,3 +453,99 @@ the temporary directory removed. These native discussions use deterministic
 subprocess fixtures; the separate real Copilot gates above establish actual
 model inference. Neither gate establishes public deployment, installed-worker
 provider setup, physical iOS behavior or distribution signing.
+
+## Local provider settings and plan cards, 2026-09-29
+
+Product revision `bd0ee48970c3f74e7858803916a907563b2b7e8b` adds Windows
+Settings for an explicit Codex executable, model and Responses-compatible API.
+The key is separately encrypted with Electron safeStorage, is never returned
+to the renderer, and is supplied to the process through its environment rather
+than command arguments. Normal conversations and read-only discussions use
+the same selected connection. Saving settings confirms storage, not a successful
+inference connection; live execution was checked separately as described below.
+Global user Git, Codex and provider configuration was not changed by these tests.
+
+All clients now render a server-validated final synthesis as a readable suggested
+plan with task criteria and named dependencies, while preserving the original
+reply behind an expandable control. A card never creates a proposal or tasks.
+The shared schema and proposal parser reject malformed plans, cycles and
+unsupported controls. Historical reads enrich only correctly attributed final
+replies using bounded queries and preserve ordinary or invalid messages as raw
+text. An actual server/node/browser regression covers initial realtime delivery,
+reload, an old reply beyond the newest message page, and the exact-message path.
+
+The [shared gate](https://github.com/Xiejiayun/artoo/actions/runs/36538110967/job/109306805731)
+passed for `bd0ee48`: 1,170 unit/integration tests passed and 20 opt-in/platform
+cases were skipped (180 passing files and nine skipped files), all 14 browser
+workflows and six authentication workflows passed, and the production dependency
+audit found zero vulnerabilities. Type checking, preview production build,
+native API contracts and whitespace checks also passed. The
+[shared artifact](https://github.com/Xiejiayun/artoo/actions/runs/36538110967/artifacts/11019319187)
+was downloaded, its source checked and its SHA-256 matched to GitHub's digest:
+`e3c4688e8e5d4c595f04b3e737a8b9437801e88c4ee6bb924569e0988a7f7c71`.
+Both desktop-width and phone-width plan-card screenshots were inspected.
+
+The unsigned Windows installer built from that source has SHA-256
+`51f5b8430a7205a3445979a5888ec598783c66ba1f9c240f7ad26a249f5eaf61`.
+Installed fixture checks cover production pairing/enrollment, encrypted provider
+settings, explicit CLI selection with an empty PATH, secret isolation/redaction,
+worker controls and duplicate-launch prevention, task execution/artifact review,
+app/server restart persistence and cleanup. Live checks used Aerial 0.3.3's
+GitHub Copilot route, requested model `gpt-5.4-mini`, and an absolute Codex path.
+Provider settings were saved in the installed UI and restored after app restart.
+Native pairing and actual node WebSocket transport use production paths; the
+Web owner's cookie is test-provisioned and the server remains on loopback.
+
+The first live attempt began at `2026-09-29T07:45:03.725Z`. Two real chat turns
+passed exactly-once persistence and prior-answer-context checks, then discussion
+failed at step 0/3. The overall reports remain failed. Its older helper retained
+only a broad stage, so the discussion failure's cause is unknown. Cleanup
+completed at `2026-09-29T07:46:37.238Z`; original evidence remains in
+`apps/desktop/release/smoke-artifacts/attempt-1/`.
+
+A discussion-only retry began at `2026-09-29T07:52:11.117Z` with the same installer
+hash and product code. All three independent provider sessions completed. Two
+registered agents received the actual preceding replies; the reviewer and final
+synthesis preserved a code invented by the first answer. The installed UI showed
+the validated plan and unchanged expandable original response. There were zero
+goal tasks or proposals before human action, and zero tasks before acceptance.
+UI acceptance created exactly two tasks retaining their criteria and `blocks`
+dependency. No model-created workspace files remained. Both reports passed and
+all resources, the isolated installation and temporary data were cleaned up by
+`2026-09-29T07:55:22.634Z`. The installed plan screenshot was inspected.
+
+These results cover chat and discussion across two separate attempts; they do
+not claim one uninterrupted five-turn pass or explain the first failure. The
+original second enclosing report has a generic check label mentioning chat;
+its companion report's `scope: "discussion"`, three measurements and three
+sessions identify its actual coverage. Original reports/logs were preserved.
+The test helper now retains discussion failure states and fixed error categories,
+omits provider-controlled text, and uses
+scope-specific report wording. See [Windows verification](windows-copilot-verification.md)
+for exact commands, evidence paths and scope controls. These test-helper and
+documentation follow-ups do not change the verified product source or installer.
+
+The five successfully measured live runs report 201,287 input and 23,237 output
+tokens. Consumption from the failed discussion is unknown and is not included.
+All reported monetary costs remain `null`. Public hosting, DNS/TLS/WebSockets,
+real Google OAuth, physical iOS devices, distribution signing and live Claude
+execution remain separate acceptance gates.
+
+The [native gate for `bd0ee48`](https://github.com/Xiejiayun/artoo/actions/runs/36538110967/job/109306805725)
+built Debug and Release successfully and passed all 77 unit XCTest cases.
+Daemon recovery (85.748 seconds) and chat synchronization (79.621 seconds)
+passed. The planning UI scenario failed when XCTest evaluated the hittability
+of the visible **Show original reply** control. Its accessibility tree exposes
+a synthetic outer button and a separate inner chevron button; the outer button
+had no valid activation point. Later action logs lack synthesized gestures, so
+the unchanged final screen does not establish that an ordinary user tap failed.
+The screenshot also shows a visually truncated acceptance criterion despite
+its complete accessibility label. This run does not validate original-reply
+expansion or the later acceptance steps for the new card.
+
+The [failed native artifact](https://github.com/Xiejiayun/artoo/actions/runs/36538110967/artifacts/11020296000)
+was downloaded, its source checked and its SHA-256 matched to GitHub's digest:
+`9e0ac4eccb633c3a634e33b725e89cfd963c01b0a597aaaa7bbae4146b0dc200`.
+The plan and failure screenshots were inspected; the report confirms resources
+closed and temporary data removed. The passing Windows live checks remain
+separate from this failed native UI acceptance.

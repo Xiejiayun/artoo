@@ -336,7 +336,10 @@ console.log('Packaged Codex adapter fixture completed');
       liveActive = true;
       liveReportPath = join(artifactDir, "windows-live-copilot.json");
       report.liveEvidence = liveReportPath;
-      report.modelExecution = "Deterministic CLI fixture plus opt-in real Codex turns through the installed Windows worker; see live evidence for completed turns and results";
+      report.liveScope = process.env.ARTOO_DESKTOP_LIVE_SCOPE ?? "all";
+      report.modelExecution = report.liveScope === "discussion"
+        ? "Deterministic CLI fixture plus a targeted real Codex planning discussion through the installed Windows worker; conversational chat turns are excluded from this run"
+        : "Deterministic CLI fixture plus opt-in real Codex chat and planning discussion through the installed Windows worker; see live evidence for completed turns and results";
       const { runWindowsLiveCopilot } = await import("./windows-live-copilot.mjs");
       const live = await runWindowsLiveCopilot({ page, workspace, userData, baseUrl, ownerCookie, artifactDir, server,
         restartApp: async () => {
@@ -350,7 +353,9 @@ console.log('Packaged Codex adapter fixture completed');
       });
       page = live.page;
       liveReportPath = live.reportPath;
-      check("Opt-in real provider chat, discussion, plan review and acceptance verified through the installed worker");
+      check(report.liveScope === "discussion"
+        ? "Targeted real provider discussion, plan review and acceptance verified through the installed worker; chat turns excluded from this run"
+        : "Opt-in real provider chat, discussion, plan review and acceptance verified through the installed worker");
     }
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Connect this computer" })).toBeVisible();

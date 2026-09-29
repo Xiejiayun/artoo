@@ -126,6 +126,10 @@ three-contribution planning discussion through Aerial / GitHub Copilot after
 the deterministic fixture succeeds. See the
 [Windows Copilot verification guide](../../docs/windows-copilot-verification.md)
 for the explicit opt-in settings, credential-file handling, evidence and limits.
+`ARTOO_DESKTOP_LIVE_SCOPE=discussion` runs only the three real discussion
+contributions for a targeted recheck. It can reuse an unchanged installer with
+`ARTOO_SMOKE_SKIP_BUILD=1` after its SHA-256 is verified; retain the earlier chat
+report separately, because the targeted run does not verify chat turns.
 
 ## Release boundary
 

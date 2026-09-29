@@ -2,27 +2,31 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { contextPacks, runs } from "@artoo/db";
+import { contextPacks, eventLog, runs } from "@artoo/db";
 import { DiscussionPlanPreviewSchema } from "@artoo/domain";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { expect } from "@playwright/test";
 
 // Explicit extension of the installed-package smoke. This consumes five real
-// model turns only when ARTOO_DESKTOP_LIVE_CODEX=1. The enclosing harness owns
+// model turns (three for discussion scope) only when ARTOO_DESKTOP_LIVE_CODEX=1.
+// The enclosing harness owns
 // pairing, installation, server, isolated app data, logout and cleanup.
 export async function runWindowsLiveCopilot({ page, workspace, userData, baseUrl, ownerCookie, artifactDir, restartApp, server }) {
+  const scope = process.env.ARTOO_DESKTOP_LIVE_SCOPE ?? "all";
   const reportPath = join(artifactDir, "windows-live-copilot.json");
   const report = { result: "fail", checkedAt: new Date().toISOString(), cleanup_complete: false,
     modelExecution: "Real Codex subprocesses through the installed Windows worker and authenticated node WebSocket",
     ownerAuthentication: "Test-provisioned owner cookie; native device pairing and authorization use production endpoints",
-    checks: [], measurements: [] };
+    scope, checks: [], measurements: [] };
   const save = () => writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   save();
   let stage = "validate local live configuration";
-  // Never include provider diagnostics, API-key values or Playwright fill call
-  // arguments in thrown errors or reports. Tracing is disabled in this harness.
+  let failureSnapshot = async () => undefined;
+  // Retain discussion states and fixed error categories only. Never include
+  // provider text, model output, keys or fill arguments. Tracing is disabled.
   try {
     assert.equal(process.env.ARTOO_DESKTOP_LIVE_CODEX, "1");
+    assert.ok(["all", "discussion"].includes(scope));
     const binary = process.env.ARTOO_DESKTOP_LIVE_BINARY;
     const model = process.env.ARTOO_DESKTOP_LIVE_MODEL;
     const provider = new URL(process.env.ARTOO_DESKTOP_LIVE_URL);
@@ -32,6 +36,18 @@ export async function runWindowsLiveCopilot({ page, workspace, userData, baseUrl
     assert.ok(["http:", "https:"].includes(provider.protocol) && !provider.username && !provider.password && !provider.search && !provider.hash);
     const apiKey = readFileSync(keyFile, "utf8").trim();
     assert.ok(apiKey.length > 0);
+    const diagnostic = (value) => {
+      if (value == null) return null;
+      const text = String(value);
+      // Never copy provider-controlled strings to a failure report. Encoded or
+      // transformed credentials need not resemble the original key.
+      const category = /unauthori[sz]ed|forbidden|invalid.?api.?key|\b(?:401|403)\b/i.test(text) ? "authentication"
+        : /rate.?limit|quota|\b429\b/i.test(text) ? "rate_limit"
+        : /timeout|timed out|deadline/i.test(text) ? "timeout"
+        : /unavailable|connection|ECONN|ENOTFOUND|\b50[234]\b/i.test(text) ? "unavailable"
+        : "other";
+      return { present: true, category };
+    };
     const providerUrl = provider.toString().replace(/\/$/, "");
     report.requested_model = model;
     report.provider = "Operator-configured Responses API (Aerial / GitHub Copilot)";
@@ -96,47 +112,49 @@ export async function runWindowsLiveCopilot({ page, workspace, userData, baseUrl
     }
     assert.equal(new Set(instances).size, 2);
 
-    stage = "create an installed-client conversation";
-    await page.getByRole("link", { name: "Workspace", exact: true }).click();
-    await page.getByRole("button", { name: "New task", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Create task" });
-    await dialog.getByLabel("Title", { exact: true }).fill("Installed Copilot conversation verification");
-    await dialog.getByLabel("Description", { exact: true }).fill("Read only the supplied context and answer the request. Do not modify files or access the network.");
-    await dialog.getByLabel("Acceptance criteria (one per line)").fill("The follow-up uses the actual prior answer.");
-    const taskCreated = responseTo("/tasks");
-    await dialog.getByRole("button", { name: "Create task", exact: true }).click();
-    const task = await consume(taskCreated);
-    const roomId = task.room.id;
-    const conversation = page.getByRole("region", { name: "Task conversation", exact: true });
-    await conversation.getByLabel("Message destination", { exact: true }).selectOption("assistant");
-    await conversation.getByLabel("Execution agent", { exact: true }).selectOption(instances[0]);
-    const marker = `INSTALLED_${randomUUID().replaceAll("-", "")}`;
-    const turns = [];
-    for (const body of [
-      `Reply with exactly this verification marker: ${marker}. Do not change files or access the network.`,
-      "Repeat the verification marker from your previous answer, followed by FOLLOWUP. Use the supplied conversation history. Do not change files or access the network.",
-    ]) {
-      stage = `real installed conversation turn ${turns.length + 1}`;
-      await conversation.getByLabel("Message", { exact: true }).fill(body);
-      const submitted = responseTo(`/rooms/${roomId}/assistant-turns`);
-      await conversation.getByRole("button", { name: "Send to agent", exact: true }).click();
-      const turnId = (await consume(submitted)).turn.id;
-      let turn;
-      await until(async () => {
-        turn = (await api(`/rooms/${roomId}/assistant-turns`)).turns.find((item) => item.id === turnId);
-        assert.ok(turn && !["failed", "cancelled"].includes(turn.status));
-        assert.ok(!(turn.status === "waiting" && turn.error));
-        return turn.status === "completed";
-      }, 120_000);
-      assert.ok(turn.response_message_id);
-      turns.push(turn);
-      console.log(`[live-installed] Conversation turn ${turns.length}/2 completed`);
+    const turns = [], answers = [];
+    if (scope === "all") {
+      stage = "create an installed-client conversation";
+      await page.getByRole("link", { name: "Workspace", exact: true }).click();
+      await page.getByRole("button", { name: "New task", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "Create task" });
+      await dialog.getByLabel("Title", { exact: true }).fill("Installed Copilot conversation verification");
+      await dialog.getByLabel("Description", { exact: true }).fill("Read only the supplied context and answer the request. Do not modify files or access the network.");
+      await dialog.getByLabel("Acceptance criteria (one per line)").fill("The follow-up uses the actual prior answer.");
+      const taskCreated = responseTo("/tasks");
+      await dialog.getByRole("button", { name: "Create task", exact: true }).click();
+      const task = await consume(taskCreated);
+      const roomId = task.room.id;
+      const conversation = page.getByRole("region", { name: "Task conversation", exact: true });
+      await conversation.getByLabel("Message destination", { exact: true }).selectOption("assistant");
+      await conversation.getByLabel("Execution agent", { exact: true }).selectOption(instances[0]);
+      const marker = `INSTALLED_${randomUUID().replaceAll("-", "")}`;
+      for (const body of [
+        `Reply with exactly this verification marker: ${marker}. Do not change files or access the network.`,
+        "Repeat the verification marker from your previous answer, followed by FOLLOWUP. Use the supplied conversation history. Do not change files or access the network.",
+      ]) {
+        stage = `real installed conversation turn ${turns.length + 1}`;
+        await conversation.getByLabel("Message", { exact: true }).fill(body);
+        const submitted = responseTo(`/rooms/${roomId}/assistant-turns`);
+        await conversation.getByRole("button", { name: "Send to agent", exact: true }).click();
+        const turnId = (await consume(submitted)).turn.id;
+        let turn;
+        await until(async () => {
+          turn = (await api(`/rooms/${roomId}/assistant-turns`)).turns.find((item) => item.id === turnId);
+          assert.ok(turn && !["failed", "cancelled"].includes(turn.status));
+          assert.ok(!(turn.status === "waiting" && turn.error));
+          return turn.status === "completed";
+        }, 120_000);
+        assert.ok(turn.response_message_id);
+        turns.push(turn);
+        console.log(`[live-installed] Conversation turn ${turns.length}/2 completed`);
+      }
+      const history = (await api(`/rooms/${roomId}/messages`)).messages;
+      answers.push(...turns.map((turn) => history.find((item) => item.id === turn.response_message_id)));
+      assert.equal(history.filter((item) => item.actor_type === "agent" && item.kind === "text").length, 2);
+      assert.ok(answers[0].body.includes(marker) && answers[1].body.includes(marker) && answers[1].body.includes("FOLLOWUP"));
+      await expect(conversation.locator(".msg__text").filter({ hasText: "FOLLOWUP" }).last()).toBeVisible();
     }
-    const history = (await api(`/rooms/${roomId}/messages`)).messages;
-    const answers = turns.map((turn) => history.find((item) => item.id === turn.response_message_id));
-    assert.equal(history.filter((item) => item.actor_type === "agent" && item.kind === "text").length, 2);
-    assert.ok(answers[0].body.includes(marker) && answers[1].body.includes(marker) && answers[1].body.includes("FOLLOWUP"));
-    await expect(conversation.locator(".msg__text").filter({ hasText: "FOLLOWUP" }).last()).toBeVisible();
 
     const sessions = new Set();
     const inspect = async (turn, previous, discussion = false) => {
@@ -157,8 +175,10 @@ export async function runWindowsLiveCopilot({ page, workspace, userData, baseUrl
         input_tokens: usage.input_tokens, output_tokens: usage.output_tokens,
         cached_input_tokens: usage.cached_input_tokens, cost_usd: usage.cost_usd, currency: usage.currency });
     };
-    await inspect(turns[0], []); await inspect(turns[1], [answers[0]]);
-    check("Two real installed-worker answers persist exactly once; follow-up receives and repeats the prior answer");
+    if (scope === "all") {
+      await inspect(turns[0], []); await inspect(turns[1], [answers[0]]);
+      check("Two real installed-worker answers persist exactly once; follow-up receives and repeats the prior answer");
+    }
 
     stage = "start bounded planning discussion through installed UI";
     await page.getByRole("link", { name: "Goals", exact: true }).click();
@@ -185,6 +205,20 @@ export async function runWindowsLiveCopilot({ page, workspace, userData, baseUrl
     const started = responseTo(`/goals/${goal.id}/discussions`);
     await planning.getByRole("button", { name: "Start planning discussion", exact: true }).click();
     let { discussion } = await consume(started);
+    stage = "complete bounded planning discussion through installed worker";
+    failureSnapshot = async () => {
+      const latest = (await api(`/discussions/${discussion.id}`)).discussion;
+      const pending = (await api(`/rooms/${discussion.room_id}/assistant-turns?thread_root_id=${encodeURIComponent(discussion.thread_root_id)}`)).turns;
+      const states = [];
+      for (const turn of pending) {
+        const run = turn.run_id ? (await server.ctx.db.db.select().from(runs).where(eq(runs.id, turn.run_id)))[0] : undefined;
+        const errors = turn.run_id ? await server.ctx.db.db.select().from(eventLog).where(and(eq(eventLog.runId, turn.run_id), eq(eventLog.type, "run.output"))).orderBy(desc(eventLog.position)).limit(40) : [];
+        states.push({ status: turn.status, error: diagnostic(turn.error), run_status: run?.status,
+          failure_reason: diagnostic(run?.failureReason),
+          stderr: errors.filter((event) => event.payload.stream === "stderr").slice(0, 5).map((event) => diagnostic(event.payload.text)) });
+      }
+      return { status: latest.status, current_step: latest.current_step, error: diagnostic(latest.error), turns: states };
+    };
     let lastStep = -1;
     await until(async () => {
       ({ discussion } = await api(`/discussions/${discussion.id}`));
@@ -244,18 +278,23 @@ export async function runWindowsLiveCopilot({ page, workspace, userData, baseUrl
     assert.deepEqual(edges.map((edge) => ({ from: edge.from_task_id, to: edge.to_task_id, type: edge.type })),
       [{ from: materialized[0].id, to: materialized[1].id, type: "blocks" }]);
     assert.deepEqual(readdirSync(liveWorkspace).filter((name) => name !== "context_pack.md"), []);
-    assert.equal(sessions.size, 5);
-    assert.equal(report.measurements.length, 5);
+    const expectedTurns = scope === "all" ? 5 : 3;
+    assert.equal(sessions.size, expectedTurns);
+    assert.equal(report.measurements.length, expectedTurns);
     assert.equal(JSON.stringify(report).includes(apiKey), false);
-    check("Human acceptance creates two tasks with the original criteria and dependency; five sessions report usage and write no work files");
+    check(`Human acceptance creates two tasks with the original criteria and dependency; ${expectedTurns} sessions report usage and write no work files`);
     report.result = "pass";
-    report.provider_turns = 5; report.provider_session_count = sessions.size;
+    report.provider_turns = expectedTurns; report.provider_session_count = sessions.size;
     report.tasks_before_proposal = 0; report.tasks_before_acceptance = 0; report.tasks_after_acceptance = 2;
     report.answer_sha256 = [...answers, ...replies].map((answer) => createHash("sha256").update(answer.body).digest("hex"));
     save();
     return { page, reportPath };
-  } catch {
-    report.error = `Installed real-provider verification failed during: ${stage}. Provider diagnostics and input values are intentionally omitted.`;
+  } catch (error) {
+    report.error_class = ["Error", "AssertionError", "TypeError", "TimeoutError"].includes(error?.name) ? error.name : "Error";
+    report.failure_location = [...String(error?.stack ?? "").matchAll(/windows-live-copilot\.mjs:(\d+):(\d+)/g)]
+      .map(([, line, column]) => ({ line: Number(line), column: Number(column) }));
+    try { report.failure_state = await failureSnapshot(); } catch { report.failure_state = "Failure state could not be retrieved"; }
+    report.error = `Installed real-provider verification failed during: ${stage}. Provider text and input values are omitted; discussion states and fixed error categories are retained when available.`;
     save();
     throw new Error(report.error);
   }

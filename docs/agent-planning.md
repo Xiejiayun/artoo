@@ -15,7 +15,14 @@ do not accept independent **Send to agent** requests: the coordinator owns the
 turn order and the stopping boundary.
 
 The final reply must contain a structured plan with task descriptions, acceptance
-criteria and dependency references. **Create plan proposal** validates that
+criteria and dependency references. Web, Windows and native iOS show a readable
+**Suggested plan** card for a server-validated final synthesis, including task
+criteria and named dependencies. **Show original reply** reveals the unchanged
+model response. Ordinary messages and invalid or unattributed JSON remain raw;
+historical final replies are enriched only after checking their discussion,
+turn, run and thread links. Viewing the card creates neither proposals nor tasks.
+
+**Create plan proposal** validates that
 reply, including dependency cycles and unsupported controls. It saves a versioned
 proposal; it does not create execution tasks. Inspect the proposed tasks and use
 **Accept plan and create tasks** to materialize the dependency graph. Invalid
@@ -52,10 +59,18 @@ between two agent instances reused the actual prior replies and materialized
 the proposed tasks, criteria and dependency only after explicit acceptance.
 Provider token usage was recorded; costs remain unknown.
 
-These live checks use temporary process-level provider settings, fixture
-authentication and in-process node transport. They do not configure or verify
-the installed Windows worker's persistent provider setup. Live Claude execution,
-task-writing model execution and production deployment remain unverified.
+Those initial live checks use temporary process-level provider settings, fixture
+authentication and in-process node transport. Additional installed Windows
+verification at `bd0ee48` saves the Aerial/Copilot connection through Settings,
+restarts the app, and uses its actual worker and authenticated node WebSocket.
+The first attempt passed two chat turns but failed during discussion for an
+undetermined reason. A discussion-only retry with the same installer then
+passed three real contributions, card rendering, unchanged original-response
+expansion, zero tasks before acceptance, and the two accepted tasks with their
+criteria and dependency. Both attempts completed cleanup; this does not claim
+one passing five-turn run. The Web owner cookie is test-provisioned and the
+server runs on loopback. Live Claude execution, task-writing model execution
+and production deployment remain unverified.
 
 At `eae1166`, native Debug and Release builds passed, with all 71 unit XCTest
 cases and three Release UI scenarios passing without failures. The UI scenarios

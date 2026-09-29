@@ -132,8 +132,17 @@ listed in [the collaboration milestone record](cross-client-sync.md).
 
 CI uses deterministic subprocess fixtures. Separate local real Codex conversation
 and discussion gates passed through Aerial's GitHub Copilot route, as described
-below. Those checks use fixture authentication and in-process node transport;
-they do not configure the installed worker's persistent provider settings.
+below. Those initial checks use fixture authentication and in-process node
+transport. At `bd0ee48`, additional installed Windows checks verify UI-saved
+provider settings, encrypted-key persistence across restart, and real model
+sessions over authenticated node WebSocket. Two chat turns passed in the first
+attempt, which then failed during discussion for an undetermined reason. A
+discussion-only retry with the same installer passed all three contributions,
+plan-card review and human acceptance. This is evidence from two attempts, not
+one passing five-turn run. The owner cookie is still test-provisioned and the
+server is on loopback. See [Windows verification](windows-copilot-verification.md)
+for the procedure and [the acceptance record](cross-client-sync.md) for exact
+source, hashes and hosted results.
 Live Claude execution, real Google OAuth, public TLS/WebSockets, physical iOS devices,
 distribution signing, provisioning and TestFlight remain separate checks.
 Deployment templates still require an actual host run.
