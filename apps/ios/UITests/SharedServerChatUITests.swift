@@ -233,11 +233,15 @@ final class SharedServerChatUITests: XCTestCase {
         try reveal(draftDependency)
         XCTAssertEqual(draftDependency.label, "Depends on: 1. \(fixture.task1Title)", "The draft must resolve its standard dependency to the numbered task name")
         attachScreenshot("Native suggested plan card before proposal")
-        let originalToggle = app.descendants(matching: .any).matching(identifier: "message.plan.original.\(synthesis.id)").firstMatch
-        try reveal(originalToggle); originalToggle.tap()
+        let originalToggle = app.buttons["message.plan.original.\(synthesis.id)"]
+        try reveal(originalToggle)
+        try waitForValue(originalToggle, "Collapsed", message: "The original-reply button must expose its collapsed state")
+        originalToggle.tap()
+        try waitForValue(originalToggle, "Expanded", message: "Tapping the original-reply button must expand the exact reply")
         try reveal(originalBody); XCTAssertEqual(originalBody.label, synthesis.body, "Expanding the original must preserve the exact server reply")
         attachScreenshot("Native suggested plan with original reply expanded")
         try reveal(originalToggle); originalToggle.tap()
+        try waitForValue(originalToggle, "Collapsed", message: "Tapping the original-reply button again must collapse the reply")
         let collapsed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: originalBody)
         try require(XCTWaiter.wait(for: [collapsed], timeout: 5) == .completed, "The original reply must collapse without changing the suggested plan")
         let afterPresentation = try await peerGoalBundle()

@@ -549,3 +549,12 @@ was downloaded, its source checked and its SHA-256 matched to GitHub's digest:
 The plan and failure screenshots were inspected; the report confirms resources
 closed and temporary data removed. The passing Windows live checks remain
 separate from this failed native UI acceptance.
+
+The native follow-up replaces that disclosure with a single, full-width button
+with a minimum 44-point height, one accessibility identifier and explicit
+Expanded/Collapsed values. Text selection is limited to the summary and original
+reply; both have room to wrap vertically. The UI test still requires a hittable
+control, exact original response, collapse, zero automatic proposals/tasks and
+human acceptance with the original dependency, and now also checks the button's
+accessible state. Static API contracts pass locally; only a subsequent macOS
+run can establish the fix's build and UI results.

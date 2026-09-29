@@ -22,25 +22,48 @@ private struct DiscussionPlanDraftView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Suggested plan").font(.headline)
-                .accessibilityIdentifier("message.plan.title.\(message.id)")
-            if !draft.rationale.isEmpty {
-                Text(draft.rationale)
-                    .accessibilityIdentifier("message.plan.rationale.\(message.id)")
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Suggested plan").font(.headline)
+                    .accessibilityIdentifier("message.plan.title.\(message.id)")
+                if !draft.rationale.isEmpty {
+                    Text(draft.rationale)
+                        .accessibilityIdentifier("message.plan.rationale.\(message.id)")
+                }
+                ForEach(Array(draft.taskSpecs.enumerated()), id: \.offset) { index, task in
+                    taskDetails(task, index: index)
+                }
             }
-            ForEach(Array(draft.taskSpecs.enumerated()), id: \.offset) { index, task in
-                taskDetails(task, index: index)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+
+            // Keep the whole row a single accessible action. DisclosureGroup
+            // in a selectable List cell can expose a synthetic outer button
+            // whose activation point differs from its nested chevron.
+            Button {
+                showsOriginal.toggle()
+            } label: {
+                HStack {
+                    Text(showsOriginal ? "Hide original reply" : "Show original reply")
+                    Spacer()
+                    Image(systemName: showsOriginal ? "chevron.down" : "chevron.right")
+                        .foregroundStyle(.tint)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            DisclosureGroup(isExpanded: $showsOriginal) {
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(showsOriginal ? "Hide original reply" : "Show original reply")
+            .accessibilityValue(showsOriginal ? "Expanded" : "Collapsed")
+            .accessibilityIdentifier("message.plan.original.\(message.id)")
+
+            if showsOriginal {
                 Text(message.body).font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("message.\(message.id)")
-            } label: {
-                Text("Show original reply")
-                    .accessibilityIdentifier("message.plan.original.\(message.id)")
             }
         }
-        .textSelection(.enabled)
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
