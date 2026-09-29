@@ -72,7 +72,7 @@ Opening a notification resolves the exact message/root directly, even outside
 the latest history page. Sending to an agent inside a thread preserves its
 thread scope. Mention metadata alone does not run an agent.
 
-Mentions load in cursor pages of 50 with a Load earlier notifications action.
+Mentions load in cursor pages of 50 with a Load earlier mentions action.
 The global badge uses the server's total unread count, including unloaded
 history. Refresh reconciles read state across the loaded pages so a read on
 another client is reflected here. A failed count refresh displays an unknown
@@ -133,14 +133,22 @@ foreground catch-up and Keychain/history restoration after app relaunch. Install
 the Playwright Chromium browser from `apps/web` before running the gate. See
 [`docs/shared-server.md`](../../docs/shared-server.md) for CI and prerequisites.
 
-The 2026-09-29 [macOS CI run](https://github.com/Xiejiayun/artoo/actions/runs/36514981285/job/109235150122)
-verified commit `60b8a248d11a6e5ea298d59dfd61c39a86475a83` using Xcode 16.4
-(16F6) and an iPhone 17 Pro simulator running iOS 26.2. The full app and asset
-catalog built successfully; all 53 XCTest cases passed with zero failures,
-including real Keychain storage and session revocation. The run retains an
-[XCTest result bundle](https://github.com/Xiejiayun/artoo/actions/runs/36514981285/artifacts/11010616964)
-under the workflow's artifact retention policy. Simulator UI walkthroughs,
-physical-device behavior and the live phone/server flow remain **unverified**.
+The 2026-09-29 [macOS CI run](https://github.com/Xiejiayun/artoo/actions/runs/36522676613/job/109258786544)
+verified commit `6be6e6ca535fcd99084431a906bf09b6c03b2528` using Xcode 16.4
+(16F6) and an iPhone 17 Pro simulator running iOS 26.2. Debug and Release builds
+succeeded; all 55 unit XCTest cases passed with zero failures, including real
+Keychain storage, session revocation and notification history/read-state
+reconciliation. The Release XCUITest also passed: real pairing, native channel
+and thread sends, a reply from the Chromium composer, background/foreground
+catch-up, and Keychain/history restoration after relaunch. The shared database
+checks confirmed each logical message was persisted once in its correct thread.
+The native and browser screenshots were inspected. The run retains
+[XCTest bundles, screenshots and synchronization records](https://github.com/Xiejiayun/artoo/actions/runs/36522676613/artifacts/11013509974)
+under the workflow's artifact retention policy. This flow verifies UI
+synchronization while the authenticated socket is connected; concurrent REST
+refreshes mean it does not isolate WebSocket delivery. Other native UI flows,
+physical-device behavior and the public phone/server deployment remain separate
+acceptance checks.
 
 ```bash
 brew install xcodegen

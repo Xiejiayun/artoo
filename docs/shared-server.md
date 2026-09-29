@@ -116,14 +116,16 @@ shared and macOS suites on main pushes and pull requests. Installed Windows
 smoke is opt-in on a separately configured isolated interactive self-hosted
 runner labeled `artoo-desktop`; no such runner is provisioned by these files.
 
-The hosted Windows shared gate and macOS simulator build/XCTest gate passed on
-2026-09-29; exact revisions, test totals and CI links are recorded in
-[the collaboration milestone record](cross-client-sync.md). The installed
-Windows smoke also passed locally. Deployment templates still require an actual
-host run. CI uses deterministic local providers; real Codex/Claude credentials,
-real Google OAuth, deployed TLS and WebSockets, simulator UI walkthroughs,
-physical iOS device behavior, distribution signing, provisioning and TestFlight
-remain separate checks.
+The hosted Windows shared gate and macOS simulator build/XCTest/UI gate passed
+on 2026-09-29; exact revisions, test totals and CI links are recorded in
+[the collaboration milestone record](cross-client-sync.md). Native UI coverage
+includes pairing, channel/thread exchange with Chromium, foreground catch-up
+and Keychain/history restoration after relaunch. The installed Windows smoke
+also passed locally. Deployment templates still require an actual host run.
+CI uses deterministic local providers; real Codex/Claude credentials, real
+Google OAuth, deployed TLS and WebSockets, other native UI workflows, physical
+iOS device behavior, distribution signing, provisioning and TestFlight remain
+separate checks.
 
 The native UI fixture runs an isolated persistent server on loopback with
 production authentication, no development credentials and no model execution.
