@@ -7,7 +7,7 @@ import { claudeCodeRuntime, createNodeClient } from "@artoo/artood";
 import { agentInstances, agentRuntimes, contextPacks, runs } from "@artoo/db";
 import { ContextPackSchema, type AssistantTurn, type Message } from "@artoo/domain";
 import { createInProcessChannel } from "@artoo/testkit";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { attachNodeBinding } from "./node-binding.js";
@@ -109,8 +109,11 @@ describe.skipIf(!enabled)("gated real Claude conversation", () => {
     expect(answers.every((message) => message.actor_type === "agent" && message.thread_root_id === null)).toBe(true);
     expect(messages.filter((message) => message.actor_type === "agent" && message.kind === "text")).toHaveLength(2);
     const [secondRun] = await server.db.db.select().from(runs).where(eq(runs.id, second.run_id!));
-    expect(secondRun?.runtimeId).toBe("runtime_mock");
-    const [runtime] = await server.db.db.select().from(agentRuntimes).where(eq(agentRuntimes.id, secondRun!.runtimeId));
+    // run.runtimeId stores the runtime name, not agent_runtimes.id.
+    expect(secondRun?.runtimeId).toBe("claude-code");
+    const [runtime] = await server.db.db.select().from(agentRuntimes).where(and(
+      eq(agentRuntimes.computerId, secondRun!.computerId), eq(agentRuntimes.runtime, secondRun!.runtimeId),
+    ));
     expect(runtime?.runtime).toBe("claude-code");
     const [pack] = await server.db.db.select().from(contextPacks).where(eq(contextPacks.id, secondRun!.contextPackId!));
     expect(ContextPackSchema.parse(pack!.payload).conversation?.messages).toEqual(expect.arrayContaining([

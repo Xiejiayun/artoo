@@ -21,6 +21,7 @@ struct WorkspaceListView: View {
                         if kind == .goals { GoalDetailView(client: model.client, goalId: item.id, projectId: projectId) }
                         else { LibraryDetailView(item: item, kind: kind, model: model, projectId: projectId) }
                     } label: { RecordRow(item: item) }
+                        .accessibilityIdentifier("workspace.\(kind.rawValue).\(item.id)")
                 }
                 if let error = model.actionError { Text(error).foregroundStyle(.red) }
             }
@@ -34,10 +35,14 @@ struct WorkspaceListView: View {
 
 struct RecordRow: View {
     let item: WorkspaceRecord
+    let showStatus: Bool
+    init(item: WorkspaceRecord, showStatus: Bool = true) {
+        self.item = item; self.showStatus = showStatus
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(item.title).font(.headline).lineLimit(3)
-            HStack { if !item.status.isEmpty { Text(item.status.replacingOccurrences(of: "_", with: " ")) }; Text(item.id).lineLimit(1) }
+            HStack { if showStatus && !item.status.isEmpty { Text(item.status.replacingOccurrences(of: "_", with: " ")) }; Text(item.id).lineLimit(1) }
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(.vertical, 4)
     }
@@ -153,6 +158,7 @@ struct GoalDetailView: View {
                 }
                 Section("Actions") {
                     NavigationLink("Discuss and break down with agents") { AgentDiscussionView(client: model.client, goalId: goalId, projectId: projectId) }
+                        .accessibilityIdentifier("goal.discuss.\(goalId)")
                     if ["draft", "paused", "blocked"].contains(goal["status"].text) { Button("Propose a plan") { planning = true } }
                     if ["running", "awaiting_approval", "blocked"].contains(goal["status"].text) { goalAction("Pause", "pause") }
                     if goal["status"].text == "paused" { goalAction("Resume", "resume") }
@@ -165,7 +171,23 @@ struct GoalDetailView: View {
                     Section("Plan \(plan["version"].text) · \(plan.status)") {
                         Text(plan["rationale"].text)
                         ForEach(Array(plan["task_specs"].array.enumerated()), id: \.offset) { index, spec in
-                            VStack(alignment: .leading) { Text("\(index + 1). \(spec["title"].text)").font(.headline); Text(spec["acceptance_criteria"].array.map(\.text).joined(separator: "\n")).font(.caption) }
+                            let dependencies = spec["dependencies"].array.map { dependency in
+                                let ref = dependency["ref"].text
+                                if let source = Int(ref), plan["task_specs"].array.indices.contains(source) {
+                                    return plan["task_specs"].array[source]["title"].text
+                                }
+                                return "Task \(ref)"
+                            }
+                            VStack(alignment: .leading) {
+                                Text("\(index + 1). \(spec["title"].text)").font(.headline)
+                                    .accessibilityIdentifier("plan.task.title.\(plan.id).\(index)")
+                                Text(spec["acceptance_criteria"].array.map(\.text).joined(separator: "\n")).font(.caption)
+                                    .accessibilityIdentifier("plan.task.criteria.\(plan.id).\(index)")
+                                if !dependencies.isEmpty {
+                                    Text("Depends on: \(dependencies.joined(separator: ", "))").font(.caption)
+                                        .accessibilityIdentifier("plan.task.dependencies.\(plan.id).\(index)")
+                                }
+                            }
                         }
                         if plan.status == "proposed" {
                             planAction("Accept and create tasks", id: plan.id, action: "accept")
@@ -176,6 +198,7 @@ struct GoalDetailView: View {
                 Section("Tasks") {
                     ForEach(bundle["tasks"].array.compactMap { WorkspaceRecord($0["task"]) }) { task in
                         NavigationLink { TaskDetailView(client: model.client, taskId: task.id) } label: { RecordRow(item: task) }
+                            .accessibilityIdentifier("goal.task.\(task.id)")
                     }
                 }
                 Section("Checkpoints") { ForEach(bundle["checkpoints"].records) { checkpoint in
@@ -195,6 +218,7 @@ struct GoalDetailView: View {
     }
     private func planAction(_ title: String, id: String, action: String) -> some View {
         Button(title) { Task { await model.perform(path: "/api/v1/plans/\(apiPart(id))/\(action)") } }.disabled(model.busy)
+            .accessibilityIdentifier("plan.\(action).\(id)")
     }
     private func exportAudit() async {
         exportError = nil

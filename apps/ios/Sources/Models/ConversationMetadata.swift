@@ -1,11 +1,11 @@
 import Foundation
 
 enum ConversationMetadata {
-    static func author(actorType: String, actorId: String, members: [WorkspaceRecord], agents: [WorkspaceRecord],
+    static func author(actorType: String, actorId: String, members: [WorkspaceRecord], agents: [WorkspaceRecord], agentInstances: [WorkspaceRecord] = [],
                        currentUserId: String?, currentUserName: String?, annotateSelf: Bool = true) -> String {
         if actorType == "system" { return "Artoo" }
-        let records = actorType == "user" ? members : (actorType == "agent" ? agents : [])
-        let recordedName = records.first { $0.id == actorId }?["display_name"].text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if actorType == "agent" { return agentName(actorId, agents: agents, instances: agentInstances) }
+        let recordedName = actorType == "user" ? displayName(members.first { $0.id == actorId }) : nil
         let isCurrentUser = actorType == "user" && actorId == currentUserId
         let ownName = isCurrentUser ? currentUserName?.trimmingCharacters(in: .whitespacesAndNewlines) : nil
         let name = [ownName, recordedName].compactMap { $0 }.first { !$0.isEmpty }
@@ -13,13 +13,27 @@ enum ConversationMetadata {
         return isCurrentUser && annotateSelf ? "\(name) (you)" : name
     }
 
-    static func mentionNames(_ payload: JSONValue?, members: [WorkspaceRecord], agents: [WorkspaceRecord],
+    static func agentName(_ actorId: String, agents: [WorkspaceRecord], instances: [WorkspaceRecord]) -> String {
+        // Runtime replies carry an agent-instance ID; older records may carry
+        // an agent ID. Resolve only within agent directories, never members.
+        if let instance = instances.first(where: { $0.id == actorId }) {
+            return displayName(instance) ?? displayName(agents.first { $0.id == instance["agent_id"].text }) ?? "agent:\(actorId)"
+        }
+        return displayName(agents.first { $0.id == actorId }) ?? "agent:\(actorId)"
+    }
+
+    private static func displayName(_ record: WorkspaceRecord?) -> String? {
+        guard let value = record?["display_name"].text.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
+    }
+
+    static func mentionNames(_ payload: JSONValue?, members: [WorkspaceRecord], agents: [WorkspaceRecord], agentInstances: [WorkspaceRecord] = [],
                              currentUserId: String?, currentUserName: String?) -> [String] {
         var names: [String] = [], seen = Set<String>()
         for mention in payload?["mentions"].array ?? [] {
             guard case let .string(actorType) = mention["actor_type"],
                   case let .string(actorId) = mention["actor_id"], !actorId.isEmpty else { continue }
-            let name = author(actorType: actorType, actorId: actorId, members: members, agents: agents,
+            let name = author(actorType: actorType, actorId: actorId, members: members, agents: agents, agentInstances: agentInstances,
                               currentUserId: currentUserId, currentUserName: currentUserName, annotateSelf: false)
             if seen.insert(name).inserted { names.append(name) }
         }

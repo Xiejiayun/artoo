@@ -55,7 +55,7 @@ struct CollaborationView: View {
                     Picker("Agent", selection: Binding(get: { chat.draft.agentInstanceId ?? "" }, set: { chat.draft.agentInstanceId = $0 })) {
                         Text("Automatic selection").tag("")
                         ForEach(agentInstances.filter { $0.status != "disabled" }) { instance in
-                            Text("\(instance["runtime"].text) · \(instance.title)").tag(instance.id)
+                            Text("\(instance["runtime"].text) · \(ConversationMetadata.agentName(instance.id, agents: agents, instances: agentInstances))").tag(instance.id)
                         }
                     }.disabled(chat.sending || chat.draft.pending != nil)
                     Button("Refresh agents") { Task { await refreshInventory() } }
@@ -153,13 +153,14 @@ struct CollaborationView: View {
         }
     }
     private func messageContent(_ message: Message) -> some View {
-        let mentions = ConversationMetadata.mentionNames(message.payload, members: members, agents: agents,
+        let mentions = ConversationMetadata.mentionNames(message.payload, members: members, agents: agents, agentInstances: agentInstances,
             currentUserId: container.identity?.user.id ?? container.bootstrap.value?.user.id,
             currentUserName: container.identity?.user.name ?? container.bootstrap.value?.user.displayName)
         return VStack(alignment: .leading, spacing: 5) {
             Text(message.body).textSelection(.enabled).accessibilityIdentifier("message.\(message.id)")
             ConversationMetadataView(actorType: message.actorType, actorId: message.actorId, createdAt: message.createdAt,
-                                     members: members, agents: agents)
+                                     members: members, agents: agents, agentInstances: agentInstances)
+                .accessibilityIdentifier("messageAuthor.\(message.id)")
             if !mentions.isEmpty {
                 let labels = mentions.map { "@\($0)" }.joined(separator: " ")
                 Text(labels).font(.caption).foregroundStyle(.secondary)
@@ -224,8 +225,9 @@ struct ConversationMetadataView: View {
     let createdAt: String?
     let members: [WorkspaceRecord]
     let agents: [WorkspaceRecord]
+    var agentInstances: [WorkspaceRecord] = []
     var body: some View {
-        let author = ConversationMetadata.author(actorType: actorType, actorId: actorId, members: members, agents: agents,
+        let author = ConversationMetadata.author(actorType: actorType, actorId: actorId, members: members, agents: agents, agentInstances: agentInstances,
             currentUserId: container.identity?.user.id ?? container.bootstrap.value?.user.id,
             currentUserName: container.identity?.user.name ?? container.bootstrap.value?.user.displayName)
         let timestamp = ConversationMetadata.timestamp(createdAt)

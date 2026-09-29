@@ -99,7 +99,6 @@ export function ComputersPage(): React.ReactNode {
             <article key={computer.id} aria-label={computer.display_name} className="inventory-item">
               <header className="inventory-item__head">
                 <h2 className="t-h3">{computer.display_name}</h2>
-                <StatusBadgeInv status={computer.status} />
               </header>
               <DaemonBadge computerId={computer.id} />
               <dl className="inv-meta">
@@ -109,7 +108,6 @@ export function ComputersPage(): React.ReactNode {
                 <Row label="Platform">
                   {computer.os} / {computer.arch}
                 </Row>
-                <Row label="Last heartbeat">{value(computer.last_heartbeat_at)}</Row>
                 <Row label="Capabilities">{list(computer.capabilities)}</Row>
               </dl>
               <section className="inventory-item__sub" aria-label={`${computer.display_name} runtimes`}>

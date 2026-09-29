@@ -44,17 +44,33 @@ describe("Inventory pages", () => {
     const client = fakeApi({
       bootstrap: async () => bootstrapFixture(),
       listComputerRuntimes,
+      listDaemons: async () => ({ daemons: [{ computer_id: "computer_local_mock", display_name: "Local Mock", status: "online",
+        connected: true, last_heartbeat_at: null, heartbeat_age_ms: null, active_runs: 0, runtimes: [] }] }),
     });
 
     renderWithProviders(<ComputersPage />, { client, route: "/computers" });
 
     const computer = await screen.findByRole("article", { name: "Local Mock" });
-    expect(computer).toHaveTextContent("online");
+    expect(await within(computer).findByText("Daemon: online")).toBeInTheDocument();
     expect(computer).toHaveTextContent("localhost");
     expect(await within(computer).findByText("mock", { exact: true })).toBeInTheDocument();
     expect(computer).toHaveTextContent("available");
     expect(computer).toHaveTextContent("code.modify");
     expect(listComputerRuntimes).toHaveBeenCalledWith("computer_local_mock");
+  });
+
+  it.each(["online", "offline"] as const)("shows only the live %s daemon status when inventory data disagrees", async (status) => {
+    const stale = status === "online" ? "offline" : "online";
+    const bootstrap = bootstrapFixture();
+    bootstrap.computers[0]!.status = stale;
+    const client = fakeApi({ bootstrap: async () => bootstrap, listComputerRuntimes: async () => ({ runtimes: [] }),
+      listDaemons: async () => ({ daemons: [{ computer_id: "computer_local_mock", display_name: "Local Mock", status,
+        connected: status === "online", last_heartbeat_at: null, heartbeat_age_ms: null, active_runs: 0, runtimes: [] }] }),
+    });
+    renderWithProviders(<ComputersPage />, { client, route: "/computers" });
+    const computer = await screen.findByRole("article", { name: "Local Mock" });
+    expect(await within(computer).findByText(`Daemon: ${status}`)).toBeInTheDocument();
+    expect(within(computer).queryByText(stale, { exact: true })).not.toBeInTheDocument();
   });
 
   it("renders agent instances with their computer, model, effort, and workspace", async () => {

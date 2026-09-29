@@ -26,7 +26,7 @@ public final class AppContainer: ObservableObject {
     @Published public private(set) var notificationCountError: String?
     public let realtime = RealtimeConnection()
     private let credentials: CredentialStore
-    private var restored = false
+    @Published fileprivate private(set) var restored = false
 
     public init(config: AppConfig = .default, credentials: CredentialStore = KeychainCredentialStore()) {
         self.config = config; self.credentials = credentials
@@ -218,6 +218,7 @@ private struct PairDeviceView: View {
                     Text("Use HTTPS for a shared team server. On a phone, localhost refers to the phone itself.").font(.caption)
                 }
             }.navigationTitle("Welcome to Artoo")
+                .disabled(!container.restored || container.isConnecting)
         }
     }
 }

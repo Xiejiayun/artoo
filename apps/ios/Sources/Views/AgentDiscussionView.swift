@@ -30,6 +30,7 @@ struct AgentDiscussionView: View {
     @StateObject private var model: WorkspaceViewModel
     @State private var draft = AgentDiscussionDraft()
     @State private var instances: [WorkspaceRecord] = []
+    @State private var agents: [WorkspaceRecord] = []
     @State private var channels: [WorkspaceRecord] = []
     @State private var error: String?
     @State private var starting = false
@@ -45,20 +46,25 @@ struct AgentDiscussionView: View {
             Section("Discuss and break down this goal") {
                 Text("Choose 2–6 distinct agent instances and their roles. Their discussion produces a proposed plan for your review before tasks are created.").font(.caption)
                 ForEach($draft.participants) { $participant in
+                    let index = draft.participants.firstIndex { $0.id == participant.id } ?? 0
                     VStack(alignment: .leading) {
                         Picker("Agent instance", selection: $participant.agentInstanceId) {
                             Text("Choose an agent").tag("")
                             ForEach(instances.filter { $0.status != "disabled" }) { instance in
-                                Text("\(instance["runtime"].text) · \(instance.title)").tag(instance.id)
+                                Text("\(instance["runtime"].text) · \(ConversationMetadata.agentName(instance.id, agents: agents, instances: instances))").tag(instance.id)
+                                    .accessibilityIdentifier("discussion.agentOption.\(instance.id)")
                             }
-                        }
+                        }.accessibilityIdentifier("discussion.participant.\(index).instance")
                         TextField("Role, such as planner or reviewer", text: $participant.role)
+                            .accessibilityIdentifier("discussion.participant.\(index).role")
                     }
                 }
                 if draft.participants.count < 6 { Button("Add participant") { draft.participants.append(DiscussionParticipantDraft()) } }
                 if draft.participants.count > 2 { Button("Remove last participant") { draft.participants.removeLast() } }
                 Stepper("Rounds: \(draft.rounds)", value: $draft.rounds, in: 1...3)
+                    .accessibilityIdentifier("discussion.rounds").accessibilityValue("\(draft.rounds)")
                 Stepper("Time limit: \(draft.maxMinutes) minutes", value: $draft.maxMinutes, in: 2...60)
+                    .accessibilityIdentifier("discussion.minutes").accessibilityValue("\(draft.maxMinutes)")
                 Picker("Discussion location", selection: $draft.roomId) {
                     Text("Goal room").tag("")
                     ForEach(channels) { channel in Text("#\(channel["name"].text)").tag(channel.id) }
@@ -68,19 +74,22 @@ struct AgentDiscussionView: View {
             Section {
                 Button(pendingStart == nil ? "Start agent discussion" : "Retry starting discussion") { Task { await start() } }
                     .disabled(starting || (pendingStart == nil && !draft.valid))
+                    .accessibilityIdentifier("discussion.start")
                 if pendingStart != nil { Text("The outcome is not confirmed. Retry preserves the original request. Check the discussions below before starting other work.").font(.caption) }
             }
             ForEach(model.state.value?["discussions"].records ?? []) { discussion in
                 Section("Discussion · \(discussion.status)") {
                     LabeledContent("Progress", value: "\(discussion["current_step"].text) / \(discussion["total_steps"].text)")
+                        .accessibilityIdentifier("discussion.progress.\(discussion.id)")
+                        .accessibilityValue("\(discussion["current_step"].text) / \(discussion["total_steps"].text)")
                     LabeledContent("Deadline", value: discussion["deadline_at"].text)
                     ForEach(Array(discussion["participants"].array.enumerated()), id: \.offset) { _, participant in
-                        Text("\(participant["role"].text): \(participant["agent_instance_id"].text)").font(.caption)
+                        Text("\(participant["role"].text): \(ConversationMetadata.agentName(participant["agent_instance_id"].text, agents: agents, instances: instances))").font(.caption)
                     }
                     if !discussion["error"].text.isEmpty { Text(discussion["error"].text).foregroundStyle(.red) }
                     NavigationLink("Open agent discussion thread") {
                         RoomThreadView(client: model.client, roomId: discussion["room_id"].text, rootId: discussion["thread_root_id"].text)
-                    }
+                    }.accessibilityIdentifier("discussion.thread.\(discussion.id)")
                     if ["running", "stopping"].contains(discussion.status) {
                         Button(discussion.status == "stopping" ? "Stopping…" : "Stop discussion", role: .destructive) { Task {
                             await model.perform(path: "/api/v1/discussions/\(apiPart(discussion.id))/cancel")
@@ -88,9 +97,11 @@ struct AgentDiscussionView: View {
                     }
                     if discussion.status == "ready" && discussion["plan_id"].text.isEmpty {
                         Button("Create plan proposal") { Task { await model.perform(path: "/api/v1/discussions/\(apiPart(discussion.id))/propose-plan") } }.disabled(model.busy)
+                            .accessibilityIdentifier("discussion.propose.\(discussion.id)")
                     }
                     if !discussion["plan_id"].text.isEmpty {
                         NavigationLink("Review proposed plan") { GoalDetailView(client: model.client, goalId: goalId, projectId: projectId) }
+                            .accessibilityIdentifier("discussion.review.\(discussion.id)")
                         Text("Accepting the plan is a separate human decision.").font(.caption)
                     }
                 }
@@ -104,7 +115,8 @@ struct AgentDiscussionView: View {
         do {
             async let bootstrap = model.client.resource(path: "/api/v1/bootstrap")
             async let projectChannels = model.client.resource(path: "/api/v1/channels?project_id=\(apiPart(projectId))")
-            instances = try await bootstrap["agent_instances"].records
+            let inventory = try await bootstrap
+            instances = inventory["agent_instances"].records; agents = inventory["agents"].records
             channels = try await projectChannels["channels"].records
             error = nil
         } catch { self.error = String(describing: error) }

@@ -276,3 +276,39 @@ gap: actual runtime answers carry an agent-instance ID, while the current name
 resolver directly looks up agent IDs. They retain an explicit typed-ID fallback.
 The following native workflow milestone addresses that gap and the duplicate
 inventory-status label found during real node recovery testing.
+
+## Runtime attribution and native goal workflows, 2026-09-29
+
+Actual runtime replies now resolve their agent-instance ID through the agent
+directory on Web/Windows and iOS, including mentions and native discussion
+participants. Legacy direct agent IDs retain their names; missing agent records
+retain a typed fallback and never resolve through a member with a colliding ID.
+Computer screens use the live daemon observation instead of displaying a second
+cached inventory status. Native plan review shows dependency names alongside
+the task titles and acceptance criteria before acceptance. Native pairing fields
+also wait for connection restoration/sign-out to finish before accepting input.
+
+The expanded Release XCUITest suite contains independent chat, real daemon
+stop/recovery, and discussion/proposal/acceptance scenarios. Its discussion uses
+two process-adapter fixture instances for two contributions and a final synthesis.
+The subprocesses check their actual context and read-only policy; the harness
+checks the persisted answers, exact thread scope, and zero goal tasks before
+human acceptance, followed by two tasks with acceptance criteria and a `blocks`
+dependency. These deterministic subprocesses do not establish provider inference.
+
+The opt-in real Codex conversation gate passed locally using the user's Aerial
+0.3.3 GitHub Copilot route with requested model `gpt-5.4-mini`. Both actual CLI
+answers were persisted exactly once, the second received and used the first
+answer in the production context pack, provider usage was recorded, and no
+model-written workspace files remained. The report includes successful temporary
+workspace cleanup. The two turns reported input/output/cached token counts of
+30,637/356/28,928 and 31,596/512/29,952 respectively. Cost remains unknown (`null`).
+The local evidence is `artifacts/live/codex-conversation.json`, excluded from Git.
+
+This gate uses temporary process-level Responses-provider configuration, an
+ephemeral CLI session and a read-only sandbox. It does not change the installed
+worker or persistent CLI configuration. Server/node transport and authentication
+are in-process fixtures, so this establishes real model conversation through
+Artoo's dispatcher and process adapter, not public deployment or real Google
+OAuth. Aerial's observed catalog had no Anthropic Messages-compatible route;
+the existing Claude live gate therefore remains unverified with that proxy.

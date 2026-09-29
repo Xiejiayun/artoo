@@ -11,7 +11,12 @@ export function messageIdentity(message: Message, bootstrap?: BootstrapResponse,
       return annotateSelf ? `${ownName} (you)` : ownName;
     }
     if (actorType === "user") return people.find((person) => person.id === actorId)?.display_name.trim() || fallback;
-    if (actorType === "agent") return bootstrap?.agents.find((agent) => agent.id === actorId)?.display_name.trim() || fallback;
+    if (actorType === "agent") {
+      // Run answers are signed by the executing instance, while older messages
+      // and mentions may identify the agent directly.
+      const agentId = bootstrap?.agent_instances.find((instance) => instance.id === actorId)?.agent_id ?? actorId;
+      return bootstrap?.agents.find((agent) => agent.id === agentId)?.display_name.trim() || fallback;
+    }
     return fallback;
   };
   const refs = Array.isArray(message.payload.mentions) ? message.payload.mentions : [];

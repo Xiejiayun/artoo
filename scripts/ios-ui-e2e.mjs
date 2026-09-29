@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium, expect } from "@playwright/test";
+import { createWorkflowFixture, verifyWorkflowResults } from "./ios-ui-workflows-fixture.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const selfCheck = process.argv.includes("--self-check");
@@ -28,9 +29,15 @@ async function main() {
   const temporary = mkdtempSync(join(tmpdir(), "artoo-ios-ui-"));
   const workspace = join(temporary, "workspace");
   mkdirSync(workspace);
-  const report = { mode: selfCheck ? "server-browser-harness-only" : "native-and-browser-ui", checks: [], passed: false };
+  const report = { mode: selfCheck ? "server-browser-harness-only" : "native-and-browser-ui", model: "deterministic subprocess fixture; no provider session", started_at: new Date().toISOString(), checks: [], passed: false };
+  const reportPath = join(output, selfCheck ? "ui-harness-self-check.json" : "native-ui-sync.json");
+  // An interrupted attempt must never leave a prior successful result in place.
+  writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  for (const name of selfCheck ? ["harness-browser.png", "harness-daemon.png", "harness-reviewed-plan.png", "harness-failure.png"] : ["native-browser-sync.png", "native-browser-failure.png"]) {
+    rmSync(join(output, name), { force: true });
+  }
   const check = (name) => { report.checks.push(name); console.log(`[ios-ui] PASS ${name}`); };
-  let server, browser, child;
+  let server, browser, child, workflows, page;
   const interrupted = new AbortController();
   const stopNative = (signal) => {
     if (!child?.pid) return;
@@ -87,19 +94,33 @@ async function main() {
     const suffix = randomUUID().slice(0, 8);
     const channelName = `native-sync-${suffix}`;
     const { channel } = await request("/api/v1/channels", { project_id: "proj_artoo", name: channelName, description: "Native and browser synchronization acceptance" });
+    workflows = await createWorkflowFixture({ root, temporary, origin, projectId: channel.project_id, peerToken: peer.control_token, suffix, request, until });
     const fixture = {
+      ...workflows.fields,
       server_url: origin, pairing_code: nativeCode.code, project_id: channel.project_id,
       channel_id: channel.id, channel_name: channelName, peer_control_token: peer.control_token,
       native_message: `Native root ${suffix}`, native_reply: `Native thread reply ${suffix}`,
       browser_reply: `Browser thread reply ${suffix}`,
     };
+    const control = async (action) => {
+      const response = await fetch(`${fixture.fixture_control_url}/node/${action}`, { method: "POST",
+        headers: { Authorization: `Bearer ${fixture.fixture_control_token}` }, signal: AbortSignal.any([interrupted.signal, AbortSignal.timeout(70_000)]) });
+      assert.equal(response.status, 200, `Fixture node ${action} failed`);
+      return response.json();
+    };
+    for (const authorization of [undefined, "Bearer incorrect-fixture-token"]) {
+      const response = await fetch(`${fixture.fixture_control_url}/node/stop`, { method: "POST", headers: authorization ? { Authorization: authorization } : {}, signal: AbortSignal.timeout(5000) });
+      assert.equal(response.status, 401, "Test control must reject missing or incorrect credentials");
+    }
+    assert.equal((await workflows.readDaemon()).status, "online");
+    check("Loopback fixture control rejects missing/wrong credentials; real paired WS node advertises two runtimes");
     const fixturePath = join(temporary, "fixture.json");
     writeFileSync(fixturePath, JSON.stringify(fixture), { mode: 0o600 });
     browser = await chromium.launch({ headless: true });
     interrupted.signal.throwIfAborted();
     const context = await browser.newContext();
     await context.addCookies([{ name: "artoo_session", value: owner.raw, url: origin, httpOnly: true, sameSite: "Lax" }]);
-    const page = await context.newPage();
+    page = await context.newPage();
     page.setDefaultTimeout(30_000);
     await page.goto(`${origin}/channels?room=${encodeURIComponent(channel.id)}`);
     await expect(page.getByRole("heading", { name: `# ${channelName}`, exact: true })).toBeVisible();
@@ -109,7 +130,7 @@ async function main() {
     const browserFlow = async () => {
       const channelView = page.getByRole("region", { name: "Channel conversation", exact: true });
       const message = channelView.getByRole("listitem").filter({ hasText: fixture.native_message });
-      await expect(message).toBeVisible({ timeout: 600_000 });
+      await expect(message).toBeVisible({ timeout: 1_200_000 });
       await message.getByRole("button", { name: /Reply in thread|\d+ replies/ }).click();
       const thread = page.getByRole("complementary", { name: "Thread", exact: true });
       await expect(thread.getByRole("list", { name: "Messages" })).toContainText(fixture.native_reply, { timeout: 120_000 });
@@ -121,7 +142,8 @@ async function main() {
     };
     const roomPath = `/api/v1/rooms/${channel.id}/messages`;
     const emulatedNative = async () => {
-      const native = await request("/api/v1/devices/claim", { code: fixture.pairing_code, platform: "ios", app_version: "harness-self-check", display_name: "Harness API client (not native UI)" });
+      const freshCode = await request("/api/v1/devices/pairings", { intended_platform: "ios" }, peer.control_token);
+      const native = await request("/api/v1/devices/claim", { code: freshCode.code, platform: "ios", app_version: "harness-self-check", display_name: "Harness API client (not native UI)" });
       const send = (body, threadRootId) => request(roomPath, { body, kind: "text", ...(threadRootId ? { thread_root_id: threadRootId } : {}), client_request_id: randomUUID() }, native.control_token);
       const { message } = await send(fixture.native_message);
       await send(fixture.native_reply, message.id);
@@ -134,11 +156,55 @@ async function main() {
       child = spawn(process.execPath, [join(root, "apps/ios/scripts/test-macos.mjs"), "--ui"], {
         cwd: root, env: { ...process.env, ARTOO_IOS_UI_FIXTURE: fixturePath }, stdio: "inherit", windowsHide: true, detached: true,
       });
-      const timeout = setTimeout(() => { stopNative("SIGTERM"); rejectTest(new Error("Native UI test exceeded 20 minutes")); }, 1_200_000);
+      const timeout = setTimeout(() => { stopNative("SIGTERM"); rejectTest(new Error("Native UI test exceeded 30 minutes")); }, 1_800_000);
       child.once("error", (error) => { clearTimeout(timeout); rejectTest(error); });
       child.once("exit", (code, signal) => { clearTimeout(timeout); code === 0 ? resolveTest() : rejectTest(new Error(`Native UI test failed (${code ?? signal})`)); });
     });
     await Promise.all([browserFlow(), selfCheck ? emulatedNative() : nativeFlow()]);
+    if (selfCheck) {
+      // This drives the real Web UI and test controls only. It is deliberately
+      // reported as harness evidence, never as an XCUITest or native result.
+      await page.goto(`${origin}/computers`);
+      const computer = page.getByRole("article", { name: fixture.computer_name, exact: true });
+      await expect(computer.getByText("Daemon: online", { exact: true })).toBeVisible({ timeout: 30_000 });
+      const stopped = await control("stop");
+      assert.equal(stopped.daemon.status, "offline");
+      await expect(computer.getByText("Daemon: offline", { exact: true })).toBeVisible({ timeout: 60_000 });
+      await control("start");
+      await expect(computer.getByText("Daemon: online", { exact: true })).toBeVisible({ timeout: 30_000 });
+      check("Browser observes authenticated artood WS online, actual stop/offline, and resumed heartbeat online");
+      await page.screenshot({ path: join(output, "harness-daemon.png"), fullPage: true });
+
+      await page.goto(`${origin}/goals`);
+      await page.getByRole("navigation", { name: "Goal list" }).getByRole("button", { name: new RegExp(fixture.goal_title) }).click();
+      const planning = page.getByRole("region", { name: "Agent planning", exact: true });
+      await planning.getByRole("checkbox", { name: new RegExp(fixture.planner_name) }).check();
+      await planning.getByRole("checkbox", { name: new RegExp(fixture.reviewer_name) }).check();
+      await planning.getByLabel("Discussion rounds", { exact: true }).fill("1");
+      await planning.getByLabel("Discussion time limit (minutes)", { exact: true }).fill("5");
+      const audit = async () => (await request(`/api/v1/goals/${fixture.goal_id}/audit-bundle`, undefined, peer.control_token)).bundle;
+      assert.equal((await audit()).tasks.length, 0);
+      await planning.getByRole("button", { name: "Start planning discussion", exact: true }).click();
+      await expect(planning.getByText("3 of 3 contributions completed", { exact: false })).toBeVisible({ timeout: 120_000 });
+      assert.equal((await audit()).tasks.length, 0, "Finished discussion must not create executable goal tasks");
+      await planning.getByRole("button", { name: "Create plan proposal", exact: true }).click();
+      const plans = page.getByRole("region", { name: "Plans", exact: true });
+      await expect(plans.getByText(fixture.task_1_title, { exact: true })).toBeVisible();
+      await expect(plans.getByText(fixture.task_2_title, { exact: true })).toBeVisible();
+      await expect(plans.getByText(fixture.task_1_criterion, { exact: true })).toBeVisible();
+      await expect(plans.getByText(fixture.task_2_criterion, { exact: true })).toBeVisible();
+      await expect(plans.getByText(`Depends on: ${fixture.task_1_title}`, { exact: true })).toBeVisible();
+      const proposed = await audit();
+      assert.equal(proposed.tasks.length, 0, "A proposal must still have zero materialized tasks before human acceptance");
+      assert.equal(proposed.plans[0].status, "proposed");
+      report.before_acceptance = { goal_id: fixture.goal_id, task_count: proposed.tasks.length, plan_status: proposed.plans[0].status };
+      await plans.getByRole("button", { name: "Accept plan and create tasks", exact: true }).click();
+      await expect(plans.getByText("accepted", { exact: true })).toBeVisible();
+      check("Browser starts two process-backed agents, reviews their three contributions and dependent proposal, then accepts it with zero goal tasks before acceptance");
+      // The product uses an inner scrolling pane. Capture the plan itself so
+      // its accepted state, criteria and dependency are not hidden by the shell.
+      await plans.screenshot({ path: join(output, "harness-reviewed-plan.png") });
+    }
     const roots = await request(roomPath);
     const nativeRoots = roots.messages.filter((message) => message.body === fixture.native_message);
     assert.equal(nativeRoots.length, 1, "Native root must be persisted exactly once");
@@ -146,8 +212,15 @@ async function main() {
     for (const text of [fixture.native_reply, fixture.browser_reply]) assert.equal(replies.messages.filter((message) => message.body === text).length, 1);
     assert.ok(replies.messages.every((message) => message.thread_root_id === nativeRoots[0].id));
     check("Shared database retains one root and exactly one copy of each scoped thread reply");
+    report.workflows = await verifyWorkflowResults({ fixture, request, transitions: workflows.transitions });
+    check("Production APIs confirm three subprocess turns with exact thread-scoped context, attributed answers, and two accepted tasks with criteria and a blocks dependency");
     if (!selfCheck) check("XCUITest passed real pairing, foreground sync, background catch-up and app relaunch");
+    if (!selfCheck) check("XCUITest passed native daemon stop/resume and discussion/proposal/acceptance workflows");
     report.passed = true;
+  } catch (error) {
+    report.error = error instanceof Error ? error.message : String(error);
+    await page?.screenshot({ path: join(output, selfCheck ? "harness-failure.png" : "native-browser-failure.png"), fullPage: true }).catch(() => {});
+    throw error;
   } finally {
     if (child && child.exitCode === null && child.signalCode === null) {
       const stopped = new Promise((done) => child.once("exit", done));
@@ -155,13 +228,26 @@ async function main() {
       await Promise.race([stopped, new Promise((done) => setTimeout(done, 5_000))]);
       stopNative("SIGKILL");
     }
-    const closed = await Promise.allSettled([browser?.close(), server?.close()]);
-    writeFileSync(join(output, selfCheck ? "ui-harness-self-check.json" : "native-ui-sync.json"), `${JSON.stringify(report, null, 2)}\n`);
-    const canonical = resolve(temporary);
-    assert.ok(canonical.startsWith(`${resolve(tmpdir())}${sep}artoo-ios-ui-`), "Refusing cleanup outside the fixture directory");
-    rmSync(canonical, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-    process.removeListener("SIGINT", onInterrupt); process.removeListener("SIGTERM", onTerminate);
+    const workersClosed = await Promise.allSettled([workflows?.close()]);
+    const closed = [...workersClosed, ...await Promise.allSettled([browser?.close(), server?.close()])];
     const failedClose = closed.find((result) => result.status === "rejected");
+    if (failedClose) { report.passed = false; report.error = "Native UI fixture cleanup failed"; }
+    let removalError;
+    try {
+      const canonical = resolve(temporary);
+      assert.ok(canonical.startsWith(`${resolve(tmpdir())}${sep}artoo-ios-ui-`), "Refusing cleanup outside the fixture directory");
+      rmSync(canonical, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch (error) {
+      removalError = error; report.passed = false; report.error = "Native UI temporary fixture cleanup failed";
+    } finally {
+      process.removeListener("SIGINT", onInterrupt); process.removeListener("SIGTERM", onTerminate);
+    }
+    // Never retain a passing report while private fixture credentials remain
+    // because directory cleanup failed after otherwise successful assertions.
+    report.cleanup = { resources_closed: !failedClose, temporary_directory_removed: !removalError };
+    report.finished_at = new Date().toISOString();
+    writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    if (removalError) throw new Error("Native UI temporary fixture cleanup failed", { cause: removalError });
     if (failedClose) throw new Error("Native UI fixture cleanup failed", { cause: failedClose.reason });
   }
 }

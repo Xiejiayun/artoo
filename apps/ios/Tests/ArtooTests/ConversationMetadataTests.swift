@@ -18,6 +18,29 @@ final class ConversationMetadataTests: XCTestCase {
         }
     }
 
+    func testRuntimeInstanceAuthorsAndMentionsResolveTheLinkedAgentWithoutUsingMemberNames() throws {
+        let member = try XCTUnwrap(WorkspaceRecord(.object(["id": .string("ai_planner"), "display_name": .string("Different person")])))
+        let agent = try XCTUnwrap(WorkspaceRecord(.object(["id": .string("agent_planner"), "display_name": .string("Planning agent")])))
+        // Match the production bootstrap: instances have agent_id and runtime,
+        // but the human-readable name currently lives on the linked agent.
+        let instance = try XCTUnwrap(WorkspaceRecord(.object(["id": .string("ai_planner"), "agent_id": .string("agent_planner"), "runtime": .string("codex")])))
+        XCTAssertEqual(ConversationMetadata.author(actorType: "agent", actorId: instance.id, members: [member], agents: [agent], agentInstances: [instance], currentUserId: member.id, currentUserName: "Different person"), "Planning agent")
+        XCTAssertEqual(ConversationMetadata.author(actorType: "user", actorId: member.id, members: [member], agents: [agent], agentInstances: [instance], currentUserId: nil, currentUserName: nil), "Different person")
+        let payload: JSONValue = .object(["mentions": .array([.object(["actor_type": .string("agent"), "actor_id": .string(instance.id)])])])
+        XCTAssertEqual(ConversationMetadata.mentionNames(payload, members: [member], agents: [agent], agentInstances: [instance], currentUserId: nil, currentUserName: nil), ["Planning agent"])
+    }
+
+    func testInstanceDisplayNameTakesPriorityAndMissingAgentProfilesKeepTheInstanceIdentity() throws {
+        let agent = try XCTUnwrap(WorkspaceRecord(.object(["id": .string("agent_planner"), "display_name": .string("Planning agent")])))
+        let named = try XCTUnwrap(WorkspaceRecord(.object(["id": .string("ai_named"), "agent_id": .string(agent.id), "display_name": .string("  Laptop planner  ")])))
+        let blank = try XCTUnwrap(WorkspaceRecord(.object(["id": .string("ai_blank"), "agent_id": .string(agent.id), "display_name": .string("  ")])))
+        let orphan = try XCTUnwrap(WorkspaceRecord(.object(["id": .string("ai_orphan"), "agent_id": .string("removed_agent"), "runtime": .string("codex")])))
+        XCTAssertEqual(ConversationMetadata.agentName(named.id, agents: [agent], instances: [named]), "Laptop planner")
+        XCTAssertEqual(ConversationMetadata.agentName(blank.id, agents: [agent], instances: [blank]), "Planning agent")
+        XCTAssertEqual(ConversationMetadata.agentName(orphan.id, agents: [agent], instances: [orphan]), "agent:ai_orphan")
+        XCTAssertEqual(ConversationMetadata.agentName(agent.id, agents: [agent], instances: [named]), "Planning agent")
+    }
+
     func testMentionNamesResolveBothActorTypesAndIgnoreMalformedOrDuplicateReferences() throws {
         let member = try XCTUnwrap(WorkspaceRecord(.object(["id": .string("shared_id"), "display_name": .string("Maya")])))
         let agent = try XCTUnwrap(WorkspaceRecord(.object(["id": .string("shared_id"), "display_name": .string("Build agent")])))

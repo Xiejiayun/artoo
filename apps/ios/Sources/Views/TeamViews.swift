@@ -17,10 +17,10 @@ struct TeamView: View {
                         ForEach(data["computers"].records) { computer in
                             NavigationLink { ComputerDetailView(computer: computer, client: model.client) } label: {
                                 VStack(alignment: .leading) {
-                                    RecordRow(item: computer)
+                                    RecordRow(item: computer, showStatus: false)
                                     DaemonStatusRow(model: daemons, computerId: computer.id)
                                 }
-                            }
+                            }.accessibilityIdentifier("computer.\(computer.id)")
                         }
                     }
                     Section("Agent instances") {
@@ -64,7 +64,7 @@ private struct ComputerDetailView: View {
     }
     var body: some View {
         Form {
-            Section("Computer") { RecordRow(item: computer); Text("\(computer["os"].text) · \(computer["arch"].text)") }
+            Section("Computer") { RecordRow(item: computer, showStatus: false); Text("\(computer["os"].text) · \(computer["arch"].text)") }
             Section("Execution daemon") {
                 DaemonStatusRow(model: daemons, computerId: computer.id)
                 Text("Status is confirmed by the server every five seconds while this screen is visible.").font(.caption)
@@ -103,6 +103,7 @@ private struct DaemonStatusRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Label("Daemon: \(status.capitalized)", systemImage: status == "online" ? "checkmark.circle" : status == "unknown" ? "questionmark.circle" : "exclamationmark.circle")
                     .foregroundStyle(status == "online" ? Color.green : status == "unknown" ? Color.secondary : Color.orange)
+                    .accessibilityIdentifier("daemonStatus.\(computerId)").accessibilityValue(status)
                 if let value {
                     Text("\(status == "unknown" ? "Last known: " : "")\(value.activeRuns) active runs").font(.caption)
                     if let heartbeat = value.lastHeartbeatAt { Text("Last heartbeat: \(heartbeat)").font(.caption) }

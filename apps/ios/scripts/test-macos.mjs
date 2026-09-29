@@ -16,14 +16,20 @@ if (ui) {
   if (!process.env.ARTOO_IOS_UI_FIXTURE) throw new Error("Start the real-server UI fixture before using --ui");
   const fixture = JSON.parse(readFileSync(process.env.ARTOO_IOS_UI_FIXTURE, "utf8"));
   const fields = { server_url: "SERVER_URL", pairing_code: "PAIRING_CODE", project_id: "PROJECT_ID", channel_id: "CHANNEL_ID",
-    peer_control_token: "PEER_CONTROL_TOKEN", native_message: "NATIVE_MESSAGE", native_reply: "NATIVE_REPLY", browser_reply: "BROWSER_REPLY" };
+    peer_control_token: "PEER_CONTROL_TOKEN", native_message: "NATIVE_MESSAGE", native_reply: "NATIVE_REPLY", browser_reply: "BROWSER_REPLY",
+    computer_id: "COMPUTER_ID", computer_name: "COMPUTER_NAME", goal_id: "GOAL_ID", goal_title: "GOAL_TITLE",
+    planner_instance_id: "PLANNER_INSTANCE_ID", planner_name: "PLANNER_NAME", reviewer_instance_id: "REVIEWER_INSTANCE_ID", reviewer_name: "REVIEWER_NAME",
+    task_1_title: "TASK_1_TITLE", task_2_title: "TASK_2_TITLE", task_1_criterion: "TASK_1_CRITERION", task_2_criterion: "TASK_2_CRITERION",
+    fixture_control_url: "FIXTURE_CONTROL_URL", fixture_control_token: "FIXTURE_CONTROL_TOKEN" };
   uiEnvironment = {};
   for (const [field, variable] of Object.entries(fields)) {
     if (typeof fixture[field] !== "string" || fixture[field].length === 0) throw new Error(`UI fixture is missing ${field}`);
     uiEnvironment[`ARTOO_UI_${variable}`] = fixture[field];
   }
-  const origin = new URL(fixture.server_url);
-  if (!["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname) || origin.username || origin.password) throw new Error("UI fixture must use an isolated loopback server");
+  for (const value of [fixture.server_url, fixture.fixture_control_url]) {
+    const origin = new URL(value);
+    if (!["http:", "https:"].includes(origin.protocol) || !["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname) || origin.username || origin.password) throw new Error("UI fixture and node controls must use isolated loopback servers");
+  }
 }
 mkdirSync(output, { recursive: true });
 function run(command, args, capture = false) {

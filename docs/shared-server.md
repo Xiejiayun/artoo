@@ -96,10 +96,13 @@ npm run verify:desktop
   native API static contracts, browser workflows, local test-provider auth E2E,
   production dependency audit and whitespace. It runs on Windows CI.
 - `verify:ios`: production server/Web build, native contracts, XcodeGen,
-  simulator build/XCTest, and a Release-app XCUITest against the shared server
+  simulator build/XCTest, and Release-app XCUITests against the shared server
   with an independent Chromium client. The UI flow pairs through onboarding,
   exchanges channel/thread messages with the Web composer, reconciles a reply
   written while backgrounded and restores Keychain/history after app relaunch.
+  Independent scenarios stop/restart a real authenticated execution node and
+  start a two-agent discussion, review its dependent proposal and accept it.
+  The discussion uses deterministic subprocesses, not provider model responses.
   Requires macOS, full Xcode with an installed iOS simulator, and XcodeGen.
   The script selects an available iPhone; `ARTOO_IOS_SIMULATOR_UDID` can select
   another installed iPhone. Simulator tests use ad-hoc signing with local
@@ -129,6 +132,12 @@ separate checks.
 
 The native UI fixture runs an isolated persistent server on loopback with
 production authentication, no development credentials and no model execution.
+Its two execution runtimes are actual process adapters that emit deterministic
+answers after checking the supplied discussion context and read-only policy.
+The server still dispatches each turn, stores responses, creates the proposal
+and materializes tasks only after acceptance through the native/Web UI. Node
+stop/start controls live on a separate authenticated loopback test service;
+they never override production presence or add routes to the production server.
 Only the fixture Web owner's session is provisioned directly; the native app
 claims its credential through the normal one-time pairing screen. Temporary
 codes, API peer credentials and test-runner manifests are removed after the
@@ -158,4 +167,38 @@ transport and identity are test fixtures, so success would not prove public
 deployment, Google login, the configured model's vendor, multi-agent discussion
 or task-writing permissions. A working provider/model configuration is required;
 the local 2026-09-29 attempt failed at the proxy, as recorded in
+[the collaboration milestone record](cross-client-sync.md).
+
+`apps/server/src/codex-conversation-smoke.test.ts` provides the corresponding
+opt-in gate for the Codex CLI with `ARTOO_CODEX_CHAT_SMOKE=1`. Its command uses
+an ephemeral session and a read-only filesystem sandbox. The filesystem sandbox
+does not disable inherited MCP servers or plugins; the gate is a conversation
+verification, not a capability-isolation certification.
+
+By default the gate uses the operator's existing Codex configuration. For a
+Responses-compatible proxy, these optional environment variables apply only
+to that invocation:
+
+- `ARTOO_CODEX_CHAT_BINARY`: an explicit CLI executable path if needed.
+- `ARTOO_CODEX_CHAT_MODEL`: the proxy's model identifier.
+- `ARTOO_CODEX_CHAT_PROVIDER_URL`: the API base URL, including `/v1`.
+- `ARTOO_CODEX_CHAT_PROVIDER_KEY`: the local proxy credential. Load it into the
+  test process from the operator's existing secret helper; do not place it in
+  source, command arguments or committed configuration.
+
+Run `npx vitest run apps/server/src/codex-conversation-smoke.test.ts --maxWorkers=1`
+in that process after enabling the gate. Its report is
+`artifacts/live/codex-conversation.json`. The gate passes history through actual
+Artoo context packs and checks two provider answers and recorded usage, while
+the server/node transport and identity remain in-process fixtures. It does not
+change persistent CLI settings or configure the installed Windows worker.
+
+For the locally tested Aerial 0.3.3 GitHub Copilot route, the base URL is
+`http://127.0.0.1:18181/v1` and the model is `gpt-5.4-mini`. The observed catalog
+exposes Responses-compatible models but no `/v1/messages` model route. Claude
+CLI uses the latter protocol, and Aerial's messages handler does not translate
+it to Responses; changing only the Claude model name cannot fix that mismatch.
+The Codex custom-provider fields follow the
+[official configuration reference](https://developers.openai.com/codex/config-advanced/).
+Provider availability may change; exact evidence and its limits belong in
 [the collaboration milestone record](cross-client-sync.md).
