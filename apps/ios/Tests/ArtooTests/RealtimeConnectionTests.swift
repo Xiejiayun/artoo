@@ -55,8 +55,8 @@ final class RealtimeConnectionTests: XCTestCase {
         let firstUpdate = expectation(description: "live event refresh")
         let olderUpdate = expectation(description: "older replay event still refreshes")
         var updates = 0
-        let observer = NotificationCenter.default.addObserver(forName: .artooRealtimeChanged, object: "session_1", queue: nil) { note in
-            if note.userInfo?["topic"] as? String == "room:r" {
+        let observer = NotificationCenter.default.addObserver(forName: .artooRealtimeChanged, object: nil, queue: nil) { note in
+            if note.object as? String == "session_1", note.userInfo?["topic"] as? String == "room:r" {
                 updates += 1
                 if updates == 1 { firstUpdate.fulfill() } else { olderUpdate.fulfill() }
             }
@@ -113,7 +113,7 @@ final class RealtimeConnectionTests: XCTestCase {
         defer { connection.stop() }
         try connection.configure(origin: URL(string: "https://team.example.com")!, controlToken: "token", sessionID: "foreground", topics: ["room:r"])
         await fulfillment(of: [started], timeout: 1)
-        let update = expectation(forNotification: .artooRealtimeChanged, object: "foreground") { $0.userInfo?["topic"] as? String == "room:r" }
+        let update = expectation(forNotification: .artooRealtimeChanged, object: nil) { $0.object as? String == "foreground" && $0.userInfo?["topic"] as? String == "room:r" }
         first.frame(cursor: 7, id: "event_7")
         await fulfillment(of: [update], timeout: 1)
         connection.setActive(false); XCTAssertTrue(first.closed)
@@ -126,7 +126,9 @@ final class RealtimeConnectionTests: XCTestCase {
     func testRevokedSocketExpiresOnlyItsSessionAndDoesNotReconnect() async throws {
         let socket = TestRealtimeSocket()
         let subscribed = expectation(description: "subscribed"); socket.onSend = { _ in subscribed.fulfill() }
-        let expired = expectation(forNotification: .artooAuthenticationExpired, object: "revoked-session")
+        // NotificationCenter's sender filter compares object identity, not the
+        // value of a Swift String bridged to a fresh NSString.
+        let expired = expectation(forNotification: .artooAuthenticationExpired, object: nil) { $0.object as? String == "revoked-session" }
         var creates = 0
         let connection = RealtimeConnection(factory: { _ in creates += 1; return socket }, retryDelay: 0.001)
         defer { connection.stop() }

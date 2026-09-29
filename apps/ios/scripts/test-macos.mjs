@@ -21,8 +21,12 @@ const candidates = Object.entries(inventory.devices).sort(([a], [b]) => b.locale
 const requested = process.env.ARTOO_IOS_SIMULATOR_UDID;
 const device = requested ? candidates.find((item) => item.udid === requested) : candidates[0];
 if (!device) throw new Error(requested ? "ARTOO_IOS_SIMULATOR_UDID must identify an available iPhone simulator" : "Install an iOS simulator runtime in Xcode before running this gate");
-const common = ["-project", "Artoo.xcodeproj", "-scheme", "Artoo", "-derivedDataPath", resolve(output, "DerivedData"), "CODE_SIGNING_ALLOWED=NO"];
+// Simulator ad-hoc signing needs no developer certificate, but provides the
+// application/keychain entitlements required by the real Keychain XCTest.
+const common = ["-project", "Artoo.xcodeproj", "-scheme", "Artoo", "-derivedDataPath", resolve(output, "DerivedData"),
+  "CODE_SIGNING_ALLOWED=YES", "CODE_SIGN_IDENTITY=-", "CODE_SIGNING_REQUIRED=YES"];
 run("xcodebuild", [...common, "-destination", "generic/platform=iOS Simulator", "build-for-testing"]);
+run("codesign", ["--display", "--entitlements", ":-", resolve(output, "DerivedData/Build/Products/Debug-iphonesimulator/Artoo.app")]);
 console.log(`Testing on ${device.name} (${device.udid})`);
 run("xcodebuild", [...common, "-destination", `platform=iOS Simulator,id=${device.udid}`, "-parallel-testing-enabled", "NO",
   "-resultBundlePath", resolve(output, `Artoo-${Date.now()}.xcresult`), "test-without-building"]);

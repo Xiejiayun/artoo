@@ -58,6 +58,9 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         GENERATE_INFOPLIST_FILE: "NO"
+        # Simulator-only ad-hoc identity enables the real Keychain API in XCTest.
+        # Device/TestFlight provisioning remains owned by the Apple developer team.
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Configuration/Simulator.entitlements
 
   ArtooTests:
     type: bundle.unit-test

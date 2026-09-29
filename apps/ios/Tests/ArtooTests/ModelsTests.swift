@@ -89,7 +89,7 @@ final class ModelsTests: XCTestCase {
         """
         let task = try decoder.decode(TaskItem.self, from: Data(json.utf8))
         XCTAssertEqual(task.status, .other("quantum_superposition"))
-        XCTAssertEqual(task.status.label, "Quantum_superposition")
+        XCTAssertEqual(task.status.label, "Quantum_Superposition")
     }
 
     func testEncodesCreateTaskRequestAsSnakeCase() throws {

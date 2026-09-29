@@ -132,14 +132,18 @@ brew install xcodegen
 cd apps/ios
 xcodegen generate
 xcodebuild -project Artoo.xcodeproj -scheme Artoo \
-  -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build-for-testing
+  -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
 xcodebuild -project Artoo.xcodeproj -scheme Artoo \
-  -destination 'platform=iOS Simulator,name=iPhone 16' test
+  -destination 'platform=iOS Simulator,name=iPhone 16' CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
 ```
 
 Choose an installed simulator listed by `xcrun simctl list devices available`.
 The project targets iOS 17 and Swift 5.9; use Xcode 15 or newer. No generated
 `.xcodeproj` is committed; `project.yml` owns its configuration and resources.
+Simulator tests use ad-hoc signing and simulator-only application/Keychain
+entitlements. This requires no Apple account or signing certificate and lets
+the Keychain round-trip exercise the real API; an entirely unsigned simulator
+app returns `errSecMissingEntitlement`. Device provisioning is separate.
 
 The native tests cover DTOs, unknown statuses, task lifecycle view models,
 production onboarding, server-origin rejection, session roles, Keychain
