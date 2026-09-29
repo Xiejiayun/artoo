@@ -103,9 +103,24 @@ Screenshot capture succeeded on its first attempt; the harness verifies native
 IPC, renderer, worker, task and realtime health before recording that evidence.
 
 Native static validation checks 22 request samples, 51 required routes and
-25 Swift source files for syntax. The macOS CI gate performs the missing
-Xcode build and XCTest run; its result must be checked for the pushed revision.
-The shared CI gate and deployment templates are described in
+25 Swift source files for syntax. The
+[hosted Windows shared gate](https://github.com/Xiejiayun/artoo/actions/runs/36514121949/job/109232517593)
+passed for collaboration milestone `3c730995379349cc6e6a4f1ecb2e9d7d55fc368f`,
+covering the preview build, regression suite, browser/authentication flows,
+native contracts and dependency audit.
+
+The subsequent [macOS gate](https://github.com/Xiejiayun/artoo/actions/runs/36514981285/job/109235150122)
+passed for native validation fix `60b8a248d11a6e5ea298d59dfd61c39a86475a83`.
+Xcode 16.4 (16F6) built the app and full asset catalog, then executed all
+53 XCTest cases on an iPhone 17 Pro simulator running iOS 26.2: zero failures
+and no skipped tests. This includes actual Keychain round-trip storage and
+session-revocation notification handling. The fix enables simulator-only
+ad-hoc Keychain entitlements and corrects test assertions; it does not change
+production Swift behavior or physical-device provisioning. The run retains
+an [XCTest result bundle](https://github.com/Xiejiayun/artoo/actions/runs/36514981285/artifacts/11010616964)
+for the workflow's configured retention period. Simulator UI walkthroughs,
+physical-device flows and live cross-device/provider acceptance remain open.
+The gate commands and deployment templates are described in
 [shared-server.md](shared-server.md).
 
 Notifications currently return the latest 100 records; the badge counts unread

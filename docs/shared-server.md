@@ -98,7 +98,8 @@ npm run verify:desktop
 - `verify:ios`: domain build/contracts, XcodeGen, simulator build and XCTest.
   Requires macOS, full Xcode with an installed iOS simulator, and XcodeGen.
   The script selects an available iPhone; `ARTOO_IOS_SIMULATOR_UDID` can select
-  another installed iPhone. It uses no signing identity or Apple credentials.
+  another installed iPhone. Simulator tests use ad-hoc signing with local
+  Keychain entitlements; no Apple account or developer certificate is required.
 - `verify:desktop`: installed NSIS/Electron smoke. Requires a logged-in Windows
   desktop and `ARTOO_DESKTOP_INTERACTIVE=1`. It is an explicit local/operator
   gate; a headless hosted runner is not claimed to verify installation/UI.
@@ -111,9 +112,11 @@ shared and macOS suites on main pushes and pull requests. Installed Windows
 smoke is opt-in on a separately configured isolated interactive self-hosted
 runner labeled `artoo-desktop`; no such runner is provisioned by these files.
 
-The macOS script and deployment templates were authored on Windows and remain
-unverified until their actual CI/host run succeeds. CI uses deterministic local
-providers; real Codex/Claude credentials, real Google OAuth, deployed TLS and
-WebSockets, physical iOS device behavior, signing, provisioning and TestFlight
-remain separate checks. Keep these distinctions in the milestone record;
-adding a workflow is not evidence that it passed.
+The hosted Windows shared gate and macOS simulator build/XCTest gate passed on
+2026-09-29; exact revisions, test totals and CI links are recorded in
+[the collaboration milestone record](cross-client-sync.md). The installed
+Windows smoke also passed locally. Deployment templates still require an actual
+host run. CI uses deterministic local providers; real Codex/Claude credentials,
+real Google OAuth, deployed TLS and WebSockets, simulator UI walkthroughs,
+physical iOS device behavior, distribution signing, provisioning and TestFlight
+remain separate checks.

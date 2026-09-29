@@ -8,11 +8,12 @@ into one auditable workflow.
 
 This repository includes the Web + Windows + iOS trusted-team preview.
 Current acceptance evidence is tracked in
-[the preview delivery record](docs/trusted-team-preview.md); deployment,
-pairing, backup and recovery instructions are in
-[the preview operations guide](docs/preview-operations.md). iOS runtime checks
-remain a separate Mac/Xcode gate. Historical milestone records below are not
-evidence that the current preview has passed its release gates.
+[the collaboration milestone record](docs/cross-client-sync.md). Shared-server
+deployment and validation instructions are in
+[the shared-server guide](docs/shared-server.md); pairing, backup and recovery
+are covered by [the preview operations guide](docs/preview-operations.md).
+Historical milestone records below are not evidence that the current preview
+has passed its release gates.
 
 v0.1 has been accepted on `origin/main` at `eec68d8`. It proves the core loop:
 

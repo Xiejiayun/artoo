@@ -122,10 +122,14 @@ The repository-level `npm run verify:ios` automates XcodeGen, simulator selectio
 build and XCTest and retains an `.xcresult` bundle. See
 [`docs/shared-server.md`](../../docs/shared-server.md) for CI and prerequisites.
 
-This revision was authored on Windows. Its Xcode build, XCTest execution,
-simulator/device UI and live phone/server flow remain **unverified**, explicitly
-deferred until a Mac is available. Previous source-build evidence does not prove
-this revision. The full asset catalog must be included in verification.
+The 2026-09-29 [macOS CI run](https://github.com/Xiejiayun/artoo/actions/runs/36514981285/job/109235150122)
+verified commit `60b8a248d11a6e5ea298d59dfd61c39a86475a83` using Xcode 16.4
+(16F6) and an iPhone 17 Pro simulator running iOS 26.2. The full app and asset
+catalog built successfully; all 53 XCTest cases passed with zero failures,
+including real Keychain storage and session revocation. The run retains an
+[XCTest result bundle](https://github.com/Xiejiayun/artoo/actions/runs/36514981285/artifacts/11010616964)
+under the workflow's artifact retention policy. Simulator UI walkthroughs,
+physical-device behavior and the live phone/server flow remain **unverified**.
 
 ```bash
 brew install xcodegen
@@ -156,8 +160,8 @@ isolation, stable agent request ids, authenticated WebSocket requests,
 replay/live ordering, reconnect cursors, background close and revocation,
 thread draft/mention boundaries, reply-count ordering, daemon Unknown handling
 and agent-planning participant/round/time validation.
-These XCTest cases require execution on the Mac; Windows source checks do not
-establish that they passed.
+The macOS CI evidence above covers these XCTest cases. Windows source checks
+alone do not establish that they passed.
 
 On a simulator and a physical phone, verify this complete live flow:
 
