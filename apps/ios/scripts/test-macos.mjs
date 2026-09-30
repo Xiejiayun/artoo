@@ -27,6 +27,10 @@ if (ui) {
   const fixture = JSON.parse(readFileSync(process.env.ARTOO_IOS_UI_FIXTURE, "utf8"));
   const fields = { server_url: "SERVER_URL", pairing_code: "PAIRING_CODE", project_id: "PROJECT_ID", channel_id: "CHANNEL_ID",
     peer_control_token: "PEER_CONTROL_TOKEN", native_message: "NATIVE_MESSAGE", native_reply: "NATIVE_REPLY", browser_reply: "BROWSER_REPLY",
+    member_user_id: "MEMBER_USER_ID", member_name: "MEMBER_NAME", member_peer_control_token: "MEMBER_PEER_CONTROL_TOKEN",
+    member_native_device_name: "MEMBER_NATIVE_DEVICE_NAME", member_recovery_device_name: "MEMBER_RECOVERY_DEVICE_NAME",
+    member_pending_mac_id: "MEMBER_PENDING_MAC_ID", member_pending_mac_name: "MEMBER_PENDING_MAC_NAME", owner_device_id: "OWNER_DEVICE_ID",
+    member_revocation_ready_message: "MEMBER_REVOCATION_READY_MESSAGE", member_recovery_message: "MEMBER_RECOVERY_MESSAGE",
     computer_id: "COMPUTER_ID", computer_name: "COMPUTER_NAME", goal_id: "GOAL_ID", goal_title: "GOAL_TITLE",
     approval_id: "APPROVAL_ID", approval_summary: "APPROVAL_SUMMARY", approval_task_id: "APPROVAL_TASK_ID",
     cancellation_goal_id: "CANCELLATION_GOAL_ID", cancellation_goal_title: "CANCELLATION_GOAL_TITLE",

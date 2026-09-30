@@ -68,6 +68,8 @@ const nativeWorkflowImages = [
   "Native execution completed with uploaded artifact",
   "Native uploaded execution report in Quick Look",
   "Native task accepted after artifact review",
+  "Native member device permissions without pairing inputs",
+  "Native member restored after fresh pairing without pairing inputs",
 ];
 export function readXCTestScreenshots(directory) {
   let manifest;

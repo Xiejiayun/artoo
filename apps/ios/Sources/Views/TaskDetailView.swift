@@ -4,6 +4,7 @@ import QuickLook
 /// Full task view: status, acceptance criteria, lifecycle actions, runs,
 /// approvals, and artifacts. Drives the create → ready → assign → review loop.
 public struct TaskDetailView: View {
+    private enum InputField: Hashable { case approval, review }
     @StateObject private var model: TaskDetailViewModel
     @State private var showingAssign = false
     @State private var cancellingRun: Run?
@@ -13,7 +14,7 @@ public struct TaskDetailView: View {
     @State private var reviewComment = ""
     @State private var executionApprovalDraft = ExecutionApprovalDraft()
     @State private var executionApprovalExpanded = false
-    @FocusState private var approvalSummaryFocused: Bool
+    @FocusState private var focusedField: InputField?
     private let client: ApiClientProtocol
 
     public init(client: ApiClientProtocol, taskId: String) {
@@ -30,7 +31,13 @@ public struct TaskDetailView: View {
                 }
                 criteriaSection(snapshot.task)
                 if snapshot.task.status == .ready { executionApprovalSection }
-                if snapshot.task.status == .review { Section("Review feedback") { TextField("Comment or requested changes", text: $reviewComment, axis: .vertical).lineLimit(2...6).accessibilityIdentifier("task.review.comment.\(model.taskId)") } }
+                if snapshot.task.status == .review {
+                    Section("Review feedback") {
+                        TextField("Comment or requested changes", text: $reviewComment, axis: .vertical).lineLimit(2...6)
+                            .focused($focusedField, equals: .review)
+                            .accessibilityIdentifier("task.review.comment.\(model.taskId)")
+                    }
+                }
                 Section("Team work") {
                     if let roomId = snapshot.room?.id ?? snapshot.task.roomId {
                         NavigationLink("Messages, decisions and blockers") { CollaborationView(client: client, roomId: roomId, taskId: snapshot.task.id) }
@@ -44,9 +51,19 @@ public struct TaskDetailView: View {
                 if let artifactError { Section { Text(artifactError).foregroundStyle(.red) } }
             }
             .listStyle(.insetGrouped)
+            .scrollDismissesKeyboard(.interactively)
         }
         .navigationTitle("Task")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                if focusedField != nil {
+                    Spacer()
+                    Button("Done") { focusedField = nil }
+                        .accessibilityIdentifier("task.detail.keyboard.done")
+                }
+            }
+        }
         .navigationDestination(for: Run.self) { run in
             RunSummaryView(run: run, client: client)
         }
@@ -79,7 +96,7 @@ public struct TaskDetailView: View {
             }
             DisclosureGroup(isExpanded: $executionApprovalExpanded) {
                 TextField("Describe the work and its risk", text: $executionApprovalDraft.summary, axis: .vertical).lineLimit(3...8)
-                    .focused($approvalSummaryFocused)
+                    .focused($focusedField, equals: .approval)
                     .accessibilityIdentifier("task.approval.summary.\(model.taskId)")
                 Picker("Risk", selection: $executionApprovalDraft.risk) {
                     Text("Low").tag("low"); Text("Medium").tag("medium"); Text("High").tag("high")
@@ -91,7 +108,7 @@ public struct TaskDetailView: View {
                 Button("Request approval") {
                     // End editing so the submitted approval and root tabs are
                     // reachable while the request is being confirmed.
-                    approvalSummaryFocused = false
+                    focusedField = nil
                     Task {
                         if await model.requestExecutionApproval(executionApprovalDraft) {
                             executionApprovalDraft = ExecutionApprovalDraft()

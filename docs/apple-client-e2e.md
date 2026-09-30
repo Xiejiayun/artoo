@@ -107,6 +107,20 @@ local execution use production code. The owner web session is provisioned by
 the fixture, and agent output comes from deterministic CLI subprocesses. These
 gates therefore do not prove Google login completion or live provider inference.
 
+The member-device scenario provisions a separate member identity, pairs the
+phone through native UI, and uses a separate owner Settings page to revoke that
+exact phone. It verifies restricted device controls, forced disconnection,
+disconnected relaunch and fresh member pairing. A fixture-only observer retains
+the matching claim credential privately in memory, proves the same member and
+device receive HTTP 200 before revocation and HTTP 401 afterward, then releases
+it. The observer forwards the original HTTP bytes unchanged and exposes no
+credential through its API or reports. Recovery messages must retain the
+member actor, and sentinel device ownership/trust must remain unchanged.
+
+The optional [Mac live-provider extension](mac-live-provider-verification.md)
+requires explicit configuration and opt-in. A passing default smoke and a
+failed missing-configuration check do not establish live model inference.
+
 The preview Mac directory app, DMG and ZIP are unsigned. Their manifest records
 the final artifact hashes; see [Mac distribution](../apps/desktop/MAC-DISTRIBUTION.md)
 for the separate Developer ID/notarization gate. Simulator execution does not certify

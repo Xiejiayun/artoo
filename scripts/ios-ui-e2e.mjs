@@ -8,6 +8,8 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium, expect } from "@playwright/test";
 import { createWorkflowFixture, verifyWorkflowResults } from "./ios-ui-workflows-fixture.mjs";
+import { createMemberRevocationFixture, findMemberMessage, selectMemberDevice, verifyMemberRevocationResults } from "./ios-ui-member-revocation.mjs";
+import { observeMemberClaim } from "./ios-ui-member-claim-observer.mjs";
 import { getE2EReportContext, readXCTestScreenshots, writeE2EReport } from "./e2e-report.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -39,11 +41,11 @@ async function main() {
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   writeE2EReport({ outputPath: htmlPath, title, report });
   if (!selfCheck) rmSync(join(output, "ui-attachments"), { recursive: true, force: true });
-  for (const name of selfCheck ? ["harness-browser.png", "harness-daemon.png", "harness-reviewed-plan.png", "harness-failure.png"] : ["native-browser-sync.png", "native-browser-failure.png"]) {
+  for (const name of selfCheck ? ["harness-browser.png", "harness-daemon.png", "harness-reviewed-plan.png", "harness-failure.png"] : ["native-browser-sync.png", "native-owner-revoked-member-device.png", "native-browser-failure.png"]) {
     rmSync(join(output, name), { force: true });
   }
   const check = (name) => { report.checks.push(name); console.log(`[ios-ui] PASS ${name}`); };
-  let server, browser, child, workflows, page;
+  let server, browser, child, workflows, page, memberClaimObserver;
   const interrupted = new AbortController();
   const stopNative = (signal) => {
     if (!child?.pid) return;
@@ -51,6 +53,7 @@ async function main() {
   };
   const interrupt = (signal) => {
     interrupted.abort(new Error(`Native UI verification interrupted by ${signal}`));
+    memberClaimObserver?.stop();
     stopNative("SIGTERM");
     // Closing the browser releases outstanding UI waits; the normal finally
     // path then closes the server and removes the fixture and runner secrets.
@@ -60,7 +63,7 @@ async function main() {
   process.once("SIGINT", onInterrupt); process.once("SIGTERM", onTerminate);
   try {
     const { startServer } = await import(pathToFileURL(join(root, "apps/server/dist/main.js")).href);
-    const { createSession } = await import(pathToFileURL(join(root, "apps/server/dist/auth/auth-service.js")).href);
+    const { createSession, provisionUser } = await import(pathToFileURL(join(root, "apps/server/dist/auth/auth-service.js")).href);
     interrupted.signal.throwIfAborted();
     server = await startServer({
       NODE_ENV: "production", ARTOO_HOST: "127.0.0.1", ARTOO_PORT: "0",
@@ -68,7 +71,7 @@ async function main() {
       ARTOO_PAIRING_PEPPER: randomBytes(32).toString("hex"), ARTOO_WEB_DIST: join(root, "apps/web/dist"),
       GOOGLE_CLIENT_ID: "ios-ui-fixture", GOOGLE_CLIENT_SECRET: "unused-local-fixture",
       GOOGLE_REDIRECT_URI: "http://localhost/auth/google/callback",
-      AUTH_ALLOWED_EMAILS: "owner@ios-ui.test", AUTH_OWNER_EMAILS: "owner@ios-ui.test",
+      AUTH_ALLOWED_EMAILS: "owner@ios-ui.test,member@ios-ui.test", AUTH_OWNER_EMAILS: "owner@ios-ui.test",
     });
     interrupted.signal.throwIfAborted();
     const address = server.app.server.address();
@@ -80,8 +83,8 @@ async function main() {
     assert.equal(server.persistent, true);
     check("Persistent shared server requires production authentication and disables dev credentials");
 
-    // Only the fixture owner's web session is provisioned in-process. The app
-    // receives a one-use code and claims its own credential through its real UI.
+    // Fixture Web identities are provisioned in-process; no completed Google
+    // login is claimed. Native credentials are claimed through the real UI.
     const owner = await createSession(server.ctx, { ttlMs: 3_600_000 }, { userId: "user_owner" });
     const request = async (path, body, token = owner.raw) => {
       const response = await fetch(`${origin}${path}`, {
@@ -98,11 +101,21 @@ async function main() {
     const peer = await request("/api/v1/devices/claim", { code: peerCode.code, platform: "ios", app_version: "ui-fixture", display_name: "Independent API peer" });
     const nativeCode = await pairing();
     const suffix = randomUUID().slice(0, 8);
+    let memberRevocation;
+    if (!selfCheck) {
+      const member = await provisionUser(server.ctx, { subject: `ios-ui-member-${suffix}`, email: "member@ios-ui.test", emailVerified: true, displayName: `Native member ${suffix}` });
+      const memberSession = await createSession(server.ctx, { ttlMs: 3_600_000 }, { userId: member.userId });
+      memberRevocation = await createMemberRevocationFixture({ request, memberSession: memberSession.raw, memberUserId: member.userId, ownerDeviceId: peer.device.id, suffix });
+      memberClaimObserver = observeMemberClaim(server.app.server, { origin,
+        displayName: memberRevocation.fields.member_native_device_name, memberUserId: member.userId });
+      check("Disposable member session and member-owned unregistered Mac use production pairing routes without administrator privileges");
+    }
     const channelName = `native-sync-${suffix}`;
     const { channel } = await request("/api/v1/channels", { project_id: "proj_artoo", name: channelName, description: "Native and browser synchronization acceptance" });
     workflows = await createWorkflowFixture({ root, temporary, origin, projectId: channel.project_id, peerToken: peer.control_token, suffix, request, until });
     const fixture = {
       ...workflows.fields,
+      ...memberRevocation?.fields,
       server_url: origin, pairing_code: nativeCode.code, project_id: channel.project_id,
       channel_id: channel.id, channel_name: channelName, peer_control_token: peer.control_token,
       native_message: `Native root ${suffix}`, native_reply: `Native thread reply ${suffix}`,
@@ -150,6 +163,45 @@ async function main() {
       await page.screenshot({ path: join(output, selfCheck ? "harness-browser.png" : "native-browser-sync.png"), fullPage: true });
     };
     const roomPath = `/api/v1/rooms/${channel.id}/messages`;
+    const ownerRevocationFlow = async () => {
+      // Wait for an actual member-authored native message; never revoke based
+      // only on a device appearing while the UI is still checking permissions.
+      await until(async () => {
+        const { messages } = await request(`${roomPath}?limit=100`);
+        return Boolean(findMemberMessage(messages, fixture.member_revocation_ready_message, fixture.member_user_id));
+      }, "Native member did not reach the revocation boundary", 1_500_000);
+      const { devices } = await request("/api/v1/devices");
+      const target = selectMemberDevice(devices, fixture, fixture.member_native_device_name);
+      assert.equal(target.trust, "active");
+      const activeSession = await memberClaimObserver.verifyActive(target.id);
+      const ownerPage = await context.newPage();
+      try {
+        await ownerPage.goto(`${origin}/settings`);
+        const card = ownerPage.getByRole("region", { name: "Devices", exact: true }).locator("article")
+          .filter({ has: ownerPage.getByRole("heading", { name: fixture.member_native_device_name, exact: true }) });
+        await expect(card).toHaveCount(1);
+        await card.getByRole("button", { name: "Revoke device", exact: true }).click();
+        const [response] = await Promise.all([
+          ownerPage.waitForResponse((response) => response.url() === `${origin}/api/v1/devices/${target.id}/revoke` && response.request().method() === "POST"),
+          card.getByRole("button", { name: "Confirm revoke", exact: true }).click(),
+        ]);
+        assert.equal(response.status(), 200, "Owner Settings must accept the revocation");
+        const result = await response.json();
+        assert.equal(result.device_id, target.id); assert.equal(result.revoked, true);
+        assert.ok(result.connections_closed >= 1, "Revocation must close the native phone's live connection");
+        // Use the same raw credential observed only in the matching native
+        // claim response. The observer releases its private memory in finally.
+        const revokedSession = await memberClaimObserver.verifyRevoked(target.id);
+        await expect(card.getByText("revoked", { exact: true })).toBeVisible();
+        // This card contains device metadata only; pairing controls are outside
+        // the captured element and this page never generates a pairing code.
+        await expect(ownerPage.getByRole("region", { name: "Device pairing", exact: true }).locator("strong")).toHaveCount(0);
+        await card.screenshot({ path: join(output, "native-owner-revoked-member-device.png") });
+        report.member_revocation_owner = { device_id: target.id, connections_closed: result.connections_closed,
+          active_session_status: activeSession.status, revoked_session_status: revokedSession.status, action: "Owner Settings UI confirmed revoke" };
+        check("Independent owner Settings UI revoked the active member iPhone, closed its live connection and caused the same native credential to receive HTTP 401");
+      } finally { await ownerPage.close(); }
+    };
     const emulatedNative = async () => {
       const freshCode = await request("/api/v1/devices/pairings", { intended_platform: "ios" }, peer.control_token);
       const native = await request("/api/v1/devices/claim", { code: freshCode.code, platform: "ios", app_version: "harness-self-check", display_name: "Harness API client (not native UI)" });
@@ -169,7 +221,7 @@ async function main() {
       child.once("error", (error) => { clearTimeout(timeout); rejectTest(error); });
       child.once("exit", (code, signal) => { clearTimeout(timeout); code === 0 ? resolveTest() : rejectTest(new Error(`Native UI test failed (${code ?? signal})`)); });
     });
-    await Promise.all([browserFlow(), selfCheck ? emulatedNative() : nativeFlow()]);
+    await Promise.all([browserFlow(), selfCheck ? emulatedNative() : nativeFlow(), ...(selfCheck ? [] : [ownerRevocationFlow()])]);
     if (selfCheck) {
       // This drives the real Web UI and test controls only. It is deliberately
       // reported as harness evidence, never as an XCUITest or native result.
@@ -227,12 +279,19 @@ async function main() {
     if (!selfCheck) check("XCUITest passed native daemon stop/resume and discussion/proposal/acceptance workflows");
     if (!selfCheck) check("XCUITest restored a needs-information approval after relaunch and verified explicit goal cancellation confirmation");
     if (!selfCheck) check("XCUITest created a task, requested and granted execution approval, manually assigned a real subprocess, previewed its uploaded report in Quick Look and accepted the task");
+    if (!selfCheck) {
+      report.member_revocation = await verifyMemberRevocationResults({ fixture, unchangedDevices: memberRevocation.unchangedDevices, request });
+      check("XCUITest verified member device permissions, owner revocation, disconnected relaunch and fresh member pairing with unchanged device ownership");
+    } else {
+      report.member_revocation = { status: "not_run", reason: "Member revocation/recovery requires the native UI and is not emulated by the harness self-check" };
+    }
     report.passed = true;
   } catch (error) {
     report.error = error instanceof Error ? error.message : String(error);
     await page?.screenshot({ path: join(output, selfCheck ? "harness-failure.png" : "native-browser-failure.png"), fullPage: true }).catch(() => {});
     throw error;
   } finally {
+    memberClaimObserver?.stop();
     if (child && child.exitCode === null && child.signalCode === null) {
       const stopped = new Promise((done) => child.once("exit", done));
       stopNative("SIGTERM");
@@ -258,7 +317,7 @@ async function main() {
     report.cleanup = { resources_closed: !failedClose, temporary_directory_removed: !removalError };
     report.finished_at = new Date().toISOString();
     writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
-    const browserImages = (selfCheck ? ["harness-browser.png", "harness-daemon.png", "harness-reviewed-plan.png", "harness-failure.png"] : ["native-browser-sync.png", "native-browser-failure.png"])
+    const browserImages = (selfCheck ? ["harness-browser.png", "harness-daemon.png", "harness-reviewed-plan.png", "harness-failure.png"] : ["native-browser-sync.png", "native-owner-revoked-member-device.png", "native-browser-failure.png"])
       .map((name) => ({ path: join(output, name), caption: `Authenticated browser · ${name.replace(/\.png$/, "").replaceAll("-", " ")}` }))
       .filter(({ path }) => existsSync(path));
     writeE2EReport({ outputPath: htmlPath, title, report, screenshots: [...browserImages, ...(selfCheck ? [] : readXCTestScreenshots(join(output, "ui-attachments")))] });

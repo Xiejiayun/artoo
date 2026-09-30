@@ -211,7 +211,11 @@ private struct PairDeviceView: View {
                     if container.isConnecting { ProgressView("Connecting…") }
                 }
                 if let error = container.connectionError {
-                    Section { Text(error).foregroundStyle(.red); Button("Retry saved connection") { Task { await container.retryConnection() } } }
+                    Section {
+                        Text(error).foregroundStyle(.red).accessibilityIdentifier("pairing.connection.error")
+                        Button("Retry saved connection") { Task { await container.retryConnection() } }
+                            .accessibilityIdentifier("pairing.retrySavedConnection")
+                    }
                 }
                 Section("Local development") {
                     Toggle("Allow localhost or .local HTTP", isOn: $localHTTP).accessibilityIdentifier("allowLocalHTTP")
@@ -231,6 +235,7 @@ private struct WorkspaceSettingsView: View {
             List {
                 Section("Workspace") {
                     Text(container.identity?.user.name ?? "Connected")
+                        .accessibilityIdentifier("workspace.account.name")
                     Text(container.serverURL).font(.caption).textSelection(.enabled)
                     if let projects = container.bootstrap.value?.projects {
                         Picker("Project", selection: $container.selectedProjectId) {

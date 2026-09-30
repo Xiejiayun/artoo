@@ -5,6 +5,9 @@ behavior from release evidence and operator-supplied information. It is not an
 App Store approval, a production acceptance report, or a legal privacy policy.
 Use the HTML E2E report for the exact revision and environment being released;
 older screenshots and successful simulator builds do not certify a new binary.
+The [workflow coverage inventory](apple-client-workflow-coverage.md) separately
+tracks implemented features that have not yet been exercised through native
+or installed-Mac UI.
 
 ## Identity and device trust
 
@@ -71,10 +74,11 @@ collection. Before distribution, the publisher must:
 | Priority | Current gap and evidence | Implementable next step | External information or credential |
 | --- | --- | --- | --- |
 | P1 | A real development-signed arm64 archive now passes; [project.yml](../apps/ios/project.yml) still uses `dev.artoo.app` and version/build defaults. | Repeat the [archive gate](apple-development-archive.md) for release source, then verify distribution export and TestFlight on supported phone/tablet sizes. | Distribution provisioning and App Store Connect app/bundle registration, build metadata and available physical devices. |
-| P1 | Fresh unsigned DMG/ZIP creation and DMG installation E2E now pass; this does not prove a distributable trust chain. | Run the [Developer ID/notarization gate](../apps/desktop/MAC-DISTRIBUTION.md), then test signed installation, upgrade and removal on a clean Mac and each supported architecture. | Developer ID identity/private key, notarization profile and actual release hosting. |
+| P1 | Fresh unsigned DMG/ZIP installation passes on local x64 and hosted arm64; this does not prove a distributable trust chain. | Run the [Developer ID/notarization gate](../apps/desktop/MAC-DISTRIBUTION.md), then test signed installation, upgrade and removal on a clean Mac and each supported architecture. | Developer ID identity/private key, notarization profile and actual release hosting. |
 | P1 | Desktop source has no implemented trusted update channel in [main.cjs](../apps/desktop/main.cjs) or package configuration. | Define a signed manual-update or automatic-update flow, publish version/checksum metadata, and verify upgrade preserves connection/settings and server compatibility. | Update policy, release endpoint and signing custody. |
 | P1 | Operator policy details cannot be established from the source tree. | Complete the privacy steps above; keep onboarding and settings disclosures reachable without signing in. | Operator identity/contact, privacy-policy URL, retention/deletion terms and provider choices. |
 | P1 | Production startup requires configured auth and durable storage in [main.ts](../apps/server/src/main.ts) and [auth-config.ts](../apps/server/src/auth/auth-config.ts). Fixture auth is not deployed Google login evidence. | Run real HTTPS/OIDC and WebSocket flows, device revocation and cross-client updates against the chosen staging deployment. | Controlled HTTPS origin, registered Google OAuth client/redirect, team allowlist/owners and securely managed secrets. |
+| P1 | Mac/iOS execution gates use deterministic CLI fixtures. The installed Mac real-provider entry and missing-configuration failure are verified, but no successful live inference is established. | Run the explicit [provider gate](mac-live-provider-verification.md), retain usage/session evidence and reviewed answers, then validate actual implementation tasks against the selected provider. | Reachable authorized Responses API, model and private key file, or a separately verified existing CLI login. |
 | P1 | The isolated production-mode backup/restore drill passes, including credentials, records and exact artifact bytes after the original data is removed. | Repeat recovery on the chosen deployment, including off-site backup retrieval, host loss and documented recovery objectives. | Durable host/storage, backup destination/access, retention and recovery objectives. |
 | P1 | Native and packaged-client acceptance must match the binary being shipped. | Save an HTML report with actual app screenshots for each Mac/iOS E2E run, including failure state and authentication/model-execution limits; retain reports in CI. | A usable Mac/Xcode simulator or device environment and credentials only for gates explicitly exercising real external services. |
 
@@ -118,9 +122,25 @@ The gate also passed 46 worker regressions and eight distribution checks; the
 separate optional tiny-filesystem DMG test was skipped. The product DMG was
 actually built, mounted, detached and used for the full E2E.
 
-The current native product source was independently archived as a signed
+The native product source at that milestone was independently archived as a signed
 Release arm64 device app in the run starting `2026-09-30T18:32:09.609Z`.
 The signature, Team, certificate, embedded development profile, app identifier,
 compiled assets and privacy manifest passed verification. Its report is
 `artifacts/ios-device/2026-09-30T18-32-09-609Z/report.html`. This is a development
 archive, with no physical-device installation, TestFlight export or upload.
+
+Hosted Mac run `36771998339` at clean source `be05d1b` later passed on arm64
+macOS 15, with new arm64 DMG/ZIP, all 12 installed-client checks, eight recovery
+checks and complete cleanup. Six installed-client captures were inspected.
+Reports are retained as `artifacts/apple-ci/36771998339/mac-arm64.html` and
+`recovery-arm64.html`; exact hashes are in the milestone ledger. This closes
+the missing arm64 functional-preview evidence, while the signed distribution
+and upgrade gates remain open.
+
+The member-revocation and compact-keyboard milestone subsequently passed a
+full native gate with 85 unit tests and seven Release UI cases on iPhone 16 /
+iOS 18.2. Its 21 reviewed native/browser captures are embedded in
+`artifacts/ios/native-ui-2026-09-30T20-25-32-344Z.html`. A matching signed
+development arm64 archive passed at
+`artifacts/ios-device/2026-09-30T20-40-52-918Z/report.html`; this still does not
+establish physical-device, TestFlight or public distribution acceptance.

@@ -26,6 +26,7 @@ final class SharedServerChatUITests: XCTestCase {
         create.tap()
         try replace(editableField("task.create.title"), with: fixture.executionTaskTitle)
         try replace(editableField("task.create.criteria"), with: "\(fixture.executionCriterion1)\n\(fixture.executionCriterion2)")
+        try dismissKeyboard(using: "task.create.keyboard.done")
         try replace(editableField("task.create.capabilities"), with: "code.modify")
         let submit = app.buttons["task.create.submit"]
         try reveal(submit); try require(submit.isEnabled, "The completed native form must enable creation"); submit.tap()
@@ -52,6 +53,7 @@ final class SharedServerChatUITests: XCTestCase {
         let disclosure = identifiedDisclosure.waitForExistence(timeout: 2) ? identifiedDisclosure : app.buttons["Request execution review"]
         try reveal(disclosure); disclosure.tap()
         try replace(editableField("task.approval.summary.\(taskId)"), with: fixture.executionApprovalSummary)
+        try dismissKeyboard(using: "task.detail.keyboard.done")
         let risk = app.segmentedControls["task.approval.risk.\(taskId)"].buttons["High"]
         try reveal(risk); risk.tap()
         let requestApproval = app.buttons["task.approval.request.\(taskId)"]
@@ -190,6 +192,7 @@ final class SharedServerChatUITests: XCTestCase {
         let reviewInput = app.descendants(matching: .any).matching(identifier: "task.review.comment.\(taskId)").firstMatch
         try reveal(reviewInput)
         try replace(editableField("task.review.comment.\(taskId)"), with: fixture.executionReviewComment)
+        try dismissKeyboard(using: "task.detail.keyboard.done")
         let accept = app.buttons["task.action.accept.\(taskId)"]
         try reveal(accept); accept.tap()
         let accepted = try await waitForExecutionTask(taskId) { $0.task.status == "done" }
@@ -315,6 +318,62 @@ final class SharedServerChatUITests: XCTestCase {
                           "events_before_confirmation": String(kept.events.count),
                           "cancellation_event_id": cancelled.events.first { $0.type == "goal.cancelled" }?.id ?? ""],
                          name: "Real goal cancellation confirmation boundary")
+    }
+
+    @MainActor
+    func testMemberDeviceRevocationRequiresFreshPairingAfterRelaunch() async throws {
+        try await pairNative(name: fixture.memberNativeDeviceName, pairingToken: fixture.memberPeerToken)
+        let original = try await memberPhone(named: fixture.memberNativeDeviceName)
+        try require(original.trust == "active", "The member's UI pairing must create an active phone")
+        try openMemberDevices(phoneId: original.id)
+        try attachMemberScreenshot("Native member device permissions without pairing inputs")
+
+        try openFixtureChannel()
+        try waitForLiveConnection()
+        // The owner browser waits for this UI-authored message before touching
+        // Settings. It can revoke promptly, so do not wait on a disappearing
+        // native message row after submitting the readiness message.
+        try send(fixture.memberRevocationReadyMessage, waitForRenderedMessage: false)
+        let ready = try await waitForMemberMessage(fixture.memberRevocationReadyMessage)
+        let expired = app.staticTexts["pairing.connection.error"]
+        try require(expired.waitForExistence(timeout: 45), "Owner revocation must return the native app to pairing")
+        try require(expired.label.contains("expired or was revoked"), "The pairing page must explain why the member connection ended")
+        try await waitForPairingState(allowAuthenticated: false)
+        try require(!app.tabBars.buttons["Channels"].exists && !app.tabBars.buttons["More"].exists, "A revoked member must lose workspace navigation")
+        let revoked = try await memberPhone(named: fixture.memberNativeDeviceName)
+        try require(revoked.id == original.id && revoked.trust == "revoked" && revoked.revokedAt != nil, "The owner must revoke the same phone that paired through native UI")
+        let retry = app.buttons["pairing.retrySavedConnection"]
+        try reveal(retry); retry.tap()
+        try await waitForPairingState(allowAuthenticated: false)
+        try require(!app.tabBars.buttons["Channels"].exists, "Retry saved connection must not restore a revoked credential")
+
+        // No onboarding screenshot is exported: the raw failure diagnostics
+        // remain separate from the public HTML's approved workflow images.
+        app.terminate(); app.launch()
+        try await waitForPairingState(allowAuthenticated: false)
+        try require(app.navigationBars["Welcome to Artoo"].exists && !app.tabBars.buttons["More"].exists, "Relaunch must remain disconnected after server revocation")
+        try require(app.textFields["pairingCode"].value as? String == app.textFields["pairingCode"].placeholderValue
+                    || (app.textFields["pairingCode"].value as? String ?? "").isEmpty, "Relaunch must not restore a pairing code")
+
+        try await pairNative(name: fixture.memberRecoveryDeviceName, pairingToken: fixture.memberPeerToken)
+        let recovered = try await memberPhone(named: fixture.memberRecoveryDeviceName)
+        try require(recovered.id != original.id && recovered.trust == "active", "Fresh member pairing must create a different active phone")
+        try openMemberDevices(phoneId: recovered.id)
+        let oldRevoke = app.buttons["device.revoke.\(original.id)"]
+        try require(!oldRevoke.exists, "The revoked phone must not retain an active revoke action")
+        try openFixtureChannel()
+        try waitForLiveConnection()
+        try require(app.staticTexts[fixture.memberRevocationReadyMessage].waitForExistence(timeout: 15), "Member history must survive revocation and fresh pairing")
+        try send(fixture.memberRecoveryMessage)
+        let recovery = try await waitForMemberMessage(fixture.memberRecoveryMessage)
+        try attachMemberScreenshot("Native member restored after fresh pairing without pairing inputs")
+        let finalOld = try await memberPhone(named: fixture.memberNativeDeviceName)
+        try require(finalOld.trust == "revoked", "Fresh pairing must not reactivate the old device")
+        try attachRecord(["member_user_id": fixture.memberUserId, "revoked_device_id": original.id,
+                          "recovered_device_id": recovered.id, "readiness_message_id": ready.id,
+                          "recovery_message_id": recovery.id, "old_device_status": finalOld.trust,
+                          "recovered_device_status": recovered.trust, "relaunch_state": "disconnected"],
+                         name: "Real member device revocation and fresh pairing recovery")
     }
 
     @MainActor
@@ -498,7 +557,7 @@ final class SharedServerChatUITests: XCTestCase {
         for reply in agentReplies {
             if reply.id != synthesis.id {
                 let body = app.staticTexts["message.\(reply.id)"]
-                try reveal(body)
+                try revealText(body)
                 XCTAssertEqual(body.label, reply.body)
             }
             let author = app.staticTexts["messageAuthor.\(reply.id)"]
@@ -508,32 +567,32 @@ final class SharedServerChatUITests: XCTestCase {
             try require(XCTWaiter.wait(for: [named], timeout: 15) == .completed, "Real agent replies must show their display name and timestamp, not an instance ID")
         }
         let draftTitle = app.staticTexts["message.plan.title.\(synthesis.id)"]
-        try reveal(draftTitle); XCTAssertEqual(draftTitle.label, "Suggested plan")
+        try revealText(draftTitle); XCTAssertEqual(draftTitle.label, "Suggested plan")
         let originalBody = app.staticTexts["message.\(synthesis.id)"]
         XCTAssertFalse(originalBody.exists, "The original JSON must be collapsed when the suggested plan first appears")
         let rationale = app.staticTexts["message.plan.rationale.\(synthesis.id)"]
-        try reveal(rationale); XCTAssertEqual(rationale.label, draft.rationale)
+        try revealText(rationale); XCTAssertEqual(rationale.label, draft.rationale)
         for (index, task) in draft.taskSpecs.enumerated() {
             let title = app.staticTexts["message.plan.task.title.\(synthesis.id).\(index)"]
-            try reveal(title); XCTAssertEqual(title.label, "\(index + 1). \(task.title)")
+            try revealText(title); XCTAssertEqual(title.label, "\(index + 1). \(task.title)")
             let description = app.staticTexts["message.plan.task.description.\(synthesis.id).\(index)"]
-            try reveal(description); XCTAssertEqual(description.label, task.description)
+            try revealText(description); XCTAssertEqual(description.label, task.description)
             for (criterionIndex, criterion) in task.acceptanceCriteria.enumerated() {
                 let label = app.staticTexts["message.plan.task.criterion.\(synthesis.id).\(index).\(criterionIndex)"]
-                try reveal(label); XCTAssertEqual(label.label, criterion)
+                try revealText(label); XCTAssertEqual(label.label, criterion)
             }
             if !task.requiredCapabilities.isEmpty {
                 let capabilities = app.staticTexts["message.plan.task.capabilities.\(synthesis.id).\(index)"]
-                try reveal(capabilities); XCTAssertEqual(capabilities.label, "Capabilities: \(task.requiredCapabilities.joined(separator: ", "))")
+                try revealText(capabilities); XCTAssertEqual(capabilities.label, "Capabilities: \(task.requiredCapabilities.joined(separator: ", "))")
             }
             for (artifactIndex, artifact) in task.expectedArtifacts.enumerated() {
                 let label = app.staticTexts["message.plan.task.artifact.\(synthesis.id).\(index).\(artifactIndex)"]
-                try reveal(label)
+                try revealText(label)
                 XCTAssertEqual(label.label, artifact.description.isEmpty ? artifact.type : "\(artifact.type): \(artifact.description)")
             }
         }
         let draftDependency = app.staticTexts["message.plan.task.dependency.\(synthesis.id).1.0"]
-        try reveal(draftDependency)
+        try revealText(draftDependency)
         XCTAssertEqual(draftDependency.label, "Depends on: 1. \(fixture.task1Title)", "The draft must resolve its standard dependency to the numbered task name")
         attachScreenshot("Native suggested plan card before proposal")
         let planHierarchy = XCTAttachment(string: app.debugDescription)
@@ -544,7 +603,7 @@ final class SharedServerChatUITests: XCTestCase {
         try waitForValue(originalToggle, "Collapsed", message: "The original-reply button must expose its collapsed state")
         originalToggle.tap()
         try waitForValue(originalToggle, "Expanded", message: "Tapping the original-reply button must expand the exact reply")
-        try reveal(originalBody); XCTAssertEqual(originalBody.label, synthesis.body, "Expanding the original must preserve the exact server reply")
+        try revealText(originalBody); XCTAssertEqual(originalBody.label, synthesis.body, "Expanding the original must preserve the exact server reply")
         attachScreenshot("Native suggested plan with original reply expanded")
         try reveal(originalToggle); originalToggle.tap()
         try waitForValue(originalToggle, "Collapsed", message: "Tapping the original-reply button again must collapse the reply")
@@ -663,7 +722,7 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func pairNative(name: String) async throws {
+    private func pairNative(name: String, pairingToken: String? = nil) async throws {
         // Codes are minted after Xcode has built the app and independently for
         // every method, so ordering and one-use/expiry semantics stay real.
         app.launch()
@@ -674,7 +733,7 @@ final class SharedServerChatUITests: XCTestCase {
             try reveal(signOut); signOut.tap()
         }
         try await waitForPairingState(allowAuthenticated: false)
-        let code: PairingCode = try await peerPost("api/v1/devices/pairings", body: ["intended_platform": "ios"])
+        let code: PairingCode = try await peerPost("api/v1/devices/pairings", body: ["intended_platform": "ios"], token: pairingToken)
         let origin = app.textFields["serverURL"]
         let localHTTP = app.switches["allowLocalHTTP"]
         if fixture.serverURL.scheme == "http" {
@@ -688,6 +747,75 @@ final class SharedServerChatUITests: XCTestCase {
         try require(pair.isEnabled, "Pairing must be enabled after completing the form")
         pair.tap()
         try require(app.tabBars.buttons["Channels"].waitForExistence(timeout: 20), "The app must authenticate and load the real server bootstrap")
+    }
+
+    @MainActor
+    private func openMemberDevices(phoneId: String) throws {
+        app.tabBars.buttons["More"].tap()
+        let account = app.staticTexts["workspace.account.name"]
+        try require(account.waitForExistence(timeout: 10) && account.label == fixture.memberName, "The native workspace must display the member account")
+        try require(!app.buttons["Manage projects"].exists, "A member must not have administrator project management")
+        let devices = app.buttons["Devices"]
+        try reveal(devices); devices.tap()
+        try require(app.navigationBars["Devices"].waitForExistence(timeout: 10), "More must open the member Devices page")
+        let own = app.descendants(matching: .any).matching(identifier: "device.row.\(phoneId)").firstMatch
+        try require(own.waitForExistence(timeout: 15), "The phone paired by this member must appear in Devices")
+        try reveal(own)
+        let ownRevoke = app.buttons["device.revoke.\(phoneId)"]
+        try require(ownRevoke.exists && ownRevoke.isEnabled, "A member must be allowed to revoke their own phone")
+        let other = app.descendants(matching: .any).matching(identifier: "device.row.\(fixture.ownerDeviceId)").firstMatch
+        try reveal(other)
+        try require(!app.buttons["device.revoke.\(fixture.ownerDeviceId)"].exists, "A member must not be offered revocation of the owner's device")
+        let pending = app.descendants(matching: .any).matching(identifier: "device.row.\(fixture.memberPendingMacId)").firstMatch
+        try reveal(pending)
+        try require(app.staticTexts[fixture.memberPendingMacName].exists, "The member's pending Mac must be visible")
+        try require(app.staticTexts["device.enrollment.pending.\(fixture.memberPendingMacId)"].exists, "A member must see that computer enrollment needs an owner or admin")
+        try require(!app.buttons["device.enroll.\(fixture.memberPendingMacId)"].exists, "Pairing as a member must not grant computer enrollment")
+    }
+
+    @MainActor
+    private func openFixtureChannel() throws {
+        app.tabBars.buttons["Channels"].tap()
+        try require(app.navigationBars["Channels"].waitForExistence(timeout: 10), "Channels must open the channel list")
+        let channel = app.buttons["channel.\(fixture.channelId)"]
+        try require(channel.waitForExistence(timeout: 15), "The shared fixture channel must be available to the member")
+        try reveal(channel); channel.tap()
+    }
+
+    @MainActor
+    private func attachMemberScreenshot(_ name: String) throws {
+        // These are the only new native images admitted to public HTML. Never
+        // capture them while any onboarding field or generated code is present.
+        for identifier in ["serverURL", "pairingDeviceName", "pairingCode", "device.pairing.code"] {
+            try require(!app.descendants(matching: .any).matching(identifier: identifier).firstMatch.exists, "Member report screenshots must exclude pairing inputs and generated codes")
+        }
+        attachScreenshot(name)
+    }
+
+    @MainActor
+    private func memberPhone(named name: String) async throws -> ServerDevice {
+        let page: DevicePage = try await peerGet("api/v1/devices")
+        let matches = page.devices.filter { $0.displayName == name }
+        try require(matches.count == 1, "Native pairing must create exactly one device with its unique name")
+        let phone = try XCTUnwrap(matches.first)
+        try require(phone.enrolledByUserId == fixture.memberUserId && phone.platform == "ios" && phone.computerId == nil, "The native phone must retain the member identity without compute authority")
+        return phone
+    }
+
+    @MainActor
+    private func waitForMemberMessage(_ body: String) async throws -> ServerMessage {
+        let deadline = Date().addingTimeInterval(20)
+        repeat {
+            let matches = try await peerMessages().filter { $0.body == body }
+            if !matches.isEmpty {
+                try require(matches.count == 1, "The member message must persist once")
+                let message = try XCTUnwrap(matches.first)
+                try require(message.actorType == "user" && message.actorId == fixture.memberUserId && message.threadRootId == nil, "Native messages must be attributed to the member before and after recovery")
+                return message
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        } while Date() < deadline
+        throw NSError(domain: "ArtooUITestMember", code: 1, userInfo: [NSLocalizedDescriptionKey: "The native member message was not persisted"])
     }
 
     @MainActor
@@ -784,15 +912,16 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func send(_ body: String) throws {
+    private func send(_ body: String, waitForRenderedMessage: Bool = true) throws {
         let composer = app.descendants(matching: .any).matching(identifier: "messageComposer").firstMatch
         try reveal(composer)
         try replace(composer, with: body)
+        try dismissKeyboard(using: "conversation.keyboard.done")
         let button = app.buttons["sendMessage"]
         try reveal(button)
         try require(button.isEnabled, "The message send control must be enabled")
         button.tap()
-        try require(app.staticTexts[body].waitForExistence(timeout: 15), "The native send must complete against the real server")
+        if waitForRenderedMessage { try require(app.staticTexts[body].waitForExistence(timeout: 15), "The native send must complete against the real server") }
     }
 
     @MainActor
@@ -804,6 +933,60 @@ final class SharedServerChatUITests: XCTestCase {
             field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
         }
         field.typeText(text)
+    }
+
+    @MainActor
+    private func dismissKeyboard(using identifier: String) throws {
+        let done = app.buttons[identifier]
+        try require(done.waitForExistence(timeout: 10) && done.isHittable,
+                    "Multiline input must expose a reachable keyboard Done action")
+        done.tap()
+        let dismissed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        try require(XCTWaiter.wait(for: [dismissed], timeout: 10) == .completed,
+                    "Done must dismiss the keyboard before continuing the workflow")
+    }
+
+    @MainActor
+    private func revealText(_ element: XCUIElement) throws {
+        // Selectable SwiftUI text can be visibly rendered yet make XCTest's
+        // activation-point lookup throw. Read-only checks need visible content;
+        // buttons and editable fields still use the strict hittability helper.
+        let list = app.collectionViews.firstMatch
+        try require(list.exists, "The displayed text must belong to a visible list")
+        try require(!app.keyboards.firstMatch.exists, "Read-only content must not be covered by the keyboard")
+        for attempt in 0..<24 {
+            var viewport = list.frame.intersection(app.frame)
+            let navigation = app.navigationBars.firstMatch
+            let tabs = app.tabBars.firstMatch
+            let top = navigation.exists ? max(viewport.minY, navigation.frame.maxY) : viewport.minY
+            let bottom = tabs.exists ? min(viewport.maxY, tabs.frame.minY) : viewport.maxY
+            viewport = CGRect(x: viewport.minX, y: top, width: viewport.width, height: max(0, bottom - top)).insetBy(dx: 2, dy: 2)
+            try require(!viewport.isEmpty && !viewport.isNull && !viewport.isInfinite,
+                        "The list must have an unobscured content viewport")
+            var scrollUp = attempt < 12
+            if element.exists {
+                let frame = element.frame
+                if !frame.isEmpty && !frame.isNull && !frame.isInfinite {
+                    let visible = frame.intersection(viewport)
+                    // Text that fits must be completely visible. Text taller
+                    // than the viewport must show at least half of it. Exact content
+                    // is independently asserted by the caller against the server.
+                    let requiredHeight = frame.height <= viewport.height ? frame.height : viewport.height / 2
+                    if !visible.isNull && visible.width >= frame.width - 1
+                        && visible.height >= requiredHeight - 1 { return }
+                    scrollUp = frame.midY > viewport.midY
+                }
+            }
+            // Short drags start inside the actual content, avoiding tab bars and
+            // skipping over a short label inside a plan taller than the screen.
+            let startY = viewport.minY + viewport.height * (scrollUp ? 0.7 : 0.3)
+            let endY = viewport.minY + viewport.height * (scrollUp ? 0.3 : 0.7)
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            origin.withOffset(CGVector(dx: viewport.midX, dy: startY))
+                .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: viewport.midX, dy: endY)))
+        }
+        try require(false, "Required text must be visibly rendered in the unobscured list")
     }
 
     @MainActor
@@ -929,13 +1112,13 @@ final class SharedServerChatUITests: XCTestCase {
         throw NSError(domain: "ArtooUITestApproval", code: 1, userInfo: [NSLocalizedDescriptionKey: "The real server did not confirm approval \(status) within 20 seconds"])
     }
 
-    private func peerPost<Response: Decodable>(_ path: String, body: [String: String]) async throws -> Response {
+    private func peerPost<Response: Decodable>(_ path: String, body: [String: String], token: String? = nil) async throws -> Response {
         var request = URLRequest(url: fixture.serverURL.appendingPathComponent(path))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(UUID().uuidString, forHTTPHeaderField: "Idempotency-Key")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        return try await peerRequest(request)
+        return try await peerRequest(request, token: token)
     }
 
     private func controlNode(_ action: String) async throws {
@@ -1027,6 +1210,11 @@ private struct ServerPlanTaskSpec: Decodable {
 }
 private struct ServerExpectedArtifact: Decodable { let type: String; let description: String }
 private struct PairingCode: Decodable { let code: String }
+private struct DevicePage: Decodable { let devices: [ServerDevice] }
+private struct ServerDevice: Decodable {
+    let id: String; let displayName: String; let enrolledByUserId: String; let platform: String
+    let trust: String; let computerId: String?; let revokedAt: String?
+}
 private struct ApprovalPage: Decodable { let approvals: [ServerApproval] }
 private struct ApprovalTaskSnapshot: Decodable { let approvals: [ServerApproval] }
 private struct ServerApproval: Decodable {
@@ -1080,6 +1268,16 @@ private struct Fixture {
     let nativeMessage: String
     let nativeReply: String
     let browserReply: String
+    let memberUserId: String
+    let memberName: String
+    let memberPeerToken: String
+    let memberNativeDeviceName: String
+    let memberRecoveryDeviceName: String
+    let memberPendingMacId: String
+    let memberPendingMacName: String
+    let ownerDeviceId: String
+    let memberRevocationReadyMessage: String
+    let memberRecoveryMessage: String
     let computerId: String
     let computerName: String
     let goalId: String
@@ -1128,6 +1326,16 @@ private struct Fixture {
         nativeMessage = try require("ARTOO_UI_NATIVE_MESSAGE")
         nativeReply = try require("ARTOO_UI_NATIVE_REPLY")
         browserReply = try require("ARTOO_UI_BROWSER_REPLY")
+        memberUserId = try require("ARTOO_UI_MEMBER_USER_ID")
+        memberName = try require("ARTOO_UI_MEMBER_NAME")
+        memberPeerToken = try require("ARTOO_UI_MEMBER_PEER_CONTROL_TOKEN")
+        memberNativeDeviceName = try require("ARTOO_UI_MEMBER_NATIVE_DEVICE_NAME")
+        memberRecoveryDeviceName = try require("ARTOO_UI_MEMBER_RECOVERY_DEVICE_NAME")
+        memberPendingMacId = try require("ARTOO_UI_MEMBER_PENDING_MAC_ID")
+        memberPendingMacName = try require("ARTOO_UI_MEMBER_PENDING_MAC_NAME")
+        ownerDeviceId = try require("ARTOO_UI_OWNER_DEVICE_ID")
+        memberRevocationReadyMessage = try require("ARTOO_UI_MEMBER_REVOCATION_READY_MESSAGE")
+        memberRecoveryMessage = try require("ARTOO_UI_MEMBER_RECOVERY_MESSAGE")
         computerId = try require("ARTOO_UI_COMPUTER_ID")
         computerName = try require("ARTOO_UI_COMPUTER_NAME")
         goalId = try require("ARTOO_UI_GOAL_ID")

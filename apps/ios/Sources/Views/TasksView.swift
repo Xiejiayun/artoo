@@ -154,6 +154,9 @@ public struct CreateTaskView: View {
     @State private var priority = "p2"
     @State private var criteriaText = ""
     @State private var capabilities = "code.modify"
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable { case title, description, criteria, capabilities }
 
     private let priorities = ["p0", "p1", "p2", "p3"]
 
@@ -162,9 +165,11 @@ public struct CreateTaskView: View {
             Form {
                 Section("Task") {
                     TextField("Title", text: $title)
+                        .focused($focusedField, equals: .title)
                         .accessibilityIdentifier("task.create.title")
                     TextField("Description", text: $description, axis: .vertical)
                         .lineLimit(2...5)
+                        .focused($focusedField, equals: .description)
                 }
                 Section("Priority") {
                     Picker("Priority", selection: $priority) {
@@ -175,18 +180,31 @@ public struct CreateTaskView: View {
                 Section("Acceptance criteria") {
                     TextField("One per line", text: $criteriaText, axis: .vertical)
                         .lineLimit(3...6)
+                        .focused($focusedField, equals: .criteria)
                         .accessibilityIdentifier("task.create.criteria")
                 }
-                Section("Required capabilities") { TextField("Comma separated", text: $capabilities).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("task.create.capabilities") }
+                Section("Required capabilities") {
+                    TextField("Comma separated", text: $capabilities)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .focused($focusedField, equals: .capabilities)
+                        .accessibilityIdentifier("task.create.capabilities")
+                }
                 if let error = model.state.errorMessage {
                     Section {
                         Text(error).foregroundStyle(.red).font(.callout)
                     }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("New Task")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { focusedField = nil }
+                        .accessibilityIdentifier("task.create.keyboard.done")
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }

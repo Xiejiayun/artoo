@@ -171,3 +171,156 @@ seven-line source-alias change made all seven real process cases pass while
 domain, protocol, server and daemon dist directories remained absent. Cleanup
 confirmed zero added fixture directories and processes. This verifies the
 local clean-checkout fix; the subsequent hosted run remains separate evidence.
+
+## 2026-10-01: member revocation and explicit Mac provider verification
+
+Native E2E now pairs an ordinary member's phone and verifies that its own
+Revoke action is enabled, another account's Revoke action is absent, and
+computer enrollment still requires an administrator. An independent owner
+browser revokes that exact phone through Settings. The same phone credential
+returns HTTP 200 before this action and 401 after it; the fixture observes only
+the matching claim response in private memory and never publishes its token.
+Native saved-connection retry and relaunch cannot restore the revoked session.
+Fresh member pairing creates a different device, restores history and sends a
+new message attributed to the same member. Other devices remain unchanged.
+
+The full Pro simulator gate passed 85 XCTest and all seven Release UI cases.
+The member permissions, recovered conversation and owner revoked-device card
+were visually inspected. Cleanup completed. The report is
+`artifacts/ios/native-ui-2026-09-30T19-28-39-263Z.html`
+(SHA-256 `b83e4e029c650c00a95147f6f659ccf8e78a0578ff7db2e637554acfc9fe2854`).
+This report precedes the subsequent task-form keyboard change; it does not
+certify that later binary. Thirty focused Node regressions passed for claim
+observation, device/message identity, response transparency, in-flight cleanup
+and report image selection.
+
+The installed Mac smoke now supports an explicit real-provider extension.
+Its default remains the deterministic CLI fixture. Exact live opt-in is
+required before loading the provider helper or reading provider configuration;
+Mac defaults to three discussion turns and Windows keeps its existing five-turn
+scope. Real model execution still needs working operator configuration.
+See [the provider verification guide](mac-live-provider-verification.md).
+
+Before the later report-retention correction, the default Mac gate passed all
+12 DMG checks, 46 worker regressions and eight distribution checks. Six real
+client screenshots were inspected and cleanup completed. Its report is
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T19-18-02-483Z.html`
+(SHA-256 `1cca74c1e7193ab2dc9d3047894bc20f5f00ffdb7ea0b5c640d62477194401f7`).
+An opted-in run with missing provider configuration correctly failed before
+inference, retained seven client screenshots and cleaned up completely:
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T19-22-59-434Z.html`
+(SHA-256 `42362936fecb1160d9d45297999ff3693a060e70a6771924286899a716a3dced`).
+It records `liveVerified: false` with no provider measurements and is negative
+configuration evidence only.
+
+Hosted run `36762899822` at `2db6a98` passed shared and Mac gates, including
+fresh DMG and recovery verification. Its iOS SDK/runtime selection was correct
+(Xcode 16.4, SDK/iPhone runtime 18.5). All 85 unit and five of six UI cases
+passed, but the task capabilities field was not hittable after multiline
+criteria input on iPhone 16. The task form now offers a keyboard Done action
+with explicit focus state; the UI case must actually use it, verify keyboard
+disappearance and still submit the original criteria/capabilities. Fresh
+compact-screen and hosted verification remain separate from the earlier Pro
+result.
+
+The first compact iPhone 16/iOS 18.2 attempt passed all 85 unit tests and four
+of seven UI cases. The new creation-form Done action and keyboard disappearance
+were exercised successfully. Later failures exposed two more multiline-input
+screens without a Done action (chat and execution approval), plus a selectable
+plan label that was visibly rendered while XCTest could not compute its tap
+activation point. Raw screenshots and accessibility frames confirmed these
+three boundaries. The failed run and complete cleanup remain recorded in
+`artifacts/ios/native-ui-2026-09-30T19-45-48-336Z.html`
+(SHA-256 `362f2fbd268844eca109d17c6dd79d2828f3195f68f4c63b6196e8dc192a2fc6`).
+The reviewed, connected-page failure images are also retained in
+`artifacts/ios/compact-failure-2026-09-30T19-45-48-336Z/report.html`
+(SHA-256 `fcab53579b35f20e564891a8864445476785a8519fd97626969cfa5f0678dfd3`).
+
+Chat, task approval and review fields now provide explicit Done actions and
+interactive keyboard dismissal. UI tests must tap the actual Done control and
+wait for the keyboard to disappear. Selectable message text checks require visible
+geometry outside navigation/tab bars and still compare the exact server
+content. Text that fits the viewport must be entirely visible; text taller
+than the viewport must occupy at least half of it. All action buttons retain
+strict hittability checks. The resulting full compact rerun is recorded
+separately below when complete.
+
+The second compact run passed all 85 unit tests and six of seven UI cases,
+including the complete task/artifact acceptance case (210 seconds), chat
+synchronization (99 seconds) and member revocation/recovery (155 seconds).
+Suggested-plan contents and original-reply expansion/collapse also passed.
+The new geometric helper then failed by assuming an immediately available
+list viewport while navigating to an asynchronously loaded proposal page.
+The helper is now confined to selectable message content; ordinary proposal
+labels and author metadata keep the original reachability helper. This was a
+test-boundary correction, with no further product changes after the keyboard
+fix. Failed evidence and complete cleanup are retained in
+`artifacts/ios/native-ui-2026-09-30T20-05-53-406Z.html`
+(SHA-256 `c0a60bcc900a4e211a8c0b82ce85964c827639897c29952f9f3e0643e9ef2e8c`).
+The reviewed failure capture is in
+`artifacts/ios/compact-failure-2026-09-30T20-05-53-406Z/report.html`
+(SHA-256 `b7deca5458b883d8069ca1934fcff394b1241c9ea1d0562016d974590e3761bf`).
+
+Independent review also found that the next Mac run replaced the companion
+provider JSON referenced by earlier history. The enclosing JSON/HTML now embed
+a finalized, redacted snapshot including provider measurements, failure stage
+and cleanup. Eleven routing/retention regressions passed. A new missing-config
+DMG attempt retained this snapshot and seven inspected client images, with
+eleven ordinary checks completed before the expected validation failure and
+complete cleanup. It performed no model inference:
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T20-01-46-032Z.html`
+(SHA-256 `2c6287b0267ce2c0869c923fedb824ec45f3fe63a84339286e5469dfae9b1ea7`).
+The Mac provider-entry/report milestone is committed and pushed as `be05d1b`.
+
+Hosted run `36771998339` independently passed the Mac job at clean source
+`be05d1bd841fda69924afc58c87ecfe3199ca1c3`. Its runner was arm64 macOS 15
+(Darwin 24.6.0, Node 24.20.0). It built new arm64 preview DMG/ZIP files,
+installed from the exact hashed DMG, and passed all 12 client checks plus the
+eight-check persistent recovery drill. All cleanup completed. Six installed
+client screenshots were visually inspected. Together with the local x64 runs,
+this establishes functional preview evidence on both Mac architectures;
+release signing, notarization, Gatekeeper and signed upgrades remain open.
+
+Downloaded, self-contained CI reports are retained locally:
+
+| Report | SHA-256 |
+| --- | --- |
+| `artifacts/apple-ci/36771998339/mac-arm64.html` | `7be75a0cb6d35aae73db8e6cc49bb30e417792566a67937ee353668794c8622a` |
+| `artifacts/apple-ci/36771998339/recovery-arm64.html` | `a082582e5df9ea0cd52a91993da6675351862758a99e9c505b0cc2d55ee7d5fb` |
+
+The arm64 DMG hash is
+`b6ea3d43b963094cef4905fb2a38712c843e263732335ecfe10d1bb675d75d63`;
+the ZIP hash is
+`8d832c05d5d149677d25748f0426d902d7f5a0c3868c4bd6b13891ab55f9184a`.
+The distribution manifest is retained beside the reports. This hosted commit
+contains the Mac milestone only; the later native member/keyboard changes
+must be assessed with their own source and reports.
+
+The final compact run, starting `2026-09-30T20:25:32.344Z` and finishing
+`20:39:54.285Z`, passed the complete `verify:ios` gate. The exact XCTest
+summaries report 85 unit and seven Release UI tests passed, with zero failures
+or skips. Nineteen native captures and two browser captures were visually
+inspected. The report confirms the original phone credential's 200 → 401
+transition, one closed live connection, a distinct recovered member device,
+correct message attribution and unchanged sentinel devices. Fixture resources
+and temporary directories were cleaned up.
+
+Successful compact HTML:
+`artifacts/ios/native-ui-2026-09-30T20-25-32-344Z.html`
+(SHA-256 `bd2865bc0d04c1f10fb5ae92a56b810b1054e66ec12110f398ca774bfa896666`).
+The result bundles are `artifacts/ios/Artoo-1790799880704.xcresult` and
+`artifacts/ios/ArtooUI-1790799985524.xcresult`. Native product source stayed
+unchanged during this successful run and the following archive.
+
+The matching development-signed Release arm64 archive also passed at
+`2026-09-30T20:40:52.918Z`: certificate/profile/Team and embedded app identity,
+compiled assets and privacy manifest all verified. The archive report is
+`artifacts/ios-device/2026-09-30T20-40-52-918Z/report.html`
+(SHA-256 `994ebbb7428f1fa38f5fcf42f7c428d670bcc2a35fc03bc8be73007f49e976bd`).
+No physical-device installation, distribution export or upload is claimed.
+
+The [coverage inventory](apple-client-workflow-coverage.md) records the
+remaining existing UI paths. Direct-agent conversations, cross-project mentions
+and execution correction/stopping are the next coverage priorities; isolated
+assignee-label and coordinator-instruction display changes are not part of
+the successful binary above.

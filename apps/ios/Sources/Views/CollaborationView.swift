@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct CollaborationView: View {
+    private enum InputField: Hashable { case composer, recordSummary }
     @EnvironmentObject private var container: AppContainer
     @StateObject private var model: WorkspaceViewModel
     @StateObject private var chat: RoomMessagesViewModel
@@ -15,6 +16,7 @@ struct CollaborationView: View {
     @State private var recipient = ""
     @State private var recordKind = "decisions"
     @State private var error: String?
+    @FocusState private var focusedField: InputField?
     let roomId: String
     let taskId: String?
     let threadRoot: Message?
@@ -61,6 +63,7 @@ struct CollaborationView: View {
                     Button("Refresh agents") { Task { await refreshInventory() } }
                 }
                 TextField(chat.allowsAssistantRequests && chat.draft.target == "assistant" ? "Ask the agent" : "Message the team", text: $chat.draft.text, axis: .vertical).lineLimit(2...6)
+                    .focused($focusedField, equals: .composer)
                     .disabled(chat.sending || chat.draft.pending != nil)
                     .accessibilityIdentifier("messageComposer")
                 if !chat.allowsAssistantRequests || chat.draft.target != "assistant" {
@@ -130,6 +133,7 @@ struct CollaborationView: View {
             Section("Record team work") {
                 Picker("Record", selection: $recordKind) { Text("Decision").tag("decisions"); Text("Handoff").tag("handoffs"); Text("Blocker").tag("blockers") }
                 TextField(recordKind == "handoffs" ? "Expected action" : "Summary", text: $summary, axis: .vertical).lineLimit(2...6)
+                    .focused($focusedField, equals: .recordSummary)
                 if recordKind == "handoffs" {
                     Picker("Recipient agent", selection: $recipient) {
                         Text("Choose agent").tag(""); ForEach(agents) { agent in Text(agent.title).tag(agent.id) }
@@ -141,7 +145,18 @@ struct CollaborationView: View {
             }
             if model.state.isLoading { ProgressView() }
             if let message = error ?? model.actionError ?? model.state.errorMessage { Text(message).foregroundStyle(.red) }
-        }.navigationTitle(threadRoot == nil ? "Team discussion" : "Thread").refreshable { await refresh() }.liveRefresh { await refresh() }
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .navigationTitle(threadRoot == nil ? "Team discussion" : "Thread").refreshable { await refresh() }.liveRefresh { await refresh() }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                if focusedField != nil {
+                    Spacer()
+                    Button("Done") { focusedField = nil }
+                        .accessibilityIdentifier("conversation.keyboard.done")
+                }
+            }
+        }
         .onAppear {
             chat.configureDraft(server: container.serverURL, user: container.identity?.user.id ?? "")
             container.realtime.watch("room:\(roomId)")

@@ -22,6 +22,8 @@ const checks = {
     runNode("E2E report integrity", "scripts/e2e-report.test.mjs"),
     runNode("E2E owned browser cleanup", "scripts/owned-browser.test.mjs"),
     runNode("native execution fixture integrity", "scripts/fixtures/ios-ui-execution.test.mjs"),
+    runNode("native member revocation fixture integrity", "scripts/ios-ui-member-revocation.test.mjs"),
+    runNode("native member credential observation", "scripts/ios-ui-member-claim-observer.test.mjs"),
     runNode("device signing selection", "apps/ios/scripts/archive-device.test.mjs"),
     runNode("SDK-aware iPhone simulator selection", "apps/ios/scripts/simulator-selection.test.mjs"),
     runNode("native static API contracts", "apps/ios/scripts/verify-contracts.mjs"),
@@ -31,6 +33,8 @@ const checks = {
     { name: "diff whitespace", command: "git", args: ["diff", "--check"] },
   ],
   ios: [
+    runNode("native member revocation fixture integrity", "scripts/ios-ui-member-revocation.test.mjs"),
+    runNode("native member credential observation", "scripts/ios-ui-member-claim-observer.test.mjs"),
     runNode("SDK-aware iPhone simulator selection", "apps/ios/scripts/simulator-selection.test.mjs"),
     runNpm("production server and browser build", "run", "build:preview"),
     runNode("native static API contracts", "apps/ios/scripts/verify-contracts.mjs"),

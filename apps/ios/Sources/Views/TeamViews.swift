@@ -135,6 +135,7 @@ struct DevicesView: View {
                 Button("Create one-time code") { Task { await createPairing() } }.disabled(creating)
                 if !pairing["code"].text.isEmpty {
                     Text(pairing["code"].text).font(.system(.title, design: .monospaced)).textSelection(.enabled).privacySensitive()
+                        .accessibilityIdentifier("device.pairing.code")
                     Text("Expires \(pairing["pairing"]["expires_at"].text)").font(.caption)
                 }
             }
@@ -152,12 +153,16 @@ struct DevicesView: View {
                                     .accessibilityIdentifier("device.enroll.\(device.id)")
                             } else {
                                 Text("An owner or admin must enroll this computer before its local worker can start.").font(.caption)
+                                    .accessibilityIdentifier("device.enrollment.pending.\(device.id)")
                             }
                         }
                         if device.status == "active" && (container.isAdministrator || device["enrolled_by_user_id"].text == container.identity?.user.id) {
                             Button("Revoke device", role: .destructive) { revoking = device }.disabled(model.busy)
+                                .accessibilityIdentifier("device.revoke.\(device.id)")
                         }
                     }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("device.row.\(device.id)")
                 }
             }
             if model.state.isLoading { ProgressView() }

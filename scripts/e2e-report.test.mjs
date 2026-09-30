@@ -68,3 +68,14 @@ test("Playwright attaches deliberate images once and excludes private failure co
     assert.deepEqual(later.attachments, [], "A later result must not inherit earlier screenshot evidence");
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("member recovery HTML admits reviewed connected screens but excludes onboarding and revocation failures", () => {
+  const directory = mkdtempSync(join(tmpdir(), "artoo-member-report-test-"));
+  try {
+    writeFileSync(join(directory, "member.png"), "safe connected workflow image");
+    const permitted = ["Native member device permissions without pairing inputs", "Native member restored after fresh pairing without pairing inputs"];
+    const privateNames = ["Native member pairing code", "Native revoked device requires pairing", "Native member onboarding", "Native UI failure"];
+    writeFileSync(join(directory, "manifest.json"), JSON.stringify([{ attachments: [...permitted, ...privateNames].map((name) => ({ exportedFileName: "member.png", name })) }]));
+    assert.deepEqual(readXCTestScreenshots(directory).map((item) => item.caption), permitted);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
