@@ -1,4 +1,4 @@
-# Artoo Windows trusted-team preview
+# Artoo desktop trusted-team preview
 
 The Electron app provides the Web workspace and a managed local `artood`
 execution worker. It connects to a separately deployed Artoo server; the
@@ -6,10 +6,11 @@ installer does not include a local server or database.
 
 ## Connect and execute work
 
-1. Sign in to the Web app and generate a Windows pairing code in Settings.
+1. Sign in to the Web app with your own account and generate a pairing code for
+   Windows or macOS in Settings.
 2. Install the app and enter the server origin, device name, and single-use code.
    Remote origins must use HTTPS; loopback HTTP is supported for local testing.
-3. Install and authenticate the Codex or Claude Code CLI on the Windows computer.
+3. Install and authenticate the Codex or Claude Code CLI on the computer.
 4. In desktop Settings, save absolute allowed workspace folders and the installed
    runtimes. Start the worker, then register its runtime and workspace on the
    Computers page.
@@ -21,6 +22,11 @@ use the device credential instead of browser cookies. A separate node credential
 authenticates the worker. Revocation removes server access; sign-out clears local
 credentials and stops the managed worker. Changing servers clears the paired
 identity and resets the local trusted-execution opt-in.
+
+Members can pair a control client using their own account. An owner or admin
+must enroll a computer before its worker can execute tasks. Owner/admin pairing
+enrolls automatically; after an administrator enrolls a member's device, starting
+the worker discovers and saves that enrollment.
 
 ### Use Aerial with GitHub Copilot
 
@@ -66,6 +72,36 @@ it does not intercept arbitrary commands in a running CLI. See the
 goal, backup, and deployment behavior.
 
 ## Build and verify
+
+On macOS:
+
+```sh
+npm ci
+VITE_AUTH_ENABLED=true npm run pack:mac --workspace @artoo/desktop
+npm run smoke:mac --workspace @artoo/desktop
+```
+
+`pack:mac` produces `release/mac-arm64/Artoo.app` on Apple silicon or
+`release/mac/Artoo.app` on Intel. The smoke builds the current architecture,
+copies the packaged `.app` into an isolated installation, and launches its
+actual executable through Playwright Electron. It verifies packaged JS/CSS,
+the `darwin` bridge, production authentication and pairing, OS-encrypted
+credentials, worker start/stop/restart, deterministic Codex execution, artifact
+bytes, task review, and app/server restart recovery. It then signs out, removes
+the isolated installation, and verifies cleanup. `ARTOO_SMOKE_SKIP_BUILD=1`
+reuses an existing package; the report records its `app.asar` SHA-256.
+
+Mac evidence is written to `release/mac-smoke-artifacts`: JSON, screenshots,
+downloaded patches and `macos-desktop-smoke.html`. The HTML embeds each screenshot
+and records source revision, checked behavior, errors and cleanup. Every run
+also keeps a timestamped HTML/JSON copy under `history/`, including build or
+preflight failures. `ARTOO_DESKTOP_REPORT_DIR` can select another evidence
+directory. This verifies an unsigned directory app; signing, notarization, DMG
+distribution, live provider quality and automatic updates are separate gates.
+Set `ARTOO_CHROMIUM_CHANNEL=chrome` to use an installed Chrome for the owner Web
+session when Playwright Chromium is unavailable; the report records the actual
+browser channel and version. The packaged Electron app is always the client
+under test.
 
 Run from the repository root on Windows:
 
@@ -121,6 +157,11 @@ The final result also records whether the app, browser and server closed,
 uninstall completed, and the temporary data directory was removed. Cleanup
 failure makes the gate fail.
 
+`windows-desktop-smoke.html` includes the same checks and embedded screenshots;
+timestamped HTML/JSON copies remain in `history/` after subsequent runs. Windows
+and macOS use the same workflow implementation with platform-specific install,
+CLI-launcher and removal steps.
+
 The optional installed-worker verification runs two real chat turns and a
 three-contribution planning discussion through Aerial / GitHub Copilot after
 the deterministic fixture succeeds. See the
@@ -144,8 +185,9 @@ sandboxing, restricted IPC senders, and server-enforced explicit desktop CORS.
 `ARTOO_DESKTOP_CORS=1` allows the packaged `file://` origin, represented as `null`;
 wildcard desktop origins are rejected.
 
-macOS packaging, signing and notarization require a Mac and have not been proved
-by these Windows tests. iOS is a separate native client under `apps/ios`.
+macOS package evidence requires a successful `smoke:mac` run on a Mac. Windows
+tests do not establish that result, and unsigned Mac tests do not establish
+signing or notarization. iOS is a separate native client under `apps/ios`.
 
 ## Toolchain notes
 

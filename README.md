@@ -15,6 +15,11 @@ are covered by [the preview operations guide](docs/preview-operations.md).
 Historical milestone records below are not evidence that the current preview
 has passed its release gates.
 
+Mac and iOS verification commands and screenshot-report locations are in
+[the Apple client E2E guide](docs/apple-client-e2e.md). Remaining commercial
+distribution and deployment requirements are tracked in
+[Apple release readiness](docs/apple-release-readiness.md).
+
 v0.1 has been accepted on `origin/main` at `eec68d8`. It proves the core loop:
 
 1. create a task in the web UI;

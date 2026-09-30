@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const suite = args.find((arg) => arg.startsWith("--suite="))?.slice(8) ?? "shared";
-if (args.some((arg) => arg !== "--list" && !/^--suite=(shared|ios|desktop)$/.test(arg))) {
-  throw new Error("Usage: npm run verify:preview -- [--suite=shared|ios|desktop] [--list]");
+if (args.some((arg) => arg !== "--list" && !/^--suite=(shared|ios|desktop|mac)$/.test(arg))) {
+  throw new Error("Usage: npm run verify:preview -- [--suite=shared|ios|desktop|mac] [--list]");
 }
 const npm = [process.env.npm_execpath, resolve(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")].find((path) => path && existsSync(path));
 const runNpm = (name, ...command) => ({ name, command: npm ? process.execPath : "npm", args: npm ? [npm, ...command] : command });
@@ -19,6 +19,8 @@ const checks = {
     runNpm("production preview build", "run", "build:preview"),
     // Keep PGlite/WASM concurrency bounded on hosted runners.
     runNpm("unit and integration tests", "test", "--", "--maxWorkers=2"),
+    runNode("E2E report integrity", "scripts/e2e-report.test.mjs"),
+    runNode("E2E owned browser cleanup", "scripts/owned-browser.test.mjs"),
     runNode("native static API contracts", "apps/ios/scripts/verify-contracts.mjs"),
     runNpm("browser workflows", "run", "test:e2e", "--workspace", "@artoo/web"),
     runNpm("authentication browser workflows", "run", "e2e:auth"),
@@ -31,13 +33,15 @@ const checks = {
     runNode("Xcode build and XCTest", "apps/ios/scripts/test-macos.mjs"),
     runNode("native and browser UI synchronization", "scripts/ios-ui-e2e.mjs"),
   ],
-  desktop: [runNpm("Windows installed package smoke", "run", "smoke:win", "--workspace", "@artoo/desktop")],
+  desktop: [runNpm(process.platform === "darwin" ? "Mac packaged application smoke" : "Windows installed package smoke", "run", process.platform === "darwin" ? "smoke:mac" : "smoke:win", "--workspace", "@artoo/desktop")],
+  mac: [runNpm("Mac packaged application smoke", "run", "smoke:mac", "--workspace", "@artoo/desktop")],
 }[suite];
 if (args.includes("--list")) {
   console.log(JSON.stringify({ suite, checks: checks.map(({ name }) => name) }, null, 2));
 } else {
   if (suite === "ios" && process.platform !== "darwin") throw new Error("The iOS suite requires macOS with Xcode, an iOS simulator and XcodeGen.");
-  if (suite === "desktop" && (process.platform !== "win32" || process.env.ARTOO_DESKTOP_INTERACTIVE !== "1")) {
+  if (suite === "mac" && process.platform !== "darwin") throw new Error("The Mac suite requires macOS with a graphical desktop session.");
+  if (suite === "desktop" && process.platform !== "darwin" && (process.platform !== "win32" || process.env.ARTOO_DESKTOP_INTERACTIVE !== "1")) {
     throw new Error("The desktop suite requires a logged-in Windows desktop. Set ARTOO_DESKTOP_INTERACTIVE=1 only in that session; hosted headless CI is not certified.");
   }
   const report = { suite, platform: process.platform, started_at: new Date().toISOString(), checks: [], passed: false };

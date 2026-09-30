@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { htmlEvidence } from "./playwright.reporting";
 
 // #34 AUTHORITY smoke config — the merge-critical single-origin topology: the
 // server serves the built web dist (ARTOO_WEB_DIST) AND /auth/* + /api/v1/* on
@@ -15,13 +16,12 @@ const WEB_DIST = process.env.ARTOO_WEB_DIST ?? resolve(here, "dist");
 
 export default defineConfig({
   testDir: "./e2e-auth",
-  outputDir: "./test-results-auth",
   timeout: 30_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
   workers: 1,
-  reporter: [["list"]],
-  use: { baseURL: SERVER_URL, trace: "off" },
+  ...htmlEvidence("auth-authority", "Unauthenticated browser gate and OAuth redirect initiation on the server's origin; no completed Google login claim"),
+  use: { baseURL: SERVER_URL, trace: "off", screenshot: "on", channel: process.env.ARTOO_CHROMIUM_CHANNEL?.trim() || undefined },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
     command: "node ../server/dist/main.js",

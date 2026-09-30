@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { htmlEvidence } from "./playwright.reporting";
 
 // #34 authority/dev-proxy smoke config. Unlike playwright.config.ts this does NOT
 // manage the servers — they are started externally with auth enabled
@@ -11,7 +12,7 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   fullyParallel: false,
   workers: 1,
-  reporter: [["list"]],
-  use: { baseURL: WEB_URL, trace: "off" },
+  ...htmlEvidence("auth-proxy", "Unauthenticated browser gate and OAuth redirect initiation via a development proxy; no completed Google login claim"),
+  use: { baseURL: WEB_URL, trace: "off", screenshot: "on", channel: process.env.ARTOO_CHROMIUM_CHANNEL?.trim() || undefined },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
 });

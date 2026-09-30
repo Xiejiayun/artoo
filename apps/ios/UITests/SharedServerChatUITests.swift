@@ -312,12 +312,7 @@ final class SharedServerChatUITests: XCTestCase {
         let origin = app.textFields["serverURL"]
         let localHTTP = app.switches["allowLocalHTTP"]
         if fixture.serverURL.scheme == "http" {
-            try reveal(localHTTP)
-            if localHTTP.value as? String != "1" {
-                let control = localHTTP.switches.firstMatch
-                (control.exists ? control : localHTTP).tap()
-            }
-            try waitForValue(localHTTP, "1", message: "Local HTTP must be enabled through the onboarding switch")
+            try setSwitchOn(localHTTP, message: "Local HTTP must be enabled through the onboarding switch")
         }
         try replace(origin, with: fixture.serverURL.absoluteString)
         try replace(app.textFields["pairingDeviceName"], with: name)
@@ -362,7 +357,9 @@ final class SharedServerChatUITests: XCTestCase {
     @MainActor
     private func setStepper(_ id: String, from initial: Int, to target: Int) throws {
         let stepper = app.steppers[id]
-        try reveal(stepper)
+        // iOS 18 exposes the Stepper as a value container whose own hit test
+        // is false even when both real adjustment buttons are on screen.
+        try reveal(stepper.buttons.firstMatch)
         try waitForValue(stepper, "\(initial)", message: "The discussion limit must begin at its displayed default")
         let hierarchy = XCTAttachment(string: stepper.debugDescription)
         hierarchy.name = "\(id) accessibility hierarchy"; hierarchy.lifetime = .keepAlways; add(hierarchy)
@@ -382,6 +379,25 @@ final class SharedServerChatUITests: XCTestCase {
             expected += direction
             try waitForValue(stepper, "\(expected)", message: "Each real stepper tap must update the displayed discussion limit")
         }
+    }
+
+    @MainActor
+    private func setSwitchOn(_ element: XCUIElement, message: String) throws {
+        for _ in 0..<3 {
+            let nested = element.switches.firstMatch
+            let control = nested.exists ? nested : element
+            try reveal(control)
+            try require(control.isEnabled, "The onboarding switch must be enabled before tapping")
+            // A first tap can be dropped while a fresh simulator is busy.
+            // Re-read state before retrying, so a delayed success is never
+            // toggled back off. All changes still use the actual native UI.
+            if element.value as? String == "1" { return }
+            try require(element.value as? String == "0", "The onboarding switch must expose a known off/on state")
+            control.tap()
+            let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1"), object: element)
+            if XCTWaiter.wait(for: [changed], timeout: 3) == .completed { return }
+        }
+        try waitForValue(element, "1", message: message)
     }
 
     @MainActor

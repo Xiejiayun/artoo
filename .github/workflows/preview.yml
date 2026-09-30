@@ -36,6 +36,7 @@ jobs:
             artifacts/preview-gate/*.json
             apps/web/test-results/
             apps/web/test-results-auth/
+            apps/web/playwright-report/
           if-no-files-found: ignore
           retention-days: 14
   ios:
@@ -59,10 +60,33 @@ jobs:
           name: ios-xctest-results
           path: |
             artifacts/preview-gate/*.json
-            artifacts/ios/*.xcresult
             artifacts/ios/*.json
             artifacts/ios/*.png
-            artifacts/ios/ui-attachments/
+            artifacts/ios/*.html
+          if-no-files-found: ignore
+          retention-days: 14
+  mac-desktop:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install chromium
+        working-directory: apps/web
+      - run: npm run verify:mac
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-packaged-e2e
+          path: |
+            artifacts/preview-gate/*.json
+            apps/desktop/release/mac-smoke-artifacts/
           if-no-files-found: ignore
           retention-days: 14
   windows-desktop:

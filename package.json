@@ -19,6 +19,7 @@
     "verify:v1": "node scripts/v1-gate.mjs",
     "verify:preview": "node scripts/preview-gate.mjs",
     "verify:ios": "node scripts/preview-gate.mjs --suite=ios",
+    "verify:mac": "node scripts/preview-gate.mjs --suite=mac",
     "verify:desktop": "node scripts/preview-gate.mjs --suite=desktop",
     "dev": "npm run dev --workspace @artoo/server",
     "dev:web": "npm run dev --workspace @artoo/web",

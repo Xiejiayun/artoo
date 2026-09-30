@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { htmlEvidence } from "./playwright.reporting";
 
 // E2E config for the artoo release flows. Playwright starts the real server
 // (dev bootstrap: embedded PGlite + migrate + seed + listen) and the Vite dev
@@ -14,10 +15,11 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   fullyParallel: false,
   workers: 1,
-  reporter: [["list"]],
+  ...htmlEvidence("workflows", "Web workflows against an isolated local development server; no native app or production deployment claim"),
   use: {
     baseURL: WEB_URL,
-    trace: "on-first-retry",
+    channel: process.env.ARTOO_CHROMIUM_CHANNEL?.trim() || undefined,
+    trace: "off",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: [

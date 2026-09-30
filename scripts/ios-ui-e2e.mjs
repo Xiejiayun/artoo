@@ -2,12 +2,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium, expect } from "@playwright/test";
 import { createWorkflowFixture, verifyWorkflowResults } from "./ios-ui-workflows-fixture.mjs";
+import { getE2EReportContext, readXCTestScreenshots, writeE2EReport } from "./e2e-report.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const selfCheck = process.argv.includes("--self-check");
@@ -29,10 +30,15 @@ async function main() {
   const temporary = mkdtempSync(join(tmpdir(), "artoo-ios-ui-"));
   const workspace = join(temporary, "workspace");
   mkdirSync(workspace);
-  const report = { mode: selfCheck ? "server-browser-harness-only" : "native-and-browser-ui", model: "deterministic subprocess fixture; no provider session", started_at: new Date().toISOString(), checks: [], passed: false };
+  const report = { ...getE2EReportContext(), mode: selfCheck ? "server-browser-harness-only" : "native-and-browser-ui", model: "deterministic subprocess fixture; no provider session", started_at: new Date().toISOString(), checks: [], passed: false };
+  if (!selfCheck) report.diagnostics_scope = "Raw xcresult bundles and exported attachments are unredacted local or CI diagnostics and inherit their repository artifact access rules; they can contain disposable fixture credentials and are intended for trusted recipients. This HTML includes only approved workflow screenshots.";
   const reportPath = join(output, selfCheck ? "ui-harness-self-check.json" : "native-ui-sync.json");
+  const htmlPath = join(output, `${selfCheck ? "ui-harness" : "native-ui"}-${report.started_at.replace(/[:.]/g, "-")}.html`);
+  const title = selfCheck ? "iOS workflow harness · browser evidence only" : "Artoo iOS · native and browser E2E";
   // An interrupted attempt must never leave a prior successful result in place.
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  writeE2EReport({ outputPath: htmlPath, title, report });
+  if (!selfCheck) rmSync(join(output, "ui-attachments"), { recursive: true, force: true });
   for (const name of selfCheck ? ["harness-browser.png", "harness-daemon.png", "harness-reviewed-plan.png", "harness-failure.png"] : ["native-browser-sync.png", "native-browser-failure.png"]) {
     rmSync(join(output, name), { force: true });
   }
@@ -116,7 +122,10 @@ async function main() {
     check("Loopback fixture control rejects missing/wrong credentials; real paired WS node advertises two runtimes");
     const fixturePath = join(temporary, "fixture.json");
     writeFileSync(fixturePath, JSON.stringify(fixture), { mode: 0o600 });
-    browser = await chromium.launch({ headless: true });
+    const browserChannel = process.env.ARTOO_CHROMIUM_CHANNEL?.trim() || undefined;
+    browser = await chromium.launch({ headless: true, ...(browserChannel ? { channel: browserChannel } : {}) });
+    report.environment.browser_channel = browserChannel ?? "playwright-bundled-chromium";
+    report.environment.browser_version = browser.version();
     interrupted.signal.throwIfAborted();
     const context = await browser.newContext();
     await context.addCookies([{ name: "artoo_session", value: owner.raw, url: origin, httpOnly: true, sameSite: "Lax" }]);
@@ -247,6 +256,11 @@ async function main() {
     report.cleanup = { resources_closed: !failedClose, temporary_directory_removed: !removalError };
     report.finished_at = new Date().toISOString();
     writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    const browserImages = (selfCheck ? ["harness-browser.png", "harness-daemon.png", "harness-reviewed-plan.png", "harness-failure.png"] : ["native-browser-sync.png", "native-browser-failure.png"])
+      .map((name) => ({ path: join(output, name), caption: `Authenticated browser · ${name.replace(/\.png$/, "").replaceAll("-", " ")}` }))
+      .filter(({ path }) => existsSync(path));
+    writeE2EReport({ outputPath: htmlPath, title, report, screenshots: [...browserImages, ...(selfCheck ? [] : readXCTestScreenshots(join(output, "ui-attachments")))] });
+    console.log(`[ios-ui] HTML report: ${htmlPath}`);
     if (removalError) throw new Error("Native UI temporary fixture cleanup failed", { cause: removalError });
     if (failedClose) throw new Error("Native UI fixture cleanup failed", { cause: failedClose.reason });
   }

@@ -3,14 +3,23 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getE2EReportContext, readXCTestScreenshots, writeE2EReport } from "../../../scripts/e2e-report.mjs";
 
-if (process.platform !== "darwin") throw new Error("Xcode/XCTest requires macOS; static checks are not a native test result.");
 const ios = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const output = resolve(ios, "../../artifacts/ios");
 const ui = process.argv.includes("--ui");
-if (process.argv.slice(2).some((arg) => arg !== "--ui")) throw new Error("Usage: test-macos.mjs [--ui]");
 const scheme = ui ? "ArtooUI" : "Artoo";
 const configuration = ui ? "Release" : "Debug";
+const report = { ...getE2EReportContext(), scope: ui ? "Release iOS XCUITest on the selected simulator; deterministic local server fixtures" : "Debug simulator build and unit XCTest; no UI workflow or physical-device claim", started_at: new Date().toISOString(), checks: [], passed: false };
+if (ui) report.diagnostics_scope = "Raw xcresult bundles and exported attachments are unredacted local or CI diagnostics and inherit their repository artifact access rules; they can contain disposable fixture credentials and are intended for trusted recipients. This HTML includes only approved workflow screenshots.";
+const htmlPath = resolve(output, `${scheme}-${report.started_at.replace(/[:.]/g, "-")}.html`);
+const title = ui ? "Artoo · native iOS UI tests" : "Artoo · iOS build and unit tests";
+let resultBundle;
+writeE2EReport({ outputPath: htmlPath, title, report });
+try {
+if (ui) rmSync(resolve(output, "ui-attachments"), { recursive: true, force: true });
+if (process.platform !== "darwin") throw new Error("Xcode/XCTest requires macOS; static checks are not a native test result.");
+if (process.argv.slice(2).some((arg) => arg !== "--ui")) throw new Error("Usage: test-macos.mjs [--ui]");
 let uiEnvironment;
 if (ui) {
   if (!process.env.ARTOO_IOS_UI_FIXTURE) throw new Error("Start the real-server UI fixture before using --ui");
@@ -33,11 +42,14 @@ if (ui) {
 }
 mkdirSync(output, { recursive: true });
 function run(command, args, capture = false) {
+  const started = Date.now();
   const result = spawnSync(command, args, { cwd: ios, stdio: capture ? "pipe" : "inherit", encoding: "utf8", timeout: 1_200_000 });
+  if (["xcodebuild", "xcodegen", "codesign"].includes(command)) report.checks.push({ name: [command, ...args].join(" "), passed: !result.error && result.status === 0, duration_ms: Date.now() - started });
   if (result.error || result.status !== 0) throw new Error(result.error?.message ?? `${command} failed (${result.status}): ${result.stderr ?? "see output"}`);
   return result.stdout;
 }
-run("xcodebuild", ["-version"]);
+report.environment.xcode = run("xcodebuild", ["-version"], true).trim().replaceAll("\n", " · ");
+console.log(report.environment.xcode);
 run("xcodegen", ["generate"]);
 const inventory = JSON.parse(run("xcrun", ["simctl", "list", "devices", "available", "--json"], true));
 const candidates = Object.entries(inventory.devices).sort(([a], [b]) => b.localeCompare(a, undefined, { numeric: true }))
@@ -45,6 +57,9 @@ const candidates = Object.entries(inventory.devices).sort(([a], [b]) => b.locale
 const requested = process.env.ARTOO_IOS_SIMULATOR_UDID;
 const device = requested ? candidates.find((item) => item.udid === requested) : candidates[0];
 if (!device) throw new Error(requested ? "ARTOO_IOS_SIMULATOR_UDID must identify an available iPhone simulator" : "Install an iOS simulator runtime in Xcode before running this gate");
+report.environment.simulator = device.name;
+report.environment.simulator_udid = device.udid;
+report.environment.configuration = configuration;
 // Simulator ad-hoc signing needs no developer certificate, but provides the
 // application/keychain entitlements required by the real Keychain XCTest.
 const common = ["-project", "Artoo.xcodeproj", "-scheme", scheme, "-configuration", configuration, "-derivedDataPath", resolve(output, "DerivedData"),
@@ -52,7 +67,7 @@ const common = ["-project", "Artoo.xcodeproj", "-scheme", scheme, "-configuratio
 run("xcodebuild", [...common, "-destination", "generic/platform=iOS Simulator", "build-for-testing"]);
 run("codesign", ["--display", "--entitlements", ":-", resolve(output, `DerivedData/Build/Products/${configuration}-iphonesimulator/Artoo.app`)]);
 console.log(`Testing on ${device.name} (${device.udid})`);
-const resultBundle = resolve(output, `${scheme}-${Date.now()}.xcresult`);
+resultBundle = resolve(output, `${scheme}-${Date.now()}.xcresult`);
 const destination = ["-destination", `platform=iOS Simulator,id=${device.udid}`, "-parallel-testing-enabled", "NO",
   "-resultBundlePath", resultBundle];
 if (!ui) {
@@ -98,4 +113,24 @@ if (!ui) {
       catch (error) { console.warn(`UI attachment export failed; the original xcresult remains available: ${error.message}`); }
     } else { console.warn("This Xcode cannot export UI attachments; inspect the retained xcresult bundle in Xcode."); }
   }
+}
+report.passed = true;
+} catch (error) {
+  report.error = error instanceof Error ? error.message : String(error);
+  process.exitCode = 1;
+  console.error(report.error);
+} finally {
+  report.finished_at = new Date().toISOString();
+  if (resultBundle) report.result_bundle = resultBundle;
+  const screenshots = ui ? readXCTestScreenshots(resolve(output, "ui-attachments")) : [];
+  if (ui && report.passed) {
+    report.checks.push({ name: "Export named native workflow screenshots", passed: screenshots.length > 0 });
+    if (!screenshots.length) {
+      report.passed = false;
+      report.error = "XCUITest passed, but native screenshot export is missing. Inspect the xcresult; visual evidence is not complete.";
+      process.exitCode = 1;
+    }
+  }
+  writeE2EReport({ outputPath: htmlPath, title, report, screenshots });
+  console.log(`HTML report: ${htmlPath}`);
 }
