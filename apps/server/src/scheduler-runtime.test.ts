@@ -73,6 +73,22 @@ describe("#15 Part 3 scheduler runtime eligibility", () => {
     expect(res.json().error.code).toBe("runtime_unavailable");
   });
 
+  it.each(["auto", "manual"] as const)("rejects a fresh missing runtime even when agent capabilities match (%s)", async (mode) => {
+    server = await buildTestServer();
+    await patchRuntimeMock(server, { status: "missing", lastSeenAt: server.ctx.clock.nowIso(), capabilities: [] });
+    const task = await createReadyTask(server, ["code.modify"]);
+    const payload = mode === "manual" ? { mode, agent_instance_id: "instance_mock_coder" } : { mode };
+    const res = await server.app.inject({ method: "POST", url: `/api/v1/tasks/${task}/assign`, payload });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe("runtime_unavailable");
+    const snapshot = (await server.app.inject({ method: "GET", url: `/api/v1/tasks/${task}` })).json();
+    expect(snapshot.task.status).toBe("ready");
+    expect(snapshot.runs).toEqual([]);
+
+    await patchRuntimeMock(server, { status: "available" });
+    expect((await server.app.inject({ method: "POST", url: `/api/v1/tasks/${task}/assign`, payload })).statusCode).toBe(200);
+  });
+
   it("excludes an instance whose runtime row is stale or has no last_seen_at", async () => {
     server = await buildTestServer();
     await patchRuntimeMock(server, { lastSeenAt: "2026-06-12T00:00:00.000Z" }); // ~1 day old

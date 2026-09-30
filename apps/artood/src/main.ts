@@ -151,6 +151,7 @@ export function createNodeFromConfig(config: ArtoodConfig): ArtoodNode {
 /** Load config, connect, and start dispatching. Connects the real WebSocket. */
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<ArtoodNode> {
   const config = loadConfigFromEnv(env);
+  if (process.connected === false) throw new Error("Desktop IPC disconnected before worker startup");
   const node = createNodeFromConfig(config);
   const removeHandlers = installShutdownHandlers(node);
   try { await node.start(); } catch (error) { removeHandlers(); throw error; }
@@ -180,10 +181,14 @@ export function installShutdownHandlers(node: ArtoodNode, host: ShutdownHost = p
     if (value && typeof value === "object" && "type" in value && value.type === "shutdown") shutdown();
   };
   host.on("message", message);
+  // A managed desktop worker must not outlive its IPC owner after a crash.
+  // Standalone CLI processes have no `connected` property or IPC lifetime.
+  if (host.connected !== undefined) host.on("disconnect", shutdown);
   host.on("SIGINT", shutdown);
   host.on("SIGTERM", shutdown);
   return () => {
     host.off("message", message);
+    host.off("disconnect", shutdown);
     host.off("SIGINT", shutdown);
     host.off("SIGTERM", shutdown);
   };

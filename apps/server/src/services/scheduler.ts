@@ -192,12 +192,12 @@ export async function scheduleTask(
     .filter((r) => {
       // Runtime eligibility (#15 Part 3). A missing agent_runtimes row is a
       // deliberate fallback (seeded/dev/pre-heartbeat): the candidate stays
-      // eligible with no runtime caps. A present-but-disabled or stale/timestamp-
-      // less row excludes the candidate (its runtime is known-bad). A fresh,
+      // eligible with no runtime caps. A present-but-missing/disabled or stale/
+      // timestamp-less row excludes the candidate (its runtime is known-bad). A fresh,
       // enabled row contributes its capabilities. `version` is non-gating.
       let runtimeCaps: Capability[] = [];
       if (r.runtimeStatus !== null) {
-        if (r.runtimeStatus === "disabled") {
+        if (r.runtimeStatus === "disabled" || r.runtimeStatus === "missing") {
           return false;
         }
         if (isRuntimeStale(r.runtimeLastSeen, now, RUNTIME_STALE_AFTER_MS)) {

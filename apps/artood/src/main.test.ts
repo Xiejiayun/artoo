@@ -145,4 +145,30 @@ describe("desktop worker shutdown", () => {
     remove();
     expect(host.listenerCount("message")).toBe(0);
   });
+
+  it("awaits node cleanup on IPC loss without using the disconnected channel", async () => {
+    const events: string[] = [];
+    let finish!: () => void;
+    const stopped = new Promise<void>((resolve) => { finish = resolve; });
+    const host = Object.assign(new EventEmitter(), { connected: true,
+      disconnect: vi.fn(() => { throw new Error("IPC already closed"); }), exit: (code: number) => events.push(`exit:${code}`) });
+    const remove = installShutdownHandlers({ start: async () => {}, stop: async () => { events.push("stop"); await stopped; } }, host);
+    host.connected = false;
+    host.emit("disconnect"); host.emit("SIGTERM");
+    expect(events).toEqual(["stop"]);
+    finish(); await new Promise((resolve) => setImmediate(resolve));
+    expect(events).toEqual(["stop", "exit:0"]);
+    expect(host.disconnect).not.toHaveBeenCalled();
+    remove(); expect(host.listenerCount("disconnect")).toBe(0);
+  });
+
+  it("keeps standalone workers without IPC on their existing signal lifecycle", async () => {
+    const stop = vi.fn(async () => {}); const exit = vi.fn();
+    const host = Object.assign(new EventEmitter(), { exit });
+    const remove = installShutdownHandlers({ start: async () => {}, stop }, host);
+    host.emit("disconnect"); expect(stop).not.toHaveBeenCalled();
+    host.emit("SIGTERM"); await new Promise((resolve) => setImmediate(resolve));
+    expect(stop).toHaveBeenCalledTimes(1); expect(exit).toHaveBeenCalledWith(0);
+    remove();
+  });
 });

@@ -86,29 +86,53 @@ async function stopProcessTree(pid: number): Promise<void> {
       killer.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
       killer.once("error", rejectStop);
       killer.once("close", (code) => {
-        // 128 means the process already exited; no process can still be writing.
+        // 128 means the requested root PID already exited. Windows descendant
+        // containment remains taskkill-based; POSIX uses an owned group below.
         if (code === 0 || code === 128) resolveStop();
         else rejectStop(new Error(`could not stop process tree (${code}): ${output}`));
       });
     });
   } else {
     try { process.kill(-pid, "SIGKILL"); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return; throw error; }
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      try { process.kill(-pid, 0); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+        // macOS can briefly report EPERM while killed members are being
+        // reaped. Retry the observation, never count EPERM as a stopped group.
+        if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+      }
+      await new Promise((resolveStop) => setTimeout(resolveStop, 20));
+    }
+    throw new Error("CLI process group did not exit after termination");
   }
 }
 
 // A small independent Node process owns a pipe from the daemon. If the daemon
 // crashes (including an Electron worker kill), pipe EOF kills the CLI's process
-// tree. A normal CLI exit disarms it first. No task content becomes executable.
+// tree. POSIX cleanup disarms it only after the owned group is gone. No task
+// content becomes executable, and detached/setsid escape is not containment.
 const PROCESS_GUARDIAN = `
 const {spawn}=require('node:child_process');
 const pid=Number(process.argv[1]);
 let disarmed=false;
 process.stdin.on('data',()=>{disarmed=true;});
-process.stdin.on('end',()=>{
+process.stdin.on('end',async()=>{
   if(disarmed) return;
   if(process.platform==='win32') spawn(require('node:path').resolve(process.env.SystemRoot||'C:/Windows','System32','taskkill.exe'),['/PID',String(pid),'/T','/F'],{stdio:'ignore',windowsHide:true});
-  else { try { process.kill(-pid,'SIGKILL'); } catch {} }
+  else {
+    try {
+      process.kill(-pid,'SIGKILL');
+      const deadline=Date.now()+5000;
+      while(Date.now()<deadline) {
+        try { process.kill(-pid,0); } catch(error) { if(error.code!=='EPERM') throw error; }
+        await new Promise(resolve=>setTimeout(resolve,20));
+      }
+      process.exitCode=1;
+    } catch(error) { if(error.code!=='ESRCH') process.exitCode=1; }
+  }
 });
 process.stdin.resume();
 `;
@@ -391,7 +415,20 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
         }
         stderr.feed(`${err.message}\n`);
       });
+      child.on("exit", () => {
+        if (process.platform === "win32" || child.pid === undefined) return;
+        // The CLI leader can exit while a writer either ignores or inherits
+        // stdio. Start group cleanup on exit, before waiting for pipe closure.
+        termination ??= stopProcessTree(child.pid);
+        void termination.catch((error: unknown) => stderr.feed(`CLI cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`));
+      });
       child.on("close", async (code: number | null, signal: NodeJS.Signals | null) => {
+        if (process.platform !== "win32" && child.pid !== undefined) {
+          termination ??= stopProcessTree(child.pid);
+          try { await termination; } catch { return; }
+        }
+        // Only disarm after the POSIX group has actually disappeared. A leader
+        // exiting successfully is not evidence that all workspace writers did.
         guardian?.stdin?.end("disarm");
         if (state.stopReason) {
           // A parent exit alone does not prove its descendants stopped.
@@ -455,7 +492,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
 
       if (!finalized && child.pid !== undefined) {
         guardian = spawn(process.execPath, ["-e", PROCESS_GUARDIAN, String(child.pid)], {
-          stdio: ["pipe", "ignore", "ignore"], windowsHide: true,
+          stdio: ["pipe", "ignore", "ignore"], windowsHide: true, detached: process.platform !== "win32",
           env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
         });
         guardian.stdin?.on("error", () => {});
