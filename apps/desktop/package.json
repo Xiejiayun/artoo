@@ -10,7 +10,7 @@
     "bundle-daemon": "node scripts/bundle-daemon.mjs",
     "prepare-renderer": "npm run build --workspace @artoo/web && node scripts/prepare-renderer.mjs",
     "pack:win": "npm run prepare-renderer && npm run bundle-daemon && electron-builder --win dir --publish never",
-    "pack:mac": "npm run prepare-renderer && npm run bundle-daemon && electron-builder --mac dir --publish never --config.electronDist=../../node_modules/electron/dist",
+    "pack:mac": "npm run prepare-renderer && npm run bundle-daemon && install-electron && electron-builder --mac dir --publish never --config.electronDist=../../node_modules/electron/dist",
     "dist:win": "npm run prepare-renderer && npm run bundle-daemon && electron-builder --win nsis --publish never",
     "smoke:win": "node scripts/windows-e2e-smoke.mjs",
     "smoke:mac": "node scripts/macos-e2e-smoke.mjs"
