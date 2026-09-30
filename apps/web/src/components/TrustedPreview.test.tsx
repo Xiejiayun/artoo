@@ -59,7 +59,7 @@ describe("trusted preview controls", () => {
   });
 
   it("surfaces a ready conflict without pretending the task advanced", async () => {
-    renderWithProviders(<TaskActions task={taskFixture({ id: "task_1", title: "Task", status: "backlog" })} />, { client: fakeApi({ markReady: async () => { throw new ApiClientError("conflict", "A prerequisite has not completed", 409); } }) });
+    renderWithProviders(<TaskActions task={taskFixture({ id: "task_1", title: "Task", status: "backlog" })} approvals={[]} />, { client: fakeApi({ markReady: async () => { throw new ApiClientError("conflict", "A prerequisite has not completed", 409); } }) });
     await userEvent.click(screen.getByRole("button", { name: "Mark ready" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("prerequisite");
     expect(screen.getByRole("button", { name: "Mark ready" })).toBeEnabled();

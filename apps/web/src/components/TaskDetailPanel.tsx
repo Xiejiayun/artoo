@@ -90,7 +90,7 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
         ) : null}
       </dl>
 
-      <TaskActions key={`actions:${task.id}`} task={task} />
+      <TaskActions key={`actions:${task.id}`} task={task} approvals={approvals} />
       <CancelRun key={`cancel:${task.id}`} runs={runs} taskId={task.id} projectId={task.project_id} />
 
       {task.acceptance_criteria.length > 0 ? (

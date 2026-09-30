@@ -80,6 +80,19 @@ exit and Playwright profile cleanup, and records whether graceful or forced
 closure was needed. Browser names are never used to terminate unrelated apps.
 An incomplete cleanup prevents a passing result.
 
+The installed Mac task flow also checks pending, needs-information, rejected
+and replacement execution approvals. Every decision and replacement comes
+from the UI. Independent API reads verify that the task remains Ready with
+zero runs until a user assigns it, and that the actual run consumes only the
+approved current request. Screenshots show the disabled assignment explanation
+and its enabled state after approval. Expired, previously consumed and malformed
+approval snapshots additionally have focused component regressions.
+
+The real POSIX worker tests compile their temporary child bundle directly from
+the current daemon, domain and protocol sources. They require no existing
+package `dist` directories; a clean-checkout regression verifies that this
+gate cannot accidentally test stale shared code from a previous build.
+
 The recovery gate rebuilds the production packages, then uses only isolated
 temporary storage. It checks online-backup refusal, offline backup hashes,
 restoration into a new directory, corrupt-backup/overwrite rejection, and

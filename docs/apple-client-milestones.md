@@ -140,3 +140,34 @@ removes that automatic mismatch without claiming that it proves the runner
 failure's deeper cause. The prior hosted Home-transition failure now has
 bounded state-aware retries and actual state diagnostics; background entry
 remains mandatory before testing catch-up.
+
+## 2026-10-01: desktop execution approval feedback and clean-checkout CI
+
+The Mac/Web assignment button now follows the same current/unconsumed approval
+rules as the server. Pending, needs-information, rejected, expired and consumed
+requests disable assignment and explain how to proceed. The existing no-gate
+path and ordinary member permissions remain unchanged. The detail panel uses
+the approvals from the same authoritative task snapshot.
+
+Thirty focused React tests and the Web TypeScript check passed. The freshly
+built x64 DMG run starting `2026-09-30T18:55:00.096Z` passed all 12 client checks,
+with six screenshots inspected and complete cleanup. It drove pending → Need
+info → Reject → replacement request → Approve through the actual installed UI.
+Read-only production API checks verified zero runs before assignment, preserved
+superseded history, and the final run's binding to only the current approval.
+The task then completed artifact download/review and app/server restart checks.
+
+Report:
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T18-55-00-096Z.html`
+(SHA-256 `c0fb66587d1294fbd49ebd3a4e76a4509c7652dc8c7d1f30613f334114eb3b4e`).
+The Mac gate also passed all 46 process regressions and eight distribution
+checks, with the separate tiny-DMG opt-in test skipped.
+
+Hosted run `36760737412` exposed a clean-checkout failure before its Mac UI
+could launch: the POSIX test bundle followed domain/protocol package exports
+into missing `dist` directories. An independent worktree at `85eb8cd` reproduced
+the exact four resolution errors after its own `npm ci`. Applying only the
+seven-line source-alias change made all seven real process cases pass while
+domain, protocol, server and daemon dist directories remained absent. Cleanup
+confirmed zero added fixture directories and processes. This verifies the
+local clean-checkout fix; the subsequent hosted run remains separate evidence.

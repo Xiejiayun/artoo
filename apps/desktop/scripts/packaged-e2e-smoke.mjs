@@ -89,7 +89,7 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
     modelExecution: "Temporary CLI fixture through production Codex adapter; no real model quality claim",
     ownerAuthentication: "Test-provisioned owner cookie; native pairing and authorization use production endpoints" };
   mkdirSync(artifactDir, { recursive: true });
-  for (const filename of [`${label}-desktop-smoke.json`, `${label}-desktop-smoke.html`, `${label}-desktop-smoke.png`, `${label}-desktop-smoke-failure.png`, `${label}-artifact.patch`, `${label}-artifact-after-restart.patch`, `${label}-desktop-connect.png`, `${label}-desktop-worker.png`, `${label}-desktop-restored.png`, ...(!isMac ? ["windows-live-copilot.json", "windows-live-copilot-plan.png"] : [])]) {
+  for (const filename of [`${label}-desktop-smoke.json`, `${label}-desktop-smoke.html`, `${label}-desktop-smoke.png`, `${label}-desktop-smoke-failure.png`, `${label}-artifact.patch`, `${label}-artifact-after-restart.patch`, `${label}-desktop-connect.png`, `${label}-desktop-worker.png`, `${label}-desktop-restored.png`, `${label}-desktop-approval-needs-info.png`, `${label}-desktop-approval-replaced.png`, ...(!isMac ? ["windows-live-copilot.json", "windows-live-copilot-plan.png"] : [])]) {
     rmSync(join(artifactDir, filename), { force: true });
   }
   // Record build/preflight failures too; every invocation owns an HTML report.
@@ -398,14 +398,53 @@ console.log('Packaged Codex adapter fixture completed');
     await page.getByText("Require approval before execution", { exact: true }).click();
     await page.getByLabel("Execution approval summary").fill("Run the packaged fixture in its isolated smoke workspace");
     await page.getByRole("button", { name: "Request execution approval", exact: true }).click();
+    const assignButton = page.getByRole("button", { name: "Assign", exact: true });
+    const assertApprovalHold = async (status, reason) => {
+      await expect(assignButton).toBeDisabled();
+      await expect(assignButton).toHaveAccessibleDescription(reason);
+      const snapshot = await ownerApi(`/api/v1/tasks/${taskId}`);
+      assert.equal(snapshot.task.status, "ready");
+      assert.equal(snapshot.runs.length, 0, "An approval decision must not start execution");
+      const gates = snapshot.approvals.filter((approval) => approval.action === "execution.start" && approval.payload_ref === "execution-gate/current");
+      assert.equal(gates.length, 1); assert.equal(gates[0].status, status); assert.equal(gates[0].run_id, null);
+      return gates[0];
+    };
+    const initialApproval = await assertApprovalHold("pending", /Execution approval is pending/);
+    await page.getByRole("button", { name: "Need info", exact: true }).click();
+    assert.equal((await assertApprovalHold("needs_more_info", /Execution approval needs more information/)).id, initialApproval.id);
+    await assignButton.scrollIntoViewIfNeeded();
+    await captureScene(`${label}-desktop-approval-needs-info.png`, "Assignment remains disabled while the current execution review needs more information");
+    await page.getByRole("button", { name: "Reject", exact: true }).click();
+    assert.equal((await assertApprovalHold("rejected", /Execution approval was rejected/)).id, initialApproval.id);
+    await page.getByLabel("Execution approval summary").fill("Scope clarified: execute only the fixture and upload its patch for review");
+    await page.getByRole("button", { name: "Request execution approval", exact: true }).click();
+    const replacement = await assertApprovalHold("pending", /Execution approval is pending/);
+    assert.notEqual(replacement.id, initialApproval.id);
+    const replaced = await ownerApi(`/api/v1/tasks/${taskId}`);
+    assert.equal(replaced.approvals.length, 2);
+    assert.equal(replaced.approvals.find((approval) => approval.id === initialApproval.id).payload_ref, "execution-gate/superseded");
     await page.getByRole("button", { name: "Approve", exact: true }).click();
     await expect(page.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
-    await page.getByRole("button", { name: "Assign", exact: true }).click();
+    await expect(assignButton).toBeEnabled();
+    const approved = await ownerApi(`/api/v1/tasks/${taskId}`);
+    assert.equal(approved.task.status, "ready"); assert.equal(approved.runs.length, 0);
+    assert.equal(approved.approvals.find((approval) => approval.id === replacement.id).status, "approved");
+    assert.equal(approved.approvals.find((approval) => approval.id === replacement.id).run_id, null);
+    report.execution_approval = { original_id: initialApproval.id, current_id: replacement.id, verified_states: ["pending", "needs_more_info", "rejected", "replacement_pending", "approved"], runs_before_assignment: 0 };
+    await assignButton.scrollIntoViewIfNeeded();
+    await captureScene(`${label}-desktop-approval-replaced.png`, "A new approved execution review enables assignment; the earlier rejected request remains history");
+    check("Execution approval states disable assignment with a reason; only the approved replacement enables a user-initiated execution");
+    await assignButton.click();
     await until(async () => {
       const snapshot = await ownerApi(`/api/v1/tasks/${taskId}`);
       if (snapshot.task.status === "blocked") throw new Error(`Fixture run blocked: ${JSON.stringify(snapshot.runs.map((run) => ({ status: run.status, summary: run.summary })))}`);
       return snapshot.task.status === "review";
     }, "The packaged worker did not deliver a reviewable task", 60_000);
+    const executed = await ownerApi(`/api/v1/tasks/${taskId}`);
+    assert.equal(executed.runs.length, 1);
+    assert.equal(executed.approvals.find((approval) => approval.id === replacement.id).run_id, executed.runs[0].id);
+    assert.equal(executed.approvals.find((approval) => approval.id === initialApproval.id).run_id, null);
+    report.execution_approval.run_id = executed.runs[0].id;
     await expect(page.getByRole("button", { name: "Accept", exact: true })).toBeVisible();
     assert.equal(await page.locator(".pane").evaluateAll((panes) => panes.every((pane) => pane.scrollWidth <= pane.clientWidth + 1)), true, "A workspace pane overflows horizontally with real generated identifiers");
     const execution = JSON.parse(readFileSync(join(workspace, "fixture-execution.json"), "utf8"));
