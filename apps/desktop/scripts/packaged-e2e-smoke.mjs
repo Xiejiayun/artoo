@@ -12,6 +12,7 @@ import { getE2EReportContext, writeE2EReport } from "../../../scripts/e2e-report
 import { closeOwnedBrowser } from "../../../scripts/owned-browser.mjs";
 import { buildMacDistribution } from "./mac-distribution.mjs";
 import { mountPreviewDmg } from "./mac-dmg-install.mjs";
+import { finalizeInstalledLiveProviderEvidence, installedLiveProviderEvidence, runOptionalInstalledLiveProvider } from "./installed-live-provider-gate.mjs";
 
 const desktopDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(desktopDir, "..", "..");
@@ -74,6 +75,7 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
     : join(desktopDir, "release", isMac ? (fromDmg ? "mac-dmg-smoke-artifacts" : "mac-smoke-artifacts") : "smoke-artifacts");
   const jsonPath = join(artifactDir, `${label}-desktop-smoke.json`);
   const htmlPath = join(artifactDir, `${label}-desktop-smoke.html`);
+  const liveEvidence = installedLiveProviderEvidence(platform, artifactDir);
   const screenshots = [];
   const checks = [];
   const captures = [];
@@ -92,6 +94,7 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
   for (const filename of [`${label}-desktop-smoke.json`, `${label}-desktop-smoke.html`, `${label}-desktop-smoke.png`, `${label}-desktop-smoke-failure.png`, `${label}-artifact.patch`, `${label}-artifact-after-restart.patch`, `${label}-desktop-connect.png`, `${label}-desktop-worker.png`, `${label}-desktop-restored.png`, `${label}-desktop-approval-needs-info.png`, `${label}-desktop-approval-replaced.png`, ...(!isMac ? ["windows-live-copilot.json", "windows-live-copilot-plan.png"] : [])]) {
     rmSync(join(artifactDir, filename), { force: true });
   }
+  for (const path of [liveEvidence.reportPath, liveEvidence.planScreenshotPath, liveEvidence.chatScreenshotPath]) rmSync(path, { force: true });
   // Record build/preflight failures too; every invocation owns an HTML report.
   writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`);
   writeE2EReport({ outputPath: htmlPath, title: `Artoo ${platformName} packaged E2E`, report, screenshots });
@@ -477,27 +480,32 @@ console.log('Packaged Codex adapter fixture completed');
     await downloadPatch(`${label}-artifact-after-restart.patch`);
     check("App/server restart preserve device identity, worker settings, reviewed task, and downloadable artifact");
     await captureScene(`${label}-desktop-restored.png`, "Completed task and downloadable artifact restored after app and server restart");
-    if (!isMac && process.env.ARTOO_DESKTOP_LIVE_CODEX === "1") {
-      liveActive = true;
-      liveReportPath = join(artifactDir, "windows-live-copilot.json");
-      report.liveEvidence = liveReportPath;
-      report.liveScope = process.env.ARTOO_DESKTOP_LIVE_SCOPE ?? "all";
-      report.modelExecution = report.liveScope === "discussion"
-        ? "Deterministic CLI fixture plus a targeted real Codex planning discussion through the installed Windows worker; conversational chat turns are excluded from this run"
-        : "Deterministic CLI fixture plus opt-in real Codex chat and planning discussion through the installed Windows worker; see live evidence for completed turns and results";
-      const { runWindowsLiveCopilot } = await import("./windows-live-copilot.mjs");
-      const live = await runWindowsLiveCopilot({ page, workspace, userData, baseUrl, ownerCookie, artifactDir, server,
-        restartApp: async () => {
-          await electronApp.close(); electronApp = undefined; page = undefined;
-          // The fixture must use an empty PATH, while real Codex may require
-          // ordinary system tools. This only changes this isolated child app.
-          appEnv.PATH = Object.entries(process.env).find(([key]) => /^path$/i.test(key))?.[1] ?? "";
-          await launchApp();
-          return page;
-        },
-      });
+    const live = await runOptionalInstalledLiveProvider({ platform, page, workspace, userData, baseUrl, ownerCookie, artifactDir, server,
+      onStart: (plan) => {
+        liveActive = true;
+        liveReportPath = plan.reportPath;
+        report.liveEvidence = liveReportPath;
+        report.liveScope = plan.scope;
+        report.liveVerified = false;
+        report.modelExecution = `Deterministic CLI fixture completed; real Codex ${plan.scope} verification requested through the installed ${platformName} worker. See liveVerified and the live evidence for its outcome.`;
+      },
+      onScreenshot: (screenshot) => screenshots.push(screenshot),
+      restartApp: async () => {
+        await electronApp.close(); electronApp = undefined; page = undefined;
+        // The fixture must use an empty PATH, while real Codex may require
+        // ordinary system tools. This only changes this isolated child app.
+        appEnv.PATH = Object.entries(process.env).find(([key]) => /^path$/i.test(key))?.[1] ?? "";
+        await launchApp();
+        return page;
+      },
+    });
+    if (live) {
       page = live.page;
       liveReportPath = live.reportPath;
+      report.liveVerified = true;
+      report.modelExecution = report.liveScope === "discussion"
+        ? `Deterministic CLI fixture plus a completed real Codex planning discussion through the installed ${platformName} worker; conversational chat turns are excluded from this run`
+        : `Deterministic CLI fixture plus completed real Codex chat and planning discussion through the installed ${platformName} worker; see live evidence for completed turns and results`;
       check(report.liveScope === "discussion"
         ? "Targeted real provider discussion, plan review and acceptance verified through the installed worker; chat turns excluded from this run"
         : "Opt-in real provider chat, discussion, plan review and acceptance verified through the installed worker");
@@ -552,13 +560,9 @@ console.log('Packaged Codex adapter fixture completed');
       report.error ??= "Installed smoke cleanup did not complete";
       executionError ??= new Error(report.error);
     }
-    if (liveReportPath && existsSync(liveReportPath)) {
+    if (liveReportPath) {
       try {
-        const liveReport = JSON.parse(readFileSync(liveReportPath, "utf8"));
-        liveReport.cleanup_complete = report.cleanup_complete;
-        liveReport.cleanup = cleanup;
-        if (report.result !== "pass") { liveReport.result = "fail"; liveReport.error ??= report.error; }
-        writeFileSync(liveReportPath, `${JSON.stringify(liveReport, null, 2)}\n`);
+        report.liveEvidenceSnapshot = finalizeInstalledLiveProviderEvidence(liveReportPath, report);
       } catch {
         report.result = "fail";
         report.error = "Could not finalize installed live verification cleanup evidence";

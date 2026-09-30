@@ -50,8 +50,10 @@ the mounted package.
 The installed app then uses the existing packaged smoke's complete pairing,
 authenticated realtime, worker lifecycle, task approval/execution, artifact
 download, review, app/server restart, sign-out and removal checks. It uses an
-isolated fixture server and deterministic CLI, with no model-provider request
-or live Google sign-in claim. It never installs into `/Applications`, replaces
+isolated fixture server and deterministic CLI by default. Optional real Codex
+discussion verification requires explicit opt-in and provider configuration;
+see [installed Mac provider verification](../../docs/mac-live-provider-verification.md).
+The fixture does not establish live Google sign-in. It never installs into `/Applications`, replaces
 an existing user app or uses a directory package as DMG evidence.
 
 The HTML report, actual app screenshots, JSON result, package hashes and cleanup
