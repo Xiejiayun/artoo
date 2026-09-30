@@ -45,6 +45,13 @@ describe.skipIf(process.platform === "win32")("POSIX managed worker process owne
     // application's dist or bundled daemon while another E2E run is active.
     await build({ entryPoints: [fileURLToPath(new URL("../../artood/src/main.ts", import.meta.url))], outfile: bundle,
       bundle: true, platform: "node", format: "esm", target: "node24", logLevel: "silent",
+      // Like the Vitest imports above, the child bundle must use this checkout's
+      // source. Package exports point at dist, which is absent after npm ci and
+      // can otherwise silently test stale shared code from an earlier build.
+      alias: {
+        "@artoo/domain": fileURLToPath(new URL("../../../packages/domain/src/index.ts", import.meta.url)),
+        "@artoo/protocol": fileURLToPath(new URL("../../../packages/protocol/src/index.ts", import.meta.url)),
+      },
       banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
       external: ["bufferutil", "utf-8-validate"] });
   });
