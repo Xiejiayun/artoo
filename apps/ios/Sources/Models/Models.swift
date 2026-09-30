@@ -454,6 +454,7 @@ public struct Approval: Codable, Equatable, Hashable, Identifiable {
     }
 
     public var isActiveExecutionGate: Bool { action == "execution.start" && payloadRef != "execution-gate/superseded" }
+    public var actionLabel: String { action == "execution.start" ? "Start task execution" : action }
 }
 
 public struct Artifact: Codable, Equatable, Identifiable {

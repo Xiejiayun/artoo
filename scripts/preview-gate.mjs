@@ -21,6 +21,9 @@ const checks = {
     runNpm("unit and integration tests", "test", "--", "--maxWorkers=2"),
     runNode("E2E report integrity", "scripts/e2e-report.test.mjs"),
     runNode("E2E owned browser cleanup", "scripts/owned-browser.test.mjs"),
+    runNode("native execution fixture integrity", "scripts/fixtures/ios-ui-execution.test.mjs"),
+    runNode("device signing selection", "apps/ios/scripts/archive-device.test.mjs"),
+    runNode("SDK-aware iPhone simulator selection", "apps/ios/scripts/simulator-selection.test.mjs"),
     runNode("native static API contracts", "apps/ios/scripts/verify-contracts.mjs"),
     runNpm("browser workflows", "run", "test:e2e", "--workspace", "@artoo/web"),
     runNpm("authentication browser workflows", "run", "e2e:auth"),
@@ -28,13 +31,19 @@ const checks = {
     { name: "diff whitespace", command: "git", args: ["diff", "--check"] },
   ],
   ios: [
+    runNode("SDK-aware iPhone simulator selection", "apps/ios/scripts/simulator-selection.test.mjs"),
     runNpm("production server and browser build", "run", "build:preview"),
     runNode("native static API contracts", "apps/ios/scripts/verify-contracts.mjs"),
     runNode("Xcode build and XCTest", "apps/ios/scripts/test-macos.mjs"),
     runNode("native and browser UI synchronization", "scripts/ios-ui-e2e.mjs"),
   ],
   desktop: [runNpm(process.platform === "darwin" ? "Mac packaged application smoke" : "Windows installed package smoke", "run", process.platform === "darwin" ? "smoke:mac" : "smoke:win", "--workspace", "@artoo/desktop")],
-  mac: [runNpm("Mac packaged application smoke", "run", "smoke:mac", "--workspace", "@artoo/desktop")],
+  mac: [
+    runNode("Mac distribution configuration and mount integrity", "apps/desktop/scripts/mac-distribution.test.mjs"),
+    runNpm("Mac execution and worker shutdown regressions", "test", "--", "--maxWorkers=1",
+      "apps/artood/src/main.test.ts", "apps/artood/src/process-adapter.test.ts", "apps/server/src/desktop-worker-posix.test.ts"),
+    runNpm("Mac DMG installation smoke", "run", "smoke:mac:dmg", "--workspace", "@artoo/desktop"),
+  ],
 }[suite];
 if (args.includes("--list")) {
   console.log(JSON.stringify({ suite, checks: checks.map(({ name }) => name) }, null, 2));

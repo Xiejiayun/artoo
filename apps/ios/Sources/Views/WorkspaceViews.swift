@@ -138,6 +138,7 @@ private struct LibraryDetailView: View {
 struct GoalDetailView: View {
     @StateObject private var model: WorkspaceViewModel
     @State private var planning = false
+    @State private var confirmingCancellation = false
     @State private var auditURL: URL?
     @State private var exportError: String?
     let goalId: String
@@ -154,6 +155,10 @@ struct GoalDetailView: View {
                 Section(goal["title"].text) {
                     Text(goal["objective"].text)
                     LabeledContent("Status", value: goal["status"].text)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Goal status")
+                        .accessibilityValue(goal["status"].text)
+                        .accessibilityIdentifier("goal.status.\(goalId)")
                     ForEach(Array(goal["acceptance_criteria"].array.enumerated()), id: \.offset) { _, item in Label(item.text, systemImage: "checkmark.circle") }
                 }
                 Section("Actions") {
@@ -163,7 +168,11 @@ struct GoalDetailView: View {
                     if ["running", "awaiting_approval", "blocked"].contains(goal["status"].text) { goalAction("Pause", "pause") }
                     if goal["status"].text == "paused" { goalAction("Resume", "resume") }
                     if ["paused", "blocked"].contains(goal["status"].text) { goalAction("Reconcile from checkpoint", "reconcile") }
-                    if !["completed", "cancelled", "archived"].contains(goal["status"].text) { goalAction("Cancel goal", "cancel") }
+                    if !["completed", "cancelled", "archived"].contains(goal["status"].text) {
+                        Button("Cancel goal", role: .destructive) { confirmingCancellation = true }
+                            .disabled(model.busy)
+                            .accessibilityIdentifier("goal.cancel.request.\(goalId)")
+                    }
                     Button("Prepare audit export") { Task { await exportAudit() } }
                     if let auditURL { ShareLink("Share audit", item: auditURL) }
                 }
@@ -211,6 +220,15 @@ struct GoalDetailView: View {
                 if let exportError { Text(exportError).foregroundStyle(.red) }
             }
         }.navigationTitle("Goal").sheet(isPresented: $planning) { PlanEditor(goalId: goalId, model: model) }
+            .confirmationDialog("Cancel this goal?", isPresented: $confirmingCancellation, titleVisibility: .visible) {
+                Button("Cancel goal", role: .destructive) {
+                    Task { await model.perform(path: "/api/v1/goals/\(apiPart(goalId))/cancel") }
+                }.disabled(model.busy).accessibilityIdentifier("goal.cancel.confirm.\(goalId)")
+                Button("Keep goal", role: .cancel) { confirmingCancellation = false }
+                    .accessibilityIdentifier("goal.cancel.dismiss.\(goalId)")
+            } message: {
+                Text("This cancels the goal and its unfinished tasks. Active runs must stop before cancellation completes. A cancelled goal cannot be resumed.")
+            }
             .refreshable { await model.load() }.liveRefresh { await model.load() }
     }
     private func goalAction(_ title: String, _ action: String) -> some View {

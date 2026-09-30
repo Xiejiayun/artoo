@@ -119,7 +119,7 @@ async function main() {
       assert.equal(response.status, 401, "Test control must reject missing or incorrect credentials");
     }
     assert.equal((await workflows.readDaemon()).status, "online");
-    check("Loopback fixture control rejects missing/wrong credentials; real paired WS node advertises two runtimes");
+    check("Loopback fixture control rejects missing/wrong credentials; real paired WS node advertises two discussion runtimes and one executor");
     const fixturePath = join(temporary, "fixture.json");
     writeFileSync(fixturePath, JSON.stringify(fixture), { mode: 0o600 });
     const browserChannel = process.env.ARTOO_CHROMIUM_CHANNEL?.trim() || undefined;
@@ -221,10 +221,12 @@ async function main() {
     for (const text of [fixture.native_reply, fixture.browser_reply]) assert.equal(replies.messages.filter((message) => message.body === text).length, 1);
     assert.ok(replies.messages.every((message) => message.thread_root_id === nativeRoots[0].id));
     check("Shared database retains one root and exactly one copy of each scoped thread reply");
-    report.workflows = await verifyWorkflowResults({ fixture, request, transitions: workflows.transitions });
+    report.workflows = await verifyWorkflowResults({ fixture, request, transitions: workflows.transitions, verifyNativeActions: !selfCheck });
     check("Production APIs confirm three subprocess turns with exact thread-scoped context, attributed answers, and two accepted tasks with criteria and a blocks dependency");
     if (!selfCheck) check("XCUITest passed real pairing, foreground sync, background catch-up and app relaunch");
     if (!selfCheck) check("XCUITest passed native daemon stop/resume and discussion/proposal/acceptance workflows");
+    if (!selfCheck) check("XCUITest restored a needs-information approval after relaunch and verified explicit goal cancellation confirmation");
+    if (!selfCheck) check("XCUITest created a task, requested and granted execution approval, manually assigned a real subprocess, previewed its uploaded report in Quick Look and accepted the task");
     report.passed = true;
   } catch (error) {
     report.error = error instanceof Error ? error.message : String(error);

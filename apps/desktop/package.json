@@ -12,8 +12,11 @@
     "pack:win": "npm run prepare-renderer && npm run bundle-daemon && electron-builder --win dir --publish never",
     "pack:mac": "npm run prepare-renderer && npm run bundle-daemon && install-electron && electron-builder --mac dir --publish never --config.electronDist=../../node_modules/electron/dist",
     "dist:win": "npm run prepare-renderer && npm run bundle-daemon && electron-builder --win nsis --publish never",
+    "dist:mac:preview": "node scripts/mac-distribution.mjs --preview",
+    "dist:mac:release": "node scripts/mac-distribution.mjs --release",
     "smoke:win": "node scripts/windows-e2e-smoke.mjs",
-    "smoke:mac": "node scripts/macos-e2e-smoke.mjs"
+    "smoke:mac": "node scripts/macos-e2e-smoke.mjs",
+    "smoke:mac:dmg": "node scripts/macos-dmg-e2e-smoke.mjs"
   },
   "devDependencies": {
     "electron": "44.4.3",

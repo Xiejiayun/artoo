@@ -10,7 +10,7 @@ const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (character) =>
 
 // Reports never inspect process.env or retain HTTP headers, cookies or tokens.
 // Keep a second boundary here for callers that include diagnostic objects.
-function redact(value, key = "") {
+export function redact(value, key = "") {
   if (/(?:token|secret|password|authorization|cookie|pairing.?code|api.?key)$/i.test(key)) return "[redacted]";
   if (Array.isArray(value)) return value.map((item) => redact(item));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redact(item, name)]));
@@ -58,6 +58,16 @@ const nativeWorkflowImages = [
   "Native suggested plan with original reply expanded",
   "Native proposed plan before human acceptance",
   "Native accepted plan with dependent tasks",
+  "Native needs-information approval restored after relaunch",
+  "Native approval completed and removed from Inbox",
+  "Native goal cancellation requires confirmation",
+  "Native goal preserved after dismissing cancellation",
+  "Native goal cancelled after explicit confirmation",
+  "Native task awaiting execution approval",
+  "Native assignment rejected with selection preserved",
+  "Native execution completed with uploaded artifact",
+  "Native uploaded execution report in Quick Look",
+  "Native task accepted after artifact review",
 ];
 export function readXCTestScreenshots(directory) {
   let manifest;

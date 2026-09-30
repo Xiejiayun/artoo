@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 
 /// Black-box tests of the Release app. The companion client uses the same
 /// authenticated REST routes as every other paired client; no API is mocked.
@@ -12,6 +13,309 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     override func tearDownWithError() throws { app.terminate() }
+
+    @MainActor
+    func testTaskExecutionApprovalArtifactPreviewAndAcceptance() async throws {
+        try await controlNode("start")
+        try await pairNative(name: "Native task execution CI")
+        let beforeCreation = try await peerExecutionTasks()
+        try require(!beforeCreation.contains { $0.title == fixture.executionTaskTitle }, "The fixture must not precreate the native execution task")
+        app.tabBars.buttons["Tasks"].tap()
+        let create = app.buttons["task.create.open"]
+        try require(create.waitForExistence(timeout: 15), "Tasks must expose native creation")
+        create.tap()
+        try replace(editableField("task.create.title"), with: fixture.executionTaskTitle)
+        try replace(editableField("task.create.criteria"), with: "\(fixture.executionCriterion1)\n\(fixture.executionCriterion2)")
+        try replace(editableField("task.create.capabilities"), with: "code.modify")
+        let submit = app.buttons["task.create.submit"]
+        try reveal(submit); try require(submit.isEnabled, "The completed native form must enable creation"); submit.tap()
+        let created = try await waitForCreatedExecutionTask()
+        XCTAssertEqual(created.status, "backlog")
+        XCTAssertEqual(created.projectId, fixture.projectId)
+        XCTAssertEqual(created.acceptanceCriteria, [fixture.executionCriterion1, fixture.executionCriterion2])
+        XCTAssertEqual(created.requiredCapabilities, ["code.modify"])
+        let taskId = created.id
+        let taskRow = app.buttons["task.row.\(taskId)"]
+        try require(taskRow.waitForExistence(timeout: 15), "The task created by the phone must appear in Tasks")
+        try reveal(taskRow); taskRow.tap()
+        let status = app.descendants(matching: .any).matching(identifier: "task.status.\(taskId)").firstMatch
+        try require(status.waitForExistence(timeout: 15), "Task detail must expose its real status")
+        try waitForValue(status, "backlog", message: "The newly created task must remain in Backlog")
+        let ready = app.buttons["task.action.markReady.\(taskId)"]
+        try reveal(ready); ready.tap()
+        let readySnapshot = try await waitForExecutionTask(taskId) { $0.task.status == "ready" }
+        XCTAssertTrue(readySnapshot.runs.isEmpty)
+        XCTAssertTrue(readySnapshot.approvals.isEmpty, "The fixture must not precreate execution approval")
+        try reveal(app.staticTexts[fixture.executionTaskTitle])
+        try waitForValue(status, "ready", message: "Mark Ready must update the native task")
+        let identifiedDisclosure = app.buttons["task.approval.disclosure.\(taskId)"]
+        let disclosure = identifiedDisclosure.waitForExistence(timeout: 2) ? identifiedDisclosure : app.buttons["Request execution review"]
+        try reveal(disclosure); disclosure.tap()
+        try replace(editableField("task.approval.summary.\(taskId)"), with: fixture.executionApprovalSummary)
+        let risk = app.segmentedControls["task.approval.risk.\(taskId)"].buttons["High"]
+        try reveal(risk); risk.tap()
+        let requestApproval = app.buttons["task.approval.request.\(taskId)"]
+        try reveal(requestApproval); requestApproval.tap()
+        let pending = try await waitForExecutionTask(taskId) {
+            $0.approvals.contains { $0.action == "execution.start" && $0.payloadRef == "execution-gate/current" && $0.status == "pending" }
+        }
+        try require(pending.approvals.count == 1, "One native review request must create one approval")
+        let approval = try XCTUnwrap(pending.approvals.first)
+        XCTAssertEqual(approval.summary, fixture.executionApprovalSummary)
+        XCTAssertEqual(approval.risk, "high")
+        XCTAssertNil(approval.runId)
+        XCTAssertEqual(pending.task.status, "ready")
+        XCTAssertTrue(pending.runs.isEmpty, "Requesting review must not execute the task")
+        let assign = app.buttons["task.action.assign.\(taskId)"]
+        let blocked = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: assign)
+        try require(XCTWaiter.wait(for: [blocked], timeout: 10) == .completed, "The native task must block assignment while approval is pending")
+        let keyboardDismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        try require(XCTWaiter.wait(for: [keyboardDismissed], timeout: 10) == .completed, "Submitting execution approval must dismiss the keyboard so root navigation is reachable")
+        let summaryInput = app.descendants(matching: .any).matching(identifier: "task.approval.summary.\(taskId)").firstMatch
+        let requestCollapsed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: summaryInput)
+        try require(XCTWaiter.wait(for: [requestCollapsed], timeout: 10) == .completed, "A successful approval request must collapse its cleared input form")
+        attachScreenshot("Native task awaiting execution approval")
+
+        let inbox = app.tabBars.buttons["Inbox"]
+        try require(inbox.isHittable, "Inbox must be reachable after submitting execution approval")
+        inbox.tap()
+        try require(app.navigationBars["Today"].waitForExistence(timeout: 10), "Selecting Inbox must leave Task detail and show Today")
+        let approvalRow = app.buttons["inbox.approval.\(approval.id)"]
+        try require(approvalRow.waitForExistence(timeout: 15), "Inbox must receive the task's real execution approval")
+        try reveal(approvalRow); approvalRow.tap()
+        let summary = app.staticTexts["approval.summary.\(approval.id)"]
+        try require(summary.waitForExistence(timeout: 10), "Approval detail must show the submitted summary")
+        XCTAssertEqual(summary.label, fixture.executionApprovalSummary)
+        let approve = app.buttons["approval.decision.approved.\(approval.id)"]
+        try reveal(approve); approve.tap()
+        let approved = try await waitForExecutionTask(taskId) { $0.approvals.first { $0.id == approval.id }?.status == "approved" }
+        XCTAssertEqual(approved.task.status, "ready")
+        XCTAssertTrue(approved.runs.isEmpty, "Approval must authorize one future execution, not start it automatically")
+        XCTAssertNil(approved.approvals.first?.runId)
+        try require(app.navigationBars["Today"].waitForExistence(timeout: 15), "Approving execution must finish and return to Inbox")
+        app.tabBars.buttons["Tasks"].tap()
+        try require(assign.waitForExistence(timeout: 15), "The approved task must offer assignment")
+        try reveal(assign); assign.tap()
+        try require(app.navigationBars["Assign Task"].waitForExistence(timeout: 10), "Assign must open the real assignment form")
+        let manual = app.segmentedControls["task.assignment.mode"].buttons["Manual"]
+        try reveal(manual); manual.tap()
+        let picker = app.descendants(matching: .any).matching(identifier: "task.assignment.instance").firstMatch
+        try reveal(picker); picker.tap()
+        let identifiedOption = app.descendants(matching: .any).matching(identifier: "task.assignment.option.\(fixture.executorInstanceId)").firstMatch
+        let option = identifiedOption.waitForExistence(timeout: 2) ? identifiedOption
+            : app.buttons["\(fixture.executorRuntime) · \(fixture.executorInstanceId)"]
+        try require(option.waitForExistence(timeout: 10), "The paired executor must be selectable through the native picker")
+        option.tap()
+        let confirm = app.buttons["task.assignment.confirm"]
+        do {
+            // Keep the selected executor in the open form, then remove its
+            // real authenticated node connection before submitting through UI.
+            try await controlNode("stop")
+            _ = try await waitForDaemon("offline")
+            try reveal(confirm); try require(confirm.isEnabled, "The selected executor must remain submittable so the server decides eligibility"); confirm.tap()
+            let assignmentError = app.staticTexts["task.assignment.error"]
+            try require(assignmentError.waitForExistence(timeout: 15), "A rejected assignment must display the server error in the same sheet")
+            try require(app.navigationBars["Assign Task"].exists, "Server rejection must keep the assignment sheet open")
+            try require(manual.isSelected, "Server rejection must preserve Manual mode")
+            let selection = [picker.label, picker.value as? String ?? ""].joined(separator: " ")
+            try require(selection.contains(fixture.executorInstanceId), "Server rejection must preserve the selected executor")
+            // The scheduler distinguishes an entirely offline fleet from an
+            // unavailable pinned instance when another computer is online.
+            let schedulerErrors = ["HTTP 409: no online computer is available",
+                                   "HTTP 409: no eligible idle agent instance for the required capabilities"]
+            try require(schedulerErrors.contains(assignmentError.label), "The native form must retain the actual scheduler rejection, received: \(assignmentError.label)")
+            try require(confirm.isEnabled && app.buttons["task.assignment.cancel"].isEnabled, "A completed rejection must leave the form available for retry or cancellation")
+            let rejected: ExecutionTaskSnapshot = try await peerGet("api/v1/tasks/\(taskId)")
+            try require(rejected.task.status == "ready" && rejected.runs.isEmpty, "Rejected assignment must not create a run or advance the task")
+            let unusedApproval = try XCTUnwrap(rejected.approvals.first { $0.id == approval.id })
+            try require(unusedApproval.status == "approved" && unusedApproval.runId == nil, "Rejected assignment must not consume the execution approval")
+            attachScreenshot("Native assignment rejected with selection preserved")
+            try attachRecord(["task_id": taskId, "approval_id": approval.id, "agent_instance_id": fixture.executorInstanceId,
+                              "server_error": assignmentError.label, "task_status": rejected.task.status,
+                              "run_count": String(rejected.runs.count), "selection_preserved": "true"],
+                             name: "Native assignment rejection before explicit retry")
+            try await controlNode("start")
+            _ = try await waitForDaemon("online")
+        } catch {
+            try? await controlNode("start")
+            throw error
+        }
+        try require(app.navigationBars["Assign Task"].exists && manual.isSelected, "Reconnecting the node must retain the same form for explicit retry")
+        try require([picker.label, picker.value as? String ?? ""].joined(separator: " ").contains(fixture.executorInstanceId), "Retry must use the preserved executor selection")
+        try reveal(confirm); try require(confirm.isEnabled, "Selecting the executor must enable assignment"); confirm.tap()
+        let assigned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.navigationBars["Assign Task"])
+        try require(XCTWaiter.wait(for: [assigned], timeout: 15) == .completed, "An accepted assignment must close the sheet")
+        let completed = try await waitForExecutionTask(taskId, timeout: 90) { $0.task.status == "review" && !$0.artifacts.isEmpty }
+        try require(completed.runs.count == 1 && completed.artifacts.count == 1, "One assignment must produce one real run and one uploaded report")
+        let run = try XCTUnwrap(completed.runs.first)
+        XCTAssertEqual(run.status, "completed")
+        XCTAssertEqual(run.taskId, taskId)
+        XCTAssertEqual(run.runtimeId, fixture.executorRuntime)
+        XCTAssertEqual(run.agentInstanceId, fixture.executorInstanceId)
+        XCTAssertEqual(run.computerId, fixture.computerId)
+        XCTAssertEqual(completed.approvals.first { $0.id == approval.id }?.runId, run.id)
+        let artifact = try XCTUnwrap(completed.artifacts.first)
+        XCTAssertEqual(artifact.taskId, taskId); XCTAssertEqual(artifact.runId, run.id)
+        XCTAssertEqual(artifact.type, "report")
+        XCTAssertEqual(artifact.uri, "/api/v1/artifacts/\(artifact.id)/content")
+        XCTAssertEqual(artifact.metadata.filename, fixture.executionArtifactFilename)
+        let bytes = try await peerArtifact(artifact)
+        XCTAssertEqual(bytes.count, artifact.metadata.size)
+        let checksum = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(checksum, artifact.checksum)
+        let text = try XCTUnwrap(String(data: bytes, encoding: .utf8))
+        for expected in [fixture.executionArtifactMarker, taskId, run.id, fixture.executionCriterion1, fixture.executionCriterion2] {
+            XCTAssertTrue(text.contains(expected), "The actual uploaded bytes must retain \(expected)")
+        }
+        try reveal(app.staticTexts[fixture.executionTaskTitle])
+        try waitForValue(status, "review", message: "The completed execution must be ready for human review")
+        let preview = app.buttons["artifact.preview.\(artifact.id)"]
+        try reveal(preview)
+        attachScreenshot("Native execution completed with uploaded artifact")
+        preview.tap()
+        let marker = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", fixture.executionArtifactMarker, fixture.executionArtifactMarker)).firstMatch
+        try require(marker.waitForExistence(timeout: 20), "Quick Look must render the actual report body, not only open a preview shell")
+        let basename = (fixture.executionArtifactFilename as NSString).deletingPathExtension
+        let previewBar = app.navigationBars.matching(NSPredicate(format: "identifier == %@ OR identifier == %@ OR label == %@ OR label == %@",
+            fixture.executionArtifactFilename, basename, fixture.executionArtifactFilename, basename)).firstMatch
+        try require(previewBar.waitForExistence(timeout: 10), "Quick Look must identify the uploaded filename")
+        attachScreenshot("Native uploaded execution report in Quick Look")
+        let done = previewBar.buttons["Done"].firstMatch
+        let close = done.waitForExistence(timeout: 2) ? done : app.buttons["Close"].firstMatch
+        try require(close.waitForExistence(timeout: 10), "The system preview must expose its dismissal control")
+        close.tap()
+        try require(app.navigationBars["Task"].waitForExistence(timeout: 15), "Closing Quick Look must return to the task")
+        // Quick Look returns to the artifact's scroll position. SwiftUI List
+        // creates the review field only after that row is scrolled into view.
+        let reviewInput = app.descendants(matching: .any).matching(identifier: "task.review.comment.\(taskId)").firstMatch
+        try reveal(reviewInput)
+        try replace(editableField("task.review.comment.\(taskId)"), with: fixture.executionReviewComment)
+        let accept = app.buttons["task.action.accept.\(taskId)"]
+        try reveal(accept); accept.tap()
+        let accepted = try await waitForExecutionTask(taskId) { $0.task.status == "done" }
+        XCTAssertEqual(accepted.runs.map(\.id), [run.id])
+        XCTAssertEqual(accepted.artifacts.map(\.id), [artifact.id])
+        XCTAssertEqual(accepted.artifacts.first?.checksum, checksum)
+        try reveal(app.staticTexts[fixture.executionTaskTitle])
+        try waitForValue(status, "done", message: "Accepting the reviewed artifact must finish the native task")
+        attachScreenshot("Native task accepted after artifact review")
+        try attachRecord(["task_id": taskId, "approval_id": approval.id, "run_id": run.id,
+                          "agent_instance_id": run.agentInstanceId, "artifact_id": artifact.id,
+                          "artifact_checksum": checksum, "downloaded_bytes": String(bytes.count),
+                          "final_status": accepted.task.status, "runtime_validation": "deterministic subprocess; no live model inference"],
+                         name: "Real native execution approval and artifact acceptance")
+    }
+
+    @MainActor
+    func testApprovalNeedsMoreInfoSurvivesRelaunchAndCanBeApproved() async throws {
+        try await pairNative(name: "Native approval recovery CI")
+        let initial = try await waitForApproval("pending")
+        XCTAssertEqual(initial.taskId, fixture.approvalTaskId)
+        XCTAssertEqual(initial.summary, fixture.approvalSummary)
+        let inbox = app.tabBars.buttons["Inbox"]
+        inbox.tap()
+        let row = app.buttons["inbox.approval.\(fixture.approvalId)"]
+        try require(row.waitForExistence(timeout: 15), "The pending approval must be reachable from Inbox")
+        try reveal(row); row.tap()
+        let summary = app.staticTexts["approval.summary.\(fixture.approvalId)"]
+        try require(summary.waitForExistence(timeout: 10), "Approval detail must show the real request summary")
+        XCTAssertEqual(summary.label, fixture.approvalSummary)
+        let needsInfo = app.buttons["approval.decision.needs_more_info.\(fixture.approvalId)"]
+        try reveal(needsInfo); needsInfo.tap()
+        let waiting = try await waitForApproval("needs_more_info")
+        XCTAssertEqual(waiting.id, initial.id, "Requesting information must retain the same approval")
+        try require(app.navigationBars["Today"].waitForExistence(timeout: 15), "Requesting information must return to Inbox")
+        try require(row.waitForExistence(timeout: 15), "Need Info must not remove the request from Inbox")
+        XCTAssertTrue(row.label.contains("Needs More Info"))
+
+        app.terminate(); app.launch()
+        try require(inbox.waitForExistence(timeout: 20), "Relaunch must restore the authenticated Inbox")
+        inbox.tap()
+        try require(app.navigationBars["Today"].waitForExistence(timeout: 15), "The restored client must open Inbox")
+        try require(row.waitForExistence(timeout: 15), "The needs-information request must still be reachable after relaunch")
+        try reveal(row)
+        XCTAssertTrue(row.label.contains("Needs More Info"))
+        attachScreenshot("Native needs-information approval restored after relaunch")
+        row.tap()
+        try require(summary.waitForExistence(timeout: 10), "Reopening must retain the approval's exact summary")
+        XCTAssertEqual(summary.label, fixture.approvalSummary)
+        XCTAssertFalse(needsInfo.exists, "An existing information request must offer a final decision rather than repeating Need Info")
+        let approve = app.buttons["approval.decision.approved.\(fixture.approvalId)"]
+        try reveal(approve); approve.tap()
+        let approved = try await waitForApproval("approved")
+        XCTAssertEqual(approved.id, initial.id)
+        XCTAssertEqual(approved.taskId, fixture.approvalTaskId)
+        XCTAssertEqual(approved.summary, fixture.approvalSummary)
+        XCTAssertNotNil(approved.resolvedBy)
+        try require(app.navigationBars["Today"].waitForExistence(timeout: 15), "Approving must return to Inbox")
+        let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: row)
+        try require(XCTWaiter.wait(for: [removed], timeout: 15) == .completed, "A completed approval must leave the actionable Inbox")
+        for status in ["pending", "needs_more_info"] {
+            let approvals = try await peerApprovals(status: status)
+            XCTAssertFalse(approvals.contains { $0.id == fixture.approvalId }, "The server must remove the approved request from \(status)")
+        }
+        attachScreenshot("Native approval completed and removed from Inbox")
+        try attachRecord(["approval_id": approved.id, "task_id": approved.taskId,
+                          "initial_status": initial.status, "after_need_info": waiting.status,
+                          "final_status": approved.status, "resolved_by": approved.resolvedBy ?? ""],
+                         name: "Real approval recovery and final decision")
+    }
+
+    @MainActor
+    func testGoalCancellationRequiresConfirmationAndKeepGoalDoesNotMutateServer() async throws {
+        try await pairNative(name: "Native goal cancellation CI")
+        try require(fixture.cancellationGoalId != fixture.goalId, "Cancellation must use an independent fixture goal")
+        let initial = try await peerGoalBundle(goalId: fixture.cancellationGoalId)
+        XCTAssertEqual(initial.goal.id, fixture.cancellationGoalId)
+        XCTAssertEqual(initial.goal.title, fixture.cancellationGoalTitle)
+        try require(initial.goal.status == "draft" && initial.tasks.isEmpty, "Cancellation must start with an isolated draft goal without child work")
+        app.tabBars.buttons["More"].tap()
+        let goals = app.buttons["Goals"]
+        try reveal(goals); goals.tap()
+        let goal = app.buttons["workspace.goals.\(fixture.cancellationGoalId)"]
+        try require(goal.waitForExistence(timeout: 15), "The independent cancellation goal must appear in Goals")
+        XCTAssertTrue(goal.label.contains(fixture.cancellationGoalTitle))
+        try reveal(goal); goal.tap()
+        let visibleStatus = app.descendants(matching: .any).matching(identifier: "goal.status.\(fixture.cancellationGoalId)").firstMatch
+        try require(visibleStatus.waitForExistence(timeout: 15), "Goal detail must expose its current server status")
+        try waitForValue(visibleStatus, initial.goal.status, message: "The independent goal must display its initial server status")
+        let request = app.buttons["goal.cancel.request.\(fixture.cancellationGoalId)"]
+        try reveal(request); request.tap()
+        let keep = cancellationDialogButton("dismiss", label: "Keep goal")
+        try require(keep.waitForExistence(timeout: 10), "Cancelling a goal must first expose a Keep goal choice")
+        let beforeDecision = try await peerGoalBundle(goalId: fixture.cancellationGoalId)
+        XCTAssertEqual(beforeDecision.goal.status, initial.goal.status)
+        XCTAssertEqual(beforeDecision.events.map(\.id), initial.events.map(\.id), "Opening confirmation must not issue a goal mutation")
+        attachScreenshot("Native goal cancellation requires confirmation")
+        keep.tap()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: keep)
+        try require(XCTWaiter.wait(for: [dismissed], timeout: 10) == .completed, "Keep goal must dismiss the confirmation")
+        let kept = try await peerGoalBundle(goalId: fixture.cancellationGoalId)
+        XCTAssertEqual(kept.goal.status, initial.goal.status)
+        XCTAssertEqual(kept.goal.updatedAt, initial.goal.updatedAt)
+        XCTAssertEqual(kept.events.map(\.id), initial.events.map(\.id), "Keep goal must leave the real server audit stream unchanged")
+        try waitForValue(visibleStatus, kept.goal.status, message: "Keep goal must preserve the displayed server status")
+        try reveal(request)
+        attachScreenshot("Native goal preserved after dismissing cancellation")
+        request.tap()
+        let confirm = cancellationDialogButton("confirm", label: "Cancel goal")
+        try require(confirm.waitForExistence(timeout: 10), "The destructive confirmation must be available on the second attempt")
+        confirm.tap()
+        let cancelled = try await waitForCancelledGoal()
+        XCTAssertEqual(cancelled.goal.id, fixture.cancellationGoalId)
+        XCTAssertEqual(cancelled.events.filter { $0.type == "goal.cancelled" }.count,
+                       initial.events.filter { $0.type == "goal.cancelled" }.count + 1,
+                       "One explicit confirmation must persist exactly one cancellation event")
+        try waitForValue(visibleStatus, "cancelled", message: "Goal detail must display the server-confirmed cancelled state")
+        let actionRemoved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: request)
+        try require(XCTWaiter.wait(for: [actionRemoved], timeout: 10) == .completed, "The cancelled goal must no longer offer cancellation")
+        attachScreenshot("Native goal cancelled after explicit confirmation")
+        try attachRecord(["goal_id": cancelled.goal.id, "initial_status": initial.goal.status,
+                          "after_keep_goal": kept.goal.status, "final_status": cancelled.goal.status,
+                          "events_before_confirmation": String(kept.events.count),
+                          "cancellation_event_id": cancelled.events.first { $0.type == "goal.cancelled" }?.id ?? ""],
+                         name: "Real goal cancellation confirmation boundary")
+    }
 
     @MainActor
     func testPairSendThreadAndCatchUpWithAnotherClient() async throws {
@@ -55,8 +359,7 @@ final class SharedServerChatUITests: XCTestCase {
         XCTAssertEqual(live.threadRootId, root.id)
         try waitForLiveConnection()
 
-        XCUIDevice.shared.press(.home)
-        try require(app.wait(for: .runningBackground, timeout: 10) || app.state == .runningBackgroundSuspended, "The app must enter the background")
+        try await enterBackground()
         let background = try await peerSend(catchUpBody, root: root.id)
         app.activate()
         try require(app.staticTexts[catchUpBody].waitForExistence(timeout: 15), "Foreground must reconcile the message written while backgrounded")
@@ -297,6 +600,69 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
+    private func enterBackground() async throws {
+        func stateName(_ state: XCUIApplication.State) -> String {
+            switch state {
+            case .unknown: return "unknown"
+            case .notRunning: return "not_running"
+            case .runningForeground: return "foreground"
+            case .runningBackground: return "background"
+            case .runningBackgroundSuspended: return "background_suspended"
+            @unknown default: return "unrecognized_\(state.rawValue)"
+            }
+        }
+        var transitions: [String] = []
+        var homePresses = 0
+        for attempt in 1...3 {
+            var pressed = false
+            var lastState: XCUIApplication.State?
+            let deadline = Date().addingTimeInterval(10)
+            repeat {
+                let state = app.state
+                if state != lastState {
+                    let observation = "attempt \(attempt): \(stateName(state))"
+                    transitions.append(observation)
+                    print("[native-ui] Background transition \(observation)")
+                    lastState = state
+                }
+                if state == .runningBackground || state == .runningBackgroundSuspended {
+                    try attachRecord(["home_presses": String(homePresses), "confirmed_state": stateName(state),
+                                      "observed_states": transitions.joined(separator: " -> ")], name: "Native background transition states")
+                    return
+                }
+                try require(state != .notRunning, "The app exited instead of entering the background: \(transitions.joined(separator: " -> "))")
+                // Retry only an observed foreground app. Both legitimate
+                // background states are checked throughout each bounded wait.
+                if state == .runningForeground && !pressed {
+                    XCUIDevice.shared.press(.home)
+                    homePresses += 1
+                    pressed = true
+                }
+                try await Task.sleep(nanoseconds: 250_000_000)
+            } while Date() < deadline
+        }
+        try require(false, "The app must enter the background after at most three Home presses: \(transitions.joined(separator: " -> "))")
+    }
+
+    @MainActor
+    private func editableField(_ identifier: String) -> XCUIElement {
+        let field = app.textFields.matching(identifier: identifier).firstMatch
+        if field.waitForExistence(timeout: 2) { return field }
+        return app.textViews.matching(identifier: identifier).firstMatch
+    }
+
+    @MainActor
+    private func cancellationDialogButton(_ action: String, label: String) -> XCUIElement {
+        let identified = app.buttons["goal.cancel.\(action).\(fixture.cancellationGoalId)"]
+        if identified.waitForExistence(timeout: 2) { return identified }
+        // Some OS versions expose confirmationDialog actions through the
+        // system sheet without preserving the SwiftUI identifier.
+        let sheetButton = app.sheets.buttons[label].firstMatch
+        if sheetButton.exists { return sheetButton }
+        return app.alerts.buttons[label].firstMatch
+    }
+
+    @MainActor
     private func pairNative(name: String) async throws {
         // Codes are minted after Xcode has built the app and independently for
         // every method, so ordering and one-use/expiry semantics stay real.
@@ -498,6 +864,71 @@ final class SharedServerChatUITests: XCTestCase {
         try await peerRequest(URLRequest(url: fixture.serverURL.appendingPathComponent(path)))
     }
 
+    private func peerApprovals(status: String) async throws -> [ServerApproval] {
+        var components = URLComponents(url: fixture.serverURL.appendingPathComponent("api/v1/approvals"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "status", value: status)]
+        let response: ApprovalPage = try await peerRequest(URLRequest(url: components.url!))
+        return response.approvals
+    }
+
+    private func peerExecutionTasks() async throws -> [ExecutionTask] {
+        var components = URLComponents(url: fixture.serverURL.appendingPathComponent("api/v1/tasks"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "project_id", value: fixture.projectId)]
+        let page: ExecutionTaskPage = try await peerRequest(URLRequest(url: components.url!))
+        return page.tasks
+    }
+
+    private func waitForCreatedExecutionTask() async throws -> ExecutionTask {
+        let deadline = Date().addingTimeInterval(30)
+        repeat {
+            let tasks = try await peerExecutionTasks().filter { $0.title == fixture.executionTaskTitle }
+            if tasks.count == 1 { return tasks[0] }
+            if tasks.count > 1 { break }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        } while Date() < deadline
+        throw NSError(domain: "ArtooUITestExecution", code: 1, userInfo: [NSLocalizedDescriptionKey: "Native creation must persist exactly one uniquely titled execution task"])
+    }
+
+    private func waitForExecutionTask(_ id: String, timeout: TimeInterval = 30, _ predicate: (ExecutionTaskSnapshot) -> Bool) async throws -> ExecutionTaskSnapshot {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            let snapshot: ExecutionTaskSnapshot = try await peerGet("api/v1/tasks/\(id)")
+            if predicate(snapshot) { return snapshot }
+            if let failed = snapshot.runs.first(where: { ["failed", "cancelled"].contains($0.status) }) {
+                throw NSError(domain: "ArtooUITestExecution", code: 2, userInfo: [NSLocalizedDescriptionKey: "The real execution ended with \(failed.status): \(failed.failureReason ?? "no reported reason")"])
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        } while Date() < deadline
+        throw NSError(domain: "ArtooUITestExecution", code: 3, userInfo: [NSLocalizedDescriptionKey: "The real task did not reach its required state within \(timeout) seconds"])
+    }
+
+    private func peerArtifact(_ artifact: ExecutionArtifact) async throws -> Data {
+        var request = URLRequest(url: fixture.serverURL.appendingPathComponent("api/v1/artifacts/\(artifact.id)/content"))
+        request.setValue("Bearer \(fixture.peerToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 20
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let (data, response) = try await session.data(for: request)
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+        guard http.statusCode == 200 else {
+            throw NSError(domain: "ArtooUITestExecution", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Authenticated artifact download failed"])
+        }
+        XCTAssertEqual(http.suggestedFilename, fixture.executionArtifactFilename)
+        return data
+    }
+
+    private func waitForApproval(_ status: String) async throws -> ServerApproval {
+        let deadline = Date().addingTimeInterval(20)
+        repeat {
+            let snapshot: ApprovalTaskSnapshot = try await peerGet("api/v1/tasks/\(fixture.approvalTaskId)")
+            if let approval = snapshot.approvals.first(where: { $0.id == fixture.approvalId && $0.status == status }) { return approval }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        } while Date() < deadline
+        throw NSError(domain: "ArtooUITestApproval", code: 1, userInfo: [NSLocalizedDescriptionKey: "The real server did not confirm approval \(status) within 20 seconds"])
+    }
+
     private func peerPost<Response: Decodable>(_ path: String, body: [String: String]) async throws -> Response {
         var request = URLRequest(url: fixture.serverURL.appendingPathComponent(path))
         request.httpMethod = "POST"
@@ -523,9 +954,19 @@ final class SharedServerChatUITests: XCTestCase {
         throw NSError(domain: "ArtooUITestDaemon", code: 1, userInfo: [NSLocalizedDescriptionKey: "The real server did not confirm daemon \(status) within \(timeout) seconds"])
     }
 
-    private func peerGoalBundle() async throws -> GoalBundle {
-        let response: GoalAuditResponse = try await peerGet("api/v1/goals/\(fixture.goalId)/audit-bundle")
+    private func peerGoalBundle(goalId: String? = nil) async throws -> GoalBundle {
+        let response: GoalAuditResponse = try await peerGet("api/v1/goals/\(goalId ?? fixture.goalId)/audit-bundle")
         return response.bundle
+    }
+
+    private func waitForCancelledGoal() async throws -> GoalBundle {
+        let deadline = Date().addingTimeInterval(30)
+        repeat {
+            let bundle = try await peerGoalBundle(goalId: fixture.cancellationGoalId)
+            if bundle.goal.status == "cancelled" { return bundle }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        } while Date() < deadline
+        throw NSError(domain: "ArtooUITestGoal", code: 2, userInfo: [NSLocalizedDescriptionKey: "The real server did not confirm goal cancellation within 30 seconds"])
     }
 
     private func waitForGoalTasks(count: Int) async throws -> GoalBundle {
@@ -586,6 +1027,32 @@ private struct ServerPlanTaskSpec: Decodable {
 }
 private struct ServerExpectedArtifact: Decodable { let type: String; let description: String }
 private struct PairingCode: Decodable { let code: String }
+private struct ApprovalPage: Decodable { let approvals: [ServerApproval] }
+private struct ApprovalTaskSnapshot: Decodable { let approvals: [ServerApproval] }
+private struct ServerApproval: Decodable {
+    let id: String; let taskId: String; let summary: String; let status: String; let resolvedBy: String?
+}
+private struct ExecutionTaskPage: Decodable { let tasks: [ExecutionTask] }
+private struct ExecutionTaskSnapshot: Decodable {
+    let task: ExecutionTask; let runs: [ExecutionRun]; let approvals: [ExecutionApproval]; let artifacts: [ExecutionArtifact]
+}
+private struct ExecutionTask: Decodable {
+    let id: String; let projectId: String; let title: String; let status: String
+    let acceptanceCriteria: [String]; let requiredCapabilities: [String]
+}
+private struct ExecutionRun: Decodable {
+    let id: String; let taskId: String; let status: String; let runtimeId: String
+    let agentInstanceId: String; let computerId: String; let failureReason: String?
+}
+private struct ExecutionApproval: Decodable {
+    let id: String; let action: String; let summary: String; let risk: String; let status: String
+    let payloadRef: String?; let runId: String?
+}
+private struct ExecutionArtifact: Decodable {
+    let id: String; let taskId: String; let runId: String; let type: String; let uri: String; let checksum: String
+    let metadata: ExecutionArtifactMetadata
+}
+private struct ExecutionArtifactMetadata: Decodable { let filename: String; let size: Int }
 private struct DaemonPage: Decodable { let daemons: [ServerDaemon] }
 private struct ServerDaemon: Decodable { let computerId: String; let status: String; let connected: Bool; let lastHeartbeatAt: String? }
 private struct NodeControlResponse: Decodable { let daemon: ServerDaemon? }
@@ -596,7 +1063,9 @@ private struct ServerDiscussion: Decodable {
 }
 private struct DiscussionParticipant: Decodable { let agentInstanceId: String }
 private struct GoalAuditResponse: Decodable { let bundle: GoalBundle }
-private struct GoalBundle: Decodable { let plans: [ServerPlan]; let tasks: [GoalTaskEnvelope] }
+private struct GoalBundle: Decodable { let goal: ServerGoal; let plans: [ServerPlan]; let tasks: [GoalTaskEnvelope]; let events: [ServerGoalEvent] }
+private struct ServerGoal: Decodable { let id: String; let title: String; let status: String; let updatedAt: String }
+private struct ServerGoalEvent: Decodable { let id: String; let type: String }
 private struct ServerPlan: Decodable { let id: String; let status: String }
 private struct GoalTaskEnvelope: Decodable { let task: ServerTask }
 private struct ServerTask: Decodable { let id: String; let title: String; let acceptanceCriteria: [String] }
@@ -615,6 +1084,21 @@ private struct Fixture {
     let computerName: String
     let goalId: String
     let goalTitle: String
+    let approvalId: String
+    let approvalSummary: String
+    let approvalTaskId: String
+    let cancellationGoalId: String
+    let cancellationGoalTitle: String
+    let executorInstanceId: String
+    let executorName: String
+    let executorRuntime: String
+    let executionTaskTitle: String
+    let executionCriterion1: String
+    let executionCriterion2: String
+    let executionApprovalSummary: String
+    let executionArtifactFilename: String
+    let executionArtifactMarker: String
+    let executionReviewComment: String
     let plannerInstanceId: String
     let plannerName: String
     let reviewerInstanceId: String
@@ -648,6 +1132,21 @@ private struct Fixture {
         computerName = try require("ARTOO_UI_COMPUTER_NAME")
         goalId = try require("ARTOO_UI_GOAL_ID")
         goalTitle = try require("ARTOO_UI_GOAL_TITLE")
+        approvalId = try require("ARTOO_UI_APPROVAL_ID")
+        approvalSummary = try require("ARTOO_UI_APPROVAL_SUMMARY")
+        approvalTaskId = try require("ARTOO_UI_APPROVAL_TASK_ID")
+        cancellationGoalId = try require("ARTOO_UI_CANCELLATION_GOAL_ID")
+        cancellationGoalTitle = try require("ARTOO_UI_CANCELLATION_GOAL_TITLE")
+        executorInstanceId = try require("ARTOO_UI_EXECUTOR_INSTANCE_ID")
+        executorName = try require("ARTOO_UI_EXECUTOR_NAME")
+        executorRuntime = try require("ARTOO_UI_EXECUTOR_RUNTIME")
+        executionTaskTitle = try require("ARTOO_UI_EXECUTION_TASK_TITLE")
+        executionCriterion1 = try require("ARTOO_UI_EXECUTION_CRITERION_1")
+        executionCriterion2 = try require("ARTOO_UI_EXECUTION_CRITERION_2")
+        executionApprovalSummary = try require("ARTOO_UI_EXECUTION_APPROVAL_SUMMARY")
+        executionArtifactFilename = try require("ARTOO_UI_EXECUTION_ARTIFACT_FILENAME")
+        executionArtifactMarker = try require("ARTOO_UI_EXECUTION_ARTIFACT_MARKER")
+        executionReviewComment = try require("ARTOO_UI_EXECUTION_REVIEW_COMMENT")
         plannerInstanceId = try require("ARTOO_UI_PLANNER_INSTANCE_ID")
         plannerName = try require("ARTOO_UI_PLANNER_NAME")
         reviewerInstanceId = try require("ARTOO_UI_REVIEWER_INSTANCE_ID")

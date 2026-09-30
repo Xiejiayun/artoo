@@ -42,6 +42,7 @@ public struct TasksView: View {
                                     NavigationLink(value: task) {
                                         TaskRow(task: task)
                                     }
+                                    .accessibilityIdentifier("task.row.\(task.id)")
                                 }
                             } header: {
                                 HStack {
@@ -80,6 +81,7 @@ public struct TasksView: View {
                     } label: {
                         Label("New Task", systemImage: "plus")
                     }
+                    .accessibilityIdentifier("task.create.open")
                 }
             }
             .sheet(isPresented: $showingCreate) {
@@ -160,6 +162,7 @@ public struct CreateTaskView: View {
             Form {
                 Section("Task") {
                     TextField("Title", text: $title)
+                        .accessibilityIdentifier("task.create.title")
                     TextField("Description", text: $description, axis: .vertical)
                         .lineLimit(2...5)
                 }
@@ -172,8 +175,9 @@ public struct CreateTaskView: View {
                 Section("Acceptance criteria") {
                     TextField("One per line", text: $criteriaText, axis: .vertical)
                         .lineLimit(3...6)
+                        .accessibilityIdentifier("task.create.criteria")
                 }
-                Section("Required capabilities") { TextField("Comma separated", text: $capabilities).textInputAutocapitalization(.never).autocorrectionDisabled() }
+                Section("Required capabilities") { TextField("Comma separated", text: $capabilities).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("task.create.capabilities") }
                 if let error = model.state.errorMessage {
                     Section {
                         Text(error).foregroundStyle(.red).font(.callout)
@@ -200,6 +204,7 @@ public struct CreateTaskView: View {
                         }
                     }
                     .disabled(model.creating || title.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .accessibilityIdentifier("task.create.submit")
                 }
             }
         }

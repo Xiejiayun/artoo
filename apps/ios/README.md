@@ -223,6 +223,17 @@ xcodebuild -project Artoo.xcodeproj -scheme Artoo \
 ```
 
 Choose an installed simulator listed by `xcrun simctl list devices available`.
+The automated gate reads the selected Xcode's iPhoneSimulator SDK version and
+both runtime/device inventories. By default it chooses an available iPhone on
+the newest available iOS runtime whose numeric version is no newer than that
+SDK. For example, SDK 18.5 does not automatically select an installed iOS 26.2
+runtime. Missing or unavailable candidates produce explicit diagnostics.
+`ARTOO_IOS_SIMULATOR_UDID` selects a specific available iPhone instead; a runtime
+above the SDK ceiling is retained as an explicit operator override and marked
+in the console and HTML report. This default avoids an unrequested toolchain
+combination; it does not establish the root cause of a prior simulator failure.
+The gate does not switch Xcode, create simulators, or erase their contents.
+
 The project targets iOS 17 and Swift 5.9; use Xcode 15 or newer. No generated
 `.xcodeproj` is committed; `project.yml` owns its configuration and resources.
 Simulator tests use ad-hoc signing and simulator-only application/Keychain

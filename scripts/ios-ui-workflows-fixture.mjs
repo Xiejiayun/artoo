@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,7 +11,7 @@ const sha256 = (value) => createHash("sha256").update(value).digest("hex");
  * Node presence comes from authenticated WS hello/heartbeat/disconnect; all
  * resources, discussions, plans and acceptance go through production APIs. */
 export async function createWorkflowFixture({ root, temporary, origin, projectId, peerToken, suffix, request, until }) {
-  const { createAdapterRegistry, createArtoodNode, createProcessAdapter } = await import(pathToFileURL(join(root, "apps/artood/dist/index.js")).href);
+  const { createAdapterRegistry, createArtoodNode, createArtifactUploader, createProcessAdapter } = await import(pathToFileURL(join(root, "apps/artood/dist/index.js")).href);
   const fields = {
     project_id: projectId,
     computer_name: `Native fixture computer ${suffix}`,
@@ -20,6 +20,16 @@ export async function createWorkflowFixture({ root, temporary, origin, projectId
     task_1_title: `Implement shared contract ${suffix}`, task_2_title: `Verify shared contract ${suffix}`,
     task_1_criterion: "Authenticated clients receive the documented response",
     task_2_criterion: "Contract and failure cases pass after implementation",
+    approval_summary: `Review before executing native task ${suffix}`,
+    cancellation_goal_title: `Native cancellation confirmation ${suffix}`,
+    executor_name: `Native executor ${suffix}`, executor_runtime: "ui-executor",
+    execution_task_title: `Native execution and artifact review ${suffix}`,
+    execution_criterion_1: "The approved task runs on the selected paired executor",
+    execution_criterion_2: "The uploaded report can be previewed before human acceptance",
+    execution_approval_summary: `Review one report-producing execution ${suffix}`,
+    execution_artifact_filename: "native-execution-report.txt",
+    execution_artifact_marker: `Native execution report ${suffix}`,
+    execution_review_comment: `Reviewed the uploaded execution report ${suffix}`,
   };
   const platform = process.platform === "win32" ? "windows" : "macos";
   const code = await request("/api/v1/devices/pairings", { intended_platform: platform }, peerToken);
@@ -27,17 +37,26 @@ export async function createWorkflowFixture({ root, temporary, origin, projectId
   const enrolled = await request(`/api/v1/devices/${claimed.device.id}/enroll`, { display_name: fields.computer_name, hostname: "isolated-ui-fixture", os: platform, arch: process.arch }, peerToken);
   fields.computer_id = enrolled.computer_id;
   const configurationPath = join(temporary, "discussion-process.json");
-  const workspaces = Object.fromEntries(["planner", "reviewer"].map((role) => [role, join(temporary, role)]));
+  const workspaces = Object.fromEntries(["planner", "reviewer", "executor"].map((role) => [role, join(temporary, role)]));
   for (const directory of Object.values(workspaces)) mkdirSync(directory);
-  const registry = createAdapterRegistry(["planner", "reviewer"].map((role) => {
+  fields.executor_workspace = workspaces.executor;
+  const adapters = ["planner", "reviewer"].map((role) => {
     const runtime = `ui-${role}`;
     const command = [process.execPath, join(root, "scripts/fixtures/ios-ui-discussion.mjs"), "{{context_pack_path}}", configurationPath, role];
     return { runtime, capabilities: ["code.read"], adapter: createProcessAdapter({ runtimeId: runtime,
       command, discussionCommand: command, allowedRoots: [workspaces[role]], outputFormat: "codex-json" }) };
-  }));
+  });
+  adapters.push({ runtime: fields.executor_runtime, capabilities: ["code.modify"], adapter: createProcessAdapter({
+    runtimeId: fields.executor_runtime,
+    command: [process.execPath, join(root, "scripts/fixtures/ios-ui-execution.mjs"), "{{context_pack_path}}", configurationPath],
+    allowedRoots: [workspaces.executor], artifacts: [{ type: "report", path: fields.execution_artifact_filename }], outputFormat: "codex-json",
+  }) });
+  const registry = createAdapterRegistry(adapters);
+  const runtimeNames = adapters.map((adapter) => adapter.runtime);
   const socketURL = new URL("/api/v1/node", origin);
   socketURL.protocol = "ws:"; socketURL.searchParams.set("token", claimed.node_token);
   const node = createArtoodNode({ url: socketURL.href, registry, heartbeatIntervalMs: 500, acknowledgeRunEvents: true,
+    uploadArtifact: createArtifactUploader(socketURL.href, fields.computer_id),
     hello: { kind: "node.hello", node_id: fields.computer_id, protocol_version: "0.1", artood_version: "native-ui-fixture",
       machine: { hostname: "isolated-ui-fixture", os: platform, arch: process.arch } } });
   const transitions = [];
@@ -49,7 +68,8 @@ export async function createWorkflowFixture({ root, temporary, origin, projectId
     if (start) await node.start(); else await node.stop();
     await until(async () => {
       const daemon = await readDaemon();
-      return start ? daemon?.status === "online" && daemon.connected && daemon.runtimes.length === 2
+      return start ? daemon?.status === "online" && daemon.connected && daemon.runtimes.length === runtimeNames.length
+        && runtimeNames.every((name) => daemon.runtimes.some((runtime) => runtime.runtime === name))
         : daemon?.status === "offline" && !daemon.connected;
     }, `Authenticated fixture node did not become ${start ? "online" : "offline"}`, 60_000);
     const daemon = await readDaemon();
@@ -66,9 +86,9 @@ export async function createWorkflowFixture({ root, temporary, origin, projectId
   };
   try {
     await changeNode(true);
-    for (const role of ["planner", "reviewer"]) {
+    for (const role of ["planner", "reviewer", "executor"]) {
       const created = await request(`/api/v1/computers/${fields.computer_id}/instances`, {
-        runtime: `ui-${role}`, workspace_root: workspaces[role], display_name: fields[`${role}_name`], capabilities: ["code.read"],
+        runtime: `ui-${role}`, workspace_root: workspaces[role], display_name: fields[`${role}_name`], capabilities: [role === "executor" ? "code.modify" : "code.read"],
       }, peerToken);
       fields[`${role}_instance_id`] = created.agent_instance.id;
       fields[`${role}_agent_id`] = created.agent.id;
@@ -80,6 +100,23 @@ export async function createWorkflowFixture({ root, temporary, origin, projectId
     fields.goal_id = goal.id;
     fields.goal_room_id = goal.room_id;
     assert.ok(fields.goal_room_id);
+    const { task: approvalTask } = await request("/api/v1/tasks", {
+      project_id: projectId, title: `Native approval recovery ${suffix}`,
+      acceptance_criteria: ["A request for information remains reachable until a final decision"],
+    }, peerToken);
+    fields.approval_task_id = approvalTask.id;
+    await request(`/api/v1/tasks/${approvalTask.id}/ready`, {}, peerToken);
+    const { approval } = await request(`/api/v1/tasks/${approvalTask.id}/execution-approval`, {
+      summary: fields.approval_summary, risk: "high",
+    }, peerToken);
+    fields.approval_id = approval.id;
+    assert.equal(approval.status, "pending");
+    const { goal: cancellationGoal } = await request("/api/v1/goals", {
+      project_id: projectId, title: fields.cancellation_goal_title,
+      objective: "Confirm cancellation only after an explicit human decision.",
+      acceptance_criteria: ["Dismissing confirmation leaves the goal unchanged"],
+    }, peerToken);
+    fields.cancellation_goal_id = cancellationGoal.id;
     // Same-room messages from another thread must never enter the planning
     // context. User messages are intentional: checking assistant bodies alone
     // would miss this kind of cross-thread leakage.
@@ -92,6 +129,9 @@ export async function createWorkflowFixture({ root, temporary, origin, projectId
     fields.unrelated_message_ids = [unrelatedRoot.id, unrelatedReply.id];
     fields.context_receipts_directory = join(temporary, "context-receipts");
     mkdirSync(fields.context_receipts_directory, { mode: 0o700 });
+    fields.execution_receipts_directory = join(temporary, "execution-receipts");
+    mkdirSync(fields.execution_receipts_directory, { mode: 0o700 });
+    // The execution task and its approval must be created by the native UI.
     writeFileSync(configurationPath, JSON.stringify(fields), { mode: 0o600 });
 
     control = createServer((req, res) => {
@@ -121,7 +161,7 @@ export async function createWorkflowFixture({ root, temporary, origin, projectId
 }
 
 /** Read-only assertions after the native/browser UI has accepted the proposal. */
-export async function verifyWorkflowResults({ fixture, request, transitions }) {
+export async function verifyWorkflowResults({ fixture, request, transitions, verifyNativeActions = false }) {
   const { bundle } = await request(`/api/v1/goals/${fixture.goal_id}/audit-bundle`);
   assert.equal(bundle.tasks.length, 2, "Human plan acceptance must materialize exactly two goal tasks");
   const first = bundle.tasks.find(({ task }) => task.title === fixture.task_1_title)?.task;
@@ -198,7 +238,86 @@ export async function verifyWorkflowResults({ fixture, request, transitions }) {
   }
   const stopped = transitions.findIndex((transition) => transition.action === "stop" && transition.status === "offline");
   assert.ok(stopped >= 0 && transitions.slice(stopped + 1).some((transition) => transition.action === "start" && transition.status === "online"), "Native/browser workflow must stop and resume the actual authenticated node");
+  let nativeActions, nativeExecution;
+  if (verifyNativeActions) {
+    const approvalTask = await request(`/api/v1/tasks/${fixture.approval_task_id}`);
+    const reviewed = approvalTask.approvals.find((item) => item.id === fixture.approval_id);
+    assert.equal(reviewed?.status, "approved", "The native Inbox must recover and resolve its needs-information request");
+    assert.equal(approvalTask.task.status, "ready", "Approval must not execute the task automatically");
+    assert.equal(approvalTask.runs.length, 0);
+    const cancelled = await request(`/api/v1/goals/${fixture.cancellation_goal_id}/audit-bundle`);
+    assert.equal(cancelled.bundle.goal.status, "cancelled", "The native confirmation must cancel the independent goal");
+    nativeActions = { approval_id: reviewed.id, approval_status: reviewed.status, task_id: approvalTask.task.id,
+      task_status: approvalTask.task.status, execution_count: approvalTask.runs.length,
+      cancelled_goal_id: cancelled.bundle.goal.id, cancelled_goal_status: cancelled.bundle.goal.status };
+    nativeExecution = await verifyNativeExecution({ fixture, request });
+  }
   return { goal_id: fixture.goal_id, discussion_id: discussion.id, plan_id: discussion.plan_id,
     task_ids: [first.id, second.id], dependency: { from_task_id: first.id, to_task_id: second.id, type: "blocks" },
-    process_turns: receipts, daemon_transitions: transitions };
+    process_turns: receipts, daemon_transitions: transitions, ...(nativeActions ? { native_actions: nativeActions, native_execution: nativeExecution } : {}) };
+}
+
+async function verifyNativeExecution({ fixture, request }) {
+  const { tasks } = await request(`/api/v1/tasks?project_id=${encodeURIComponent(fixture.project_id)}`);
+  const matches = tasks.filter((task) => task.title === fixture.execution_task_title);
+  assert.equal(matches.length, 1, "Native creation must persist one execution task");
+  const taskId = matches[0].id;
+  const { bundle } = await request(`/api/v1/tasks/${taskId}/audit-bundle`);
+  assert.equal(bundle.task.status, "done");
+  assert.deepEqual(bundle.task.acceptance_criteria, [fixture.execution_criterion_1, fixture.execution_criterion_2]);
+  assert.deepEqual(bundle.task.required_capabilities, ["code.modify"]);
+  assert.equal(bundle.runs.length, 1, "Approval and acceptance must not create duplicate executions");
+  const run = bundle.runs[0];
+  assert.equal(run.status, "completed");
+  assert.equal(run.runtime_id, fixture.executor_runtime);
+  assert.equal(run.agent_instance_id, fixture.executor_instance_id);
+  assert.equal(run.computer_id, fixture.computer_id);
+  assert.equal(bundle.approvals.length, 1);
+  const approval = bundle.approvals[0];
+  assert.equal(approval.action, "execution.start");
+  assert.equal(approval.status, "approved");
+  assert.equal(approval.summary, fixture.execution_approval_summary);
+  assert.equal(approval.run_id, run.id);
+  assert.equal(bundle.scheduler_decisions.length, 1);
+  assert.equal(bundle.scheduler_decisions[0].mode, "manual");
+  assert.equal(bundle.scheduler_decisions[0].selected_agent_instance_id, fixture.executor_instance_id);
+  assert.equal(bundle.artifacts.length, 1);
+  const artifact = bundle.artifacts[0];
+  assert.equal(artifact.type, "report");
+  assert.equal(artifact.task_id, taskId);
+  assert.equal(artifact.run_id, run.id);
+  assert.equal(artifact.uri, `/api/v1/artifacts/${artifact.id}/content`);
+  assert.equal(artifact.metadata.filename, fixture.execution_artifact_filename);
+  const receipt = JSON.parse(readFileSync(join(fixture.execution_receipts_directory, `${sha256(run.id)}.json`), "utf8"));
+  assert.equal(receipt.task_id, taskId);
+  assert.equal(receipt.run_id, run.id);
+  assert.equal(receipt.project_id, fixture.project_id);
+  assert.equal(realpathSync(receipt.workspace_root), realpathSync(fixture.executor_workspace));
+  assert.deepEqual(receipt.acceptance_criteria, bundle.task.acceptance_criteria);
+  assert.equal(receipt.artifact_filename, fixture.execution_artifact_filename);
+  assert.equal(receipt.context_sha256, sha256(readFileSync(join(fixture.executor_workspace, "context_pack.md"))));
+  const localBytes = readFileSync(join(fixture.executor_workspace, fixture.execution_artifact_filename));
+  assert.equal(receipt.artifact_sha256, sha256(localBytes));
+  assert.equal(artifact.checksum, `sha256:${receipt.artifact_sha256}`);
+  const response = await fetch(new URL(artifact.uri, fixture.server_url), {
+    headers: { Authorization: `Bearer ${fixture.peer_control_token}` }, redirect: "error", signal: AbortSignal.timeout(15_000),
+  });
+  assert.equal(response.status, 200, "The real uploaded report must be available through authenticated artifact storage");
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.deepEqual(bytes, localBytes);
+  assert.equal(artifact.metadata.size, bytes.length);
+  assert.ok(bytes.toString("utf8").includes(fixture.execution_artifact_marker));
+  assert.ok(bytes.toString("utf8").includes(taskId) && bytes.toString("utf8").includes(run.id));
+  const { usage } = await request(`/api/v1/runs/${run.id}/usage`);
+  assert.equal(usage.provider_session_id, `ios-ui-executor:${receipt.pid}:${run.id}`);
+  for (const key of ["input_tokens", "output_tokens", "cached_input_tokens", "cost_usd"]) {
+    assert.equal(usage[key], null, "The deterministic executor must not invent provider measurements");
+  }
+  const reviews = bundle.events.filter((event) => event.type === "review.completed");
+  assert.equal(reviews.length, 1);
+  assert.equal(reviews[0].payload.outcome, "accepted");
+  assert.equal(reviews[0].payload.comment, fixture.execution_review_comment);
+  return { task_id: taskId, task_status: bundle.task.status, approval_id: approval.id, run_id: run.id,
+    agent_instance_id: run.agent_instance_id, artifact_id: artifact.id, artifact_checksum: artifact.checksum,
+    uploaded_bytes: bytes.length, process_receipt: usage.provider_session_id, review_event_id: reviews[0].id };
 }

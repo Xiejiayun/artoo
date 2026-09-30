@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getE2EReportContext, readXCTestScreenshots, writeE2EReport } from "../../../scripts/e2e-report.mjs";
+import { selectIPhoneSimulator } from "./simulator-selection.mjs";
 
 const ios = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const output = resolve(ios, "../../artifacts/ios");
@@ -27,6 +28,12 @@ if (ui) {
   const fields = { server_url: "SERVER_URL", pairing_code: "PAIRING_CODE", project_id: "PROJECT_ID", channel_id: "CHANNEL_ID",
     peer_control_token: "PEER_CONTROL_TOKEN", native_message: "NATIVE_MESSAGE", native_reply: "NATIVE_REPLY", browser_reply: "BROWSER_REPLY",
     computer_id: "COMPUTER_ID", computer_name: "COMPUTER_NAME", goal_id: "GOAL_ID", goal_title: "GOAL_TITLE",
+    approval_id: "APPROVAL_ID", approval_summary: "APPROVAL_SUMMARY", approval_task_id: "APPROVAL_TASK_ID",
+    cancellation_goal_id: "CANCELLATION_GOAL_ID", cancellation_goal_title: "CANCELLATION_GOAL_TITLE",
+    executor_instance_id: "EXECUTOR_INSTANCE_ID", executor_name: "EXECUTOR_NAME", executor_runtime: "EXECUTOR_RUNTIME",
+    execution_task_title: "EXECUTION_TASK_TITLE", execution_criterion_1: "EXECUTION_CRITERION_1", execution_criterion_2: "EXECUTION_CRITERION_2",
+    execution_approval_summary: "EXECUTION_APPROVAL_SUMMARY", execution_artifact_filename: "EXECUTION_ARTIFACT_FILENAME",
+    execution_artifact_marker: "EXECUTION_ARTIFACT_MARKER", execution_review_comment: "EXECUTION_REVIEW_COMMENT",
     planner_instance_id: "PLANNER_INSTANCE_ID", planner_name: "PLANNER_NAME", reviewer_instance_id: "REVIEWER_INSTANCE_ID", reviewer_name: "REVIEWER_NAME",
     task_1_title: "TASK_1_TITLE", task_2_title: "TASK_2_TITLE", task_1_criterion: "TASK_1_CRITERION", task_2_criterion: "TASK_2_CRITERION",
     fixture_control_url: "FIXTURE_CONTROL_URL", fixture_control_token: "FIXTURE_CONTROL_TOKEN" };
@@ -50,16 +57,23 @@ function run(command, args, capture = false) {
 }
 report.environment.xcode = run("xcodebuild", ["-version"], true).trim().replaceAll("\n", " · ");
 console.log(report.environment.xcode);
-run("xcodegen", ["generate"]);
-const inventory = JSON.parse(run("xcrun", ["simctl", "list", "devices", "available", "--json"], true));
-const candidates = Object.entries(inventory.devices).sort(([a], [b]) => b.localeCompare(a, undefined, { numeric: true }))
-  .flatMap(([, devices]) => devices).filter((device) => device.isAvailable && device.name.startsWith("iPhone"));
+let sdkVersion;
+try { sdkVersion = run("xcrun", ["--sdk", "iphonesimulator", "--show-sdk-version"], true).trim(); }
+catch (error) { throw new Error(`Cannot read the selected Xcode's iPhoneSimulator SDK: ${error.message}`); }
+report.environment.iphonesimulator_sdk = sdkVersion;
+const deviceInventory = JSON.parse(run("xcrun", ["simctl", "list", "devices", "--json"], true));
+const runtimeInventory = JSON.parse(run("xcrun", ["simctl", "list", "runtimes", "--json"], true));
 const requested = process.env.ARTOO_IOS_SIMULATOR_UDID;
-const device = requested ? candidates.find((item) => item.udid === requested) : candidates[0];
-if (!device) throw new Error(requested ? "ARTOO_IOS_SIMULATOR_UDID must identify an available iPhone simulator" : "Install an iOS simulator runtime in Xcode before running this gate");
+const selection = selectIPhoneSimulator({ sdkVersion, deviceInventory, runtimeInventory, requestedUDID: requested });
+const { device, runtime } = selection;
+report.simulator_selection = { mode: selection.mode, newer_than_sdk: selection.newerThanSdk, candidates: selection.diagnostics };
+report.environment.simulator_runtime = `${runtime.name} (${runtime.version})`;
+console.log(`iPhoneSimulator SDK ${sdkVersion}; selected ${device.name} on ${runtime.name} (${selection.mode})`);
+if (selection.newerThanSdk) console.warn("Explicit ARTOO_IOS_SIMULATOR_UDID overrides the SDK ceiling; this toolchain/runtime combination is operator-selected, not default compatibility evidence.");
 report.environment.simulator = device.name;
 report.environment.simulator_udid = device.udid;
 report.environment.configuration = configuration;
+run("xcodegen", ["generate"]);
 // Simulator ad-hoc signing needs no developer certificate, but provides the
 // application/keychain entitlements required by the real Keychain XCTest.
 const common = ["-project", "Artoo.xcodeproj", "-scheme", scheme, "-configuration", configuration, "-derivedDataPath", resolve(output, "DerivedData"),

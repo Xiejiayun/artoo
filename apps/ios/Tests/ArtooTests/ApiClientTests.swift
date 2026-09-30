@@ -428,6 +428,89 @@ final class ApiClientTests: XCTestCase {
     }
 
     @MainActor
+    func testInboxLoadsBothActionableStatusesAndDeduplicatesAnApprovalMovingBetweenReads() async {
+        let requests = expectation(description: "Both actionable approval states are requested")
+        requests.expectedFulfillmentCount = 2
+        APIProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/v1/approvals")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer control-secret")
+            let status = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "status" }?.value
+            XCTAssertTrue(["pending", "needs_more_info"].contains(status ?? ""))
+            requests.fulfill()
+            let rows = status == "pending"
+                ? #"[{"id":"moving","action":"Review","risk":"high","status":"pending","created_at":"2026-09-29T00:00:00Z"},{"id":"newer","action":"Review","risk":"medium","status":"pending","created_at":"2026-09-30T00:00:00Z"}]"#
+                : #"[{"id":"older","action":"Review","risk":"low","status":"needs_more_info","created_at":"2026-09-28T00:00:00Z"},{"id":"moving","action":"Review","risk":"high","status":"needs_more_info","created_at":"2026-09-29T00:00:00Z"}]"#
+            return (200, Data("{\"approvals\":\(rows)}".utf8))
+        }
+        let model = InboxViewModel(client: client())
+        await model.load()
+        await fulfillment(of: [requests], timeout: 1)
+        XCTAssertEqual(model.state.value?.map(\.id), ["older", "moving", "newer"])
+        XCTAssertEqual(model.state.value?.first { $0.id == "moving" }?.status, .needsMoreInfo)
+    }
+
+    @MainActor
+    func testInboxDoesNotClaimAnEmptyQueueWhenNeedsInformationReadFails() async {
+        APIProtocol.handler = { request in
+            let status = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "status" }?.value
+            if status == "needs_more_info" {
+                return (503, Data(#"{"error":{"message":"Needs-information approvals could not be retrieved"}}"#.utf8))
+            }
+            return (200, Data(#"{"approvals":[]}"#.utf8))
+        }
+        let model = InboxViewModel(client: client())
+        await model.load()
+        XCTAssertNil(model.state.value)
+        XCTAssertTrue(model.state.errorMessage?.contains("could not be retrieved") == true)
+    }
+
+    @MainActor
+    func testGoalCancellationFailureKeepsGoalAndErrorUntilExplicitRetrySucceeds() async throws {
+        var failCancellation = true
+        var cancellationRequests = 0
+        var serverStatus = "running"
+        APIProtocol.handler = { request in
+            if request.httpMethod == "GET" {
+                XCTAssertEqual(request.url?.path, "/api/v1/goals/goal_1/audit-bundle")
+                return (200, Data("{\"bundle\":{\"goal\":{\"id\":\"goal_1\",\"title\":\"Ship\",\"status\":\"\(serverStatus)\"}}}".utf8))
+            }
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/v1/goals/goal_1/cancel")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer control-secret")
+            XCTAssertNotNil(request.value(forHTTPHeaderField: "Idempotency-Key"))
+            XCTAssertEqual(try Self.body(request), .object([:]))
+            cancellationRequests += 1
+            if failCancellation {
+                serverStatus = "paused"
+                return (409, Data(#"{"error":{"message":"Goal paused: process stop is still unconfirmed"}}"#.utf8))
+            }
+            serverStatus = "cancelled"
+            return (200, Data(#"{"goal":{"id":"goal_1","status":"cancelled"}}"#.utf8))
+        }
+        let model = WorkspaceViewModel(client: client(), path: "/api/v1/goals/goal_1/audit-bundle")
+        await model.load()
+        XCTAssertEqual(cancellationRequests, 0)
+        let first = await model.perform(path: "/api/v1/goals/goal_1/cancel")
+        XCTAssertFalse(first)
+        XCTAssertEqual(cancellationRequests, 1)
+        XCTAssertEqual(model.state.value?["bundle"]["goal"]["id"].text, "goal_1")
+        XCTAssertTrue(model.actionError?.contains("process stop is still unconfirmed") == true)
+        XCTAssertFalse(model.busy)
+        await model.load()
+        XCTAssertEqual(cancellationRequests, 1, "Refreshing the goal must never retry cancellation")
+        XCTAssertEqual(model.state.value?["bundle"]["goal"]["status"].text, "paused")
+        XCTAssertTrue(model.actionError?.contains("process stop is still unconfirmed") == true)
+        failCancellation = false
+        let retried = await model.perform(path: "/api/v1/goals/goal_1/cancel")
+        XCTAssertTrue(retried)
+        XCTAssertEqual(cancellationRequests, 2)
+        XCTAssertEqual(model.state.value?["bundle"]["goal"]["status"].text, "cancelled")
+        XCTAssertNil(model.actionError)
+        XCTAssertFalse(model.busy)
+    }
+
+    @MainActor
     func testExecutionApprovalRequestUsesReadyTaskRouteAndPreservesFailure() async throws {
         var rejectRequest = true
         var requested = false
@@ -490,11 +573,138 @@ final class ApiClientTests: XCTestCase {
         }
         let model = TaskDetailViewModel(client: client(), taskId: "task_1")
         await model.load()
-        await model.assign(mode: "manual", agentInstanceId: "instance_1")
+        let succeeded = await model.assign(mode: "manual", agentInstanceId: "instance_1")
+        XCTAssertTrue(succeeded)
         XCTAssertNil(model.actionError)
         XCTAssertEqual(model.state.value?.task.status, .assigned)
         XCTAssertEqual(model.state.value?.runs.first?.id, "run_assigned")
         XCTAssertFalse(model.actionInFlight)
+    }
+
+    @MainActor
+    func testRejectedAssignmentKeepsTaskAndServerErrorUntilExplicitRetrySucceeds() async throws {
+        let fixtureURL = try XCTUnwrap(Bundle(for: ApiClientTests.self).url(forResource: "assignment-response", withExtension: "json"))
+        let fixtureData = try Data(contentsOf: fixtureURL)
+        let fixture = try JSONDecoder().decode(JSONValue.self, from: fixtureData)
+        var rejectAssignment = true
+        var assigned = false
+        var submittedBodies: [JSONValue] = []
+        APIProtocol.handler = { request in
+            if request.httpMethod == "GET" {
+                XCTAssertEqual(request.url?.path, "/api/v1/tasks/task_1")
+                let snapshot = JSONValue.object([
+                    "task": .object(["id": .string("task_1"), "project_id": .string("proj_artoo"), "title": .string("Implement"), "status": .string(assigned ? "assigned" : "ready")]),
+                    "runs": .array(assigned ? [fixture["run"]] : []), "approvals": .array([]), "artifacts": .array([])
+                ])
+                return (200, try JSONEncoder().encode(snapshot))
+            }
+            XCTAssertEqual(request.url?.path, "/api/v1/tasks/task_1/assign")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer control-secret")
+            XCTAssertNotNil(request.value(forHTTPHeaderField: "Idempotency-Key"))
+            let body = try Self.body(request)
+            submittedBodies.append(body)
+            XCTAssertEqual(body["mode"].text, "manual")
+            XCTAssertEqual(body["agent_instance_id"].text, "instance_1")
+            if rejectAssignment { return (409, Data(#"{"error":{"message":"Selected execution computer is offline"}}"#.utf8)) }
+            assigned = true
+            return (200, fixtureData)
+        }
+        let model = TaskDetailViewModel(client: client(), taskId: "task_1")
+        await model.load()
+        let original = try XCTUnwrap(model.state.value)
+        let rejected = await model.assign(mode: "manual", agentInstanceId: "instance_1")
+        XCTAssertFalse(rejected, "The sheet must stay open when the server rejects assignment")
+        XCTAssertEqual(model.state.value, original)
+        XCTAssertEqual(model.actionError, "HTTP 409: Selected execution computer is offline")
+        XCTAssertFalse(model.actionInFlight)
+        XCTAssertEqual(model.availableActions, [.assign])
+        await model.load()
+        XCTAssertEqual(submittedBodies.count, 1, "Refreshing must not retry the failed assignment")
+        XCTAssertEqual(model.actionError, "HTTP 409: Selected execution computer is offline")
+        rejectAssignment = false
+        let retried = await model.assign(mode: "manual", agentInstanceId: "instance_1")
+        XCTAssertTrue(retried)
+        XCTAssertEqual(submittedBodies.count, 2)
+        XCTAssertEqual(submittedBodies.first, submittedBodies.last, "An explicit retry retains the selected mode and instance")
+        XCTAssertNil(model.actionError)
+        XCTAssertFalse(model.actionInFlight)
+        XCTAssertEqual(model.state.value?.task.status, .assigned)
+        XCTAssertEqual(model.state.value?.runs.map(\.id), ["run_assigned"])
+    }
+
+    @MainActor
+    func testAssignmentRemainsBusyAndRejectsDuplicateSubmissionUntilServerResponds() async throws {
+        let fixtureURL = try XCTUnwrap(Bundle(for: ApiClientTests.self).url(forResource: "assignment-response", withExtension: "json"))
+        let fixtureData = try Data(contentsOf: fixtureURL)
+        let fixture = try JSONDecoder().decode(JSONValue.self, from: fixtureData)
+        let arrived = expectation(description: "The assignment request reached the transport")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        var submissions = 0
+        var assigned = false
+        APIProtocol.handler = { request in
+            if request.httpMethod == "GET" {
+                let snapshot = JSONValue.object([
+                    "task": .object(["id": .string("task_1"), "project_id": .string("proj_artoo"), "title": .string("Implement"), "status": .string(assigned ? "assigned" : "ready")]),
+                    "runs": .array(assigned ? [fixture["run"]] : []), "approvals": .array([]), "artifacts": .array([])
+                ])
+                return (200, try JSONEncoder().encode(snapshot))
+            }
+            XCTAssertEqual(request.url?.path, "/api/v1/tasks/task_1/assign")
+            submissions += 1
+            if submissions == 1 {
+                // URLProtocol receives URLSession work off the main actor;
+                // hold the response while the UI model stays observable.
+                guard !Thread.isMainThread else { throw ApiError.transport("Test transport unexpectedly ran on the main thread") }
+                arrived.fulfill()
+                guard release.wait(timeout: .now() + 5) == .success else { throw ApiError.transport("Assignment test response was not released") }
+            }
+            assigned = true
+            return (200, fixtureData)
+        }
+        let model = TaskDetailViewModel(client: client(), taskId: "task_1")
+        await model.load()
+        let first = Task { await model.assign(mode: "manual", agentInstanceId: "instance_1") }
+        await fulfillment(of: [arrived], timeout: 2)
+        XCTAssertTrue(model.actionInFlight)
+        XCTAssertNil(model.actionError)
+        let duplicate = await model.assign(mode: "auto")
+        XCTAssertFalse(duplicate)
+        XCTAssertEqual(submissions, 1)
+        XCTAssertTrue(model.actionInFlight, "A rejected duplicate must not unlock cancellation or editing of the active request")
+        release.signal()
+        let succeeded = await first.value
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(submissions, 1)
+        XCTAssertFalse(model.actionInFlight)
+        XCTAssertEqual(model.state.value?.runs.map(\.id), ["run_assigned"])
+    }
+
+    @MainActor
+    func testAcceptedAssignmentDoesNotBecomeRetryableWhenStatusRefreshFails() async throws {
+        let fixtureURL = try XCTUnwrap(Bundle(for: ApiClientTests.self).url(forResource: "assignment-response", withExtension: "json"))
+        let fixtureData = try Data(contentsOf: fixtureURL)
+        var submissions = 0
+        APIProtocol.handler = { request in
+            if request.httpMethod == "GET" {
+                if submissions > 0 { return (503, Data(#"{"error":{"message":"Task status is temporarily unavailable"}}"#.utf8)) }
+                return (200, Data(#"{"task":{"id":"task_1","project_id":"proj_artoo","title":"Implement","status":"ready"},"runs":[],"approvals":[],"artifacts":[]}"#.utf8))
+            }
+            XCTAssertEqual(request.url?.path, "/api/v1/tasks/task_1/assign")
+            submissions += 1
+            return (200, fixtureData)
+        }
+        let model = TaskDetailViewModel(client: client(), taskId: "task_1")
+        await model.load()
+        let accepted = await model.assign(mode: "manual", agentInstanceId: "instance_1")
+        XCTAssertTrue(accepted, "A server-accepted assignment closes the sheet even if the subsequent read fails")
+        XCTAssertEqual(submissions, 1)
+        XCTAssertNil(model.actionError)
+        XCTAssertEqual(model.state.errorMessage, "HTTP 503: Task status is temporarily unavailable")
+        XCTAssertFalse(model.actionInFlight)
+        await model.load()
+        XCTAssertEqual(submissions, 1, "The read-retry path must not repeat the accepted command")
     }
 
     private static func body(_ request: URLRequest) throws -> JSONValue {

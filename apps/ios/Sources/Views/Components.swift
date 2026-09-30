@@ -154,6 +154,23 @@ public struct RiskBadge: View {
     }
 }
 
+/// Preserve the full decision state when the title or Dynamic Type needs space.
+struct ApprovalBadges: View {
+    let approval: Approval
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: ArtooTokens.Spacing.xs) {
+                ApprovalStatusBadge(approval.status)
+                RiskBadge(approval.risk)
+            }.fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xxs) {
+                ApprovalStatusBadge(approval.status)
+                RiskBadge(approval.risk)
+            }
+        }
+    }
+}
+
 public struct PriorityBadge: View {
     public let priority: String
     public init(_ priority: String) { self.priority = priority }

@@ -71,11 +71,11 @@ collection. Before distribution, the publisher must:
 | Priority | Current gap and evidence | Implementable next step | External information or credential |
 | --- | --- | --- | --- |
 | P1 | A real development-signed arm64 archive now passes; [project.yml](../apps/ios/project.yml) still uses `dev.artoo.app` and version/build defaults. | Repeat the [archive gate](apple-development-archive.md) for release source, then verify distribution export and TestFlight on supported phone/tablet sizes. | Distribution provisioning and App Store Connect app/bundle registration, build metadata and available physical devices. |
-| P1 | Mac packaging supports a directory app in [desktop package.json](../apps/desktop/package.json); a directory build does not prove a distributable trust chain. | Produce the intended installer/archive, verify its signature and notarization, and test installation, upgrade and removal on a clean Mac. | Distribution model, signing identity, notarization account/access and actual release hosting. |
+| P1 | Fresh unsigned DMG/ZIP creation and DMG installation E2E now pass; this does not prove a distributable trust chain. | Run the [Developer ID/notarization gate](../apps/desktop/MAC-DISTRIBUTION.md), then test signed installation, upgrade and removal on a clean Mac and each supported architecture. | Developer ID identity/private key, notarization profile and actual release hosting. |
 | P1 | Desktop source has no implemented trusted update channel in [main.cjs](../apps/desktop/main.cjs) or package configuration. | Define a signed manual-update or automatic-update flow, publish version/checksum metadata, and verify upgrade preserves connection/settings and server compatibility. | Update policy, release endpoint and signing custody. |
 | P1 | Operator policy details cannot be established from the source tree. | Complete the privacy steps above; keep onboarding and settings disclosures reachable without signing in. | Operator identity/contact, privacy-policy URL, retention/deletion terms and provider choices. |
 | P1 | Production startup requires configured auth and durable storage in [main.ts](../apps/server/src/main.ts) and [auth-config.ts](../apps/server/src/auth/auth-config.ts). Fixture auth is not deployed Google login evidence. | Run real HTTPS/OIDC and WebSocket flows, device revocation and cross-client updates against the chosen staging deployment. | Controlled HTTPS origin, registered Google OAuth client/redirect, team allowlist/owners and securely managed secrets. |
-| P1 | Backup/restore exists in [storage-operations.ts](../apps/server/src/storage-operations.ts), but code presence alone does not demonstrate operational recovery. | Exercise offline backup, checksum validation, restore to a new directory, restart and artifact/account checks; record the recovery result. | Durable host/storage, backup destination/access, retention and recovery objectives. |
+| P1 | The isolated production-mode backup/restore drill passes, including credentials, records and exact artifact bytes after the original data is removed. | Repeat recovery on the chosen deployment, including off-site backup retrieval, host loss and documented recovery objectives. | Durable host/storage, backup destination/access, retention and recovery objectives. |
 | P1 | Native and packaged-client acceptance must match the binary being shipped. | Save an HTML report with actual app screenshots for each Mac/iOS E2E run, including failure state and authentication/model-execution limits; retain reports in CI. | A usable Mac/Xcode simulator or device environment and credentials only for gates explicitly exercising real external services. |
 
 No new P0 issue was confirmed by this source audit. That statement is limited
@@ -105,3 +105,22 @@ screenshots passed with complete cleanup in the local run beginning
 Run `npm run verify:recovery` to rebuild and repeat the drill. This closes the
 missing repeatable local recovery evidence; the deployed, off-site and
 operator-specific recovery requirements in the table remain open.
+
+## Local distribution evidence, 2026-10-01
+
+The Mac DMG run starting `2026-09-30T18:10:58.898Z` passed all 11 checks and
+complete cleanup. It built new x64 DMG/ZIP artifacts, verified the exact DMG
+checksum, installed the app from a read-only mount, checked copied renderer
+and daemon bytes, detached before launch, and completed the existing task,
+artifact, review and restart workflows. Four actual app screenshots are in
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T18-10-58-898Z.html`.
+The gate also passed 46 worker regressions and eight distribution checks; the
+separate optional tiny-filesystem DMG test was skipped. The product DMG was
+actually built, mounted, detached and used for the full E2E.
+
+The current native product source was independently archived as a signed
+Release arm64 device app in the run starting `2026-09-30T18:32:09.609Z`.
+The signature, Team, certificate, embedded development profile, app identifier,
+compiled assets and privacy manifest passed verification. Its report is
+`artifacts/ios-device/2026-09-30T18-32-09-609Z/report.html`. This is a development
+archive, with no physical-device installation, TestFlight export or upload.

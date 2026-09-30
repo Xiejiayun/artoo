@@ -10,6 +10,8 @@ import { _electron as electron, chromium } from "playwright";
 import { expect } from "@playwright/test";
 import { getE2EReportContext, writeE2EReport } from "../../../scripts/e2e-report.mjs";
 import { closeOwnedBrowser } from "../../../scripts/owned-browser.mjs";
+import { buildMacDistribution } from "./mac-distribution.mjs";
+import { mountPreviewDmg } from "./mac-dmg-install.mjs";
 
 const desktopDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(desktopDir, "..", "..");
@@ -62,13 +64,14 @@ async function removeTemp(directory) {
   await until(() => { try { rmSync(canonical, { recursive: true, force: true }); return !existsSync(canonical); } catch { return false; } }, "Smoke temporary files remained locked", 15_000);
 }
 
-export async function runPackagedSmoke(platform) {
+export async function runPackagedSmoke(platform, { macDistribution } = {}) {
   const isMac = platform === "darwin";
-  const label = isMac ? "macos" : "windows";
+  const fromDmg = macDistribution === "dmg";
+  const label = isMac ? (fromDmg ? "macos-dmg" : "macos") : "windows";
   const platformName = isMac ? "macOS" : "Windows";
   const artifactDir = process.env.ARTOO_DESKTOP_REPORT_DIR
     ? resolve(process.env.ARTOO_DESKTOP_REPORT_DIR)
-    : join(desktopDir, "release", isMac ? "mac-smoke-artifacts" : "smoke-artifacts");
+    : join(desktopDir, "release", isMac ? (fromDmg ? "mac-dmg-smoke-artifacts" : "mac-smoke-artifacts") : "smoke-artifacts");
   const jsonPath = join(artifactDir, `${label}-desktop-smoke.json`);
   const htmlPath = join(artifactDir, `${label}-desktop-smoke.html`);
   const screenshots = [];
@@ -78,11 +81,11 @@ export async function runPackagedSmoke(platform) {
   const runId = startedAt.replaceAll(/[:.]/g, "-");
   const report = { ...getE2EReportContext(), result: "fail", passed: false, platform, architecture: process.arch,
     checkedAt: startedAt, started_at: startedAt, run_id: runId, checks, captures, screenshots,
-    package_reused: process.env.ARTOO_SMOKE_SKIP_BUILD === "1",
-    package_provenance: process.env.ARTOO_SMOKE_SKIP_BUILD === "1" ? "Existing package; recorded source identifies the test harness and does not prove the package was built from this revision" : "Package built from the working tree during this invocation",
+    package_reused: !fromDmg && process.env.ARTOO_SMOKE_SKIP_BUILD === "1",
+    package_provenance: fromDmg ? "DMG and ZIP built during this invocation; the app is installed from that verified, read-only mounted DMG" : process.env.ARTOO_SMOKE_SKIP_BUILD === "1" ? "Existing package; recorded source identifies the test harness and does not prove the package was built from this revision" : "Package built from the working tree during this invocation",
     scope: `${platformName} packaged app: pairing, authenticated realtime, worker lifecycle, task execution, artifact download, review and restart recovery`,
     cleanup_complete: false,
-    distribution: isMac ? "Unsigned packaged .app copied to an isolated installation; signing, notarization and updates are separate release gates" : "NSIS installed package",
+    distribution: isMac ? (fromDmg ? "Unsigned preview DMG installed in an isolated directory; no Developer ID, notarization or Gatekeeper trust claim" : "Unsigned packaged .app copied to an isolated installation; signing, notarization and updates are separate release gates") : "NSIS installed package",
     modelExecution: "Temporary CLI fixture through production Codex adapter; no real model quality claim",
     ownerAuthentication: "Test-provisioned owner cookie; native pairing and authorization use production endpoints" };
   mkdirSync(artifactDir, { recursive: true });
@@ -95,6 +98,7 @@ export async function runPackagedSmoke(platform) {
   let tempRoot, installDir, userData, workspace, fixtureBin, fixtureProgram, fixtureKey, installer, packagedApp;
   let server, browser, browserServer, electronApp, page, appExe, ownerCookie;
   let liveReportPath, executionError;
+  let dmgMount;
   let liveActive = false;
   let uninstalled = false;
   let rendererCrashed = false;
@@ -197,12 +201,28 @@ export async function runPackagedSmoke(platform) {
   try {
     assert.equal(process.platform, platform, `The packaged smoke must run on ${platformName}`);
     assert.ok(["darwin", "win32"].includes(platform), "Unsupported desktop platform");
+    assert.ok(macDistribution === undefined || (isMac && fromDmg), "DMG installation is available only in the Mac DMG smoke");
+    if (fromDmg) assert.notEqual(process.env.ARTOO_SMOKE_SKIP_BUILD, "1", "DMG smoke must build a fresh distribution; ARTOO_SMOKE_SKIP_BUILD is not permitted");
     runNpm(["run", "build", "--workspace", "@artoo/server"]);
-    if (process.env.ARTOO_SMOKE_SKIP_BUILD !== "1") runNpm(["run", isMac ? "pack:mac" : "dist:win", "--workspace", "@artoo/desktop"]);
+    if (!fromDmg && process.env.ARTOO_SMOKE_SKIP_BUILD !== "1") runNpm(["run", isMac ? "pack:mac" : "dist:win", "--workspace", "@artoo/desktop"]);
     if (isMac) {
-      const candidates = [join(desktopDir, "release", process.arch === "arm64" ? "mac-arm64" : "mac", "Artoo.app")];
-      packagedApp = candidates.find((candidate) => existsSync(join(candidate, "Contents", "MacOS", "Artoo")));
-      assert.ok(packagedApp, "Build pack:mac for this architecture before using ARTOO_SMOKE_SKIP_BUILD=1");
+      if (fromDmg) {
+        const distribution = buildMacDistribution({ mode: "preview" });
+        const artifact = distribution.files.find((file) => file.kind === "dmg");
+        report.distribution_artifacts = distribution.files;
+        report.distribution_manifest = distribution.manifestPath;
+        dmgMount = mountPreviewDmg(artifact, { onCreated: (mount) => {
+          dmgMount = mount;
+          report.dmg_installation = { artifact_sha256: artifact.sha256, mounted_read_only: false, mountpoint: mount.mountpoint };
+        } });
+        packagedApp = dmgMount.app;
+        report.dmg_installation = { artifact_sha256: artifact.sha256, mounted_read_only: true, mountpoint: dmgMount.mountpoint };
+        check("This invocation built DMG/ZIP; the exact DMG hash is verified and mounted read-only");
+      } else {
+        const candidates = [join(desktopDir, "release", process.arch === "arm64" ? "mac-arm64" : "mac", "Artoo.app")];
+        packagedApp = candidates.find((candidate) => existsSync(join(candidate, "Contents", "MacOS", "Artoo")));
+        assert.ok(packagedApp, "Build pack:mac for this architecture before using ARTOO_SMOKE_SKIP_BUILD=1");
+      }
       report.package = packagedApp;
       report.packageAsarSha256 = createHash("sha256").update(readFileSync(join(packagedApp, "Contents", "Resources", "app.asar"))).digest("hex");
       report.packageDaemonSha256 = createHash("sha256").update(readFileSync(join(packagedApp, "Contents", "Resources", "app.asar.unpacked", "daemon", "artood.mjs"))).digest("hex");
@@ -280,6 +300,14 @@ console.log('Packaged Codex adapter fixture completed');
       cpSync(packagedApp, join(installDir, "Artoo.app"), { recursive: true, verbatimSymlinks: true });
       appExe = join(installDir, "Artoo.app", "Contents", "MacOS", "Artoo");
       appEnv.ARTOO_SMOKE_EXECUTABLE = appExe;
+      if (dmgMount) {
+        for (const [path, hash] of [["app.asar", report.packageAsarSha256], ["app.asar.unpacked/daemon/artood.mjs", report.packageDaemonSha256]]) {
+          assert.equal(createHash("sha256").update(readFileSync(join(installDir, "Artoo.app", "Contents", "Resources", path))).digest("hex"), hash, "Installed app bytes differ from the mounted DMG");
+        }
+        dmgMount.detach();
+        report.dmg_installation.detached_before_launch = true;
+        check("Installed app and daemon match the DMG; its volume is detached before the complete business workflow starts");
+      }
     } else {
       run(installer, ["/S", `/D=${installDir}`], 180_000);
       appExe = findFirst(installDir, (name) => /^Artoo\.exe$/i.test(name));
@@ -458,6 +486,10 @@ console.log('Packaged Codex adapter fixture completed');
     }
   } finally {
     const cleanup = { app_closed: !electronApp, browser_closed: !browserServer, server_closed: !server, uninstalled: uninstalled || !appExe, temporary_directory_removed: !tempRoot };
+    if (fromDmg) {
+      try { dmgMount?.detach(); cleanup.dmg_detached = !dmgMount || dmgMount.detached; }
+      catch { cleanup.dmg_detached = false; console.warn("[smoke] Owned DMG detach failed"); }
+    }
     for (const [key, resource] of [["app_closed", electronApp], ["server_closed", server]]) {
       if (!resource) continue;
       try { await bounded(resource.close(), key, 30_000); cleanup[key] = true; }

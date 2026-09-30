@@ -20,18 +20,47 @@ final class ViewModelsTests: XCTestCase {
         XCTAssertEqual(model.state.value?.isEmpty, true)
     }
 
-    func testInboxCanRequestMoreInfo() async {
+    func testInboxNeedsMoreInfoSurvivesReopeningAndCanBeApproved() async throws {
         let client = MockApiClient.demo()
         let model = InboxViewModel(client: client)
 
         await model.load()
-        let approval = try? XCTUnwrap(model.state.value?.first)
-        if let approval {
-            await model.resolve(approval, decision: .needsMoreInfo, comment: "Need logs")
-        }
+        let approval = try XCTUnwrap(model.state.value?.first)
+        let requested = await model.resolve(approval, decision: .needsMoreInfo, comment: "Need logs")
+        XCTAssertTrue(requested)
+        XCTAssertEqual(model.state.value?.map(\.id), [approval.id])
+        XCTAssertEqual(model.state.value?.first?.status, .needsMoreInfo)
 
-        let approvals = try? await client.listApprovals(status: nil)
-        XCTAssertEqual(approvals?.first?.status, .needsMoreInfo)
+        let reopened = InboxViewModel(client: client)
+        await reopened.load()
+        let waiting = try XCTUnwrap(reopened.state.value?.first)
+        XCTAssertEqual(waiting.id, approval.id)
+        XCTAssertEqual(waiting.status, .needsMoreInfo)
+        let approved = await reopened.resolve(waiting, decision: .approved, comment: "Logs reviewed")
+        XCTAssertTrue(approved)
+        XCTAssertEqual(reopened.state.value, [])
+        let stored = try await client.listApprovals(status: nil)
+        XCTAssertEqual(stored.first?.status, .approved)
+    }
+
+    func testInboxRetainsBothActionableStatesAndRemovesRejectedRequest() async throws {
+        let bootstrap = try await MockApiClient.demo().bootstrap()
+        let client = MockApiClient(bootstrap: bootstrap, approvals: [
+            Approval(id: "pending", action: "Review", risk: .high, status: .pending),
+            Approval(id: "waiting", action: "Review", risk: .medium, status: .needsMoreInfo),
+            Approval(id: "done", action: "Review", risk: .low, status: .approved),
+            Approval(id: "expired", action: "Review", risk: .low, status: .expired),
+            Approval(id: "superseded", action: "execution.start", risk: .high, payloadRef: "execution-gate/superseded", status: .needsMoreInfo)
+        ])
+        let model = InboxViewModel(client: client)
+        await model.load()
+        XCTAssertEqual(model.state.value?.map(\.id), ["pending", "waiting"])
+        let waiting = try XCTUnwrap(model.state.value?.first { $0.id == "waiting" })
+        let rejected = await model.resolve(waiting, decision: .rejected, comment: "Not safe to continue")
+        XCTAssertTrue(rejected)
+        XCTAssertEqual(model.state.value?.map(\.id), ["pending"])
+        let history = try await client.listApprovals(status: nil)
+        XCTAssertEqual(history.first { $0.id == "waiting" }?.status, .rejected)
     }
 
     func testTasksGroupIntoOrderedColumns() async {

@@ -36,9 +36,10 @@ entitlements, plus an arm64 executable, compiled assets and privacy manifest.
 
 ## Executed evidence
 
-The complete development archive gate passed on 2026-10-01 using the existing
-matching local identity and profile. Its report is
-`artifacts/ios-device/2026-09-30T17-25-54-318Z/report.html`, and the signed
+The complete development archive gate passed again on 2026-10-01 after the
+native approval and assignment-recovery changes, using the existing matching
+local identity and profile. Its report is
+`artifacts/ios-device/2026-09-30T18-32-09-609Z/report.html`, and the signed
 `Artoo.xcarchive` is in the same directory. This proves a signed device-target
 build at the report's recorded source snapshot; it does not prove physical
 device UI behavior or App Store distribution. Five selection/signing-settings

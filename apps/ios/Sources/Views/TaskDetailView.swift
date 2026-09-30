@@ -12,6 +12,8 @@ public struct TaskDetailView: View {
     @State private var downloading = false
     @State private var reviewComment = ""
     @State private var executionApprovalDraft = ExecutionApprovalDraft()
+    @State private var executionApprovalExpanded = false
+    @FocusState private var approvalSummaryFocused: Bool
     private let client: ApiClientProtocol
 
     public init(client: ApiClientProtocol, taskId: String) {
@@ -28,7 +30,7 @@ public struct TaskDetailView: View {
                 }
                 criteriaSection(snapshot.task)
                 if snapshot.task.status == .ready { executionApprovalSection }
-                if snapshot.task.status == .review { Section("Review feedback") { TextField("Comment or requested changes", text: $reviewComment, axis: .vertical).lineLimit(2...6) } }
+                if snapshot.task.status == .review { Section("Review feedback") { TextField("Comment or requested changes", text: $reviewComment, axis: .vertical).lineLimit(2...6).accessibilityIdentifier("task.review.comment.\(model.taskId)") } }
                 Section("Team work") {
                     if let roomId = snapshot.room?.id ?? snapshot.task.roomId {
                         NavigationLink("Messages, decisions and blockers") { CollaborationView(client: client, roomId: roomId, taskId: snapshot.task.id) }
@@ -49,9 +51,7 @@ public struct TaskDetailView: View {
             RunSummaryView(run: run, client: client)
         }
         .sheet(isPresented: $showingAssign) {
-            AssignSheet(client: client) { mode, agentInstanceId in
-                Task { await model.assign(mode: mode, agentInstanceId: agentInstanceId) }
-            }
+            AssignSheet(client: client, model: model)
         }
         .refreshable { await model.load() }
         .liveRefresh { await model.load() }
@@ -77,17 +77,32 @@ public struct TaskDetailView: View {
                 Text("Request a review before assigning work that needs human approval. Once requested, execution waits for approval.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            DisclosureGroup(model.executionApproval == nil ? "Request execution review" : "Submit an updated review request") {
+            DisclosureGroup(isExpanded: $executionApprovalExpanded) {
                 TextField("Describe the work and its risk", text: $executionApprovalDraft.summary, axis: .vertical).lineLimit(3...8)
+                    .focused($approvalSummaryFocused)
+                    .accessibilityIdentifier("task.approval.summary.\(model.taskId)")
                 Picker("Risk", selection: $executionApprovalDraft.risk) {
                     Text("Low").tag("low"); Text("Medium").tag("medium"); Text("High").tag("high")
                 }.pickerStyle(.segmented)
+                    .accessibilityIdentifier("task.approval.risk.\(model.taskId)")
                 if model.executionApproval != nil {
                     Text("Submitting again creates a new pending review and keeps previous decisions in the history.").font(.caption).foregroundStyle(.secondary)
                 }
                 Button("Request approval") {
-                    Task { if await model.requestExecutionApproval(executionApprovalDraft) { executionApprovalDraft = ExecutionApprovalDraft() } }
+                    // End editing so the submitted approval and root tabs are
+                    // reachable while the request is being confirmed.
+                    approvalSummaryFocused = false
+                    Task {
+                        if await model.requestExecutionApproval(executionApprovalDraft) {
+                            executionApprovalDraft = ExecutionApprovalDraft()
+                            executionApprovalExpanded = false
+                        }
+                    }
                 }.disabled(model.actionInFlight || !executionApprovalDraft.valid)
+                    .accessibilityIdentifier("task.approval.request.\(model.taskId)")
+            } label: {
+                Text(model.executionApproval == nil ? "Request execution review" : "Submit an updated review request")
+                    .accessibilityIdentifier("task.approval.disclosure.\(model.taskId)")
             }
         }
     }
@@ -103,6 +118,10 @@ public struct TaskDetailView: View {
 
                     HStack(spacing: ArtooTokens.Spacing.xs) {
                         StatusBadge(task.status)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Task status")
+                            .accessibilityValue(task.status.rawValue)
+                            .accessibilityIdentifier("task.status.\(task.id)")
                         if let priority = task.priority {
                             PriorityBadge(priority)
                         }
@@ -162,6 +181,7 @@ public struct TaskDetailView: View {
                         }
                     }
                     .disabled(model.actionInFlight)
+                    .accessibilityIdentifier("task.action.\(action.rawValue).\(model.taskId)")
                     .accessibilityHint(action.accessibilityHint)
                 }
                 if let error = model.actionError {
@@ -214,6 +234,7 @@ public struct TaskDetailView: View {
                             .lineLimit(1)
                         if artifact.uri.hasPrefix("/api/v1/artifacts/") {
                             Button(downloading ? "Downloading…" : "Preview or share") { Task { await download(artifact) } }.disabled(downloading)
+                                .accessibilityIdentifier("artifact.preview.\(artifact.id)")
                         } else if let url = URL(string: artifact.uri), url.scheme == "https" {
                             Link("Open artifact", destination: url)
                         } else { Text("This older artifact was not uploaded to the server.").font(.caption).foregroundStyle(.secondary) }
@@ -255,7 +276,7 @@ private struct AssignSheet: View {
     @State private var instances: [WorkspaceRecord] = []
     @State private var error: String?
     let client: ApiClientProtocol
-    let onAssign: (String, String?) -> Void
+    @ObservedObject var model: TaskDetailViewModel
 
     var body: some View {
         NavigationStack {
@@ -265,27 +286,42 @@ private struct AssignSheet: View {
                     Text("Manual").tag("manual")
                 }
                 .pickerStyle(.segmented)
+                .accessibilityIdentifier("task.assignment.mode")
                 if mode == "manual" {
                     Picker("Agent instance", selection: $agentInstanceId) {
                         Text("Choose agent").tag("")
-                        ForEach(instances.filter { $0.status != "disabled" }) { instance in Text("\(instance["runtime"].text) · \(instance.id)").tag(instance.id) }
+                        ForEach(instances.filter { $0.status != "disabled" }) { instance in
+                            Text("\(instance["runtime"].text) · \(instance.id)").tag(instance.id)
+                                .accessibilityIdentifier("task.assignment.option.\(instance.id)")
+                        }
                     }
+                    .accessibilityIdentifier("task.assignment.instance")
                 }
-                if let error { Text(error).foregroundStyle(.red) }
+                if let message = model.actionError ?? error {
+                    Text(message).foregroundStyle(.red)
+                        .accessibilityIdentifier("task.assignment.error")
+                }
+                if model.actionInFlight { ProgressView("Assigning task…").accessibilityIdentifier("task.assignment.progress") }
             }
+            .disabled(model.actionInFlight)
             .navigationTitle("Assign Task")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .disabled(model.actionInFlight)
+                        .accessibilityIdentifier("task.assignment.cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Assign") {
+                        let selectedMode = mode
                         let trimmed = agentInstanceId.trimmingCharacters(in: .whitespaces)
-                        onAssign(mode, trimmed.isEmpty ? nil : trimmed)
-                        dismiss()
+                        Task {
+                            if await model.assign(mode: selectedMode, agentInstanceId: trimmed.isEmpty ? nil : trimmed) { dismiss() }
+                        }
                     }
-                    .disabled(mode == "manual" && agentInstanceId.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(model.actionInFlight || (mode == "manual" && agentInstanceId.trimmingCharacters(in: .whitespaces).isEmpty))
+                    .accessibilityIdentifier("task.assignment.confirm")
                 }
             }
             .task {
@@ -293,6 +329,7 @@ private struct AssignSheet: View {
                 catch { self.error = String(describing: error) }
             }
         }
+        .interactiveDismissDisabled(model.actionInFlight)
     }
 }
 
@@ -441,15 +478,11 @@ private struct ApprovalCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xs) {
-            HStack(alignment: .firstTextBaseline, spacing: ArtooTokens.Spacing.xs) {
-                Text(approval.action)
-                    .font(ArtooTokens.Typography.subheadline.weight(.semibold))
-                    .foregroundStyle(ArtooTokens.ColorToken.text)
-                    .lineLimit(2)
-                Spacer()
-                ApprovalStatusBadge(approval.status)
-                RiskBadge(approval.risk)
-            }
+            Text(approval.actionLabel)
+                .font(ArtooTokens.Typography.subheadline.weight(.semibold))
+                .foregroundStyle(ArtooTokens.ColorToken.text)
+                .lineLimit(2)
+            ApprovalBadges(approval: approval)
             if let summary = approval.summary, !summary.isEmpty {
                 Text(summary)
                     .font(ArtooTokens.Typography.caption)
@@ -469,7 +502,7 @@ private struct ApprovalCard: View {
                 .frame(width: 4)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(approval.action), \(approval.status.label), \(approval.risk.label) risk")
+        .accessibilityLabel("\(approval.actionLabel), \(approval.status.label), \(approval.risk.label) risk")
     }
 
     private var riskColor: Color {

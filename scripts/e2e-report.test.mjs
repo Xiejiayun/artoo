@@ -39,13 +39,14 @@ test("XCTest reports only explicit workflow images from the current export manif
     writeFileSync(join(directory, "manifest.json"), JSON.stringify([{ attachments: [
       { exportedFileName: "workflow.png", suggestedHumanReadableName: "Native accepted plan with dependent tasks" },
       { exportedFileName: "named.png", name: "Native daemon online after real reconnect" },
+      { exportedFileName: "named.png", name: "Native goal cancelled after explicit confirmation_0_fixture.png" },
       { exportedFileName: "failure.png", suggestedHumanReadableName: "Screenshot at failure" },
       { exportedFileName: "named.png", suggestedHumanReadableName: "Native UI failure" },
       { exportedFileName: "named.png", suggestedHumanReadableName: "Native future unreviewed screenshot" },
       { exportedFileName: "../escaped.png", suggestedHumanReadableName: "Native outside export" },
       { exportedFileName: "private.json", suggestedHumanReadableName: "Native UI tree" },
     ] }]));
-    assert.deepEqual(readXCTestScreenshots(directory), [{ path: join(directory, "workflow.png"), caption: "Native accepted plan with dependent tasks" }, { path: join(directory, "named.png"), caption: "Native daemon online after real reconnect" }]);
+    assert.deepEqual(readXCTestScreenshots(directory), [{ path: join(directory, "workflow.png"), caption: "Native accepted plan with dependent tasks" }, { path: join(directory, "named.png"), caption: "Native daemon online after real reconnect" }, { path: join(directory, "named.png"), caption: "Native goal cancelled after explicit confirmation_0_fixture.png" }]);
     rmSync(join(directory, "manifest.json"));
     assert.deepEqual(readXCTestScreenshots(directory), [], "A missing manifest must never reuse old screenshots");
   } finally { rmSync(directory, { recursive: true, force: true }); }

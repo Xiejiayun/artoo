@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Approvals-first work surface: the primary reason a human opens the app is to
-/// triage agent escalations. Lists pending approvals; each row opens a detail
-/// with approve/reject.
+/// triage agent escalations. Keeps pending and needs-information approvals
+/// reachable until a final decision; each row opens approve/reject details.
 public struct InboxView: View {
     @EnvironmentObject private var container: AppContainer
     @StateObject private var model: InboxViewModel
@@ -19,8 +19,8 @@ public struct InboxView: View {
                 if approvals.isEmpty {
                     EmptyStateView(
                         systemImage: "checkmark.seal",
-                        title: "No pending approvals",
-                        message: "Agent escalations will appear here. Mentions are available from the @ button."
+                        title: "No approvals need attention",
+                        message: "Pending reviews and requests for more information appear here. Mentions are available from the @ button."
                     )
                 } else {
                     List {
@@ -30,6 +30,7 @@ public struct InboxView: View {
                                     NavigationLink(value: approval) {
                                         ApprovalRow(approval: approval)
                                     }
+                                    .accessibilityIdentifier("inbox.approval.\(approval.id)")
                                 }
                             } header: {
                                 HStack {
@@ -82,15 +83,11 @@ private struct ApprovalRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xs) {
-            HStack(alignment: .firstTextBaseline, spacing: ArtooTokens.Spacing.xs) {
-                Text(approval.action)
-                    .font(ArtooTokens.Typography.subheadline.weight(.semibold))
-                    .foregroundStyle(ArtooTokens.ColorToken.text)
-                    .lineLimit(2)
-                Spacer()
-                ApprovalStatusBadge(approval.status)
-                RiskBadge(approval.risk)
-            }
+            Text(approval.actionLabel)
+                .font(ArtooTokens.Typography.subheadline.weight(.semibold))
+                .foregroundStyle(ArtooTokens.ColorToken.text)
+                .lineLimit(2)
+            ApprovalBadges(approval: approval)
             if let summary = approval.summary, !summary.isEmpty {
                 Text(summary)
                     .font(ArtooTokens.Typography.caption)
@@ -111,7 +108,7 @@ private struct ApprovalRow: View {
                 .frame(width: 4)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(approval.action), \(approval.risk.label) risk, \(approval.status.label)")
+        .accessibilityLabel("\(approval.actionLabel), \(approval.risk.label) risk, \(approval.status.label)")
     }
 
     private var riskColor: Color {
@@ -135,14 +132,11 @@ public struct ApprovalDetailView: View {
             Section("Decision") {
                 ArtooSectionCard {
                     VStack(alignment: .leading, spacing: ArtooTokens.Spacing.sm) {
-                        Text(approval.action)
+                        Text(approval.actionLabel)
                             .font(ArtooTokens.Typography.headline)
                             .foregroundStyle(ArtooTokens.ColorToken.text)
                             .fixedSize(horizontal: false, vertical: true)
-                        HStack(spacing: ArtooTokens.Spacing.xs) {
-                            ApprovalStatusBadge(approval.status)
-                            RiskBadge(approval.risk)
-                        }
+                        ApprovalBadges(approval: approval)
                         ArtooMetadataGrid([
                             ("Task", approval.taskId),
                             ("Run", approval.runId),
@@ -159,7 +153,7 @@ public struct ApprovalDetailView: View {
                 .listRowBackground(Color.clear)
             }
             if let summary = approval.summary, !summary.isEmpty {
-                Section("Summary") { Text(summary) }
+                Section("Summary") { Text(summary).accessibilityIdentifier("approval.summary.\(approval.id)") }
             }
             if approval.action == "execution.start" {
                 Section { Text("This review allows one execution of the ready task. Retrying requires a new review. It does not approve individual commands during execution.").font(.caption).foregroundStyle(.secondary) }
@@ -197,6 +191,7 @@ public struct ApprovalDetailView: View {
             }
         }
         .disabled(model.isResolving(approval))
+        .accessibilityIdentifier("approval.decision.\(decision.rawValue).\(approval.id)")
         .accessibilityHint("Resolves this approval as \(decision.label)")
     }
 

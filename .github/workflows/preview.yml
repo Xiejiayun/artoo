@@ -79,7 +79,11 @@ jobs:
       - run: npm ci
       - run: npx playwright install chromium
         working-directory: apps/web
-      - run: npm run verify:mac
+      - name: Mac DMG installation E2E
+        shell: bash
+        run: |
+          mkdir -p artifacts/preview-gate
+          npm run verify:mac 2>&1 | tee artifacts/preview-gate/mac-dmg.log
       - run: npm run verify:recovery
       - uses: actions/upload-artifact@v4
         if: always()
@@ -87,7 +91,12 @@ jobs:
           name: mac-packaged-e2e
           path: |
             artifacts/preview-gate/*.json
+            artifacts/preview-gate/mac-dmg.log
             apps/desktop/release/mac-smoke-artifacts/
+            apps/desktop/release/mac-dmg-smoke-artifacts/
+            apps/desktop/release/mac-distribution/*/distribution.json
+            apps/desktop/release/mac-distribution/*/builder-debug.yml
+            apps/desktop/release/mac-distribution/*/*.log
             artifacts/recovery/
           if-no-files-found: ignore
           retention-days: 14

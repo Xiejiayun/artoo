@@ -54,8 +54,20 @@ public final class InboxViewModel: ObservableObject {
     public func load() async {
         if state.value == nil { state = .loading }
         do {
-            let approvals = try await client.listApprovals(status: "pending")
-            state = .loaded(approvals)
+            async let pending = client.listApprovals(status: "pending")
+            async let needsInfo = client.listApprovals(status: "needs_more_info")
+            let (pendingApprovals, needsInfoApprovals) = try await (pending, needsInfo)
+            // A decision can move between these reads. Keep one destination
+            // per approval, including requests awaiting more information.
+            var approvals: [String: Approval] = [:]
+            for approval in pendingApprovals + needsInfoApprovals
+            where (approval.status == .pending || approval.status == .needsMoreInfo)
+                && approval.payloadRef != "execution-gate/superseded" {
+                approvals[approval.id] = approval
+            }
+            state = .loaded(approvals.values.sorted {
+                ($0.createdAt ?? "", $0.id) < ($1.createdAt ?? "", $1.id)
+            })
         } catch {
             state = .failed(describe(error))
         }
@@ -226,10 +238,13 @@ public final class TaskDetailViewModel: ObservableObject {
         }
     }
 
-    public func markReady() async { await run { try await self.client.markReady(taskId: self.taskId) } }
-    public func retry() async { await run { try await self.client.retry(taskId: self.taskId) } }
+    public func markReady() async { _ = await run { try await self.client.markReady(taskId: self.taskId) } }
+    public func retry() async { _ = await run { try await self.client.retry(taskId: self.taskId) } }
 
-    public func assign(mode: String = "auto", agentInstanceId: String? = nil) async {
+    /// Returns whether the server accepted assignment. A later status-read
+    /// failure remains in state rather than changing the command outcome.
+    @discardableResult
+    public func assign(mode: String = "auto", agentInstanceId: String? = nil) async -> Bool {
         await run {
             try await self.client.assign(
                 taskId: self.taskId,
@@ -239,7 +254,7 @@ public final class TaskDetailViewModel: ObservableObject {
     }
 
     public func review(accept: Bool, comment: String? = nil) async {
-        await run {
+        _ = await run {
             try await self.client.review(
                 taskId: self.taskId,
                 request: ReviewRequest(outcome: accept ? "accepted" : "changes_requested", comment: comment)
@@ -294,16 +309,18 @@ public final class TaskDetailViewModel: ObservableObject {
         }
     }
 
-    private func run<Response>(_ operation: @escaping () async throws -> Response) async {
-        guard !actionInFlight else { return }
+    private func run<Response>(_ operation: @escaping () async throws -> Response) async -> Bool {
+        guard !actionInFlight else { return false }
         actionInFlight = true
         actionError = nil
         defer { actionInFlight = false }
         do {
             _ = try await operation()
             await load()
+            return true
         } catch {
             actionError = describe(error)
+            return false
         }
     }
 }

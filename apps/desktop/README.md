@@ -77,8 +77,20 @@ On macOS:
 
 ```sh
 npm ci
-VITE_AUTH_ENABLED=true npm run pack:mac --workspace @artoo/desktop
-npm run smoke:mac --workspace @artoo/desktop
+npm run verify:mac
+```
+
+The Mac release gate builds fresh unsigned preview DMG/ZIP artifacts, installs
+the app from the verified read-only DMG into an isolated directory, and runs the
+complete packaged workflow after detaching the image. Its HTML report is
+`release/mac-dmg-smoke-artifacts/macos-dmg-desktop-smoke.html`. See
+[macOS distribution](MAC-DISTRIBUTION.md) for signing gates, artifact manifests
+and CI evidence retention.
+
+The separate directory-package smoke remains available:
+
+```sh
+VITE_AUTH_ENABLED=true npm run smoke:mac --workspace @artoo/desktop
 ```
 
 `pack:mac` produces `release/mac-arm64/Artoo.app` on Apple silicon or
@@ -96,8 +108,9 @@ downloaded patches and `macos-desktop-smoke.html`. The HTML embeds each screensh
 and records source revision, checked behavior, errors and cleanup. Every run
 also keeps a timestamped HTML/JSON copy under `history/`, including build or
 preflight failures. `ARTOO_DESKTOP_REPORT_DIR` can select another evidence
-directory. This verifies an unsigned directory app; signing, notarization, DMG
-distribution, live provider quality and automatic updates are separate gates.
+directory. This smoke verifies an unsigned directory app; use `verify:mac` for
+DMG installation. Signing, notarization, live provider quality and automatic
+updates remain separate gates.
 Set `ARTOO_CHROMIUM_CHANNEL=chrome` to use an installed Chrome for the owner Web
 session when Playwright Chromium is unavailable; the report records the actual
 browser channel and version. The packaged Electron app is always the client
