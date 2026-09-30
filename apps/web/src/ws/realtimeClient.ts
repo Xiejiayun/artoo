@@ -9,6 +9,7 @@ export const WS_UNAUTHENTICATED_CODE = 1008;
  *  close code so the client can distinguish a terminal 1008 auth failure from a
  *  transport-level drop (1006/1001/…) that should reconnect. */
 export interface WebSocketLike {
+  readonly readyState: number;
   send(data: string): void;
   close(): void;
   onopen: (() => void) | null;
@@ -76,7 +77,6 @@ export class RealtimeClient {
 
   private socket: WebSocketLike | null = null;
   private readonly topics = new Map<string, number>();
-  private open = false;
   private closedByUser = false;
   /** Set once the server closes 1008; suppresses all further reconnects. */
   private unauthenticated = false;
@@ -93,47 +93,50 @@ export class RealtimeClient {
   }
 
   connect(): void {
-    if (this.socket !== null) return;
-    this.setStatus("connecting");
+    if (this.socket !== null || this.unauthenticated) return;
     this.closedByUser = false;
     const generation = ++this.generation;
+    this.setStatus("connecting");
+    if (generation !== this.generation || this.closedByUser) return;
     if (this.tokenProvider) {
       void Promise.resolve(this.tokenProvider()).then((token) => {
         if (generation !== this.generation || this.closedByUser) return;
-        this.openSocket(token ? ["artoo", `artoo-auth.${token}`] : undefined);
+        this.openSocket(generation, token ? ["artoo", `artoo-auth.${token}`] : undefined);
       }).catch(() => { if (generation === this.generation) { this.setStatus("unauthenticated"); this.onUnauthenticated(); } });
-    } else this.openSocket();
+    } else this.openSocket(generation);
   }
 
-  private openSocket(protocols?: string[]): void {
+  private openSocket(generation: number, protocols?: string[]): void {
     const socket = this.socketFactory(this.url, protocols);
     this.socket = socket;
+    const isCurrent = () => generation === this.generation && this.socket === socket && !this.closedByUser;
     socket.onopen = () => {
-      this.open = true;
-      this.setStatus("connected");
-      // (Re)subscribe to the full current topic set.
+      if (!isCurrent() || socket.readyState !== 1) return;
+      // Replay before notifying UI listeners, which can close/reconnect this
+      // client and remount subscriptions synchronously.
       if (this.topics.size > 0) {
         this.sendFrame({ type: "subscribe", topics: [...this.topics.keys()] });
       }
+      this.setStatus("connected");
     };
     socket.onclose = (event) => {
-      this.open = false;
+      if (!isCurrent()) return;
       this.socket = null;
-      this.setStatus("disconnected");
       // Terminal auth failure (#28 3b): the server closes 1008 for any
       // missing/bad/expired/revoked credential (and pre-auth buffer overflow).
       // Do NOT reconnect — clear subscriptions and signal the app to route
       // through the #34 auth gate. Transport drops (1006/1001/…) reconnect.
       if (event.code === WS_UNAUTHENTICATED_CODE) {
         this.unauthenticated = true;
-        this.setStatus("unauthenticated");
         this.topics.clear();
+        this.setStatus("unauthenticated");
         this.onUnauthenticated();
         return;
       }
-      if (!this.closedByUser && !this.unauthenticated && this.reconnectDelayMs > 0) {
+      this.setStatus("disconnected");
+      if (generation === this.generation && !this.closedByUser && !this.unauthenticated && this.reconnectDelayMs > 0) {
         this.scheduleTimeout(() => {
-          if (!this.closedByUser && !this.unauthenticated) {
+          if (generation === this.generation && !this.closedByUser && !this.unauthenticated) {
             this.connect();
           }
         }, this.reconnectDelayMs);
@@ -142,7 +145,7 @@ export class RealtimeClient {
     socket.onerror = () => {
       // Errors are followed by close; reconnect is handled there.
     };
-    socket.onmessage = (message) => this.handleMessage(message.data);
+    socket.onmessage = (message) => { if (isCurrent()) this.handleMessage(message.data); };
   }
 
   subscribe(topics: string[]): void {
@@ -150,7 +153,7 @@ export class RealtimeClient {
     for (const topic of new Set(topics)) {
       this.topics.set(topic, (this.topics.get(topic) ?? 0) + 1);
     }
-    if (this.open && added.length > 0) {
+    if (added.length > 0) {
       this.sendFrame({ type: "subscribe", topics: added });
     }
   }
@@ -162,22 +165,25 @@ export class RealtimeClient {
       if (count > 1) this.topics.set(topic, count - 1);
       else if (count === 1) { this.topics.delete(topic); removed.push(topic); }
     }
-    if (this.open && removed.length > 0) {
+    if (removed.length > 0) {
       this.sendFrame({ type: "unsubscribe", topics: removed });
     }
   }
 
   close(): void {
+    const socket = this.socket;
     this.generation++;
-    this.setStatus("disconnected");
     this.closedByUser = true;
-    this.open = false;
-    this.socket?.close();
     this.socket = null;
+    socket?.close();
+    this.setStatus("disconnected");
   }
 
   private sendFrame(frame: SubscribeFrame): void {
-    this.socket?.send(JSON.stringify(frame));
+    const socket = this.socket;
+    // WebSocket.OPEN is 1. UI status and queued callbacks cannot establish
+    // transport readiness; desired topics remain in the map for the next open.
+    if (!this.closedByUser && !this.unauthenticated && socket?.readyState === 1) socket.send(JSON.stringify(frame));
   }
 
   private handleMessage(raw: string): void {

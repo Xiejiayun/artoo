@@ -16,21 +16,26 @@ afterEach(() => {
 });
 
 class FakeSocket implements WebSocketLike {
+  readyState = 0;
   sent: string[] = [];
   onopen: (() => void) | null = null;
   onclose: ((event: { code: number; reason: string }) => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   send(data: string): void {
+    if (this.readyState === 0) throw new DOMException("WebSocket is still CONNECTING", "InvalidStateError");
+    if (this.readyState !== 1) return;
     this.sent.push(data);
   }
   close(): void {
-    this.onclose?.({ code: 1000, reason: "" });
+    this.readyState = 2;
   }
   closeWith(code: number, reason = ""): void {
+    this.readyState = 3;
     this.onclose?.({ code, reason });
   }
   open(): void {
+    this.readyState = 1;
     this.onopen?.();
   }
   emit(data: string): void {

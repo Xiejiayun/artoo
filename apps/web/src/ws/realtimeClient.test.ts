@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { RealtimeClient, type WebSocketLike } from "./realtimeClient.js";
 
 class FakeSocket implements WebSocketLike {
+  readyState = 0;
   sent: string[] = [];
   onopen: (() => void) | null = null;
   onclose: ((event: { code: number; reason: string }) => void) | null = null;
@@ -10,16 +11,20 @@ class FakeSocket implements WebSocketLike {
   onerror: (() => void) | null = null;
 
   send(data: string): void {
+    if (this.readyState === 0) throw new DOMException("WebSocket is still CONNECTING", "InvalidStateError");
+    if (this.readyState !== 1) return;
     this.sent.push(data);
   }
   close(): void {
-    this.onclose?.({ code: 1000, reason: "" });
+    this.readyState = 2;
   }
   /** Simulate a server/transport close with a specific code. */
   closeWith(code: number, reason = ""): void {
+    this.readyState = 3;
     this.onclose?.({ code, reason });
   }
   open(): void {
+    this.readyState = 1;
     this.onopen?.();
   }
   emit(data: string): void {
@@ -149,6 +154,84 @@ describe("RealtimeClient", () => {
     timeouts[0]?.();
     sockets[1]?.open();
     expect(sockets[1]?.lastFrame()).toEqual({ type: "subscribe", topics: ["task:1"] });
+  });
+
+  it("does not send to a connecting replacement when connected-status listeners remount subscriptions", () => {
+    const first = new FakeSocket(), replacement = new FakeSocket();
+    const factory = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(replacement);
+    const client = new RealtimeClient({ url: "ws://x", onEvent: () => undefined, socketFactory: factory });
+    client.subscribe(["room:old"]);
+    const stopListening = client.subscribeStatus(() => {
+      if (client.getStatus() !== "connected") return;
+      stopListening();
+      client.close();
+      client.connect();
+      client.unsubscribe(["room:old"]);
+      client.subscribe(["room:current"]);
+    });
+    client.connect();
+    expect(() => first.open()).not.toThrow();
+    expect(client.getStatus()).toBe("connecting");
+    expect(replacement.sent).toHaveLength(0);
+    replacement.open();
+    expect(replacement.lastFrame()).toEqual({ type: "subscribe", topics: ["room:current"] });
+  });
+
+  it("ignores queued open callbacks from a closed generation during subscription cleanup", () => {
+    const first = new FakeSocket(), replacement = new FakeSocket();
+    const client = new RealtimeClient({ url: "ws://x", onEvent: () => undefined,
+      socketFactory: vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(replacement) });
+    client.subscribe(["room:old", "inbox:user"]);
+    client.connect();
+    const queuedOpen = first.onopen!;
+    client.close(); client.connect();
+    expect(() => queuedOpen()).not.toThrow();
+    expect(() => { client.unsubscribe(["room:old"]); client.subscribe(["room:new"]); }).not.toThrow();
+    expect(client.getStatus()).toBe("connecting");
+    expect(replacement.sent).toHaveLength(0);
+    replacement.open();
+    expect(replacement.sent.map((frame) => JSON.parse(frame))).toEqual([{ type: "subscribe", topics: ["inbox:user", "room:new"] }]);
+  });
+
+  it("ignores retired socket events without clearing a replacement or its subscriptions", () => {
+    const first = new FakeSocket(), replacement = new FakeSocket();
+    const onEvent = vi.fn(), onUnauthenticated = vi.fn(), schedule = vi.fn();
+    const client = new RealtimeClient({ url: "ws://x", onEvent, onUnauthenticated, setTimeoutFn: schedule,
+      socketFactory: vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(replacement) });
+    client.subscribe(["room:current"]);
+    client.connect(); first.open();
+    client.close(); client.connect(); replacement.open();
+    first.emit(JSON.stringify({ type: "event", topic: "room:current", event: {
+      id: "stale", type: "run.completed", schema_version: "2026-06-11", organization_id: "org_default",
+      actor: { type: "agent", id: "agent_1" }, occurred_at: "2026-06-13T00:00:00Z", correlation_id: "corr_1", payload: {},
+    } }));
+    first.closeWith(1008, "retired connection");
+    first.closeWith(1006);
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(onUnauthenticated).not.toHaveBeenCalled();
+    expect(schedule).not.toHaveBeenCalled();
+    expect(client.getStatus()).toBe("connected");
+    client.unsubscribe(["room:current"]);
+    expect(replacement.lastFrame()).toEqual({ type: "unsubscribe", topics: ["room:current"] });
+  });
+
+  it("uses transport readyState before close notification and replays only current reference-counted topics", () => {
+    const first = new FakeSocket(), replacement = new FakeSocket();
+    let reconnect!: () => void;
+    const client = new RealtimeClient({ url: "ws://x", onEvent: () => undefined,
+      socketFactory: vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(replacement),
+      setTimeoutFn: (handler) => { reconnect = handler; } });
+    client.subscribe(["room:old", "room:shared"]); client.subscribe(["room:shared"]);
+    client.connect(); first.open();
+    const send = vi.spyOn(first, "send");
+    first.close(); // CLOSING is visible before the browser delivers its close event.
+    client.unsubscribe(["room:old", "room:shared"]); client.subscribe(["room:next"]);
+    expect(send).not.toHaveBeenCalled();
+    first.closeWith(1006); reconnect();
+    client.unsubscribe(["room:next"]); client.subscribe(["room:latest"]);
+    expect(replacement.sent).toHaveLength(0);
+    replacement.open();
+    expect(replacement.lastFrame()).toEqual({ type: "subscribe", topics: ["room:shared", "room:latest"] });
   });
 
   it("does not reconnect after an explicit close", () => {
