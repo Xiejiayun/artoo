@@ -121,6 +121,7 @@ struct DevicesView: View {
     @EnvironmentObject private var container: AppContainer
     @StateObject private var model: WorkspaceViewModel
     @State private var revoking: WorkspaceRecord?
+    @State private var enrolling: WorkspaceRecord?
     @State private var platform = "ios"
     @State private var pairing: JSONValue = .null
     @State private var error: String?
@@ -128,14 +129,13 @@ struct DevicesView: View {
     init(client: ApiClientProtocol) { _model = StateObject(wrappedValue: WorkspaceViewModel(client: client, path: "/api/v1/devices")) }
     var body: some View {
         List {
-            if container.isAdministrator {
-                Section("Connect another device") {
-                    Picker("Platform", selection: $platform) { Text("iOS").tag("ios"); Text("Windows").tag("windows"); Text("macOS").tag("macos") }
-                    Button("Create one-time code") { Task { await createPairing() } }.disabled(creating)
-                    if !pairing["code"].text.isEmpty {
-                        Text(pairing["code"].text).font(.system(.title, design: .monospaced)).textSelection(.enabled).privacySensitive()
-                        Text("Expires \(pairing["pairing"]["expires_at"].text)").font(.caption)
-                    }
+            Section("Connect another device") {
+                Text("Use this code only on your own device. It grants access as your account.").font(.caption)
+                Picker("Platform", selection: $platform) { Text("iOS").tag("ios"); Text("Windows").tag("windows"); Text("macOS").tag("macos") }
+                Button("Create one-time code") { Task { await createPairing() } }.disabled(creating)
+                if !pairing["code"].text.isEmpty {
+                    Text(pairing["code"].text).font(.system(.title, design: .monospaced)).textSelection(.enabled).privacySensitive()
+                    Text("Expires \(pairing["pairing"]["expires_at"].text)").font(.caption)
                 }
             }
             Section("Devices") {
@@ -143,8 +143,19 @@ struct DevicesView: View {
                     VStack(alignment: .leading) {
                         RecordRow(item: device)
                         Text(device["platform"].text).font(.caption)
+                        if !device["computer_id"].text.isEmpty {
+                            Text("Computer: \(device["computer_id"].text)").font(.caption).textSelection(.enabled)
+                        } else if device.status == "active" && ["macos", "windows"].contains(device["platform"].text) {
+                            if container.isAdministrator {
+                                Button("Enroll computer") { error = nil; enrolling = device }
+                                    .disabled(model.busy)
+                                    .accessibilityIdentifier("device.enroll.\(device.id)")
+                            } else {
+                                Text("An owner or admin must enroll this computer before its local worker can start.").font(.caption)
+                            }
+                        }
                         if device.status == "active" && (container.isAdministrator || device["enrolled_by_user_id"].text == container.identity?.user.id) {
-                            Button("Revoke device", role: .destructive) { revoking = device }
+                            Button("Revoke device", role: .destructive) { revoking = device }.disabled(model.busy)
                         }
                     }
                 }
@@ -152,6 +163,14 @@ struct DevicesView: View {
             if model.state.isLoading { ProgressView() }
             if let message = error ?? model.actionError ?? model.state.errorMessage { Text(message).foregroundStyle(.red) }
         }.navigationTitle("Devices").refreshable { await model.load() }.liveRefresh { await model.load() }
+            .confirmationDialog("Enroll this execution computer?", isPresented: Binding(get: { enrolling != nil }, set: { if !$0 { enrolling = nil } }), titleVisibility: .visible, presenting: enrolling) { device in
+                Button("Enroll computer") { Task {
+                    if await model.perform(path: "/api/v1/devices/\(apiPart(device.id))/enroll") { await container.loadBootstrap() }
+                } }
+                Button("Cancel", role: .cancel) { enrolling = nil }
+            } message: { device in
+                Text("Enroll \(device.title) so its owner can start a worker and allow team tasks in their selected folders.")
+            }
             .confirmationDialog("Revoke this device and disconnect its sessions?", isPresented: Binding(get: { revoking != nil }, set: { if !$0 { revoking = nil } })) {
                 Button("Revoke", role: .destructive) { if let device = revoking { Task { await model.perform(path: "/api/v1/devices/\(apiPart(device.id))/revoke"); revoking = nil } } }
             }

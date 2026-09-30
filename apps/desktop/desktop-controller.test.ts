@@ -139,7 +139,7 @@ describe("desktop secure connection and worker lifecycle", () => {
     const request = vi.fn(async (url: string, options: { headers: { Authorization?: string } }) => {
       const route = new URL(url).pathname; requests.push({ route, authorization: options.headers.Authorization });
       const body = route.endsWith("/claim") ? { device: { id: "d" }, control_token: "control", node_token: "node" } :
-        route.endsWith("/enroll") ? { computer_id: "c" } : route.endsWith("/runtimes") ? { runtimes: [{ last_seen_at: new Date().toISOString(), status: "available" }] } : {};
+        route.endsWith("/enroll") ? { computer_id: "c" } : route === "/auth/session" ? { user: { role: "owner" } } : route.endsWith("/runtimes") ? { runtimes: [{ last_seen_at: new Date().toISOString(), status: "available" }] } : {};
       return new Response(JSON.stringify(body), { status: 200 });
     });
     const spawned: any[] = [];
@@ -165,6 +165,38 @@ describe("desktop secure connection and worker lifecycle", () => {
     const reopened = createDesktopController({ directory: root, safeStorage: secure, fetch: request }); await reopened.initialize();
     expect(reopened.getConnection()).toMatchObject({ paired: true, computerId: "c" });
     await reopened.logout(); expect(reopened.getToken()).toBeNull();
+  });
+
+  it("pairs members for control access and starts execution only after an administrator enrolls their device", async () => {
+    const root = await temporary(); const entry = join(root, "daemon.mjs"); await writeFile(entry, "");
+    const secure = encryption();
+    let enrolled = false;
+    const request = vi.fn(async (url: string) => {
+      const route = new URL(url).pathname;
+      const body = route.endsWith("/claim") ? { device: { id: "member-device" }, control_token: "member-control", node_token: "member-node" } :
+        route === "/auth/session" ? { user: { role: "member" } } :
+        route === "/api/v1/devices" ? { devices: [{ id: "other-device", computer_id: "other-computer" }, { id: "member-device", computer_id: enrolled ? "member-computer" : null }] } : {};
+      return new Response(JSON.stringify(body));
+    });
+    const spawn = vi.fn(() => {
+      const child: any = Object.assign(new EventEmitter(), { connected: true, pid: 10, send: () => queueMicrotask(() => child.emit("exit", 0)) });
+      return child;
+    });
+    const controller = createDesktopController({ directory: root, safeStorage: secure, fetch: request, spawn, executable: "electron", daemonEntry: entry });
+    await expect(controller.pairDevice({ code: "member-code", displayName: "Member Mac" })).resolves.toMatchObject({ paired: true, computerId: null });
+    expect(controller.getToken()).toBe("member-control");
+    await controller.configureDaemon({ allowedRoots: [root], runtimes: ["codex"], trustedExecution: false });
+    await expect(controller.startDaemon()).rejects.toThrow("Ask an owner or admin to enroll");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(controller.getConnection()).toMatchObject({ paired: true, computerId: null });
+    enrolled = true;
+    await controller.startDaemon();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(controller.getConnection().computerId).toBe("member-computer");
+    expect(request.mock.calls.some(([url]) => url.endsWith("/enroll"))).toBe(false);
+    await controller.stopDaemon();
+    const reopened = createDesktopController({ directory: root, safeStorage: secure }); await reopened.initialize();
+    expect(reopened.getConnection()).toMatchObject({ paired: true, computerId: "member-computer" });
   });
 
   it("does not let an automatic restart outlive logout or race a second writer", async () => {

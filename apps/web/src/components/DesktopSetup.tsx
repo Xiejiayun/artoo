@@ -17,7 +17,8 @@ export function DesktopGate({ children }: { children: React.ReactNode }): React.
 export function DesktopSetup({ initialError }: { initialError?: unknown } = {}): React.ReactNode {
   const bridge = window.artooDesktop!;
   const [server, setServer] = useState(bridge.serverUrl);
-  const [name, setName] = useState("My Windows computer");
+  const platformName = bridge.platform === "darwin" ? "macOS" : "Windows";
+  const [name, setName] = useState(bridge.platform === "darwin" ? "My Mac" : "My Windows computer");
   const [code, setCode] = useState("");
   const mutation = useMutation({ mutationFn: async () => {
     clearRoomDrafts();
@@ -26,7 +27,7 @@ export function DesktopSetup({ initialError }: { initialError?: unknown } = {}):
     window.location.reload();
   } });
   return <section className="auth-state"><form className="login-card u-stack" aria-label="Connect desktop" onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}>
-    <span className="login-brand">artoo</span><h1>Connect this computer</h1><p>Sign in to the Web app and open Settings → Connect a device to generate a Windows pairing code.</p>
+    <span className="login-brand">artoo</span><h1>Connect this computer</h1><p>Sign in to the Web app with your own account and open Settings → Connect a device to generate a {platformName} pairing code. This computer will use that account's permissions.</p>
     <Input label="Server address" type="url" required value={server} onChange={(event) => setServer(event.target.value)} placeholder="https://artoo.example.com" />
     <Input label="Device name" required value={name} onChange={(event) => setName(event.target.value)} />
     <Input label="Pairing code" required autoComplete="off" value={code} onChange={(event) => setCode(event.target.value)} />

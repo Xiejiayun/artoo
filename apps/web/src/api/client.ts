@@ -186,6 +186,7 @@ export class ApiClient {
   setAgentEnabled(id: string, enabled: boolean, key: string): Promise<unknown> { return this.request("PATCH", `/agent-instances/${encodeURIComponent(id)}`, { body: { enabled }, idempotencyKey: key }); }
   createPairing(platform: DevicePlatform, key: string): Promise<{ code: string; pairing: { expires_at: string } }> { return this.request("POST", "/devices/pairings", { body: { intended_platform: platform }, idempotencyKey: key }); }
   revokeDevice(id: string, key: string): Promise<unknown> { return this.request("POST", `/devices/${encodeURIComponent(id)}/revoke`, { idempotencyKey: key }); }
+  enrollDevice(id: string, key: string): Promise<{ device_id: string; computer_id: string; created: boolean }> { return this.request("POST", `/devices/${encodeURIComponent(id)}/enroll`, { body: {}, idempotencyKey: key }); }
   async downloadArtifact(id: string): Promise<Blob> {
     const headers: Record<string, string> = {};
     const token = await this.tokenProvider?.();

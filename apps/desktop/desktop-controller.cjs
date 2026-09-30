@@ -33,10 +33,19 @@ function createDesktopController(options) {
     if (!response.ok) throw new Error(json?.error?.message ?? `Server request failed (${response.status})`);
     return json;
   }
-  async function enroll() {
+  async function enroll(session) {
     const connection = store.connection();
     if (!connection.paired || !connection.deviceId) throw new Error("Pair this computer before starting its worker");
     if (!connection.computerId) {
+      if (!["owner", "admin"].includes(session?.user?.role)) {
+        // A member may pair their own control client. Starting local execution
+        // requires an administrator to enroll it first, possibly on another app.
+        const result = await api("/api/v1/devices");
+        const enrolled = result.devices?.find((device) => device.id === connection.deviceId);
+        if (!enrolled?.computer_id) throw new Error("Ask an owner or admin to enroll this computer before starting its worker");
+        await store.setComputer(enrolled.computer_id);
+        return;
+      }
       const enrolled = await api(`/api/v1/devices/${encodeURIComponent(connection.deviceId)}/enroll`, {
         method: "POST", body: { display_name: os.hostname(), hostname: os.hostname(), os: process.platform, arch: process.arch },
       });
@@ -72,8 +81,8 @@ function createDesktopController(options) {
     const config = store.daemonConfig();
     await configureDaemon(config);
     const codex = config.codex;
-    await api("/auth/session");
-    await enroll();
+    const session = await api("/auth/session");
+    await enroll(session);
     await fs.access(options.daemonEntry);
     if (generation !== launchGeneration || stopRequested) return;
     const connection = store.connection();
@@ -159,7 +168,8 @@ function createDesktopController(options) {
         code: code.trim(), display_name: displayName.trim(), platform: process.platform === "darwin" ? "macos" : "windows", app_version: options.version,
       } });
       await store.pair(claimed.device.id, claimed.control_token, claimed.node_token);
-      await enroll();
+      const session = await api("/auth/session");
+      if (["owner", "admin"].includes(session?.user?.role)) await enroll(session);
       return store.connection();
     },
     async logout() {

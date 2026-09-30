@@ -1,9 +1,14 @@
 # Artoo iOS trusted-team preview
 
-The SwiftUI client opens into real-server onboarding. An owner/admin signs in to
-the Web app, creates a pairing code for **iOS**, and enters that code together
+The SwiftUI client opens into real-server onboarding. Each team member signs in to
+the Web app with their own account, creates a pairing code for **iOS**, and enters that code together
 with the server origin on the phone. The app stores only the control credential
 in a device-bound Keychain item. It never stores the compute node token.
+
+Pairing transfers the code creator's account permissions. Keep codes private;
+never give an administrator's code to another team member. Members can pair
+their own control clients; an owner/admin separately authorizes Mac/Windows
+execution computers from the Devices screen.
 
 Use HTTPS for the shared server. Local development can explicitly permit
 `http://localhost` or a `.local` hostname; `localhost` on a physical phone points

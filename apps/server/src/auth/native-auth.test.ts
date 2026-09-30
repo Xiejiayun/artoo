@@ -1,8 +1,8 @@
-import { deviceTokens, users } from "@artoo/db";
+import { deviceTokens, organizations, users } from "@artoo/db";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { claimPairing, createPairing, resolveNodeToken, revokeDevice } from "../services/device-service.js";
+import { claimPairing, createPairing, enrollDeviceComputer, resolveNodeToken, revokeDevice } from "../services/device-service.js";
 import { buildTestServer, fixedClock, type TestServer } from "../test-support.js";
 import { createSession, provisionUser } from "./auth-service.js";
 
@@ -21,7 +21,7 @@ describe("native and team API authentication", () => {
 
   async function paired(userId: string) {
     const config = { pepper: server.ctx.deviceAuth.pairingPepper, ttlMs: 600_000 };
-    const pairing = await createPairing(server.ctx, config, { createdByUserId: userId });
+    const pairing = await createPairing({ ...server.ctx, actorUserId: userId }, config, { createdByUserId: userId });
     return claimPairing(server.ctx, config, {
       code: pairing.code, platform: "windows", displayName: "Native test", appVersion: "0.1.0",
     });
@@ -80,6 +80,75 @@ describe("native and team API authentication", () => {
     expect((await server.app.inject({ url: "/auth/session", cookies: { artoo_session: owner.raw } })).statusCode).toBe(200);
   });
 
+  it.each(["ios", "macos"])("pairs a member's own %s client without granting administrator or compute permissions", async (platform) => {
+    const owner = await sessionFor("owner@example.com", "owner");
+    const member = await sessionFor("member@example.com");
+    const pairing = await server.app.inject({ method: "POST", url: "/api/v1/devices/pairings",
+      cookies: { artoo_session: member.raw }, payload: {
+        intended_platform: platform, created_by_user_id: owner.userId, enrolled_by_user_id: owner.userId,
+        organization_id: "org_other", role: "owner",
+      } });
+    expect(pairing.statusCode).toBe(201);
+    expect(pairing.json().pairing).toMatchObject({ created_by_user_id: member.userId, organization_id: "org_default" });
+    const claim = await server.app.inject({ method: "POST", url: "/api/v1/devices/claim",
+      payload: { code: pairing.json().code, platform, display_name: "Member device", app_version: "0.1.0",
+        enrolled_by_user_id: owner.userId, role: "owner" } });
+    expect(claim.statusCode).toBe(201);
+    const { control_token, device } = claim.json();
+    expect(device).toMatchObject({ enrolled_by_user_id: member.userId, computer_id: null });
+    await expect(enrollDeviceComputer({ ...server.ctx, actorUserId: member.userId }, { deviceId: device.id }))
+      .rejects.toThrow(/owner or admin/);
+    for (const token of [member.raw, control_token]) {
+      const headers = { authorization: `Bearer ${token}` };
+      const identity = await server.app.inject({ url: "/auth/session", headers });
+      expect(identity.statusCode).toBe(200);
+      expect(identity.json().user).toMatchObject({ id: member.userId, role: "member" });
+      const boot = await server.app.inject({ url: "/api/v1/bootstrap", headers });
+      expect(boot.statusCode).toBe(200);
+      expect(boot.json().actor.id).toBe(member.userId);
+      for (const url of ["/api/v1/projects", "/api/v1/skills/install", `/api/v1/devices/${device.id}/enroll`]) {
+        expect((await server.app.inject({ method: "POST", url, headers, payload: {} })).statusCode, url).toBe(403);
+      }
+      const next = await server.app.inject({ method: "POST", url: "/api/v1/devices/pairings", headers, payload: {} });
+      expect(next.statusCode).toBe(201);
+      expect(next.json().pairing.created_by_user_id).toBe(member.userId);
+    }
+    if (platform === "macos") {
+      const enroll = await server.app.inject({ method: "POST", url: `/api/v1/devices/${device.id}/enroll`,
+        cookies: { artoo_session: owner.raw }, payload: {} });
+      expect(enroll.statusCode).toBe(200);
+      expect(enroll.json().computer_id).toMatch(/^computer_/);
+    }
+    expect((await server.app.inject({ method: "POST", url: `/api/v1/devices/${device.id}/revoke`,
+      headers: { authorization: `Bearer ${control_token}` } })).statusCode).toBe(200);
+    expect((await server.app.inject({ url: "/auth/session", headers: { authorization: `Bearer ${control_token}` } })).statusCode).toBe(401);
+  });
+
+  it("keeps pairing identities, claims and device administration inside the current organization", async () => {
+    const owner = await sessionFor("owner@example.com", "owner");
+    const member = await sessionFor("member@example.com");
+    const foreign = { ...server.ctx, organizationId: "org_other", actorUserId: "user_other" };
+    await server.db.db.insert(organizations).values({ id: foreign.organizationId, name: "Other team", createdAt: foreign.clock.nowIso() });
+    await server.db.db.insert(users).values({ id: foreign.actorUserId, organizationId: foreign.organizationId,
+      email: "foreign@example.com", displayName: "Foreign owner", role: "owner", createdAt: foreign.clock.nowIso() });
+    const config = { pepper: server.ctx.deviceAuth.pairingPepper, ttlMs: 600_000 };
+    await expect(createPairing({ ...server.ctx, actorUserId: member.userId }, config, { createdByUserId: owner.userId }))
+      .rejects.toThrow(/current team member/);
+    await expect(createPairing({ ...server.ctx, actorUserId: foreign.actorUserId }, config, { createdByUserId: foreign.actorUserId }))
+      .rejects.toThrow(/current team member/);
+    const code = await createPairing(foreign, config, { createdByUserId: foreign.actorUserId });
+    const claimBody = { code: code.code, platform: "macos", display_name: "Foreign device", app_version: "0.1.0" };
+    expect((await server.app.inject({ method: "POST", url: "/api/v1/devices/claim", payload: claimBody })).statusCode).toBe(400);
+    const device = await claimPairing(foreign, config, { code: code.code, platform: "macos", displayName: "Foreign device", appVersion: "0.1.0" });
+    expect((await server.app.inject({ url: "/auth/session", headers: { authorization: `Bearer ${device.controlToken}` } })).statusCode).toBe(401);
+    for (const action of ["enroll", "revoke"]) {
+      expect((await server.app.inject({ method: "POST", url: `/api/v1/devices/${device.device.id}/${action}`,
+        cookies: { artoo_session: member.raw }, payload: {} })).statusCode).toBe(403);
+      expect((await server.app.inject({ method: "POST", url: `/api/v1/devices/${device.device.id}/${action}`,
+        cookies: { artoo_session: owner.raw }, payload: {} })).statusCode).toBe(404);
+    }
+  });
+
   it("rejects expired user and device sessions and revoked devices", async () => {
     const s = await sessionFor("exp@example.com");
     const first = await paired(s.userId);
@@ -100,12 +169,12 @@ describe("native and team API authentication", () => {
     const own = await paired(member.userId);
     const foreign = await paired(other.userId);
     const headers = { authorization: `Bearer ${member.raw}` };
-    for (const url of ["/api/v1/devices/pairings", "/api/v1/skills/install", "/api/v1/projects",
+    for (const url of ["/api/v1/skills/install", "/api/v1/projects",
       `/api/v1/devices/${foreign.device.id}/revoke`, `/api/v1/devices/${foreign.device.id}/enroll`]) {
       expect((await server.app.inject({ method: "POST", url, headers, payload: {} })).statusCode, url).toBe(403);
     }
     expect((await server.app.inject({ method: "POST", url: `/api/v1/devices/${own.device.id}/enroll`, headers })).statusCode)
-      .toBe(200);
+      .toBe(403);
     const task = await server.app.inject({ method: "POST", url: "/api/v1/tasks", headers,
       payload: { project_id: "proj_artoo", title: "Member work", acceptance_criteria: ["done"] } });
     expect(task.statusCode).toBe(201);
@@ -120,6 +189,8 @@ describe("native and team API authentication", () => {
     const headers = { authorization: `Bearer ${admin.raw}` };
     expect((await server.app.inject({ method: "POST", url: "/api/v1/devices/pairings", headers, payload: {} })).statusCode)
       .toBe(201);
+    expect((await server.app.inject({ method: "POST", url: `/api/v1/devices/${foreign.device.id}/enroll`, headers })).statusCode)
+      .toBe(200);
     expect((await server.app.inject({ method: "POST", url: `/api/v1/devices/${foreign.device.id}/revoke`, headers })).statusCode)
       .toBe(200);
   });
@@ -139,7 +210,9 @@ describe("native and team API authentication", () => {
         expect(response.json().user.role, url).toBe(role);
       }
       const pairing = await server.app.inject({ method: "POST", url: "/api/v1/devices/pairings", headers, payload: {} });
-      expect(pairing.statusCode).toBe(role === "member" ? 403 : 201);
+      expect(pairing.statusCode).toBe(201);
+      const adminAction = await server.app.inject({ method: "POST", url: `/api/v1/devices/${native.device.id}/enroll`, headers });
+      expect(adminAction.statusCode).toBe(role === "member" ? 403 : 200);
     }
     expect((await server.db.db.select().from(users).where(eq(users.id, former.userId)))[0]?.role).toBe("owner");
     expect((await server.db.db.select().from(users).where(eq(users.id, successor.userId)))[0]?.role).toBe("member");

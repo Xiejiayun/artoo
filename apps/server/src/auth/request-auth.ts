@@ -102,10 +102,12 @@ export async function mayAdministerRoute(
 ): Promise<boolean> {
   const route = req.routeOptions.url ?? req.url.split("?")[0] ?? "";
   if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return true;
-  const adminOnly = route === "/api/v1/devices/pairings" || route === "/api/v1/skills/install" ||
+  // Pairing only transfers the current user's identity to their own client.
+  // Adding an execution host is a separate team-administrator decision.
+  const adminOnly = route === "/api/v1/devices/:id/enroll" || route === "/api/v1/skills/install" ||
     route === "/api/v1/projects" || route === "/api/v1/projects/:id" ||
     route === "/api/v1/computers/:id/instances" || route === "/api/v1/agent-instances/:id";
-  const ownDevice = route === "/api/v1/devices/:id/enroll" || route === "/api/v1/devices/:id/revoke";
+  const ownDevice = route === "/api/v1/devices/:id/revoke";
   if (!adminOnly && !ownDevice) return true;
   if (principal.user.role === "owner" || principal.user.role === "admin") return true;
   if (ownDevice) {

@@ -13,10 +13,12 @@ Web uses the existing Google sign-in and HttpOnly session cookie. Production
 cookies are Secure. Use HTTPS for the server and the registered OAuth callback.
 Do not copy a session token into an application setting or URL.
 
-Native Windows/iOS onboarding:
+Native Windows/macOS/iOS onboarding:
 
-1. An authenticated owner/admin creates a code with
+1. An authenticated team member creates a code for their own identity with
    `POST /api/v1/devices/pairings`, optionally setting `intended_platform`.
+   Sign in as the person who will use the client. Never share a code with
+   another person: it grants the creating user's access, including their role.
 2. The native app submits the code, `platform`, `app_version`, and `display_name`
    to `POST /api/v1/devices/claim`. This is the only public device REST endpoint;
    its single-use code is short-lived and claim attempts are rate limited.
@@ -30,12 +32,14 @@ Native Windows/iOS onboarding:
    malformed or multiple authentication protocols.
 4. `/auth/session` returns `{user: {id, email, name, role}, device_id}` for paired
    credentials. A device credential can perform the same permitted actions as
-   its enrolling user. Only owner/admin can create pairings, install skills,
-   change projects or configure agent instances. A member can enroll/revoke a
-   device they own; unrelated member devices are protected.
-5. A desktop host can enroll its device via
-   `POST /api/v1/devices/:id/enroll` and retain `node_token` separately for the
-   compute daemon. Node tokens never authenticate control REST or WebSocket.
+   its enrolling user. Only owner/admin can enroll execution hosts, install
+   skills, change projects or configure agent instances. Members can pair their
+   own clients and revoke their own devices; unrelated member devices are protected.
+5. An owner/admin authorizes a desktop execution host with
+   `POST /api/v1/devices/:id/enroll`. A member's paired desktop can use the control
+   application before enrollment, but its worker cannot connect until an
+   administrator enrolls it. Retain `node_token` separately for the compute daemon.
+   Node tokens never authenticate control REST or WebSocket.
 6. `POST /auth/logout` with the control bearer revokes that control credential;
    clear secure client storage and close its WebSocket. Server wiring also
    closes existing control sockets for that device, leaving compute credentials

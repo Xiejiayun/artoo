@@ -24,6 +24,21 @@ const createReq: CreateTaskRequest = {
 };
 
 describe("ApiClient", () => {
+  it("enrolls the selected device with an idempotency key and preserves enrollment errors", async () => {
+    let attempts = 0;
+    server.use(http.post(`${BASE}/devices/:id/enroll`, async ({ request, params }) => {
+      expect(params.id).toBe("device/with space");
+      expect(request.headers.get("Idempotency-Key")).toBe("enrollment-key");
+      expect(await request.json()).toEqual({});
+      attempts += 1;
+      return attempts === 1
+        ? HttpResponse.json({ error: { code: "permission_denied", message: "An administrator must enroll this computer" } }, { status: 403 })
+        : HttpResponse.json({ device_id: params.id, computer_id: "computer_1", created: true });
+    }));
+    await expect(client.enrollDevice("device/with space", "enrollment-key")).rejects.toMatchObject({ status: 403, code: "permission_denied" });
+    await expect(client.enrollDevice("device/with space", "enrollment-key")).resolves.toMatchObject({ computer_id: "computer_1", created: true });
+  });
+
   it("preserves opaque notification cursors and the server's global unread count", async () => {
     server.use(http.get(`${BASE}/notifications`, ({ request }) => {
       const search = new URL(request.url).searchParams;

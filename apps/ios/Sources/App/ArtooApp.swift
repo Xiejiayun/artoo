@@ -199,7 +199,7 @@ private struct PairDeviceView: View {
         NavigationStack {
             Form {
                 Section("Connect to your team") {
-                    Text("Sign in to your team's Web app. Ask an owner or admin to create an iOS pairing code in Settings, then enter it here.")
+                    Text("Sign in to your team's Web app with your own account. Create an iOS pairing code in Settings, then enter it here. This device will use that account's permissions. Keep your code private.")
                     TextField("https://artoo.example.com", text: $server).keyboardType(.URL)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("serverURL")
                     TextField("Device name", text: $deviceName).accessibilityIdentifier("pairingDeviceName")
@@ -217,6 +217,7 @@ private struct PairDeviceView: View {
                     Toggle("Allow localhost or .local HTTP", isOn: $localHTTP).accessibilityIdentifier("allowLocalHTTP")
                     Text("Use HTTPS for a shared team server. On a phone, localhost refers to the phone itself.").font(.caption)
                 }
+                Section { NavigationLink("Privacy and data") { PrivacyView() } }
             }.navigationTitle("Welcome to Artoo")
                 .disabled(!container.restored || container.isConnecting)
         }
@@ -253,6 +254,7 @@ private struct WorkspaceSettingsView: View {
                     NavigationLink("Devices") { DevicesView(client: container.client) }
                 }
                 if let error = container.connectionError { Section { Text(error).foregroundStyle(.red) } }
+                Section { NavigationLink("Privacy and data") { PrivacyView() } }
                 Section { Button("Sign out", role: .destructive) { Task { await container.logout() } }.disabled(container.isConnecting).accessibilityIdentifier("signOut") }
             }.navigationTitle("More")
         }

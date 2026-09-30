@@ -16,7 +16,7 @@
  *  - revoke flips device trust AND every active credential to `revoked`; closing
  *    live sockets is the wire layer's job (slice 3) — this returns the deviceId.
  */
-import { computers, devices, deviceTokens, pairingCodes } from "@artoo/db";
+import { computers, devices, deviceTokens, pairingCodes, users } from "@artoo/db";
 import {
   ID_PREFIXES,
   parseDeviceToken,
@@ -32,6 +32,7 @@ import {
 import { and, desc, eq, isNull } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
+import { requireAdministrator } from "../auth/request-auth.js";
 import { DEFAULT_CONTROL_TOKEN_TTL_MS } from "../config/device-auth.js";
 import { AppError } from "../errors.js";
 import {
@@ -135,12 +136,18 @@ export async function listDevices(ctx: ServerContext): Promise<Device[]> {
   return rows.map(mapDevice);
 }
 
-/** Create a short-lived single-use pairing code. Stores only its HMAC. */
+/** Create a short-lived single-use code for the actor's own identity. Stores only its HMAC. */
 export async function createPairing(
   ctx: ServerContext,
   config: DevicePairingConfig,
   input: CreatePairingInput,
 ): Promise<CreatedPairing> {
+  const actor = (await ctx.db.db.select({ id: users.id }).from(users).where(and(
+    eq(users.id, ctx.actorUserId), eq(users.organizationId, ctx.organizationId),
+  )))[0];
+  if (input.createdByUserId !== ctx.actorUserId || actor === undefined) {
+    throw AppError.permissionDenied("pairing codes must belong to the current team member");
+  }
   const random = config.random ?? cryptoRandomSource;
   const code = generatePairingCode(random);
   const now = ctx.clock.nowIso();
@@ -453,6 +460,7 @@ export async function enrollDeviceComputer(
   ctx: ServerContext,
   input: EnrollDeviceComputerInput,
 ): Promise<EnrollResult> {
+  await requireAdministrator(ctx);
   const now = ctx.clock.nowIso();
   return ctx.db.transaction(async (tx) => {
     const device = (

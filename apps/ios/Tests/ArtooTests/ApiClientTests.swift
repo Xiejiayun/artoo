@@ -384,6 +384,39 @@ final class ApiClientTests: XCTestCase {
     }
 
     @MainActor
+    func testDeviceEnrollmentKeepsFailureVisibleAndRefreshesTheComputerAfterRetry() async throws {
+        var rejectRequest = true
+        var enrolled = false
+        APIProtocol.handler = { request in
+            if request.httpMethod == "GET" {
+                XCTAssertEqual(request.url?.path, "/api/v1/devices")
+                let computer = enrolled ? #""computer_member""# : "null"
+                return (200, Data("{\"devices\":[{\"id\":\"device_member\",\"display_name\":\"Member Mac\",\"platform\":\"macos\",\"trust\":\"active\",\"computer_id\":\(computer)}]}".utf8))
+            }
+            XCTAssertEqual(request.url?.path, "/api/v1/devices/device_member/enroll")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer control-secret")
+            XCTAssertNotNil(request.value(forHTTPHeaderField: "Idempotency-Key"))
+            XCTAssertEqual(try Self.body(request), .object([:]))
+            if rejectRequest { return (403, Data(#"{"error":{"code":"permission_denied","message":"An administrator must enroll this computer"}}"#.utf8)) }
+            enrolled = true
+            return (200, Data(#"{"device_id":"device_member","computer_id":"computer_member","created":true}"#.utf8))
+        }
+        let model = WorkspaceViewModel(client: client(), path: "/api/v1/devices")
+        await model.load()
+        let failed = await model.perform(path: "/api/v1/devices/device_member/enroll")
+        XCTAssertFalse(failed)
+        XCTAssertTrue(model.actionError?.contains("administrator") == true)
+        XCTAssertEqual(model.state.value?["devices"].records.first?["computer_id"], .null)
+        XCTAssertFalse(model.busy)
+        rejectRequest = false
+        let succeeded = await model.perform(path: "/api/v1/devices/device_member/enroll")
+        XCTAssertTrue(succeeded)
+        XCTAssertNil(model.actionError)
+        XCTAssertEqual(model.state.value?["devices"].records.first?["computer_id"].text, "computer_member")
+    }
+
+    @MainActor
     func testFailedApprovalResolutionReturnsFalseInsteadOfDismissingTheDecision() async {
         APIProtocol.handler = { _ in (409, Data(#"{"error":{"message":"Approval already resolved"}}"#.utf8)) }
         let model = InboxViewModel(client: client())
