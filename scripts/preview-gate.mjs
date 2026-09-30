@@ -44,6 +44,7 @@ const checks = {
   desktop: [runNpm(process.platform === "darwin" ? "Mac packaged application smoke" : "Windows installed package smoke", "run", process.platform === "darwin" ? "smoke:mac" : "smoke:win", "--workspace", "@artoo/desktop")],
   mac: [
     runNode("Installed live provider opt-in and evidence routing", "apps/desktop/scripts/installed-live-provider.test.mjs"),
+    runNode("Installed Mac planning subprocess and evidence integrity", "apps/desktop/scripts/mac-planning-fixture.test.mjs"),
     runNode("Mac distribution configuration and mount integrity", "apps/desktop/scripts/mac-distribution.test.mjs"),
     runNpm("Mac execution and worker shutdown regressions", "test", "--", "--maxWorkers=1",
       "apps/artood/src/main.test.ts", "apps/artood/src/process-adapter.test.ts", "apps/server/src/desktop-worker-posix.test.ts"),

@@ -144,3 +144,32 @@ iOS 18.2. Its 21 reviewed native/browser captures are embedded in
 development arm64 archive passed at
 `artifacts/ios-device/2026-09-30T20-40-52-918Z/report.html`; this still does not
 establish physical-device, TestFlight or public distribution acceptance.
+
+The later installed-Mac planning gate passed all 13 client checks and complete
+cleanup at `2026-09-30T21:33:48.067Z`, with ten inspected embedded screenshots:
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T21-33-48-067Z.html`.
+It proves three real deterministic worker subprocesses, exact prior-answer
+context, readable coordinator instructions and UI proposal/acceptance creating
+two dependent tasks. Synthetic usage counters verify ingestion only. This
+extends functional preview coverage; the real-provider and signed-distribution
+requirements above remain open. Failed packaging and stopped-worker attempts
+are preserved separately in the milestone ledger.
+
+The corresponding native assignment/planning milestone passed 100 unit and
+all seven Release UI cases on iPhone 16 / iOS 18.2, with zero failed or skipped
+cases, 24 inspected native/browser captures and complete cleanup:
+`artifacts/ios/native-ui-2026-09-30T21-37-39-852Z.html`.
+The matching signed arm64 development archive passed at
+`artifacts/ios-device/2026-09-30T21-53-41-133Z/report.html`.
+Fresh Pro/tablet, physical-device and distribution results are not inferred
+from this compact-simulator run and archive.
+
+The final Mac assertion refinement also passed all 13 installed-client checks
+with 11 inspected images in
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T22-02-26-613Z.html`.
+That invocation used a supported temporary `dmgbuild --detach-retries 10`
+override after two pre-launch default-detach failures. Default packaging had
+passed earlier on the same product source, but its intermittent local detach
+failure is not established as permanently fixed. The milestone ledger retains
+each attempt, the supported-override conditions and hashes; release packaging
+must be verified on the actual signing host.

@@ -103,10 +103,20 @@ final class SharedServerChatUITests: XCTestCase {
         try reveal(manual); manual.tap()
         let picker = app.descendants(matching: .any).matching(identifier: "task.assignment.instance").firstMatch
         try reveal(picker); picker.tap()
-        let identifiedOption = app.descendants(matching: .any).matching(identifier: "task.assignment.option.\(fixture.executorInstanceId)").firstMatch
-        let option = identifiedOption.waitForExistence(timeout: 2) ? identifiedOption
-            : app.buttons["\(fixture.executorRuntime) · \(fixture.executorInstanceId)"]
-        try require(option.waitForExistence(timeout: 10), "The paired executor must be selectable through the native picker")
+        try require(fixture.executorInstanceId != fixture.executorCollisionInstanceId, "The same-name fixture must contain two distinct execution instances")
+        let option = try assignmentOption(instanceId: fixture.executorInstanceId)
+        let collision = try assignmentOption(instanceId: fixture.executorCollisionInstanceId)
+        for (candidate, id, otherId) in [(option, fixture.executorInstanceId, fixture.executorCollisionInstanceId),
+                                         (collision, fixture.executorCollisionInstanceId, fixture.executorInstanceId)] {
+            try require(candidate.label.contains(fixture.executorName) && candidate.label.contains(fixture.computerName)
+                        && candidate.label.contains(fixture.executorRuntime) && candidate.label.contains("Instance: \(id)")
+                        && !candidate.label.contains(otherId),
+                        "Same-name executor options must expose their full unique instance ID alongside readable details")
+        }
+        try revealAssignmentPair(option, collision)
+        try attachConnectedScreenshot("Native executor options with readable details")
+        // Never select a same-name candidate by its display name. This remains
+        // the original executor's stable ID (or a complete-ID fallback).
         option.tap()
         let confirm = app.buttons["task.assignment.confirm"]
         do {
@@ -119,8 +129,10 @@ final class SharedServerChatUITests: XCTestCase {
             try require(assignmentError.waitForExistence(timeout: 15), "A rejected assignment must display the server error in the same sheet")
             try require(app.navigationBars["Assign Task"].exists, "Server rejection must keep the assignment sheet open")
             try require(manual.isSelected, "Server rejection must preserve Manual mode")
-            let selection = [picker.label, picker.value as? String ?? ""].joined(separator: " ")
-            try require(selection.contains(fixture.executorInstanceId), "Server rejection must preserve the selected executor")
+            let selection = picker.value as? String ?? picker.label
+            try require(selection.contains(fixture.executorName) && selection.contains("Instance: \(fixture.executorInstanceId)")
+                        && !selection.contains(fixture.executorCollisionInstanceId),
+                        "Server rejection must preserve the original executor's readable name and full instance ID")
             // The scheduler distinguishes an entirely offline fleet from an
             // unavailable pinned instance when another computer is online.
             let schedulerErrors = ["HTTP 409: no online computer is available",
@@ -133,6 +145,7 @@ final class SharedServerChatUITests: XCTestCase {
             try require(unusedApproval.status == "approved" && unusedApproval.runId == nil, "Rejected assignment must not consume the execution approval")
             attachScreenshot("Native assignment rejected with selection preserved")
             try attachRecord(["task_id": taskId, "approval_id": approval.id, "agent_instance_id": fixture.executorInstanceId,
+                              "unselected_collision_instance_id": fixture.executorCollisionInstanceId,
                               "server_error": assignmentError.label, "task_status": rejected.task.status,
                               "run_count": String(rejected.runs.count), "selection_preserved": "true"],
                              name: "Native assignment rejection before explicit retry")
@@ -143,7 +156,10 @@ final class SharedServerChatUITests: XCTestCase {
             throw error
         }
         try require(app.navigationBars["Assign Task"].exists && manual.isSelected, "Reconnecting the node must retain the same form for explicit retry")
-        try require([picker.label, picker.value as? String ?? ""].joined(separator: " ").contains(fixture.executorInstanceId), "Retry must use the preserved executor selection")
+        let retrySelection = picker.value as? String ?? picker.label
+        try require(retrySelection.contains(fixture.executorName) && retrySelection.contains("Instance: \(fixture.executorInstanceId)")
+                    && !retrySelection.contains(fixture.executorCollisionInstanceId),
+                    "Retry must retain the original executor's full identity, not its same-name counterpart")
         try reveal(confirm); try require(confirm.isEnabled, "Selecting the executor must enable assignment"); confirm.tap()
         let assigned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.navigationBars["Assign Task"])
         try require(XCTWaiter.wait(for: [assigned], timeout: 15) == .completed, "An accepted assignment must close the sheet")
@@ -326,7 +342,7 @@ final class SharedServerChatUITests: XCTestCase {
         let original = try await memberPhone(named: fixture.memberNativeDeviceName)
         try require(original.trust == "active", "The member's UI pairing must create an active phone")
         try openMemberDevices(phoneId: original.id)
-        try attachMemberScreenshot("Native member device permissions without pairing inputs")
+        try attachConnectedScreenshot("Native member device permissions without pairing inputs")
 
         try openFixtureChannel()
         try waitForLiveConnection()
@@ -366,7 +382,7 @@ final class SharedServerChatUITests: XCTestCase {
         try require(app.staticTexts[fixture.memberRevocationReadyMessage].waitForExistence(timeout: 15), "Member history must survive revocation and fresh pairing")
         try send(fixture.memberRecoveryMessage)
         let recovery = try await waitForMemberMessage(fixture.memberRecoveryMessage)
-        try attachMemberScreenshot("Native member restored after fresh pairing without pairing inputs")
+        try attachConnectedScreenshot("Native member restored after fresh pairing without pairing inputs")
         let finalOld = try await memberPhone(named: fixture.memberNativeDeviceName)
         try require(finalOld.trust == "revoked", "Fresh pairing must not reactivate the old device")
         try attachRecord(["member_user_id": fixture.memberUserId, "revoked_device_id": original.id,
@@ -535,6 +551,18 @@ final class SharedServerChatUITests: XCTestCase {
         try require(beforeProposal.tasks.isEmpty && beforeProposal.plans.isEmpty, "Finishing agent discussion must not create a plan or execution tasks automatically")
 
         let replies = try await peerMessages(roomId: discussion.roomId, root: discussion.threadRootId)
+        let instructions = replies.filter { $0.actorType == "system" && $0.actorId == "discussion-coordinator" }
+            .sorted { ($0.payload?.discussionStep ?? -1) < ($1.payload?.discussionStep ?? -1) }
+        try require(instructions.count == 3 && instructions.compactMap { $0.payload?.discussionStep } == [0, 1, 2],
+                    "The real coordinator must persist exactly three ordered planning instructions")
+        try require(instructions.allSatisfy { $0.kind == "text" && $0.threadRootId == discussion.threadRootId
+            && $0.payload?.discussionId == discussion.id && $0.payload?.intent == "discussion"
+            && !($0.payload?.assistantTurnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty },
+                    "Planning summaries must be tied to real coordinator messages in this discussion")
+        try require(Set(instructions.compactMap { $0.payload?.assistantTurnId }).count == 3,
+                    "Each coordinator instruction must identify a distinct real agent turn")
+        let finalInstruction = try XCTUnwrap(instructions.last)
+        let instructionHash = "sha256:" + SHA256.hash(data: Data(finalInstruction.body.utf8)).map { String(format: "%02x", $0) }.joined()
         let agentReplies = replies.filter { $0.actorType == "agent" }
         try require(agentReplies.count == 3, "The real dispatcher and processes must persist exactly three agent replies")
         XCTAssertEqual(agentReplies.filter { $0.actorId == fixture.plannerInstanceId }.count, 2)
@@ -554,7 +582,43 @@ final class SharedServerChatUITests: XCTestCase {
         let thread = app.buttons["discussion.thread.\(discussion.id)"]
         try reveal(thread); thread.tap()
         try require(app.navigationBars["Thread"].waitForExistence(timeout: 15), "The discussion must open its real conversation thread")
-        for reply in agentReplies {
+        // Visit each instruction with its actual reply in conversation order;
+        // avoid a second full traversal of this long compact-screen thread.
+        for instruction in instructions {
+            let step = try XCTUnwrap(instruction.payload?.discussionStep)
+            let title = app.staticTexts["message.planning.title.\(instruction.id)"]
+            try reveal(title)
+            try require(title.label == "Planning instruction · Step \(step + 1)", "Each real coordinator step must display its readable summary title")
+            let brief = app.staticTexts["message.planning.summary.\(instruction.id)"]
+            try reveal(brief)
+            try require(brief.label == "The agents use the goal and earlier replies to prepare a plan. You review a proposal before accepting it.",
+                        "Coordinator instructions must show the human-readable planning brief")
+            let toggle = app.buttons["message.planning.original.\(instruction.id)"]
+            try require(toggle.exists && toggle.value as? String == "Collapsed", "Agent instructions must start collapsed")
+            let originalInstruction = app.staticTexts["message.\(instruction.id)"]
+            try require(!originalInstruction.exists, "The raw coordinator prompt must not be displayed by default")
+            let matchingReplies = agentReplies.filter { $0.payload?.assistantTurnId == instruction.payload?.assistantTurnId }
+            try require(matchingReplies.count == 1, "Each summarized instruction must have exactly one real agent reply")
+            let reply = try XCTUnwrap(matchingReplies.first)
+            if instruction.id == finalInstruction.id {
+                try require(reply.id == synthesis.id, "The final instruction must belong to the validated plan synthesis")
+                try reveal(toggle)
+                try attachConnectedScreenshot("Native planning instructions summarized before proposal")
+                toggle.tap()
+                try waitForValue(toggle, "Expanded", message: "Show agent instructions must expand the actual coordinator prompt")
+                // Only the expanded original is selectable text. Summary labels
+                // and buttons retain strict hittability checks above.
+                try revealText(originalInstruction)
+                try require(Array(originalInstruction.label.utf8) == Array(instruction.body.utf8),
+                            "Expanded coordinator instructions must match the exact persisted server body")
+                let displayedHash = "sha256:" + SHA256.hash(data: Data(originalInstruction.label.utf8)).map { String(format: "%02x", $0) }.joined()
+                try require(displayedHash == instructionHash, "The full displayed instruction must retain its server-body hash")
+                try attachConnectedScreenshot("Native original coordinator instruction expanded")
+                try reveal(toggle); toggle.tap()
+                try waitForValue(toggle, "Collapsed", message: "Hide agent instructions must collapse the prompt again")
+                let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: originalInstruction)
+                try require(XCTWaiter.wait(for: [hidden], timeout: 5) == .completed, "Collapsing coordinator instructions must remove the original text")
+            }
             if reply.id != synthesis.id {
                 let body = app.staticTexts["message.\(reply.id)"]
                 try revealText(body)
@@ -654,8 +718,45 @@ final class SharedServerChatUITests: XCTestCase {
         attachScreenshot("Native accepted plan with dependent tasks")
         try attachRecord(["goal_id": fixture.goalId, "discussion_id": discussion.id, "thread_root_id": discussion.threadRootId,
                           "plan_id": planId, "first_task_id": first.id, "dependent_task_id": second.id,
+                          "coordinator_message_ids": instructions.map(\.id).joined(separator: ","),
+                          "final_instruction_body_sha256": instructionHash,
                           "runtime_validation": "deterministic process fixtures over authenticated node WebSocket; not live provider validation"],
                          name: "Real discussion and materialized task identities")
+    }
+
+    @MainActor
+    private func assignmentOption(instanceId: String) throws -> XCUIElement {
+        let identified = app.descendants(matching: .any).matching(identifier: "task.assignment.option.\(instanceId)").firstMatch
+        if identified.waitForExistence(timeout: 2) { return identified }
+        let fullIdentity = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Instance: \(instanceId)"))
+        try require(fullIdentity.firstMatch.waitForExistence(timeout: 5) && fullIdentity.count == 1,
+                    "An assignment fallback must identify exactly one option by its complete instance ID")
+        return fullIdentity.firstMatch
+    }
+
+    @MainActor
+    private func revealAssignmentPair(_ original: XCUIElement, _ collision: XCUIElement) throws {
+        try require(!app.keyboards.firstMatch.exists, "Executor identity evidence must not be covered by a keyboard")
+        for attempt in 0..<6 {
+            let navigation = app.navigationBars.firstMatch
+            let tabs = app.tabBars.firstMatch
+            let top = navigation.exists ? max(app.frame.minY, navigation.frame.maxY) : app.frame.minY
+            let bottom = tabs.exists ? min(app.frame.maxY, tabs.frame.minY) : app.frame.maxY
+            let viewport = CGRect(x: app.frame.minX, y: top + 2, width: app.frame.width, height: max(0, bottom - top - 4))
+            try require(!viewport.isEmpty && !viewport.isNull && !viewport.isInfinite, "Assignment options require an unobscured viewport")
+            let frames = [original.frame, collision.frame]
+            var scrollUp = attempt < 3
+            if frames.allSatisfy({ !$0.isEmpty && !$0.isNull && !$0.isInfinite }) {
+                if frames.allSatisfy({ viewport.contains($0) }) && original.isHittable && collision.isHittable { return }
+                scrollUp = frames[0].union(frames[1]).midY > viewport.midY
+            }
+            let startY = viewport.minY + viewport.height * (scrollUp ? 0.65 : 0.35)
+            let endY = viewport.minY + viewport.height * (scrollUp ? 0.35 : 0.65)
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            origin.withOffset(CGVector(dx: viewport.midX, dy: startY))
+                .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: viewport.midX, dy: endY)))
+        }
+        try require(false, "Both executor options and their full IDs must be visible together before taking the screenshot")
     }
 
     @MainActor
@@ -783,11 +884,11 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func attachMemberScreenshot(_ name: String) throws {
-        // These are the only new native images admitted to public HTML. Never
-        // capture them while any onboarding field or generated code is present.
+    private func attachConnectedScreenshot(_ name: String) throws {
+        // Deliberate workflow images admitted to public HTML must never contain
+        // an onboarding field or a generated pairing code.
         for identifier in ["serverURL", "pairingDeviceName", "pairingCode", "device.pairing.code"] {
-            try require(!app.descendants(matching: .any).matching(identifier: identifier).firstMatch.exists, "Member report screenshots must exclude pairing inputs and generated codes")
+            try require(!app.descendants(matching: .any).matching(identifier: identifier).firstMatch.exists, "Workflow report screenshots must exclude pairing inputs and generated codes")
         }
         attachScreenshot(name)
     }
@@ -1198,9 +1299,16 @@ private struct MessagePage: Decodable { let messages: [ServerMessage] }
 private struct MessageEnvelope: Decodable { let message: ServerMessage }
 private struct ServerMessage: Decodable {
     let id: String; let body: String; let threadRootId: String?; let actorType: String; let actorId: String
+    let kind: String?
     let payload: ServerMessagePayload?
 }
-private struct ServerMessagePayload: Decodable { let discussionPlan: ServerPlanDraft? }
+private struct ServerMessagePayload: Decodable {
+    let discussionPlan: ServerPlanDraft?
+    let discussionId: String?
+    let discussionStep: Int?
+    let assistantTurnId: String?
+    let intent: String?
+}
 private struct ServerPlanDraft: Decodable {
     let version: Int; let discussionId: String; let goalId: String; let rationale: String; let taskSpecs: [ServerPlanTaskSpec]
 }
@@ -1288,6 +1396,7 @@ private struct Fixture {
     let cancellationGoalId: String
     let cancellationGoalTitle: String
     let executorInstanceId: String
+    let executorCollisionInstanceId: String
     let executorName: String
     let executorRuntime: String
     let executionTaskTitle: String
@@ -1346,6 +1455,7 @@ private struct Fixture {
         cancellationGoalId = try require("ARTOO_UI_CANCELLATION_GOAL_ID")
         cancellationGoalTitle = try require("ARTOO_UI_CANCELLATION_GOAL_TITLE")
         executorInstanceId = try require("ARTOO_UI_EXECUTOR_INSTANCE_ID")
+        executorCollisionInstanceId = try require("ARTOO_UI_EXECUTOR_COLLISION_INSTANCE_ID")
         executorName = try require("ARTOO_UI_EXECUTOR_NAME")
         executorRuntime = try require("ARTOO_UI_EXECUTOR_RUNTIME")
         executionTaskTitle = try require("ARTOO_UI_EXECUTION_TASK_TITLE")

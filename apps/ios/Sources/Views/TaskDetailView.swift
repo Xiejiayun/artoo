@@ -291,6 +291,8 @@ private struct AssignSheet: View {
     @State private var mode = "auto"
     @State private var agentInstanceId = ""
     @State private var instances: [WorkspaceRecord] = []
+    @State private var agents: [WorkspaceRecord] = []
+    @State private var computers: [WorkspaceRecord] = []
     @State private var error: String?
     let client: ApiClientProtocol
     @ObservedObject var model: TaskDetailViewModel
@@ -307,12 +309,35 @@ private struct AssignSheet: View {
                 if mode == "manual" {
                     Picker("Agent instance", selection: $agentInstanceId) {
                         Text("Choose agent").tag("")
-                        ForEach(instances.filter { $0.status != "disabled" }) { instance in
-                            Text("\(instance["runtime"].text) · \(instance.id)").tag(instance.id)
+                        ForEach(visibleInstances) { instance in
+                            let label = AssigneeLabel(instance: instance, agents: agents, computers: computers, options: visibleInstances)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(label.name).font(.body)
+                                Text(label.context).font(.caption).foregroundStyle(.secondary)
+                                Text(label.workspace).font(.caption).foregroundStyle(.secondary)
+                                    .lineLimit(2).truncationMode(.middle)
+                                if let identity = label.identityDetail {
+                                    Text(identity).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                                .accessibilityElement(children: .combine)
+                                .tag(instance.id)
                                 .accessibilityIdentifier("task.assignment.option.\(instance.id)")
                         }
                     }
+                    .pickerStyle(.navigationLink)
                     .accessibilityIdentifier("task.assignment.instance")
+                    .accessibilityValue(selectedAssignee?.accessibilityValue ?? "Choose agent")
+                    if let selectedAssignee {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(selectedAssignee.context).font(.footnote).foregroundStyle(.secondary)
+                            Text(selectedAssignee.workspace).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                            if let identity = selectedAssignee.identityDetail {
+                                Text(identity).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                        }
+                        .accessibilityIdentifier("task.assignment.selected.details")
+                    }
                 }
                 if let message = model.actionError ?? error {
                     Text(message).foregroundStyle(.red)
@@ -342,11 +367,24 @@ private struct AssignSheet: View {
                 }
             }
             .task {
-                do { let bootstrap = try await client.resource(path: "/api/v1/bootstrap"); instances = bootstrap["agent_instances"].records }
+                do {
+                    let bootstrap = try await client.resource(path: "/api/v1/bootstrap")
+                    instances = bootstrap["agent_instances"].records
+                    agents = bootstrap["agents"].records
+                    computers = bootstrap["computers"].records
+                }
                 catch { self.error = String(describing: error) }
             }
         }
         .interactiveDismissDisabled(model.actionInFlight)
+    }
+
+    private var visibleInstances: [WorkspaceRecord] { instances.filter { $0.status != "disabled" } }
+
+    private var selectedAssignee: AssigneeLabel? {
+        instances.first { $0.id == agentInstanceId }.map {
+            AssigneeLabel(instance: $0, agents: agents, computers: computers, options: visibleInstances)
+        }
     }
 }
 

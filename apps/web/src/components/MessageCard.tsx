@@ -1,6 +1,7 @@
 import { DiscussionPlanPreviewSchema, normalizeMessageKind, type Message } from "@artoo/domain";
 
 import { Badge, type Tone } from "../ui/index.js";
+import { planningInstructionTitle } from "./planningInstruction.js";
 
 /**
  * Renders a single task-room message as an activity-feed row (#73): actor
@@ -72,6 +73,14 @@ const PLAN_DEPENDENCY_LABELS = [
 
 function renderBody(kind: ReturnType<typeof normalizeMessageKind>, message: Message): React.ReactNode {
   const payload = message.payload as Record<string, unknown>;
+  const instructionTitle = planningInstructionTitle(message);
+  if (instructionTitle !== null) {
+    return <section className="msg__plan" aria-label="Planning instruction">
+      <h3>{instructionTitle}</h3>
+      <p className="msg__text">The agents use the goal and earlier replies to prepare a plan. You review a proposal before accepting it.</p>
+      <details className="msg__plan-original"><summary>Show agent instructions</summary><pre className="msg__code">{message.body}</pre></details>
+    </section>;
+  }
   // This is server-provided display metadata for a discussion's synthesis.
   // Message text and user-supplied payloads never identify an agent plan.
   if (message.actor_type === "agent" && message.kind === "text") {

@@ -324,3 +324,142 @@ remaining existing UI paths. Direct-agent conversations, cross-project mentions
 and execution correction/stopping are the next coverage priorities; isolated
 assignee-label and coordinator-instruction display changes are not part of
 the successful binary above.
+
+## Readable assignment and planning, 2026-10-01
+
+Native assignment now presents the agent, computer, runtime and exact workspace
+path. Visually colliding choices additionally show their full instance IDs;
+selection and execution still use the original IDs. Coordinator instructions
+receive a short summary and an explicit original-text disclosure on both
+clients. Recognition requires the exact system actor and valid discussion,
+turn and step metadata. The Web request list uses the same strict display
+helper. Stored messages and the context received by agents are unchanged.
+Seventy-one related Web component tests and Web typechecking passed.
+
+The first new Mac attempt failed during DMG creation when the builder could
+not detach disk16 (`Resource busy`), before client launch. Its HTML contains
+no client photos. A subsequent read-only `hdiutil info` showed no disk16; the
+outer cleanup flag alone does not establish cleanup of a builder-owned mount.
+The second attempt completed eleven existing checks, then exposed a missing
+test precondition: after the restart check, the worker was stopped. Planning
+waited with zero contributions. Its seven real captures and all six cleanup
+flags are retained. The new flow now starts the worker through Settings and
+verifies the exact paired computer is connected and advertising Codex before
+starting planning. That failure's log also exposed a duplicate full prompt in
+the Web request list; the shared display helper fixes that presentation.
+
+| Retained Mac attempt | Result | HTML SHA-256 |
+| --- | --- | --- |
+| `apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T21-12-30-046Z.html` | Packaging failed before launch, no photos | `16d8fb64c0f425848e7ece386995c18dd3ced568152dec025e521fc2dda43d52` |
+| `apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T21-18-30-755Z.html` | Eleven checks passed; planning failed; seven photos | `25681eaec7ec322fb303df82a5025a6a561ff91b01aabfb9e854838cc8b67fe9` |
+| `apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T21-33-48-067Z.html` | All thirteen installed-client checks passed; ten photos | `4f5dfd4ae969c6564cee93af6187c382e1d34c091fe23350f8ff58f28af4bb26` |
+
+The successful full `verify:mac` invocation built a fresh x64 DMG/ZIP, installed
+from the hashed read-only image and detached it before launch. In addition to
+the existing task, approval, artifact and restart workflows, the installed UI
+selected two planning instances, started a discussion, and obtained three
+answers through the bundled worker and actual deterministic subprocesses.
+Private receipts establish exact turn/run/instance identity and prior-answer
+context. All three original instructions expanded and collapsed without text
+changes. No plan or task existed before proposal; only UI acceptance created
+two tasks with the reviewed criteria and dependency. Usage counters are
+explicitly synthetic and establish ingestion only, not provider billing.
+
+All ten embedded images were inspected, including the four new planning
+captures at full size. The final image shows the accepted plan; exact created
+tasks and their dependency are verified by read-only server records. All six
+cleanup checks passed. The gate also passed 15 planning-fixture, 11 provider
+entry/report, 46 worker and eight distribution regressions. The optional tiny
+filesystem fixture mount test was skipped; the actual product DMG was mounted
+and exercised. The report records `c7aacc2` plus the dirty source hashes, not
+a clean hosted verification of a later commit.
+
+Hosted run `36774913543` at clean `c7aacc2` finished with shared and Mac success
+and iOS failure. Its 85 native unit tests and Release UI build passed, but no
+UI case started. The logs point to a parent readiness GET timing out during
+Xcode startup; parent cleanup then interrupted Xcode. The exact environmental
+reason for that timeout is unestablished. The parent failed HTML is retained at
+`artifacts/apple-ci/36774913543/ios/native-ui-2026-09-30T20-51-58-612Z.html`
+(SHA-256 `d21a61a1dd8966197178ca821dfd33c5200baad1b6b9f398ebec67fcb20614e2`).
+It contains one actual browser capture and complete parent cleanup. The child
+UI report's unfinished `Running` label is stale evidence, not a live run or a
+passed UI suite. The harness now preconnects a separate owner Web page before
+Xcode starts, waits for the exact native readiness message through realtime UI,
+then performs the unchanged strict device and credential revocation checks.
+Fresh local and hosted validation of that change are recorded separately.
+
+The integrated native gate then passed from `2026-09-30T21:37:39.852Z` to
+`21:53:26.343Z` on iPhone 16 / iOS 18.2. The retained xcresult summaries
+confirm 100 unit and all seven Release UI cases passed, with no failures,
+skips or expected failures. Exact UI method IDs were also independently
+checked against the seven-case core contract. Twenty-two native screenshots
+and two browser screenshots were inspected; the new original-instruction,
+collapsed-summary, colliding-executor and preserved-selection images were
+reviewed at full size.
+
+The native driver verified all three coordinator messages' identity, intent,
+step and turn linkage, and compared the expanded synthesis instruction's
+exact UTF-8 body and hash before collapsing it again. Two otherwise identical
+executor choices displayed distinct full IDs simultaneously; after an actual
+offline refusal and recovery, the real run retained the originally selected
+instance. The preconnected owner page successfully observed the member
+readiness message and completed real Settings revocation, same-credential
+200 → 401 verification and fresh member pairing. Both parent cleanup checks
+passed. This validates the revised harness locally; hosted validation of the
+new source remains separate from the earlier failed `c7aacc2` run.
+
+Native HTML:
+`artifacts/ios/native-ui-2026-09-30T21-37-39-852Z.html`
+(SHA-256 `47133bdb6e39af2e0ae0572373f97cdbd6656393fc4351dcd4aeb6ec9708106c`).
+The unit and UI bundles are `artifacts/ios/Artoo-1790804213922.xcresult` and
+`artifacts/ios/ArtooUI-1790804342446.xcresult`. No native product source was
+changed during this run or before the matching development archive.
+
+The matching signed Release arm64 development archive passed at
+`2026-09-30T21:53:41.133Z`, including certificate/profile/Team, embedded app
+identity, compiled assets and privacy manifest verification:
+`artifacts/ios-device/2026-09-30T21-53-41-133Z/report.html`
+(SHA-256 `e47ee560ca8926e1e150b51bcdb811712a7bd125b9298e8275cb328d5d9af28e`).
+This is build/signature evidence only; no physical-device installation,
+distribution export or upload was performed.
+
+A final Mac assertion refinement checks the installed request list's three
+short visible titles and exact accessible names, with an additional real
+request-list capture. Its first fresh-DMG attempt again failed before launch
+with the builder's `disk16 Resource busy` detach error. Read-only mount
+inventory afterward contained neither disk16 nor an Artoo image; no force
+detach or unrelated disk operation was performed. This attempt contains zero
+client captures and is retained at
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T21-56-00-672Z.html`
+(SHA-256 `ffd78cbb3dfdd779ad1b2f11ea106030bd12118391736d5f8ea6ae00f9aabcea`).
+The specific cause of the intermittent builder failure remains unestablished;
+its outer cleanup flags alone do not prove the builder's mount lifecycle.
+The immediate retry also failed at that same pre-launch boundary, again with
+no matching mounted image afterward:
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T21-57-46-466Z.html`
+(SHA-256 `4fa95f3cadfef2e27219be8ea8e2bd6cf7e6347b093b57e4c63b8c7ffab7775f`).
+Vendor inspection confirms that its five normal-detach retries are followed
+by a forced-detach attempt and an error even if that final cleanup succeeds.
+This explains why a failed build can leave no mounted disk without proving
+what held the volume busy. No client behavior was exercised in either attempt.
+
+One bounded experiment used the installed tool's supported
+`CUSTOM_DMGBUILD_PATH` override and `--detach-retries 10`, with no vendor or
+system modification. Its maximum retry sleep budget is about 170 seconds
+instead of the default 19.8 seconds, plus `hdiutil` execution time. The vendor
+binary and temporary wrapper hashes are recorded in
+`artifacts/preview-gate/dmg-diagnostics/experiment.json`; the distribution
+build log confirms that the override was used. This invocation successfully
+built and installed a new DMG and passed all 13 client checks, including the
+three request titles and accessible names. All 11 embedded client captures
+were inspected, and all six cleanup checks passed.
+
+Final refined Mac HTML:
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T22-02-26-613Z.html`
+(SHA-256 `882347882dfed80415df755f32dcde6c3e2e68287f45754158127f17a714d9f6`).
+It ran from `22:02:26.613Z` to `22:04:35.899Z`. The successful override is a
+reproducible mitigation experiment, not proof of the cause or a permanent fix
+for default-builder reliability. The earlier full Mac gate passed without
+this override on the same product source; only the later UI assertions and
+capture were added. A clean hosted run of the committed source remains a
+separate check.

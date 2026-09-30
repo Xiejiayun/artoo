@@ -8,6 +8,7 @@ import { queryKeys } from "../app/queryKeys.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { Badge, Button } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
+import { planningInstructionTitle } from "./planningInstruction.js";
 
 export function AssistantTurns({ roomId, threadRootId, messages, allowActions = true }: { roomId: string; threadRootId?: string; messages: Message[]; allowActions?: boolean }): React.ReactNode {
   const api = useApi();
@@ -32,7 +33,8 @@ export function AssistantTurns({ roomId, threadRootId, messages, allowActions = 
   if (!visible?.length && !turns.error) return null;
   return <section className="u-stack-sm" aria-label="Agent requests"><h3>Agent requests</h3><ActionError error={turns.error ?? action.error} />{turns.error && <Button size="sm" onClick={() => void turns.refetch()}>Retry agent sync</Button>}
     {visible?.map((turn) => {
-      const request = messages.find((message) => message.id === turn.user_message_id)?.body;
+      const message = messages.find((message) => message.id === turn.user_message_id);
+      const request = planningInstructionTitle(message) ?? message?.body;
       return <article className="product-card u-stack-sm" key={turn.id} aria-label={`Agent request ${request ?? turn.id}`}><div className="action-row"><strong>{request ?? "Agent request"}</strong><Badge tone={turn.status === "completed" ? "success" : turn.status === "failed" || turn.status === "waiting" ? "warning" : "neutral"}>{turn.status}</Badge></div>
         {turn.error && <p>{turn.error}</p>}
         {turn.status === "queued" && <p className="t-subtle">Waiting for an available execution slot.</p>}

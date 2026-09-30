@@ -35,6 +35,7 @@ if (ui) {
     approval_id: "APPROVAL_ID", approval_summary: "APPROVAL_SUMMARY", approval_task_id: "APPROVAL_TASK_ID",
     cancellation_goal_id: "CANCELLATION_GOAL_ID", cancellation_goal_title: "CANCELLATION_GOAL_TITLE",
     executor_instance_id: "EXECUTOR_INSTANCE_ID", executor_name: "EXECUTOR_NAME", executor_runtime: "EXECUTOR_RUNTIME",
+    executor_collision_instance_id: "EXECUTOR_COLLISION_INSTANCE_ID",
     execution_task_title: "EXECUTION_TASK_TITLE", execution_criterion_1: "EXECUTION_CRITERION_1", execution_criterion_2: "EXECUTION_CRITERION_2",
     execution_approval_summary: "EXECUTION_APPROVAL_SUMMARY", execution_artifact_filename: "EXECUTION_ARTIFACT_FILENAME",
     execution_artifact_marker: "EXECUTION_ARTIFACT_MARKER", execution_review_comment: "EXECUTION_REVIEW_COMMENT",

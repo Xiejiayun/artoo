@@ -15,6 +15,12 @@ const suggestedPlan = {
   ],
 };
 const originalReply = `\`\`\`json\n${JSON.stringify({ rationale: suggestedPlan.rationale, task_specs: suggestedPlan.task_specs })}\n\`\`\``;
+const planningInstruction = messageFixture({
+  id: "planning_instruction", kind: "text", actor_type: "system", actor_id: "discussion-coordinator",
+  thread_root_id: "goal_root",
+  body: '\n  Prepare a plan for “目标 🧭”.\r\n\t{"task_specs": [{"title": "保留空白"}]}\n  ',
+  payload: { intent: "discussion", discussion_id: "discussion_1", assistant_turn_id: "turn_1", discussion_step: 2 },
+});
 
 describe("MessageCard", () => {
   it("renders plain text", () => {
@@ -54,6 +60,83 @@ describe("MessageCard", () => {
       { client },
     );
     expect(screen.getByText(/Artifact: fallback/)).toBeInTheDocument();
+  });
+
+  it("summarizes a coordinator instruction and toggles its exact original text without changing the message", async () => {
+    const message = structuredClone(planningInstruction);
+    renderWithProviders(<MessageCard message={message} actorName="Discussion coordinator" />, { client });
+    expect(screen.getByRole("region", { name: "Planning instruction" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Planning instruction · Step 3" })).toBeVisible();
+    expect(screen.getByText("The agents use the goal and earlier replies to prepare a plan. You review a proposal before accepting it.")).toBeVisible();
+    expect(screen.getByText("Discussion coordinator")).toBeVisible();
+    expect(screen.getByLabelText("text message").querySelector("time")).toHaveAttribute("datetime", message.created_at);
+    const original = screen.getByText(message.body, { exact: true, normalizer: (text) => text });
+    const disclosure = screen.getByText("Show agent instructions");
+    expect(original).not.toBeVisible();
+    expect(disclosure.closest("details")).not.toHaveAttribute("open");
+    const user = userEvent.setup();
+    await user.click(disclosure);
+    expect(original).toBeVisible();
+    expect(original.textContent).toBe(message.body);
+    await user.click(disclosure);
+    expect(original).not.toBeVisible();
+    expect(disclosure.closest("details")).not.toHaveAttribute("open");
+    expect(message).toEqual(planningInstruction);
+    expect(screen.queryByRole("button", { name: /accept|propose|create tasks/i })).not.toBeInTheDocument();
+  });
+
+  it.each([0, Number.MAX_SAFE_INTEGER - 1])("displays a safe zero-based instruction step %s as one-based", (step) => {
+    renderWithProviders(<MessageCard message={{ ...planningInstruction, payload: { ...planningInstruction.payload, discussion_step: step } }} />, { client });
+    expect(screen.getByRole("heading", { name: `Planning instruction · Step ${step + 1}` })).toBeVisible();
+  });
+
+  it("retains opaque identifiers whose content is not removed by JavaScript trim", () => {
+    const message = { ...planningInstruction, thread_root_id: "\u0085",
+      payload: { ...planningInstruction.payload, discussion_id: "\u0085", assistant_turn_id: "\u0085" } };
+    renderWithProviders(<MessageCard message={message} />, { client });
+    expect(screen.getByRole("region", { name: "Planning instruction" })).toBeVisible();
+    expect(message.thread_root_id).toBe("\u0085");
+    expect(message.payload.discussion_id).toBe("\u0085");
+  });
+
+  it.each([
+    ["a user imitating coordinator metadata", { actor_type: "user" }],
+    ["an agent reply with coordinator metadata", { actor_type: "agent" }],
+    ["another system actor", { actor_id: "another-coordinator" }],
+    ["a non-text instruction", { kind: "run_event" }],
+    ["an unknown message kind", { kind: "future_kind" }],
+    ["a missing thread root", { thread_root_id: undefined }],
+    ["a null thread root", { thread_root_id: null }],
+    ["an empty thread root", { thread_root_id: "" }],
+    ["a blank thread root", { thread_root_id: " \n\t" }],
+    ["a Unicode trim-only thread root", { thread_root_id: "\uFEFF" }],
+    ["missing metadata", { payload: {} }],
+    ["a missing intent", { payload: { ...planningInstruction.payload, intent: undefined } }],
+    ["another intent", { payload: { ...planningInstruction.payload, intent: "execution" } }],
+    ["a non-string intent", { payload: { ...planningInstruction.payload, intent: 1 } }],
+    ["a missing discussion ID", { payload: { ...planningInstruction.payload, discussion_id: undefined } }],
+    ["an empty discussion ID", { payload: { ...planningInstruction.payload, discussion_id: "" } }],
+    ["a blank discussion ID", { payload: { ...planningInstruction.payload, discussion_id: " \n\t" } }],
+    ["a Unicode trim-only discussion ID", { payload: { ...planningInstruction.payload, discussion_id: "\uFEFF" } }],
+    ["a non-string discussion ID", { payload: { ...planningInstruction.payload, discussion_id: 1 } }],
+    ["a missing turn ID", { payload: { ...planningInstruction.payload, assistant_turn_id: undefined } }],
+    ["an empty turn ID", { payload: { ...planningInstruction.payload, assistant_turn_id: "" } }],
+    ["a blank turn ID", { payload: { ...planningInstruction.payload, assistant_turn_id: " \n\t" } }],
+    ["a Unicode trim-only turn ID", { payload: { ...planningInstruction.payload, assistant_turn_id: "\uFEFF" } }],
+    ["a non-string turn ID", { payload: { ...planningInstruction.payload, assistant_turn_id: 1 } }],
+    ["a missing step", { payload: { ...planningInstruction.payload, discussion_step: undefined } }],
+    ["a string step", { payload: { ...planningInstruction.payload, discussion_step: "2" } }],
+    ["a negative step", { payload: { ...planningInstruction.payload, discussion_step: -1 } }],
+    ["a fractional step", { payload: { ...planningInstruction.payload, discussion_step: 0.5 } }],
+    ["a non-finite step", { payload: { ...planningInstruction.payload, discussion_step: Infinity } }],
+    ["a NaN step", { payload: { ...planningInstruction.payload, discussion_step: NaN } }],
+    ["a step with an unsafe increment", { payload: { ...planningInstruction.payload, discussion_step: Number.MAX_SAFE_INTEGER } }],
+    ["an unsafe step", { payload: { ...planningInstruction.payload, discussion_step: Number.MAX_SAFE_INTEGER + 1 } }],
+  ] as const)("keeps %s visible as its original body", (_name, overrides) => {
+    renderWithProviders(<MessageCard message={{ ...planningInstruction, ...overrides }} />, { client });
+    expect(screen.queryByRole("region", { name: "Planning instruction" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Show agent instructions")).not.toBeInTheDocument();
+    expect(screen.getByText(planningInstruction.body, { exact: true, normalizer: (text) => text })).toBeVisible();
   });
 
   it("shows an agent's suggested tasks, criteria and named dependencies with the original reply collapsed", async () => {

@@ -6,9 +6,39 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { registerExecutorCollision } from "../ios-ui-workflows-fixture.mjs";
 
 const executable = fileURLToPath(new URL("./ios-ui-execution.mjs", import.meta.url));
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+
+test("executor collision uses only the production instance registration route with identical display fields", async () => {
+  const original = { agent: { display_name: "Readable executor", capabilities: ["code.modify"] },
+    agent_instance: { id: "ai_target", computer_id: "computer_fixture", runtime: "ui-executor", workspace_root: "/work/meaningful-space ", status: "idle" } };
+  const before = structuredClone(original);
+  const calls = [];
+  const id = await registerExecutorCollision({ original, peerToken: "fixture-peer", request: async (path, body, token) => {
+    calls.push({ path, body, token });
+    return { agent: { ...original.agent }, agent_instance: { ...original.agent_instance, id: "ai_collision" } };
+  } });
+  assert.equal(id, "ai_collision");
+  assert.deepEqual(original, before);
+  assert.deepEqual(calls, [{ path: "/api/v1/computers/computer_fixture/instances", token: "fixture-peer",
+    body: { runtime: "ui-executor", workspace_root: "/work/meaningful-space ", display_name: "Readable executor", capabilities: ["code.modify"] } }]);
+});
+
+test("executor collision rejects reused identity, changed metadata and a disabled option", async () => {
+  const original = { agent: { display_name: "Readable executor", capabilities: ["code.modify"] },
+    agent_instance: { id: "ai_target", computer_id: "computer_fixture", runtime: "ui-executor", workspace_root: "/work/executor", status: "idle" } };
+  for (const patch of [{ id: "ai_target" }, { computer_id: "another-computer" }, { runtime: "another-runtime" },
+    { workspace_root: "/work/other" }, { status: "disabled" }]) {
+    await assert.rejects(registerExecutorCollision({ original, peerToken: "fixture-peer", request: async () => ({
+      agent: original.agent, agent_instance: { ...original.agent_instance, id: "ai_collision", ...patch },
+    }) }));
+  }
+  await assert.rejects(registerExecutorCollision({ original, peerToken: "fixture-peer", request: async () => ({
+    agent: { ...original.agent, display_name: "Different executor" }, agent_instance: { ...original.agent_instance, id: "ai_collision" },
+  }) }));
+});
 
 function setup(t) {
   const directory = mkdtempSync(join(tmpdir(), "artoo-ios-execution-test-"));

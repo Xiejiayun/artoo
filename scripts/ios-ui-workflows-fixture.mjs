@@ -7,6 +7,25 @@ import { pathToFileURL } from "node:url";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
+/** Register a second visible instance with the original executor's exact
+ * presentation fields, without adding a runtime or changing any task state. */
+export async function registerExecutorCollision({ original, request, peerToken }) {
+  const instance = original.agent_instance;
+  const created = await request(`/api/v1/computers/${instance.computer_id}/instances`, {
+    runtime: instance.runtime, workspace_root: instance.workspace_root,
+    display_name: original.agent.display_name, capabilities: original.agent.capabilities,
+  }, peerToken);
+  assert.ok(typeof created.agent_instance.id === "string" && created.agent_instance.id.length > 0);
+  assert.notEqual(created.agent_instance.id, instance.id, "The collision fixture must create a distinct instance");
+  assert.deepEqual(
+    [created.agent.display_name, created.agent_instance.computer_id, created.agent_instance.runtime, created.agent_instance.workspace_root],
+    [original.agent.display_name, instance.computer_id, instance.runtime, instance.workspace_root],
+    "The collision must share the executor's name, computer, runtime and exact workspace",
+  );
+  assert.notEqual(created.agent_instance.status, "disabled", "The collision option must be visible under the existing filter");
+  return created.agent_instance.id;
+}
+
 /** Test-only infrastructure, never registered on the production Fastify app.
  * Node presence comes from authenticated WS hello/heartbeat/disconnect; all
  * resources, discussions, plans and acceptance go through production APIs. */
@@ -86,13 +105,16 @@ export async function createWorkflowFixture({ root, temporary, origin, projectId
   };
   try {
     await changeNode(true);
+    let executorRegistration;
     for (const role of ["planner", "reviewer", "executor"]) {
       const created = await request(`/api/v1/computers/${fields.computer_id}/instances`, {
         runtime: `ui-${role}`, workspace_root: workspaces[role], display_name: fields[`${role}_name`], capabilities: [role === "executor" ? "code.modify" : "code.read"],
       }, peerToken);
       fields[`${role}_instance_id`] = created.agent_instance.id;
       fields[`${role}_agent_id`] = created.agent.id;
+      if (role === "executor") executorRegistration = created;
     }
+    fields.executor_collision_instance_id = await registerExecutorCollision({ original: executorRegistration, request, peerToken });
     assert.notEqual(fields.planner_instance_id, fields.reviewer_instance_id);
     const { goal } = await request("/api/v1/goals", { project_id: projectId, title: fields.goal_title,
       objective: "Discuss an implementation and its dependent verification. A human must review the proposal before either task exists.",

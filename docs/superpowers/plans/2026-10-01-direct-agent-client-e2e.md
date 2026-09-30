@@ -52,8 +52,14 @@ prior-history context.
   workspace. The existing loopback control may start/stop the actual node;
   it must never mutate tested message, turn or run state.
 - [ ] Add stable native destination/agent picker, turn row, Retry, Cancel and
-  linked-task IDs in `apps/ios/Sources/Views/CollaborationView.swift`. Drive the
-  controls from a distinct XCTest case; keep user drafts and attribution checks.
+  linked-task IDs in `apps/ios/Sources/Views/CollaborationView.swift`. Show the
+  actual request beside its status/actions so multiple requests are distinguishable;
+  strictly recognized coordinator instructions retain their short planning title.
+  Reuse readable agent/computer/runtime/workspace choices and collision IDs.
+  Give List-row action buttons an explicit style so Retry/Cancel remain distinct
+  tap targets. Drive the controls from a distinct XCTest case; keep user drafts
+  and attribution checks, including a waiting/failed-state relaunch without extra
+  subprocess launches.
 - [ ] Extend the installed Mac fixture CLI in
   `apps/desktop/scripts/packaged-e2e-smoke.mjs` to route conversation context
   through the shared fixture and emit the actual Codex JSONL message lifecycle.
@@ -84,3 +90,12 @@ append more workflows without separating scenario ownership.
 
 This is a source-reviewed future plan. No new direct-agent UI scenario has
 been executed or counted as passed by writing this document.
+
+Production conversation context contains task/run headers, project/workspace,
+room/turn/current request and prior messages. It does not contain the current
+computer/instance identity. The fixture must report only identities it actually
+observes; the driver binds those receipts to exact computer/instance values from
+the resulting server run. Start with a separate empty top-level conversation:
+the first request has no prior history, the second has the actual first request
+and answer, and the held third request has both completed exchanges. Future
+thread coverage must be explicit rather than inferred from this empty-room case.

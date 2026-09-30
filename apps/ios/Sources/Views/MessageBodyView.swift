@@ -6,12 +6,53 @@ struct MessageBodyView: View {
     let message: Message
 
     var body: some View {
-        if let draft = message.discussionPlanDraft {
+        if let instruction = message.planningInstruction {
+            PlanningInstructionView(instruction: instruction, messageId: message.id)
+        } else if let draft = message.discussionPlanDraft {
             DiscussionPlanDraftView(draft: draft, message: message)
         } else {
             Text(message.body).textSelection(.enabled)
                 .accessibilityIdentifier("message.\(message.id)")
         }
+    }
+}
+
+private struct PlanningInstructionView: View {
+    let instruction: PlanningInstruction
+    let messageId: String
+    @State private var showsOriginal = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(instruction.title).font(.headline)
+                .accessibilityIdentifier("message.planning.title.\(messageId)")
+            Text(instruction.summary).font(.subheadline)
+                .accessibilityIdentifier("message.planning.summary.\(messageId)")
+            Button {
+                showsOriginal.toggle()
+            } label: {
+                HStack {
+                    Text(showsOriginal ? "Hide agent instructions" : "Show agent instructions")
+                    Spacer()
+                    Image(systemName: showsOriginal ? "chevron.down" : "chevron.right")
+                        .foregroundStyle(.tint).accessibilityHidden(true)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(showsOriginal ? "Hide agent instructions" : "Show agent instructions")
+            .accessibilityValue(showsOriginal ? "Expanded" : "Collapsed")
+            .accessibilityIdentifier("message.planning.original.\(messageId)")
+            if showsOriginal {
+                Text(instruction.originalText).font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("message.\(messageId)")
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
     }
 }
 

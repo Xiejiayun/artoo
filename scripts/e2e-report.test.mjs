@@ -79,3 +79,14 @@ test("member recovery HTML admits reviewed connected screens but excludes onboar
     assert.deepEqual(readXCTestScreenshots(directory).map((item) => item.caption), permitted);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("planning and executor reports admit only reviewed workflow screenshots", () => {
+  const directory = mkdtempSync(join(tmpdir(), "artoo-planning-report-test-"));
+  try {
+    writeFileSync(join(directory, "workflow.png"), "deliberate workflow image");
+    const permitted = ["Native planning instructions summarized before proposal", "Native original coordinator instruction expanded", "Native executor options with readable details"];
+    const excluded = ["Native planning pairing code", "Native executor onboarding", "Native UI failure", "Native unreviewed coordinator screenshot"];
+    writeFileSync(join(directory, "manifest.json"), JSON.stringify([{ attachments: [...permitted, ...excluded].map((name) => ({ exportedFileName: "workflow.png", name })) }]));
+    assert.deepEqual(readXCTestScreenshots(directory).map((item) => item.caption), permitted);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});

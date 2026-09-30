@@ -149,6 +149,19 @@ async function main() {
     await expect(page.getByText("Live updates connected", { exact: true })).toBeVisible();
     check("Authenticated production Web UI connects to the same server and channel");
 
+    // Connect a separate owner channel before the native build/boot starts.
+    // Its UI receives the readiness message over the existing WebSocket, so
+    // waiting for native progress does not depend on repeated 15-second GETs.
+    let ownerPage;
+    if (!selfCheck) {
+      ownerPage = await context.newPage();
+      ownerPage.setDefaultTimeout(30_000);
+      await ownerPage.goto(`${origin}/channels?room=${encodeURIComponent(channel.id)}`);
+      await expect(ownerPage.getByRole("heading", { name: `# ${channelName}`, exact: true })).toBeVisible();
+      await expect(ownerPage.getByText("Live updates connected", { exact: true })).toBeVisible();
+      check("Independent owner Web UI is connected before native build and boot");
+    }
+
     const browserFlow = async () => {
       const channelView = page.getByRole("region", { name: "Channel conversation", exact: true });
       const message = channelView.getByRole("listitem").filter({ hasText: fixture.native_message });
@@ -164,18 +177,19 @@ async function main() {
     };
     const roomPath = `/api/v1/rooms/${channel.id}/messages`;
     const ownerRevocationFlow = async () => {
-      // Wait for an actual member-authored native message; never revoke based
-      // only on a device appearing while the UI is still checking permissions.
-      await until(async () => {
-        const { messages } = await request(`${roomPath}?limit=100`);
-        return Boolean(findMemberMessage(messages, fixture.member_revocation_ready_message, fixture.member_user_id));
-      }, "Native member did not reach the revocation boundary", 1_500_000);
-      const { devices } = await request("/api/v1/devices");
-      const target = selectMemberDevice(devices, fixture, fixture.member_native_device_name);
-      assert.equal(target.trust, "active");
-      const activeSession = await memberClaimObserver.verifyActive(target.id);
-      const ownerPage = await context.newPage();
       try {
+        // Wait for the real native message, then verify its unique member
+        // attribution through the API before identifying or revoking a phone.
+        const readyMessage = ownerPage.getByRole("region", { name: "Channel conversation", exact: true })
+          .getByText(fixture.member_revocation_ready_message, { exact: true });
+        await expect(readyMessage, "Native member did not reach the revocation boundary").toBeVisible({ timeout: 1_500_000 });
+        const { messages } = await request(`${roomPath}?limit=100`);
+        assert.ok(findMemberMessage(messages, fixture.member_revocation_ready_message, fixture.member_user_id),
+          "Native member readiness message is missing from the shared server");
+        const { devices } = await request("/api/v1/devices");
+        const target = selectMemberDevice(devices, fixture, fixture.member_native_device_name);
+        assert.equal(target.trust, "active");
+        const activeSession = await memberClaimObserver.verifyActive(target.id);
         await ownerPage.goto(`${origin}/settings`);
         const card = ownerPage.getByRole("region", { name: "Devices", exact: true }).locator("article")
           .filter({ has: ownerPage.getByRole("heading", { name: fixture.member_native_device_name, exact: true }) });

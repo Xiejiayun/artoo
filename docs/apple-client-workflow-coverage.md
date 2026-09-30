@@ -10,12 +10,12 @@ UI coverage.
 | --- | --- | --- | --- |
 | Identity and devices | Pairing, saved session/relaunch, member permissions, owner Web revocation and fresh member pairing | Pairing, execution enrollment, encrypted credentials, sign-out and restart | Native creation of a personal pairing code, authorized enrollment and native Revoke action |
 | Inbox approvals | Needs-information, restored draft/history and approval; task execution gate | Needs-information, rejection, replacement approval and assignment gate | Native rejection; additional approval types |
-| Task execution | Create, execution approval, manual assignment, offline refusal/retry, actual subprocess/artifact, Quick Look and acceptance | Success chain, approval history, artifact bytes/review and app/server restart | Request changes, failed-run retry, running Stop confirmation, manual dependencies, filters and standalone run detail |
+| Task execution | Create, execution approval, readable manual assignment with colliding IDs, offline refusal/retry, actual subprocess/artifact, Quick Look and acceptance | Success chain, approval history, artifact bytes/review and app/server restart | Request changes, failed-run retry, running Stop confirmation, manual dependencies, filters and standalone run detail |
 | Team conversation | Root/thread messages, independent Web peer, background catch-up and relaunch | Default package smoke does not enter conversation | Channel creation/history, unconfirmed-send UI recovery and installed-Mac message/thread flows |
 | Direct agent requests | Not yet covered by native UI | Optional live `all` helper implements two chat turns; no successful Mac real-provider run is established | Agent selection, follow-up context, waiting, explicit retry/cancel and linked execution task |
 | Decisions, handoffs and blockers | Not yet covered by native UI | Not yet covered by package smoke | Create/accept decision; create/accept/complete handoff; create/resolve blocker. Existing Web browser scenarios cover these product paths separately |
 | Team execution resources | Actual daemon disconnect/grace/reconnect and status presentation | Instance registration, worker settings and start/stop/restart | Native instance registration, enable/disable and setup recovery |
-| Goals and plans | Agent discussion, suggested/original reply, proposal, human acceptance with dependent tasks, cancellation confirmation | Optional live discussion helper exists; no successful Mac real-provider run is established | Manual plan editor, reject proposal, pause/resume/reconcile, audit export/share |
+| Goals and plans | Agent discussion, coordinator summary/original instruction, suggested/original reply, proposal, human acceptance with dependent tasks, cancellation confirmation | Three deterministic process contributions with exact prior-answer context; coordinator/original instruction disclosure; suggested plan, proposal and acceptance with dependent tasks. Optional real-provider helper has no established live pass | Manual plan editor, reject proposal, pause/resume/reconcile, audit export/share |
 | Mentions and project navigation | Model and mock-transport coverage, no native UI scenario | No package scenario | Precise historical reply, project/room/thread switch, pagination, unread acknowledgement and retry. Existing Web browser tests are separate evidence |
 | Other workspace pages | Projects, Memory, Skills, run history and Privacy have no native UI scenarios | Default package smoke does not cover these pages | Project creation/switching; memory review/supersession; skill installation/details; independent run history; offline privacy navigation |
 
@@ -23,6 +23,7 @@ Primary source references:
 
 - [Native UI cases](../apps/ios/UITests/SharedServerChatUITests.swift),
   [installed package smoke](../apps/desktop/scripts/packaged-e2e-smoke.mjs) and
+  [installed planning](../apps/desktop/scripts/installed-mac-planning.mjs), plus
   [optional provider extension](../apps/desktop/scripts/installed-live-provider.mjs).
 - Native [collaboration](../apps/ios/Sources/Views/CollaborationView.swift),
   [team/devices](../apps/ios/Sources/Views/TeamViews.swift),

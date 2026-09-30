@@ -13,6 +13,7 @@ import { closeOwnedBrowser } from "../../../scripts/owned-browser.mjs";
 import { buildMacDistribution } from "./mac-distribution.mjs";
 import { mountPreviewDmg } from "./mac-dmg-install.mjs";
 import { finalizeInstalledLiveProviderEvidence, installedLiveProviderEvidence, runOptionalInstalledLiveProvider } from "./installed-live-provider-gate.mjs";
+import { macPlanningImageNames, runInstalledMacPlanning } from "./installed-mac-planning.mjs";
 
 const desktopDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(desktopDir, "..", "..");
@@ -85,7 +86,7 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
     checkedAt: startedAt, started_at: startedAt, run_id: runId, checks, captures, screenshots,
     package_reused: !fromDmg && process.env.ARTOO_SMOKE_SKIP_BUILD === "1",
     package_provenance: fromDmg ? "DMG and ZIP built during this invocation; the app is installed from that verified, read-only mounted DMG" : process.env.ARTOO_SMOKE_SKIP_BUILD === "1" ? "Existing package; recorded source identifies the test harness and does not prove the package was built from this revision" : "Package built from the working tree during this invocation",
-    scope: `${platformName} packaged app: pairing, authenticated realtime, worker lifecycle, task execution, artifact download, review and restart recovery`,
+    scope: `${platformName} packaged app: pairing, authenticated realtime, worker lifecycle, task execution, artifact download, review and restart recovery${isMac ? ", process-backed planning, coordinator instruction disclosure and human plan acceptance" : ""}`,
     cleanup_complete: false,
     distribution: isMac ? (fromDmg ? "Unsigned preview DMG installed in an isolated directory; no Developer ID, notarization or Gatekeeper trust claim" : "Unsigned packaged .app copied to an isolated installation; signing, notarization and updates are separate release gates") : "NSIS installed package",
     modelExecution: "Temporary CLI fixture through production Codex adapter; no real model quality claim",
@@ -95,10 +96,11 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
     rmSync(join(artifactDir, filename), { force: true });
   }
   for (const path of [liveEvidence.reportPath, liveEvidence.planScreenshotPath, liveEvidence.chatScreenshotPath]) rmSync(path, { force: true });
+  if (isMac) for (const filename of macPlanningImageNames) rmSync(join(artifactDir, filename), { force: true });
   // Record build/preflight failures too; every invocation owns an HTML report.
   writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`);
   writeE2EReport({ outputPath: htmlPath, title: `Artoo ${platformName} packaged E2E`, report, screenshots });
-  let tempRoot, installDir, userData, workspace, fixtureBin, fixtureProgram, fixtureKey, installer, packagedApp;
+  let tempRoot, installDir, userData, workspace, fixtureBin, fixtureProgram, fixtureKey, installer, packagedApp, planningConfigurationPath;
   let server, browser, browserServer, electronApp, page, appExe, ownerCookie;
   let liveReportPath, executionError;
   let dmgMount;
@@ -243,6 +245,7 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
     workspace = join(tempRoot, "workspace"); fixtureBin = join(tempRoot, "fixture-bin");
     fixtureKey = randomBytes(24).toString("hex");
     fixtureProgram = join(fixtureBin, isMac ? "codex" : "codex.cmd");
+    if (isMac) planningConfigurationPath = join(tempRoot, "mac-planning-process.json");
     mkdirSync(workspace); mkdirSync(fixtureBin);
     // Only this absolute CLI fixture is selected. On macOS the shell launcher
     // uses the installed Electron in Node mode; no Node or model CLI needs PATH.
@@ -252,12 +255,20 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
       writeFileSync(fixtureProgram, `#!/bin/sh\nexec "$ARTOO_SMOKE_EXECUTABLE" ${quote(fixtureEntry)} "$@"\n`);
       chmodSync(fixtureProgram, 0o755);
     } else writeFileSync(fixtureProgram, '@ECHO off\r\n"%_prog%" "%dp0%\\fixture-codex.mjs" %*\r\n');
-    writeFileSync(fixtureEntry, `import {writeFileSync} from 'node:fs';
+    writeFileSync(fixtureEntry, `import {readFileSync,writeFileSync} from 'node:fs';
 if (process.env.ARTOO_CODEX_PROVIDER_KEY !== ${JSON.stringify(fixtureKey)}) throw new Error('Configured fixture key did not reach CLI');
+${isMac ? `const source = readFileSync('context_pack.md', 'utf8'), marker = '## Raw Payload\\n';
+if (!source.includes(marker)) throw new Error('Installed fixture is missing its actual context pack');
+const pack = JSON.parse(source.slice(source.indexOf(marker) + marker.length));
+if (pack.conversation) {
+  const {runMacPlanningFixture} = await import(${JSON.stringify(pathToFileURL(join(desktopDir, "scripts/mac-planning-fixture.mjs")).href)});
+  runMacPlanningFixture({contextPath:'context_pack.md',configurationPath:${JSON.stringify(planningConfigurationPath)}});
+} else {` : ""}
 writeFileSync('changes.patch', ${JSON.stringify(fixturePatch)});
 writeFileSync('fixture-execution.json', JSON.stringify({argv:process.argv.slice(2), executable:process.execPath, cwd:process.cwd(), apiKeyConfigured:true}));
 console.error('Diagnostic key: ' + process.env.ARTOO_CODEX_PROVIDER_KEY);
 console.log('Packaged Codex adapter fixture completed');
+${isMac ? "}" : ""}
 `);
     const port = await freePort(); baseUrl = `http://127.0.0.1:${port}`;
     serverEnv = {
@@ -480,6 +491,13 @@ console.log('Packaged Codex adapter fixture completed');
     await downloadPatch(`${label}-artifact-after-restart.patch`);
     check("App/server restart preserve device identity, worker settings, reviewed task, and downloadable artifact");
     await captureScene(`${label}-desktop-restored.png`, "Completed task and downloadable artifact restored after app and server restart");
+    if (isMac) {
+      await runInstalledMacPlanning({ page, workspace, configurationPath: planningConfigurationPath, baseUrl, ownerCookie, artifactDir,
+        onEvidence: (evidence) => { report.macPlanning = evidence; },
+        onScreenshot: (screenshot) => screenshots.push(screenshot),
+      });
+      check("Installed Mac UI verifies three worker planning contributions, summarized/exact coordinator instructions, and human acceptance of two dependent tasks");
+    }
     const live = await runOptionalInstalledLiveProvider({ platform, page, workspace, userData, baseUrl, ownerCookie, artifactDir, server,
       onStart: (plan) => {
         liveActive = true;
