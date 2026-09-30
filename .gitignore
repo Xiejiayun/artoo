@@ -14,6 +14,8 @@ apps/web/playwright-report/
 *.tsbuildinfo
 artifacts/preview-gate/
 artifacts/ios/
+artifacts/ios-device/
+artifacts/recovery/
 artifacts/live/
 artifacts/notification-navigation-*/
 apps/ios/Artoo.xcodeproj/

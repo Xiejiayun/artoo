@@ -70,7 +70,7 @@ collection. Before distribution, the publisher must:
 
 | Priority | Current gap and evidence | Implementable next step | External information or credential |
 | --- | --- | --- | --- |
-| P1 | iOS config uses `dev.artoo.app`, version/build defaults and simulator entitlements in [project.yml](../apps/ios/project.yml). | Add a reproducible device archive/export gate; test the signed build through TestFlight on supported phone/tablet sizes. | Apple Developer team, owned bundle ID, provisioning/signing access, App Store Connect app and build metadata. |
+| P1 | A real development-signed arm64 archive now passes; [project.yml](../apps/ios/project.yml) still uses `dev.artoo.app` and version/build defaults. | Repeat the [archive gate](apple-development-archive.md) for release source, then verify distribution export and TestFlight on supported phone/tablet sizes. | Distribution provisioning and App Store Connect app/bundle registration, build metadata and available physical devices. |
 | P1 | Mac packaging supports a directory app in [desktop package.json](../apps/desktop/package.json); a directory build does not prove a distributable trust chain. | Produce the intended installer/archive, verify its signature and notarization, and test installation, upgrade and removal on a clean Mac. | Distribution model, signing identity, notarization account/access and actual release hosting. |
 | P1 | Desktop source has no implemented trusted update channel in [main.cjs](../apps/desktop/main.cjs) or package configuration. | Define a signed manual-update or automatic-update flow, publish version/checksum metadata, and verify upgrade preserves connection/settings and server compatibility. | Update policy, release endpoint and signing custody. |
 | P1 | Operator policy details cannot be established from the source tree. | Complete the privacy steps above; keep onboarding and settings disclosures reachable without signing in. | Operator identity/contact, privacy-policy URL, retention/deletion terms and provider choices. |
@@ -88,3 +88,20 @@ support contact/URL, review access or a reviewable demo environment, export
 compliance answers, age/category metadata and a decision on distribution and
 pricing. A future paid digital feature must be reviewed against the applicable
 store payment requirements; no billing behavior is inferred or added here.
+
+## Local recovery evidence, 2026-10-01
+
+The deterministic production-mode drill in `scripts/recovery-e2e.mjs` now
+exercises the existing offline storage CLI through backup and restoration into
+a different directory. It independently checks archive/artifact hashes,
+rejects an online backup and unsafe restore targets, and removes the original
+database and workspace output before verifying account/session and device
+credentials, node reconnection, task/run/message records, artifact bytes,
+idempotent replay and a real Web download. Eight checks and two actual browser
+screenshots passed with complete cleanup in the local run beginning
+`2026-09-30T16:43:22.347Z`. Its HTML/JSON live under
+`artifacts/recovery/2026-09-30T16-43-22-347Z/`.
+
+Run `npm run verify:recovery` to rebuild and repeat the drill. This closes the
+missing repeatable local recovery evidence; the deployed, off-site and
+operator-specific recovery requirements in the table remain open.
