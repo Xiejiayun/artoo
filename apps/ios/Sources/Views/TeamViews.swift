@@ -12,21 +12,36 @@ struct TeamView: View {
         NavigationStack {
             StateView(state: model.state, retry: { Task { await refresh() } }) { data in
                 List {
+                    Section {
+                        ArtooPageIntro(title: "The team behind your work", message: "Find your agents and the computers they use to carry work forward.", systemImage: "person.2.fill")
+                            .listRowBackground(Color.clear)
+                    }
                     Section("Execution computers") {
-                        if data["computers"].records.isEmpty { Text("Pair an execution computer from Devices, then start its daemon.") }
+                        if data["computers"].records.isEmpty {
+                            ArtooPageIntro(title: "Connect your first computer", message: "Pair an execution computer from Devices, then start its daemon.", systemImage: "desktopcomputer")
+                        }
                         ForEach(data["computers"].records) { computer in
                             NavigationLink { ComputerDetailView(computer: computer, client: model.client) } label: {
-                                VStack(alignment: .leading) {
-                                    RecordRow(item: computer, showStatus: false)
-                                    DaemonStatusRow(model: daemons, computerId: computer.id)
-                                }
+                                HStack(alignment: .top, spacing: 12) {
+                                    ArtooAvatar(name: computer.title, systemImage: "desktopcomputer")
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        RecordRow(item: computer, showStatus: false)
+                                        DaemonStatusRow(model: daemons, computerId: computer.id)
+                                    }
+                                }.padding(.vertical, 6)
                             }.accessibilityIdentifier("computer.\(computer.id)")
                         }
                     }
                     Section("Agent instances") {
+                        if data["agent_instances"].records.isEmpty {
+                            Text("Open a computer to configure its first agent.").font(.subheadline).foregroundStyle(.secondary)
+                        }
                         ForEach(data["agent_instances"].records) { instance in
                             VStack(alignment: .leading, spacing: 6) {
-                                RecordRow(item: instance)
+                                HStack(alignment: .top, spacing: 12) {
+                                    ArtooAvatar(name: instance.title, systemImage: "sparkles")
+                                    RecordRow(item: instance)
+                                }
                                 Text(instance["workspace_root"].text).font(.caption).textSelection(.enabled)
                                 if container.isAdministrator {
                                     Button(instance.status == "disabled" ? "Enable" : "Disable") { Task {
@@ -38,6 +53,7 @@ struct TeamView: View {
                     }
                     if let message = daemons.error ?? model.actionError { Text(message).foregroundStyle(.red) }
                 }
+                .listStyle(.insetGrouped)
             }.navigationTitle("Team").refreshable { await refresh() }.liveRefresh { await model.load() }
                 .liveRefresh(interval: 5) { await daemons.load() }
         }

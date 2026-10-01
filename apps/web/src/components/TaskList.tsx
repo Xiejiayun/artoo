@@ -4,6 +4,8 @@ import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { Button, EmptyState, ErrorState, PriorityBadge, Skeleton, StatusBadge } from "../ui/index.js";
 import { ListTodo, Search } from "../ui/Icon.js";
+import { taskUpdatedLabel } from "./taskPresentation.js";
+import "../ui/work-management.css";
 
 export interface TaskListProps {
   projectId: string;
@@ -19,9 +21,9 @@ function TaskRowsSkeleton(): React.ReactNode {
       <span className="task-list-loading-label" role="status" aria-label="Loading tasks">
         Loading tasks...
       </span>
-      <div className="task-list" aria-hidden="true">
+      <div className="task-list work-task-list" aria-hidden="true">
         {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="task-row task-row--skeleton">
+          <div key={i} className="task-row work-task-row task-row--skeleton">
             <Skeleton height={14} width="75%" />
             <Skeleton height={16} width="48%" radius="var(--radius-pill)" />
           </div>
@@ -67,21 +69,22 @@ export function TaskList({ projectId, selectedTaskId, onSelectTask, filter = "" 
   }
 
   return (
-    <ul aria-label="Tasks" className="task-list">
+    <ul aria-label="Tasks" className="task-list work-task-list">
       {tasks.map((task) => {
         const selected = task.id === selectedTaskId;
         return (
           <li key={task.id}>
             <button
               type="button"
-              className={`task-row${selected ? " is-selected" : ""}`}
+              className={`task-row work-task-row${selected ? " is-selected" : ""}`}
               aria-current={selected}
               onClick={() => onSelectTask(task.id)}
             >
-              <span className="task-row__title u-truncate">{task.title}</span>
+              <span className="task-row__title" title={task.title}>{task.title}</span>
               <span className="task-row__meta">
                 <StatusBadge status={task.status} />
                 <PriorityBadge priority={task.priority} />
+                <time className="work-task-row__date" dateTime={task.updated_at} title={`Updated ${new Date(task.updated_at).toLocaleString()}`}>{taskUpdatedLabel(task.updated_at)}</time>
               </span>
             </button>
           </li>

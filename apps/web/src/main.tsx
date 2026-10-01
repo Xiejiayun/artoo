@@ -5,6 +5,8 @@ import { App } from "./app/App.js";
 import "./ui/tokens.css";
 import "./ui/base.css";
 import "./styles.css";
+import "./ui/product-shell.css";
+import "./ui/channels.css";
 
 const rootElement = document.getElementById("root");
 if (rootElement !== null) {

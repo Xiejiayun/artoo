@@ -1,6 +1,8 @@
 import { DiscussionPlanPreviewSchema, normalizeMessageKind, type Message } from "@artoo/domain";
+import { Bot, MessageSquare, Sparkles } from "lucide-react";
 
-import { Badge, type Tone } from "../ui/index.js";
+import { Badge, Button, type Tone } from "../ui/index.js";
+import { Icon } from "../ui/Icon.js";
 import { planningInstructionTitle } from "./planningInstruction.js";
 
 /**
@@ -10,41 +12,49 @@ import { planningInstructionTitle } from "./planningInstruction.js";
  * lifecycle state here (codex guardrail). Unknown kinds degrade to a system
  * notice via normalizeMessageKind.
  */
-export function MessageCard({ message, actorName, mentionNames = [] }: { message: Message; actorName?: string; mentionNames?: string[] }): React.ReactNode {
+export function MessageCard({ message, actorName, mentionNames = [], compact = false, onOpenThread }: { message: Message; actorName?: string; mentionNames?: string[]; compact?: boolean; onOpenThread?: () => void }): React.ReactNode {
   const kind = normalizeMessageKind(message.kind);
   const actor = actorName ?? `${message.actor_type}:${message.actor_id}`;
   return (
-    <article className="msg" data-kind={kind} aria-label={`${kind} message`}>
-      <span className="msg__avatar" aria-hidden="true">
-        {initials(actorName ?? message.actor_id, message.actor_type)}
-      </span>
+    <article className={`msg${compact ? " msg--compact" : ""}`} data-kind={kind} data-actor={message.actor_type} aria-label={`${kind} message`}>
+      {compact ? <time className="msg__gutter-time" dateTime={message.created_at} title={formatTime(message.created_at, true)} aria-hidden="true">{formatTime(message.created_at)}</time> : <span className="msg__avatar" data-tone={avatarTone(message.actor_id)} aria-hidden="true">
+        {message.actor_type === "agent" ? <Icon icon={Bot} size={19} /> : message.actor_type === "system" ? <Icon icon={Sparkles} size={17} /> : initials(actorName ?? message.actor_id, message.actor_type)}
+      </span>}
       <div className="msg__main">
         <header className="msg__meta">
-          <span className="msg__actor">{actor}</span>
+          <span className="msg__actor" title={actor}>{actor}</span>
+          {message.actor_type === "agent" && <span className="msg__actor-label">Agent</span>}
           {kindBadge(kind)}
           {typeof message.payload["assistant_turn_id"] === "string" && <Badge tone="accent">{message.actor_type === "agent" ? "Agent reply" : "Agent request"}</Badge>}
-          <time className="msg__time" dateTime={message.created_at}>
+          <time className="msg__time" dateTime={message.created_at} title={formatTime(message.created_at, true)}>
             {formatTime(message.created_at)}
           </time>
         </header>
         {renderBody(kind, message)}
         {mentionNames.length > 0 && <p className="msg__mentions" aria-label="Mentioned people">{mentionNames.map((name) => `@${name}`).join(" ")}</p>}
+        {onOpenThread && !!message.reply_count && <Button className="msg__thread" size="sm" variant="ghost" iconLeft={MessageSquare} onClick={onOpenThread}>{message.reply_count} {message.reply_count === 1 ? "reply" : "replies"}<span className="msg__thread-open" aria-hidden="true">View thread</span></Button>}
       </div>
+      {onOpenThread && <div className="msg__actions"><Button size="sm" variant="secondary" iconLeft={MessageSquare} onClick={onOpenThread} title="Reply in thread">Reply in thread</Button></div>}
     </article>
   );
 }
 
 function initials(actorId: string, actorType: string): string {
-  const source = actorId.length > 0 ? actorId : actorType;
-  return source.slice(0, 2).toUpperCase();
+  const source = actorId.replace(/\s*\(you\)$/, "").trim() || actorType;
+  const words = source.split(/[\s._-]+/u);
+  return (words.length > 1 ? `${Array.from(words[0]!)[0]}${Array.from(words[words.length - 1]!)[0]}` : Array.from(source).slice(0, 2).join("")).toLocaleUpperCase();
 }
 
-function formatTime(iso: string): string {
+function avatarTone(actorId: string): number {
+  return Array.from(actorId).reduce((hash, char) => (hash * 31 + char.codePointAt(0)!) % 5, 0);
+}
+
+function formatTime(iso: string, full = false): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) {
     return iso;
   }
-  return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return full ? d.toLocaleString([], { year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" }) : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 const KIND_BADGE: Partial<Record<ReturnType<typeof normalizeMessageKind>, { tone: Tone; label: string }>> = {

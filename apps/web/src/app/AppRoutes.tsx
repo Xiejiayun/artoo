@@ -20,8 +20,9 @@ export function AppRoutes(): React.ReactNode {
   return (
     <div className="app-shell">
       <Nav />
+      <div className="app-content">
       <ConnectionStatus />
-      <main className="app-main">
+      <main className="app-main" id="main-content">
         <Routes>
           <Route path="/" element={<WorkspaceLayout />} />
           <Route path="/board" element={<BoardView />} />
@@ -35,6 +36,7 @@ export function AppRoutes(): React.ReactNode {
           <Route path="/runs" element={<RunsAuditPage />} />
         </Routes>
       </main>
+      </div>
     </div>
   );
 }

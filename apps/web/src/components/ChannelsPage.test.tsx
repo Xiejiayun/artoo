@@ -16,6 +16,28 @@ function api(overrides: Partial<ApiClient> = {}): ApiClient {
 afterEach(() => { localStorage.clear(); vi.restoreAllMocks(); });
 
 describe("channel collaboration", () => {
+  it("offers recovery when account loading fails while opening a room", async () => {
+    const bootstrap = vi.fn<ApiClient["bootstrap"]>().mockRejectedValueOnce(new ApiClientError("network_error", "Server unavailable", 0)).mockResolvedValue(bootstrapFixture());
+    renderWithProviders(<ChannelsPage />, { client: api({ bootstrap }), route: `/channels?room=${channel.id}` });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not open your workspace");
+    await userEvent.click(screen.getByRole("button", { name: "Retry workspace" }));
+    expect(await screen.findByLabelText("Message")).toBeEnabled();
+  });
+
+  it("filters the directory by topic without replacing the open conversation or its draft", async () => {
+    const second = { ...channel, id: "design_room", name: "design", description: "Product ideas" };
+    renderWithProviders(<ChannelsPage />, { client: api({ listChannels: async () => ({ channels: [channel, second] }) }) });
+    await userEvent.type(await screen.findByLabelText("Message"), "Keep this draft");
+    await userEvent.type(screen.getByRole("searchbox", { name: "Find a channel" }), "product");
+    const directory = screen.getByRole("navigation", { name: "Channel list" });
+    expect(within(directory).getByRole("button", { name: "# design" })).toBeInTheDocument();
+    expect(within(directory).queryByRole("button", { name: "# engineering" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "# engineering" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Message")).toHaveValue("Keep this draft");
+    await userEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect(within(directory).getByRole("button", { name: "# engineering" })).toBeInTheDocument();
+  });
+
   it("allows only team replies when a deep-linked thread belongs to an agent planning discussion", async () => {
     const root = messageFixture({ id: "planning_root", room_id: channel.id, kind: "text", body: "Planning discussion", payload: { discussion_id: "discussion_1" } });
     renderWithProviders(<ChannelsPage />, { client: api({ getMessage: async () => ({ message: root }) }), route: `/channels?room=${channel.id}&thread=${root.id}` });
@@ -54,12 +76,12 @@ describe("channel collaboration", () => {
     const listMessages = vi.fn<ApiClient["listMessages"]>().mockImplementation(async (_, options) => ({ messages: options?.thread_root_id ? [reply] : [root] }));
     renderWithProviders(<ChannelsPage />, { client: api({ listMessages, sendMessage, getMessage: async () => ({ message: root }) }) });
     await userEvent.type(await screen.findByLabelText("Message"), "Root draft");
-    await userEvent.click(screen.getByRole("button", { name: "1 replies" }));
+    await userEvent.click(screen.getByRole("button", { name: "1 reply" }));
     const panel = await screen.findByRole("complementary", { name: "Thread" });
     await within(panel).findByText("Existing reply");
     expect(within(panel).getByLabelText("Message")).toHaveValue("");
     await userEvent.type(within(panel).getByLabelText("Message"), "Please check");
-    await userEvent.click(within(panel).getByText("@ Notify people"));
+    await userEvent.click(within(panel).getByText("Notify people"));
     await userEvent.click(within(panel).getByLabelText("@Jane"));
     await userEvent.click(within(panel).getByRole("button", { name: "Send message" }));
     expect(await within(panel).findByText("Message sent.")).toBeInTheDocument();

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { fakeApi, messageFixture, renderWithProviders } from "../test/utils.js";
 import { MessageCard } from "./MessageCard.js";
@@ -23,6 +23,17 @@ const planningInstruction = messageFixture({
 });
 
 describe("MessageCard", () => {
+  it("uses a person's initials and keeps thread actions on their message", async () => {
+    const onOpenThread = vi.fn();
+    renderWithProviders(<MessageCard message={messageFixture({ id: "root", kind: "text", body: "Let's discuss", reply_count: 1 })} actorName="Alex Chen (you)" onOpenThread={onOpenThread} />, { client });
+    expect(screen.getByText("AC")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByText("Alex Chen (you)")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "1 reply" }));
+    expect(onOpenThread).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole("button", { name: "Reply in thread" }));
+    expect(onOpenThread).toHaveBeenCalledTimes(2);
+  });
+
   it("renders plain text", () => {
     renderWithProviders(
       <MessageCard message={messageFixture({ id: "m1", kind: "text", body: "hello world" })} />,

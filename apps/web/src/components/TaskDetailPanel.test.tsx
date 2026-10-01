@@ -51,6 +51,19 @@ describe("TaskDetailPanel", () => {
     expect(screen.getByText("completed")).toBeInTheDocument();
   });
 
+  it("shows the full brief and resolves assignment to a readable agent and computer", async () => {
+    const client = fakeApi({
+      bootstrap: async () => bootstrapFixture(),
+      getTask: async () => ({ task: taskFixture({ id: "task_1", title: "A clear brief", status: "running", description: "Make the inbox easy to scan.\nPreserve keyboard navigation.", assignee_type: "agent", assignee_id: "agent_mock_coder", required_capabilities: ["code.modify"] }), room: null, runs: [runFixture({ id: "run_1", status: "running", computer_id: "computer_local_mock" })], approvals: [], artifacts: [] }),
+    });
+    renderWithProviders(<TaskDetailPanel taskId="task_1" />, { client });
+    expect(await screen.findByText("Mock Coder")).toBeInTheDocument();
+    expect(screen.getByText("Local Mock")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Description" })).toHaveTextContent("Make the inbox easy to scan. Preserve keyboard navigation.");
+    expect(screen.getByRole("region", { name: "Required capabilities" })).toHaveTextContent("Write code");
+    expect(screen.queryByText("agent:agent_mock_coder")).not.toBeInTheDocument();
+  });
+
   it("keeps assignment blocked until the current approval is confirmed and the snapshot refreshes", async () => {
     let approval = approvalFixture({ id: "approval_current", status: "pending", action: "execution.start", payload_ref: "execution-gate/current", run_id: null });
     const assignTask = vi.fn().mockResolvedValue({ run: { id: "run_1" }, scheduler_decision: { reason: "approved", score: 1 } });

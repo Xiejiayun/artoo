@@ -19,4 +19,6 @@ artifacts/ios-device/
 artifacts/recovery/
 artifacts/live/
 artifacts/notification-navigation-*/
+artifacts/ui-refresh/
+artifacts/ui-channels-empty.png
 apps/ios/Artoo.xcodeproj/

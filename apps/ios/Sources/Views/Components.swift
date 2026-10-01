@@ -16,18 +16,18 @@ public enum ArtooTokens {
         public static let textMuted = Color.secondary
         public static let textSubtle = Color(uiColor: .tertiaryLabel)
 
-        public static let accent = Color(hex: 0x4F46E5)
-        public static let accentSoft = Color(hex: 0xEEF0FE)
-        public static let success = Color(hex: 0x15803D)
-        public static let successSoft = Color(hex: 0xE7F6EC)
-        public static let warning = Color(hex: 0xB45309)
-        public static let warningSoft = Color(hex: 0xFDF1E0)
-        public static let danger = Color(hex: 0xB42318)
-        public static let dangerSoft = Color(hex: 0xFDECEB)
-        public static let info = Color(hex: 0x1D6FD1)
-        public static let infoSoft = Color(hex: 0xE8F1FC)
-        public static let neutral = Color(hex: 0x475467)
-        public static let neutralSoft = Color(hex: 0xEEF1F4)
+        public static let accent = Color.adaptive(light: 0x4F46E5, dark: 0xB0A9FF)
+        public static let accentSoft = Color.adaptive(light: 0xEEEDFF, dark: 0x2D294A)
+        public static let success = Color.adaptive(light: 0x18744B, dark: 0x7FD6AC)
+        public static let successSoft = Color.adaptive(light: 0xEAF6EF, dark: 0x193C2D)
+        public static let warning = Color.adaptive(light: 0x9B5D0A, dark: 0xF3C77B)
+        public static let warningSoft = Color.adaptive(light: 0xFFF4E2, dark: 0x44351C)
+        public static let danger = Color.adaptive(light: 0xB42332, dark: 0xFFA4AB)
+        public static let dangerSoft = Color.adaptive(light: 0xFDECEF, dark: 0x46262C)
+        public static let info = Color.adaptive(light: 0x2366B5, dark: 0x9FCBFF)
+        public static let infoSoft = Color.adaptive(light: 0xECF3FC, dark: 0x23364D)
+        public static let neutral = Color.adaptive(light: 0x536074, dark: 0xB8C1D1)
+        public static let neutralSoft = Color.adaptive(light: 0xF0F2F6, dark: 0x2B303B)
     }
 
     public enum Spacing {
@@ -51,12 +51,76 @@ public enum ArtooTokens {
     public enum Radius {
         public static let sm: CGFloat = 6
         public static let md: CGFloat = 8
-        public static let lg: CGFloat = 12
+        public static let lg: CGFloat = 16
         public static let pill: CGFloat = 999
     }
 
     public enum Layout {
         public static let minTouchTarget: CGFloat = 44
+    }
+}
+
+/// Shared identity tile for people, agents, channels and workspace resources.
+/// The name is always presented beside this decorative image by the caller.
+struct ArtooAvatar: View {
+    let name: String
+    var systemImage: String? = nil
+    var size: CGFloat = 40
+    var color: Color = ArtooTokens.ColorToken.accent
+
+    var body: some View {
+        Group {
+            if let systemImage {
+                Image(systemName: systemImage).font(.system(size: size * 0.43, weight: .semibold))
+            } else {
+                Text(initials).font(.system(size: size * 0.36, weight: .semibold, design: .rounded))
+            }
+        }
+        .foregroundStyle(color)
+        .frame(width: size, height: size)
+        .background(color.opacity(0.11), in: RoundedRectangle(cornerRadius: size * 0.28))
+        .accessibilityHidden(true)
+    }
+
+    private var initials: String {
+        let words = name.split(whereSeparator: { $0.isWhitespace })
+        return words.prefix(2).compactMap { $0.first.map(String.init) }.joined().uppercased()
+    }
+}
+
+struct ArtooPageIntro: View {
+    let title: String
+    let message: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: ArtooTokens.Spacing.sm) {
+            ArtooAvatar(name: title, systemImage: systemImage, size: 44)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title).font(.headline).foregroundStyle(ArtooTokens.ColorToken.text)
+                Text(message).font(.subheadline).foregroundStyle(ArtooTokens.ColorToken.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, ArtooTokens.Spacing.xs)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct ArtooSectionHeading: View {
+    let title: String
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: ArtooTokens.Spacing.xs) {
+            Text(title).font(.subheadline.weight(.semibold))
+            Text(count, format: .number).font(.caption.weight(.medium)).monospacedDigit()
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(ArtooTokens.ColorToken.neutralSoft, in: Capsule())
+            Spacer(minLength: 0)
+        }
+        .textCase(nil)
+        .foregroundStyle(ArtooTokens.ColorToken.textMuted)
     }
 }
 
@@ -285,6 +349,7 @@ public struct EmptyStateView: View {
                 Button(actionTitle, action: action)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
+                    .frame(minHeight: ArtooTokens.Layout.minTouchTarget)
                     .padding(.top, ArtooTokens.Spacing.xxs)
                     .accessibilityHint("Starts the recommended recovery action")
             }
@@ -495,6 +560,15 @@ private extension SemanticBadgeStyle {
 }
 
 private extension Color {
+    static func adaptive(light: UInt32, dark: UInt32) -> Color {
+        Color(uiColor: UIColor { traits in
+            let hex = traits.userInterfaceStyle == .dark ? dark : light
+            return UIColor(red: CGFloat((hex >> 16) & 0xFF) / 255,
+                           green: CGFloat((hex >> 8) & 0xFF) / 255,
+                           blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+        })
+    }
+
     init(hex: UInt32) {
         self.init(
             .sRGB,

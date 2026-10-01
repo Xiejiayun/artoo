@@ -92,7 +92,9 @@ export async function createMentionsScenario({ root, server, origin, browser, ow
       second_mention_body: `Historical second mention ${suffix}. This is another reply in the same project B thread. Opening it must preserve the draft and leave the project A sentinel unread. End marker SECOND_${suffix}.` });
     assert.ok(fields.first_mention_body.length > 240 && fields.first_mention_body.length <= 360);
     ledger.fields = fields;
-    peerContext = await browser.newContext();
+    // Both complete replies and their shared author must fit in the real
+    // conversation viewport when consecutive messages share one header.
+    peerContext = await browser.newContext({ viewport: { width: 1440, height: 1080 } });
     await peerContext.addCookies([{ name: "artoo_session", value: session.raw, url: origin, httpOnly: true, sameSite: "Lax" }]);
     const peer = await peerContext.newPage(); peer.setDefaultTimeout(30_000);
     fault = installMentionsReadFault(server.app.server, { origin });
@@ -138,20 +140,26 @@ export async function createMentionsScenario({ root, server, origin, browser, ow
           assert.equal(message.actor_id, sender.userId); assert.equal(message.body, body); assert.equal(message.thread_root_id, rootB.id);
           assert.deepEqual(message.payload.mentions, [{ actor_type: "user", actor_id: recipientUserId }]);
           ledger.expected_messages.push(structuredClone(message)); ledger.peer_sent_message_ids.push(message.id);
-          const row = thread.getByRole("list", { name: "Messages", exact: true }).getByRole("listitem").filter({ has: peer.getByText(body, { exact: true }) });
+          const messageList = thread.getByRole("list", { name: "Messages", exact: true });
+          const row = messageList.getByRole("listitem").filter({ has: peer.getByText(body, { exact: true }) });
           await expect(row).toHaveCount(1);
           if (await people.getAttribute("open") !== null) await people.locator("summary").click();
           const card = row.getByRole("article", { name: "text message", exact: true });
-          await card.scrollIntoViewIfNeeded();
+          await expect(messageList.getByRole("listitem")).toHaveCount(index + 1);
+          await messageList.scrollIntoViewIfNeeded();
           const text = card.locator(".msg__text"), actor = card.locator(".msg__actor"), mentions = card.getByLabel("Mentioned people", { exact: true });
+          const groupActor = messageList.locator(".msg:not(.msg--compact) .msg__actor").last();
           await expect(text).toHaveText(body);
           await expect(actor).toHaveText(`${fields.sender_name} (you)`);
+          await expect(groupActor).toHaveText(`${fields.sender_name} (you)`);
           await expect(mentions).toHaveText(`@${recipient.display_name}`);
-          // Rounded container edges may lie just beyond the scrollport. Require
-          // every semantic part of the evidence, including the full body, inside it.
-          for (const content of [text, actor, mentions]) await expect(content).toBeInViewport({ ratio: 1 });
-          await onScreenshot({ locator: card, name: mentionsPeerImageNames[index],
-            caption: `Independent sender browser: ${index === 0 ? "first" : "second"} complete structured mention sent to the recipient` });
+          // A continuation keeps its author accessible but visually uses the
+          // preceding group header. Capture that real header with every complete
+          // reply, and reject evidence clipped by either scrollport.
+          const visibleContent = [groupActor, ...await messageList.locator(".msg__text, .msg__mentions").all()];
+          for (const content of visibleContent) await expect(content).toBeInViewport({ ratio: 1 });
+          await onScreenshot({ locator: messageList, name: mentionsPeerImageNames[index],
+            caption: `Independent sender browser: ${index === 0 ? "first" : "second"} complete structured mention and its visible author group sent to the recipient` });
           return message;
         };
         const firstMessage = await send(fields.first_mention_body, 0), secondMessage = await send(fields.second_mention_body, 1);

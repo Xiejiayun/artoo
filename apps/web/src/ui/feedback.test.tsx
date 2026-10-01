@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +15,25 @@ afterEach(() => {
 });
 
 describe("ui feedback + badges (#68)", () => {
+  it("keeps field focus across state updates and restores the dialog trigger on Escape", async () => {
+    function FormDialog() {
+      const [open, setOpen] = useState(false);
+      const [value, setValue] = useState("");
+      return <><button onClick={() => setOpen(true)}>Open editor</button><Modal open={open} title="Editor" onClose={() => setOpen(false)}><input aria-label="Name" value={value} onChange={(event) => setValue(event.target.value)} /></Modal></>;
+    }
+    render(<FormDialog />);
+    const trigger = screen.getByRole("button", { name: "Open editor" });
+    await userEvent.click(trigger);
+    await userEvent.tab({ shift: true });
+    expect(screen.getByRole("textbox", { name: "Name" })).toHaveFocus();
+    await userEvent.type(screen.getByRole("textbox", { name: "Name" }), "design reviews");
+    expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("design reviews");
+    expect(screen.getByRole("textbox", { name: "Name" })).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
   it("toneFor maps the full domain vocabulary to semantic tones", () => {
     expect(toneFor.taskStatus("done")).toBe("success");
     expect(toneFor.taskStatus("blocked")).toBe("danger");

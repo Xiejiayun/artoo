@@ -1,5 +1,9 @@
 # Artoo Production UI Gate (v2-K / #44)
 
+> October 2026: apply [Collaboration UI refresh](collaboration-ui-refresh.md) for
+> current information architecture and chat/workflow design. The accessibility,
+> real-server behavior and platform-specific evidence gates still apply.
+
 This document is the reviewable output for the #44 planning gate. It turns the
 reference audits, product flow map, cross-client IA, token rules, component
 rules, state rules, and evidence matrix into concrete implementation standards.

@@ -1,5 +1,18 @@
 import Foundation
 
+/// Inventory refresh never rewrites an explicit execution target as automatic.
+enum AgentSelectionAvailability: Equatable {
+    case automatic, checking, available, unavailable
+
+    static func resolve(instanceId: String?, instances: [WorkspaceRecord], loaded: Bool) -> Self {
+        guard let instanceId, !instanceId.isEmpty else { return .automatic }
+        guard loaded else { return .checking }
+        return instances.contains { $0.id == instanceId && $0.status != "disabled" } ? .available : .unavailable
+    }
+
+    var allowsNewRequest: Bool { self == .automatic || self == .available }
+}
+
 /// Presentation only. Instance identity and scheduling remain server-owned.
 struct AssigneeLabel: Equatable {
     let name: String

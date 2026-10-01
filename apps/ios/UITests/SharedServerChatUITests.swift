@@ -612,7 +612,10 @@ final class SharedServerChatUITests: XCTestCase {
             let reply = try XCTUnwrap(matchingReplies.first)
             if instruction.id == finalInstruction.id {
                 try require(reply.id == synthesis.id, "The final instruction must belong to the validated plan synthesis")
-                try reveal(toggle)
+                // Move the entire disclosure above the fixed composer before
+                // asking XCTest for its activation point.
+                try revealText(toggle)
+                try require(toggle.isEnabled && toggle.isHittable, "Show agent instructions must be reachable")
                 try attachConnectedScreenshot("Native planning instructions summarized before proposal")
                 toggle.tap()
                 try waitForValue(toggle, "Expanded", message: "Show agent instructions must expand the actual coordinator prompt")
@@ -676,7 +679,8 @@ final class SharedServerChatUITests: XCTestCase {
         planHierarchy.name = "Native suggested plan accessibility before original reply"
         planHierarchy.lifetime = .keepAlways; add(planHierarchy)
         let originalToggle = app.buttons["message.plan.original.\(synthesis.id)"]
-        try reveal(originalToggle)
+        try revealText(originalToggle)
+        try require(originalToggle.isEnabled && originalToggle.isHittable, "Show original reply must be reachable")
         try waitForValue(originalToggle, "Collapsed", message: "The original-reply button must expose its collapsed state")
         originalToggle.tap()
         try waitForValue(originalToggle, "Expanded", message: "Tapping the original-reply button must expand the exact reply")
@@ -1104,8 +1108,12 @@ final class SharedServerChatUITests: XCTestCase {
             var viewport = list.frame.intersection(app.frame)
             let navigation = app.navigationBars.firstMatch
             let tabs = app.tabBars.firstMatch
-            let top = navigation.exists ? max(viewport.minY, navigation.frame.maxY) : viewport.minY
-            let bottom = tabs.exists ? min(viewport.maxY, tabs.frame.minY) : viewport.maxY
+            var top = navigation.exists ? max(viewport.minY, navigation.frame.maxY) : viewport.minY
+            var bottom = tabs.exists ? min(viewport.maxY, tabs.frame.minY) : viewport.maxY
+            let connection = app.descendants(matching: .any).matching(identifier: "realtimeStatus").firstMatch
+            let composer = app.descendants(matching: .any).matching(identifier: "conversation.composer").firstMatch
+            if connection.exists && !connection.frame.isEmpty { top = max(top, connection.frame.maxY + 4) }
+            if composer.exists && !composer.frame.isEmpty { bottom = min(bottom, composer.frame.minY - 4) }
             viewport = CGRect(x: viewport.minX, y: top, width: viewport.width, height: max(0, bottom - top)).insetBy(dx: 2, dy: 2)
             try require(!viewport.isEmpty && !viewport.isNull && !viewport.isInfinite,
                         "The list must have an unobscured content viewport")
@@ -1120,7 +1128,30 @@ final class SharedServerChatUITests: XCTestCase {
                     let requiredHeight = frame.height <= viewport.height ? frame.height : viewport.height / 2
                     if !visible.isNull && visible.width >= frame.width - 1
                         && visible.height >= requiredHeight - 1 { return }
-                    scrollUp = frame.midY > viewport.midY
+                    // Move only the distance needed to reveal the required
+                    // height. A fixed swipe can fling an expanded reply past
+                    // the opposite edge and oscillate without showing it all.
+                    let above = max(0, viewport.minY + requiredHeight - frame.maxY)
+                    let below = max(0, frame.minY + requiredHeight - viewport.maxY)
+                    try require(above > 0 || below > 0,
+                                "Vertical scrolling cannot resolve horizontal text clipping")
+                    scrollUp = below > 0
+                    let gap = scrollUp ? below : above
+                    var distance = min(viewport.height * 0.3, max(24, gap + 12))
+                    if frame.height <= viewport.height {
+                        // Near-screen-height text has too little spare room
+                        // for the normal minimum drag or interior margin.
+                        distance = min(distance, gap + max(0, viewport.height - frame.height))
+                    }
+                    let start = CGPoint(x: viewport.midX, y: viewport.midY + (scrollUp ? distance : -distance) / 2)
+                    let end = CGPoint(x: viewport.midX, y: viewport.midY - (scrollUp ? distance : -distance) / 2)
+                    try require(distance.isFinite && distance > 0 && viewport.contains(start) && viewport.contains(end),
+                                "Text alignment must stay inside the unobscured viewport")
+                    let origin = app.coordinate(withNormalizedOffset: .zero)
+                    origin.withOffset(CGVector(dx: start.x, dy: start.y))
+                        .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: end.x, dy: end.y)),
+                               withVelocity: .slow, thenHoldForDuration: 0.2)
+                    continue
                 }
             }
             // Short drags start inside the actual content, avoiding tab bars and
@@ -1136,13 +1167,30 @@ final class SharedServerChatUITests: XCTestCase {
 
     @MainActor
     private func reveal(_ element: XCUIElement) throws {
-        for _ in 0..<5 {
+        for attempt in 0..<10 {
             if element.exists && element.isHittable { return }
-            app.swipeUp()
-        }
-        for _ in 0..<5 {
-            if element.exists && element.isHittable { return }
-            app.swipeDown()
+            // App-wide swipes can begin on the keyboard after a form grows.
+            // Keep both drag points in the visible native content instead.
+            let bounds = app.frame
+            let list = app.collectionViews.firstMatch
+            let rect = list.exists ? list.frame.intersection(bounds) : bounds
+            let navigation = app.navigationBars.firstMatch
+            let tabs = app.tabBars.firstMatch
+            let keyboard = app.keyboards.firstMatch
+            let top = navigation.exists ? max(rect.minY, navigation.frame.maxY) : rect.minY
+            var bottom = tabs.exists ? min(rect.maxY, tabs.frame.minY) : rect.maxY
+            if keyboard.exists { bottom = min(bottom, keyboard.frame.minY) }
+            let viewport = CGRect(x: rect.minX + 6, y: top + 8,
+                                  width: rect.width - 12, height: bottom - top - 16)
+            try require([viewport.minX, viewport.minY, viewport.width, viewport.height].allSatisfy { $0.isFinite }
+                        && !viewport.isEmpty && bounds.contains(viewport),
+                        "Control scrolling must stay inside finite content bounds above the keyboard")
+            let frame = element.exists ? element.frame : .zero
+            let known = !frame.isEmpty && [frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite }
+            let upward = known ? frame.midY > viewport.midY : attempt < 5
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            origin.withOffset(CGVector(dx: viewport.midX, dy: viewport.minY + viewport.height * (upward ? 0.7 : 0.3)))
+                .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: viewport.midX, dy: viewport.minY + viewport.height * (upward ? 0.3 : 0.7))))
         }
         try require(element.exists && element.isHittable, "Required control must be reachable")
     }

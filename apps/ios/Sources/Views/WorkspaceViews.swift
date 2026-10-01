@@ -4,6 +4,7 @@ struct WorkspaceListView: View {
     @EnvironmentObject private var container: AppContainer
     @StateObject private var model: WorkspaceViewModel
     @State private var creating = false
+    @State private var searchText = ""
     let kind: WorkspaceKind
     let projectId: String
     let embedded: Bool
@@ -14,22 +15,41 @@ struct WorkspaceListView: View {
     var body: some View { Group { if embedded { content } else { NavigationStack { content } } } }
     private var content: some View {
         StateView(state: model.state, retry: { Task { await model.load() } }) { document in
+            let records = document[kind.rawValue].records
+            let matches = records.filter { searchText.isEmpty || ($0.title + " " + $0.status).localizedCaseInsensitiveContains(searchText) }
             List {
-                if document[kind.rawValue].records.isEmpty { Text("No \(kind.title.lowercased()) yet").foregroundStyle(.secondary) }
-                ForEach(document[kind.rawValue].records) { item in
+                if records.isEmpty {
+                    EmptyStateView(systemImage: resourceIcon, title: "No \(kind.title.lowercased()) yet", message: resourceDescription)
+                } else if matches.isEmpty {
+                    EmptyStateView(systemImage: "magnifyingglass", title: "No matches", message: "Try a different name or status.", actionTitle: "Clear search", action: { searchText = "" })
+                }
+                ForEach(matches) { item in
                     NavigationLink {
                         if kind == .goals { GoalDetailView(client: model.client, goalId: item.id, projectId: projectId) }
                         else { LibraryDetailView(item: item, kind: kind, model: model, projectId: projectId) }
-                    } label: { RecordRow(item: item) }
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            ArtooAvatar(name: item.title, systemImage: resourceIcon)
+                            RecordRow(item: item)
+                        }.padding(.vertical, 4)
+                    }
                         .accessibilityIdentifier("workspace.\(kind.rawValue).\(item.id)")
                 }
                 if let error = model.actionError { Text(error).foregroundStyle(.red) }
             }
+            .listStyle(.insetGrouped)
         }
         .navigationTitle(kind.title)
+        .searchable(text: $searchText, prompt: "Search \(kind.title.lowercased())")
         .toolbar { if kind != .skills || container.isAdministrator { Button("Add", systemImage: "plus") { creating = true } } }
         .sheet(isPresented: $creating) { CreateWorkspaceItem(kind: kind, projectId: projectId, model: model) }
         .refreshable { await model.load() }.liveRefresh { await model.load() }
+    }
+
+    private var resourceIcon: String { kind == .goals ? "target" : (kind == .memories ? "brain.head.profile" : "square.stack.3d.up") }
+    private var resourceDescription: String {
+        kind == .goals ? "Define an outcome for the team and turn it into a plan." :
+            (kind == .memories ? "Keep useful context your team can return to." : "Add reusable capabilities for your agents.")
     }
 }
 
@@ -42,9 +62,13 @@ struct RecordRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(item.title).font(.headline).lineLimit(3)
-            HStack { if showStatus && !item.status.isEmpty { Text(item.status.replacingOccurrences(of: "_", with: " ")) }; Text(item.id).lineLimit(1) }
-                .font(.caption).foregroundStyle(.secondary)
-        }.padding(.vertical, 4)
+            if showStatus && !item.status.isEmpty {
+                Text(item.status.replacingOccurrences(of: "_", with: " ").capitalized)
+                    .font(.caption.weight(.medium)).foregroundStyle(ArtooTokens.ColorToken.neutral)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(ArtooTokens.ColorToken.neutralSoft, in: Capsule())
+            }
+        }.padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

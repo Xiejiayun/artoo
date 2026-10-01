@@ -71,6 +71,7 @@ final class MentionsUITests: XCTestCase {
         try reveal(field("mentions.unreadSummary"))
         try screenshot("Native mentions global unread across projects")
         try openNotice(publication.first.notificationId)
+        try await waitForInitialMention(publication.first)
         try assertDestination(publication.first, publication: publication)
         let failure = field("mention.readError"), retry = app.buttons["retryMentionRead"]
         try require(failure.waitForExistence(timeout: 20) && failure.label.contains("503"), "A real read 503 must remain visible with the loaded historical target")
@@ -270,6 +271,24 @@ final class MentionsUITests: XCTestCase {
                     "Native Mentions must show the exact global unread count")
     }
     @MainActor
+    private func waitForInitialMention(_ target: MentionsTarget) async throws {
+        let message = app.staticTexts["message.\(target.messageId)"]
+        let deadline = Date().addingTimeInterval(15)
+        repeat {
+            if message.exists && app.collectionViews.firstMatch.exists && !app.keyboards.firstMatch.exists {
+                let view = try viewport(), rect = message.frame
+                if !rect.isEmpty && !rect.isNull && !rect.isInfinite {
+                    let visible = rect.intersection(view)
+                    if !visible.isNull && visible.width >= rect.width - 1 && visible.height >= rect.height - 1 { return }
+                }
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        } while Date() < deadline
+        // Observe the product's initial landing before any test gesture can
+        // reveal the root or move the selected historical reply into view.
+        try require(false, "Opening a mention must show its complete historical reply before any scrolling")
+    }
+    @MainActor
     private func assertDestination(_ target: MentionsTarget, publication: MentionsPublication) throws {
         let root = app.staticTexts["message.\(publication.rootB.id)"]; try revealText(root)
         try require(root.label == publication.rootB.body, "The mention must render the exact B root")
@@ -319,17 +338,48 @@ final class MentionsUITests: XCTestCase {
     }
     @MainActor
     private func reveal(_ element: XCUIElement) throws {
-        for _ in 0..<35 { if element.exists && element.isHittable { return }; app.swipeUp() }
-        for _ in 0..<35 { if element.exists && element.isHittable { return }; app.swipeDown() }
+        for attempt in 0..<70 {
+            if element.exists && element.isHittable { return }
+            // App-wide swipes can begin on the keyboard after a form grows.
+            // Keep both drag points in the visible native content instead.
+            let bounds = app.frame
+            let list = app.collectionViews.firstMatch
+            let rect = list.exists ? list.frame.intersection(bounds) : bounds
+            let navigation = app.navigationBars.firstMatch
+            let tabs = app.tabBars.firstMatch
+            let keyboard = app.keyboards.firstMatch
+            let top = navigation.exists ? max(rect.minY, navigation.frame.maxY) : rect.minY
+            var bottom = tabs.exists ? min(rect.maxY, tabs.frame.minY) : rect.maxY
+            if keyboard.exists { bottom = min(bottom, keyboard.frame.minY) }
+            let viewport = CGRect(x: rect.minX + 6, y: top + 8,
+                                  width: rect.width - 12, height: bottom - top - 16)
+            try require([viewport.minX, viewport.minY, viewport.width, viewport.height].allSatisfy { $0.isFinite }
+                        && !viewport.isEmpty && bounds.contains(viewport),
+                        "Control scrolling must stay inside finite content bounds above the keyboard")
+            let frame = element.exists ? element.frame : .zero
+            let known = !frame.isEmpty && [frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite }
+            let upward = known ? frame.midY > viewport.midY : attempt < 35
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            origin.withOffset(CGVector(dx: viewport.midX, dy: viewport.minY + viewport.height * (upward ? 0.7 : 0.3)))
+                .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: viewport.midX, dy: viewport.minY + viewport.height * (upward ? 0.3 : 0.7))))
+        }
         try require(element.exists && element.isHittable, "The exact native control must be reachable through the real list")
     }
+
     @MainActor
-    private func viewport() throws -> CGRect {
+    private func viewport(includeComposer: Bool = false) throws -> CGRect {
         let list = app.collectionViews.firstMatch
         try require(list.exists && !app.keyboards.firstMatch.exists, "Message screenshots require an unobscured native List")
-        let rect = list.frame.intersection(app.frame), nav = app.navigationBars.firstMatch, tabs = app.tabBars.firstMatch
-        let top = nav.exists ? max(rect.minY, nav.frame.maxY) : rect.minY
+        // The composer is now fixed below the timeline. Verify it against the
+        // screen's usable bounds; historical text must fit above that inset.
+        let rect = includeComposer ? app.frame : list.frame.intersection(app.frame)
+        let nav = app.navigationBars.firstMatch, tabs = app.tabBars.firstMatch
+        var top = nav.exists ? max(rect.minY, nav.frame.maxY) : rect.minY
         var bottom = tabs.exists ? min(rect.maxY, tabs.frame.minY) : rect.maxY
+        let connection = field("realtimeStatus")
+        if connection.exists && !connection.frame.isEmpty { top = max(top, connection.frame.maxY + 4) }
+        let composer = field("conversation.composer")
+        if !includeComposer && composer.exists && !composer.frame.isEmpty { bottom = min(bottom, composer.frame.minY - 4) }
         let error = field("mention.readError")
         if error.exists && !error.frame.isEmpty { bottom = min(bottom, error.frame.minY - 12) }
         let visible = CGRect(x: rect.minX + 2, y: top + 2, width: rect.width - 4, height: bottom - top - 4)
@@ -339,13 +389,27 @@ final class MentionsUITests: XCTestCase {
     @MainActor
     private func revealText(_ element: XCUIElement) throws {
         for attempt in 0..<70 {
-            let view = try viewport(); var upward = attempt < 35
+            let view = try viewport(includeComposer: element.identifier == "messageComposer"); var upward = attempt < 35
             if element.exists {
                 let rect = element.frame
                 if !rect.isEmpty && !rect.isNull && !rect.isInfinite {
                     let visible = rect.intersection(view)
                     if !visible.isNull && visible.width >= rect.width - 1 && visible.height >= rect.height - 1 { return }
-                    upward = rect.midY > view.midY
+                    let above = max(0, view.minY - rect.minY), below = max(0, rect.maxY - view.maxY)
+                    try require(above > 0 || below > 0, "Vertical scrolling cannot resolve horizontal historical text clipping")
+                    upward = below > 0
+                    // Align the measured overflow instead of flinging a nearly
+                    // visible reply past the opposite edge of the viewport.
+                    let distance = min(view.height * 0.3, max(24, (upward ? below : above) + 12))
+                    let start = CGPoint(x: view.midX, y: view.midY + (upward ? distance : -distance) / 2)
+                    let end = CGPoint(x: view.midX, y: view.midY - (upward ? distance : -distance) / 2)
+                    try require(distance.isFinite && distance > 0 && view.contains(start) && view.contains(end),
+                                "Historical text alignment must stay inside the unobscured viewport")
+                    let origin = app.coordinate(withNormalizedOffset: .zero)
+                    origin.withOffset(CGVector(dx: start.x, dy: start.y))
+                        .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: end.x, dy: end.y)),
+                               withVelocity: .slow, thenHoldForDuration: 0.2)
+                    continue
                 }
             }
             let origin = app.coordinate(withNormalizedOffset: .zero)

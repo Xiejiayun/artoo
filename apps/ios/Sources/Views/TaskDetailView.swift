@@ -24,6 +24,7 @@ public struct TaskDetailView: View {
         StateView(state: model.state, retry: { Task { await model.load() } }) { snapshot in
             List {
                 headerSection(snapshot.task)
+                actionsSection
                 if let description = snapshot.task.description, !description.isEmpty {
                     Section("Description") { Text(description) }
                 }
@@ -40,11 +41,14 @@ public struct TaskDetailView: View {
                 }
                 Section("Team work") {
                     if let roomId = snapshot.room?.id ?? snapshot.task.roomId {
-                        NavigationLink("Messages, decisions and blockers") { CollaborationView(client: client, roomId: roomId, taskId: snapshot.task.id) }
+                        NavigationLink { CollaborationView(client: client, roomId: roomId, taskId: snapshot.task.id) } label: {
+                            Label("Messages, decisions and blockers", systemImage: "bubble.left.and.bubble.right")
+                        }
                     }
-                    NavigationLink("Dependencies") { DependenciesView(client: client, taskId: snapshot.task.id, projectId: snapshot.task.projectId) }
+                    NavigationLink { DependenciesView(client: client, taskId: snapshot.task.id, projectId: snapshot.task.projectId) } label: {
+                        Label("Dependencies", systemImage: "arrow.triangle.branch")
+                    }
                 }
-                actionsSection
                 runsSection(snapshot.runs)
                 approvalsSection(snapshot.approvals)
                 artifactsSection(snapshot.artifacts, runs: snapshot.runs)
@@ -142,7 +146,7 @@ public struct TaskDetailView: View {
             ArtooSectionCard {
                 VStack(alignment: .leading, spacing: ArtooTokens.Spacing.sm) {
                     Text(task.title)
-                        .font(ArtooTokens.Typography.headline)
+                        .font(.title2.weight(.semibold))
                         .foregroundStyle(ArtooTokens.ColorToken.text)
                         .fixedSize(horizontal: false, vertical: true)
 
@@ -157,13 +161,17 @@ public struct TaskDetailView: View {
                         }
                     }
 
-                    ArtooMetadataGrid([
-                        ("Assignee", task.assigneeId),
-                        ("Type", task.assigneeType),
-                        ("Updated", task.updatedAt),
-                        ("Created", task.createdAt),
-                        ("Task", task.id)
-                    ])
+                    Text(nextStep(task)).font(.subheadline).foregroundStyle(ArtooTokens.ColorToken.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    DisclosureGroup("Task details") {
+                        ArtooMetadataGrid([
+                            ("Assignee", task.assigneeId ?? "Unassigned"),
+                            ("Type", task.assigneeType),
+                            ("Updated", ConversationMetadata.timestamp(task.updatedAt)),
+                            ("Created", ConversationMetadata.timestamp(task.createdAt)),
+                            ("Task", task.id)
+                        ]).padding(.top, 8)
+                    }.font(.subheadline).frame(minHeight: 44)
                 }
             }
             .listRowInsets(EdgeInsets(
@@ -173,6 +181,21 @@ public struct TaskDetailView: View {
                 trailing: ArtooTokens.Spacing.md
             ))
             .listRowBackground(Color.clear)
+        }
+    }
+
+    private func nextStep(_ task: TaskItem) -> String {
+        switch task.status {
+        case .backlog: return "Check the outcome and acceptance criteria, then mark this task ready for assignment."
+        case .ready: return model.executionBlocked ? "This task is ready. Assignment will unlock when its execution review is approved." : "Ready for assignment. Choose an agent or let the scheduler find a match."
+        case .assigned: return "Assigned to an agent. Follow the conversation and execution activity below."
+        case .running, .inProgress: return "Work is in progress. Review live execution activity and any requests for your input."
+        case .awaitingApproval: return "Your decision is needed. Review the pending approval before work can continue."
+        case .blocked: return "Work needs attention. Review the latest run and blockers before retrying."
+        case .review: return "The work is ready for your review. Check the outputs and criteria, then accept or request changes."
+        case .done: return "Work is complete. The conversation, outputs, and execution history remain available below."
+        case .cancelled: return "This task was cancelled. Its conversation and execution history remain available below."
+        case .other: return "Review the task details, conversation, and latest execution activity."
         }
     }
 
@@ -193,13 +216,13 @@ public struct TaskDetailView: View {
     private var actionsSection: some View {
         let actions = model.availableActions
         if !actions.isEmpty {
-            Section("Actions") {
+            Section("Next step") {
                 ForEach(actions, id: \.self) { action in
                     Button {
                         perform(action)
                     } label: {
                         HStack {
-                            Text(action.label)
+                            Label(action.label, systemImage: action.systemImage).font(.body.weight(.semibold))
                             Spacer()
                             if model.actionInFlight {
                                 ProgressView()
@@ -209,6 +232,7 @@ public struct TaskDetailView: View {
                                     .accessibilityHidden(true)
                             }
                         }
+                        .frame(minHeight: 44)
                     }
                     .disabled(model.actionInFlight)
                     .accessibilityIdentifier("task.action.\(action.rawValue).\(model.taskId)")
@@ -373,25 +397,41 @@ private struct AssignSheet: View {
     @State private var agents: [WorkspaceRecord] = []
     @State private var computers: [WorkspaceRecord] = []
     @State private var error: String?
+    @State private var inventoryLoaded = false
     let client: ApiClientProtocol
     @ObservedObject var model: TaskDetailViewModel
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    ArtooPageIntro(title: "Hand off with confidence", message: model.state.value?.task.title ?? "Choose how this task reaches an agent.", systemImage: "person.crop.circle.badge.plus")
+                }
+                Section {
                 Picker("Mode", selection: $mode) {
                     Text("Auto").tag("auto")
                     Text("Manual").tag("manual")
                 }
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("task.assignment.mode")
-                Toggle("Use an isolated Git worktree", isOn: $branchBacked)
-                    .accessibilityIdentifier("task.assignment.worktree")
-                Text("Requires a Git repository on the execution computer and an unused workspace location. Failed or stopped work stays there for recovery.")
-                    .font(.caption).foregroundStyle(.secondary)
+                } header: { Text("Assignment") } footer: {
+                    Text(mode == "auto" ? "The scheduler selects an eligible agent using the task's required capabilities and available capacity." : "Choose a specific agent. Check its computer, runtime, and workspace before assigning.")
+                }
+                Section {
+                    Toggle("Use an isolated Git worktree", isOn: $branchBacked)
+                        .accessibilityIdentifier("task.assignment.worktree")
+                } header: { Text("Execution workspace") } footer: {
+                    Text("Requires a Git repository on the execution computer and an unused workspace location. Failed or stopped work stays there for recovery.")
+                }
                 if mode == "manual" {
+                    Section("Agent") {
                     Picker("Agent instance", selection: $agentInstanceId) {
                         Text("Choose agent").tag("")
+                        if selectedAvailability == .unavailable {
+                            Text("Unavailable: \(selectedAssignee?.name ?? agentInstanceId)").tag(agentInstanceId)
+                        } else if selectedAvailability == .checking && !visibleInstances.contains(where: { $0.id == agentInstanceId }) {
+                            Text("Checking selected agent…").tag(agentInstanceId)
+                        }
                         ForEach(visibleInstances) { instance in
                             let label = AssigneeLabel(instance: instance, agents: agents, computers: computers, options: visibleInstances)
                             VStack(alignment: .leading, spacing: 4) {
@@ -410,7 +450,12 @@ private struct AssignSheet: View {
                     }
                     .pickerStyle(.navigationLink)
                     .accessibilityIdentifier("task.assignment.instance")
-                    .accessibilityValue(selectedAssignee?.accessibilityValue ?? "Choose agent")
+                    .accessibilityValue(selectedAvailability == .unavailable ? "Unavailable: \(selectedAssignee?.accessibilityValue ?? agentInstanceId)" : (selectedAssignee?.accessibilityValue ?? "Choose agent"))
+                    if selectedAvailability == .unavailable {
+                        Label("This selected agent is no longer available. Choose another agent or switch to Auto.", systemImage: "exclamationmark.circle")
+                            .font(.subheadline).foregroundStyle(ArtooTokens.ColorToken.warning)
+                            .accessibilityIdentifier("task.assignment.unavailable")
+                    }
                     if let selectedAssignee {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(selectedAssignee.context).font(.footnote).foregroundStyle(.secondary)
@@ -421,14 +466,36 @@ private struct AssignSheet: View {
                         }
                         .accessibilityIdentifier("task.assignment.selected.details")
                     }
-                }
-                if let message = model.actionError ?? error {
-                    Text(message).foregroundStyle(.red)
-                        .accessibilityIdentifier("task.assignment.error")
+                    if !inventoryLoaded { ProgressView("Loading agents…") }
+                    else if visibleInstances.isEmpty { Text("No enabled agents are available. Configure an agent in Team, then try again.").font(.subheadline).foregroundStyle(.secondary) }
+                    }
                 }
                 if model.actionInFlight { ProgressView("Assigning task…").accessibilityIdentifier("task.assignment.progress") }
             }
             .disabled(model.actionInFlight)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if let message = model.actionError ?? error {
+                    VStack(alignment: .leading, spacing: ArtooTokens.Spacing.sm) {
+                        HStack(alignment: .top, spacing: ArtooTokens.Spacing.sm) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .accessibilityHidden(true)
+                            Text(message)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("task.assignment.error")
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(ArtooTokens.ColorToken.danger)
+                        if error != nil {
+                            Button("Reload agents") { Task { await loadInventory() } }
+                                .frame(minHeight: 44)
+                                .disabled(model.actionInFlight)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .background(.regularMaterial)
+                }
+            }
             .navigationTitle("Assign Task")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -439,31 +506,39 @@ private struct AssignSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Assign") {
+                        guard canAssign else { return }
                         let selectedMode = mode
                         let selectedBranchBacked: Bool? = branchBacked ? true : nil
-                        let trimmed = agentInstanceId.trimmingCharacters(in: .whitespaces)
+                        let selectedId = selectedMode == "manual" ? agentInstanceId : nil
                         Task {
-                            if await model.assign(mode: selectedMode, agentInstanceId: trimmed.isEmpty ? nil : trimmed, branchBacked: selectedBranchBacked) { dismiss() }
+                            if await model.assign(mode: selectedMode, agentInstanceId: selectedId, branchBacked: selectedBranchBacked) { dismiss() }
                         }
                     }
-                    .disabled(model.actionInFlight || (mode == "manual" && agentInstanceId.trimmingCharacters(in: .whitespaces).isEmpty))
+                    .disabled(!canAssign)
                     .accessibilityIdentifier("task.assignment.confirm")
                 }
             }
-            .task {
-                do {
-                    let bootstrap = try await client.resource(path: "/api/v1/bootstrap")
-                    instances = bootstrap["agent_instances"].records
-                    agents = bootstrap["agents"].records
-                    computers = bootstrap["computers"].records
-                }
-                catch { self.error = String(describing: error) }
-            }
+            .task { await loadInventory() }
         }
         .interactiveDismissDisabled(model.actionInFlight)
     }
 
     private var visibleInstances: [WorkspaceRecord] { instances.filter { $0.status != "disabled" } }
+    private var selectedAvailability: AgentSelectionAvailability {
+        .resolve(instanceId: agentInstanceId, instances: instances, loaded: inventoryLoaded)
+    }
+    private var canAssign: Bool { !model.actionInFlight && (mode == "auto" || selectedAvailability == .available) }
+
+    private func loadInventory() async {
+        inventoryLoaded = false
+        do {
+            let bootstrap = try await client.resource(path: "/api/v1/bootstrap")
+            instances = bootstrap["agent_instances"].records
+            agents = bootstrap["agents"].records
+            computers = bootstrap["computers"].records
+            inventoryLoaded = true; error = nil
+        } catch { self.error = String(describing: error) }
+    }
 
     private var selectedAssignee: AssigneeLabel? {
         instances.first { $0.id == agentInstanceId }.map {

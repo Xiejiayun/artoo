@@ -192,7 +192,7 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
         await bounded(page.bringToFront(), "Renderer activation");
         const health = await bounded(page.evaluate(async () => {
           const [connection, worker] = await Promise.all([window.artooDesktop.getConnection(), window.artooDesktop.daemonStatus()]);
-          return { paired: connection.paired, worker: worker.state, taskStatus: document.querySelector(".task-detail__header .ui-badge--status")?.textContent?.trim() };
+          return { paired: connection.paired, worker: worker.state, taskStatus: document.querySelector(".task-detail__meta .ui-badge--status")?.textContent?.trim() };
         }), "Renderer and native IPC health probe");
         assert.equal(health.paired, true, "App lost its native connection during evidence capture");
         assert.equal(health.worker, "running", "Worker stopped during evidence capture");
@@ -451,8 +451,8 @@ ${isMac ? "}" : ""}
     await dialog.getByLabel("Title", { exact: true }).fill(taskTitle);
     await dialog.getByLabel("Description", { exact: true }).fill("Exercise the ordinary Codex adapter using a temporary model-free CLI fixture.");
     await dialog.getByLabel("Acceptance criteria (one per line)").fill("Download and verify the uploaded patch from the desktop");
-    await dialog.getByText("Required capabilities", { exact: true }).click();
-    await dialog.getByRole("checkbox", { name: "code.modify", exact: true }).check();
+    await dialog.locator("summary").filter({ hasText: "Required capabilities" }).click();
+    await dialog.getByRole("checkbox", { name: "Write code", exact: true }).check();
     const created = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/tasks" && response.request().method() === "POST");
     await dialog.getByRole("button", { name: "Create task", exact: true }).click();
     const createResponse = await created; assert.equal(createResponse.ok(), true);
@@ -524,7 +524,7 @@ ${isMac ? "}" : ""}
     const downloaded = await downloadPatch(`${label}-artifact.patch`);
     await page.getByLabel("Review comment", { exact: true }).fill("Downloaded patch bytes verified by packaged authenticated smoke");
     await page.getByRole("button", { name: "Accept", exact: true }).click();
-    await expect(page.locator(".task-detail__header .ui-badge--status")).toHaveText("done");
+    await expect(page.locator(".task-detail__meta .ui-badge--status")).toHaveText("done");
     await captureEvidence(`${label}-desktop-smoke.png`, taskId);
     check("Native UI creates and approves task; bundled daemon runs Codex fixture; artifact downloads and review completes");
 
@@ -533,7 +533,7 @@ ${isMac ? "}" : ""}
     assert.equal((await ownerApi(`/api/v1/tasks/${taskId}`)).task.status, "done");
     await launchApp();
     await page.getByRole("button", { name: new RegExp(taskTitle) }).click();
-    await expect(page.locator(".task-detail__header .ui-badge--status")).toHaveText("done");
+    await expect(page.locator(".task-detail__meta .ui-badge--status")).toHaveText("done");
     assert.deepEqual(await page.evaluate(() => window.artooDesktop.getConnection()), connection);
     assert.ok((await page.evaluate(() => window.artooDesktop.daemonStatus())).config.allowedRoots.includes(workspace));
     assert.deepEqual((await page.evaluate(() => window.artooDesktop.daemonStatus())).config.codex, savedCodex);

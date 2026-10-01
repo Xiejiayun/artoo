@@ -90,7 +90,9 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
   onEvidence(evidence);
   const capture = (target, filename, caption) => captureMacMentionScreenshot(target, { artifactDir, filename, caption, evidence, onScreenshot });
   const viewport = async (target, filename, caption) => {
-    await target.scrollIntoViewIfNeeded();
+    // Center the complete evidence target in its real scroll container; nearest
+    // alignment can leave a fractional edge clipped after a restored draft.
+    await target.evaluate((element) => element.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
     await expect(target).toBeVisible(); await expect(target).toBeInViewport({ ratio: 1 });
     await capture(page, filename, caption);
   };
@@ -115,7 +117,8 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
       const row = conversation.getByRole("list", { name: "Messages", exact: true }).getByRole("listitem")
         .filter({ has: page.getByText(fields.root_a_body, { exact: true }) });
       await expect(row).toHaveCount(1);
-      await row.getByRole("button", { name: /^(Reply in thread|\d+ replies)$/ }).click();
+      await row.hover();
+      await row.getByRole("button", { name: "Reply in thread", exact: true }).click();
       await expect(thread.getByText(fields.root_a_body, { exact: true })).toBeVisible();
       assert.equal(installedMentionRoute(page.url()).search.thread, fields.root_a_id);
     };
@@ -129,7 +132,11 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
     const mentionedReply = () => thread.getByRole("region", { name: "Mentioned reply", exact: true });
     const destination = async (target) => {
       await expect(projectPicker).toHaveValue(publication.project_b.id);
-      await expect(page.getByRole("heading", { name: `# ${publication.channel_b.name}`, exact: true })).toBeVisible();
+      // A focused thread replaces the main conversation at narrower desktop
+      // widths. The exact selected channel remains visible in its directory.
+      const selectedChannel = channelList.getByRole("button", { name: `# ${publication.channel_b.name}`, exact: true });
+      await expect(selectedChannel).toBeVisible();
+      await expect(selectedChannel).toHaveAttribute("aria-current", "page");
       await expect(thread.getByText(publication.root_b.body, { exact: true })).toBeVisible();
       await expect(mentionedReply().getByText(target.body, { exact: true })).toBeVisible();
       await expect(mentionedReply().getByText(fields.sender_name, { exact: true })).toBeVisible();

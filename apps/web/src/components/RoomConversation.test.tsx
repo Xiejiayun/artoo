@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GoalSchema } from "@artoo/domain";
 import { ApiClient, ApiClientError } from "../api/client.js";
-import type { AssistantTurn } from "../api/types.js";
+import type { AssistantTurn, MessagesResponse } from "../api/types.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { clearRoomDrafts, roomDraftKey, writeRoomDraft } from "../app/roomDrafts.js";
 import { bootstrapFixture, createTestQueryClient, fakeApi, messageFixture, renderWithProviders } from "../test/utils.js";
@@ -23,6 +23,123 @@ function chatApi(overrides: Partial<ApiClient> = {}): ApiClient {
 afterEach(() => { localStorage.clear(); });
 
 describe("RoomConversation", () => {
+  it("sends with Enter, keeps Shift+Enter as a new line, and returns focus to the composer", async () => {
+    const sendMessage = vi.fn<ApiClient["sendMessage"]>().mockResolvedValue({ message: messageFixture({ id: "sent", kind: "text", body: "First line\nSecond line" }) });
+    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ sendMessage }) });
+    const message = await screen.findByLabelText("Message");
+    await userEvent.type(message, "First line{Shift>}{Enter}{/Shift}Second line");
+    expect(message).toHaveValue("First line\nSecond line");
+    expect(sendMessage).not.toHaveBeenCalled();
+    await userEvent.keyboard("{Enter}");
+    expect(await screen.findByText("Message sent.")).toBeInTheDocument();
+    expect(sendMessage).toHaveBeenCalledExactlyOnceWith("room_1", expect.objectContaining({ body: "First line\nSecond line" }), expect.any(String));
+    expect(message).toHaveValue("");
+    expect(message).toHaveFocus();
+  });
+
+  it("does not send while committing IME composition or repeating a held Enter key", async () => {
+    const sendMessage = vi.fn<ApiClient["sendMessage"]>().mockResolvedValue({ message: messageFixture({ id: "sent", kind: "text", body: "你好" }) });
+    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ sendMessage }) });
+    const message = await screen.findByLabelText("Message");
+    fireEvent.change(message, { target: { value: "你好" } });
+    fireEvent.compositionStart(message);
+    fireEvent.keyDown(message, { key: "Enter" });
+    fireEvent.compositionEnd(message);
+    fireEvent.keyDown(message, { key: "Enter", keyCode: 229 });
+    fireEvent.keyDown(message, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(message, { key: "Enter", repeat: true });
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(message).toHaveValue("你好");
+    fireEvent.keyDown(message, { key: "Enter" });
+    expect(await screen.findByText("Message sent.")).toBeInTheDocument();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not move a reader browsing history when messages arrive and lets them jump to latest", async () => {
+    const first = messageFixture({ id: "first", kind: "text", body: "Earlier conversation", sequence: 1 });
+    const second = messageFixture({ id: "second", kind: "text", body: "First arrival", sequence: 2 });
+    const third = messageFixture({ id: "third", kind: "text", body: "Second arrival", sequence: 3 });
+    const query = createTestQueryClient();
+    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ listMessages: async () => ({ messages: [first] }) }), queryClient: query });
+    const history = await screen.findByRole("region", { name: "Message history" });
+    let height = 1000;
+    let top = 0;
+    Object.defineProperties(history, { scrollHeight: { get: () => height }, clientHeight: { get: () => 300 }, scrollTop: { get: () => top, set: (value: number) => { top = Math.min(value, height - 300); } } });
+    history.scrollTop = 100;
+    fireEvent.scroll(history);
+    expect(screen.getByRole("button", { name: "Jump to latest" })).toBeInTheDocument();
+    height = 1200;
+    await act(async () => { query.setQueryData(queryKeys.messages("room_1"), { messages: [first, second] }); });
+    expect(await screen.findByRole("button", { name: "1 new message" })).toBeInTheDocument();
+    expect(history.scrollTop).toBe(100);
+    height = 1400;
+    await act(async () => { query.setQueryData(queryKeys.messages("room_1"), { messages: [first, second, third] }); });
+    await userEvent.click(await screen.findByRole("button", { name: "2 new messages" }));
+    expect(history.scrollTop).toBe(1100);
+    expect(screen.queryByRole("button", { name: /new messages|Jump to latest/ })).not.toBeInTheDocument();
+    height = 1600;
+    await act(async () => { query.setQueryData(queryKeys.messages("room_1"), { messages: [first, second, third, messageFixture({ id: "fourth", kind: "text", body: "Followed arrival", sequence: 4 })] }); });
+    await screen.findByText("Followed arrival");
+    expect(history.scrollTop).toBe(1300);
+  });
+
+  it("preserves the visible history offset when an earlier page is prepended", async () => {
+    const latest = messageFixture({ id: "latest", kind: "text", body: "Latest message", sequence: 2 });
+    const oldest = messageFixture({ id: "oldest", kind: "text", body: "Older message", sequence: 1 });
+    let resolveEarlier!: (page: MessagesResponse) => void;
+    const listMessages = vi.fn<ApiClient["listMessages"]>().mockResolvedValueOnce({ messages: [latest], has_more: true, next_before: "before", next_after: "after" }).mockImplementationOnce(() => new Promise((resolve) => { resolveEarlier = resolve; }));
+    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ listMessages }) });
+    const history = await screen.findByRole("region", { name: "Message history" });
+    Object.defineProperties(history, { scrollHeight: { get: () => screen.queryByText("Older message") ? 1400 : 1000 }, clientHeight: { get: () => 300 } });
+    Object.defineProperty(screen.getByText("Latest message").closest("li")!, "offsetTop", { get: () => screen.queryByText("Older message") ? 450 : 50 });
+    history.scrollTop = 100;
+    fireEvent.scroll(history);
+    await userEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
+    await act(async () => { resolveEarlier({ messages: [oldest], has_more: false }); });
+    await screen.findByText("Older message");
+    expect(history.scrollTop).toBe(500);
+    expect(screen.queryByRole("button", { name: /new messages/ })).not.toBeInTheDocument();
+  });
+
+  it("anchors earlier pages independently of arrivals and scrolling while they load", async () => {
+    const latest = messageFixture({ id: "latest", kind: "text", body: "Latest message", sequence: 2 });
+    const arrival = messageFixture({ id: "arrival", kind: "text", body: "New arrival", sequence: 3 });
+    const oldest = messageFixture({ id: "oldest", kind: "text", body: "Older message", sequence: 1 });
+    let resolveEarlier!: (page: MessagesResponse) => void;
+    const listMessages = vi.fn<ApiClient["listMessages"]>().mockResolvedValueOnce({ messages: [latest], has_more: true, next_before: "before", next_after: "after" }).mockImplementationOnce(() => new Promise((resolve) => { resolveEarlier = resolve; }));
+    const query = createTestQueryClient();
+    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ listMessages }), queryClient: query });
+    const history = await screen.findByRole("region", { name: "Message history" });
+    Object.defineProperties(history, { scrollHeight: { get: () => screen.queryByText("Older message") ? 1500 : screen.queryByText("New arrival") ? 1100 : 1000 }, clientHeight: { get: () => 300 } });
+    Object.defineProperty(screen.getByText("Latest message").closest("li")!, "offsetTop", { get: () => screen.queryByText("Older message") ? 450 : 50 });
+    history.scrollTop = 100;
+    fireEvent.scroll(history);
+    await userEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
+    await act(async () => { query.setQueryData<MessagesResponse>(queryKeys.messages("room_1"), (current) => ({ ...current, messages: [latest, arrival] })); });
+    await screen.findByRole("button", { name: "1 new message" });
+    history.scrollTop = 150;
+    fireEvent.scroll(history);
+    await act(async () => { resolveEarlier({ messages: [oldest], has_more: false }); });
+    await screen.findByText("Older message");
+    expect(history.scrollTop).toBe(550);
+    expect(screen.getByRole("button", { name: "1 new message" })).toBeInTheDocument();
+  });
+
+  it("groups consecutive messages while retaining date and actor boundaries", async () => {
+    const messages = [
+      messageFixture({ id: "first", kind: "text", body: "Morning", sequence: 1, created_at: "2026-09-28T10:00:00Z" }),
+      messageFixture({ id: "second", kind: "text", body: "A quick follow-up", sequence: 2, created_at: "2026-09-28T10:01:00Z" }),
+      messageFixture({ id: "third", kind: "text", body: "Next day", sequence: 3, created_at: "2026-09-29T10:00:00Z" }),
+      messageFixture({ id: "fourth", kind: "text", body: "Agent response", sequence: 4, actor_type: "agent", actor_id: "agent_mock_coder", created_at: "2026-09-29T10:01:00Z" }),
+    ];
+    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ listMessages: async () => ({ messages }) }) });
+    expect((await screen.findByText("Morning")).closest("article")).not.toHaveClass("msg--compact");
+    expect(screen.getByText("A quick follow-up").closest("article")).toHaveClass("msg--compact");
+    expect(screen.getByText("Next day").closest("article")).not.toHaveClass("msg--compact");
+    expect(screen.getByText("Agent response").closest("article")).not.toHaveClass("msg--compact");
+    expect(within(screen.getByRole("list", { name: "Messages" })).getAllByRole("separator")).toHaveLength(2);
+  });
+
   it("loads room and thread assistant turns independently and refreshes both from a room event", async () => {
     const base: AssistantTurn = { id: "root_turn", room_id: "room_1", task_id: "task_1", run_id: null, user_message_id: "request", response_message_id: null, status: "waiting", error: "Root waiting reason", created_at: "2026-09-29", updated_at: "2026-09-29" };
     const thread = { ...base, id: "thread_turn", thread_root_id: "thread_1", error: "Thread waiting reason" };
