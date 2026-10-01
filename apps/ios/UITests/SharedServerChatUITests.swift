@@ -1140,13 +1140,30 @@ final class SharedServerChatUITests: XCTestCase {
 
     @MainActor
     private func reveal(_ element: XCUIElement) throws {
-        for _ in 0..<5 {
+        for attempt in 0..<10 {
             if element.exists && element.isHittable { return }
-            app.swipeUp()
-        }
-        for _ in 0..<5 {
-            if element.exists && element.isHittable { return }
-            app.swipeDown()
+            // App-wide swipes can begin on the keyboard after a form grows.
+            // Keep both drag points in the visible native content instead.
+            let bounds = app.frame
+            let list = app.collectionViews.firstMatch
+            let rect = list.exists ? list.frame.intersection(bounds) : bounds
+            let navigation = app.navigationBars.firstMatch
+            let tabs = app.tabBars.firstMatch
+            let keyboard = app.keyboards.firstMatch
+            let top = navigation.exists ? max(rect.minY, navigation.frame.maxY) : rect.minY
+            var bottom = tabs.exists ? min(rect.maxY, tabs.frame.minY) : rect.maxY
+            if keyboard.exists { bottom = min(bottom, keyboard.frame.minY) }
+            let viewport = CGRect(x: rect.minX + 6, y: top + 8,
+                                  width: rect.width - 12, height: bottom - top - 16)
+            try require([viewport.minX, viewport.minY, viewport.width, viewport.height].allSatisfy { $0.isFinite }
+                        && !viewport.isEmpty && bounds.contains(viewport),
+                        "Control scrolling must stay inside finite content bounds above the keyboard")
+            let frame = element.exists ? element.frame : .zero
+            let known = !frame.isEmpty && [frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite }
+            let upward = known ? frame.midY > viewport.midY : attempt < 5
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            origin.withOffset(CGVector(dx: viewport.midX, dy: viewport.minY + viewport.height * (upward ? 0.7 : 0.3)))
+                .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: viewport.midX, dy: viewport.minY + viewport.height * (upward ? 0.3 : 0.7))))
         }
         try require(element.exists && element.isHittable, "Required control must be reachable")
     }
