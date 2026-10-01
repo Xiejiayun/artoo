@@ -116,7 +116,10 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
       if (await input.count() && await input.isVisible()) assert.equal(await input.inputValue(), "", "Approved evidence must exclude credential values");
     }
     if (target) {
-      await target.scrollIntoViewIfNeeded(); await expect(target).toBeVisible();
+      // Center the complete evidence region inside its real scroll container.
+      // Chromium's if-needed alignment can leave a fractional edge clipped.
+      await target.evaluate((element) => element.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
+      await expect(target).toBeVisible();
       await expect(target).toBeInViewport({ ratio: 1 });
     }
     return captureMacCorrectionScreenshot(snapshot, { filename: macCorrectionImageNames[index], caption, evidence });
