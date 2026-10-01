@@ -90,7 +90,9 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
   onEvidence(evidence);
   const capture = (target, filename, caption) => captureMacMentionScreenshot(target, { artifactDir, filename, caption, evidence, onScreenshot });
   const viewport = async (target, filename, caption) => {
-    await target.scrollIntoViewIfNeeded();
+    // Center the complete evidence target in its real scroll container; nearest
+    // alignment can leave a fractional edge clipped after a restored draft.
+    await target.evaluate((element) => element.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
     await expect(target).toBeVisible(); await expect(target).toBeInViewport({ ratio: 1 });
     await capture(page, filename, caption);
   };
