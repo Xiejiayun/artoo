@@ -247,39 +247,55 @@ public struct RootView: View {
 }
 
 private struct PairDeviceView: View {
+    private enum InputField: Hashable { case server, name, code }
     @EnvironmentObject private var container: AppContainer
     @State private var server = ""
     @State private var code = ""
     @State private var deviceName = "My iPhone"
     @State private var localHTTP = false
+    @FocusState private var focusedField: InputField?
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    ArtooPageIntro(title: "Good work starts with a conversation", message: "Bring your team's conversations, tasks, and agents together on your phone.", systemImage: "bubble.left.and.bubble.right.fill")
+                    ArtooPageIntro(title: "Your team, on the go", message: "Chat, review work, and keep projects moving.", systemImage: "bubble.left.and.bubble.right.fill")
                 }
-                Section("Connect to your team") {
-                    Text("Sign in to your team's Web app with your own account. Create an iOS pairing code in Settings, then enter it here. This device will use that account's permissions. Keep your code private.")
+                Section {
+                    Text("In Web Settings, choose Connect a device → iOS to get your pairing code.")
+                        .font(.subheadline).foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Team server").font(.caption).foregroundStyle(.secondary)
                         TextField("https://artoo.example.com", text: $server).keyboardType(.URL)
                             .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("serverURL")
+                            .focused($focusedField, equals: .server).submitLabel(.next)
+                            .onSubmit { focusedField = .name }
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Device name").font(.caption).foregroundStyle(.secondary)
                         TextField("Device name", text: $deviceName).accessibilityIdentifier("pairingDeviceName")
+                            .focused($focusedField, equals: .name).submitLabel(.next)
+                            .onSubmit { focusedField = .code }
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Pairing code").font(.caption).foregroundStyle(.secondary)
                         TextField("One-time pairing code", text: $code).textInputAutocapitalization(.characters)
                             .textContentType(.oneTimeCode).privacySensitive()
                             .autocorrectionDisabled().accessibilityIdentifier("pairingCode")
+                            .focused($focusedField, equals: .code).submitLabel(.done)
+                            .onSubmit { focusedField = nil }
                     }
-                    Button("Connect") { Task { await container.pair(server: server, code: code, displayName: deviceName, allowLocalHTTP: localHTTP); code = "" } }
+                    Button("Connect") {
+                        focusedField = nil
+                        Task { await container.pair(server: server, code: code, displayName: deviceName, allowLocalHTTP: localHTTP); code = "" }
+                    }
                         .frame(minHeight: 44)
                         .disabled(container.isConnecting || server.isEmpty || code.isEmpty)
                         .accessibilityIdentifier("pairDevice")
                     if container.isConnecting { ProgressView("Connecting…") }
+                } header: {
+                    Text("Connect to your team")
+                } footer: {
+                    Text("Your phone will use your Web account's permissions. Keep this one-time code private.")
                 }
                 if let error = container.connectionError {
                     Section {
@@ -295,6 +311,15 @@ private struct PairDeviceView: View {
                 Section { NavigationLink("Privacy and data") { PrivacyView() } }
             }.navigationTitle("Welcome to Artoo").scrollDismissesKeyboard(.interactively)
                 .disabled(!container.restored || container.isConnecting)
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        if focusedField != nil {
+                            Spacer()
+                            Button("Done") { focusedField = nil }
+                                .accessibilityIdentifier("pairing.keyboard.done")
+                        }
+                    }
+                }
         }
     }
 }
