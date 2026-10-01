@@ -13,7 +13,7 @@ contracts remain unchanged.
 | Channels, groups, threads, mentions | Searchable directory, author groups, focused threads, fixed composer, historical-message recovery (first milestone) | Primary Channels tab, native conversation and thread context, fixed composer, recovery (first milestone) |
 | Task handoff and review | Task list/board, explicit assignee/computer/runtime, next action, approval gates, artifact origin and durable review history | Task filtering, native creation/assignment, next action, native review and stop confirmation |
 | Goals and plans | Search/filter, clear outcome and criteria, numbered dependent tasks, readable capabilities, contextual planning participants and checkpoints | Outcome/criteria sections, numbered participants, rich agent picker, goal controls above long histories |
-| Runs and evidence | Search by task/run, chronological execution information, readable evidence sections, technical references available on demand | Searchable history, readable task and failure context, native summary navigation |
+| Runs and evidence | Task search and status filters, chronological execution information, readable evidence sections, technical references available on demand | Task/status/run-ID search, readable task and failure context, native summary navigation |
 | Memory | Search/filter and review guidance, readable record details, replacement semantics and recoverable drafts | Content displayed once, clear review and replacement guidance |
 | Agents, computers and skills | Searchable inventory, distinct enabled/work/connection states, registration dialog and two-step permission review | Computer/runtime context, readable permissions, setup guidance and multiline paths |
 | Settings and onboarding | Section navigation, focused project creation, pairing steps, device management, grouped local worker configuration, responsive sign-in | Persistent pairing field labels, code entry assistance, grouped settings |
@@ -65,7 +65,7 @@ skill installation, searches, and widths of 1440, 1024 and 390 pixels where
 applicable. The PR records the final production build, full Web test suite,
 real-server browser workflows and installed desktop checks.
 
-Native changes and Windows-only static verification are documented separately in
+Native changes, simulator results and source provenance are documented separately in
 [native-work-management-ui.md](native-work-management-ui.md). Xcode compilation,
 XCTest and installed macOS results come from Apple CI. VoiceOver, physical-device
 keyboard behavior and a complete manual accessibility-size matrix are separate

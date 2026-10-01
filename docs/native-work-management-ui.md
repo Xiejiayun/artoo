@@ -28,11 +28,23 @@ Approvals, artifact previews, devices, privacy, and workspace settings were audi
 
 The retained aggregate is `ios/native-suites-2026-10-01T17-15-38-449Z.json` in the run's native report artifact, with separate parent/child reports and raw XCTest exports under its four attempt directories. It finished at `2026-10-01T18:09:42.594Z`. The unit-test result is recorded at `17:15:31.720Z` in the iOS job log.
 
-Integration commit `45071640c07b2262e17e51c57f2ca3c0fc07cc3e` subsequently brought in geometry-aware XCTest disclosure helpers. Relative to the tested branch head, it changes only `apps/ios/UITests/SharedServerChatUITests.swift`; native application, Web, desktop, server, and fixture-script sources match. The run above verifies the earlier test inputs; the later helper revisions need their own CI result.
+### Current XCTest helper validation
+
+[Run 36905873890](https://github.com/Xiejiayun/artoo/actions/runs/36905873890) tested branch head `efb13185c5261422af4191eab8a22f5874fd84fe` at actual checkout `7d4b9213dbaea918763e4ba3904d3bde8a2bcd5e`. It passed the shared and installed macOS gates, 146 iOS unit tests, and the nine exact Core/Assistant/Mentions cases. All 38 screenshots from those three suites were retained, decoded and visually reviewed. Each suite had stable source and complete cleanup. This validates the later geometry-aware disclosure helpers; the overall native aggregate nevertheless **failed** in Correction.
+
+The Correction failure captured the Assign button fully inside the content viewport after its fourteenth scroll, but the helper had no observation after that final gesture. Commit `30d6044b648618c39bef2cdb16a4a68201693963` adds the missing observation while retaining the maximum of 14 gestures and every complete-visibility, identity, stable-frame, unobscured-action and workflow-outcome assertion.
+
+Isolated [run 36916600443](https://github.com/Xiejiayun/artoo/actions/runs/36916600443) compiled successfully but failed before reaching that scroll helper: a long press on the keyboard-focused default device-name field exposed no edit menu. Commit `c765cd853e17f07ef7fc71cd330bf681af00f23b` changes only replacement of the exact single-line `pairingDeviceName` input. After checking identity, type, keyboard, bounded old value and full finite visibility, it places the caret inside the trailing field edge and issues one native Delete sequence based on the observed old length. Exact empty and final-text checks remain; other fields retain their existing selection path. Credential screenshot guards and all lifecycle assertions remain unchanged. The 52 relevant contract/evidence/fixture tests, 22 request specimens / 51 routes, Swift grammar check and diff check pass.
+
+The final affected Correction workflow **passed** in [run 36918582321](https://github.com/Xiejiayun/artoo/actions/runs/36918582321), against candidate `c765cd853e17f07ef7fc71cd330bf681af00f23b` at verification commit `1a403583c8d299af47e9ddf98655725960c1907f`. The verification tree differs only in its temporary CI workflow; that workflow is excluded from the product branch. Raw XCTest and the aggregate agree on the exact one required case passing, with no failures, skips, expected failures or unknown cases. All 15 required screenshots were uniquely matched, fully decoded and visually reviewed, including long feedback, retained original/corrected artifacts, Quick Look and the explicit Stop confirmation.
+
+The run finished at `2026-10-01T20:26:25.513Z` on the same iPhone 16 / iOS 18.5 / Xcode 16.4 Release configuration. Parent, native and aggregate source records agree and remain stable, with the same generated tracked-diff fingerprint `61717b07761f860b4d2e2d918a2d13b4d502100b6ccf1d10e611bb95c2c8c377`, zero untracked source files and complete inventory. The checkout is dirty after XcodeGen. All cleanup checks passed without forced termination. Four execution attempts retained two reviews, two artifacts and two worktrees; the Keep Running and stopped-stable checkpoints passed, with exactly one confirmed cancellation and no live owned process when its HTTP 200 response returned.
+
+The latest evidence consists of nine passing Core/Assistant/Mentions cases in run 36905873890 and the separately passing Correction case in run 36918582321. Application, server, fixture, dependency, build and other test inputs are unchanged between those validations; only the Correction helper and inherited documentation changed. These separate source records do not constitute a new single all-suite aggregate. The earlier complete 18-gate / 10-case / 53-screenshot result above retains its own provenance.
 
 ## Captured native UI
 
-These are unmodified frames from the passing Core suite above.
+These are unmodified frames from the passing Core suite in run 36897315175.
 
 | Assignment rejection preserves the selected executor | Proposed plan shows task dependencies and acceptance |
 | --- | --- |
