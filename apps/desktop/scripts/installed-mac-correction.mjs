@@ -94,7 +94,7 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
   const eventRow = (id) => { assert.match(id, /^[A-Za-z0-9_-]+$/); return history().locator(`[data-review-id="${id}"]`); };
   const state = async (status) => {
     await expect(detail().getByRole("heading", { name: fixture.task_title, exact: true })).toBeVisible();
-    await expect(detail().locator(".task-detail__header .ui-badge--status")).toHaveText(status);
+    await expect(detail().locator(".task-detail__meta .ui-badge--status")).toHaveText(status);
   };
   const checkpoint = async (name) => {
     const saved = await scenario.waitForCheckpoint(name);
@@ -259,8 +259,8 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
     await dialog.getByLabel("Title", { exact: true }).fill(fixture.task_title);
     await dialog.getByLabel("Description", { exact: true }).fill("Review an actual report, correct it with persisted feedback, and retain recoverable work after failure or an explicit Stop.");
     await dialog.getByLabel("Acceptance criteria (one per line)", { exact: true }).fill(`${fixture.criterion_1}\n${fixture.criterion_2}`);
-    await dialog.getByText("Required capabilities", { exact: true }).click();
-    await dialog.getByRole("checkbox", { name: "code.modify", exact: true }).check();
+    await dialog.locator("summary").filter({ hasText: "Required capabilities" }).click();
+    await dialog.getByRole("checkbox", { name: "Write code", exact: true }).check();
     const created = await uiPost("/api/v1/tasks", () => dialog.getByRole("button", { name: "Create task", exact: true }).click(), (body) => {
       assert.equal(body.title, fixture.task_title); assert.equal(body.project_id, fixture.project_id);
       assert.deepEqual(body.acceptance_criteria, [fixture.criterion_1, fixture.criterion_2]); assert.deepEqual(body.required_capabilities, ["code.modify"]);
@@ -325,7 +325,7 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
     assert.ok(!retried.run, "Retry must only return this task to Ready");
     const ready = await checkpoint("retried"); await state("ready"); await assertHistory(ready);
     await expect(detail().getByRole("button", { name: "Assign", exact: true })).toBeDisabled();
-    await capture(detail().locator(".task-actions"), 4, "Installed Mac: explicit Retry returns the same task to Ready while a fresh execution approval is still required");
+    await capture(detail().locator(".work-task-actions"), 4, "Installed Mac: explicit Retry returns the same task to Ready while a fresh execution approval is still required");
     pass("The second actual process consumes persisted feedback, fails with its files retained, and Retry creates no run or artifact");
 
     const corrected = await assign(3, "corrected"), correctedArtifact = corrected.observation.snapshot.artifacts.find((item) => item.run_id === corrected.run.id);

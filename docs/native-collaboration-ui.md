@@ -25,7 +25,7 @@ These are interaction references, not claims of feature parity. The client uses 
 ## Verification recorded on Windows
 
 - Static native API contracts passed: 22 request specimens, 51 server routes, and the existing realtime, scoped draft, stable-send, Keychain and icon checks.
-- Exact native UI-suite contract tests passed: 15 tests. This verifies suite selection and evidence validation, not execution of the iOS UI.
+- Exact native UI-suite contract tests passed: 16 tests. This verifies suite selection and evidence validation, not execution of the iOS UI.
 - All ten changed Swift source files parsed with the existing tree-sitter Swift grammar. The modified assignee unit tests, core UI tests and mentions UI tests also parsed. Two targeted unit tests cover disabled/deleted/replaced manual targets and inventory loading; their XCTest execution still requires Apple CI. The grammar rejects the entire `AssistantConversationUITests.swift` file at line 1 both on the unchanged baseline and on this revision, so the full-source syntax script is not reported as passing.
 - The parser needed `--liftoff-only --wasm-num-compilation-tasks=1 --no-wasm-async-compilation` on this host to avoid a Node parallel WebAssembly compiler crash.
 - `git diff --check` passed.
