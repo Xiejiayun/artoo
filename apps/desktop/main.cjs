@@ -58,6 +58,8 @@ function installBridge() {
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280, height: 832, title: "Artoo",
+    minWidth: 360, minHeight: 540, backgroundColor: "#ffffff", autoHideMenuBar: true,
+    ...(process.platform === "win32" ? { icon: path.join(__dirname, "resources", "AppIcon.ico") } : {}),
     webPreferences: { preload: path.join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
   });
   mainWindow.webContents.on("will-navigate", (event, url) => { if (!trustedUrl(url)) event.preventDefault(); });

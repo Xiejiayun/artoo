@@ -70,7 +70,7 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
 
   const { task, runs, approvals, artifacts } = snapshot.data;
   const assignee = taskAssigneeName(task, bootstrap.data);
-  const latestRun = runs.reduce<(typeof runs)[number] | undefined>((latest, run) => latest === undefined || run.sequence > latest.sequence ? run : latest, undefined);
+  const latestRun = runs.reduce<(typeof runs)[number] | undefined>((latest, run) => latest === undefined || run.created_at > latest.created_at ? run : latest, undefined);
   const computer = bootstrap.data?.computers.find((item) => item.id === latestRun?.computer_id);
 
   return (

@@ -144,6 +144,7 @@ public struct ArtooSectionCard<Content: View>: View {
 }
 
 public struct ArtooMetadataGrid: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private let rows: [(String, String)]
 
     public init(_ rows: [(String, String?)]) {
@@ -156,15 +157,19 @@ public struct ArtooMetadataGrid: View {
     public var body: some View {
         VStack(spacing: ArtooTokens.Spacing.xs) {
             ForEach(Array(rows.enumerated()), id: \.offset) { item in
-                HStack(alignment: .firstTextBaseline, spacing: ArtooTokens.Spacing.sm) {
+                let layout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: ArtooTokens.Spacing.xxs))
+                    : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: ArtooTokens.Spacing.sm))
+                layout {
                     Text(item.element.0)
                         .font(ArtooTokens.Typography.caption)
                         .foregroundStyle(ArtooTokens.ColorToken.textMuted)
-                        .frame(width: 86, alignment: .leading)
+                        .frame(width: dynamicTypeSize.isAccessibilitySize ? nil : 86, alignment: .leading)
                     Text(item.element.1)
                         .font(ArtooTokens.Typography.caption)
                         .foregroundStyle(ArtooTokens.ColorToken.text)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
             }
@@ -251,7 +256,7 @@ private struct ProductionBadge: View {
     var body: some View {
         Label(style.label, systemImage: style.systemImage)
             .font(ArtooTokens.Typography.badge)
-            .lineLimit(1)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, ArtooTokens.Spacing.xs)
             .padding(.vertical, ArtooTokens.Spacing.xxs)
             .foregroundStyle(style.foreground)

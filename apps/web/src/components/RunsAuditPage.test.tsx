@@ -109,4 +109,19 @@ describe("RunsAuditPage", () => {
     const region = await screen.findByRole("region", { name: "Audit bundle" });
     expect(within(region).queryByRole("button")).toBeNull();
   });
+
+  it("filters tasks while preserving the evidence already selected", async () => {
+    const done = taskFixture({ id: "done_task", title: "Closed release", status: "done" });
+    const blocked = taskFixture({ id: "blocked_task", title: "Needs review", status: "blocked" });
+    renderWithProviders(<RunsAuditPage />, { client: fakeApi({ bootstrap: async () => bootstrap(), listTasks: async () => ({ tasks: [done, blocked] }), getTaskAuditBundle: async () => ({ bundle: auditBundleFixture({ task: done }) }) }), route: "/runs" });
+    await userEvent.click(await screen.findByRole("button", { name: /Closed release/ }));
+    expect(await screen.findByRole("region", { name: "Task summary" })).toHaveTextContent("Closed release");
+    await userEvent.selectOptions(screen.getByLabelText("Task view"), "attention");
+    const picker = screen.getByRole("navigation", { name: "Tasks" });
+    expect(within(picker).queryByRole("button", { name: /Closed release/ })).not.toBeInTheDocument();
+    expect(within(picker).getByRole("button", { name: /Needs review/ })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Task summary" })).toHaveTextContent("Closed release");
+    await userEvent.type(screen.getByLabelText("Search tasks"), "no matching task");
+    expect(within(picker).getByText("No tasks found")).toBeInTheDocument();
+  });
 });

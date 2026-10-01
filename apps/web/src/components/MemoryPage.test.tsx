@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -127,6 +127,7 @@ describe("MemoryPage", () => {
     renderWithProviders(<MemoryPage />, { client, route: "/memory" });
 
     await userEvent.click(await screen.findByText("old rule"));
+    await userEvent.click(screen.getByText("Provenance and record details"));
     const detail = screen.getByRole("region", { name: "Provenance" });
     expect(within(detail).getByText("task_99")).toBeInTheDocument();
     expect(screen.getByText(/Superseded by mem_new/)).toBeInTheDocument();
@@ -157,5 +158,44 @@ describe("MemoryPage", () => {
       expect.objectContaining({ scope: "project", project_id: "proj_artoo", text: "newer rule" }),
       expect.any(String),
     );
+  });
+
+  it("keeps a replacement draft after a failed save and sends it when retried", async () => {
+    const supersedeMemory = vi.fn().mockRejectedValueOnce(new Error("Connection interrupted")).mockResolvedValue({ memory: accepted, superseded: accepted });
+    renderWithProviders(<MemoryPage />, { client: fakeApi({ bootstrap: async () => bootstrap(), listMemories: async () => ({ memories: [accepted] }), getMemoryContext: async () => ({ memories: [], source_memory_ids: [] }), supersedeMemory }), route: "/memory" });
+    await userEvent.click(await screen.findByText("accepted rule"));
+    await userEvent.click(screen.getByRole("button", { name: "Supersede" }));
+    await userEvent.type(screen.getByLabelText("Replacement text"), "Preserve this carefully written replacement");
+    await userEvent.click(screen.getByRole("button", { name: "Save replacement" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Connection interrupted");
+    expect(screen.getByLabelText("Replacement text")).toHaveValue("Preserve this carefully written replacement");
+    await userEvent.click(screen.getByRole("button", { name: "Save replacement" }));
+    await waitFor(() => expect(supersedeMemory).toHaveBeenCalledTimes(2));
+    expect(supersedeMemory.mock.calls[1]?.[1]).toMatchObject({ text: "Preserve this carefully written replacement" });
+    await waitFor(() => expect(screen.queryByLabelText("Replacement text")).not.toBeInTheDocument());
+  });
+
+  it("keeps replacement drafts scoped to their selected memory", async () => {
+    const another = memoryFixture({ ...accepted, id: "other_memory", text: "Another rule" });
+    renderWithProviders(<MemoryPage />, { client: fakeApi({ bootstrap: async () => bootstrap(), listMemories: async () => ({ memories: [accepted, another] }), getMemoryContext: async () => ({ memories: [], source_memory_ids: [] }) }), route: "/memory" });
+    await userEvent.click(await screen.findByText("accepted rule"));
+    await userEvent.click(screen.getByRole("button", { name: "Supersede" }));
+    await userEvent.type(screen.getByLabelText("Replacement text"), "Only belongs to the first memory");
+    await userEvent.click(screen.getByText("Another rule"));
+    expect(screen.queryByLabelText("Replacement text")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Supersede" }));
+    expect(screen.getByLabelText("Replacement text")).toHaveValue("");
+  });
+
+  it("searches content and tags without changing context eligibility", async () => {
+    renderWithProviders(<MemoryPage />, { client: fakeApi({ bootstrap: async () => bootstrap(), listMemories: async () => ({ memories: [proposed, { ...accepted, tags: ["release"] }] }), getMemoryContext: async () => ({ memories: [accepted], source_memory_ids: [accepted.id] }) }), route: "/memory" });
+    const list = await screen.findByRole("region", { name: "Memories" });
+    await within(list).findByText("proposed idea");
+    await userEvent.type(screen.getByLabelText("Search memories"), "release");
+    expect(within(list).queryByText("proposed idea")).not.toBeInTheDocument();
+    expect(within(list).getByText("accepted rule")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Injectable into ContextPack" })).getByText("accepted rule")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(within(list).getByText("proposed idea")).toBeInTheDocument();
   });
 });

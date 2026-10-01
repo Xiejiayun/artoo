@@ -29,11 +29,11 @@
     "electronVersion": "44.4.3",
     "asar": true,
     "npmRebuild": false,
-    "files": ["main.cjs", "preload.cjs", "connection-store.cjs", "desktop-controller.cjs", "codex-settings.cjs", "renderer/**", "daemon/**"],
+    "files": ["main.cjs", "preload.cjs", "connection-store.cjs", "desktop-controller.cjs", "codex-settings.cjs", "resources/AppIcon.ico", "renderer/**", "daemon/**"],
     "asarUnpack": ["daemon/**"],
     "directories": { "output": "release" },
     "mac": { "target": "dir", "category": "public.app-category.developer-tools", "icon": "resources/AppIcon.icns" },
-    "win": { "target": "nsis" },
+    "win": { "target": "nsis", "icon": "resources/AppIcon.ico" },
     "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
   }
 }

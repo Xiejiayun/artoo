@@ -4,13 +4,14 @@ import type { Memory } from "@artoo/domain";
 
 import { Badge, Button, Textarea } from "../ui/index.js";
 import { MEMORY_STATUS_TONE } from "./MemoryPage.js";
+import "../ui/work-insights.css";
 
 interface MemoryDetailProps {
   memory: Memory;
   busy: boolean;
   onAccept: () => void;
   onReject: () => void;
-  onSupersede: (text: string) => void;
+  onSupersede: (text: string) => Promise<void>;
 }
 
 /** Renders a memory's full record — content, provenance, supersession links, and
@@ -38,24 +39,20 @@ export function MemoryDetail({
   return (
     <div className="memory-detail">
       <header className="memory-detail__head">
-        <h2 className="t-h3 t-mono">{memory.id}</h2>
+        <h2 className="t-h2">Knowledge detail</h2>
         <Badge tone={MEMORY_STATUS_TONE[memory.status] ?? "neutral"}>{memory.status}</Badge>
       </header>
-      <dl className="inv-meta">
+      <p className="insights-help">{memory.status === "proposed" ? "Review this proposal before making it available to future runs." : memory.status === "accepted" ? "This knowledge is accepted. Replace it when guidance changes." : "This record is kept for reference and is unavailable to future runs."}</p>
+      <dl className="inv-meta insights-memory-meta">
         <div className="inv-row">
           <dt>Scope</dt>
           <dd>{memory.scope}</dd>
         </div>
         <div className="inv-row">
           <dt>Confidence</dt>
-          <dd>{memory.confidence}</dd>
+          <dd>{Math.round(memory.confidence * 100)}%</dd>
         </div>
-        <div className="inv-row">
-          <dt>Author</dt>
-          <dd>
-            {memory.author_type}:{memory.author_id}
-          </dd>
-        </div>
+        <div className="inv-row"><dt>Created by</dt><dd>{memory.author_type === "agent" ? "Agent" : memory.author_type === "user" ? "Team member" : memory.author_type}</dd></div>
         {memory.project_id != null ? (
           <div className="inv-row">
             <dt>Project</dt>
@@ -85,6 +82,8 @@ export function MemoryDetail({
         )}
       </section>
 
+      <details className="insights-disclosure"><summary>Provenance and record details</summary>
+      <dl className="inv-meta"><div className="inv-row"><dt>Memory ID</dt><dd><code>{memory.id}</code></dd></div><div className="inv-row"><dt>Author reference</dt><dd>{memory.author_type}:{memory.author_id}</dd></div></dl>
       {hasProvenance ? (
         <section className="memory-detail__section" aria-label="Provenance">
           <h3 className="inventory-subtitle">Provenance</h3>
@@ -116,6 +115,7 @@ export function MemoryDetail({
         <p className="t-small t-subtle">Created {memory.created_at}</p>
         {memory.updated_at != null ? <p className="t-small t-subtle">Updated {memory.updated_at}</p> : null}
       </section>
+      </details>
 
       {memory.status === "proposed" ? (
         <div className="memory-actions">
@@ -133,25 +133,29 @@ export function MemoryDetail({
           {showSupersede ? (
             <form
               className="u-stack"
-              onSubmit={(event) => {
+              onSubmit={async (event) => {
                 event.preventDefault();
-                onSupersede(replacement);
-                setReplacement("");
-                setShowSupersede(false);
+                if (busy || !replacement.trim()) return;
+                try {
+                  await onSupersede(replacement);
+                  setReplacement("");
+                  setShowSupersede(false);
+                } catch { /* Keep the draft; the parent displays the mutation error. */ }
               }}
             >
               <Textarea
                 label="Replacement text"
                 value={replacement}
+                disabled={busy}
                 onChange={(event) => setReplacement(event.target.value)}
                 required
               />
-              <p className="hint">Creates a new accepted memory (same scope/refs) and retires this one.</p>
+              <p className="hint">Creates an accepted replacement with the same scope and retires this memory immediately.</p>
               <div className="memory-actions">
                 <Button type="submit" variant="primary" size="sm" disabled={busy || replacement.trim() === ""}>
                   Save replacement
                 </Button>
-                <Button type="button" variant="ghost" size="sm" onClick={() => setShowSupersede(false)}>
+                <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setShowSupersede(false)}>
                   Cancel
                 </Button>
               </div>

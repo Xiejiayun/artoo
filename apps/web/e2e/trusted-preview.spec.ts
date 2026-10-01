@@ -71,7 +71,7 @@ test("goals materialize a reviewed dependent plan and preserve pause/resume chec
   await page.getByRole("button", { name: "New goal" }).click();
   await page.getByLabel("Goal title").fill(title);
   await page.getByLabel("Objective", { exact: true }).fill("Deliver an auditable preview");
-  await page.getByLabel("Goal acceptance criteria").fill("Tests pass\nEvidence reviewed");
+  await page.getByRole("dialog", { name: "New goal", exact: true }).getByRole("textbox", { name: "Goal acceptance criteria", exact: true }).fill("Tests pass\nEvidence reviewed");
   await page.getByRole("button", { name: "Create goal", exact: true }).click();
   await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Propose plan", exact: true }).click();
@@ -122,7 +122,7 @@ test("project management, device pairing/revocation and reviewed skill installat
   await expect(page.getByText("No task selected", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Generate pairing code" }).click();
-  const code = await page.getByRole("region", { name: "Device pairing" }).locator("strong").textContent();
+  const code = await page.getByRole("region", { name: "Device pairing" }).getByLabel("Pairing code", { exact: true }).textContent();
   const deviceName = unique("Preview Windows");
   const claim = await request.post("/api/v1/devices/claim", { data: { code, platform: "windows", display_name: deviceName, app_version: "e2e" } });
   expect(claim.status()).toBe(201);

@@ -37,16 +37,21 @@ struct TeamView: View {
                             Text("Open a computer to configure its first agent.").font(.subheadline).foregroundStyle(.secondary)
                         }
                         ForEach(data["agent_instances"].records) { instance in
+                            let assignee = AssigneeLabel(instance: instance, agents: data["agents"].records, computers: data["computers"].records, options: data["agent_instances"].records)
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack(alignment: .top, spacing: 12) {
                                     ArtooAvatar(name: instance.title, systemImage: "sparkles")
                                     RecordRow(item: instance)
                                 }
-                                Text(instance["workspace_root"].text).font(.caption).textSelection(.enabled)
+                                Text(assignee.context).font(.subheadline).foregroundStyle(.secondary)
+                                Text(assignee.workspace).font(.caption).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                                if let identity = assignee.identityDetail {
+                                    Text(identity).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                }
                                 if container.isAdministrator {
                                     Button(instance.status == "disabled" ? "Enable" : "Disable") { Task {
                                         await model.perform(path: "/api/v1/agent-instances/\(apiPart(instance.id))", method: "PATCH", body: .object(["enabled": .bool(instance.status == "disabled")]))
-                                    } }.disabled(model.busy)
+                                    } }.disabled(model.busy).frame(minHeight: 44)
                                 }
                             }
                         }
@@ -80,7 +85,10 @@ private struct ComputerDetailView: View {
     }
     var body: some View {
         Form {
-            Section("Computer") { RecordRow(item: computer, showStatus: false); Text("\(computer["os"].text) · \(computer["arch"].text)") }
+            Section("Computer") {
+                RecordRow(item: computer, showStatus: false)
+                ArtooMetadataGrid([("System", computer["os"].text), ("Architecture", computer["arch"].text)])
+            }
             Section("Execution daemon") {
                 DaemonStatusRow(model: daemons, computerId: computer.id)
                 Text("Status is confirmed by the server every five seconds while this screen is visible.").font(.caption)
@@ -89,6 +97,9 @@ private struct ComputerDetailView: View {
             Section("Advertised runtimes") {
                 ForEach(model.state.value?["runtimes"].records ?? []) { runtime in RecordRow(item: runtime) }
                 if model.state.isLoading { ProgressView() }
+                else if model.state.value?["runtimes"].records.isEmpty == true {
+                    Text("No runtimes have been reported. Start the execution daemon on this computer to publish its available runtimes.").font(.subheadline).foregroundStyle(.secondary)
+                }
             }
             if container.isAdministrator {
                 Section("Configure an agent") {
@@ -97,15 +108,18 @@ private struct ComputerDetailView: View {
                         ForEach((model.state.value?["runtimes"].records ?? []).filter { $0.status == "available" }) { item in Text(item["runtime"].text).tag(item["runtime"].text) }
                     }
                     TextField("Agent name", text: $name)
-                    TextField("Absolute workspace path on this computer", text: $workspace).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    TextField("Absolute workspace path on this computer", text: $workspace, axis: .vertical).lineLimit(1...4)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Text("Tasks assigned to this agent run inside this folder on \(computer.title).").font(.footnote).foregroundStyle(.secondary)
                     Button("Create agent instance") { Task {
                         success = await model.perform(path: "/api/v1/computers/\(apiPart(computer.id))/instances", body: .object(["runtime": .string(runtime), "display_name": .string(name), "workspace_root": .string(workspace)]))
-                    } }.disabled(model.busy || runtime.isEmpty || name.isEmpty || workspace.isEmpty)
+                    } }.disabled(model.busy || runtime.isEmpty || name.isEmpty || workspace.isEmpty).frame(minHeight: 44)
                     if success { Label("Agent configured", systemImage: "checkmark.circle") }
                 }
             }
             if let error = model.actionError ?? model.state.errorMessage { Text(error).foregroundStyle(.red) }
-        }.navigationTitle(computer.title).liveRefresh { await model.load() }.liveRefresh(interval: 5) { await daemons.load() }
+        }.navigationTitle(computer.title).navigationBarTitleDisplayMode(.inline).scrollDismissesKeyboard(.interactively)
+            .liveRefresh { await model.load() }.liveRefresh(interval: 5) { await daemons.load() }
     }
 }
 
@@ -122,7 +136,7 @@ private struct DaemonStatusRow: View {
                     .accessibilityIdentifier("daemonStatus.\(computerId)").accessibilityValue(status)
                 if let value {
                     Text("\(status == "unknown" ? "Last known: " : "")\(value.activeRuns) active runs").font(.caption)
-                    if let heartbeat = value.lastHeartbeatAt { Text("Last heartbeat: \(heartbeat)").font(.caption) }
+                    if let heartbeat = value.lastHeartbeatAt { Text("Last heartbeat: \(ConversationMetadata.timestamp(heartbeat))").font(.caption) }
                     ForEach(Array(value.runtimes.enumerated()), id: \.offset) { _, runtime in
                         Text("\(runtime["runtime"].text): \(runtime["status"].text)").font(.caption)
                     }
@@ -216,11 +230,12 @@ struct ProjectsView: View {
             } }
             Section("Create project") {
                 TextField("Name", text: $name)
-                TextField("Absolute workspace path", text: $workspace).textInputAutocapitalization(.never).autocorrectionDisabled()
+                TextField("Absolute workspace path", text: $workspace, axis: .vertical).lineLimit(1...4)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
                 Button("Create") { Task { await create() } }.disabled(busy || name.isEmpty || workspace.isEmpty)
             }
             if let error { Text(error).foregroundStyle(.red) }
-        }.navigationTitle("Projects")
+        }.navigationTitle("Projects").navigationBarTitleDisplayMode(.inline).scrollDismissesKeyboard(.interactively)
     }
     private func create() async {
         busy = true; error = nil; defer { busy = false }
