@@ -982,11 +982,13 @@ final class SharedServerChatUITests: XCTestCase {
     private func selectAgent(index: Int, id: String, name: String) throws {
         let picker = app.descendants(matching: .any).matching(identifier: "discussion.participant.\(index).instance").firstMatch
         try reveal(picker); picker.tap()
-        let identified = app.descendants(matching: .any).matching(identifier: "discussion.agentOption.\(id)").firstMatch
-        // Menu options expose their SwiftUI Text as a button on some iOS
-        // versions; the exact display-name suffix also identifies that option.
-        let option = identified.waitForExistence(timeout: 2) ? identified : app.buttons.matching(NSPredicate(format: "label ENDSWITH %@", "· \(name)")).firstMatch
+        let option = app.descendants(matching: .any).matching(identifier: "discussion.agentOption.\(id)").firstMatch
+        // Navigation picker rows can be outside the visible list. Reveal the
+        // exact instance before selecting it; display names need not be unique.
+        try reveal(option)
         try require(option.waitForExistence(timeout: 10), "The enrolled agent instance must be a selectable option")
+        try require(option.label.contains(name) && option.isEnabled && option.isHittable,
+                    "The exact enrolled instance must show its readable name and be available to select")
         option.tap()
     }
 

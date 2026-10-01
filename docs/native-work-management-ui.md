@@ -13,7 +13,7 @@ This pass builds on the conversation-first native UI. It addresses remaining nav
 
 ## Retained contracts
 
-All 68 pre-existing accessibility identifier declarations and all API route literals in the six edited source files remain present. The task's model-owned feedback, review history, artifact provenance, stop confirmation, and execution-workspace controls remain intact. Goal cancellation still requires the existing explicit alert. Pending discussion retries bypass fresh-selection validation only to resend their captured request unchanged. No UI test helper, request model, server route, or networking implementation was edited in this pass.
+All 68 pre-existing accessibility identifier declarations and all API route literals in the six edited source files remain present. The task's model-owned feedback, review history, artifact provenance, stop confirmation, and execution-workspace controls remain intact. Goal cancellation still requires the existing explicit alert. Pending discussion retries bypass fresh-selection validation only to resend their captured request unchanged. The discussion-agent UI test now reveals and selects the exact instance by its stable ID in the navigation picker. Request models, server routes, and networking implementations were not edited in this pass.
 
 Approvals, artifact previews, devices, privacy, and workspace settings were audited. Their existing decision boundaries and navigation were retained; shared metadata and badge improvements benefit their existing content where applicable.
 
