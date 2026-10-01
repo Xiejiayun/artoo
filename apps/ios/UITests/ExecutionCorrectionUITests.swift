@@ -570,13 +570,17 @@ final class ExecutionCorrectionUITests: XCTestCase {
 
     @MainActor
     private func revealText(_ element: XCUIElement, identifier: String, preferTop: Bool = false) throws {
-        for attempt in 0..<14 {
+        for attempt in 0...14 {
             let area = try viewport(), frame = element.exists ? element.frame : .zero
             let known = !frame.isEmpty && !frame.isNull && !frame.isInfinite
             if known {
                 try require(frame.height <= area.height && frame.width <= area.width,
                             "Complete text \(identifier) cannot fit the content viewport (text \(frame.size), viewport \(area.size))")
                 if area.contains(frame) { return }
+            }
+            // Observe the final gesture's result without adding another gesture.
+            guard attempt < 14 else { break }
+            if known {
                 try align(frame, inside: area)
             } else {
                 try drag(area, upward: attempt < 7 ? !preferTop : preferTop)
