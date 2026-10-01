@@ -52,8 +52,8 @@ struct CollaborationView: View {
                             .font(.caption).foregroundStyle(.secondary).listRowSeparator(.hidden)
                     }
                 }
-                if let root = threadRoot { Section("Original message") { messageContent(root) } }
-                if let focus = focusedMessage, focus.id != threadRoot?.id { Section("Mentioned reply") { messageContent(focus) } }
+                if let root = threadRoot { Section("Original message") { messageContent(root).id(root.id) } }
+                if let focus = focusedMessage, focus.id != threadRoot?.id { Section("Mentioned reply") { messageContent(focus).id(focus.id) } }
                 Section {
                     if chat.hasOlder {
                         Button { Task { await chat.loadOlder() } } label: { Label("Load earlier messages", systemImage: "arrow.up") }
@@ -114,12 +114,14 @@ struct CollaborationView: View {
             .onChange(of: deliveryDetailsRequest) { _, _ in
                 withAnimation { proxy.scrollTo("deliveryStatus", anchor: .top) }
             }
+            .onChange(of: chat.loading) { _, loading in
+                // A mention can target the root of a thread with no replies.
+                if !loading && chat.messages.isEmpty { placeInitialHistory(using: proxy) }
+            }
             .onChange(of: chat.messages.map(\.id)) { previous, current in
                 guard let latest = current.last else { return }
                 if !placedInitialHistory {
-                    placedInitialHistory = true
-                    // A mention deep link must remain focused on its historical reply.
-                    if focusedMessage == nil { proxy.scrollTo(latest, anchor: .bottom) }
+                    placeInitialHistory(using: proxy)
                     return
                 }
                 guard previous.last != latest else { return } // Loading older history keeps the reader's place.
@@ -285,7 +287,20 @@ struct CollaborationView: View {
             && (!isAgentRequest || selectedAgentAvailability.allowsNewRequest)
     }
     private var conversationTitle: String { roomName.isEmpty ? "Team discussion" : "# \(roomName)" }
-    private var visibleMessages: [Message] { chat.messages.filter { $0.id != focusedMessage?.id } }
+    private func placeInitialHistory(using proxy: ScrollViewProxy) {
+        guard !placedInitialHistory else { return }
+        if let focus = focusedMessage {
+            placedInitialHistory = true
+            proxy.scrollTo(focus.id, anchor: .center)
+        } else if let latest = chat.messages.last {
+            placedInitialHistory = true
+            proxy.scrollTo(latest.id, anchor: .bottom)
+        }
+    }
+
+    private var visibleMessages: [Message] {
+        chat.messages.filter { $0.id != threadRoot?.id && $0.id != focusedMessage?.id }
+    }
 
     private func startsNewDay(_ index: Int) -> Bool {
         guard index > 0 else { return true }
