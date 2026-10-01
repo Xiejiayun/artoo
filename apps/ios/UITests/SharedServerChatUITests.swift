@@ -1128,7 +1128,30 @@ final class SharedServerChatUITests: XCTestCase {
                     let requiredHeight = frame.height <= viewport.height ? frame.height : viewport.height / 2
                     if !visible.isNull && visible.width >= frame.width - 1
                         && visible.height >= requiredHeight - 1 { return }
-                    scrollUp = frame.midY > viewport.midY
+                    // Move only the distance needed to reveal the required
+                    // height. A fixed swipe can fling an expanded reply past
+                    // the opposite edge and oscillate without showing it all.
+                    let above = max(0, viewport.minY + requiredHeight - frame.maxY)
+                    let below = max(0, frame.minY + requiredHeight - viewport.maxY)
+                    try require(above > 0 || below > 0,
+                                "Vertical scrolling cannot resolve horizontal text clipping")
+                    scrollUp = below > 0
+                    let gap = scrollUp ? below : above
+                    var distance = min(viewport.height * 0.3, max(24, gap + 12))
+                    if frame.height <= viewport.height {
+                        // Near-screen-height text has too little spare room
+                        // for the normal minimum drag or interior margin.
+                        distance = min(distance, gap + max(0, viewport.height - frame.height))
+                    }
+                    let start = CGPoint(x: viewport.midX, y: viewport.midY + (scrollUp ? distance : -distance) / 2)
+                    let end = CGPoint(x: viewport.midX, y: viewport.midY - (scrollUp ? distance : -distance) / 2)
+                    try require(distance.isFinite && distance > 0 && viewport.contains(start) && viewport.contains(end),
+                                "Text alignment must stay inside the unobscured viewport")
+                    let origin = app.coordinate(withNormalizedOffset: .zero)
+                    origin.withOffset(CGVector(dx: start.x, dy: start.y))
+                        .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: end.x, dy: end.y)),
+                               withVelocity: .slow, thenHoldForDuration: 0.2)
+                    continue
                 }
             }
             // Short drags start inside the actual content, avoiding tab bars and
