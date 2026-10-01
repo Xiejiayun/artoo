@@ -215,7 +215,7 @@ async function main() {
         await expect(card.getByText("revoked", { exact: true })).toBeVisible();
         // This card contains device metadata only; pairing controls are outside
         // the captured element and this page never generates a pairing code.
-        await expect(ownerPage.getByRole("region", { name: "Device pairing", exact: true }).locator("strong")).toHaveCount(0);
+        await expect(ownerPage.getByRole("region", { name: "Device pairing", exact: true }).getByLabel("Pairing code", { exact: true })).toHaveCount(0);
         await card.screenshot({ path: join(output, "native-owner-revoked-member-device.png") });
         report.member_revocation_owner = { device_id: target.id, connections_closed: result.connections_closed,
           active_session_status: activeSession.status, revoked_session_status: revokedSession.status, action: "Owner Settings UI confirmed revoke" };

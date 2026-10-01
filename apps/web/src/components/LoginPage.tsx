@@ -4,6 +4,8 @@
  * fall back to the app root. The server validates again — this is defence in depth.
  */
 import { Button } from "../ui/index.js";
+import { CheckCircle2, Hash, MessageSquare, ArrowRight } from "lucide-react";
+import "../ui/settings.css";
 
 export function sanitizeReturnTo(value: string): string {
   if (!value.startsWith("/")) return "/";
@@ -34,14 +36,14 @@ export function LoginPage({
   }
 
   return (
-    <div className="login-page">
-      <div className="login-card">
-        <span className="login-brand">artoo</span>
+    <div className="login-page welcome-page">
+      <div className="welcome-panel"><span className="login-brand"><span className="brand-mark" aria-hidden="true">a</span>artoo</span><h2>A shared place<br />to move work forward.</h2><p>Talk with your team, bring agents into the conversation, and turn decisions into finished work.</p><div className="welcome-features"><span><Hash size={20} aria-hidden="true" />Channels for every conversation</span><span><MessageSquare size={20} aria-hidden="true" />Focused replies, shared context</span><span><CheckCircle2 size={20} aria-hidden="true" />Clear assignments and review</span></div></div>
+      <div className="login-card welcome-signin">
         <h1 className="t-display">Sign in to artoo</h1>
         <p className="t-body t-muted login-lede">
-          Your team&apos;s shared workspace for agent tasks, runs, approvals, and memory.
+          Pick up the conversation with your team.
         </p>
-        <Button variant="primary" size="md" className="login-submit" onClick={signIn}>
+        <Button variant="primary" size="md" className="login-submit" iconRight={ArrowRight} onClick={signIn}>
           Sign in with Google
         </Button>
         <p className="login-foot t-caption t-subtle">

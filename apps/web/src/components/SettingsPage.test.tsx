@@ -13,6 +13,45 @@ function device(patch: Partial<Device> = {}): Device {
 }
 
 describe("device enrollment in Settings", () => {
+  it("keeps a pending project creation visible until it settles and preserves fields after failure", async () => {
+    let rejectCreate!: (error: Error) => void;
+    const createProject = vi.fn(() => new Promise<never>((_resolve, reject) => { rejectCreate = reject; }));
+    renderWithProviders(<SettingsPage />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), listDevices: async () => ({ devices: [] }), createProject }) });
+    await userEvent.click(await screen.findByRole("button", { name: "New project" }));
+    const dialog = screen.getByRole("dialog", { name: "New project" });
+    await userEvent.type(within(dialog).getByLabelText("Project name"), "Launch workspace");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create project" }));
+    await waitFor(() => expect(createProject).toHaveBeenCalledOnce());
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Project name")).toBeDisabled();
+    rejectCreate(new Error("Could not save project"));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Could not save project");
+    expect(within(dialog).getByLabelText("Project name")).toHaveValue("Launch workspace");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("scrolls between sections without replacing the desktop hash route", async () => {
+    const previousScroll = HTMLElement.prototype.scrollIntoView;
+    const scroll = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
+    const previousHash = window.location.hash;
+    window.location.hash = "#/settings";
+    try {
+      renderWithProviders(<SettingsPage />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), listDevices: async () => ({ devices: [] }) }) });
+      const navigation = screen.getByRole("navigation", { name: "Settings sections" });
+      await userEvent.click(within(navigation).getByRole("button", { name: "Connect a device" }));
+      expect(scroll).toHaveBeenCalledOnce();
+      expect(scroll.mock.instances[0]).toHaveAttribute("id", "pairing-settings");
+      expect(window.location.hash).toBe("#/settings");
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previousScroll;
+      window.location.hash = previousHash;
+    }
+  });
+
   it.each(["owner", "admin"] as const)("lets an %s confirm enrollment and refreshes the registered computer", async (role) => {
     const current = device();
     const enrollDevice = vi.fn(async () => {

@@ -5,6 +5,7 @@ import QuickLook
 /// approvals, and artifacts. Drives the create → ready → assign → review loop.
 public struct TaskDetailView: View {
     private enum InputField: Hashable { case approval, review }
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @StateObject private var model: TaskDetailViewModel
     @State private var showingAssign = false
     @State private var artifactURL: URL?
@@ -150,7 +151,10 @@ public struct TaskDetailView: View {
                         .foregroundStyle(ArtooTokens.ColorToken.text)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    HStack(spacing: ArtooTokens.Spacing.xs) {
+                    let badgeLayout = dynamicTypeSize.isAccessibilitySize
+                        ? AnyLayout(VStackLayout(alignment: .leading, spacing: ArtooTokens.Spacing.xs))
+                        : AnyLayout(HStackLayout(spacing: ArtooTokens.Spacing.xs))
+                    badgeLayout {
                         StatusBadge(task.status)
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel("Task status")
@@ -562,13 +566,7 @@ public struct RunSummaryView: View {
             Section("Run") {
                 ArtooSectionCard {
                     VStack(alignment: .leading, spacing: ArtooTokens.Spacing.sm) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(run.displayTitle)
-                                .font(ArtooTokens.Typography.headline)
-                                .foregroundStyle(ArtooTokens.ColorToken.text)
-                            Spacer()
-                            RunStatusBadge(run.status)
-                        }
+                        RunIdentityHeading(run: run).font(ArtooTokens.Typography.headline)
                         ArtooMetadataGrid([
                             ("Run", run.id),
                             ("Task", run.taskId),
@@ -633,6 +631,25 @@ public struct RunSummaryView: View {
     }
 }
 
+private struct RunIdentityHeading: View {
+    let run: Run
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: ArtooTokens.Spacing.sm) {
+                Text(run.displayTitle)
+                RunStatusBadge(run.status)
+            }.fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xs) {
+                Text(run.displayTitle).fixedSize(horizontal: false, vertical: true)
+                RunStatusBadge(run.status)
+            }
+        }
+        .foregroundStyle(ArtooTokens.ColorToken.text)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 private struct RunTimelineRow: View {
     let run: Run
 
@@ -650,14 +667,7 @@ private struct RunTimelineRow: View {
             .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xs) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(run.displayTitle)
-                        .font(ArtooTokens.Typography.subheadline.weight(.semibold))
-                        .foregroundStyle(ArtooTokens.ColorToken.text)
-                        .lineLimit(1)
-                    Spacer()
-                    RunStatusBadge(run.status)
-                }
+                RunIdentityHeading(run: run).font(ArtooTokens.Typography.subheadline.weight(.semibold))
                 ArtooMetadataGrid([
                     ("Run", run.id),
                     ("Runtime", run.runtimeId),

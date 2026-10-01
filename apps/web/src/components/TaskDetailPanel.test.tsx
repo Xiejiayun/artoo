@@ -85,4 +85,18 @@ describe("TaskDetailPanel", () => {
     await userEvent.click(assign);
     expect(assignTask).toHaveBeenCalledWith("task_1", { mode: "manual", agent_instance_id: "instance_mock_coder" }, expect.any(String));
   });
+
+  it("shows the newest run's computer even when an older run has more ingested events", async () => {
+    const bootstrap = bootstrapFixture();
+    bootstrap.computers.push({ ...bootstrap.computers[0]!, id: "new_computer", display_name: "New execution computer" });
+    renderWithProviders(<TaskDetailPanel taskId="task_1" />, { client: fakeApi({
+      bootstrap: async () => bootstrap,
+      getTask: async () => ({ task: taskFixture({ id: "task_1", title: "Latest execution", status: "done" }), room: null, approvals: [], artifacts: [], runs: [
+        runFixture({ id: "old_run", status: "completed", computer_id: "computer_local_mock", created_at: "2026-09-01T00:00:00Z", sequence: 100 }),
+        runFixture({ id: "new_run", status: "completed", computer_id: "new_computer", created_at: "2026-10-01T00:00:00Z", sequence: 2 }),
+      ] }),
+    }) });
+    expect(await screen.findByText("New execution computer")).toBeInTheDocument();
+    expect(screen.queryByText("Local Mock")).not.toBeInTheDocument();
+  });
 });

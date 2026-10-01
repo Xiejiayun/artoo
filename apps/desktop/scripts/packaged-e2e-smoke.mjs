@@ -354,8 +354,8 @@ ${isMac ? "}" : ""}
     await ownerPage.getByLabel("Device platform").selectOption(isMac ? "macos" : "windows");
     await ownerPage.getByRole("button", { name: "Generate pairing code" }).click();
     const pairingRegion = ownerPage.getByRole("region", { name: "Device pairing" });
-    await expect(pairingRegion.locator("strong")).toBeVisible();
-    const pairingCode = await pairingRegion.locator("strong").textContent();
+    await expect(pairingRegion.getByLabel("Pairing code", { exact: true })).toBeVisible();
+    const pairingCode = await pairingRegion.getByLabel("Pairing code", { exact: true }).textContent();
     check("Production auth required; owner creates a real one-use pairing code");
 
     if (isMac) {

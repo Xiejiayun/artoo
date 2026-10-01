@@ -1,6 +1,7 @@
 import { useProject } from "../app/useProject.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { BookOpen } from "lucide-react";
 
 import type { Memory, ProposeMemoryRequest } from "@artoo/domain";
 
@@ -8,9 +9,10 @@ import { newIdempotencyKey } from "../api/idempotency.js";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { useSubscription } from "../app/RealtimeContext.js";
-import { Badge, EmptyState, ErrorState, Select, type Tone } from "../ui/index.js";
+import { Badge, Button, EmptyState, ErrorState, Input, Select, type Tone } from "../ui/index.js";
 import { MemoryDetail } from "./MemoryDetail.js";
 import { ActionError } from "./ActionError.js";
+import "../ui/work-insights.css";
 
 const STATUS_FILTERS = ["all", "proposed", "accepted", "rejected", "superseded"] as const;
 const SCOPE_FILTERS = ["all", "task", "project", "organization", "code"] as const;
@@ -39,6 +41,7 @@ export function MemoryPage(): React.ReactNode {
   const [status, setStatus] = useState<(typeof STATUS_FILTERS)[number]>("all");
   const [scope, setScope] = useState<(typeof SCOPE_FILTERS)[number]>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
 
   const { bootstrap, projectId } = useProject();
   useSubscription(projectId === undefined ? [] : [`project:${projectId}`]);
@@ -100,20 +103,23 @@ export function MemoryPage(): React.ReactNode {
   if (bootstrap.isError || projectId === undefined) {
     return (
       <div className="memory">
-        <ErrorState title="Failed to load memory" />
+        <ErrorState title="Failed to load memory" action={<Button onClick={() => void bootstrap.refetch()}>Retry</Button>} />
       </div>
     );
   }
 
   const items = memories.data?.memories ?? [];
+  const matching = items.filter((memory) => `${summarize(memory)} ${memory.tags.join(" ")}`.toLowerCase().includes(search.trim().toLowerCase()));
   const selected = items.find((memory) => memory.id === selectedId) ?? null;
   const busy = accept.isPending || reject.isPending || supersede.isPending;
 
   return (
-    <div className="memory">
-      <header className="memory-header">
-        <h1 className="t-h1">Memory</h1>
-        <div className="memory-filters">
+    <div className="memory insights-page">
+      <header className="insights-page__header">
+        <div><span className="insights-eyebrow"><BookOpen size={15} aria-hidden="true" /> Shared knowledge</span><h1 className="t-h1">Memory</h1><p>Review what your agents learn and keep useful knowledge current.</p></div>
+      </header>
+        <div className="insights-toolbar memory-filters">
+          <Input label="Search memories" placeholder="Search knowledge or tags…" value={search} onChange={(event) => setSearch(event.target.value)} />
           <Select
             label="Status"
             value={status}
@@ -136,20 +142,22 @@ export function MemoryPage(): React.ReactNode {
               </option>
             ))}
           </Select>
+          {(search || status !== "all" || scope !== "all") && <Button size="sm" variant="ghost" onClick={() => { setSearch(""); setStatus("all"); setScope("all"); }}>Clear filters</Button>}
         </div>
-      </header>
       <ActionError error={memories.error ?? context.error ?? accept.error ?? reject.error ?? supersede.error} />
 
       <div className="memory-body">
         <section className="memory-list" aria-label="Memories">
+          <div className="insights-section-heading"><h2>Knowledge</h2><Badge>{matching.length}</Badge></div>
           {memories.isLoading ? (
             <p className="memory-loading-label" role="status" aria-label="Loading memories">
               Loading memories
             </p>
           ) : null}
-          {!memories.isLoading && items.length === 0 ? <p className="inv-empty">No memories match.</p> : null}
+          {!memories.isLoading && matching.length === 0 ? <EmptyState title="No memories match." description={search || status !== "all" || scope !== "all" ? "Try another search or clear your filters." : "Agent proposals will appear here for you to review."} /> : null}
+          {memories.isError && <Button size="sm" onClick={() => void memories.refetch()}>Retry memories</Button>}
           <ul>
-            {items.map((memory) => (
+            {matching.map((memory) => (
               <li key={memory.id}>
                 <button
                   type="button"
@@ -163,7 +171,8 @@ export function MemoryPage(): React.ReactNode {
                     <Badge tone="neutral">{memory.scope}</Badge>
                     <Badge tone={MEMORY_STATUS_TONE[memory.status] ?? "neutral"}>{memory.status}</Badge>
                   </span>
-                  <span className="memory-summary u-truncate">{summarize(memory)}</span>
+                  <span className="memory-summary">{summarize(memory)}</span>
+                  <span className="insights-row-meta">{memory.tags.length ? memory.tags.slice(0, 3).join(" · ") : "No tags"}<time dateTime={memory.updated_at ?? memory.created_at}>{new Date(memory.updated_at ?? memory.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time></span>
                 </button>
               </li>
             ))}
@@ -173,11 +182,12 @@ export function MemoryPage(): React.ReactNode {
         <section className="memory-detail-panel" aria-label="Memory detail">
           {selected !== null ? (
             <MemoryDetail
+              key={selected.id}
               memory={selected}
               busy={busy}
               onAccept={() => accept.mutate(selected.id)}
               onReject={() => reject.mutate(selected.id)}
-              onSupersede={(text) => supersede.mutate({ memory: selected, text })}
+              onSupersede={async (text) => { await supersede.mutateAsync({ memory: selected, text }); }}
             />
           ) : (
             <EmptyState title="Select a memory to review" description="Choose a memory from the list to see its full record and curation actions." />
@@ -185,10 +195,9 @@ export function MemoryPage(): React.ReactNode {
         </section>
 
         <section className="memory-context" aria-label="Injectable into ContextPack">
-          <h2 className="inventory-subtitle">Injectable into ContextPack</h2>
+          <div className="insights-section-heading"><h2>Available to future runs</h2><Badge tone="success">{context.data?.memories.length ?? 0} accepted</Badge></div>
           <p className="hint">
-            Accepted memories that would inject for this project, with the audit ids recorded on a
-            run&apos;s ContextPack. Proposed, rejected, and superseded memories never inject.
+            Accepted knowledge eligible for this project. A run’s evidence records what it actually used. Proposed, rejected, and superseded memories are excluded.
           </p>
           {context.data !== undefined ? (
             <>
@@ -200,14 +209,15 @@ export function MemoryPage(): React.ReactNode {
                   </li>
                 ))}
               </ul>
-              <p className="source-ids">
+              {context.data.memories.length === 0 && <p>No accepted knowledge is available for this project yet.</p>}
+              <details className="insights-disclosure"><summary>Source references</summary><p className="source-ids">
                 source_memory_ids:{" "}
                 {context.data.source_memory_ids.length > 0
                   ? context.data.source_memory_ids.join(", ")
                   : "(none)"}
-              </p>
+              </p></details>
             </>
-          ) : (
+          ) : context.isError ? <Button size="sm" onClick={() => void context.refetch()}>Retry available knowledge</Button> : (
             <p className="memory-loading-label" role="status" aria-label="Loading context">
               Loading context
             </p>

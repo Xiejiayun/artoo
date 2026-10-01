@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Check, FileText, RotateCcw } from "lucide-react";
 
 import type { Artifact, Task, TaskReview } from "@artoo/domain";
 
@@ -8,7 +9,8 @@ import { ApiClientError } from "../api/client.js";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { ActionError } from "./ActionError.js";
-import { Button, Textarea } from "../ui/index.js";
+import { Badge, Button, Textarea } from "../ui/index.js";
+import "../ui/work-insights.css";
 
 export interface ArtifactReviewProps {
   task: Task;
@@ -57,8 +59,8 @@ export function ArtifactReview({ task, artifacts, reviews, versionCursor }: Arti
   const submit = (outcome: ReviewSubmission["outcome"]): void => mutation.mutate({ taskId: task.id, projectId: task.project_id, outcome, comment, versionCursor });
 
   return (
-    <section aria-label="Artifacts" className="artifact-review">
-      <h3>Artifacts</h3>
+    <section aria-label="Artifacts" className="artifact-review insights-artifact-review">
+      <div className="insights-section-heading"><FileText size={16} aria-hidden="true" /><h3>Artifacts</h3><Badge>{artifacts.length}</Badge></div>
       <ActionError error={reviewError} />
       {reviewError instanceof ApiClientError && reviewError.details.reason === "stale_base_version" && <p role="status">This task changed. Review the refreshed details and submit your decision again.</p>}
       {artifacts.length === 0 ? (
@@ -67,7 +69,7 @@ export function ArtifactReview({ task, artifacts, reviews, versionCursor }: Arti
         <ul className="artifact-list">
           {artifacts.map((artifact) => (
             <li key={artifact.id} className="artifact" data-type={artifact.type} data-artifact-id={artifact.id} aria-label={`Artifact ${artifact.id}`}>
-              <header className="action-row"><strong className="artifact-filename">{artifactFilename(artifact)}</strong><span className="artifact-type">{artifact.type}</span></header>
+              <header className="action-row"><strong className="artifact-filename">{artifactFilename(artifact)}</strong><Badge>{artifact.type}</Badge></header>
               <dl className="artifact-metadata">
                 <div><dt>Originating run</dt><dd>{artifact.run_id ? <code>{artifact.run_id}</code> : "Originating run not recorded"}</dd></div>
                 <div><dt>Created</dt><dd><RecordedTime value={artifact.created_at} /></dd></div>
@@ -80,19 +82,20 @@ export function ArtifactReview({ task, artifacts, reviews, versionCursor }: Arti
       )}
       <ReviewHistory reviews={history} artifacts={artifacts} />
       {task.status === "review" ? (
-        <><Textarea label="Review comment" value={comment} onChange={(event) => setDraft({ taskId: task.id, comment: event.target.value })} disabled={mutation.isPending} />
+        <div className="insights-review-decision"><h4>Review this work</h4><p className="insights-help">Accept to complete the task, or request changes for another attempt.</p><Textarea label="Review comment" placeholder="Share your feedback and any changes needed…" value={comment} onChange={(event) => setDraft({ taskId: task.id, comment: event.target.value })} disabled={mutation.isPending} />
         <div className="review-actions">
-          <button type="button" disabled={mutation.isPending} onClick={() => submit("accepted")}>
+          <Button variant="primary" iconLeft={Check} type="button" disabled={mutation.isPending} onClick={() => submit("accepted")}>
             Accept
-          </button>
-          <button
+          </Button>
+          <Button
+            iconLeft={RotateCcw}
             type="button"
             disabled={mutation.isPending}
             onClick={() => submit("changes_requested")}
           >
             Request changes
-          </button>
-        </div></>
+          </Button>
+        </div></div>
       ) : null}
     </section>
   );
@@ -111,7 +114,7 @@ function RecordedTime({ value }: { value: string }): React.ReactNode {
 function ReviewHistory({ reviews, artifacts }: { reviews: TaskReview[] | undefined; artifacts: Artifact[] }): React.ReactNode {
   const byId = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
   return <section aria-label="Review history" className="review-history u-stack u-stack-sm">
-    <h3>Review history</h3>
+    <div className="insights-section-heading"><h3>Review history</h3>{reviews && <Badge>{reviews.length}</Badge>}</div>
     {reviews === undefined ? <p className="t-subtle">Review history is unavailable from this server.</p>
       : reviews.length === 0 ? <p className="t-subtle">No submitted reviews yet.</p>
         : reviews.map((review) => <article key={review.event_id} className="task-review u-stack u-stack-sm" data-review-id={review.event_id} data-outcome={review.outcome}>

@@ -1,11 +1,34 @@
 // @vitest-environment jsdom
 import { screen, within } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { bootstrapFixture, fakeApi, renderWithProviders } from "../test/utils.js";
 import { AgentsPage, ComputersPage, SkillsPage } from "./InventoryPages.js";
 
 describe("Inventory pages", () => {
+  it("filters enabled and disabled agents independently of connection and work state", async () => {
+    const user = userEvent.setup();
+    const bootstrap = bootstrapFixture();
+    bootstrap.agents.push({ ...bootstrap.agents[0]!, id: "reviewer", display_name: "Design reviewer" });
+    bootstrap.agent_instances.push({ ...bootstrap.agent_instances[0]!, id: "reviewer_workspace", agent_id: "reviewer", status: "running", config: { enabled: false } });
+    const client = fakeApi({ bootstrap: async () => bootstrap, listDaemons: async () => ({ daemons: [{ computer_id: "computer_local_mock", display_name: "Local Mock", status: "offline", connected: false, last_heartbeat_at: null, heartbeat_age_ms: null, active_runs: 0, runtimes: [] }] }) });
+    renderWithProviders(<AgentsPage />, { client, route: "/agents" });
+    const reviewer = await screen.findByRole("article", { name: "Design reviewer" });
+    expect(await within(reviewer).findByText("Daemon: offline")).toBeInTheDocument();
+    expect(within(reviewer).getByText("Disabled", { exact: true })).toBeInTheDocument();
+    expect(within(reviewer).getByText("running", { exact: true })).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Agent state"), "enabled");
+    expect(screen.queryByRole("article", { name: "Design reviewer" })).not.toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Mock Coder" })).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Agent state"), "disabled");
+    expect(screen.queryByRole("article", { name: "Mock Coder" })).not.toBeInTheDocument();
+    await user.type(screen.getByRole("searchbox", { name: "Search agents" }), "does not exist");
+    expect(screen.getByText("No matching resources")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(screen.getAllByRole("article")).toHaveLength(2);
+  });
+
   it("announces loading while computer inventory cards are skeletonized", () => {
     const client = fakeApi({
       bootstrap: () => new Promise(() => undefined),

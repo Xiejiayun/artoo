@@ -323,6 +323,7 @@ final class SharedServerChatUITests: XCTestCase {
         XCTAssertEqual(kept.goal.status, initial.goal.status)
         XCTAssertEqual(kept.goal.updatedAt, initial.goal.updatedAt)
         XCTAssertEqual(kept.events.map(\.id), initial.events.map(\.id), "Keep goal must leave the real server audit stream unchanged")
+        try revealText(visibleStatus, preferTop: true)
         try waitForValue(visibleStatus, kept.goal.status, message: "Keep goal must preserve the displayed server status")
         try reveal(request)
         attachScreenshot("Native goal preserved after dismissing cancellation")
@@ -335,6 +336,7 @@ final class SharedServerChatUITests: XCTestCase {
         XCTAssertEqual(cancelled.events.filter { $0.type == "goal.cancelled" }.count,
                        initial.events.filter { $0.type == "goal.cancelled" }.count + 1,
                        "One explicit confirmation must persist exactly one cancellation event")
+        try revealText(visibleStatus, preferTop: true)
         try waitForValue(visibleStatus, "cancelled", message: "Goal detail must display the server-confirmed cancelled state")
         let actionRemoved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: request)
         try require(XCTWaiter.wait(for: [actionRemoved], timeout: 10) == .completed, "The cancelled goal must no longer offer cancellation")
@@ -986,11 +988,13 @@ final class SharedServerChatUITests: XCTestCase {
     private func selectAgent(index: Int, id: String, name: String) throws {
         let picker = app.descendants(matching: .any).matching(identifier: "discussion.participant.\(index).instance").firstMatch
         try reveal(picker); picker.tap()
-        let identified = app.descendants(matching: .any).matching(identifier: "discussion.agentOption.\(id)").firstMatch
-        // Menu options expose their SwiftUI Text as a button on some iOS
-        // versions; the exact display-name suffix also identifies that option.
-        let option = identified.waitForExistence(timeout: 2) ? identified : app.buttons.matching(NSPredicate(format: "label ENDSWITH %@", "· \(name)")).firstMatch
+        let option = app.descendants(matching: .any).matching(identifier: "discussion.agentOption.\(id)").firstMatch
+        // Navigation picker rows can be outside the visible list. Reveal the
+        // exact instance before selecting it; display names need not be unique.
+        try reveal(option)
         try require(option.waitForExistence(timeout: 10), "The enrolled agent instance must be a selectable option")
+        try require(option.label.contains(name) && option.isEnabled && option.isHittable,
+                    "The exact enrolled instance must show its readable name and be available to select")
         option.tap()
     }
 

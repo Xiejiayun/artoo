@@ -247,29 +247,55 @@ public struct RootView: View {
 }
 
 private struct PairDeviceView: View {
+    private enum InputField: Hashable { case server, name, code }
     @EnvironmentObject private var container: AppContainer
     @State private var server = ""
     @State private var code = ""
     @State private var deviceName = "My iPhone"
     @State private var localHTTP = false
+    @FocusState private var focusedField: InputField?
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    ArtooPageIntro(title: "Good work starts with a conversation", message: "Bring your team's conversations, tasks, and agents together on your phone.", systemImage: "bubble.left.and.bubble.right.fill")
+                    ArtooPageIntro(title: "Your team, on the go", message: "Chat, review work, and keep projects moving.", systemImage: "bubble.left.and.bubble.right.fill")
                 }
-                Section("Connect to your team") {
-                    Text("Sign in to your team's Web app with your own account. Create an iOS pairing code in Settings, then enter it here. This device will use that account's permissions. Keep your code private.")
-                    TextField("https://artoo.example.com", text: $server).keyboardType(.URL)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("serverURL")
-                    TextField("Device name", text: $deviceName).accessibilityIdentifier("pairingDeviceName")
-                    TextField("One-time pairing code", text: $code).textInputAutocapitalization(.characters)
-                        .autocorrectionDisabled().accessibilityIdentifier("pairingCode")
-                    Button("Connect") { Task { await container.pair(server: server, code: code, displayName: deviceName, allowLocalHTTP: localHTTP); code = "" } }
+                Section {
+                    Text("In Web Settings, choose Connect a device → iOS to get your pairing code.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Team server").font(.caption).foregroundStyle(.secondary)
+                        TextField("https://artoo.example.com", text: $server).keyboardType(.URL)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("serverURL")
+                            .focused($focusedField, equals: .server).submitLabel(.next)
+                            .onSubmit { focusedField = .name }
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Device name").font(.caption).foregroundStyle(.secondary)
+                        TextField("Device name", text: $deviceName).accessibilityIdentifier("pairingDeviceName")
+                            .focused($focusedField, equals: .name).submitLabel(.next)
+                            .onSubmit { focusedField = .code }
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Pairing code").font(.caption).foregroundStyle(.secondary)
+                        TextField("One-time pairing code", text: $code).textInputAutocapitalization(.characters)
+                            .textContentType(.oneTimeCode).privacySensitive()
+                            .autocorrectionDisabled().accessibilityIdentifier("pairingCode")
+                            .focused($focusedField, equals: .code).submitLabel(.done)
+                            .onSubmit { focusedField = nil }
+                    }
+                    Button("Connect") {
+                        focusedField = nil
+                        Task { await container.pair(server: server, code: code, displayName: deviceName, allowLocalHTTP: localHTTP); code = "" }
+                    }
                         .frame(minHeight: 44)
                         .disabled(container.isConnecting || server.isEmpty || code.isEmpty)
                         .accessibilityIdentifier("pairDevice")
                     if container.isConnecting { ProgressView("Connecting…") }
+                } header: {
+                    Text("Connect to your team")
+                } footer: {
+                    Text("Your phone will use your Web account's permissions. Keep this one-time code private.")
                 }
                 if let error = container.connectionError {
                     Section {
@@ -283,8 +309,17 @@ private struct PairDeviceView: View {
                     Text("Use HTTPS for a shared team server. On a phone, localhost refers to the phone itself.").font(.caption)
                 }
                 Section { NavigationLink("Privacy and data") { PrivacyView() } }
-            }.navigationTitle("Welcome to Artoo")
+            }.navigationTitle("Welcome to Artoo").scrollDismissesKeyboard(.interactively)
                 .disabled(!container.restored || container.isConnecting)
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        if focusedField != nil {
+                            Spacer()
+                            Button("Done") { focusedField = nil }
+                                .accessibilityIdentifier("pairing.keyboard.done")
+                        }
+                    }
+                }
         }
     }
 }
@@ -334,14 +369,37 @@ private struct WorkspaceSettingsView: View {
 
 private struct RunsOverviewView: View {
     @StateObject private var model: RunsOverviewViewModel
+    @State private var searchText = ""
     let client: ApiClientProtocol
     init(client: ApiClientProtocol, projectId: String) { self.client = client; _model = StateObject(wrappedValue: RunsOverviewViewModel(client: client, projectId: projectId)) }
     var body: some View {
         StateView(state: model.state, retry: { Task { await model.load() } }) { items in
-            List(items) { item in NavigationLink { RunSummaryView(run: item.run, client: client) } label: {
-                VStack(alignment: .leading) { Text(item.task.title); RunStatusBadge(item.run.status); Text(item.run.id).font(.caption) }
-            } }
-        }.navigationTitle("Runs").refreshable { await model.load() }.liveRefresh { await model.load() }
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let matches = items.filter { query.isEmpty || ($0.task.title + " " + $0.run.id + " " + $0.run.status.label).localizedCaseInsensitiveContains(query) }
+            List {
+                if items.isEmpty {
+                    EmptyStateView(systemImage: "clock.arrow.circlepath", title: "No executions yet", message: "Assign a ready task to an agent to start its first execution. Progress and outcomes will appear here.")
+                } else if matches.isEmpty {
+                    EmptyStateView(systemImage: "magnifyingglass", title: "No matching executions", message: "Search by task, status, or run identifier.", actionTitle: "Clear search", action: { searchText = "" })
+                }
+                ForEach(matches) { item in
+                    NavigationLink { RunSummaryView(run: item.run, client: client) } label: {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(item.task.title).font(.headline).lineLimit(3)
+                            RunStatusBadge(item.run.status)
+                            Text("\(item.run.displayTitle) · \(ConversationMetadata.timestamp(item.run.startedAt ?? item.run.createdAt))")
+                                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            if let reason = item.run.failureReason, !reason.isEmpty {
+                                Text(reason).font(.subheadline).foregroundStyle(ArtooTokens.ColorToken.danger).lineLimit(2)
+                            }
+                        }.padding(.vertical, 6)
+                    }
+                    .accessibilityIdentifier("run.history.\(item.run.id)")
+                    .accessibilityHint("Opens execution details for run \(item.run.id)")
+                }
+            }.listStyle(.insetGrouped)
+        }.navigationTitle("Runs").searchable(text: $searchText, prompt: "Search tasks or executions")
+            .refreshable { await model.load() }.liveRefresh { await model.load() }
     }
 }
 
