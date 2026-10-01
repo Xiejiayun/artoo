@@ -49,6 +49,12 @@ send. History browsing is not interrupted by a new message. Drafts, uncertain
 delivery, idempotent retries, assistant execution approvals and exact notification
 destinations retain their existing contracts.
 
+Short windows retain a usable history scrollport without allowing messages to
+paint over the composer. If a multiline draft exceeds the available height,
+the conversation can scroll to its complete send control. Browser regression
+coverage checks the actual hit target and successful channel/thread submission
+at 390×667 and 390×400, as well as the fixed desktop composer.
+
 ## iOS
 
 iOS uses native list navigation, sheets and a reachable composer with 44-point

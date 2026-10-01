@@ -32,9 +32,13 @@
 .channel-header h2 { font-size: 18px; line-height: 26px; overflow-wrap: anywhere; }
 .channel-header p { font-size: 12px; color: var(--text-muted); margin: 3px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .channel-header > .ui-btn { flex: none; }
-.channel-main > .conversation { flex: 1; min-height: 0; border: 0; border-radius: 0; box-shadow: none; }
+.channel-main > .conversation { flex: 1; min-height: 0; overflow-y: auto; border: 0; border-radius: 0; box-shadow: none; }
 .channel-main > .conversation > .conversation__header { display: none; }
-.channel-main .conversation__viewport { max-height: none; }
+/* The history owns its minimum height. A taller inner scrollport would paint
+   over the composer when the window shrinks or a draft grows. Short windows
+   can scroll the conversation while keeping a usable history scrollport. */
+.channels-page .conversation__history { min-height: 120px; }
+.channel-main .conversation__viewport { min-height: 0; max-height: none; }
 .channel-welcome { display: grid; place-items: center; padding: 32px; }
 .channel-welcome .ui-state { max-width: 430px; padding: 40px; background: transparent; }
 .channels-page .thread-panel { grid-column: auto; min-height: 0; overflow: auto; padding: 0; border: 0; border-left: 1px solid var(--border); background: var(--surface); gap: 0; }
@@ -44,7 +48,7 @@
 .thread-panel > .msg { margin: 12px 16px; max-height: 26dvh; overflow-y: auto; flex-shrink: 0; }
 .thread-panel > .product-card { margin: 12px 16px; max-height: 26dvh; overflow-y: auto; flex-shrink: 0; }
 .thread-panel > .conversation { flex: 1; min-height: 300px; border: 0; border-radius: 0; box-shadow: none; }
-.thread-panel .conversation__viewport { max-height: none; }
+.thread-panel .conversation__viewport { min-height: 0; max-height: none; }
 .channel-create { gap: 20px; }
 .channel-create > p { margin: 0; line-height: 1.7; }
 .channel-create > .action-row { justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 16px; }
