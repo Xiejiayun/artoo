@@ -43,7 +43,7 @@ final class AssistantConversationUITests: XCTestCase {
         let restored = try await waitForTurn(fixture.firstRequest, status: "waiting")
         try demand(restored.id == firstWaiting.id && restored.userMessageId == firstWaiting.userMessageId && restored.runId == nil,
                    "Relaunch must preserve the same waiting logical request without resubmission")
-        try revealTogether(composer, app.staticTexts["conversation.turn.status.\(firstWaiting.id)"], selectable: false)
+        try revealTogether(composer, app.staticTexts["conversation.turn.status.\(firstWaiting.id)"], selectable: false, firstIsComposer: true)
         try screenshot("Native assistant waiting with draft restored")
 
         // Reconnection resumes waiting work automatically; no Retry is tapped.
@@ -315,16 +315,18 @@ final class AssistantConversationUITests: XCTestCase {
         let list = app.collectionViews.firstMatch
         let keyboard = app.keyboards.firstMatch
         let done = app.buttons["conversation.keyboard.done"]
-        try require(list.exists, "The exact composer must belong to the visible conversation list")
+        try require(list.exists, "The fixed composer must accompany a visible conversation list")
         if keyboardRequired {
             try require(keyboard.waitForExistence(timeout: 10) && done.waitForExistence(timeout: 10),
                         "The focused conversation input must expose its keyboard and Done toolbar")
         }
-        let listFrame = list.frame.intersection(app.frame)
+        // The composer is a safe-area inset beside the list, so the list's
+        // frame is only a scrolling viewport, not the input's allowed bounds.
+        let screen = app.frame
         let nav = app.navigationBars.firstMatch
         let tabs = app.tabBars.firstMatch
-        let top = max(listFrame.minY, nav.exists ? nav.frame.maxY : listFrame.minY) + 4
-        var bottom = min(listFrame.maxY, tabs.exists ? tabs.frame.minY : listFrame.maxY)
+        let top = max(screen.minY, nav.exists ? nav.frame.maxY : screen.minY) + 4
+        var bottom = min(screen.maxY, tabs.exists ? tabs.frame.minY : screen.maxY)
         if keyboard.exists {
             try require(done.exists, "A visible conversation keyboard must expose its Done toolbar")
             let toolbars = app.toolbars.containing(.button, identifier: "conversation.keyboard.done")
@@ -332,48 +334,30 @@ final class AssistantConversationUITests: XCTestCase {
             let toolbarTop = toolbars.count == 1 ? toolbars.element(boundBy: 0).frame.minY : done.frame.minY
             bottom = min(bottom, min(keyboard.frame.minY, toolbarTop))
         }
-        let visible = CGRect(x: listFrame.minX + 2, y: top, width: listFrame.width - 4, height: bottom - top - 8)
+        let visible = CGRect(x: screen.minX + 2, y: top, width: screen.width - 4, height: bottom - top - 8)
         try require([visible.minX, visible.minY, visible.width, visible.height].allSatisfy { $0.isFinite } && !visible.isEmpty,
                     "The composer editing viewport must have finite unobscured bounds")
         return visible
     }
     @MainActor
     private func revealComposerForEditing(_ field: XCUIElement, keyboardRequired: Bool) throws {
-        // isHittable can be true while this multiline field lies under the
-        // navigation bar or floating keyboard toolbar. Align its whole frame
-        // before focus and again before native selection or typing.
-        let keyboard = app.keyboards.firstMatch
-        for _ in 0..<14 {
-            // A native scroll can dismiss the keyboard. Restore focus before
-            // measuring the editing viewport again, without sending any text.
-            if keyboardRequired && !keyboard.exists {
-                try revealComposerForEditing(field, keyboardRequired: false)
-                field.tap()
-            }
+        // isHittable alone can accept a field covered by the keyboard toolbar.
+        // Wait for the fixed inset to settle and require its entire frame;
+        // dragging the timeline cannot reposition a composer outside the list.
+        for _ in 0..<20 {
             let visible = try composerEditingViewport(keyboardRequired: keyboardRequired)
             let frame = field.frame
-            try require([frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite } &&
-                        !frame.isEmpty && frame.height <= visible.height &&
-                        frame.minX >= visible.minX && frame.maxX <= visible.maxX,
-                        "The exact composer must fit in a finite unobscured editing viewport")
-            if visible.contains(frame) {
+            if [frame.minX, frame.minY, frame.width, frame.height].allSatisfy({ $0.isFinite }) &&
+                !frame.isEmpty && visible.contains(frame) && field.isHittable {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.15))
                 let settledViewport = try composerEditingViewport(keyboardRequired: keyboardRequired)
                 let settled = field.frame
-                if settledViewport.contains(settled) && abs(settledViewport.minY - visible.minY) < 1 &&
+                if settledViewport.contains(settled) && field.isHittable && abs(settledViewport.minY - visible.minY) < 1 &&
                     abs(settledViewport.maxY - visible.maxY) < 1 && abs(settled.minY - frame.minY) < 1 &&
                     abs(settled.height - frame.height) < 1 { return }
                 continue
             }
-            let upward = frame.maxY > visible.maxY
-            let overflow = upward ? frame.maxY - visible.maxY : visible.minY - frame.minY
-            let distance = min(visible.height * 0.45, max(12, overflow + 10))
-            let startY = visible.minY + visible.height * (upward ? 0.75 : 0.25)
-            let endY = startY + (upward ? -distance : distance)
-            let origin = app.coordinate(withNormalizedOffset: .zero)
-            origin.withOffset(CGVector(dx: visible.midX, dy: startY))
-                .press(forDuration: 0.05,
-                       thenDragTo: origin.withOffset(CGVector(dx: visible.midX, dy: endY)),
-                       withVelocity: .slow, thenHoldForDuration: 0.2)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.15))
         }
         try require(false, "The composer must be fully between navigation, tabs and any keyboard toolbar before editing")
     }
@@ -433,14 +417,18 @@ final class AssistantConversationUITests: XCTestCase {
         try require(false, "The exact read-only text must be visibly rendered")
     }
     @MainActor
-    private func revealTogether(_ first: XCUIElement, _ second: XCUIElement, selectable: Bool) throws {
+    private func revealTogether(_ first: XCUIElement, _ second: XCUIElement, selectable: Bool, firstIsComposer: Bool = false) throws {
         for attempt in 0..<18 {
             let view = try viewport(); var upward = attempt < 9
+            let firstView = firstIsComposer ? try composerEditingViewport(keyboardRequired: false) : view
             if first.exists && second.exists {
                 let frames = [first.frame, second.frame]
                 if frames.allSatisfy({ !$0.isEmpty && !$0.isNull && !$0.isInfinite }) {
-                    if frames.allSatisfy({ view.contains($0) }) && (selectable || (first.isHittable && second.isHittable)) { return }
-                    upward = frames[0].union(frames[1]).midY > view.midY
+                    if firstView.contains(frames[0]) && view.contains(frames[1]) &&
+                        (selectable || (first.isHittable && second.isHittable)) { return }
+                    // Only timeline evidence moves when the list scrolls.
+                    let scrollTarget = firstIsComposer ? frames[1] : frames[0].union(frames[1])
+                    upward = scrollTarget.midY > view.midY
                 }
             }
             drag(view, upward: upward)
