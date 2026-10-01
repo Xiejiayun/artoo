@@ -8,6 +8,50 @@ async function expectUncoveredSend(button: Locator): Promise<void> {
   })).toBe(true);
 }
 
+test("the chat composer reflows enlarged text without overlapping actions", async ({ page, request }, testInfo) => {
+  const bootstrap = await (await request.get("/api/v1/bootstrap")).json();
+  const created = await request.post("/api/v1/channels", { data: { project_id: bootstrap.projects[0].id, name: `readable-${Date.now()}` } });
+  expect(created.ok()).toBe(true);
+  const { channel } = await created.json();
+  for (const width of [800, 390]) {
+    await page.setViewportSize({ width, height: 667 });
+    await page.goto(`/channels?room=${channel.id}`);
+    const conversation = page.getByRole("region", { name: "Channel conversation", exact: true });
+    const input = conversation.getByLabel("Message", { exact: true });
+    await expect(input).toBeEnabled();
+    // Read all original values before setting any: inherited text must grow
+    // exactly once, rather than compounding at each nested element.
+    await page.evaluate(() => {
+      const original = Array.from(document.querySelectorAll<HTMLElement>("body, body *"), (element) => {
+        const style = getComputedStyle(element);
+        return { element, font: Number.parseFloat(style.fontSize), line: Number.parseFloat(style.lineHeight) };
+      });
+      for (const { element, font, line } of original) {
+        if (Number.isFinite(font)) element.style.fontSize = `${font * 2}px`;
+        if (Number.isFinite(line)) element.style.lineHeight = `${line * 2}px`;
+      }
+    });
+    const body = `Readable message at ${width} pixels`;
+    await input.fill(body);
+    const send = conversation.getByRole("button", { name: "Send message", exact: true });
+    await send.scrollIntoViewIfNeeded();
+    await expectUncoveredSend(send);
+    const areas = await conversation.locator(".conversation-composer__mentions summary span, .conversation-composer__hint, .conversation-composer__send").evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect()).filter((rect) => rect.width > 0 && rect.height > 0).map((rect) => ({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom })));
+    for (const [index, area] of areas.entries()) {
+      expect(area.left).toBeGreaterThanOrEqual(0);
+      expect(area.right).toBeLessThanOrEqual(width);
+      for (const other of areas.slice(index + 1)) {
+        expect(Math.min(area.right, other.right) <= Math.max(area.left, other.left) || Math.min(area.bottom, other.bottom) <= Math.max(area.top, other.top)).toBe(true);
+      }
+    }
+    await page.screenshot({ path: testInfo.outputPath(`composer-enlarged-text-${width}.png`) });
+    const sent = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/rooms/${channel.id}/messages` && response.request().method() === "POST" && response.request().postDataJSON()?.body === body);
+    await send.click();
+    expect((await (await sent).json()).message.body).toBe(body);
+    await expect(input).toHaveValue("");
+  }
+});
+
 test("short mobile conversations keep history separate and multiline messages can be sent", async ({ page, request }, testInfo) => {
   const bootstrap = await (await request.get("/api/v1/bootstrap")).json();
   const created = await request.post("/api/v1/channels", { data: { project_id: bootstrap.projects[0].id, name: `compact-${Date.now()}`, description: "Compact conversation regression" } });
