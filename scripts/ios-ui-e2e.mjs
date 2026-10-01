@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -11,12 +11,17 @@ import { createWorkflowFixture, verifyWorkflowResults } from "./ios-ui-workflows
 import { createMemberRevocationFixture, findMemberMessage, selectMemberDevice, verifyMemberRevocationResults } from "./ios-ui-member-revocation.mjs";
 import { observeMemberClaim } from "./ios-ui-member-claim-observer.mjs";
 import { getE2EReportContext, readXCTestScreenshots, writeE2EReport } from "./e2e-report.mjs";
+import { closeOwnedProcessGroup } from "./owned-process-group.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const selfCheck = process.argv.includes("--self-check");
 if (process.argv.slice(2).some((arg) => arg !== "--self-check")) throw new Error("Usage: node scripts/ios-ui-e2e.mjs [--self-check]");
 if (!selfCheck && process.platform !== "darwin") throw new Error("Native UI verification requires macOS and Xcode; --self-check validates only the server/browser harness.");
-const output = resolve(root, "artifacts/ios");
+const baseOutput = resolve(root, "artifacts/ios");
+const output = selfCheck ? baseOutput : resolve(process.env.ARTOO_IOS_UI_OUTPUT_DIR
+  ?? join(baseOutput, "attempts", `${new Date().toISOString().replace(/[:.]/g, "-")}-core`));
+if (!selfCheck && !output.startsWith(`${baseOutput}${sep}`)) throw new Error("Core UI evidence requires its own artifacts/ios attempt directory");
+const childResultPath = join(output, "xctest-result.json");
 mkdirSync(output, { recursive: true });
 
 async function until(read, message, timeout = 30_000) {
@@ -32,11 +37,11 @@ async function main() {
   const temporary = mkdtempSync(join(tmpdir(), "artoo-ios-ui-"));
   const workspace = join(temporary, "workspace");
   mkdirSync(workspace);
-  const report = { ...getE2EReportContext(), mode: selfCheck ? "server-browser-harness-only" : "native-and-browser-ui", model: "deterministic subprocess fixture; no provider session", started_at: new Date().toISOString(), checks: [], passed: false };
+  const report = { ...getE2EReportContext(), ...(selfCheck ? {} : { suite: "core" }), mode: selfCheck ? "server-browser-harness-only" : "native-and-browser-ui", model: "deterministic subprocess fixture; no provider session", started_at: new Date().toISOString(), checks: [], passed: false };
   if (!selfCheck) report.diagnostics_scope = "Raw xcresult bundles and exported attachments are unredacted local or CI diagnostics and inherit their repository artifact access rules; they can contain disposable fixture credentials and are intended for trusted recipients. This HTML includes only approved workflow screenshots.";
-  const reportPath = join(output, selfCheck ? "ui-harness-self-check.json" : "native-ui-sync.json");
+  const reportPath = join(output, selfCheck ? "ui-harness-self-check.json" : "suite-result.json");
   const htmlPath = join(output, `${selfCheck ? "ui-harness" : "native-ui"}-${report.started_at.replace(/[:.]/g, "-")}.html`);
-  const title = selfCheck ? "iOS workflow harness · browser evidence only" : "Artoo iOS · native and browser E2E";
+  const title = selfCheck ? "iOS workflow harness · browser evidence only" : "Artoo iOS · core native and browser E2E subset";
   // An interrupted attempt must never leave a prior successful result in place.
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   writeE2EReport({ outputPath: htmlPath, title, report });
@@ -228,14 +233,21 @@ async function main() {
       interrupted.signal.throwIfAborted();
       // Asynchronous child execution keeps this parent server and the browser
       // responsive while the child's xcodebuild process runs synchronously.
-      child = spawn(process.execPath, [join(root, "apps/ios/scripts/test-macos.mjs"), "--ui"], {
-        cwd: root, env: { ...process.env, ARTOO_IOS_UI_FIXTURE: fixturePath }, stdio: "inherit", windowsHide: true, detached: true,
+      child = spawn(process.execPath, [join(root, "apps/ios/scripts/test-macos.mjs"), "--ui", "--suite=core"], {
+        cwd: root, env: { ...process.env, ARTOO_IOS_UI_FIXTURE: fixturePath, ARTOO_IOS_UI_OUTPUT_DIR: output, ARTOO_IOS_UI_RESULT_JSON: childResultPath }, stdio: "inherit", windowsHide: true, detached: true,
       });
       const timeout = setTimeout(() => { stopNative("SIGTERM"); rejectTest(new Error("Native UI test exceeded 30 minutes")); }, 1_800_000);
       child.once("error", (error) => { clearTimeout(timeout); rejectTest(error); });
       child.once("exit", (code, signal) => { clearTimeout(timeout); code === 0 ? resolveTest() : rejectTest(new Error(`Native UI test failed (${code ?? signal})`)); });
     });
     await Promise.all([browserFlow(), selfCheck ? emulatedNative() : nativeFlow(), ...(selfCheck ? [] : [ownerRevocationFlow()])]);
+    if (!selfCheck) {
+      const native = JSON.parse(readFileSync(childResultPath, "utf8"));
+      assert.equal(native.suite, "core"); assert.equal(native.passed, true); assert.equal(native.contract?.passed, true);
+      assert.deepEqual(native.source, report.source, "Native build source changed after the parent started");
+      report.native = native;
+      check("Exact seven-case native core contract passed with the original matching source fingerprint");
+    }
     if (selfCheck) {
       // This drives the real Web UI and test controls only. It is deliberately
       // reported as harness evidence, never as an XCUITest or native result.
@@ -306,12 +318,11 @@ async function main() {
     throw error;
   } finally {
     memberClaimObserver?.stop();
-    if (child && child.exitCode === null && child.signalCode === null) {
-      const stopped = new Promise((done) => child.once("exit", done));
-      stopNative("SIGTERM");
-      await Promise.race([stopped, new Promise((done) => setTimeout(done, 5_000))]);
-      stopNative("SIGKILL");
-    }
+    // A detached group's descendants can outlive its Node leader. Verify the
+    // original owned group even when child.exitCode already indicates exit.
+    const nativeCleanup = child?.pid ? await closeOwnedProcessGroup(child.pid) : { closed: true, not_started: true };
+    report.native_process_cleanup = nativeCleanup;
+    if (!nativeCleanup.closed) { report.passed = false; report.error = "Native test process-group cleanup failed"; }
     const workersClosed = await Promise.allSettled([workflows?.close()]);
     const closed = [...workersClosed, ...await Promise.allSettled([browser?.close(), server?.close()])];
     const failedClose = closed.find((result) => result.status === "rejected");
@@ -328,8 +339,14 @@ async function main() {
     }
     // Never retain a passing report while private fixture credentials remain
     // because directory cleanup failed after otherwise successful assertions.
-    report.cleanup = { resources_closed: !failedClose, temporary_directory_removed: !removalError };
+    report.cleanup = { resources_closed: !failedClose, temporary_directory_removed: !removalError,
+      native_process_group_closed: nativeCleanup.closed };
+    report.source_at_finish = getE2EReportContext().source;
+    report.source_stable = JSON.stringify(report.source_at_finish) === JSON.stringify(report.source);
+    if (!report.source_stable) { report.passed = false; report.error ??= "Core source changed during verification"; }
     report.finished_at = new Date().toISOString();
+    report.html_report = htmlPath;
+    report.native_result_json = childResultPath;
     writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
     const browserImages = (selfCheck ? ["harness-browser.png", "harness-daemon.png", "harness-reviewed-plan.png", "harness-failure.png"] : ["native-browser-sync.png", "native-owner-revoked-member-device.png", "native-browser-failure.png"])
       .map((name) => ({ path: join(output, name), caption: `Authenticated browser · ${name.replace(/\.png$/, "").replaceAll("-", " ")}` }))
@@ -338,6 +355,8 @@ async function main() {
     console.log(`[ios-ui] HTML report: ${htmlPath}`);
     if (removalError) throw new Error("Native UI temporary fixture cleanup failed", { cause: removalError });
     if (failedClose) throw new Error("Native UI fixture cleanup failed", { cause: failedClose.reason });
+    if (!nativeCleanup.closed) throw new Error("Native test process-group cleanup failed");
+    if (!report.source_stable) throw new Error("Core source changed during verification");
   }
 }
 

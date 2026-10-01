@@ -64,9 +64,6 @@ public struct TaskDetailView: View {
                 }
             }
         }
-        .navigationDestination(for: Run.self) { run in
-            RunSummaryView(run: run, client: client)
-        }
         .sheet(isPresented: $showingAssign) {
             AssignSheet(client: client, model: model)
         }
@@ -215,7 +212,9 @@ public struct TaskDetailView: View {
         if !runs.isEmpty {
             Section("Runs") {
                 ForEach(runs) { run in
-                    NavigationLink(value: run) {
+                    NavigationLink {
+                        RunSummaryView(run: run, client: client)
+                    } label: {
                         RunTimelineRow(run: run)
                     }
                     if [.queued, .starting, .running, .awaitingInput, .paused].contains(run.status) {

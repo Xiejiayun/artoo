@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, extname, resolve, sep } from "node:path";
 import { release } from "node:os";
 import { fileURLToPath } from "node:url";
+import { hasCompletePNGPixelStream, MAX_PNG_BYTES } from "./png-evidence.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
@@ -50,7 +51,7 @@ export function getE2EReportContext() {
 // Xcode also exports failure screenshots and UI trees, which can contain
 // onboarding codes. Only reviewed workflow image names enter shareable HTML.
 // Raw xcresult/CI diagnostics inherit their storage/repository access rules.
-const nativeWorkflowImages = [
+const nativeCoreImages = [
   "Native real-server thread after foreground catch-up",
   "Native daemon offline after real disconnect grace",
   "Native daemon online after real reconnect",
@@ -74,9 +75,27 @@ const nativeWorkflowImages = [
   "Native member device permissions without pairing inputs",
   "Native member restored after fresh pairing without pairing inputs",
 ];
+const nativeAssistantImages = [
+  "Native assistant readable agent selection",
+  "Native assistant waiting with draft restored",
+  "Native assistant failed request before retry",
+  "Native assistant first completed answer",
+  "Native assistant follow-up uses the actual first answer",
+  "Native assistant linked execution task",
+  "Native assistant cancelled with process stopped",
+];
+const nativeWorkflowImages = [...nativeCoreImages, ...nativeAssistantImages];
+export function expectedNativeScreenshots(suite) {
+  if (suite === "core") return [...nativeCoreImages];
+  if (suite === "assistant") return [...nativeAssistantImages];
+  throw new Error("Native screenshot scope must be core or assistant");
+}
 export function readXCTestScreenshots(directory) {
-  let manifest;
-  try { manifest = JSON.parse(readFileSync(resolve(directory, "manifest.json"), "utf8")); }
+  let manifest, canonicalDirectory;
+  try {
+    canonicalDirectory = realpathSync(directory);
+    manifest = JSON.parse(readFileSync(resolve(directory, "manifest.json"), "utf8"));
+  }
   catch { return []; }
   const screenshots = [];
   function visit(value) {
@@ -85,7 +104,16 @@ export function readXCTestScreenshots(directory) {
     const approved = typeof name === "string" && nativeWorkflowImages.some((title) => name === title || name.startsWith(`${title}_`) || name.startsWith(`${title}.`));
     if (typeof value.exportedFileName === "string" && approved) {
       const path = resolve(directory, value.exportedFileName);
-      if (path.startsWith(`${resolve(directory)}${sep}`) && /\.(png|jpe?g)$/i.test(path) && existsSync(path)) screenshots.push({ path, caption: name });
+      // Native XCTest exports PNG. Unsupported formats and invalid individual
+      // files are omitted so the suite's required-capture gate fails closed,
+      // while failure HTML can still retain other complete approved captures.
+      if (path.startsWith(`${resolve(directory)}${sep}`) && /\.png$/i.test(path)) {
+        try {
+          const stat = lstatSync(path);
+          if (stat.isFile() && stat.size <= MAX_PNG_BYTES && realpathSync(path).startsWith(`${canonicalDirectory}${sep}`)
+              && hasCompletePNGPixelStream(readFileSync(path))) screenshots.push({ path, caption: name });
+        } catch { /* Unreadable or replaced captures are not evidence. */ }
+      }
     }
     for (const nested of Object.values(value)) {
       if (Array.isArray(nested)) nested.forEach(visit);

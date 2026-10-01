@@ -63,6 +63,9 @@ jobs:
             artifacts/ios/*.json
             artifacts/ios/*.png
             artifacts/ios/*.html
+            artifacts/ios/attempts/*/*.json
+            artifacts/ios/attempts/*/*.html
+            artifacts/ios/attempts/*/*.png
           if-no-files-found: ignore
           retention-days: 14
   mac-desktop:

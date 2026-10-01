@@ -6,6 +6,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { _electron as electron, chromium } from "playwright";
 import { expect } from "@playwright/test";
 import { getE2EReportContext, writeE2EReport } from "../../../scripts/e2e-report.mjs";
@@ -14,10 +15,25 @@ import { buildMacDistribution } from "./mac-distribution.mjs";
 import { mountPreviewDmg } from "./mac-dmg-install.mjs";
 import { finalizeInstalledLiveProviderEvidence, installedLiveProviderEvidence, runOptionalInstalledLiveProvider } from "./installed-live-provider-gate.mjs";
 import { macPlanningImageNames, runInstalledMacPlanning } from "./installed-mac-planning.mjs";
+import { macAssistantImageNames, runInstalledMacAssistant } from "./installed-mac-assistant.mjs";
 
 const desktopDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(desktopDir, "..", "..");
 const fixturePatch = "diff --git a/preview.txt b/preview.txt\nnew file mode 100644\n--- /dev/null\n+++ b/preview.txt\n@@ -0,0 +1 @@\n+Packaged authenticated execution verified\n";
+
+// Return an error instead of throwing so the caller still writes its final
+// JSON, self-contained HTML and immutable history on a failed source boundary.
+export function finalizePackagedSmokeSource(report, sourceAtFinish) {
+  report.source_at_finish = sourceAtFinish;
+  const complete = (source) => source && typeof source.commit === "string" && source.commit.length > 0
+    && /^[a-f0-9]{64}$/.test(source.tracked_diff_sha256 ?? "")
+    && /^[a-f0-9]{64}$/.test(source.untracked_source_sha256 ?? "") && source.untracked_source_complete === true;
+  report.source_stable = !!complete(report.source) && !!complete(sourceAtFinish) && isDeepStrictEqual(report.source, sourceAtFinish);
+  if (report.source_stable) return;
+  const error = new Error("Packaged smoke source changed or could not be fully verified during this invocation");
+  report.result = "fail"; report.passed = false; report.error ??= error.message;
+  return error;
+}
 
 function run(command, args, timeout = 300_000) {
   console.log(`[smoke] ${command} ${args.join(" ")}`);
@@ -86,7 +102,7 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
     checkedAt: startedAt, started_at: startedAt, run_id: runId, checks, captures, screenshots,
     package_reused: !fromDmg && process.env.ARTOO_SMOKE_SKIP_BUILD === "1",
     package_provenance: fromDmg ? "DMG and ZIP built during this invocation; the app is installed from that verified, read-only mounted DMG" : process.env.ARTOO_SMOKE_SKIP_BUILD === "1" ? "Existing package; recorded source identifies the test harness and does not prove the package was built from this revision" : "Package built from the working tree during this invocation",
-    scope: `${platformName} packaged app: pairing, authenticated realtime, worker lifecycle, task execution, artifact download, review and restart recovery${isMac ? ", process-backed planning, coordinator instruction disclosure and human plan acceptance" : ""}`,
+    scope: `${platformName} packaged app: pairing, authenticated realtime, worker lifecycle, task execution, artifact download, review and restart recovery${isMac ? ", process-backed planning, coordinator instruction disclosure, human plan acceptance, and direct-assistant waiting/retry/cancellation" : ""}`,
     cleanup_complete: false,
     distribution: isMac ? (fromDmg ? "Unsigned preview DMG installed in an isolated directory; no Developer ID, notarization or Gatekeeper trust claim" : "Unsigned packaged .app copied to an isolated installation; signing, notarization and updates are separate release gates") : "NSIS installed package",
     modelExecution: "Temporary CLI fixture through production Codex adapter; no real model quality claim",
@@ -96,13 +112,13 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
     rmSync(join(artifactDir, filename), { force: true });
   }
   for (const path of [liveEvidence.reportPath, liveEvidence.planScreenshotPath, liveEvidence.chatScreenshotPath]) rmSync(path, { force: true });
-  if (isMac) for (const filename of macPlanningImageNames) rmSync(join(artifactDir, filename), { force: true });
+  if (isMac) for (const filename of [...macPlanningImageNames, ...macAssistantImageNames]) rmSync(join(artifactDir, filename), { force: true });
   // Record build/preflight failures too; every invocation owns an HTML report.
   writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`);
   writeE2EReport({ outputPath: htmlPath, title: `Artoo ${platformName} packaged E2E`, report, screenshots });
-  let tempRoot, installDir, userData, workspace, fixtureBin, fixtureProgram, fixtureKey, installer, packagedApp, planningConfigurationPath;
+  let tempRoot, installDir, userData, workspace, fixtureBin, fixtureProgram, fixtureKey, installer, packagedApp, planningConfigurationPath, assistantConfigurationPath;
   let server, browser, browserServer, electronApp, page, appExe, ownerCookie;
-  let liveReportPath, executionError;
+  let liveReportPath, executionError, observeAssistantCleanup;
   let dmgMount;
   let liveActive = false;
   let uninstalled = false;
@@ -245,7 +261,10 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
     workspace = join(tempRoot, "workspace"); fixtureBin = join(tempRoot, "fixture-bin");
     fixtureKey = randomBytes(24).toString("hex");
     fixtureProgram = join(fixtureBin, isMac ? "codex" : "codex.cmd");
-    if (isMac) planningConfigurationPath = join(tempRoot, "mac-planning-process.json");
+    if (isMac) {
+      planningConfigurationPath = join(tempRoot, "mac-planning-process.json");
+      assistantConfigurationPath = join(tempRoot, "mac-assistant-process.json");
+    }
     mkdirSync(workspace); mkdirSync(fixtureBin);
     // Only this absolute CLI fixture is selected. On macOS the shell launcher
     // uses the installed Electron in Node mode; no Node or model CLI needs PATH.
@@ -261,8 +280,13 @@ ${isMac ? `const source = readFileSync('context_pack.md', 'utf8'), marker = '## 
 if (!source.includes(marker)) throw new Error('Installed fixture is missing its actual context pack');
 const pack = JSON.parse(source.slice(source.indexOf(marker) + marker.length));
 if (pack.conversation) {
-  const {runMacPlanningFixture} = await import(${JSON.stringify(pathToFileURL(join(desktopDir, "scripts/mac-planning-fixture.mjs")).href)});
-  runMacPlanningFixture({contextPath:'context_pack.md',configurationPath:${JSON.stringify(planningConfigurationPath)}});
+  if (pack.policy.execution_mode === 'discussion') {
+    const {runMacPlanningFixture} = await import(${JSON.stringify(pathToFileURL(join(desktopDir, "scripts/mac-planning-fixture.mjs")).href)});
+    runMacPlanningFixture({contextPath:'context_pack.md',configurationPath:${JSON.stringify(planningConfigurationPath)}});
+  } else {
+    const {runAssistantConversationFixture} = await import(${JSON.stringify(pathToFileURL(join(desktopDir, "../../scripts/fixtures/assistant-conversation.mjs")).href)});
+    await runAssistantConversationFixture({contextPath:'context_pack.md',configurationPath:${JSON.stringify(assistantConfigurationPath)}});
+  }
 } else {` : ""}
 writeFileSync('changes.patch', ${JSON.stringify(fixturePatch)});
 writeFileSync('fixture-execution.json', JSON.stringify({argv:process.argv.slice(2), executable:process.execPath, cwd:process.cwd(), apiKeyConfigured:true}));
@@ -497,6 +521,12 @@ ${isMac ? "}" : ""}
         onScreenshot: (screenshot) => screenshots.push(screenshot),
       });
       check("Installed Mac UI verifies three worker planning contributions, summarized/exact coordinator instructions, and human acceptance of two dependent tasks");
+      await runInstalledMacAssistant({ page, workspace, configurationPath: assistantConfigurationPath, baseUrl, ownerCookie, artifactDir,
+        onEvidence: (evidence) => { report.macAssistant = evidence; },
+        onScreenshot: (screenshot) => screenshots.push(screenshot),
+        onCleanupObserver: (observe) => { observeAssistantCleanup = observe; },
+      });
+      check("Installed Mac direct requests verify automatic worker recovery, explicit failed-turn Retry, two context-linked answers, and running-process cancellation");
     }
     const live = await runOptionalInstalledLiveProvider({ platform, page, workspace, userData, baseUrl, ownerCookie, artifactDir, server,
       onStart: (plan) => {
@@ -560,6 +590,11 @@ ${isMac ? "}" : ""}
       try { await bounded(resource.close(), key, 30_000); cleanup[key] = true; }
       catch { console.warn(`[smoke] Cleanup failed: ${key}`); }
     }
+    if (observeAssistantCleanup) {
+      try { report.mac_assistant_cleanup = await observeAssistantCleanup(); }
+      catch { report.mac_assistant_cleanup = { closed: false, error: "Assistant PID observation failed" }; }
+      cleanup.assistant_processes_closed = report.mac_assistant_cleanup.closed === true;
+    }
     if (browserServer) {
       report.browser_cleanup = await closeOwnedBrowser(browserServer);
       cleanup.browser_closed = report.browser_cleanup.closed;
@@ -578,12 +613,15 @@ ${isMac ? "}" : ""}
       report.error ??= "Installed smoke cleanup did not complete";
       executionError ??= new Error(report.error);
     }
+    const sourceError = finalizePackagedSmokeSource(report, getE2EReportContext().source);
+    executionError ??= sourceError;
     if (liveReportPath) {
       try {
         report.liveEvidenceSnapshot = finalizeInstalledLiveProviderEvidence(liveReportPath, report);
       } catch {
         report.result = "fail";
-        report.error = "Could not finalize installed live verification cleanup evidence";
+        report.live_evidence_finalization_error = "Could not finalize installed live verification cleanup evidence";
+        report.error ??= report.live_evidence_finalization_error;
         executionError ??= new Error(report.error);
       }
     }

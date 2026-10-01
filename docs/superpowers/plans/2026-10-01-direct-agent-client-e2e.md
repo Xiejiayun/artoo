@@ -88,8 +88,10 @@ append more workflows without separating scenario ownership.
   failed attempt, real captures, explicit fixture scope and cleanup status;
   pairing inputs and fixture credentials stay out of the shareable HTML.
 
-This is a source-reviewed future plan. No new direct-agent UI scenario has
-been executed or counted as passed by writing this document.
+Implementation and real-client verification are in progress. The separate
+integration plan and timestamped reports distinguish executed failures,
+verified subsets and full matching-source results; this plan alone is not
+a passed native or installed-Mac scenario.
 
 Production conversation context contains task/run headers, project/workspace,
 room/turn/current request and prior messages. It does not contain the current

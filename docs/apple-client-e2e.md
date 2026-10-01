@@ -33,15 +33,20 @@ Set `ARTOO_CHROMIUM_CHANNEL=chrome` to use an installed Chrome for browser
 peers when the bundled browser is unavailable. Reports record the actual
 browser version; the Mac client under test remains packaged Electron.
 
-To run the already-built native UI fixture independently:
+The full iOS gate builds and runs unit tests, then runs separate core and
+direct-agent UI suites. Each uses its own fixture, XCTest selection and
+evidence directory. To run one UI subset while diagnosing it:
 
 ```sh
-npm run build:preview
-node scripts/ios-ui-e2e.mjs
+npm run verify:ios:core
+npm run verify:ios:assistant
 ```
 
-`--self-check` on that script tests the browser/server fixture without native
-UI. It is explicitly labeled as harness evidence and cannot pass an iOS gate.
+Subset success does not certify the full gate. Keep source files, documentation
+and Git state unchanged during each run: original source fingerprints are
+checked after build, fixture cleanup and suite aggregation. The core fixture's
+`node scripts/ios-ui-e2e.mjs --self-check` tests its browser/server harness
+without native UI and cannot pass an iOS gate.
 Run the shared browser and authentication workflows with:
 
 ```sh
@@ -57,8 +62,10 @@ npm run e2e:auth
 | Mac packaged app | `apps/desktop/release/mac-smoke-artifacts/macos-desktop-smoke.html` | Pairing, packaged renderer and bridge, worker lifecycle, approved execution, artifact bytes/review, restart recovery and cleanup. |
 | Every Mac attempt | `apps/desktop/release/mac-smoke-artifacts/history/` | Timestamped, self-contained HTML and JSON, including build and cleanup failures. |
 | iOS build/XCTest | `artifacts/ios/Artoo-<timestamp>.html` | Full asset build, Keychain-enabled simulator signing and executed unit tests. This is not UI evidence. |
-| iOS UI | `artifacts/ios/native-ui-<timestamp>.html` | Real pairing, approval recovery across relaunch, explicit goal cancellation, daemon state, discussion/plan acceptance, cross-client threads, and native task creation through approved execution, uploaded artifact preview and human acceptance. |
-| Native UI runner | `artifacts/ios/ArtooUI-<timestamp>.html` | Xcode command results and approved named XCTest screenshots. |
+| Native suite aggregate | `artifacts/ios/native-suites-<timestamp>.html` | Exact selected case IDs, independent fixture results, original matching source and cleanup; combines the actual approved screenshots. |
+| iOS core UI | `artifacts/ios/attempts/<timestamp>-core/native-ui-<timestamp>.html` | Real pairing, approval recovery across relaunch, explicit goal cancellation, daemon state, discussion/plan acceptance, cross-client threads, and native task creation through approved execution, uploaded artifact preview and human acceptance. |
+| iOS direct-agent UI | `artifacts/ios/attempts/<timestamp>-assistant/native-assistant-<timestamp>.html` | Agent choice, offline waiting/relaunch/draft, automatic dispatch, explicit failed-request Retry, prior-answer context, linked run details and running-request Cancel. Read the actual result: failed attempts do not establish the whole scenario. |
+| Native UI runner | `artifacts/ios/attempts/<timestamp>-<suite>/ArtooUI-<timestamp>.html` | Xcode command results, exact selected-case contract and approved named XCTest screenshots. Earlier single-suite reports remain at the original top-level paths. |
 | Browser and authentication | `apps/web/playwright-report/<suite>-<timestamp>/index.html` | Test results, deliberate workflow screenshots and browser/source metadata. |
 | Local backup/restore | `artifacts/recovery/<timestamp>/report.html` | Production persistent server, real worker artifact upload, offline CLI backup/restore, credential continuity, exact bytes, idempotency and restored Web download. |
 
@@ -79,6 +86,16 @@ The Mac harness owns its browser process. Cleanup waits for actual process
 exit and Playwright profile cleanup, and records whether graceful or forced
 closure was needed. Browser names are never used to terminate unrelated apps.
 An incomplete cleanup prevents a passing result.
+
+The direct-agent fixtures use three logical requests, four real CLI launches
+and exactly two answers. The first request waits with no run while its worker
+is offline, then dispatches automatically. The follow-up fails once and only
+retries after the request's UI action; that distinct run reads the first
+process's actual answer. A held fourth process is cancelled through the UI,
+with its PID gone and no answer or redispatch. Server reads independently bind
+turn, message, run, task, computer and instance identities. Context-file hashes
+are captured before the next execution can overwrite the shared workspace.
+Usage counters in these fixtures are synthetic and prove ingestion only.
 
 The installed Mac task flow also checks pending, needs-information, rejected
 and replacement execution approvals. Every decision and replacement comes

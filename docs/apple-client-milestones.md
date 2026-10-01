@@ -463,3 +463,205 @@ for default-builder reliability. The earlier full Mac gate passed without
 this override on the same product source; only the later UI assertions and
 capture were added. A clean hosted run of the committed source remains a
 separate check.
+
+Hosted run `36783627020` at `d61af1e53f8fdb8eea0087482531ce32e2d67b92`
+subsequently completed successfully: iOS, Mac and shared gates passed; the
+optional Windows desktop job was skipped. Completed iOS logs independently
+contain 100 distinct passing unit cases and all seven passing UI methods,
+with zero failures. The native parent retains 24 captures; Mac retains eleven
+and recovery two. All 37 images were inspected, with no functional visual
+blocker. Some broad browser/task captures do not show the entire message or
+Done header within the crop; the exact assertions and other retained captures
+remain separate evidence rather than being inferred from those crops.
+
+The hosted Mac built fresh arm64 preview DMG/ZIP artifacts, installed the
+hashed read-only image, detached before launch, passed 13 installed checks
+and the eight-check recovery drill, and completed cleanup. Its workflow uses
+the default unsigned-preview configuration, with no package reuse or local
+detach-retry wrapper. This is an additional successful default-builder run;
+it does not establish the cause of the earlier local intermittent failures.
+
+Byte-identical self-contained report copies and their original downloaded
+artifacts are retained under `artifacts/apple-ci/36783627020/`:
+
+| Hosted report | HTML SHA-256 |
+| --- | --- |
+| `native-core.html` | `edee16feb66aa682002681e09f5f65d738ff59db7622735298a06fa71dbccd75` |
+| `mac-arm64.html` | `b08de1fb53fa49c3a86a764944735e3b80ade244bbdaade473a0d6da6d62303b` |
+| `recovery-arm64.html` | `dd17772d757da8ae835e91e258ef13b38f05270b53a5859d6360279ea4a26d2e` |
+
+Both artifact ZIP hashes match GitHub's published digests. The detailed
+verification record is `verification-summary.json` with `SHA256SUMS` and
+`verification-notes.md`. Unit, Mac and recovery report clean `d61af1e`;
+the UI report records that commit with tracked worktree hash
+`61717b07761f860b4d2e2d918a2d13b4d502100b6ccf1d10e611bb95c2c8c377`
+after the build's generated configuration. The hosted upload does not include
+original xcresult bundles or DMG/ZIP binaries; case counts are corroborated
+by the completed job logs, while distribution checksums come from its manifest
+and installation report. These results certify the preceding milestone, not
+the following uncommitted direct-agent changes.
+
+## Direct-agent workflow verification attempts
+
+The first independent assistant run built the Release app and successfully
+selected the original of two identically named instances through its complete
+identity. It then failed before reaching the waiting-state UI assertion: the
+test waited for an offscreen lazy List row before attempting to scroll. The
+retained connected-page screenshot also exposed repeated selected-agent
+details occupying most of the viewport. No waiting/retry/cancellation success
+is inferred from this attempt. Its single approved screenshot, failure result,
+unchanged source fingerprint and complete fixture/process-group cleanup are
+retained in
+`artifacts/ios/attempts/2026-09-30T22-36-40-402Z-assistant/native-assistant-2026-09-30T22-36-41-255Z.html`
+(SHA-256 `9948b3d02d863162c9887f1c21f50f3b86b7d04cf3955b2a76ebf4f781b16fb8`).
+The aggregate is `artifacts/ios/native-suites-2026-09-30T22-36-40-402Z.html`;
+the same attempt's `failure-review/report.html` contains the inspected
+credential-free failure screen. The waiting helper and duplicate selected
+display are being corrected before a new isolated run.
+
+The second assistant attempt verified the compact selection UI, waiting-state
+visibility, relaunch with an unsent draft, automatic worker recovery and the
+real failed follow-up followed by explicit Retry. It then failed an overly
+strict screenshot condition requiring both answers to fit in one phone
+viewport. The actual feed includes intervening run events; its retained image
+and accessibility frames show the first answer and later event rows, rather
+than both answers at once. The test now scrolls to and compares each answer's
+exact visible text separately and retains two answer captures. No product
+messages or run events were removed to satisfy the test.
+
+Second failed HTML, with three approved captures, stable source and complete
+cleanup:
+`artifacts/ios/attempts/2026-09-30T22-50-40-153Z-assistant/native-assistant-2026-09-30T22-50-41-007Z.html`
+(SHA-256 `d1b8cfd8e682d0da40278e6f9fb636cb4e73de906bce6b98e8994bf8c692b1c2`).
+Its aggregate is `artifacts/ios/native-suites-2026-09-30T22-50-40-153Z.html`.
+Cancellation was not reached, so this is not a passed direct-agent scenario.
+
+The third attempt separately verified and captured both exact answer bodies,
+then started the real held process and opened its linked task in Running state.
+It failed when waiting for that task's fourth run row before scrolling to it.
+The retained task image and accessibility hierarchy show the first older run
+at the lower viewport edge and the held run further down. The test is being
+corrected to reveal the exact full-ID row before checking uniqueness and
+tapping it; linked-run identity and UI cancellation remain required.
+
+Third failed HTML, with five approved captures, stable source and complete
+cleanup:
+`artifacts/ios/attempts/2026-09-30T23-00-39-043Z-assistant/native-assistant-2026-09-30T23-00-39-944Z.html`
+(SHA-256 `fdb41c5b4785e2e1093fb52c22ac5f886f1dd9114a4db2a06f030c2ca4e5ecfb`).
+Its aggregate is `artifacts/ios/native-suites-2026-09-30T23-00-39-043Z.html`.
+The held process was stopped during cleanup, not through the unexecuted UI
+Cancel action; no cancellation success is claimed for this attempt.
+
+The fourth attempt reached and tapped the exact, uniquely identified Running
+run row. Its expected Run Summary did not appear; the retained failure image
+shows the linked Task back at its top. Native navigation and refresh behavior
+are being investigated before another attempt. All five earlier captures,
+the stable source fingerprint and complete cleanup are retained:
+`artifacts/ios/attempts/2026-09-30T23-15-51-454Z-assistant/native-assistant-2026-09-30T23-15-52-418Z.html`
+(SHA-256 `eaae8776a4f3fa266c1ac2eef57d57cc966511b2f9f1cc09cd1075243dd405ea`).
+The aggregate is `artifacts/ios/native-suites-2026-09-30T23-15-51-454Z.html`.
+Its `failure-review/report.html` includes the inspected credential-free screen
+and explicitly represents review of that original failure, not a new E2E.
+UI cancellation remains unverified. Review of recording frames at 292–299
+seconds confirms the correct running row followed by a new Task loading page
+and a return to the task header. The Task's run link now directly constructs
+`RunSummaryView`, matching the run-history entry, instead of mixing a local
+value destination with the surrounding view-based navigation. The exact
+Run Summary and cancellation assertions remain unchanged; this correction
+still needs a fresh run to establish its effect.
+
+The fifth independent assistant attempt passed after that navigation change.
+Its one exact Release UI case and production-record verifier confirm three
+logical requests, four distinct real CLI processes/runs, two context-linked
+answers, explicit failed-request Retry, the exact linked Run Summary, and
+UI cancellation with no remaining owned PID or redispatch. The failed and
+cancelled states were each observed unchanged for at least 3.1 seconds.
+Relaunch preserved the selected same-name instance and unsent draft. All seven
+approved captures were inspected, including full-size run identity/cancelled
+screens; all source and cleanup checks passed.
+
+Assistant subset HTML:
+`artifacts/ios/attempts/2026-09-30T23-32-23-707Z-assistant/native-assistant-2026-09-30T23-32-24-426Z.html`
+(SHA-256 `96ef1a62141176d32f168eb1c0f8c524e0debe41e386943ac3865b012165a2b3`).
+Its exact-case aggregate is
+`artifacts/ios/native-suites-2026-09-30T23-32-23-707Z.html`.
+This subset does not replace the pending full native or installed-Mac gate.
+Long-request disclosure remains model-test/review evidence because these
+three UI requests do not trigger that disclosure. Deterministic subprocesses
+and synthetic usage counters do not establish model quality or provider cost.
+
+The first installed-Mac direct-agent gate passed all 14 functional checks,
+including the shared exact-record/context verifier and four terminated CLI
+PIDs. Its source fingerprint stayed unchanged and all seven cleanup flags
+passed. Fifteen images were reviewed in
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T23-41-23-104Z.html`
+(SHA-256 `57eb843d7833132caba427027e944d951d573fd5d413d54b54749d920e21b99f`).
+The run used the supported local `dmgbuild --detach-retries 10` wrapper.
+Visual review found that the long message-list screenshot shows the first
+answer and intervening events, while its scroll container clips the second
+answer. Both bodies were checked against server records, but that image does
+not show both replies. The helper is being refined to reveal and capture each
+complete answer separately before a fresh installed run; the original report
+is retained unchanged.
+
+## 2026-10-01: direct-agent recovery and native run navigation
+
+The completed local milestone adds readable native request summaries with
+exact original-text disclosure, a compact agent-selection entry with full
+identity details in its destination, and a fix for opening Run Summary from a
+conversation's linked task. The latter replaces mixed value/view navigation
+with the existing direct destination pattern. Request identity, original
+content and existing run events are preserved.
+
+Both clients now exercise three logical direct-agent requests through four
+real CLI launches: offline waiting and automatic recovery, a failed follow-up
+and explicit Retry using the first actual answer, then a held process stopped
+by UI Cancel. Read-only verification binds all task/turn/message/run/computer/
+instance identities and four independently captured context-file hashes.
+Native relaunch additionally preserves the chosen colliding instance and an
+unsent draft. These are deterministic subprocess fixtures, with synthetic
+usage measurements and no inference-quality or real-provider-cost claim.
+
+| Final local gate | Verified result |
+| --- | --- |
+| Mac | The full gate passed its fixture/provider/planning/distribution tests and 46 worker regressions. After the screenshot-only refinement and 17 focused tests, a fresh DMG repeated all 14 installed-client checks with 16 inspected captures. Both complete answer rows are pictured separately. All seven cleanup flags and the final source comparison passed. |
+| iOS unit | 110 distinct XCTest cases passed, zero failed/skipped/duplicates, independently counted from the original xcresult. |
+| iOS Release UI | Exact seven-case core and one-case assistant suites passed; eight total, zero failed/skipped/expected failures/unknown results. The aggregate retains all 31 inspected captures. All fixture and owned process-group cleanup passed. |
+| Source consistency | Unit, core, assistant, aggregate, final Mac and development archive preserve the same original source fingerprint. Source remained frozen during the runs. Only evidence documentation and restoration of the generated UI-test plist followed verification. |
+| Signed development archive | Release arm64 archive passed certificate, Team, embedded profile, asset and privacy-manifest verification. All 35 native source/resource files byte-match its isolated snapshot. No physical-device run, distribution export or upload was performed. |
+
+Final immutable evidence:
+
+| Report | HTML SHA-256 |
+| --- | --- |
+| `artifacts/ios/native-suites-2026-09-30T23-52-07-720Z.html` | `243700951d00b1a4015eac54d1058cbd93cc91d3e3a454c9f1c1798b4bf5c3c9` |
+| `artifacts/ios/attempts/2026-09-30T23-52-07-720Z-core/native-ui-2026-09-30T23-52-09-386Z.html` | `2f0d4680763dab2e81cac4748bdb3c94ad9c69fcab659f55db519fd019eb64c3` |
+| `artifacts/ios/attempts/2026-09-30T23-52-07-720Z-assistant/native-assistant-2026-10-01T00-05-31-912Z.html` | `ce63ab055c6a679cf69f6b858cbb94979d92d6783c3209cc82a88b611743a06d` |
+| `apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T23-47-31-330Z.html` | `e60a977d088d721484e798490c01dfbb907998aaa8f4915d12901e20a707c585` |
+| `artifacts/ios-device/2026-10-01T00-14-24-654Z/report.html` | `80fc98f11f319ee958d1204bf1405afb45be826c1075e2eaef7e677ad863f835` |
+
+Both local Mac attempts used the previously documented supported detach-retry
+wrapper. The final package was freshly built and installed; this does not
+establish default packaging reliability or Developer ID trust. Hosted results
+for the newly committed milestone remain a separate gate.
+
+The core visual-review notes retain specific boundaries: its broad browser
+capture does not show the individual thread replies, the expanded instruction
+capture contains only the upper part of the original, and executor options
+abbreviate their paths (the selected-instance capture shows the full path).
+The suggested-plan title is slightly cropped at the top; its tasks, criteria
+and dependency remain visible. Three non-failing frame-dimension warnings are
+also retained. These limits are not expanded into unobserved visual claims.
+
+The report infrastructure now verifies exact XCTest case identities, preserved
+source boundaries, bounded owned-process-group cleanup and complete static PNG
+pixel streams. PNG checks cover framing, CRC, decompression and scanline shape,
+not colour/palette semantics. Interrupted or incomplete evidence cannot pass
+the aggregate. Failed attempts remain independently available above.
+
+The next confirmed product gap is native mention navigation to a project
+created after pairing: cached bootstrap can leave the global project selector
+on the previous project. An isolated fix has focused tests and review but is
+not included in this milestone; real native/installed-Mac mention workflows
+remain the next validation stage. Commercial release gates in the readiness
+document remain open.

@@ -10,6 +10,7 @@ struct CollaborationView: View {
     @State private var blockers: [WorkspaceRecord] = []
     @State private var agents: [WorkspaceRecord] = []
     @State private var agentInstances: [WorkspaceRecord] = []
+    @State private var computers: [WorkspaceRecord] = []
     @State private var inventoryLoaded = false
     @State private var members: [WorkspaceRecord] = []
     @State private var summary = ""
@@ -49,18 +50,42 @@ struct CollaborationView: View {
                 Picker("Send to", selection: Binding(get: { chat.draft.target ?? "team" }, set: { chat.draft.target = $0 })) {
                     Text("Team discussion").tag("team"); Text("Agent").tag("assistant")
                 }.disabled(chat.sending || chat.draft.pending != nil)
+                    .accessibilityIdentifier("conversation.destination")
                 } else {
                     Text("Agents take turns within this goal's discussion limits. Add a team reply to share constraints; manage the discussion from the goal.").font(.caption).foregroundStyle(.secondary)
                 }
                 if chat.allowsAssistantRequests && chat.draft.target == "assistant" {
                     Text("The agent can execute a task on an available computer. Existing execution approvals still apply.").font(.caption).foregroundStyle(.secondary)
-                    Picker("Agent", selection: Binding(get: { chat.draft.agentInstanceId ?? "" }, set: { chat.draft.agentInstanceId = $0 })) {
-                        Text("Automatic selection").tag("")
-                        ForEach(agentInstances.filter { $0.status != "disabled" }) { instance in
-                            Text("\(instance["runtime"].text) · \(ConversationMetadata.agentName(instance.id, agents: agents, instances: agentInstances))").tag(instance.id)
+                    NavigationLink {
+                        ConversationAgentSelectionView(selection: Binding(get: { chat.draft.agentInstanceId ?? "" }, set: { chat.draft.agentInstanceId = $0 }),
+                                                       instances: visibleAgentInstances, agents: agents, computers: computers)
+                            .disabled(chat.sending || chat.draft.pending != nil)
+                    } label: {
+                        HStack {
+                            Text("Agent")
+                            Spacer()
+                            Text(selectedAgentName).foregroundStyle(.secondary).lineLimit(1)
                         }
-                    }.disabled(chat.sending || chat.draft.pending != nil)
+                    }
+                    .disabled(chat.sending || chat.draft.pending != nil)
+                    .accessibilityIdentifier("conversation.agent")
+                    .accessibilityLabel("Agent")
+                    .accessibilityValue(selectedAgentAccessibilityValue)
+                    if let selectedAgent {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(selectedAgent.context).font(.footnote).foregroundStyle(.secondary)
+                            Text(selectedAgent.workspace).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                            if let identity = selectedAgent.identityDetail {
+                                Text(identity).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                        }
+                        .accessibilityIdentifier("conversation.agent.selected.details")
+                    } else if let id = chat.draft.agentInstanceId, !id.isEmpty {
+                        Text("Selected agent: \(id)").font(.footnote).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("conversation.agent.selected.details")
+                    }
                     Button("Refresh agents") { Task { await refreshInventory() } }
+                        .accessibilityIdentifier("conversation.agent.refresh")
                 }
                 TextField(chat.allowsAssistantRequests && chat.draft.target == "assistant" ? "Ask the agent" : "Message the team", text: $chat.draft.text, axis: .vertical).lineLimit(2...6)
                     .focused($focusedField, equals: .composer)
@@ -94,20 +119,29 @@ struct CollaborationView: View {
             if !chat.turns.isEmpty || chat.turnError != nil {
                 Section("Agent requests") {
                     ForEach(chat.turns) { turn in
+                        let request = AssistantRequestSummary(userMessageId: turn.userMessageId, roomId: turn.roomId,
+                                                              threadRootId: turn.threadRootId, messages: chat.messages)
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(turn.status.capitalized).font(.headline)
+                            AssistantRequestSummaryView(summary: request, turnId: turn.id)
+                            Text(turn.status.capitalized).font(.subheadline)
+                                .accessibilityIdentifier("conversation.turn.status.\(turn.id)")
                             if let message = turn.error, !message.isEmpty { Text(message).foregroundStyle(.red) }
                             if turn.status == "waiting" { Text("Waiting for an available agent or execution approval.").font(.caption) }
                             NavigationLink("Open execution task") { TaskDetailView(client: model.client, taskId: turn.taskId) }
+                                .accessibilityIdentifier("conversation.turn.task.\(turn.id)")
                             if chat.allowsAssistantRequests { HStack {
                                 if ["queued", "running", "waiting"].contains(turn.status) {
                                     Button("Cancel") { Task { await chat.changeTurn(turn, action: "cancel") } }
+                                        .accessibilityIdentifier("conversation.turn.cancel.\(turn.id)")
                                 }
                                 if ["failed", "waiting"].contains(turn.status) {
                                     Button("Retry") { Task { await chat.changeTurn(turn, action: "retry") } }
+                                        .accessibilityIdentifier("conversation.turn.retry.\(turn.id)")
                                 }
-                            }.disabled(chat.turnActionInFlight != nil) }
+                            }.buttonStyle(.borderless).disabled(chat.turnActionInFlight != nil) }
                         }
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("conversation.turn.\(turn.id)")
                     }
                     if let message = chat.turnError { Text(message).foregroundStyle(.red) }
                 }
@@ -213,8 +247,24 @@ struct CollaborationView: View {
     private func refreshInventory() async {
         do {
             let bootstrap = try await model.client.resource(path: "/api/v1/bootstrap")
-            agents = bootstrap["agents"].records; agentInstances = bootstrap["agent_instances"].records; inventoryLoaded = true
+            agents = bootstrap["agents"].records; agentInstances = bootstrap["agent_instances"].records
+            computers = bootstrap["computers"].records; inventoryLoaded = true
         } catch { self.error = String(describing: error) }
+    }
+    private var visibleAgentInstances: [WorkspaceRecord] { agentInstances.filter { $0.status != "disabled" } }
+    private var selectedAgent: AssigneeLabel? {
+        agentInstances.first { $0.id == chat.draft.agentInstanceId }.map {
+            AssigneeLabel(instance: $0, agents: agents, computers: computers, options: visibleAgentInstances)
+        }
+    }
+    private var selectedAgentAccessibilityValue: String {
+        if let selectedAgent { return selectedAgent.accessibilityValue }
+        if let id = chat.draft.agentInstanceId, !id.isEmpty { return "Selected agent: \(id)" }
+        return "Automatic selection"
+    }
+    private var selectedAgentName: String {
+        if let selectedAgent { return selectedAgent.name }
+        return chat.draft.agentInstanceId?.isEmpty == false ? "Selected agent" : "Automatic selection"
     }
     private func transition(_ title: String, _ item: WorkspaceRecord, _ kind: String, _ status: String) -> some View {
         Button(title) { Task { if await model.perform(path: "/api/v1/\(kind)/\(apiPart(item.id))", method: "PATCH", body: .object(["status": .string(status)])) { await refresh() } } }.disabled(model.busy)
@@ -230,6 +280,94 @@ struct CollaborationView: View {
         default: body.merge(["summary": .string(summary), "type": .string("human_input"), "owner_type": .string("user"), "owner_id": .string(actor), "source_kind": .string("manual")]) { _, new in new }
         }
         if await model.perform(path: "/api/v1/rooms/\(apiPart(roomId))/\(recordKind)", body: .object(body)) { summary = ""; await refresh() }
+    }
+}
+
+private struct ConversationAgentSelectionView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var selection: String
+    let instances: [WorkspaceRecord]
+    let agents: [WorkspaceRecord]
+    let computers: [WorkspaceRecord]
+
+    var body: some View {
+        List {
+            Button { selection = ""; dismiss() } label: {
+                HStack {
+                    Text("Automatic selection")
+                    Spacer()
+                    if selection.isEmpty { Image(systemName: "checkmark").foregroundStyle(.tint).accessibilityHidden(true) }
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(selection.isEmpty ? "Selected" : "")
+            .accessibilityIdentifier("conversation.agent.automatic")
+            ForEach(instances) { instance in
+                let label = AssigneeLabel(instance: instance, agents: agents, computers: computers, options: instances)
+                Button { selection = instance.id; dismiss() } label: {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(label.name).font(.body)
+                            Text(label.context).font(.caption).foregroundStyle(.secondary)
+                            Text(label.workspace).font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if let identity = label.identityDetail { Text(identity).font(.caption).foregroundStyle(.secondary) }
+                        }
+                        Spacer()
+                        if selection == instance.id { Image(systemName: "checkmark").foregroundStyle(.tint).accessibilityHidden(true) }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(label.accessibilityValue)
+                .accessibilityValue(selection == instance.id ? "Selected" : "")
+                .accessibilityIdentifier("conversation.agent.option.\(instance.id)")
+            }
+        }
+        .navigationTitle("Agent")
+    }
+}
+
+private struct AssistantRequestSummaryView: View {
+    let summary: AssistantRequestSummary
+    let turnId: String
+    @State private var showsOriginal = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(summary.text).font(.headline)
+                .accessibilityIdentifier("conversation.turn.request.\(turnId)")
+            if summary.isUnavailable {
+                Text("Request: \(turnId)").font(.caption).foregroundStyle(.secondary)
+                Text("Load more messages to find the original request.").font(.caption).foregroundStyle(.secondary)
+            }
+            if let original = summary.originalText {
+                // Keep this action separate from selectable text in the List,
+                // as with the existing original-message disclosures.
+                Button {
+                    showsOriginal.toggle()
+                } label: {
+                    HStack {
+                        Text(showsOriginal ? "Hide full request" : "Show full request")
+                        Spacer()
+                        Image(systemName: showsOriginal ? "chevron.down" : "chevron.right").accessibilityHidden(true)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityValue(showsOriginal ? "Expanded" : "Collapsed")
+                .accessibilityIdentifier("conversation.turn.request.disclosure.\(turnId)")
+                if showsOriginal {
+                    Text(original).font(.subheadline).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("conversation.turn.request.original.\(turnId)")
+                }
+            }
+        }
     }
 }
 

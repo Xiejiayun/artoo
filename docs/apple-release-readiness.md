@@ -173,3 +173,21 @@ passed earlier on the same product source, but its intermittent local detach
 failure is not established as permanently fixed. The milestone ledger retains
 each attempt, the supported-override conditions and hashes; release packaging
 must be verified on the actual signing host.
+
+The direct-agent recovery milestone subsequently passed the full native gate:
+110 unit tests and eight Release UI cases, with 31 inspected captures and
+complete cleanup. The final installed-Mac run passed 14 checks with 16 inspected
+captures, including separate complete first/follow-up answer rows and real UI
+cancellation of the held CLI process. The full native aggregate is
+`artifacts/ios/native-suites-2026-09-30T23-52-07-720Z.html`; final Mac evidence is
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-09-30T23-47-31-330Z.html`.
+Both source fingerprints match, as does the signed arm64 development archive
+at `artifacts/ios-device/2026-10-01T00-14-24-654Z/report.html`; its 35 native
+source/resource files byte-match the verified source. This closes direct-agent
+recovery coverage and the discovered native linked-run navigation defect.
+
+The Mac used the documented local detach-retry wrapper. Native long-request
+disclosure still has model-test/review evidence rather than a real UI operation;
+fresh-project mention navigation is a separately confirmed gap being addressed
+next. Real providers, physical devices, signed public distribution, deployed
+identity and operator policy are still required for commercial acceptance.
