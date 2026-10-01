@@ -19,9 +19,25 @@ Approvals, artifact previews, devices, privacy, and workspace settings were audi
 
 ## Verification
 
-- Native static contracts passed: 22 request specimens, 51 routes, and existing realtime, draft, idempotency, Keychain, onboarding, and icon checks.
-- Native UI-suite contract tests passed: 16 tests. These validate suite selection and retained-evidence rules, not a simulator run.
-- Each of the six edited Swift source files parsed with the repository's tree-sitter Swift grammar using the serial WebAssembly compilation flags needed on this Windows host.
-- The identifier/route preservation audit and `git diff --check` passed.
+- [CI run 36897315175](https://github.com/Xiejiayun/artoo/actions/runs/36897315175) passed the shared, macOS, and iOS jobs for branch head `bc553c97abb3b682c5bdc10e94e9c4c55ec7ba93`. The actual PR merge checkout was `a3a262c3b48592222d5afafc81867cab7a85efbe`.
+- The iOS gate passed all 18 checks, including the Xcode build and **146 unit tests with zero failures**. The native UI suites ran in Release on an **iPhone 16 simulator, iOS 18.5, with Xcode 16.4 (16F6) and the iOS 18.5 SDK**.
+- The complete native aggregate passed **10 of 10 exact UI cases**, with no failures, skips, expected failures, or unknown cases: Core 7, Assistant 1, Mentions 1, and Correction 1. An independent audit of the retained `xcresult-tests.json` and `xcresult-summary.json` exports also passed the repository's exact suite contract.
+- All **53 required native screenshots** were present with unique expected captions and complete, decodable PNG streams: Core 22, Assistant 7, Mentions 9, and Correction 15. Visual review covered all retained frames and enlarged assignment, agent-selection, and plan-proposal originals. The assignment error preserves the selected executor; duplicate executor choices show their full instance identity; proposed plans expose acceptance criteria, dependencies, and the explicit acceptance action. Review history, failed attempts, original and corrected artifacts, and stop confirmation remain readable.
+- The aggregate, all four parent fixture reports, and all four native child reports agree on the source fingerprint recorded after XcodeGen preparation. Every parent and native child reports `source_stable: true`; the recorded tracked-diff SHA-256 is `61717b07761f860b4d2e2d918a2d13b4d502100b6ccf1d10e611bb95c2c8c377`. The recorded working tree is dirty after generation, with zero untracked source files and complete source inventory. Every suite exited successfully and confirmed fixture-resource, temporary-directory, and owned-process-group cleanup; the mentions fixture also confirmed browser-process cleanup.
+- Shared verification passed 21 checks, including 193 test files / 1,377 tests (11 files / 30 tests skipped), 16 product browser workflows, and 6 authentication workflows. Native static contracts passed 22 request specimens / 51 routes, and the native suite/evidence tests passed 45 tests. The source identifier/route preservation audit, Swift grammar parsing, and `git diff --check` also passed.
 
-Xcode type checking, XCTest, screenshots, VoiceOver, and physical keyboard/layout behavior still require Apple CI. Visual verification should cover a small phone and iPad in light/dark appearance, the largest accessibility text size, long task/goal names, a duplicate-name planning team, unavailable planning selections, memory replacement, a failed run, and pairing with the keyboard visible. No native runtime or visual acceptance is claimed from Windows checks.
+The retained aggregate is `ios/native-suites-2026-10-01T17-15-38-449Z.json` in the run's native report artifact, with separate parent/child reports and raw XCTest exports under its four attempt directories. It finished at `2026-10-01T18:09:42.594Z`. The unit-test result is recorded at `17:15:31.720Z` in the iOS job log.
+
+Integration commit `45071640c07b2262e17e51c57f2ca3c0fc07cc3e` subsequently brought in geometry-aware XCTest disclosure helpers. Relative to the tested branch head, it changes only `apps/ios/UITests/SharedServerChatUITests.swift`; native application, Web, desktop, server, and fixture-script sources match. The run above verifies the earlier test inputs; the later helper revisions need their own CI result.
+
+## Captured native UI
+
+These are unmodified frames from the passing Core suite above.
+
+| Assignment rejection preserves the selected executor | Proposed plan shows task dependencies and acceptance |
+| --- | --- |
+| <img src="assets/ui-refresh/native-assignment-after.png" width="300" alt="Native assignment sheet preserves the selected agent and worktree setting while showing the server error"> | <img src="assets/ui-refresh/native-planning-after.png" width="300" alt="Native proposed plan with numbered tasks, acceptance criteria, dependency, and explicit accept or reject actions"> |
+
+## Coverage limits
+
+The native workflows use a real server and deterministic local agent subprocess fixtures. They verify simulator behavior, server state, retained evidence, retries, and cleanup; live model-provider behavior and physical-device execution are outside this evidence. Visual acceptance covers the captured iPhone 16 light-appearance states. Small phones, iPad, dark appearance, maximum Dynamic Type, VoiceOver, and physical-keyboard behavior still need dedicated review. The run also does not provide screenshots of every memory, skill, run-search, planning-selection, or pairing state changed by this milestone.
