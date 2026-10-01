@@ -23,6 +23,7 @@ emails, owner emails and one stable generated pairing pepper. Set these paths:
 ARTOO_DATA_DIR=/var/lib/artoo
 ARTOO_HOST=127.0.0.1
 ARTOO_PORT=4000
+ARTOO_TRUSTED_PROXIES=127.0.0.1
 ARTOO_DESKTOP_CORS=1
 ARTOO_DESKTOP_CORS_ORIGINS=null
 ```
@@ -38,6 +39,17 @@ into the host's Caddy configuration and replace `artoo.example.com` with the
 team's actual DNS name. Allow public ports 80/443 for TLS; keep 4000 bound to
 loopback and closed externally. Caddy automatically proxies both client
 `/api/v1/ws` and execution-node WebSocket upgrades, authorization and cookies.
+
+`ARTOO_TRUSTED_PROXIES` names the exact proxy IPs allowed to supply forwarded
+client addresses. The same-host Caddy template connects from `127.0.0.1`; this
+setting keeps device-pairing limits separate for different client IPs. Existing
+deployments must add it to their server environment before restarting. With no
+value, forwarded headers are ignored. Only comma-separated literal IPv4/IPv6
+addresses are accepted; hostnames, CIDR ranges, hop counts and blanket trust are
+rejected before the database opens. For another proxy, name its actual peer IP
+and keep the server port private. The proxy must replace or safely append
+forwarded headers using the actual connection source, as Caddy does by default.
+Never configure an untrusted client's address as a proxy.
 
 ```bash
 sudo systemd-analyze verify /etc/systemd/system/artoo-preview.service

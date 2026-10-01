@@ -35,6 +35,12 @@ local testing only. Do not expose a development server to the network. Productio
 never enables `/dev` routes or development node tokens, even if their environment
 flags are present. Public health endpoints are `/health/live` and `/health/ready`.
 
+Set `ARTOO_TRUSTED_PROXIES` to the reverse proxy's exact IP addresses so device
+pairing is limited per client rather than per proxy. The bundled same-host Caddy
+setup uses `127.0.0.1`; leave the setting empty without a proxy. Arbitrary clients'
+forwarded headers are not trusted. See the shared-server guide for the trust
+boundary and existing-deployment configuration update.
+
 Use a service manager with graceful stop and restart-on-failure. Keep only one
 server process per database. PGlite is embedded; this deployment does not support
 multiple replicas sharing its directory. Durable state defaults to `.artoo/db`

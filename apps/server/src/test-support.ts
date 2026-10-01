@@ -74,6 +74,7 @@ export interface BuildTestServerOptions {
   clientWsHooks?: ClientWsHooks;
   /** Inject a claim rate-limiter (#28 4b) so tests can assert a tight bound. */
   claimLimiter?: ClaimLimiter;
+  trustedProxies?: string[];
   /** Enable packaged-desktop CORS for targeted route tests. */
   desktopCors?: DesktopCorsOptions;
   /** Inject a node disconnect grace manager for WS reconnect tests. */
@@ -116,6 +117,7 @@ export async function buildTestServer(
     webDistDir: options.webDistDir,
     clientWsHooks: options.clientWsHooks,
     claimLimiter: options.claimLimiter,
+    trustedProxies: options.trustedProxies,
     desktopCors: options.desktopCors,
     graceWindow: options.graceWindow,
   });

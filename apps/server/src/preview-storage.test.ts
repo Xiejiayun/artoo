@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { PgliteDbClient } from "@artoo/storage";
 import { loadMigrationStatements, seed } from "@artoo/db";
 import { createSession } from "./auth/auth-service.js";
+import { DEFAULT_CLAIM_LIMIT } from "./claim-rate-limit.js";
 import { startServer } from "./main.js";
 import { adoptLegacyStorage, backupStorage, restoreStorage, unlockStorage } from "./storage-operations.js";
 
@@ -23,11 +24,23 @@ describe("durable production startup and recovery", () => {
   it("protects APIs, excludes fake resources, survives restart and a verified complete backup restore", async () => {
     const root = await temporary();
     const data = join(root, "data");
-    let server = await startServer(production(data));
+    let server = await startServer({ ...production(data), ARTOO_TRUSTED_PROXIES: "127.0.0.1, ::1" });
     let closed = false;
     try {
       expect((await server.app.inject({ url: "/health/ready" })).statusCode).toBe(200);
       expect((await server.app.inject({ url: "/api/v1/bootstrap" })).statusCode).toBe(401);
+      // Exercise the production environment wiring through the public route:
+      // exhausting one forwarded client's allowance must not block its peer.
+      const claimAttempt = (forwardedFor: string) => server.app.inject({
+        method: "POST", url: "/api/v1/devices/claim", remoteAddress: "127.0.0.1",
+        headers: { "x-forwarded-for": forwardedFor },
+        payload: { code: "WRON-GCOD", platform: "windows", app_version: "1", display_name: "x" },
+      });
+      for (let attempt = 0; attempt < DEFAULT_CLAIM_LIMIT.capacity; attempt++) {
+        expect((await claimAttempt("198.51.100.10")).statusCode).toBe(400);
+      }
+      expect((await claimAttempt("198.51.100.10")).statusCode).toBe(429);
+      expect((await claimAttempt("198.51.100.20")).statusCode).toBe(400);
       const session = await createSession(server.ctx, { ttlMs: 3_600_000 }, { userId: "user_owner" });
       const headers = { authorization: `Bearer ${session.raw}` };
       expect((await server.app.inject({ url: "/api/v1/bootstrap", headers })).json().computers).toEqual([]);
@@ -64,6 +77,9 @@ describe("durable production startup and recovery", () => {
   it("fails closed before opening the database and prevents concurrent writers", async () => {
     const root = await temporary();
     await expect(startServer({ ...production(join(root, "invalid")), AUTH_ALLOWED_EMAILS: "" })).rejects.toThrow("production requires");
+    const invalidProxyData = join(root, "invalid-proxy");
+    await expect(startServer({ ...production(invalidProxyData), ARTOO_TRUSTED_PROXIES: "true" })).rejects.toThrow("ARTOO_TRUSTED_PROXIES");
+    await expect(access(invalidProxyData)).rejects.toMatchObject({ code: "ENOENT" });
     const dbDir = join(root, "db");
     const first = await PgliteDbClient.create({ dataDir: dbDir });
     try { await expect(PgliteDbClient.create({ dataDir: dbDir })).rejects.toThrow("locked"); }

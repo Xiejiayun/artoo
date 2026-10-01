@@ -45,6 +45,23 @@ describe("device HTTP flow (pairing → claim → enroll → list → revoke)", 
     return { deviceId: json.device.id, nodeToken: json.node_token, controlToken: json.control_token };
   }
 
+  async function expectRejectedClaim(
+    s: TestServer,
+    remoteAddress: string,
+    forwardedFor: string,
+    status: 400 | 429,
+  ): Promise<void> {
+    const response = await s.app.inject({
+      method: "POST",
+      url: "/api/v1/devices/claim",
+      remoteAddress,
+      headers: { "x-forwarded-for": forwardedFor },
+      payload: { code: "WRON-GCOD", platform: "windows", app_version: "1", display_name: "x" },
+    });
+    expect(response.statusCode).toBe(status);
+    expect(response.json().error.code).toBe(status === 429 ? "rate_limited" : "validation_error");
+  }
+
   it("creates a pairing, claims it into a device with two credentials", async () => {
     server = await buildTestServer();
     const code = await createPairing(server);
@@ -158,6 +175,53 @@ describe("device HTTP flow (pairing → claim → enroll → list → revoke)", 
     });
     expect(third.statusCode).toBe(429);
     expect(third.json().error.code).toBe("rate_limited");
+  });
+
+  it("gives clients behind an explicitly trusted proxy independent claim limits", async () => {
+    server = await buildTestServer({
+      authConfig: { enforceApiAuth: true },
+      trustedProxies: ["127.0.0.1"],
+      claimLimiter: createClaimLimiter({ capacity: 2, windowMs: 60_000 }),
+    });
+
+    await expectRejectedClaim(server, "127.0.0.1", "198.51.100.10", 400);
+    await expectRejectedClaim(server, "127.0.0.1", "198.51.100.10", 400);
+    await expectRejectedClaim(server, "127.0.0.1", "198.51.100.10", 429);
+    await expectRejectedClaim(server, "127.0.0.1", "198.51.100.20", 400);
+    await expectRejectedClaim(server, "127.0.0.1", "198.51.100.20", 400);
+    await expectRejectedClaim(server, "127.0.0.1", "198.51.100.20", 429);
+  });
+
+  it("does not let a client rotate forged leftmost forwarded addresses to evade its claim limit", async () => {
+    server = await buildTestServer({
+      authConfig: { enforceApiAuth: true },
+      trustedProxies: ["127.0.0.1"],
+      claimLimiter: createClaimLimiter({ capacity: 2, windowMs: 60_000 }),
+    });
+
+    // The trusted proxy appends the actual client address. Client-supplied
+    // entries to its left must not become the rate-limit identity.
+    await expectRejectedClaim(server, "127.0.0.1", "203.0.113.1, 198.51.100.10", 400);
+    await expectRejectedClaim(server, "127.0.0.1", "203.0.113.2, 198.51.100.10", 400);
+    await expectRejectedClaim(server, "127.0.0.1", "203.0.113.3, 198.51.100.10", 429);
+  });
+
+  it.each([
+    { name: "no proxy is configured", trustedProxies: undefined, remoteAddress: "127.0.0.1" },
+    { name: "the socket peer is not a trusted proxy", trustedProxies: ["127.0.0.1"], remoteAddress: "198.51.100.30" },
+  ])("ignores forwarded addresses when $name", async ({ trustedProxies, remoteAddress }) => {
+    server = await buildTestServer({
+      authConfig: { enforceApiAuth: true },
+      trustedProxies,
+      claimLimiter: createClaimLimiter({ capacity: 2, windowMs: 60_000 }),
+    });
+
+    await expectRejectedClaim(server, remoteAddress, "203.0.113.1", 400);
+    await expectRejectedClaim(server, remoteAddress, "203.0.113.2", 400);
+    await expectRejectedClaim(server, remoteAddress, "203.0.113.3", 429);
+    // The actual connection source, rather than the untrusted header, owns
+    // the exhausted bucket; another socket peer still has its own allowance.
+    await expectRejectedClaim(server, "198.51.100.40", "203.0.113.3", 400);
   });
 
   // ── #28 4b re-review: issuance routes are exempt from the idempotency store,

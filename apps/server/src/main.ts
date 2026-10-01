@@ -8,6 +8,7 @@ import { buildApp, type DesktopCorsOptions } from "./app.js";
 import { loadAuthConfig, type AuthConfig, type AuthConfigEnv } from "./auth/auth-config.js";
 import { createFetchOidcHttp } from "./auth/oidc-client.js";
 import { loadDeviceAuthConfig } from "./config/device-auth.js";
+import { loadTrustedProxies } from "./config/trusted-proxies.js";
 import type { ServerContext } from "./context.js";
 import { createEventPublisher } from "./ws/event-publisher.js";
 import { createWsHub } from "./ws/ws-hub.js";
@@ -42,6 +43,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env) {
     throw new Error("Authentication is required when listening beyond loopback");
   }
   const cors = desktopCors(env);
+  const trustedProxies = loadTrustedProxies(env);
   const dataRoot = resolve(env.ARTOO_DATA_DIR?.trim() || ".artoo");
   const dbDir = env.ARTOO_DB_DIR?.trim() || (production ? join(dataRoot, "db") : undefined);
   const artifactDir = env.ARTOO_ARTIFACT_DIR?.trim() || join(dataRoot, "artifacts");
@@ -62,7 +64,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env) {
     };
     const wsHub = createWsHub();
     const app = buildApp(ctx, {
-      wsHub, webDistDir: env.ARTOO_WEB_DIST, desktopCors: cors,
+      wsHub, webDistDir: env.ARTOO_WEB_DIST, desktopCors: cors, trustedProxies,
       enableDevRoutes: !production && env.ARTOO_ENABLE_DEV_ROUTES === "1",
       artifactDir: resolve(artifactDir),
     });

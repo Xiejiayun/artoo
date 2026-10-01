@@ -93,6 +93,8 @@ export interface BuildAppOptions {
   clientWsHooks?: ClientWsHooks;
   /** Inject a claim rate-limiter (#28 4b) so tests can use a tight bound. */
   claimLimiter?: ClaimLimiter;
+  /** Explicit reverse-proxy IPs. Omitted by default so direct clients cannot spoof their source. */
+  trustedProxies?: string[];
   /** Allow packaged desktop renderers (file:// -> Origin: null) to call the API. */
   desktopCors?: DesktopCorsOptions;
   /** Inject a disconnect grace-window manager (#115 P2-S3) so tests can drive a
@@ -110,7 +112,7 @@ export interface DesktopCorsOptions {
  * business state transitions live in services, never in routes.
  */
 export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): FastifyInstance {
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, trustProxy: options.trustedProxies?.length ? options.trustedProxies : false });
   if (options.budgetMonitorIntervalMs !== false) {
     let budgetMonitor: ReturnType<typeof startGoalBudgetMonitor> | undefined;
     app.addHook("onReady", async () => {
