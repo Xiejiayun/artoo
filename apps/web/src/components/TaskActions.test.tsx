@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Approval } from "@artoo/domain";
 import { ApiClientError } from "../api/client.js";
 
-import { approvalFixture, bootstrapFixture, fakeApi, renderWithProviders, taskFixture } from "../test/utils.js";
+import { approvalFixture, bootstrapFixture, createTestQueryClient, fakeApi, renderWithProviders, taskFixture } from "../test/utils.js";
+import { queryKeys } from "../app/queryKeys.js";
 import { TaskActions } from "./TaskActions.js";
 
 describe("TaskActions", () => {
@@ -85,6 +86,46 @@ describe("TaskActions", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(retryTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("distinguishes the same agent on different computers and preserves the selected instance", async () => {
+    const bootstrap = bootstrapFixture();
+    bootstrap.computers.push({ ...bootstrap.computers[0]!, id: "computer_mac", display_name: "Studio Mac", status: "offline" });
+    bootstrap.agent_instances.push({ ...bootstrap.agent_instances[0]!, id: "instance_mac", computer_id: "computer_mac" });
+    const assignTask = vi.fn().mockResolvedValue({ run: { id: "run_1" }, scheduler_decision: { reason: "manual", score: 1 } });
+    renderWithProviders(<TaskActions task={taskFixture({ id: "task_1", title: "T", status: "ready" })} approvals={[]} />, { client: fakeApi({ bootstrap: async () => bootstrap, assignTask }) });
+    await screen.findByRole("option", { name: "Mock Coder · Studio Mac · mock · offline" });
+    expect(screen.getByRole("option", { name: "Mock Coder · Local Mock · mock · online" })).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("Assignment"), "instance_mac");
+    expect(screen.getByText("This computer is offline. Check its connection before assigning work.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Assign" }));
+    expect(assignTask).toHaveBeenCalledWith("task_1", { mode: "manual", agent_instance_id: "instance_mac" }, expect.any(String));
+  });
+
+  it.each(["removed", "disabled", "disabled by configuration"] as const)("keeps a %s manual destination visible and requires a deliberate replacement", async (change) => {
+    const bootstrap = bootstrapFixture();
+    const queryClient = createTestQueryClient();
+    const assignTask = vi.fn().mockResolvedValue({ run: { id: "run_1" }, scheduler_decision: { reason: "auto", score: 1 } });
+    renderWithProviders(<TaskActions task={taskFixture({ id: "task_1", title: "T", status: "ready" })} approvals={[]} />, { queryClient, client: fakeApi({ bootstrap: async () => bootstrap, assignTask }) });
+    await screen.findByRole("option", { name: /Mock Coder/ });
+    const selection = screen.getByLabelText("Assignment");
+    await userEvent.selectOptions(selection, "instance_mock_coder");
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.bootstrap, { ...bootstrap, agent_instances: change === "removed" ? [] : bootstrap.agent_instances.map((instance) => ({ ...instance, ...(change === "disabled" ? { status: "disabled" } : { config: { ...instance.config, enabled: false } }) })) });
+    });
+
+    expect(await screen.findByRole("option", { name: /Mock Coder.*no longer available/ })).toBeDisabled();
+    expect(selection).toHaveValue("instance_mock_coder");
+    const assign = screen.getByRole("button", { name: "Assign" });
+    expect(assign).toBeDisabled();
+    expect(assign).toHaveAccessibleDescription(/Choose another agent or Automatic selection/);
+    await userEvent.click(assign);
+    expect(assignTask).not.toHaveBeenCalled();
+
+    await userEvent.selectOptions(selection, "");
+    expect(assign).toBeEnabled();
+    await userEvent.click(assign);
+    expect(assignTask).toHaveBeenCalledWith("task_1", { mode: "auto" }, expect.any(String));
   });
 
   it("renders nothing for non-actionable statuses (review)", () => {

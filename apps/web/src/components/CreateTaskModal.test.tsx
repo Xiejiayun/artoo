@@ -53,4 +53,31 @@ describe("CreateTaskModal", () => {
     await userEvent.type(screen.getByLabelText("Title"), "x");
     expect(screen.getByRole("button", { name: "Create task" })).toBeEnabled();
   });
+
+  it("focuses the brief, supports keyboard submission, and preserves selected routing fields", async () => {
+    const createTask = vi.fn().mockResolvedValue({ task: taskFixture({ id: "new", title: "Improve search", status: "backlog" }) });
+    renderWithProviders(<CreateTaskModal projectId="proj_artoo" onClose={() => undefined} />, { client: fakeApi({ createTask }) });
+
+    expect(screen.getByRole("dialog", { name: "Create task" })).toHaveAttribute("aria-modal", "true");
+    expect(screen.getByLabelText("Title")).toHaveFocus();
+    await userEvent.type(screen.getByLabelText("Title"), "  Improve search  ");
+    await userEvent.type(screen.getByLabelText("Description"), "Keep keyboard navigation working");
+    await userEvent.selectOptions(screen.getByLabelText("Priority"), "p1");
+    await userEvent.click(screen.getByText("Required capabilities"));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Write code" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Run tests" }));
+    await userEvent.click(screen.getByLabelText("Title"));
+    await userEvent.keyboard("{Control>}{Enter}{/Control}");
+
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ title: "Improve search", description: "Keep keyboard navigation working", priority: "p1", required_capabilities: ["code.modify", "test.run"] }), expect.any(String));
+  });
+
+  it("closes with Escape without creating work", async () => {
+    const onClose = vi.fn();
+    const createTask = vi.fn();
+    renderWithProviders(<CreateTaskModal projectId="proj_artoo" onClose={onClose} />, { client: fakeApi({ createTask }) });
+    await userEvent.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(createTask).not.toHaveBeenCalled();
+  });
 });

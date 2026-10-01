@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Circle, ListChecks } from "lucide-react";
 
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
@@ -12,6 +13,8 @@ import { TaskActions } from "./TaskActions.js";
 import { CancelRun } from "./CancelRun.js";
 import { TaskDependencies } from "./TaskDependencies.js";
 import { ActionError } from "./ActionError.js";
+import { CAPABILITY_LABELS, taskAssigneeName, taskUpdatedLabel } from "./taskPresentation.js";
+import "../ui/work-management.css";
 
 function DetailSkeleton(): React.ReactNode {
   return (
@@ -19,7 +22,7 @@ function DetailSkeleton(): React.ReactNode {
       <span className="detail-loading-label" role="status" aria-label="Loading detail">
         Loading detail...
       </span>
-      <div className="task-detail" aria-hidden="true">
+      <div className="task-detail work-task-detail" aria-hidden="true">
         <Skeleton height={22} width="72%" />
         <div className="task-detail__meta">
           <Skeleton height={14} width="40%" />
@@ -40,6 +43,7 @@ function DetailSkeleton(): React.ReactNode {
  */
 export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode {
   const api = useApi();
+  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
   const snapshot = useQuery({
     queryKey: queryKeys.task(taskId),
     queryFn: () => api.getTask(taskId),
@@ -65,50 +69,50 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
   }
 
   const { task, runs, approvals, artifacts } = snapshot.data;
-  const hasAssignee = task.assignee_id !== null && task.assignee_id !== undefined;
+  const assignee = taskAssigneeName(task, bootstrap.data);
+  const latestRun = runs.reduce<(typeof runs)[number] | undefined>((latest, run) => latest === undefined || run.sequence > latest.sequence ? run : latest, undefined);
+  const computer = bootstrap.data?.computers.find((item) => item.id === latestRun?.computer_id);
 
   return (
-    <div className="task-detail">
+    <div className="task-detail work-task-detail">
       <header className="task-detail__header">
+        <span className="work-eyebrow">Task details</span>
         <h2 className="t-h2">{task.title}</h2>
-        <StatusBadge status={task.status} />
       </header>
       {snapshot.isError && <div className="u-stack-sm"><ActionError error={snapshot.error} /><Button size="sm" onClick={() => void snapshot.refetch()}>Retry loading task details</Button></div>}
 
       <dl className="task-detail__meta">
+        <div className="task-detail__meta-row"><dt>Status</dt><dd><StatusBadge status={task.status} /></dd></div>
         <div className="task-detail__meta-row">
           <dt>Priority</dt>
           <dd>
             <PriorityBadge priority={task.priority} />
           </dd>
         </div>
-        {hasAssignee ? (
-          <div className="task-detail__meta-row">
-            <dt>Assignee</dt>
-            <dd className="t-mono">
-              {task.assignee_type}:{task.assignee_id}
-            </dd>
-          </div>
-        ) : null}
+        <div className="task-detail__meta-row"><dt>Assignee</dt><dd className="work-task-detail__assignee" title={task.assignee_id ?? undefined}><span className="work-avatar" aria-hidden="true">{task.assignee_id ? assignee.slice(0, 1).toUpperCase() : "–"}</span>{assignee}</dd></div>
+        {computer ? <div className="task-detail__meta-row"><dt>Computer</dt><dd>{computer.display_name}</dd></div> : null}
+        <div className="task-detail__meta-row"><dt>Updated</dt><dd><time dateTime={task.updated_at} title={new Date(task.updated_at).toLocaleString()}>{taskUpdatedLabel(task.updated_at)}</time></dd></div>
       </dl>
 
       <TaskActions key={`actions:${task.id}`} task={task} approvals={approvals} />
       <CancelRun key={`cancel:${task.id}`} runs={runs} taskId={task.id} projectId={task.project_id} />
 
+      {task.description ? <section className="task-detail__section" aria-label="Description"><h3 className="task-detail__section-title">Description</h3><p className="work-task-detail__description">{task.description}</p></section> : null}
       {task.acceptance_criteria.length > 0 ? (
         <section className="task-detail__section" aria-label="Acceptance criteria">
-          <h3 className="task-detail__section-title">Acceptance criteria</h3>
+          <h3 className="task-detail__section-title"><ListChecks size={15} aria-hidden="true" />Acceptance criteria <span className="work-count">{task.acceptance_criteria.length}</span></h3>
           <ul className="task-detail__criteria">
             {task.acceptance_criteria.map((criterion, index) => (
-              <li key={`${index}-${criterion}`}>{criterion}</li>
+              <li key={`${index}-${criterion}`}><Circle size={14} aria-hidden="true" /><span>{criterion}</span></li>
             ))}
           </ul>
         </section>
       ) : null}
+      {task.required_capabilities.length > 0 ? <section className="task-detail__section" aria-label="Required capabilities"><h3 className="task-detail__section-title">Required capabilities</h3><div className="work-task-detail__capabilities">{task.required_capabilities.map((capability) => <span key={capability} title={capability}>{CAPABILITY_LABELS[capability]}</span>)}</div></section> : null}
 
       <ApprovalInbox taskId={task.id} taskStatus={task.status} approvals={approvals} />
       <section className="task-detail__section" aria-label="Runs">
-        <h3 className="task-detail__section-title">Runs</h3>
+        <h3 className="task-detail__section-title">Runs <span className="work-count">{runs.length}</span></h3>
         <RunTimeline runs={runs} outputsByRun={outputsByRun} renderUsage={(run) => <RunUsageSummary run={run} />} />
       </section>
       <ArtifactReview key={`review:${task.id}`} task={task} artifacts={artifacts} reviews={snapshot.data.reviews} versionCursor={snapshot.data.version_cursor} />

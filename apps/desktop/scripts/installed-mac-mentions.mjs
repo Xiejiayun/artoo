@@ -115,7 +115,8 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
       const row = conversation.getByRole("list", { name: "Messages", exact: true }).getByRole("listitem")
         .filter({ has: page.getByText(fields.root_a_body, { exact: true }) });
       await expect(row).toHaveCount(1);
-      await row.getByRole("button", { name: /^(Reply in thread|\d+ replies)$/ }).click();
+      await row.hover();
+      await row.getByRole("button", { name: "Reply in thread", exact: true }).click();
       await expect(thread.getByText(fields.root_a_body, { exact: true })).toBeVisible();
       assert.equal(installedMentionRoute(page.url()).search.thread, fields.root_a_id);
     };

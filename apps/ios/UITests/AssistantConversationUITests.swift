@@ -400,8 +400,11 @@ final class AssistantConversationUITests: XCTestCase {
         let list = app.collectionViews.firstMatch
         try require(list.exists && !app.keyboards.firstMatch.exists, "Evidence must use an unobscured native list")
         let rect = list.frame.intersection(app.frame), nav = app.navigationBars.firstMatch, tabs = app.tabBars.firstMatch
-        let top = nav.exists ? max(rect.minY, nav.frame.maxY) : rect.minY
-        let bottom = tabs.exists ? min(rect.maxY, tabs.frame.minY) : rect.maxY
+        var top = nav.exists ? max(rect.minY, nav.frame.maxY) : rect.minY
+        var bottom = tabs.exists ? min(rect.maxY, tabs.frame.minY) : rect.maxY
+        let connection = field("realtimeStatus"), composer = field("conversation.composer")
+        if connection.exists && !connection.frame.isEmpty { top = max(top, connection.frame.maxY + 4) }
+        if composer.exists && !composer.frame.isEmpty { bottom = min(bottom, composer.frame.minY - 4) }
         let visible = CGRect(x: rect.minX + 2, y: top + 2, width: rect.width - 4, height: bottom - top - 4)
         try require(!visible.isEmpty && !visible.isNull && !visible.isInfinite, "The content viewport must have a real visible frame")
         return visible

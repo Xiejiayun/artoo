@@ -6,6 +6,27 @@ final class AssigneeLabelTests: XCTestCase {
         try XCTUnwrap(WorkspaceRecord(.object(fields)))
     }
 
+    func testExplicitAgentBecomesUnavailableWhenDisabledRemovedOrReplacedBySameName() throws {
+        let selected = try record(["id": .string("ai_selected"), "display_name": .string("Coding agent"), "status": .string("idle")])
+        let disabled = try record(["id": .string(selected.id), "display_name": .string("Coding agent"), "status": .string("disabled")])
+        let replacement = try record(["id": .string("ai_different"), "display_name": .string("Coding agent"), "status": .string("idle")])
+        XCTAssertEqual(AgentSelectionAvailability.resolve(instanceId: selected.id, instances: [selected], loaded: true), .available)
+        for inventory in [[disabled], [], [replacement]] {
+            let availability = AgentSelectionAvailability.resolve(instanceId: selected.id, instances: inventory, loaded: true)
+            XCTAssertEqual(availability, .unavailable, "A refresh must retain the explicit identity instead of selecting another agent or Auto")
+            XCTAssertFalse(availability.allowsNewRequest)
+        }
+    }
+
+    func testSavedManualSelectionWaitsForVerifiedInventoryAndAutoRemainsExplicit() {
+        let checking = AgentSelectionAvailability.resolve(instanceId: "ai_saved", instances: [], loaded: false)
+        XCTAssertEqual(checking, .checking)
+        XCTAssertFalse(checking.allowsNewRequest, "A persisted manual draft must not silently fall back to automatic assignment during loading")
+        XCTAssertEqual(AgentSelectionAvailability.resolve(instanceId: nil, instances: [], loaded: false), .automatic)
+        XCTAssertEqual(AgentSelectionAvailability.resolve(instanceId: "", instances: [], loaded: true), .automatic)
+        XCTAssertTrue(AgentSelectionAvailability.automatic.allowsNewRequest)
+    }
+
     func testProductionInstanceResolvesAgentComputerRuntimeAndWorkspace() throws {
         let instance = try record(["id": .string("ai_executor"), "agent_id": .string("agent_executor"),
                                    "computer_id": .string("computer_mac"), "runtime": .string("codex"),

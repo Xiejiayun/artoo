@@ -12,12 +12,13 @@ test("channels and threads synchronize between independent browser clients and s
   await main.getByLabel("Message", { exact: true }).fill("Split the release into implementation and verification.");
   await main.getByRole("button", { name: "Send message", exact: true }).click();
   await expect(main.getByRole("list", { name: "Messages" })).toContainText("Split the release");
+  await main.getByRole("article", { name: "text message", exact: true }).hover();
   await main.getByRole("button", { name: "Reply in thread", exact: true }).click();
   const thread = page.getByRole("complementary", { name: "Thread", exact: true });
   await thread.getByLabel("Message", { exact: true }).fill("Verification should depend on implementation.");
   await thread.getByRole("button", { name: "Send message", exact: true }).click();
   await expect(thread.getByRole("list", { name: "Messages" })).toContainText("Verification should depend");
-  await expect(main.getByRole("button", { name: "1 replies", exact: true })).toBeVisible();
+  await expect(main.getByRole("button", { name: "1 reply", exact: true })).toBeVisible();
   const secondContext = await browser.newContext();
   try {
     const second = await secondContext.newPage();
@@ -40,5 +41,13 @@ test("channels and threads synchronize between independent browser clients and s
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       await page.screenshot({ path: testInfo.outputPath(`channels-${width}.png`), fullPage: true });
     }
+    await thread.getByRole("button", { name: "Close thread", exact: true }).click();
+    await expect(main.getByLabel("Message", { exact: true })).toBeVisible();
+    await main.getByLabel("Message", { exact: true }).fill("A keyboard-friendly follow-up.");
+    await main.getByLabel("Message", { exact: true }).press("Enter");
+    await expect(main.getByRole("list", { name: "Messages" })).toContainText("A keyboard-friendly follow-up.");
+    const links = page.getByRole("navigation", { name: "Primary", exact: true }).locator(".app-nav__links li");
+    const boxes = await links.evaluateAll((items) => items.map((item) => { const rect = item.getBoundingClientRect(); return { left: rect.left, right: rect.right }; }));
+    for (let index = 1; index < boxes.length; index++) expect(boxes[index]!.left).toBeGreaterThanOrEqual(boxes[index - 1]!.right);
   } finally { await secondContext.close(); }
 });

@@ -1,5 +1,9 @@
 # Artoo UI System Spec (v2-K / #46)
 
+> October 2026: [Collaboration UI refresh](collaboration-ui-refresh.md) supersedes
+> the operations-first information architecture below. Conversation-first
+> navigation and native chat ergonomics are now the product baseline.
+
 Reference-driven production UI system for Artoo's shared Web/Electron renderer
 (Web, Windows desktop, macOS desktop) and the cross-client design language that
 the native iOS client (#51/#52) mirrors. This spec is the hard acceptance ruler

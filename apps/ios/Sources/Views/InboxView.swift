@@ -24,6 +24,10 @@ public struct InboxView: View {
                     )
                 } else {
                     List {
+                        Section {
+                            ArtooPageIntro(title: "Keep work moving", message: "Review the decisions waiting on you, with the highest risk first.", systemImage: "tray.full.fill")
+                                .listRowBackground(Color.clear)
+                        }
                         ForEach(riskSections(approvals), id: \.risk.rawValue) { section in
                             Section {
                                 ForEach(section.approvals) { approval in
@@ -33,13 +37,7 @@ public struct InboxView: View {
                                     .accessibilityIdentifier("inbox.approval.\(approval.id)")
                                 }
                             } header: {
-                                HStack {
-                                    Text("\(section.risk.label) risk")
-                                    Spacer()
-                                    Text("\(section.approvals.count)")
-                                        .font(ArtooTokens.Typography.caption)
-                                        .foregroundStyle(ArtooTokens.ColorToken.textMuted)
-                                }
+                                ArtooSectionHeading(title: "\(section.risk.label) risk", count: section.approvals.count)
                             }
                         }
                     }
@@ -100,7 +98,7 @@ private struct ApprovalRow: View {
                 ("Created", approval.createdAt)
             ])
         }
-        .padding(.vertical, ArtooTokens.Spacing.xxs)
+        .padding(.vertical, ArtooTokens.Spacing.xs)
         .padding(.leading, ArtooTokens.Spacing.xs)
         .overlay(alignment: .leading) {
             RoundedRectangle(cornerRadius: ArtooTokens.Radius.pill)
@@ -140,7 +138,7 @@ public struct ApprovalDetailView: View {
                         ArtooMetadataGrid([
                             ("Task", approval.taskId),
                             ("Run", approval.runId),
-                            ("Created", approval.createdAt)
+                ("Created", ConversationMetadata.timestamp(approval.createdAt))
                         ])
                     }
                 }
@@ -189,6 +187,7 @@ public struct ApprovalDetailView: View {
                     ProgressView()
                 }
             }
+            .frame(minHeight: 44)
         }
         .disabled(model.isResolving(approval))
         .accessibilityIdentifier("approval.decision.\(decision.rawValue).\(approval.id)")

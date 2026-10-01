@@ -7,8 +7,9 @@ public struct TasksView: View {
     @State private var showingCreate = false
     @State private var searchText = ""
     @State private var selectedStatusRaw = "all"
+    @State private var directory: JSONValue = .null
 
-    private let statusFilters: [TaskStatus] = [.backlog, .ready, .assigned, .running, .awaitingApproval, .blocked, .review, .done, .cancelled]
+    private let statusFilters: [TaskStatus] = [.backlog, .ready, .assigned, .running, .inProgress, .awaitingApproval, .blocked, .review, .done, .cancelled]
 
     public init(client: ApiClientProtocol, projectId: String) {
         self.client = client
@@ -32,7 +33,8 @@ public struct TasksView: View {
                     EmptyStateView(
                         systemImage: "tray",
                         title: "No tasks yet",
-                        message: "Create the first task to kick off the create → ready → assign → review loop."
+                        message: "Give your team a clear outcome, define what done means, then assign the right agent.",
+                        actionTitle: "Create a task", action: { showingCreate = true }
                     )
                 } else {
                     List {
@@ -40,18 +42,12 @@ public struct TasksView: View {
                             Section {
                                 ForEach(column.tasks) { task in
                                     NavigationLink(value: task) {
-                                        TaskRow(task: task)
+                                        TaskRow(task: task, assigneeName: assigneeName(task))
                                     }
                                     .accessibilityIdentifier("task.row.\(task.id)")
                                 }
                             } header: {
-                                HStack {
-                                    Text(column.status.label)
-                                    Spacer()
-                                    Text("\(column.tasks.count)")
-                                        .font(ArtooTokens.Typography.caption)
-                                        .foregroundStyle(ArtooTokens.ColorToken.textMuted)
-                                }
+                                ArtooSectionHeading(title: column.status.label, count: column.tasks.count)
                             }
                         }
                     }
@@ -59,7 +55,8 @@ public struct TasksView: View {
                 }
             }
             .navigationTitle("Tasks")
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search title, assignee, priority")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search title, description, priority")
+            .safeAreaInset(edge: .top, spacing: 0) { quickFilters }
             .navigationDestination(for: TaskItem.self) { task in
                 TaskDetailView(client: client, taskId: task.id)
             }
@@ -89,11 +86,49 @@ public struct TasksView: View {
             }
             .refreshable { await model.load() }
             .liveRefresh { await model.load() }
+            .task { await loadDirectory() }
         }
     }
 
     private var statusFilterTitle: String {
         selectedStatusRaw == "all" ? "All" : TaskStatus(rawValue: selectedStatusRaw).label
+    }
+
+    private var quickFilters: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                filterPill("All tasks", raw: "all", count: model.state.value?.count ?? 0)
+                ForEach([TaskStatus.ready, .review, .blocked], id: \.rawValue) { status in
+                    filterPill(status.label, raw: status.rawValue, count: model.state.value?.filter { $0.status == status }.count ?? 0)
+                }
+            }.padding(.horizontal, 16).padding(.vertical, 8)
+        }
+        .background(ArtooTokens.ColorToken.background)
+    }
+
+    private func filterPill(_ title: String, raw: String, count: Int) -> some View {
+        Button { selectedStatusRaw = raw } label: {
+            HStack(spacing: 6) {
+                Text(title).font(.subheadline.weight(.medium))
+                Text(count, format: .number).font(.caption.weight(.semibold)).monospacedDigit()
+            }
+            .padding(.horizontal, 14).frame(minHeight: 44)
+            .foregroundStyle(selectedStatusRaw == raw ? ArtooTokens.ColorToken.accent : ArtooTokens.ColorToken.textMuted)
+            .background(selectedStatusRaw == raw ? ArtooTokens.ColorToken.accentSoft : ArtooTokens.ColorToken.surfaceRaised, in: Capsule())
+        }.buttonStyle(.plain).accessibilityValue(selectedStatusRaw == raw ? "Selected" : "")
+    }
+
+    private func assigneeName(_ task: TaskItem) -> String? {
+        guard let id = task.assigneeId, !id.isEmpty else { return nil }
+        if task.assigneeType == "agent" {
+            return ConversationMetadata.agentName(id, agents: directory["agents"].records, instances: directory["agent_instances"].records)
+        }
+        return id
+    }
+
+    private func loadDirectory() async {
+        do { directory = try await client.resource(path: "/api/v1/bootstrap") }
+        catch { /* Task loading remains available; unresolved assignees keep their actual IDs. */ }
     }
 
     private func clearFilters() {
@@ -104,44 +139,41 @@ public struct TasksView: View {
 
 private struct TaskRow: View {
     let task: TaskItem
+    let assigneeName: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xs) {
-            HStack(alignment: .firstTextBaseline, spacing: ArtooTokens.Spacing.xs) {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: task.status == .done ? "checkmark.circle.fill" : "circle")
+                .font(.title3).foregroundStyle(task.status == .done ? ArtooTokens.ColorToken.success : ArtooTokens.ColorToken.textSubtle)
+                .padding(.top, 2).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xs) {
                 Text(task.title)
-                    .font(ArtooTokens.Typography.subheadline.weight(.semibold))
+                    .font(.body.weight(.semibold))
                     .foregroundStyle(ArtooTokens.ColorToken.text)
                     .lineLimit(2)
-                Spacer()
-                StatusBadge(task.status)
-            }
-            HStack(spacing: ArtooTokens.Spacing.xs) {
-                if let priority = task.priority {
-                    PriorityBadge(priority)
+                if let description = task.description, !description.isEmpty {
+                    Text(description).font(.subheadline).foregroundStyle(ArtooTokens.ColorToken.textMuted).lineLimit(2)
                 }
-                if let assignee = task.assigneeId, !assignee.isEmpty {
-                    Label(assignee, systemImage: "person.crop.circle")
-                        .font(ArtooTokens.Typography.caption)
-                        .foregroundStyle(ArtooTokens.ColorToken.textMuted)
-                        .lineLimit(1)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { taskMetadata }
+                    VStack(alignment: .leading, spacing: 6) { taskMetadata }
                 }
-                if let updated = task.updatedAt ?? task.createdAt {
-                    Label(updated, systemImage: "clock")
-                        .font(ArtooTokens.Typography.caption)
-                        .foregroundStyle(ArtooTokens.ColorToken.textMuted)
-                        .lineLimit(1)
+                if let raw = task.updatedAt ?? task.createdAt, let date = ConversationMetadata.parseTimestamp(raw) {
+                    Text("Updated \(date.formatted(.dateTime.month(.abbreviated).day()))")
+                        .font(.caption).foregroundStyle(ArtooTokens.ColorToken.textMuted)
                 }
             }
-            if let description = task.description, !description.isEmpty {
-                Text(description)
-                    .font(ArtooTokens.Typography.caption)
-                    .foregroundStyle(ArtooTokens.ColorToken.textMuted)
-                    .lineLimit(2)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, ArtooTokens.Spacing.xxs)
+        .padding(.vertical, 8)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(task.title), \(task.status.label), \(task.priority?.uppercased() ?? "No priority")")
+        .accessibilityLabel("\(task.title), \(task.status.label), \(task.priority?.uppercased() ?? "No priority"), \(assigneeName ?? "Unassigned")")
+    }
+
+    @ViewBuilder private var taskMetadata: some View {
+        if let priority = task.priority { PriorityBadge(priority) }
+        Label(assigneeName ?? "Unassigned", systemImage: assigneeName == nil ? "person.crop.circle.badge.plus" : "person.crop.circle")
+            .font(.caption).foregroundStyle(ArtooTokens.ColorToken.textMuted).lineLimit(1)
     }
 }
 
@@ -163,6 +195,9 @@ public struct CreateTaskView: View {
     public var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    ArtooPageIntro(title: "Make the next step clear", message: "Describe an outcome and what you will review when the work is done.", systemImage: "checklist")
+                }
                 Section("Task") {
                     TextField("Title", text: $title)
                         .focused($focusedField, equals: .title)
@@ -171,14 +206,14 @@ public struct CreateTaskView: View {
                         .lineLimit(2...5)
                         .focused($focusedField, equals: .description)
                 }
-                Section("Priority") {
+                Section {
                     Picker("Priority", selection: $priority) {
                         ForEach(priorities, id: \.self) { Text($0.uppercased()).tag($0) }
                     }
                     .pickerStyle(.segmented)
-                }
+                } header: { Text("Priority") } footer: { Text("P0 urgent · P1 high · P2 normal · P3 low") }
                 Section("Acceptance criteria") {
-                    TextField("One per line", text: $criteriaText, axis: .vertical)
+                    TextField("What needs to be true when this is done? One item per line.", text: $criteriaText, axis: .vertical)
                         .lineLimit(3...6)
                         .focused($focusedField, equals: .criteria)
                         .accessibilityIdentifier("task.create.criteria")
@@ -195,7 +230,9 @@ public struct CreateTaskView: View {
                         Text(error).foregroundStyle(.red).font(.callout)
                     }
                 }
+                if model.creating { ProgressView("Creating task…") }
             }
+            .disabled(model.creating)
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle("New Task")
             .navigationBarTitleDisplayMode(.inline)
@@ -206,7 +243,7 @@ public struct CreateTaskView: View {
                         .accessibilityIdentifier("task.create.keyboard.done")
                 }
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") { dismiss() }.disabled(model.creating)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") {
@@ -226,6 +263,7 @@ public struct CreateTaskView: View {
                 }
             }
         }
+        .interactiveDismissDisabled(model.creating)
     }
 
     private var parsedCriteria: [String] {

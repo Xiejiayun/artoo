@@ -201,14 +201,17 @@ export function Modal({ open, onClose, title, children, footer }: {
   footer?: ReactNode;
 }): React.ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const titleId = useId();
   useEffect(() => {
     if (!open) {
       return;
     }
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") {
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key === "Tab" && panelRef.current) {
@@ -217,8 +220,11 @@ export function Modal({ open, onClose, title, children, footer }: {
     };
     document.addEventListener("keydown", onKey);
     panelRef.current?.focus();
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, [open]);
   if (!open) {
     return null;
   }
@@ -259,7 +265,10 @@ function trapFocus(e: KeyboardEvent, root: HTMLElement): void {
   }
   const first = focusables[0]!;
   const last = focusables[focusables.length - 1]!;
-  if (e.shiftKey && document.activeElement === first) {
+  if (document.activeElement === root || !root.contains(document.activeElement)) {
+    e.preventDefault();
+    (e.shiftKey ? last : first).focus();
+  } else if (e.shiftKey && document.activeElement === first) {
     e.preventDefault();
     last.focus();
   } else if (!e.shiftKey && document.activeElement === last) {

@@ -220,17 +220,17 @@ private enum RootTab: Hashable { case inbox, tasks, channels, team, more }
 public struct RootView: View {
     @EnvironmentObject private var container: AppContainer
     @Environment(\.scenePhase) private var scenePhase
-    @State private var selectedTab = RootTab.inbox
+    @State private var selectedTab = RootTab.channels
     public init() {}
     public var body: some View {
         Group {
             if container.isAuthenticated {
                 TabView(selection: $selectedTab) {
+                    ChannelsView(client: container.client, projectId: container.projectId)
+                        .id("channels.\(container.projectId)").tabItem { Label("Channels", systemImage: "bubble.left.and.bubble.right") }.tag(RootTab.channels)
                     InboxView(client: container.client).tabItem { Label("Inbox", systemImage: "tray.full") }.badge(container.notificationBadge).tag(RootTab.inbox)
                     TasksView(client: container.client, projectId: container.projectId)
                         .id("tasks.\(container.projectId)").tabItem { Label("Tasks", systemImage: "checklist") }.tag(RootTab.tasks)
-                    ChannelsView(client: container.client, projectId: container.projectId)
-                        .id("channels.\(container.projectId)").tabItem { Label("Channels", systemImage: "number") }.tag(RootTab.channels)
                     TeamView(client: container.client).tabItem { Label("Team", systemImage: "desktopcomputer") }.tag(RootTab.team)
                     WorkspaceSettingsView().tabItem { Label("More", systemImage: "ellipsis.circle") }.tag(RootTab.more)
                 }.id(container.sessionGeneration).liveRefresh(interval: 30, realtime: false) { await container.validateConnection() }
@@ -238,7 +238,7 @@ public struct RootView: View {
             } else { PairDeviceView() }
         }
         .task { await container.restore() }
-        .onChange(of: container.sessionGeneration) { _, _ in selectedTab = .inbox }
+        .onChange(of: container.sessionGeneration) { _, _ in selectedTab = .channels }
         .onChange(of: scenePhase) { _, phase in container.realtime.setActive(phase == .active) }
         .onReceive(NotificationCenter.default.publisher(for: .artooAuthenticationExpired).receive(on: RunLoop.main)) { notification in
             container.authenticationExpired(session: notification.object as? String)
@@ -255,6 +255,9 @@ private struct PairDeviceView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    ArtooPageIntro(title: "Good work starts with a conversation", message: "Bring your team's conversations, tasks, and agents together on your phone.", systemImage: "bubble.left.and.bubble.right.fill")
+                }
                 Section("Connect to your team") {
                     Text("Sign in to your team's Web app with your own account. Create an iOS pairing code in Settings, then enter it here. This device will use that account's permissions. Keep your code private.")
                     TextField("https://artoo.example.com", text: $server).keyboardType(.URL)
@@ -263,6 +266,7 @@ private struct PairDeviceView: View {
                     TextField("One-time pairing code", text: $code).textInputAutocapitalization(.characters)
                         .autocorrectionDisabled().accessibilityIdentifier("pairingCode")
                     Button("Connect") { Task { await container.pair(server: server, code: code, displayName: deviceName, allowLocalHTTP: localHTTP); code = "" } }
+                        .frame(minHeight: 44)
                         .disabled(container.isConnecting || server.isEmpty || code.isEmpty)
                         .accessibilityIdentifier("pairDevice")
                     if container.isConnecting { ProgressView("Connecting…") }
@@ -291,29 +295,34 @@ private struct WorkspaceSettingsView: View {
         NavigationStack {
             List {
                 Section("Workspace") {
-                    Text(container.identity?.user.name ?? "Connected")
-                        .accessibilityIdentifier("workspace.account.name")
-                    Text(container.serverURL).font(.caption).textSelection(.enabled)
+                    HStack(spacing: 12) {
+                        ArtooAvatar(name: container.identity?.user.name ?? "Connected", size: 48)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(container.identity?.user.name ?? "Connected").font(.headline)
+                                .accessibilityIdentifier("workspace.account.name")
+                            Text(container.serverURL).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                    }.padding(.vertical, 8)
                     if let projects = container.bootstrap.value?.projects {
                         Picker("Project", selection: $container.selectedProjectId) {
                             ForEach(projects) { project in Text(project.name).tag(project.id).accessibilityIdentifier("workspace.project.option.\(project.id)") }
                         }.accessibilityIdentifier("workspace.project")
                     }
-                    Button("Refresh workspace") { Task { await container.loadBootstrap() } }
+                    Button { Task { await container.loadBootstrap() } } label: { Label("Refresh workspace", systemImage: "arrow.clockwise") }
                     if container.isAdministrator { NavigationLink("Manage projects") { ProjectsView() } }
                 }
                 Section("Work") {
-                    NavigationLink("Goals") { WorkspaceListView(kind: .goals, client: container.client, projectId: container.projectId, embedded: true) }
+                    NavigationLink { WorkspaceListView(kind: .goals, client: container.client, projectId: container.projectId, embedded: true) } label: { Label("Goals", systemImage: "target") }
                     NavigationLink { MentionsView(client: container.client) } label: {
                         VStack(alignment: .leading) {
                             Text(container.mentionsTitle)
                             Text(container.notificationCountSummary).font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    NavigationLink("Run history") { RunsOverviewView(client: container.client, projectId: container.projectId) }
-                    NavigationLink("Memory") { WorkspaceListView(kind: .memories, client: container.client, projectId: container.projectId, embedded: true) }
-                    NavigationLink("Skills") { WorkspaceListView(kind: .skills, client: container.client, projectId: container.projectId, embedded: true) }
-                    NavigationLink("Devices") { DevicesView(client: container.client) }
+                    NavigationLink { RunsOverviewView(client: container.client, projectId: container.projectId) } label: { Label("Run history", systemImage: "clock.arrow.circlepath") }
+                    NavigationLink { WorkspaceListView(kind: .memories, client: container.client, projectId: container.projectId, embedded: true) } label: { Label("Memory", systemImage: "brain.head.profile") }
+                    NavigationLink { WorkspaceListView(kind: .skills, client: container.client, projectId: container.projectId, embedded: true) } label: { Label("Skills", systemImage: "square.stack.3d.up") }
+                    NavigationLink { DevicesView(client: container.client) } label: { Label("Devices", systemImage: "laptopcomputer.and.iphone") }
                 }
                 if let error = container.connectionError { Section { Text(error).foregroundStyle(.red) } }
                 Section { NavigationLink("Privacy and data") { PrivacyView() } }

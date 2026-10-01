@@ -171,7 +171,8 @@ async function main() {
       const channelView = page.getByRole("region", { name: "Channel conversation", exact: true });
       const message = channelView.getByRole("listitem").filter({ hasText: fixture.native_message });
       await expect(message).toBeVisible({ timeout: 1_200_000 });
-      await message.getByRole("button", { name: /Reply in thread|\d+ replies/ }).click();
+      await message.hover();
+      await message.getByRole("button", { name: "Reply in thread", exact: true }).click();
       const thread = page.getByRole("complementary", { name: "Thread", exact: true });
       await expect(thread.getByRole("list", { name: "Messages" })).toContainText(fixture.native_reply, { timeout: 120_000 });
       await thread.getByLabel("Message", { exact: true }).fill(fixture.browser_reply);

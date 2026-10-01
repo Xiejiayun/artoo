@@ -1104,8 +1104,12 @@ final class SharedServerChatUITests: XCTestCase {
             var viewport = list.frame.intersection(app.frame)
             let navigation = app.navigationBars.firstMatch
             let tabs = app.tabBars.firstMatch
-            let top = navigation.exists ? max(viewport.minY, navigation.frame.maxY) : viewport.minY
-            let bottom = tabs.exists ? min(viewport.maxY, tabs.frame.minY) : viewport.maxY
+            var top = navigation.exists ? max(viewport.minY, navigation.frame.maxY) : viewport.minY
+            var bottom = tabs.exists ? min(viewport.maxY, tabs.frame.minY) : viewport.maxY
+            let connection = app.descendants(matching: .any).matching(identifier: "realtimeStatus").firstMatch
+            let composer = app.descendants(matching: .any).matching(identifier: "conversation.composer").firstMatch
+            if connection.exists && !connection.frame.isEmpty { top = max(top, connection.frame.maxY + 4) }
+            if composer.exists && !composer.frame.isEmpty { bottom = min(bottom, composer.frame.minY - 4) }
             viewport = CGRect(x: viewport.minX, y: top, width: viewport.width, height: max(0, bottom - top)).insetBy(dx: 2, dy: 2)
             try require(!viewport.isEmpty && !viewport.isNull && !viewport.isInfinite,
                         "The list must have an unobscured content viewport")

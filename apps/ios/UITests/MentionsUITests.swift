@@ -324,12 +324,19 @@ final class MentionsUITests: XCTestCase {
         try require(element.exists && element.isHittable, "The exact native control must be reachable through the real list")
     }
     @MainActor
-    private func viewport() throws -> CGRect {
+    private func viewport(includeComposer: Bool = false) throws -> CGRect {
         let list = app.collectionViews.firstMatch
         try require(list.exists && !app.keyboards.firstMatch.exists, "Message screenshots require an unobscured native List")
-        let rect = list.frame.intersection(app.frame), nav = app.navigationBars.firstMatch, tabs = app.tabBars.firstMatch
-        let top = nav.exists ? max(rect.minY, nav.frame.maxY) : rect.minY
+        // The composer is now fixed below the timeline. Verify it against the
+        // screen's usable bounds; historical text must fit above that inset.
+        let rect = includeComposer ? app.frame : list.frame.intersection(app.frame)
+        let nav = app.navigationBars.firstMatch, tabs = app.tabBars.firstMatch
+        var top = nav.exists ? max(rect.minY, nav.frame.maxY) : rect.minY
         var bottom = tabs.exists ? min(rect.maxY, tabs.frame.minY) : rect.maxY
+        let connection = field("realtimeStatus")
+        if connection.exists && !connection.frame.isEmpty { top = max(top, connection.frame.maxY + 4) }
+        let composer = field("conversation.composer")
+        if !includeComposer && composer.exists && !composer.frame.isEmpty { bottom = min(bottom, composer.frame.minY - 4) }
         let error = field("mention.readError")
         if error.exists && !error.frame.isEmpty { bottom = min(bottom, error.frame.minY - 12) }
         let visible = CGRect(x: rect.minX + 2, y: top + 2, width: rect.width - 4, height: bottom - top - 4)
@@ -339,7 +346,7 @@ final class MentionsUITests: XCTestCase {
     @MainActor
     private func revealText(_ element: XCUIElement) throws {
         for attempt in 0..<70 {
-            let view = try viewport(); var upward = attempt < 35
+            let view = try viewport(includeComposer: element.identifier == "messageComposer"); var upward = attempt < 35
             if element.exists {
                 let rect = element.frame
                 if !rect.isEmpty && !rect.isNull && !rect.isInfinite {

@@ -19,7 +19,7 @@ describe("TaskRoom", () => {
 
     renderWithProviders(<TaskRoom taskId="task_1" />, { client });
 
-    expect(screen.getByRole("status", { name: "Loading activity" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Loading messages" })).toBeInTheDocument();
   });
 
   it("renders messages for the task's room", async () => {
@@ -59,6 +59,6 @@ describe("TaskRoom", () => {
 
     renderWithProviders(<TaskRoom taskId="task_1" />, { client });
 
-    expect(await screen.findByText("No activity yet")).toBeInTheDocument();
+    expect(await screen.findByText("A space for your team")).toBeInTheDocument();
   });
 });

@@ -451,7 +451,7 @@ ${isMac ? "}" : ""}
     await dialog.getByLabel("Title", { exact: true }).fill(taskTitle);
     await dialog.getByLabel("Description", { exact: true }).fill("Exercise the ordinary Codex adapter using a temporary model-free CLI fixture.");
     await dialog.getByLabel("Acceptance criteria (one per line)").fill("Download and verify the uploaded patch from the desktop");
-    await dialog.getByText("Required capabilities", { exact: true }).click();
+    await dialog.locator("summary").filter({ hasText: "Required capabilities" }).click();
     await dialog.getByRole("checkbox", { name: "code.modify", exact: true }).check();
     const created = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/tasks" && response.request().method() === "POST");
     await dialog.getByRole("button", { name: "Create task", exact: true }).click();
