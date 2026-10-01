@@ -665,3 +665,232 @@ on the previous project. An isolated fix has focused tests and review but is
 not included in this milestone; real native/installed-Mac mention workflows
 remain the next validation stage. Commercial release gates in the readiness
 document remain open.
+
+Hosted follow-up for `81c27deb17cb255085178efcbbd89661d515c57c`, run
+`36795780467`, completed with Mac and shared success but iOS failure. The iOS
+logs contain 110 distinct passing unit tests and all seven passing core UI
+cases. The independent assistant case failed its full-text visibility check
+after sending the second request; it had not reached the failed-request Retry
+assertion. This was not a core failure or a workflow timeout.
+
+The retained three artifact ZIPs match GitHub's published digests. Actual
+image coverage is 44 unique inspected captures: 24 from core (22 native and
+two browser), two earlier assistant captures, 16 installed-Mac captures and
+two recovery captures. No xcresult, attachment directory, failure screenshot
+or failure hierarchy was uploaded for the assistant failure. The logs locate
+the failed assertion, but do not prove whether its immediate cause was product
+behavior or test navigation. Original artifacts and independent audit notes
+remain under `artifacts/apple-ci/36795780467/`.
+
+Independent source review confirmed that the short request body is also the
+request-card title, making the test's first exact-label match ambiguous during
+lazy-list scrolling. The current follow-up strengthens that test to obtain
+the real persisted user-message ID, reveal `message.<id>` and compare it with
+the subsequent turn's `userMessageId`. Its original visibility, Retry and
+Cancel requirements remain. New explicitly guarded failure-caption names
+retain a screenshot only when known credential controls are absent; legacy
+and automatic failure captures remain excluded. These changes still require
+fresh local and hosted results and do not retroactively make run `36795780467`
+successful.
+
+## Cross-project mention verification attempts
+
+The first native mention subset built the Release client and paired the phone,
+then failed before publication of project B. The actual captured More screen
+shows project A (`artoo`) correctly selected. Its accessibility tree represents
+the Picker as a button labeled `Project, artoo`, with a selected `artoo` child
+and no value property. The test had incorrectly required `value == artoo`.
+Only that assertion is being corrected to accept the exact full label or exact
+value, preserving the complete name, visibility and original timeout.
+
+The failed report contains the inspected credential-excluded failure scene:
+`artifacts/ios/attempts/2026-10-01T01-07-33-023Z-mentions/native-mentions-2026-10-01T01-07-34-503Z.html`
+(SHA-256 `330832f180747e6c6d6257f3f0178d8af529fa5d0c16fc56d3b2da117caef561`).
+Source remained stable; all four fixture/process/browser cleanup flags passed.
+The publication stage remained Waiting for recipient readiness, so this
+attempt establishes no historical-mention or read-retry success.
+
+The second subset passed initial selection and typed draft A, then its
+publication control returned 500 while capturing the first independent sender
+message. All four cleanup flags and the source boundary passed. The original
+report is
+`artifacts/ios/attempts/2026-10-01T01-15-36-370Z-mentions/native-mentions-2026-10-01T01-15-37-719Z.html`
+(SHA-256 `0ee60865ad8b54e340b458a571313005a7b221a1aadb0224a8e6003b8cb06734`).
+It does not establish recipient mention or Retry coverage.
+
+A separate real-Web sender self-check reproduced the publication failure:
+the padded list item had viewport ratio 0.9975903630256653 while the assertion
+required 1. Its failure picture shows the complete body, sender and mention.
+The fixture now closes the people chooser through UI and checks the full body,
+sender and mention individually at ratio 1 before capturing their article.
+The repeated self-check passed and both actual sender images were inspected;
+all four cleanup checks passed. This is fixture-only evidence with an
+API-paired observer, not native or installed-Mac recipient coverage.
+
+| Sender self-check | Report | HTML SHA-256 |
+| --- | --- | --- |
+| Failed original | `artifacts/preview-gate/mentions-debug/2026-10-01T01-23-30-072Z/report.html` | `50f4b59dfb2dd211b6dd0f7b2234ac94b6ae7c6f9e849b6ce3caeb74d41f95d0` |
+| Passed after capture correction | `artifacts/preview-gate/mentions-debug/2026-10-01T01-29-54-221Z/report.html` | `a21bf99b89f3556960fd928b5c2821f9c1ef312748bd7fddb92bc8ed7ec6ffab` |
+
+The third native subset reached both historical targets, the actual 503 and
+explicit Retry, unread counts 3 → 2 → 1 and selected project B. Returning to A
+then failed a test assumption that the Channels tab must show its inventory.
+The guarded failure frame instead shows the correct retained A thread and
+complete unsent A draft. The helper now permits that retained stack, while
+still requiring the exact A root ID and full body. This attempt does not prove
+the later relaunch assertion or final independent verifier. Its ten embedded
+images (eight native, including the diagnostic, and two sender) were reviewed;
+all four cleanup flags and source consistency passed.
+
+Report:
+`artifacts/ios/attempts/2026-10-01T01-31-07-827Z-mentions/native-mentions-2026-10-01T01-31-09-232Z.html`
+(SHA-256 `abc6bd73e3a247675766e55ecd8851dd332152de52eb12b1e706ce5052bc4839`).
+
+The first Mac mentions gate passed 46 worker regressions and reached the new
+scenario after successful task, planning and direct-agent checks. Project B,
+the full historical target and the injected read failure rendered correctly,
+but the sender still appeared as its internal ID. Its guarded failure image
+and accessibility output confirm the stale member cache. Refreshing members
+only when recovering an unknown project misses a project already loaded by a
+separate bootstrap query. The fix moves that refresh to each newly verified
+room navigation. A regression first reproduced the missing sender name; the
+corrected focused suite passes all 28 tests and Web typechecking. Fresh UI
+verification is still required. All seven cleanup flags and source consistency
+passed in the failed Mac attempt.
+
+Mac report:
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-10-01T01-33-23-097Z.html`
+(SHA-256 `7c9e15e507e05a6778ace35556a6824e09942bdde1b57df3827aa392e949896c`).
+Its failure screenshot was inspected at full size; the 20-image contact sheet
+is retained under `artifacts/preview-gate/mac-mentions-attempt1-review/`.
+
+Independent review also found that a delayed workspace Refresh could overwrite
+a newer mention's authorized project list and selection within the same
+session. AppContainer now orders accepted bootstrap outcomes and mention
+selections, including cache hits. Old successes and failures cannot replace
+newer accepted state; cancelled, unpublished mentions do not invalidate a
+useful pending refresh. A still-visible superseded mention offers its existing
+explicit open Retry. Eleven added regressions exercise these interleavings
+against the actual production AppContainer in an isolated Swift package:
+30 focused tests reproduced six failing methods before the change and all
+30 passed afterward. Full Xcode and native UI verification remains pending.
+
+The fourth native subset compiled the new Release source, then failed while
+typing draft B before read Retry. Its guarded screenshot and hierarchy show
+the composer at y738.7–781 behind the persistent bottom error/Retry area;
+XCTest nevertheless reported it hittable. The tap established no keyboard
+focus. The helper now requires the entire composer inside the unobscured List
+viewport and a keyboard after tapping, and uses that same visibility check
+for draft captures. This keeps the original read failure and draft assertions.
+All four cleanup flags and source consistency passed in the failed attempt:
+`artifacts/ios/attempts/2026-10-01T01-49-23-101Z-mentions/native-mentions-2026-10-01T01-49-24-592Z.html`
+(SHA-256 `9cf4e9407e3599cc9b0315c0730605c9b87f677909ac5a9a996cb958f9d81bdf`).
+
+The second Mac attempt failed before app launch: even the supported ten-retry
+wrapper ended with `dmgbuild`'s Resource busy detach error. It completed all
+six applicable cleanup checks, retained stable source and left no Artoo image
+mounted. It contains no client screenshots because installation never began:
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-10-01T01-50-22-084Z.html`
+(SHA-256 `ddaa7467e7b890def452153a053323db9c5693b72dbcd13276979d1cbf3c5967`).
+The next packaging attempt will observe only its own temporary image and
+device to identify the blocking process; the packaging issue remains open.
+
+The fifth native subset exposed an error in that helper change: reading the
+composer's `identifier` before its lazy row exists causes XCTest's snapshot
+lookup to fail. It stopped before draft B and read Retry. The two composer
+call sites now explicitly request an unobscured List viewport, so the helper
+can scroll using existence checks before reading any element property. This
+retains full visibility and keyboard-focus requirements. Source was stable
+and all four cleanup flags passed in the preserved failed report:
+`artifacts/ios/attempts/2026-10-01T01-58-38-747Z-mentions/native-mentions-2026-10-01T01-58-40-025Z.html`
+(SHA-256 `da2c8f2cf5686982b0a45d2a3366275554523fe1acd713a2e8d70341fbe17d15`).
+
+The third Mac gate passed all 15 installed-client checks, including the full
+mentions verifier, and all seven cleanup checks with unchanged source:
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-10-01T02-02-55-201Z.html`
+(SHA-256 `8e5a4e2fe6853dcbfbe3358ec17cd947e25b2b467f23d2ceacc12ab4a5687b8d`).
+Its 26 captures are under independent visual review. The supported detach
+wrapper was still used. A read-only watcher observed this attempt's writable
+and final read-only images attach and detach; it found no confirmed cause for
+the earlier intermittent busy error. Normal backing-image and installation
+reader file descriptors are not evidence of the earlier failure's cause.
+After this Mac gate, only native UI-test helper and evidence documentation
+changes are planned before complete native verification; preserved per-file
+hashes will identify any additional differences.
+
+## 2026-10-01: verified cross-project historical mentions
+
+Native mention navigation now resolves an authorized project before exposing
+the conversation or acknowledging the notification. Accepted bootstrap
+responses and project selections prevent older same-session responses from
+replacing newer state, while a failed opening retains explicit Retry. Web/Mac
+uses the actual room's project and an account-matched bootstrap response;
+entering a verified room refreshes member names independently of the project
+cache. Existing thread drafts remain scoped to their actual conversations.
+
+Both clients now complete the independent-sender scenario: project B is
+created after recipient readiness, two real Web UI mentions are pushed beyond
+the latest 50 replies by 55 ordinary messages, and the full first body exceeds
+the notification preview. One exact recipient-device read is rejected before
+the production handler with 503. The failed state remains unchanged for at
+least 3.1 seconds before UI Retry, then unread changes 3 → 2 → 1 while A's
+sentinel remains unread. A/B drafts survive project changes and native
+relaunch or installed-renderer reload, and neither becomes a server message.
+
+| Final local verification | Result |
+| --- | --- |
+| Mac | Full gate passed, including 46 worker regressions and 15 installed-client checks. Fresh DMG/ZIP and copied installed bytes were verified; all seven cleanup checks passed. All 26 capture entries were inspected (25 unique images; two captions show the same read-failure screen). |
+| iOS unit | 133 unique Debug XCTest cases passed; zero failed, skipped, expected failures or unknown results, independently counted from the original xcresult. |
+| iOS Release UI | Exact core 7 + assistant 1 + mentions 1 cases passed. All fixture checks, source boundaries and owned-process cleanup passed. The aggregate contains 42 unique inspected images: 24 core, 7 assistant and 11 mentions. |
+| Signed development archive | Release arm64 archive passed certificate, Team, embedded profile, executable, asset and privacy checks; independent strict code-signature verification passed. All 35 product source/resource files byte-match the isolated snapshot. No physical-device UI, distribution export or upload occurred. |
+
+The corrected assistant test also passed in the complete native gate. It uses
+the exact persisted user-message ID and verifies each turn references that
+message; the original full-text, failure Retry, context-linked answers and
+running-process Cancel assertions remain. This local result does not change
+the earlier failed hosted run `36795780467`; new hosted acceptance is pending
+the milestone push.
+
+| Immutable report | HTML SHA-256 |
+| --- | --- |
+| `artifacts/ios/native-suites-2026-10-01T02-28-26-800Z.html` | `addf7164f527453874221466599d4779581178fbadccaccc1a7e183af2692292` |
+| `artifacts/ios/Artoo-2026-10-01T02-26-09-120Z.html` | `9d8e05ee0be906326cd2051112320e2a3f3b4105bd348c370916fa6bda0dcb45` |
+| `apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-10-01T02-02-55-201Z.html` | `8e5a4e2fe6853dcbfbe3358ec17cd947e25b2b467f23d2ceacc12ab4a5687b8d` |
+| `artifacts/ios-device/2026-10-01T03-08-18-923Z/report.html` | `c552e7fc33c7e7ffc2d220c0ea017038abaf8d8b4aad551bec0bd3438d60d381` |
+
+The earlier successful mentions-only report is also retained at
+`artifacts/ios/attempts/2026-10-01T02-09-28-715Z-mentions/native-mentions-2026-10-01T02-09-29-952Z.html`
+(SHA-256 `e76ef1f5e122f8c0d98ff73d8f6001e8e8cc79c3a1b292c9832ed0c0f6ad6b1d`).
+It was followed by the complete gate above; no subset substitutes for a full
+result. Every failed attempt remains independently documented and retained.
+
+Source stayed frozen through each test and the archive. The complete native
+UI suites, unit report's original source and archive share one fingerprint.
+The unit runner retains its original metadata in HTML, without a separate
+original JSON or finish fingerprint; independent exports confirm its cases.
+Between the final Mac run and complete native verification, exactly four
+native test-helper lines and milestone documentation changed. A 678-file
+inventory proves all other 676 entries,
+including every product file, remained byte-identical. The two overall source
+fingerprints therefore differ and are not represented as equal. The generated
+UI-test plist was restored only after all Xcode work ended; final evidence
+documentation followed verification. Detailed comparisons and the aggregate
+image mapping are in `artifacts/preview-gate/mentions-final-source-boundary/`.
+
+Known limits remain explicit. Raw xcresults contain non-failing SwiftUI frame
+dimension warnings; inspected photos show no associated blocking layout issue.
+The long expanded planning instruction exceeds a single screenshot, the broad
+browser sync image does not show its individual reply bodies, and the native
+Done page still shows an internal assignee ID. The Mac report retains the first
+two raw read attempts; its final verifier checks subsequent request identities
+but reports their count rather than retaining every later raw record. The
+final Mac run used the supported local detach-retry wrapper, and intermittent
+packaging reliability remains unproven. Model execution is deterministic; the real-provider,
+physical-device, trusted distribution, deployed identity and operator-policy
+requirements in the release-readiness document remain open.
+
+The next implementation stage is task correction and safe stopping: durable
+review feedback, delivery of that feedback to later execution, readable artifact
+versions, confirmation bound to the actual run, and preservation of work after
+failure/cancellation. Isolated fixes have focused tests but are not included in
+this mentions milestone and have no new client E2E acceptance yet.

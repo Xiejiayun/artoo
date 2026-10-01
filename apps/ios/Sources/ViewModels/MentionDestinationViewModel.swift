@@ -6,6 +6,7 @@ final class MentionDestinationViewModel: ObservableObject {
     @Published private(set) var root: Message?
     @Published private(set) var focus: Message?
     @Published private(set) var loading = false
+    @Published private(set) var projectResolved = false
     @Published private(set) var markingRead = false
     @Published private(set) var loadError: String?
     @Published private(set) var readError: String?
@@ -14,11 +15,16 @@ final class MentionDestinationViewModel: ObservableObject {
 
     private struct Target: Equatable {
         let notificationId: String
+        let projectId: String
         let roomId: String
         let messageId: String
         let threadRootId: String?
         init(_ notification: WorkspaceRecord) throws {
             notificationId = notification.id
+            guard case let .string(project) = notification["project_id"], !project.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw ApiError.decoding("The mention has no project destination.")
+            }
+            projectId = project
             roomId = notification["room_id"].text
             messageId = notification["message_id"].text
             if case let .string(id) = notification["thread_root_id"], !id.isEmpty { threadRootId = id }
@@ -33,13 +39,21 @@ final class MentionDestinationViewModel: ObservableObject {
     private var generation = UUID()
     private let resource: @MainActor (String) async throws -> JSONValue
     private let markRead: @MainActor (String) async throws -> JSONValue
+    private let resolveProject: @MainActor (String, @escaping @MainActor () -> Bool) async throws -> Void
+    private let isSessionCurrent: @MainActor () -> Bool
 
-    convenience init(client: ApiClientProtocol) {
+    convenience init(client: ApiClientProtocol,
+                     resolveProject: @escaping @MainActor (String, @escaping @MainActor () -> Bool) async throws -> Void,
+                     isSessionCurrent: @escaping @MainActor () -> Bool) {
         self.init(resource: { try await client.resource(path: $0) },
-                  markRead: { try await client.command(path: $0, method: "POST", body: .object([:])) })
+                  markRead: { try await client.command(path: $0, method: "POST", body: .object([:])) },
+                  resolveProject: resolveProject, isSessionCurrent: isSessionCurrent)
     }
-    init(resource: @escaping @MainActor (String) async throws -> JSONValue, markRead: @escaping @MainActor (String) async throws -> JSONValue) {
+    init(resource: @escaping @MainActor (String) async throws -> JSONValue, markRead: @escaping @MainActor (String) async throws -> JSONValue,
+         resolveProject: @escaping @MainActor (String, @escaping @MainActor () -> Bool) async throws -> Void,
+         isSessionCurrent: @escaping @MainActor () -> Bool) {
         self.resource = resource; self.markRead = markRead
+        self.resolveProject = resolveProject; self.isSessionCurrent = isSessionCurrent
     }
 
     func load(_ notification: WorkspaceRecord, onRead: (WorkspaceRecord, Int) -> Void) async {
@@ -53,12 +67,15 @@ final class MentionDestinationViewModel: ObservableObject {
             cancel(); target = selected; root = nil; focus = nil
             loadError = nil; readError = nil; readConfirmed = false
         }
-        guard !loading else { return }
-        if root != nil { await retryRead(onRead: onRead); return }
+        guard !loading, isCurrent(generation) else { return }
         let request = generation
-        loading = true; loadError = nil
+        loading = true; projectResolved = false; loadError = nil
         defer { if request == generation { loading = false } }
         do {
+            try await resolveProject(selected.projectId, { [weak self] in self?.isCurrent(request) == true })
+            guard isCurrent(request) else { return }
+            projectResolved = true
+            if root != nil { loading = false; await retryRead(onRead: onRead); return }
             let message = try await fetchMessage(selected.messageId, roomId: selected.roomId)
             guard isCurrent(request) else { return }
             guard message.id == selected.messageId, message.roomId == selected.roomId,
@@ -79,7 +96,7 @@ final class MentionDestinationViewModel: ObservableObject {
     }
 
     func retryRead(onRead: (WorkspaceRecord, Int) -> Void) async {
-        guard !loading, !markingRead, !readConfirmed, let target, let root, let focus else { return }
+        guard projectResolved, !loading, !markingRead, !readConfirmed, isCurrent(generation), let target, let root, let focus else { return }
         let request = generation
         markingRead = true; readError = nil
         defer { if request == generation { markingRead = false } }
@@ -103,9 +120,9 @@ final class MentionDestinationViewModel: ObservableObject {
 
     // A departed screen or changed destination must not apply an old response
     // to its content, notification row, or global unread count.
-    func cancel() { generation = UUID(); loading = false; markingRead = false }
+    func cancel() { generation = UUID(); loading = false; markingRead = false; projectResolved = false }
 
-    private func isCurrent(_ request: UUID) -> Bool { request == generation && !Task.isCancelled }
+    private func isCurrent(_ request: UUID) -> Bool { request == generation && isSessionCurrent() && !Task.isCancelled }
     private func fetchMessage(_ id: String, roomId: String) async throws -> Message {
         let value = try await resource("/api/v1/rooms/\(apiPart(roomId))/messages/\(apiPart(id))")
         return try ArtooJSON.decoder().decode(MessageEnvelope.self, from: JSONEncoder().encode(value)).message

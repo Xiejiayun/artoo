@@ -41,7 +41,9 @@ jobs:
           retention-days: 14
   ios:
     runs-on: macos-15
-    timeout-minutes: 45
+    # Three independently verified UI suites plus cold Xcode/unit builds.
+    # The preceding two-suite run required about 33 minutes on this runner.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

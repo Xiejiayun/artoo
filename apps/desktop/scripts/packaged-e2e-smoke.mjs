@@ -16,6 +16,7 @@ import { mountPreviewDmg } from "./mac-dmg-install.mjs";
 import { finalizeInstalledLiveProviderEvidence, installedLiveProviderEvidence, runOptionalInstalledLiveProvider } from "./installed-live-provider-gate.mjs";
 import { macPlanningImageNames, runInstalledMacPlanning } from "./installed-mac-planning.mjs";
 import { macAssistantImageNames, runInstalledMacAssistant } from "./installed-mac-assistant.mjs";
+import { macMentionsImageNames, runInstalledMacMentions } from "./installed-mac-mentions.mjs";
 
 const desktopDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(desktopDir, "..", "..");
@@ -102,7 +103,7 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
     checkedAt: startedAt, started_at: startedAt, run_id: runId, checks, captures, screenshots,
     package_reused: !fromDmg && process.env.ARTOO_SMOKE_SKIP_BUILD === "1",
     package_provenance: fromDmg ? "DMG and ZIP built during this invocation; the app is installed from that verified, read-only mounted DMG" : process.env.ARTOO_SMOKE_SKIP_BUILD === "1" ? "Existing package; recorded source identifies the test harness and does not prove the package was built from this revision" : "Package built from the working tree during this invocation",
-    scope: `${platformName} packaged app: pairing, authenticated realtime, worker lifecycle, task execution, artifact download, review and restart recovery${isMac ? ", process-backed planning, coordinator instruction disclosure, human plan acceptance, and direct-assistant waiting/retry/cancellation" : ""}`,
+    scope: `${platformName} packaged app: pairing, authenticated realtime, worker lifecycle, task execution, artifact download, review and restart recovery${isMac ? ", process-backed planning, coordinator instruction disclosure, human plan acceptance, direct-assistant waiting/retry/cancellation, and cross-project historical mentions with read recovery and draft persistence" : ""}`,
     cleanup_complete: false,
     distribution: isMac ? (fromDmg ? "Unsigned preview DMG installed in an isolated directory; no Developer ID, notarization or Gatekeeper trust claim" : "Unsigned packaged .app copied to an isolated installation; signing, notarization and updates are separate release gates") : "NSIS installed package",
     modelExecution: "Temporary CLI fixture through production Codex adapter; no real model quality claim",
@@ -112,7 +113,7 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
     rmSync(join(artifactDir, filename), { force: true });
   }
   for (const path of [liveEvidence.reportPath, liveEvidence.planScreenshotPath, liveEvidence.chatScreenshotPath]) rmSync(path, { force: true });
-  if (isMac) for (const filename of [...macPlanningImageNames, ...macAssistantImageNames]) rmSync(join(artifactDir, filename), { force: true });
+  if (isMac) for (const filename of [...macPlanningImageNames, ...macAssistantImageNames, ...macMentionsImageNames]) rmSync(join(artifactDir, filename), { force: true });
   // Record build/preflight failures too; every invocation owns an HTML report.
   writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`);
   writeE2EReport({ outputPath: htmlPath, title: `Artoo ${platformName} packaged E2E`, report, screenshots });
@@ -302,7 +303,7 @@ ${isMac ? "}" : ""}
       ARTOO_WEB_DIST: join(repoRoot, "apps/web/dist"),
       GOOGLE_CLIENT_ID: "smoke-oidc-client", GOOGLE_CLIENT_SECRET: "smoke-unused-secret",
       GOOGLE_REDIRECT_URI: `${baseUrl}/auth/google/callback`,
-      AUTH_ALLOWED_EMAILS: "owner@preview.test", AUTH_OWNER_EMAILS: "owner@preview.test",
+      AUTH_ALLOWED_EMAILS: isMac ? "owner@preview.test,sender@mentions-ui.test" : "owner@preview.test", AUTH_OWNER_EMAILS: "owner@preview.test",
     };
     appEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^path$|^electron_run_as_node$/i.test(key)));
     // Only the absolute program selected through Settings may execute. Empty PATH
@@ -527,6 +528,11 @@ ${isMac ? "}" : ""}
         onCleanupObserver: (observe) => { observeAssistantCleanup = observe; },
       });
       check("Installed Mac direct requests verify automatic worker recovery, explicit failed-turn Retry, two context-linked answers, and running-process cancellation");
+      await runInstalledMacMentions({ page, root: repoRoot, server, browser, baseUrl, ownerCookie, artifactDir,
+        onEvidence: (evidence) => { report.macMentions = evidence; },
+        onScreenshot: (screenshot) => screenshots.push(screenshot),
+      });
+      check("Installed Mac opens late-created project mentions, retries one failed read through UI, preserves both drafts and leaves an unrelated notification unread");
     }
     const live = await runOptionalInstalledLiveProvider({ platform, page, workspace, userData, baseUrl, ownerCookie, artifactDir, server,
       onStart: (plan) => {

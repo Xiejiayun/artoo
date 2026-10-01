@@ -8,28 +8,29 @@ import { loadNativeSuiteEvidence } from "./ios-ui-suite-evidence.mjs";
 
 // Reduced xcresult shape; these files are evidence-validator unit fixtures,
 // never native execution or actual client screenshots.
-function attempt() {
+function attempt(suite = "assistant") {
   const directory = mkdtempSync(join(tmpdir(), "artoo-suite-evidence-"));
   const source = { commit: "a".repeat(40), tracked_diff_sha256: "b".repeat(64),
     untracked_source_sha256: "c".repeat(64), untracked_source_files: 0,
     untracked_source_complete: true, working_tree_dirty: false };
-  const parent = { suite: "assistant", source, passed: true, finished_at: new Date().toISOString(),
+  const parent = { suite, source, passed: true, finished_at: new Date().toISOString(),
     cleanup: { resources_closed: true, temporary_directory_removed: true }, html_report: join(directory, "parent.html") };
-  const native = { suite: "assistant", source: { ...source }, source_at_finish: { ...source }, source_stable: true, passed: true, finished_at: parent.finished_at,
-    contract: { selection: "assistant", passed: true }, screenshots: { count: expectedNativeScreenshots("assistant").length, missing: [] },
+  const native = { suite, source: { ...source }, source_at_finish: { ...source }, source_stable: true, passed: true, finished_at: parent.finished_at,
+    contract: { selection: suite, passed: true }, screenshots: { count: expectedNativeScreenshots(suite).length, missing: [] },
     result_bundle: join(directory, "result.xcresult"), html_report: join(directory, "native.html"),
     attachments_directory: join(directory, "ui-attachments"),
     xcresult_tests: join(directory, "diagnostics/xcresult-tests.json"), xcresult_summary: join(directory, "diagnostics/xcresult-summary.json") };
   const device = { deviceId: "unit-fixture" }, configuration = { configurationId: "1" };
   const counts = { passedTests: 1, failedTests: 0, skippedTests: 0, expectedFailures: 0 };
-  const method = "testDirectAgentConversationAndRecovery";
+  const method = suite === "mentions" ? "testCrossProjectHistoricalMentionReadRetryAndDraftIsolation" : "testDirectAgentConversationAndRecovery";
+  const className = suite === "mentions" ? "MentionsUITests" : "AssistantConversationUITests";
   const testCase = { nodeType: "Test Case", name: `${method}()`, result: "Passed",
-    nodeIdentifier: `AssistantConversationUITests/${method}()`,
-    nodeIdentifierURL: `test://com.apple.xcode/Artoo/ArtooUITests/AssistantConversationUITests/${method}` };
+    nodeIdentifier: `${className}/${method}()`,
+    nodeIdentifierURL: `test://com.apple.xcode/Artoo/ArtooUITests/${className}/${method}` };
   const tests = { devices: [device], testPlanConfigurations: [configuration], testNodes: [
     { name: "ArtooUI", nodeType: "Test Plan", result: "Passed", children: [
       { name: "ArtooUITests", nodeType: "UI test bundle", result: "Passed", children: [
-        { name: "AssistantConversationUITests", nodeType: "Test Suite", result: "Passed", children: [testCase] },
+        { name: className, nodeType: "Test Suite", result: "Passed", children: [testCase] },
       ] },
     ] },
   ] };
@@ -37,11 +38,17 @@ function attempt() {
     devicesAndConfigurations: [{ device, testPlanConfiguration: configuration, ...counts }] };
   mkdirSync(join(directory, "diagnostics")); mkdirSync(native.result_bundle);
   mkdirSync(native.attachments_directory);
-  const images = expectedNativeScreenshots("assistant").map((name, i) => ({ name, exportedFileName: `${i}.png` }));
+  const images = expectedNativeScreenshots(suite).map((name, i) => ({ name, exportedFileName: `${i}.png` }));
   writeFileSync(join(native.attachments_directory, "manifest.json"), JSON.stringify(images));
   for (const image of images) writeFileSync(join(native.attachments_directory, image.exportedFileName),
     Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP8KuTxn4GBgYGJAQoAI8UCUpBcPuMAAAAASUVORK5CYII=", "base64"));
   for (const path of [parent.html_report, native.html_report]) writeFileSync(path, "Unit fixture only");
+  if (suite === "mentions") {
+    parent.mentions = { passed: true };
+    parent.peer_screenshots = ["mentions-peer-first.png", "mentions-peer-second.png"].map((name) => ({ path: join(directory, name), caption: `Independent sender browser: ${name}` }));
+    for (const image of parent.peer_screenshots) writeFileSync(image.path,
+      Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP8KuTxn4GBgYGJAQoAI8UCUpBcPuMAAAAASUVORK5CYII=", "base64"));
+  }
   const save = () => {
     for (const [name, value] of [["suite-result.json", parent], ["xctest-result.json", native],
       ["diagnostics/xcresult-tests.json", tests], ["diagnostics/xcresult-summary.json", summary]]) {
@@ -57,6 +64,25 @@ test("one finalized matching assistant attempt retains its exact subset identity
     assert.equal(result.contract.passed, true); assert.equal(result.contract.counts.total, 1);
     assert.equal(result.input.source.commit, fixture.parent.source.commit);
   } finally { fixture.close(); }
+});
+
+test("mentions retains its exact subset with nine native and two complete independent peer images", () => {
+  const fixture = attempt("mentions");
+  try { fixture.save(); assert.equal(loadNativeSuiteEvidence(fixture.directory, "mentions").contract.passed, true); }
+  finally { fixture.close(); }
+});
+
+for (const [name, mutate] of [
+  ["missing peer declaration", (f) => { delete f.parent.peer_screenshots; }],
+  ["duplicate peer image", (f) => { f.parent.peer_screenshots[1] = f.parent.peer_screenshots[0]; }],
+  ["missing peer file", (f) => rmSync(f.parent.peer_screenshots[0].path)],
+  ["empty peer file", (f) => writeFileSync(f.parent.peer_screenshots[0].path, Buffer.alloc(0))],
+  ["unreviewed peer caption", (f) => { f.parent.peer_screenshots[0].caption = "Pairing credentials"; }],
+  ["failed production verifier", (f) => { f.parent.mentions.passed = false; }],
+]) test(`mentions refuses ${name}`, () => {
+  const f = attempt("mentions");
+  try { mutate(f); f.save(); assert.throws(() => loadNativeSuiteEvidence(f.directory, "mentions")); }
+  finally { f.close(); }
 });
 
 for (const [name, mutate] of [

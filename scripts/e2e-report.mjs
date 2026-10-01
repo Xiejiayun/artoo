@@ -84,11 +84,28 @@ const nativeAssistantImages = [
   "Native assistant linked execution task",
   "Native assistant cancelled with process stopped",
 ];
-const nativeWorkflowImages = [...nativeCoreImages, ...nativeAssistantImages];
+const nativeMentionsImages = [
+  "Native mentions project A draft before publication",
+  "Native mentions global unread across projects",
+  "Native mentions historical reply with read failure",
+  "Native mentions draft preserved after read retry",
+  "Native mentions second historical reply",
+  "Native mentions selected project B",
+  "Native mentions one unread sentinel remains",
+  "Native mentions project A draft restored",
+  "Native mentions project B draft restored after relaunch",
+];
+const nativeWorkflowImages = [...nativeCoreImages, ...nativeAssistantImages, ...nativeMentionsImages];
+// These two XCTest helpers explicitly refuse captures whenever onboarding or
+// generated pairing-code controls exist. Retain their controlled failure
+// scene for CI diagnosis, without accepting Xcode's automatic failure images
+// or counting a diagnostic as a required successful workflow screenshot.
+const nativeDiagnosticImages = ["Native assistant guarded failure diagnostics", "Native mentions guarded failure diagnostics"];
 export function expectedNativeScreenshots(suite) {
   if (suite === "core") return [...nativeCoreImages];
   if (suite === "assistant") return [...nativeAssistantImages];
-  throw new Error("Native screenshot scope must be core or assistant");
+  if (suite === "mentions") return [...nativeMentionsImages];
+  throw new Error("Native screenshot scope must be core, assistant or mentions");
 }
 export function readXCTestScreenshots(directory) {
   let manifest, canonicalDirectory;
@@ -101,7 +118,7 @@ export function readXCTestScreenshots(directory) {
   function visit(value) {
     if (!value || typeof value !== "object") return;
     const name = value.suggestedHumanReadableName ?? value.name;
-    const approved = typeof name === "string" && nativeWorkflowImages.some((title) => name === title || name.startsWith(`${title}_`) || name.startsWith(`${title}.`));
+    const approved = typeof name === "string" && [...nativeWorkflowImages, ...nativeDiagnosticImages].some((title) => name === title || name.startsWith(`${title}_`) || name.startsWith(`${title}.`));
     if (typeof value.exportedFileName === "string" && approved) {
       const path = resolve(directory, value.exportedFileName);
       // Native XCTest exports PNG. Unsupported formats and invalid individual

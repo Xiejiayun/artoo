@@ -30,7 +30,7 @@ writeE2EReport({ outputPath: htmlPath, title, report });
 try {
 if (ui) rmSync(resolve(output, "ui-attachments"), { recursive: true, force: true });
 if (process.platform !== "darwin") throw new Error("Xcode/XCTest requires macOS; static checks are not a native test result.");
-if (process.argv.filter((arg) => arg.startsWith("--suite=")).length > 1 || process.argv.slice(2).some((arg) => arg !== "--ui" && !(ui && /^--suite=(core|assistant)$/.test(arg)))) throw new Error("Usage: test-macos.mjs [--ui --suite=core|assistant]");
+if (process.argv.filter((arg) => arg.startsWith("--suite=")).length > 1 || process.argv.slice(2).some((arg) => arg !== "--ui" && !(ui && /^--suite=(core|assistant|mentions)$/.test(arg)))) throw new Error("Usage: test-macos.mjs [--ui --suite=core|assistant|mentions]");
 const selected = ui ? selectUISuites(uiSuite)[0] : null;
 if (ui) report.expected_case_ids = selected.expected_case_ids;
 let uiEnvironment;
@@ -60,7 +60,13 @@ if (ui) {
     "assistant_first_request", "assistant_second_request", "assistant_hold_request", "assistant_draft",
     "computer_id", "computer_name", "fixture_control_url", "fixture_control_token",
   ].map((field) => [field, field.toUpperCase()]));
-  const fields = uiSuite === "assistant" ? assistantFields : coreFields;
+  const mentionsFields = Object.fromEntries([
+    "server_url", "peer_control_token", "fixture_control_url", "fixture_control_token",
+    "project_a_id", "project_a_name", "channel_a_id", "channel_a_name", "root_a_id", "root_a_body",
+    "recipient_user_id", "recipient_name", "sender_user_id", "sender_name", "native_device_name",
+    "draft_a", "draft_b", "first_mention_body", "second_mention_body",
+  ].map((field) => [field, field.toUpperCase()]));
+  const fields = uiSuite === "mentions" ? mentionsFields : uiSuite === "assistant" ? assistantFields : coreFields;
   uiEnvironment = {};
   for (const [field, variable] of Object.entries(fields)) {
     if (typeof fixture[field] !== "string" || fixture[field].length === 0) throw new Error(`UI fixture is missing ${field}`);

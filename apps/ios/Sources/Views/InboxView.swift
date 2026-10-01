@@ -50,7 +50,7 @@ public struct InboxView: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { NavigationLink { MentionsView(client: client) } label: {
                 Label(container.mentionsTitle, systemImage: "at")
                     .accessibilityHint(container.notificationCountSummary)
-            } } }
+            }.accessibilityIdentifier("inbox.mentions") } }
             .navigationDestination(for: Approval.self) { approval in
                 ApprovalDetailView(approval: approval, model: model)
             }

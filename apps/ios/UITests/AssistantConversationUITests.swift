@@ -21,8 +21,9 @@ final class AssistantConversationUITests: XCTestCase {
         try demand(try await messages().isEmpty, "The direct conversation must begin empty")
         try selectAgent()
         try await controlNode("stop")
-        try send(fixture.firstRequest)
+        let firstMessageId = try await send(fixture.firstRequest)
         let firstWaiting = try await waitForTurn(fixture.firstRequest, status: "waiting")
+        try demand(firstWaiting.userMessageId == firstMessageId, "The waiting turn must reference the exact native message that was visibly sent")
         try demand(firstWaiting.runId == nil && firstWaiting.responseMessageId == nil, "Offline waiting must not create a run or answer")
         let waitingTask: AssistantTaskEnvelope = try await get("api/v1/tasks/\(firstWaiting.taskId)")
         let waitingObservation = try await observations()
@@ -58,8 +59,9 @@ final class AssistantConversationUITests: XCTestCase {
         try require(composer.value as? String == fixture.draft, "An arriving answer must not overwrite the unsent draft")
         try demand((try await observations()).receipts.count == 1, "Automatic recovery must launch exactly one process")
 
-        try send(fixture.secondRequest)
+        let secondMessageId = try await send(fixture.secondRequest)
         let failed = try await waitForTurn(fixture.secondRequest, status: "failed", timeout: 90)
+        try demand(failed.userMessageId == secondMessageId, "The failed follow-up must reference the exact native message that was visibly sent")
         let failedRun = try await verifiedRun(failed)
         try demand(failedRun.status == "failed" && failed.responseMessageId == nil, "The first follow-up attempt must actually fail without an answer")
         try status(failed.id, "Failed")
@@ -89,8 +91,9 @@ final class AssistantConversationUITests: XCTestCase {
         try require(secondText.label == secondAnswer.body, "The follow-up answer must render its exact persisted content")
         try screenshot("Native assistant follow-up uses the actual first answer")
 
-        try send(fixture.holdRequest)
+        let holdMessageId = try await send(fixture.holdRequest)
         let held = try await waitForTurn(fixture.holdRequest, status: "running", timeout: 90)
+        try demand(held.userMessageId == holdMessageId, "The held turn must reference the exact native message that was visibly sent")
         let heldReceipt = try await waitForHeldProcess(held)
         let heldRun = try await verifiedRun(held)
         try demand(heldRun.status == "running", "The third turn must own a running process")
@@ -233,14 +236,32 @@ final class AssistantConversationUITests: XCTestCase {
     }
 
     @MainActor
-    private func send(_ text: String) throws {
+    private func send(_ text: String) async throws -> String {
         try replace(field("messageComposer"), text); try dismissKeyboard()
         let send = app.buttons["sendMessage"]; try reveal(send)
         try require(send.isEnabled && send.label == "Send to agent", "The real composer must send an agent request")
         send.tap()
-        let sent = app.staticTexts.matching(NSPredicate(format: "label == %@", text)).firstMatch
+        let deadline = Date().addingTimeInterval(15)
+        var persisted: AssistantMessage?
+        repeat {
+            let matching = try await messages().filter {
+                $0.kind == "text" && $0.actorType == "user" && $0.actorId == fixture.userId && $0.body == text
+            }
+            try require(matching.count <= 1, "The current recipient's native send must persist exactly once")
+            if let message = matching.first {
+                try require(message.threadRootId == nil, "The sent message must belong to this top-level conversation")
+                persisted = message; break
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        } while Date() < deadline
+        try require(persisted != nil, "The native send must produce its real recipient-authored message")
+        let message = try XCTUnwrap(persisted)
+        // The request card repeats the body. A label-first query can change
+        // targets as SwiftUI materializes rows; the persisted message ID cannot.
+        let sent = app.staticTexts["message.\(message.id)"]
         try revealText(sent)
         try require(sent.waitForExistence(timeout: 15) && sent.label == text, "The native request must visibly retain its exact submitted text")
+        return message.id
     }
 
     @MainActor
@@ -346,8 +367,13 @@ final class AssistantConversationUITests: XCTestCase {
     @MainActor
     private func require(_ condition: Bool, _ message: String) throws {
         if !condition {
-            let image = XCTAttachment(screenshot: app.screenshot()); image.name = "Native assistant failure diagnostics"; image.lifetime = .keepAlways; add(image)
-            let tree = XCTAttachment(string: app.debugDescription); tree.name = "Native assistant failure accessibility hierarchy"; tree.lifetime = .keepAlways; add(tree)
+            let credentialsVisible = ["serverURL", "pairingDeviceName", "pairingCode", "device.pairing.code"].contains {
+                app.descendants(matching: .any).matching(identifier: $0).firstMatch.exists
+            }
+            if !credentialsVisible {
+                let image = XCTAttachment(screenshot: app.screenshot()); image.name = "Native assistant guarded failure diagnostics"; image.lifetime = .keepAlways; add(image)
+                let tree = XCTAttachment(string: app.debugDescription); tree.name = "Native assistant failure accessibility hierarchy"; tree.lifetime = .keepAlways; add(tree)
+            }
         }
         try demand(condition, message)
     }

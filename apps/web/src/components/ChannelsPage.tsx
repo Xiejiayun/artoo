@@ -17,17 +17,36 @@ import { NotificationsPanel } from "./NotificationsPanel.js";
 
 export function ChannelsPage(): React.ReactNode {
   const api = useApi();
+  const query = useQueryClient();
   const { projectId, setSelectedProjectId, bootstrap } = useProject();
   const [search, setSearch] = useSearchParams();
   const [creating, setCreating] = useState(false);
   const requestedRoomId = search.get("room");
-  const linkedProject = search.get("project");
   const roomContext = useQuery({ queryKey: ["room", requestedRoomId], queryFn: () => api.getRoom(requestedRoomId!), enabled: !!requestedRoomId });
   const room = roomContext.data?.room.id === requestedRoomId ? roomContext.data.room : undefined;
-  const destinationProject = room ? room.project_id : linkedProject;
+  const destinationProject = room && !roomContext.error ? room.project_id : undefined;
   const appliedProject = useRef<string | null>(null);
   const projectKnown = !destinationProject || !!bootstrap.data?.projects.some((project) => project.id === destinationProject);
   const projectReady = !destinationProject || projectKnown && projectId === destinationProject;
+  const needsProjectRefresh = !!destinationProject && !!bootstrap.data && !projectKnown;
+  // A peer can create this project after the current account snapshot loaded.
+  // Keep this lookup tied to the current verified room and account, so an old
+  // navigation response cannot authorize or select a different destination.
+  const refreshedProjects = useQuery({
+    queryKey: ["notification-project", requestedRoomId, destinationProject, bootstrap.data?.organization.id, bootstrap.data?.user.id],
+    queryFn: () => api.bootstrap(), enabled: needsProjectRefresh,
+    retry: false, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false,
+  });
+  const refreshedIdentityMatches = !!refreshedProjects.data && refreshedProjects.data.organization.id === bootstrap.data?.organization.id
+    && refreshedProjects.data.user.id === bootstrap.data?.user.id;
+  const refreshedProjectKnown = refreshedIdentityMatches && !!refreshedProjects.data?.projects.some((project) => project.id === destinationProject);
+  const projectRefreshFailed = needsProjectRefresh && !refreshedProjects.isFetching
+    && (refreshedProjects.isError || !!refreshedProjects.data && !refreshedProjectKnown);
+  useEffect(() => {
+    if (needsProjectRefresh && !refreshedProjects.isFetching && !refreshedProjects.error && refreshedProjectKnown) {
+      query.setQueryData(queryKeys.bootstrap, refreshedProjects.data);
+    }
+  }, [needsProjectRefresh, refreshedProjects.isFetching, refreshedProjects.error, refreshedProjects.data, refreshedProjectKnown, query]);
   useEffect(() => {
     // Apply each deep link once. Router navigation can be deferred after an
     // explicit picker change; its old URL must not undo the new selection.
@@ -36,8 +55,11 @@ export function ChannelsPage(): React.ReactNode {
     else if (projectKnown && appliedProject.current !== link) {
       appliedProject.current = link;
       if (projectId !== destinationProject) setSelectedProjectId(destinationProject!);
+      // Entering a verified room also refreshes its people's names. Bootstrap
+      // can already know a new project while the member cache is still older.
+      void query.invalidateQueries({ queryKey: queryKeys.members });
     }
-  }, [destinationProject, requestedRoomId, projectKnown, projectId, setSelectedProjectId]);
+  }, [destinationProject, requestedRoomId, projectKnown, projectId, setSelectedProjectId, query]);
   const channels = useQuery({ queryKey: ["channels", projectId], queryFn: () => api.listChannels(projectId!), enabled: !!projectId && projectReady, refetchInterval: 10000 });
   useSubscription(projectId ? [`project:${projectId}`] : []);
   const roomId = requestedRoomId ?? channels.data?.channels[0]?.id;
@@ -48,7 +70,6 @@ export function ChannelsPage(): React.ReactNode {
   const threadRootId = search.get("thread") ?? undefined;
   const openRoom = (room: string, thread?: string): void => { setSearch({ room, ...(projectId ? { project: projectId } : {}), ...(thread ? { thread } : {}) }); };
   const openNotification = (notification: Notification): void => {
-    if (notification.project_id) setSelectedProjectId(notification.project_id);
     setSearch({ room: notification.room_id, thread: notification.thread_root_id ?? notification.message_id,
       message: notification.message_id, ...(notification.project_id ? { project: notification.project_id } : {}),
       ...(!notification.read_at ? { notification: notification.id } : {}) });
@@ -58,7 +79,15 @@ export function ChannelsPage(): React.ReactNode {
     {creating && projectId && <ChannelForm key={projectId} projectId={projectId} onCreated={(id) => { setCreating(false); openRoom(id); }} onClose={() => setCreating(false)} />}
     <ActionError error={channels.error} />{channels.isLoading && <p role="status">Loading channels…</p>}
     {requestedRoomId && <><ActionError error={roomContext.error} />{roomContext.isLoading && <p role="status">Checking the conversation's project…</p>}{roomContext.error && <Button onClick={() => void roomContext.refetch()}>Retry opening conversation</Button>}</>}
-    {!projectReady && <p role={bootstrap.data && !projectKnown ? "alert" : "status"}>{bootstrap.data && !projectKnown ? "This notification's project is unavailable. Select an available project to continue." : "Opening the notification's project…"}</p>}
+    {!projectReady && <>
+      <ActionError error={needsProjectRefresh ? refreshedProjects.error : undefined} />
+      <p role={projectRefreshFailed ? "alert" : "status"}>{projectRefreshFailed
+        ? refreshedProjects.error ? "Could not refresh access to this conversation's project."
+          : !refreshedIdentityMatches ? "Your account changed while opening this conversation. Retry opening the project."
+            : "This notification's project is unavailable. Select an available project to continue."
+        : "Opening the notification's project…"}</p>
+      {projectRefreshFailed && <Button onClick={() => void refreshedProjects.refetch()}>Retry opening project</Button>}
+    </>}
     {projectReady && <div className={`channels-layout${threadRootId ? " has-thread" : ""}`}><nav className="product-list" aria-label="Channel list">{channels.data?.channels.map((channel) => <button key={channel.id} aria-current={channel.id === roomId ? "page" : undefined} className={channel.id === roomId ? "is-selected" : ""} onClick={() => openRoom(channel.id)}># {channel.name}</button>)}</nav>
       {roomId && roomReady ? <article className="channel-main u-stack"><header><h2>{selected || room?.type === "project" ? "# " : ""}{selected?.name ?? room?.name ?? "Shared discussion"}</h2>{selected?.description && <p className="t-subtle">{selected.description}</p>}</header><RoomConversation key={roomId} roomId={roomId} onOpenThread={(id) => openRoom(roomId, id)} /></article> : !roomId && <EmptyState title="No channels yet" description="Create a channel for your project team to share ideas and discuss work in threads." />}
       {/* Read attempts and errors belong to one notification, including when

@@ -7,7 +7,7 @@ final class MentionDestinationTests: XCTestCase {
         let notification = try record()
         var failLoad = true, failRead = true
         var fetches = 0, reads = 0, confirmed = 0
-        let model = MentionDestinationViewModel(resource: { path in
+        let model = destination(resource: { path in
             fetches += 1
             if failLoad { throw URLError(.notConnectedToInternet) }
             return self.message(id: path.hasSuffix("/reply") ? "reply" : "root", thread: path.hasSuffix("/reply") ? "root" : nil)
@@ -50,13 +50,13 @@ final class MentionDestinationTests: XCTestCase {
         ]
         for (selected, root) in pairs {
             var reads = 0
-            let model = MentionDestinationViewModel(resource: { path in path.hasSuffix("/reply") ? selected : root }, markRead: { _ in reads += 1; return .null })
+            let model = destination(resource: { path in path.hasSuffix("/reply") ? selected : root }, markRead: { _ in reads += 1; return .null })
             await model.load(notification, onRead: { _, _ in XCTFail("A mismatched destination cannot update the inbox") })
             XCTAssertNotNil(model.loadError); XCTAssertNil(model.root); XCTAssertNil(model.focus)
             XCTAssertEqual(reads, 0)
         }
         let rootMention = try record(message: "reply", thread: nil)
-        let model = MentionDestinationViewModel(resource: { _ in validMessage }, markRead: { _ in XCTFail("The notification's root/reply identity must match"); return .null })
+        let model = destination(resource: { _ in validMessage }, markRead: { _ in XCTFail("The notification's root/reply identity must match"); return .null })
         await model.load(rootMention, onRead: { _, _ in XCTFail("Unexpected confirmation") })
         XCTAssertNotNil(model.loadError)
     }
@@ -66,7 +66,7 @@ final class MentionDestinationTests: XCTestCase {
         let second = try record(id: "second", message: "new", thread: nil)
         let pending = DeferredMentionResponse()
         var confirmed: [String] = [], reads: [String] = []
-        let model = MentionDestinationViewModel(resource: { path in
+        let model = destination(resource: { path in
             if path.hasSuffix("/old") { return try await pending.response() }
             return self.message(id: "new")
         }, markRead: { path in reads.append(path); return self.receipt(second) })
@@ -84,7 +84,7 @@ final class MentionDestinationTests: XCTestCase {
         let second = try record(id: "second", message: "new", thread: nil)
         let pending = DeferredMentionResponse()
         var confirmed: [String] = []
-        let model = MentionDestinationViewModel(resource: { path in self.message(id: path.hasSuffix("/old") ? "old" : "new") }, markRead: { path in
+        let model = destination(resource: { path in self.message(id: path.hasSuffix("/old") ? "old" : "new") }, markRead: { path in
             if path.contains("/first/") { return try await pending.response() }
             return self.receipt(second, unread: 2)
         })
@@ -100,7 +100,7 @@ final class MentionDestinationTests: XCTestCase {
         let notification = try record(message: "root", thread: nil)
         let pending = DeferredMentionResponse()
         var reads = 0, confirmed = 0
-        let model = MentionDestinationViewModel(resource: { _ in self.message(id: "root") }, markRead: { _ in
+        let model = destination(resource: { _ in self.message(id: "root") }, markRead: { _ in
             reads += 1
             if reads == 1 { throw URLError(.networkConnectionLost) }
             return try await pending.response()
@@ -120,7 +120,7 @@ final class MentionDestinationTests: XCTestCase {
         let pending = DeferredMentionResponse()
         let notification = try record()
         var reads = 0
-        let model = MentionDestinationViewModel(resource: { path in
+        let model = destination(resource: { path in
             if path.hasSuffix("/reply") { return self.message(id: "reply", thread: "root") }
             return try await pending.response()
         }, markRead: { _ in reads += 1; return .null })
@@ -135,7 +135,7 @@ final class MentionDestinationTests: XCTestCase {
         let wrong = try record(id: "another_notification", message: "root", thread: nil)
         var responses = [receipt(wrong), receipt(notification, unread: -1), receipt(notification, unread: 3)]
         var confirmed = 0
-        let model = MentionDestinationViewModel(resource: { _ in self.message(id: "root") }, markRead: { _ in responses.removeFirst() })
+        let model = destination(resource: { _ in self.message(id: "root") }, markRead: { _ in responses.removeFirst() })
         let onRead: (WorkspaceRecord, Int) -> Void = { _, count in confirmed += 1; XCTAssertEqual(count, 3) }
         await model.load(notification, onRead: onRead)
         XCTAssertNotNil(model.readError); XCTAssertEqual(confirmed, 0)
@@ -145,8 +145,16 @@ final class MentionDestinationTests: XCTestCase {
         XCTAssertNil(model.readError); XCTAssertEqual(confirmed, 1); XCTAssertEqual(model.root?.id, "root")
     }
 
+    private func destination(resource: @escaping @MainActor (String) async throws -> JSONValue,
+                             markRead: @escaping @MainActor (String) async throws -> JSONValue) -> MentionDestinationViewModel {
+        MentionDestinationViewModel(resource: resource, markRead: markRead, resolveProject: { project, isCurrent in
+            XCTAssertEqual(project, "project")
+            guard isCurrent() else { throw CancellationError() }
+        }, isSessionCurrent: { true })
+    }
+
     private func record(id: String = "mention", message: String = "reply", thread: String? = "root") throws -> WorkspaceRecord {
-        try XCTUnwrap(WorkspaceRecord(.object(["id": .string(id), "room_id": .string("room"), "message_id": .string(message),
+        try XCTUnwrap(WorkspaceRecord(.object(["id": .string(id), "project_id": .string("project"), "room_id": .string("room"), "message_id": .string(message),
                                              "thread_root_id": thread.map(JSONValue.string) ?? .null, "read_at": .null])))
     }
     private func message(id: String, room: String = "room", thread: String? = nil) -> JSONValue {

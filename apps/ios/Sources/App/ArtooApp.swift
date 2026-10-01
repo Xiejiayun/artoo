@@ -26,6 +26,8 @@ public final class AppContainer: ObservableObject {
     @Published public private(set) var notificationCountError: String?
     public let realtime = RealtimeConnection()
     private let credentials: CredentialStore
+    private var bootstrapOperationSequence = 0
+    private var bootstrapPublicationSequence = 0
     @Published fileprivate private(set) var restored = false
 
     public init(config: AppConfig = .default, credentials: CredentialStore = KeychainCredentialStore()) {
@@ -35,8 +37,8 @@ public final class AppContainer: ObservableObject {
         if config.useMock { self.client = MockApiClient.demo(); isAuthenticated = true; restored = true }
         #endif
     }
-    public init(client: ApiClientProtocol, config: AppConfig = .default) {
-        self.client = client; self.config = config; self.credentials = KeychainCredentialStore()
+    public init(client: ApiClientProtocol, config: AppConfig = .default, credentials: CredentialStore = KeychainCredentialStore()) {
+        self.client = client; self.config = config; self.credentials = credentials
         isAuthenticated = true; restored = true
     }
     public var projectId: String { selectedProjectId.isEmpty ? (bootstrap.value?.projects.first?.id ?? config.projectId) : selectedProjectId }
@@ -95,16 +97,71 @@ public final class AppContainer: ObservableObject {
         try realtime.configure(origin: url, controlToken: stored.controlToken, sessionID: live.sessionID,
             topics: initial.projects.map { "project:\($0.id)" } + ["inbox:\(authenticated.user.id)"])
     }
+    private func nextBootstrapOperation() -> Int {
+        bootstrapOperationSequence += 1
+        return bootstrapOperationSequence
+    }
+    private func acceptBootstrapPublication(_ operation: Int, session: UUID) -> Bool {
+        guard isAuthenticated, session == sessionGeneration, !Task.isCancelled,
+              operation > bootstrapPublicationSequence else { return false }
+        // Only an accepted outcome advances the barrier. A cancelled mention
+        // must not discard a still-useful workspace refresh that is in flight.
+        bootstrapPublicationSequence = operation
+        return true
+    }
     public func loadBootstrap() async {
+        guard isAuthenticated, !Task.isCancelled else { return }
         let generation = sessionGeneration
+        let operation = nextBootstrapOperation()
         if bootstrap.value == nil { bootstrap = .loading }
         do {
             let value = try await client.bootstrap()
-            guard generation == sessionGeneration else { return }
+            guard acceptBootstrapPublication(operation, session: generation) else { return }
             bootstrap = .loaded(value)
             if !value.projects.contains(where: { $0.id == selectedProjectId }) { selectedProjectId = value.projects.first?.id ?? "" }
             if let user = identity?.user.id { realtime.updateTopics(value.projects.map { "project:\($0.id)" } + ["inbox:\(user)"]) }
-        } catch { if generation == sessionGeneration { bootstrap = .failed(String(describing: error)) } }
+        } catch { if acceptBootstrapPublication(operation, session: generation) { bootstrap = .failed(String(describing: error)) } }
+    }
+    private struct SupersededMentionProjectError: Error, CustomStringConvertible {
+        var description: String { "The workspace changed while opening this mention. Try opening it again." }
+    }
+    func makeMentionDestinationModel(client: ApiClientProtocol, session: UUID) -> MentionDestinationViewModel {
+        return MentionDestinationViewModel(client: client, resolveProject: { [weak self] projectId, isCurrent in
+            guard let self else { throw CancellationError() }
+            try await self.resolveMentionProject(projectId, session: session, isCurrent: isCurrent)
+        }, isSessionCurrent: { [weak self] in
+            self?.isAuthenticated == true && self?.sessionGeneration == session
+        })
+    }
+    func resolveMentionProject(_ projectId: String, session: UUID, isCurrent: @escaping @MainActor () -> Bool) async throws {
+        func requireCurrent() throws {
+            guard isAuthenticated, session == sessionGeneration, isCurrent(), !Task.isCancelled else { throw CancellationError() }
+        }
+        try requireCurrent()
+        guard !projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ApiError.decoding("The mention has no project destination.")
+        }
+        let operation = nextBootstrapOperation()
+        var refreshed: Bootstrap?
+        if bootstrap.value?.projects.contains(where: { $0.id == projectId }) != true {
+            // The global inbox can receive mentions from projects added after pairing.
+            // Keep the current workspace usable when this authorized refresh fails.
+            let value = try await client.bootstrap()
+            try requireCurrent()
+            guard value.projects.contains(where: { $0.id == projectId }) else {
+                throw ApiError.http(status: 403, body: "This mention's project is unavailable or you no longer have access. Refresh and try again.")
+            }
+            refreshed = value
+        }
+        try requireCurrent()
+        // A cache-hit selection is also newer workspace state: older refresh
+        // success or failure must not undo the resolved destination.
+        guard acceptBootstrapPublication(operation, session: session) else { throw SupersededMentionProjectError() }
+        if let value = refreshed {
+            bootstrap = .loaded(value)
+            if let user = identity?.user.id { realtime.updateTopics(value.projects.map { "project:\($0.id)" } + ["inbox:\(user)"]) }
+        }
+        selectedProjectId = projectId
     }
     public func validateConnection() async {
         guard isAuthenticated, let live = client as? ApiClient else { return }
@@ -239,8 +296,8 @@ private struct WorkspaceSettingsView: View {
                     Text(container.serverURL).font(.caption).textSelection(.enabled)
                     if let projects = container.bootstrap.value?.projects {
                         Picker("Project", selection: $container.selectedProjectId) {
-                            ForEach(projects) { project in Text(project.name).tag(project.id) }
-                        }
+                            ForEach(projects) { project in Text(project.name).tag(project.id).accessibilityIdentifier("workspace.project.option.\(project.id)") }
+                        }.accessibilityIdentifier("workspace.project")
                     }
                     Button("Refresh workspace") { Task { await container.loadBootstrap() } }
                     if container.isAdministrator { NavigationLink("Manage projects") { ProjectsView() } }

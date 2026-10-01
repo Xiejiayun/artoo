@@ -34,12 +34,13 @@ peers when the bundled browser is unavailable. Reports record the actual
 browser version; the Mac client under test remains packaged Electron.
 
 The full iOS gate builds and runs unit tests, then runs separate core and
-direct-agent UI suites. Each uses its own fixture, XCTest selection and
+direct-agent and mentions UI suites. Each uses its own fixture, XCTest selection and
 evidence directory. To run one UI subset while diagnosing it:
 
 ```sh
 npm run verify:ios:core
 npm run verify:ios:assistant
+npm run verify:ios:mentions
 ```
 
 Subset success does not certify the full gate. Keep source files, documentation
@@ -65,6 +66,7 @@ npm run e2e:auth
 | Native suite aggregate | `artifacts/ios/native-suites-<timestamp>.html` | Exact selected case IDs, independent fixture results, original matching source and cleanup; combines the actual approved screenshots. |
 | iOS core UI | `artifacts/ios/attempts/<timestamp>-core/native-ui-<timestamp>.html` | Real pairing, approval recovery across relaunch, explicit goal cancellation, daemon state, discussion/plan acceptance, cross-client threads, and native task creation through approved execution, uploaded artifact preview and human acceptance. |
 | iOS direct-agent UI | `artifacts/ios/attempts/<timestamp>-assistant/native-assistant-<timestamp>.html` | Agent choice, offline waiting/relaunch/draft, automatic dispatch, explicit failed-request Retry, prior-answer context, linked run details and running-request Cancel. Read the actual result: failed attempts do not establish the whole scenario. |
+| iOS mentions UI | `artifacts/ios/attempts/<timestamp>-mentions/native-mentions-<timestamp>.html` | Late-created project, two exact historical replies sent by an independent Web peer, device-scoped pre-handler 503, explicit read retry, unread sentinel and A/B drafts across project changes/relaunch. Nine native and two sender captures are required; implemented scope is not a claim of a successful run. |
 | Native UI runner | `artifacts/ios/attempts/<timestamp>-<suite>/ArtooUI-<timestamp>.html` | Xcode command results, exact selected-case contract and approved named XCTest screenshots. Earlier single-suite reports remain at the original top-level paths. |
 | Browser and authentication | `apps/web/playwright-report/<suite>-<timestamp>/index.html` | Test results, deliberate workflow screenshots and browser/source metadata. |
 | Local backup/restore | `artifacts/recovery/<timestamp>/report.html` | Production persistent server, real worker artifact upload, offline CLI backup/restore, credential continuity, exact bytes, idempotency and restored Web download. |
@@ -81,6 +83,10 @@ credentials and are not the shareable report. CI uploads HTML, summary JSON
 and deliberate browser screenshots; it does not automatically upload raw
 XCTest bundles or attachment exports. Public HTML accepts only reviewed
 workflow screenshot names, excluding onboarding failure screenshots.
+The assistant and mentions helpers also retain their newly named guarded
+failure scene after checking that credential controls are absent. These
+diagnostics never satisfy a required successful-workflow capture; legacy
+unguarded and automatic failure images remain excluded.
 
 The Mac harness owns its browser process. Cleanup waits for actual process
 exit and Playwright profile cleanup, and records whether graceful or forced

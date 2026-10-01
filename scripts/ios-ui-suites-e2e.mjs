@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { selectUISuites, verifyUISuiteResults } from "../apps/ios/scripts/ui-suite-contract.mjs";
 import { getE2EReportContext, readXCTestScreenshots, writeE2EReport } from "./e2e-report.mjs";
-import { loadNativeSuiteEvidence } from "./ios-ui-suite-evidence.mjs";
+import { loadNativeSuiteEvidence, readMentionsPeerScreenshots } from "./ios-ui-suite-evidence.mjs";
 import { closeOwnedProcessGroup } from "./owned-process-group.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,7 +30,7 @@ mkdirSync(output, { recursive: true });
 writeE2EReport({ outputPath: html, title: "Artoo iOS · native suite verification", report });
 try {
   const args = process.argv.slice(2);
-  if (args.length > 1 || args.some((arg) => !/^--suite=(core|assistant|all)$/.test(arg))) throw new Error("Usage: ios-ui-suites-e2e.mjs [--suite=core|assistant|all]");
+  if (args.length > 1 || args.some((arg) => !/^--suite=(core|assistant|mentions|all)$/.test(arg))) throw new Error("Usage: ios-ui-suites-e2e.mjs [--suite=core|assistant|mentions|all]");
   const selection = args[0]?.slice(8) ?? "all";
   report.selection = selection;
   const selected = selectUISuites(selection);
@@ -41,7 +41,7 @@ try {
   const generated = spawnSync("xcodegen", ["generate"], { cwd: join(root, "apps/ios"), stdio: "inherit", timeout: 60_000 });
   assert.ok(!generated.error && generated.status === 0, "Common Xcode project generation must succeed");
   report.source = getE2EReportContext().source;
-  report.source_boundary = "Recorded after common XcodeGen preparation and before either native suite starts";
+  report.source_boundary = "Recorded after common XcodeGen preparation and before any native suite starts";
   for (const { suite } of selected) {
     if (abortReason) throw abortReason;
     assert.deepEqual(getE2EReportContext().source, report.source, "Source changed between native suites");
@@ -51,7 +51,7 @@ try {
     const entry = { suite, directory: attempt, passed: false };
     report.suites.push(entry);
     let parentPID;
-    const script = suite === "core" ? "scripts/ios-ui-e2e.mjs" : "scripts/ios-ui-assistant-e2e.mjs";
+    const script = { core: "scripts/ios-ui-e2e.mjs", assistant: "scripts/ios-ui-assistant-e2e.mjs", mentions: "scripts/ios-ui-mentions-e2e.mjs" }[suite];
     try {
       entry.exit_code = await new Promise((done, reject) => {
         child = spawn(process.execPath, [join(root, script)], { cwd: root, stdio: "inherit", detached: true,
@@ -82,7 +82,10 @@ try {
       }
       const parentPath = join(attempt, "suite-result.json");
       if (existsSync(parentPath)) {
-        try { const parent = JSON.parse(readFileSync(parentPath, "utf8")); entry.parent_html = parent.html_report; entry.cleanup = parent.cleanup; }
+        try {
+          const parent = JSON.parse(readFileSync(parentPath, "utf8")); entry.parent_html = parent.html_report; entry.cleanup = parent.cleanup;
+          if (suite === "mentions") screenshots.push(...readMentionsPeerScreenshots(attempt, parent.peer_screenshots));
+        }
         catch { entry.evidence_error = "Parent report could not be read"; }
       }
       if (!entry.parent_process_cleanup.closed) { entry.passed = false; throw new Error("Native parent process-group cleanup failed"); }

@@ -1,8 +1,26 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { verifyUISuiteResults } from "../apps/ios/scripts/ui-suite-contract.mjs";
 import { expectedNativeScreenshots, readXCTestScreenshots } from "./e2e-report.mjs";
+import { hasCompletePNGPixelStream, MAX_PNG_BYTES } from "./png-evidence.mjs";
+
+const peerNames = ["mentions-peer-first.png", "mentions-peer-second.png"];
+export function readMentionsPeerScreenshots(directory, declared) {
+  if (!Array.isArray(declared)) return [];
+  const found = [], seen = new Set(), attempt = resolve(directory);
+  for (const image of declared) {
+    try {
+      assert.ok(peerNames.some((name) => image.path === resolve(attempt, name)) && !seen.has(image.path));
+      assert.ok(typeof image.caption === "string" && image.caption.startsWith("Independent sender browser"));
+      const stat = lstatSync(image.path);
+      assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_PNG_BYTES
+        && dirname(realpathSync(image.path)) === realpathSync(attempt) && hasCompletePNGPixelStream(readFileSync(image.path)));
+      seen.add(image.path); found.push({ path: image.path, caption: image.caption });
+    } catch { /* Invalid images remain missing evidence; never break failure HTML. */ }
+  }
+  return found;
+}
 
 /** Read only the finalized parent, XCTest report and exports from one attempt.
  * A green XCTest cannot substitute for failed fixture checks or cleanup. */
@@ -30,6 +48,12 @@ export function loadNativeSuiteEvidence(directory, suite) {
   const screenshots = readXCTestScreenshots(native.attachments_directory);
   assert.ok(screenshots.length === native.screenshots.count && expectedNativeScreenshots(suite).every((name) => screenshots.some(({ caption }) =>
     caption === name || caption.startsWith(`${name}_`) || caption.startsWith(`${name}.`))), "Every declared and expected native screenshot must still be retained");
+  if (suite === "mentions") {
+    assert.equal(parent.mentions?.passed, true, "Mention production-record verification must pass");
+    const peerImages = readMentionsPeerScreenshots(attempt, parent.peer_screenshots);
+    assert.ok(parent.peer_screenshots?.length === 2 && peerImages.length === 2
+      && peerNames.every((name) => peerImages.some(({ path }) => path === resolve(attempt, name))), "Both independent sender captures must remain complete");
+  }
   assert.ok(native.xcresult_tests === resolve(attempt, "diagnostics/xcresult-tests.json")
     && native.xcresult_summary === resolve(attempt, "diagnostics/xcresult-summary.json"), "Raw exports must belong to this attempt");
   const input = { suite, source: native.source, result_bundle: native.result_bundle,

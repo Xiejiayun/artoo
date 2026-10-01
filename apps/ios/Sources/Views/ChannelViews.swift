@@ -45,21 +45,23 @@ struct MentionsView: View {
     var body: some View {
         List {
             Text(container.notificationCountSummary).font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("mentions.unreadSummary")
             ForEach(model.notifications) { item in
-                NavigationLink { MentionDestination(client: model.client, notification: item) { updated, unreadCount in
+                NavigationLink { MentionDestination(container: container, notification: item) { updated, unreadCount in
                     model.recordRead(updated, unreadCount: unreadCount)
                     container.acceptNotificationCount(unreadCount, session: (model.client as? ApiClient)?.sessionID)
                 }.id(item.id) } label: {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            if item["read_at"] == .null { Image(systemName: "circle.fill").foregroundStyle(.blue).font(.caption2) }
+                            if item["read_at"] == .null { Image(systemName: "circle.fill").foregroundStyle(.blue).font(.caption2).accessibilityIdentifier("mention.unread.\(item.id)") }
                             Text(item["body_preview"].text).lineLimit(3)
                         }
                         ConversationMetadataView(actorType: "user", actorId: item["actor_id"].text, createdAt: item["created_at"].text,
                                                  members: members, agents: [])
                         if !item["room_name"].text.isEmpty { Text(item["room_name"].text).font(.caption).foregroundStyle(.secondary) }
                     }
-                }
+                }.accessibilityIdentifier("mention.\(item.id)")
+                    .accessibilityValue(item["read_at"] == .null ? "Unread" : "Read")
             }
             if model.notifications.isEmpty && !model.loading { Text("No mentions yet.") }
             if model.hasMore { Button("Load earlier mentions") { Task { await model.loadEarlier() } }.disabled(model.loading) }
@@ -104,37 +106,39 @@ struct RoomThreadView: View {
 }
 
 private struct MentionDestination: View {
-    @EnvironmentObject private var container: AppContainer
     let client: ApiClientProtocol
     let notification: WorkspaceRecord
     let onRead: (WorkspaceRecord, Int) -> Void
     @StateObject private var model: MentionDestinationViewModel
-    init(client: ApiClientProtocol, notification: WorkspaceRecord, onRead: @escaping (WorkspaceRecord, Int) -> Void) {
+    init(container: AppContainer, notification: WorkspaceRecord, onRead: @escaping (WorkspaceRecord, Int) -> Void) {
+        let client = container.client, session = container.sessionGeneration
         self.client = client; self.notification = notification; self.onRead = onRead
-        _model = StateObject(wrappedValue: MentionDestinationViewModel(client: client))
+        _model = StateObject(wrappedValue: container.makeMentionDestinationModel(client: client, session: session))
     }
     var body: some View {
         Group {
-            if let root = model.root {
+            if model.projectResolved, let root = model.root {
                 CollaborationView(client: client, roomId: model.roomId, taskId: nil, threadRoot: root, focusedMessage: model.focus)
                     .safeAreaInset(edge: .bottom) {
                         if let error = model.readError {
                             VStack(spacing: 8) {
                                 Text("Read status could not be confirmed: \(error)").font(.caption).foregroundStyle(.red)
+                                    .accessibilityIdentifier("mention.readError")
                                 Button("Retry read") { Task { await model.retryRead(onRead: onRead) } }
                                     .disabled(model.markingRead).accessibilityIdentifier("retryMentionRead")
                             }.padding().frame(maxWidth: .infinity).background(.regularMaterial)
                         } else if model.markingRead { ProgressView("Confirming read status…").padding() }
                     }
             } else if let error = model.loadError {
-                VStack { Text(error).foregroundStyle(.red); Button("Retry opening mention") { Task { await load() } }.disabled(model.loading) }
+                VStack {
+                    Text(error).foregroundStyle(.red).accessibilityIdentifier("mention.open.error")
+                    Button("Retry opening mention") { Task { await load() } }.disabled(model.loading).accessibilityIdentifier("retryOpenMention")
+                }
             }
             else { ProgressView("Opening mention…") }
         }.task(id: notification.id) { await load() }.onDisappear { model.cancel() }
     }
     private func load() async {
-        let projectId = notification["project_id"].text
-        if !projectId.isEmpty, container.bootstrap.value?.projects.contains(where: { $0.id == projectId }) == true { container.selectedProjectId = projectId }
         await model.load(notification, onRead: onRead)
     }
 }

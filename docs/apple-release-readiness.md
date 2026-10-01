@@ -191,3 +191,23 @@ disclosure still has model-test/review evidence rather than a real UI operation;
 fresh-project mention navigation is a separately confirmed gap being addressed
 next. Real providers, physical devices, signed public distribution, deployed
 identity and operator policy are still required for commercial acceptance.
+
+The subsequent cross-project mentions milestone passed 133 native unit tests
+and all nine Release UI cases, with 42 inspected native/browser screenshots in
+`artifacts/ios/native-suites-2026-10-01T02-28-26-800Z.html`. The fresh installed-Mac
+gate passed all 15 checks and seven cleanup checks, retaining 26 capture entries
+(25 unique images) in
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-10-01T02-02-55-201Z.html`.
+Both prove late-created project navigation, complete historical mentions,
+explicit read recovery and distinct drafts across project changes and restart.
+Native async bootstrap ordering and Web member-cache recovery are corrected.
+
+The matching signed arm64 development archive is
+`artifacts/ios-device/2026-10-01T03-08-18-923Z/report.html`; all 35 product source
+and resource files match its isolated snapshot. Mac and final native overall
+source fingerprints differ only by a four-line native test-helper correction
+and evidence documentation, with the full product inventory independently
+byte-compared. The milestone ledger preserves those limits, failed attempts,
+non-failing layout warnings and the still-intermittent local DMG detach issue.
+These results extend local functional acceptance; they do not close the
+external release gates above or prove hosted acceptance of the new commit.
