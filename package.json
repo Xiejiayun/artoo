@@ -24,7 +24,7 @@
     "verify:ios:mentions": "npm run build:preview && node scripts/ios-ui-suites-e2e.mjs --suite=mentions",
     "verify:ios:correction": "npm run build:preview && node scripts/ios-ui-suites-e2e.mjs --suite=correction",
     "verify:mac": "node scripts/preview-gate.mjs --suite=mac",
-    "verify:recovery": "npm run build:preview && node scripts/recovery-e2e.mjs",
+    "verify:recovery": "npm run build:preview && node --test scripts/recovery-e2e.test.mjs && node scripts/recovery-e2e.mjs",
     "archive:ios:development": "node apps/ios/scripts/archive-device.mjs",
     "verify:desktop": "node scripts/preview-gate.mjs --suite=desktop",
     "dev": "npm run dev --workspace @artoo/server",

@@ -173,7 +173,7 @@ async function main() {
     async function capture(name, caption) {
       await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 30_000 });
       await page.getByRole("button", { name: new RegExp(taskBody.title) }).click();
-      await expect(page.locator(".task-detail__header .ui-badge--status")).toHaveText("done");
+      await expect(page.locator(".task-detail__meta .ui-badge--status")).toHaveText("done");
       await expect(page.getByText(messageBody.body, { exact: true })).toBeVisible();
       await expect(page.getByRole("button", { name: "Download artifact", exact: true })).toBeVisible();
       await expect(page.getByText("Live updates connected", { exact: true })).toBeVisible();
@@ -279,6 +279,9 @@ async function main() {
     writeE2EReport({ outputPath: html, title, report, screenshots });
     console.log(`[recovery] HTML report: ${html}`);
     console.log(`[recovery] ${report.passed ? "PASS" : "FAIL"}; cleanup=${report.cleanup_complete}`);
+    // Embedded database shutdown can reset process.exitCode. Decide the CLI
+    // outcome only after every cleanup step and report write has completed.
+    process.exitCode = report.passed ? 0 : 1;
   }
 }
 
