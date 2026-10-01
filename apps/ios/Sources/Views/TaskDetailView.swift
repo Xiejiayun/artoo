@@ -474,14 +474,32 @@ private struct AssignSheet: View {
                     else if visibleInstances.isEmpty { Text("No enabled agents are available. Configure an agent in Team, then try again.").font(.subheadline).foregroundStyle(.secondary) }
                     }
                 }
-                if let message = model.actionError ?? error {
-                    Text(message).foregroundStyle(.red)
-                        .accessibilityIdentifier("task.assignment.error")
-                    if error != nil { Button("Reload agents") { Task { await loadInventory() } }.frame(minHeight: 44) }
-                }
                 if model.actionInFlight { ProgressView("Assigning task…").accessibilityIdentifier("task.assignment.progress") }
             }
             .disabled(model.actionInFlight)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if let message = model.actionError ?? error {
+                    VStack(alignment: .leading, spacing: ArtooTokens.Spacing.sm) {
+                        HStack(alignment: .top, spacing: ArtooTokens.Spacing.sm) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .accessibilityHidden(true)
+                            Text(message)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("task.assignment.error")
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(ArtooTokens.ColorToken.danger)
+                        if error != nil {
+                            Button("Reload agents") { Task { await loadInventory() } }
+                                .frame(minHeight: 44)
+                                .disabled(model.actionInFlight)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .background(.regularMaterial)
+                }
+            }
             .navigationTitle("Assign Task")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
