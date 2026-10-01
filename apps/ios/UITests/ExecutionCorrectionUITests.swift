@@ -431,11 +431,33 @@ final class ExecutionCorrectionUITests: XCTestCase {
         input.tap()
         if input.value as? String == text { return }
         if !empty(input) {
-            input.press(forDuration: 1.0)
-            let item = app.menuItems["Select All"].firstMatch, button = app.buttons["Select All"].firstMatch
-            let selectAll = item.waitForExistence(timeout: 2) ? item : button
-            try require(selectAll.waitForExistence(timeout: 5) && selectAll.isHittable, "The native edit menu must select the entire existing value")
-            selectAll.tap(); input.typeText(XCUIKeyboardKey.delete.rawValue)
+            if identifier == "pairingDeviceName" {
+                try require(input.identifier == identifier && input.elementType == .textField,
+                            "Only the exact single-line pairing device name may use bounded native Delete")
+                let current = input.value as? String ?? ""
+                try require(!current.isEmpty && current != input.placeholderValue && current.count <= 128
+                            && !current.contains("\n") && !current.contains("\r"),
+                            "The existing device name must be a readable, bounded single-line value")
+                try require(app.keyboards.firstMatch.exists && input.isEnabled && input.isHittable,
+                            "The identified device name must remain editable with the native keyboard present")
+                let area = try viewport(), frame = input.frame, bounds = app.frame
+                try require(finiteNonempty(frame) && area.contains(frame) && finiteNonempty(bounds) && bounds.contains(area),
+                            "The complete device name field must remain inside the finite content viewport")
+                // A fresh pairing field can retain focus without exposing an edit
+                // menu. Place its caret at the trailing edge before deleting once.
+                let trailing = CGPoint(x: frame.maxX - min(8, frame.width / 2), y: frame.midY)
+                try require(frame.contains(trailing), "The device name caret touch must stay inside its exact field")
+                app.coordinate(withNormalizedOffset: .zero)
+                    .withOffset(CGVector(dx: trailing.x - bounds.minX, dy: trailing.y - bounds.minY)).tap()
+                try require(input.value as? String == current, "Positioning the caret must preserve the observed device name")
+                input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+            } else {
+                input.press(forDuration: 1.0)
+                let item = app.menuItems["Select All"].firstMatch, button = app.buttons["Select All"].firstMatch
+                let selectAll = item.waitForExistence(timeout: 2) ? item : button
+                try require(selectAll.waitForExistence(timeout: 5) && selectAll.isHittable, "The native edit menu must select the entire existing value")
+                selectAll.tap(); input.typeText(XCUIKeyboardKey.delete.rawValue)
+            }
             let clearedInput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@ OR value == %@", "", input.placeholderValue ?? ""), object: input)
             try require(XCTWaiter.wait(for: [clearedInput], timeout: 45) == .completed, "The existing native Delete action must finish clearing the input")
             try require(empty(input), "Deleting the selection must clear the entire native input")
