@@ -612,7 +612,10 @@ final class SharedServerChatUITests: XCTestCase {
             let reply = try XCTUnwrap(matchingReplies.first)
             if instruction.id == finalInstruction.id {
                 try require(reply.id == synthesis.id, "The final instruction must belong to the validated plan synthesis")
-                try reveal(toggle)
+                // Move the entire disclosure above the fixed composer before
+                // asking XCTest for its activation point.
+                try revealText(toggle)
+                try require(toggle.isEnabled && toggle.isHittable, "Show agent instructions must be reachable")
                 try attachConnectedScreenshot("Native planning instructions summarized before proposal")
                 toggle.tap()
                 try waitForValue(toggle, "Expanded", message: "Show agent instructions must expand the actual coordinator prompt")
@@ -676,7 +679,8 @@ final class SharedServerChatUITests: XCTestCase {
         planHierarchy.name = "Native suggested plan accessibility before original reply"
         planHierarchy.lifetime = .keepAlways; add(planHierarchy)
         let originalToggle = app.buttons["message.plan.original.\(synthesis.id)"]
-        try reveal(originalToggle)
+        try revealText(originalToggle)
+        try require(originalToggle.isEnabled && originalToggle.isHittable, "Show original reply must be reachable")
         try waitForValue(originalToggle, "Collapsed", message: "The original-reply button must expose its collapsed state")
         originalToggle.tap()
         try waitForValue(originalToggle, "Expanded", message: "Tapping the original-reply button must expand the exact reply")
