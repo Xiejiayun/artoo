@@ -130,7 +130,11 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
     const mentionedReply = () => thread.getByRole("region", { name: "Mentioned reply", exact: true });
     const destination = async (target) => {
       await expect(projectPicker).toHaveValue(publication.project_b.id);
-      await expect(page.getByRole("heading", { name: `# ${publication.channel_b.name}`, exact: true })).toBeVisible();
+      // A focused thread replaces the main conversation at narrower desktop
+      // widths. The exact selected channel remains visible in its directory.
+      const selectedChannel = channelList.getByRole("button", { name: `# ${publication.channel_b.name}`, exact: true });
+      await expect(selectedChannel).toBeVisible();
+      await expect(selectedChannel).toHaveAttribute("aria-current", "page");
       await expect(thread.getByText(publication.root_b.body, { exact: true })).toBeVisible();
       await expect(mentionedReply().getByText(target.body, { exact: true })).toBeVisible();
       await expect(mentionedReply().getByText(fields.sender_name, { exact: true })).toBeVisible();
