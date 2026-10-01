@@ -111,13 +111,14 @@ for (const [name, mutate] of [
 // escaping and proves both artifact branches retain their original outputs.
 function embeddedProgram(state, isMac) {
   const desktopDir = fileURLToPath(new URL("../", import.meta.url));
+  const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
   const source = readFileSync(new URL("./packaged-e2e-smoke.mjs", import.meta.url), "utf8");
   const start = source.indexOf("writeFileSync(fixtureEntry, `");
   const end = source.indexOf("\n`);", start) + "\n`);".length;
   assert.ok(start >= 0 && end > start);
   const fixtureEntry = join(state.directory, isMac ? "mac-inline.mjs" : "windows-inline.mjs");
-  new Function("writeFileSync", "fixtureEntry", "fixtureKey", "isMac", "pathToFileURL", "join", "desktopDir", "planningConfigurationPath", "assistantConfigurationPath", "fixturePatch", source.slice(start, end))(
-    writeFileSync, fixtureEntry, "unit-credential", isMac, pathToFileURL, join, desktopDir, state.configurationPath, join(state.directory, "unused-assistant.json"), "unit patch bytes\n");
+  new Function("writeFileSync", "fixtureEntry", "fixtureKey", "isMac", "pathToFileURL", "join", "desktopDir", "repoRoot", "planningConfigurationPath", "assistantConfigurationPath", "correctionConfigurationPath", "fixturePatch", source.slice(start, end))(
+    writeFileSync, fixtureEntry, "unit-credential", isMac, pathToFileURL, join, desktopDir, repoRoot, state.configurationPath, join(state.directory, "unused-assistant.json"), join(state.directory, "unused-correction.json"), "unit patch bytes\n");
   return fixtureEntry;
 }
 

@@ -30,7 +30,7 @@ writeE2EReport({ outputPath: htmlPath, title, report });
 try {
 if (ui) rmSync(resolve(output, "ui-attachments"), { recursive: true, force: true });
 if (process.platform !== "darwin") throw new Error("Xcode/XCTest requires macOS; static checks are not a native test result.");
-if (process.argv.filter((arg) => arg.startsWith("--suite=")).length > 1 || process.argv.slice(2).some((arg) => arg !== "--ui" && !(ui && /^--suite=(core|assistant|mentions)$/.test(arg)))) throw new Error("Usage: test-macos.mjs [--ui --suite=core|assistant|mentions]");
+if (process.argv.filter((arg) => arg.startsWith("--suite=")).length > 1 || process.argv.slice(2).some((arg) => arg !== "--ui" && !(ui && /^--suite=(core|assistant|mentions|correction)$/.test(arg)))) throw new Error("Usage: test-macos.mjs [--ui --suite=core|assistant|mentions|correction]");
 const selected = ui ? selectUISuites(uiSuite)[0] : null;
 if (ui) report.expected_case_ids = selected.expected_case_ids;
 let uiEnvironment;
@@ -66,11 +66,21 @@ if (ui) {
     "recipient_user_id", "recipient_name", "sender_user_id", "sender_name", "native_device_name",
     "draft_a", "draft_b", "first_mention_body", "second_mention_body",
   ].map((field) => [field, field.toUpperCase()]));
-  const fields = uiSuite === "mentions" ? mentionsFields : uiSuite === "assistant" ? assistantFields : coreFields;
+  const correctionFields = Object.fromEntries([
+    "server_url", "peer_control_token", "fixture_control_url", "fixture_control_token", "native_device_name",
+    "project_id", "task_title", "criterion_1", "criterion_2", "review_comment_1", "review_comment_2", "computer_id", "runtime_id",
+  ].map((field) => [field, field.toUpperCase()]));
+  const fields = uiSuite === "correction" ? correctionFields : uiSuite === "mentions" ? mentionsFields : uiSuite === "assistant" ? assistantFields : coreFields;
   uiEnvironment = {};
   for (const [field, variable] of Object.entries(fields)) {
     if (typeof fixture[field] !== "string" || fixture[field].length === 0) throw new Error(`UI fixture is missing ${field}`);
     uiEnvironment[`ARTOO_UI_${variable}`] = fixture[field];
+  }
+  if (uiSuite === "correction") {
+    for (const field of ["approval_summaries", "instances"]) {
+      if (!Array.isArray(fixture[field]) || fixture[field].length !== 4) throw new Error(`Correction fixture requires four ${field}`);
+      uiEnvironment[`ARTOO_UI_${field.toUpperCase()}`] = JSON.stringify(fixture[field]);
+    }
   }
   for (const value of [fixture.server_url, fixture.fixture_control_url]) {
     const origin = new URL(value);
@@ -80,7 +90,12 @@ if (ui) {
 mkdirSync(output, { recursive: true });
 function run(command, args, capture = false) {
   const started = Date.now();
-  const result = spawnSync(command, args, { cwd: ios, stdio: capture ? "pipe" : "inherit", encoding: "utf8", timeout: 1_200_000 });
+  // Core runs seven independent UI cases; correction performs four approved
+  // executions, two previews/reviews and explicit Stop decisions. Give both
+  // bounded suites time to finish and close their xcresult on current runtimes.
+  const timeout = ui && ["core", "correction"].includes(uiSuite) && command === "xcodebuild" && args.includes("test-without-building")
+    ? 1_800_000 : 1_200_000;
+  const result = spawnSync(command, args, { cwd: ios, stdio: capture ? "pipe" : "inherit", encoding: "utf8", timeout });
   if (["xcodebuild", "xcodegen", "codesign"].includes(command)) report.checks.push({ name: [command, ...args].join(" "), passed: !result.error && result.status === 0, duration_ms: Date.now() - started });
   if (result.error || result.status !== 0) throw new Error(result.error?.message ?? `${command} failed (${result.status}): ${result.stderr ?? "see output"}`);
   return result.stdout;

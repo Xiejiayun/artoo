@@ -115,11 +115,11 @@ test("an approved capture name cannot admit an empty, corrupt, nonregular or uns
 test("only newly guarded diagnostic names are retained, never legacy or automatic failure captures", () => {
   const directory = mkdtempSync(join(tmpdir(), "artoo-guarded-diagnostics-"));
   try {
-    const permitted = ["Native assistant guarded failure diagnostics", "Native mentions guarded failure diagnostics"];
+    const permitted = ["Native assistant guarded failure diagnostics", "Native mentions guarded failure diagnostics", "Native correction guarded failure diagnostics"];
     const rejected = ["Native assistant failure diagnostics", "Native mentions failure diagnostics", "Screenshot at failure", "Native UI failure"];
     writeFileSync(join(directory, "guarded.png"), pixels);
     writeFileSync(join(directory, "manifest.json"), JSON.stringify([...permitted, ...rejected].map((name) => ({ name, exportedFileName: "guarded.png" }))));
     assert.deepEqual(readXCTestScreenshots(directory).map((entry) => entry.caption), permitted);
-    for (const suite of ["core", "assistant", "mentions"]) assert.ok(expectedNativeScreenshots(suite).every((name) => !permitted.includes(name)), "A failure scene cannot satisfy successful workflow coverage");
+    for (const suite of ["core", "assistant", "mentions", "correction"]) assert.ok(expectedNativeScreenshots(suite).every((name) => !permitted.includes(name)), "A failure scene cannot satisfy successful workflow coverage");
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

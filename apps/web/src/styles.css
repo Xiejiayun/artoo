@@ -626,6 +626,21 @@ label {
   border-radius: var(--radius-sm);
   white-space: pre-wrap;
 }
+.run-output pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.artifact-review { display: grid; gap: var(--space-3); min-width: 0; }
+.artifact-list { display: grid; gap: var(--space-3); list-style: none; padding: 0; }
+.artifact-review .artifact { display: grid; gap: var(--space-2); padding: var(--space-3); min-width: 0; }
+.artifact-filename, .artifact-metadata dd, .review-artifacts { overflow-wrap: anywhere; }
+.artifact-metadata { display: grid; gap: var(--space-2); font-size: var(--text-small); }
+.artifact-metadata dt { color: var(--text-subtle); }
+.artifact-metadata dd { margin: 0; }
+.review-history { border-top: 1px solid var(--border); padding-top: var(--space-3); }
+.task-review { border-left: 3px solid var(--border-strong); padding: var(--space-3); background: var(--surface); }
+.review-comment { white-space: pre-wrap; overflow-wrap: anywhere; }
+.review-artifacts { display: grid; gap: var(--space-2); list-style: none; padding: 0; font-size: var(--text-small); }
+.review-artifacts li { display: grid; gap: 2px; }
+.assignment-worktree { flex-basis: 100%; }
+.assignment-worktree label { display: flex; align-items: center; gap: var(--space-2); }
 
 /* ---------------------------------------------------------------------------
  * Approval inbox

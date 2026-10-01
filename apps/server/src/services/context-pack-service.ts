@@ -13,6 +13,7 @@ import { and, desc, eq, isNull, lte, ne, or } from "drizzle-orm";
 import type { ServerContext } from "../context.js";
 import { mapMemory } from "../mappers.js";
 import { AppError } from "../errors.js";
+import { listTaskReviews } from "./review-history-service.js";
 
 export interface BuildContextPackParams {
   runId: string;
@@ -117,8 +118,26 @@ export async function buildRunContextPack(
     conversation = { room_id: turn.roomId, thread_root_id: turn.threadRootId, turn_id: turn.id, current_request: request.body, messages: selected.reverse(), history_truncated: truncated };
   }
 
+  // Reviews are durable task instructions, not conversation messages. Keep the
+  // event's identity/order and exact comment; no reviewed-run link is recorded.
+  let reviewFeedback: ContextPack["review_feedback"];
+  if (!params.assistantTurnId && !discussion) {
+    const reviews = await listTaskReviews(ctx, tx, task.id, task.projectId);
+    const entries = reviews.flatMap((review) => {
+      const { outcome, comment } = review;
+      if (outcome !== "changes_requested" || comment === null || comment.trim().length === 0) return [];
+      return [{
+        event_id: review.event_id, position: review.position, task_id: review.task_id,
+        actor: review.actor, occurred_at: review.occurred_at, comment,
+        artifact_ids: review.artifact_ids,
+      }];
+    });
+    if (entries.length > 0) reviewFeedback = { version: 1, entries };
+  }
+
   const payload: ContextPack = ContextPackSchema.parse({
     ...(conversation ? { conversation } : {}),
+    ...(reviewFeedback ? { review_feedback: reviewFeedback } : {}),
     task: {
       id: task.id,
       title: task.title,

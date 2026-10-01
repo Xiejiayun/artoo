@@ -236,7 +236,7 @@ async function main() {
       child = spawn(process.execPath, [join(root, "apps/ios/scripts/test-macos.mjs"), "--ui", "--suite=core"], {
         cwd: root, env: { ...process.env, ARTOO_IOS_UI_FIXTURE: fixturePath, ARTOO_IOS_UI_OUTPUT_DIR: output, ARTOO_IOS_UI_RESULT_JSON: childResultPath }, stdio: "inherit", windowsHide: true, detached: true,
       });
-      const timeout = setTimeout(() => { stopNative("SIGTERM"); rejectTest(new Error("Native UI test exceeded 30 minutes")); }, 1_800_000);
+      const timeout = setTimeout(() => { stopNative("SIGTERM"); rejectTest(new Error("Native core build and UI exceeded 40 minutes")); }, 2_400_000);
       child.once("error", (error) => { clearTimeout(timeout); rejectTest(error); });
       child.once("exit", (code, signal) => { clearTimeout(timeout); code === 0 ? resolveTest() : rejectTest(new Error(`Native UI test failed (${code ?? signal})`)); });
     });

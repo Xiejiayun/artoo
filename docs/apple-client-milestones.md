@@ -894,3 +894,124 @@ review feedback, delivery of that feedback to later execution, readable artifact
 versions, confirmation bound to the actual run, and preservation of work after
 failure/cancellation. Isolated fixes have focused tests but are not included in
 this mentions milestone and have no new client E2E acceptance yet.
+
+## 2026-10-01: durable correction feedback and safe stopping
+
+Validation was recorded against base
+`e2f25ce2978da27b8e5ae98923056ad6abec30fc` plus the recorded working-tree changes.
+The owning commit packages these validated changes. Reviews retain their original
+comments, actor IDs, event times and the artifact inventory recorded at the
+review decision. Current account names are display metadata; missing legacy
+attribution remains unknown. Task state, related records and the version cursor
+are read in one consistent transaction. Web and native clients preserve rejected
+or conflicting drafts, submit the loaded version, and require explicit
+resubmission after a conflict. Later ordinary executions receive the real
+requested-change comments in their context.
+
+Artifact cards identify the actual filename, originating run and creation time.
+Stop binds confirmation to the captured run and provides an explicit Keep
+running choice. Native Stop and goal cancellation use alerts so both choices
+remain present. Both clients expose a default-off isolated Git worktree option.
+Failed, cancelled, undelivered and materialized startup-failure work retain their
+files. **Successfully delivered worktrees are still deleted.** Preserving or
+explicitly transferring every successful implementation change is a remaining
+product requirement, and the isolated next-stage implementation is unapplied.
+
+| Completed verification | Actual result and scope |
+| --- | --- |
+| Shared and focused tests | Final shared Vitest rerun: 1,329 passed, 23 skipped, zero failures; its preceding run retained one editor timing failure. Typecheck and preview build passed. Web correction 58/58, real-process protocol 17/17, report/suite contracts 52/52 and Mac template regressions 32/32 retain their own source/time boundaries. |
+| Installed Mac, attempt 5 | All 21 checks passed after the Review history layout fix. The report retains 38 caption entries/37 unique images, independently reviewed process/file evidence, stable source and all nine cleanup checks. |
+| Earlier correction-only subset, session 87248 | Exact correction case passed in 1603.578 seconds on iPhone 16 / iOS 26.5. All 15 unique original captures were inspected; independent retained-data audit passed 181/181. Source and all three cleanup checks passed. |
+| Current full 64710, units | Exactly 144 unique cases passed with zero failures, skips or expected failures; independently audited from the closed raw summary/tree. The report retains original source metadata but no separate finish fingerprint. |
+| Current full 64710, core | All seven exact cases passed; case durations total 1203.737 seconds. All 24 originals (22 native and two browser) were inspected, with 17 retained-workflow cross-checks. Source and all three cleanup checks passed. |
+| Current full 64710, assistant | Exact case passed in 639.622 seconds. Seven unique originals and 19 retained-workflow cross-checks were audited. Three logical turns, four real runs/launches, two answers and zero live owned processes were recorded; failure/cancellation stayed stable for 3289/3123 ms. Source and all three cleanup checks passed. |
+| Current full 64710, mentions | Exact case passed in 608.657 seconds. All eleven unique originals (nine native and two peers) were inspected; 98 data/byte/contract checks passed. Read failure persisted for 3272 ms; exact historical targets and separate unsent A/B drafts agree. Source and all four cleanup checks passed. |
+| Current full 64710, correction | Exact case passed in 1551.643 seconds with 15 individually inspected unique originals. Image provenance passed 238 checks; the independent data audit passed 27 correction-record and 54 raw/per-attempt comparisons. Four runs/launches/approvals, two reviews/artifacts, two retained failed/stopped worktrees and zero live owned processes reconcile. Source and all three cleanup checks passed. |
+| Complete current native gate | **PASSED.** The invocation completed 144 unit tests and all ten exact Release UI cases (core 7, assistant 1, mentions 1, correction 1), with no failures/skips/expected failures/unknowns or missing/duplicate cases. All 57 distinct aggregate images were individually reviewed through the suite audits; aggregate bytes, links and captions match. All 13 recorded parent cleanup flags and all source checks passed. |
+| Matching development archive | **PASSED.** Signed Release arm64 iPhoneOS archive passed strict signature, certificate/Team/profile and source checks. All 704 repository entries, 65 iOS snapshot files and 39 product inputs match before/after archive and its isolated snapshot. No physical-device UI or upload occurred. |
+
+The correction scenario uses one UI-created task, four separately approved
+executions, two durable reviews and two immutable artifacts. The failed second
+execution and stopped fourth execution preserve modified/new files. Retry only
+returns the task to Ready; it neither starts a process nor overwrites the retained
+root. Each execution uses a different pre-provisioned instance/worktree, so
+same-instance recovery and repeat execution are not established.
+
+In current full 64710, Keep running preserved the same held PID with zero cancel
+requests or new launches across an 18.470832961-second observation gap. Nineteen
+run-output events advanced the cursor while the task/run/approval/review/artifact
+records stayed unchanged. One Stop addressed the captured run; its PID was absent
+when the actual cancel HTTP response completed. This does not establish PID exit
+before the canonical cancellation event. Stopped and stopped-stable evidence
+remained identical across 3.380175036 seconds. This forced-stop path has no
+graceful-exit receipt. The scenario declared no write leases: zero held leases
+is verified, but acquired-lease release is not exercised. Evidence copies preserve
+the failed/stopped bytes before fixture cleanup; they are not live worktrees left
+behind after teardown.
+
+Every earlier failed report remains failed. The retained history includes four
+original correction attempts (three failed and one passed), five Mac attempts,
+four failed full native attempts, the post-touch-fix crash, six failed
+matched-runtime correction attempts and the assistant-only pre-focus failure.
+The successful fourth original correction subset predates the final native alert and helper changes. The detailed
+[attempt history](apple-execution-correction-attempts.md) retains outcomes and
+immutable report hashes, including both recent assistant failures.
+
+The core timeout was increased only in three native harness files: 30 minutes
+for XCTest execution, 40 for its parent and 42 for aggregation. The later assistant
+helper change aligns the composer before focus and after keyboard appearance,
+using measured navigation/tab/toolbar bounds. Original recordings and accessibility
+geometry justify the composer bounds; the timeout change follows the actual
+20-minute harness cutoff. Select All/Delete/type and business assertions remain
+intact. These changes do not retrospectively pass failed attempts.
+
+The verified 704-file inventory is
+`artifacts/preview-gate/execution-correction/final-source-boundary/matched-runtime-assistant-prefocus-source-files.json`
+(SHA-256 `a25550606a631879944e45f8a1a6309826cfabae15997857ea57f800d93c0376`).
+Against the final Mac inventory, two native product views, four UI-test files and
+three native harness files differ; the other 695 entries, including Mac product
+inputs, are byte-identical. The completed full native gate and matching archive
+share this recorded source boundary; earlier correction 87248 and core 55771
+retain their own older inventories. Mac and final native whole-tree fingerprints
+are not equal. Archive verification is retained in
+`artifacts/preview-gate/execution-correction/archive-verification-2026-10-01T14-24-42-791173Z/verification.json`.
+
+| Principal immutable report | HTML SHA-256 |
+| --- | --- |
+| `apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-10-01T06-15-18-211Z.html` | `51b78f38146be595dab80f5b466c8c2bcb25d5ae0e30e5ec93dd56249ba918d3` |
+| `artifacts/ios/native-suites-2026-10-01T10-34-07-147Z.html` | `6a9b5fc8cf9094b04bc027c3185ab53d1f6b75fcabd6573e8e0dcf9868faa62f` |
+| `artifacts/ios/Artoo-2026-10-01T13-08-32-909Z.html` | `50ec272433cf4c2eac1c0a0c40674032d5aec46a8b0d95cac12a7b0eec2b6ebd` |
+| `artifacts/ios/attempts/2026-10-01T13-09-07-283Z-core/native-ui-2026-10-01T13-09-09-226Z.html` | `18ef8657d8fa53b3cc01007e2055ac9cdcbd4b6b73573b1a0a6b611fb4765ac6` |
+| `artifacts/ios/attempts/2026-10-01T13-09-07-283Z-assistant/native-assistant-2026-10-01T13-30-59-627Z.html` | `e40ae9ac2f9571163add7ac00d7c00b0876456948343bde7453fd231e0284289` |
+| `artifacts/ios/attempts/2026-10-01T13-09-07-283Z-mentions/native-mentions-2026-10-01T13-43-03-442Z.html` | `7f6154ff8e1e6c402f3b58033fbd2855f18783e12de28a93364ed838288d4154` |
+| `artifacts/ios/native-suites-2026-10-01T13-09-07-283Z.html` | `8cdd0d92ea850eab0ca6e94db93ba06f4ea8e264da2cc30ed62a31daf8cdc20e` |
+| `artifacts/ios-device/2026-10-01T14-24-42-929Z/report.html` | `9a27d603e88d602c48986ab6cd35f2578b6e55c98c97717dbeba4ca78f5a929a` |
+
+Current full 64710 retains six nonfatal frame-dimension warnings: three in core
+and one each in assistant, mentions and correction. Earlier warnings remain in
+their original reports. No cause or fix is claimed.
+Inspected viewports have documented scroll/chrome limits; screenshots do not
+independently establish process or server state. These deterministic local-process
+results do not establish live-provider quality, physical-device/TestFlight
+acceptance, Developer ID/notarization/trusted updates, deployed TLS/Google OAuth,
+operator policy or multi-connection PostgreSQL acceptance.
+
+The closed unit report from current session 64710 independently contains exactly
+144 unique passed cases, with zero failures, skips or expected failures. Its
+original source metadata is retained, but it has no separate finish fingerprint.
+The completed suite/aggregate source guards and archive before/after comparisons
+retain the matching boundary. Current audit directories under the execution-correction
+evidence directory are `native-full-prefocus-{unit,core,assistant,mentions}-audit/`,
+`native-full-prefocus-correction-visual-audit/` and
+`native-full-prefocus-final-data-audit/`. The final data audit maps all ten case IDs
+and 57 images; its 5,098 protected originals remained unchanged.
+
+After all native and archive work finished, the generated
+`apps/ios/Configuration/UITests-Info.plist` was restored. At that boundary the
+other 703 entries matched. Applying the final five existing documentation updates
+and the new attempt-history companion leaves all implementation and test sources
+unchanged; the final comparison records 698 matching original inventory entries.
+See `artifacts/preview-gate/execution-correction/delivery-source-reconciliation.json`.
+This milestone packages the validated implementation and its delivery documents.
+Exact-commit hosted acceptance is tracked separately and is not claimed here.
+Earlier hosted run `36810183573` remains failed.

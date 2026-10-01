@@ -1,4 +1,4 @@
-const TARGETS = { core: "ArtooUITests/SharedServerChatUITests", assistant: "ArtooUITests/AssistantConversationUITests", mentions: "ArtooUITests/MentionsUITests" };
+const TARGETS = { core: "ArtooUITests/SharedServerChatUITests", assistant: "ArtooUITests/AssistantConversationUITests", mentions: "ArtooUITests/MentionsUITests", correction: "ArtooUITests/ExecutionCorrectionUITests" };
 const METHODS = Object.freeze({
   core: Object.freeze([
     "testApprovalNeedsMoreInfoSurvivesRelaunchAndCanBeApproved",
@@ -11,6 +11,7 @@ const METHODS = Object.freeze({
   ]),
   assistant: Object.freeze(["testDirectAgentConversationAndRecovery"]),
   mentions: Object.freeze(["testCrossProjectHistoricalMentionReadRetryAndDraftIsolation"]),
+  correction: Object.freeze(["testTaskCorrectionRetainsWorkAndConfirmsExactStop"]),
 });
 const STATUS = { Passed: "passed", Failed: "failed", Skipped: "skipped", "Expected Failure": "expected_failures" };
 const SUMMARY_COUNTS = { total: "totalTestCount", passed: "passedTests", failed: "failedTests", skipped: "skippedTests", expected_failures: "expectedFailures" };
@@ -19,8 +20,8 @@ const emptyCounts = () => ({ total: 0, passed: 0, failed: 0, skipped: 0, expecte
 /** Exact selections only. `all` produces separate invocations, not one
  * longer Xcode run. Callers must also isolate fixtures, xcresults and reports. */
 export function selectUISuites(selection) {
-  if (!["core", "assistant", "mentions", "all"].includes(selection)) throw new Error("UI suite must be exactly core, assistant, mentions or all");
-  return (selection === "all" ? ["core", "assistant", "mentions"] : [selection]).map((suite) => {
+  if (!["core", "assistant", "mentions", "correction", "all"].includes(selection)) throw new Error("UI suite must be exactly core, assistant, mentions, correction or all");
+  return (selection === "all" ? ["core", "assistant", "mentions", "correction"] : [selection]).map((suite) => {
     const expected_case_ids = METHODS[suite].map((method) => `${TARGETS[suite]}/${method}`);
     return { suite, expected_case_ids, only_testing_arguments: expected_case_ids.map((id) => `-only-testing:${id}`) };
   });
@@ -43,7 +44,7 @@ function sourceIdentity(source, issues) {
 }
 
 function inspectSuite(input) {
-  if (!["core", "assistant", "mentions"].includes(input?.suite)) throw new Error("Each xcresult must identify its core, assistant or mentions suite");
+  if (!["core", "assistant", "mentions", "correction"].includes(input?.suite)) throw new Error("Each xcresult must identify its core, assistant, mentions or correction suite");
   const { suite, tests, summary } = input;
   const { expected_case_ids } = selectUISuites(suite)[0];
   const issues = [], cases = [], counts = emptyCounts();

@@ -17,12 +17,13 @@ const core = [
 ];
 const assistant = ["testDirectAgentConversationAndRecovery"];
 const mentions = ["testCrossProjectHistoricalMentionReadRetryAndDraftIsolation"];
-const id = (method) => `ArtooUITests/${mentions.includes(method) ? "MentionsUITests" : assistant.includes(method) ? "AssistantConversationUITests" : "SharedServerChatUITests"}/${method}`;
+const correction = ["testTaskCorrectionRetainsWorkAndConfirmsExactStop"];
+const id = (method) => `ArtooUITests/${correction.includes(method) ? "ExecutionCorrectionUITests" : mentions.includes(method) ? "MentionsUITests" : assistant.includes(method) ? "AssistantConversationUITests" : "SharedServerChatUITests"}/${method}`;
 const source = { commit: "a".repeat(40), branch: "main", working_tree_dirty: true,
   tracked_diff_sha256: "b".repeat(64), untracked_source_sha256: "c".repeat(64),
   untracked_source_complete: true, untracked_source_files: 2 };
-function sample(suite = "core", methods = { core, assistant, mentions }[suite], statuses = {}) {
-  const className = { core: "SharedServerChatUITests", assistant: "AssistantConversationUITests", mentions: "MentionsUITests" }[suite];
+function sample(suite = "core", methods = { core, assistant, mentions, correction }[suite], statuses = {}) {
+  const className = { core: "SharedServerChatUITests", assistant: "AssistantConversationUITests", mentions: "MentionsUITests", correction: "ExecutionCorrectionUITests" }[suite];
   const children = methods.map((method) => ({ name: `${method}()`, nodeType: "Test Case",
     nodeIdentifier: `${className}/${method}()`,
     nodeIdentifierURL: `test://com.apple.xcode/Artoo/ArtooUITests/${className}/${method}`,
@@ -42,14 +43,14 @@ function sample(suite = "core", methods = { core, assistant, mentions }[suite], 
 const caseNodes = (input) => input.tests.testNodes[0].children[0].children[0].children;
 const verify = (input) => verifyUISuiteResults({ selection: input.suite, results: [input] });
 
-test("exact core/assistant/mentions/all selections generate separate method-level invocations", () => {
+test("exact core/assistant/mentions/correction/all selections generate separate method-level invocations", () => {
   assert.deepEqual(selectUISuites("core")[0].expected_case_ids, core.map(id));
   assert.deepEqual(selectUISuites("assistant")[0].only_testing_arguments, [`-only-testing:${id(assistant[0])}`]);
   assert.deepEqual(selectUISuites("mentions")[0].only_testing_arguments, [`-only-testing:${id(mentions[0])}`]);
-  assert.deepEqual(selectUISuites("all").map(({ suite }) => suite), ["core", "assistant", "mentions"]);
-  assert.ok(selectUISuites("all").every((suite) => suite.only_testing_arguments.every((arg) => /^-only-testing:ArtooUITests\/(?:SharedServerChatUITests|AssistantConversationUITests|MentionsUITests)\/test\w+$/.test(arg))));
+  assert.deepEqual(selectUISuites("all").map(({ suite }) => suite), ["core", "assistant", "mentions", "correction"]);
+  assert.ok(selectUISuites("all").every((suite) => suite.only_testing_arguments.every((arg) => /^-only-testing:ArtooUITests\/(?:SharedServerChatUITests|AssistantConversationUITests|MentionsUITests|ExecutionCorrectionUITests)\/test\w+$/.test(arg))));
   for (const selection of [undefined, null, "", " core", "CORE", "core,assistant", "--suite=core", "constructor", ["core"]]) {
-    assert.throws(() => selectUISuites(selection), /exactly core, assistant, mentions or all/);
+    assert.throws(() => selectUISuites(selection), /exactly core, assistant, mentions, correction or all/);
   }
   selectUISuites("core")[0].expected_case_ids.pop();
   assert.equal(selectUISuites("core")[0].expected_case_ids.length, 7);
@@ -72,6 +73,15 @@ test("the mentions contract names its independent XCTest class exactly", () => {
   const swift = readFileSync(new URL("../UITests/MentionsUITests.swift", import.meta.url), "utf8");
   assert.match(swift, /final class MentionsUITests: XCTestCase/);
   assert.deepEqual([...swift.matchAll(/^\s+func (test\w+)\(/gm)].map((match) => match[1]).sort(), mentions);
+});
+
+test("correction requires its own exact case and cannot disappear from the full gate", () => {
+  const swift = readFileSync(new URL("../UITests/ExecutionCorrectionUITests.swift", import.meta.url), "utf8");
+  assert.match(swift, /final class ExecutionCorrectionUITests: XCTestCase/);
+  assert.deepEqual([...swift.matchAll(/^\s+func (test\w+)\(/gm)].map((match) => match[1]).sort(), correction);
+  assert.deepEqual(selectUISuites("correction")[0].only_testing_arguments, [`-only-testing:${id(correction[0])}`]);
+  assert.equal(verify(sample("correction")).passed, true);
+  assert.equal(verifyUISuiteResults({ selection: "all", results: [sample("core"), sample("assistant"), sample("mentions")] }).passed, false);
 });
 
 test("the observed seven-case export passes without counting diagnostic children", () => {
@@ -168,26 +178,26 @@ test("assistant and mentions stay named subsets and all requires every independe
   assert.equal(verifyUISuiteResults({ selection: "all", results: [] }).passed, false);
   assert.equal(verify(sample("mentions")).passed, true);
   assert.equal(verifyUISuiteResults({ selection: "all", results: [sample("core"), sample("assistant")] }).passed, false);
-  const result = verifyUISuiteResults({ selection: "all", results: [sample("core"), sample("assistant"), sample("mentions")] });
-  assert.equal(result.passed, true); assert.equal(result.counts.total, 9); assert.equal(result.suites.length, 3);
+  const result = verifyUISuiteResults({ selection: "all", results: [sample("core"), sample("assistant"), sample("mentions"), sample("correction")] });
+  assert.equal(result.passed, true); assert.equal(result.counts.total, 10); assert.equal(result.suites.length, 4);
 });
 
 test("aggregation rejects source drift, reused bundles and duplicate attempts", () => {
   for (const field of ["commit", "tracked_diff_sha256", "untracked_source_sha256", "untracked_source_files"]) {
     const second = sample("assistant"); second.source[field] = field === "untracked_source_files" ? 3 : "d".repeat(field === "commit" ? 40 : 64);
-    assert.equal(verifyUISuiteResults({ selection: "all", results: [sample(), second, sample("mentions")] }).passed, false, field);
+    assert.equal(verifyUISuiteResults({ selection: "all", results: [sample(), second, sample("mentions"), sample("correction")] }).passed, false, field);
   }
   const second = sample("assistant"); second.result_bundle = sample().result_bundle;
-  assert.equal(verifyUISuiteResults({ selection: "all", results: [sample(), second, sample("mentions")] }).passed, false);
+  assert.equal(verifyUISuiteResults({ selection: "all", results: [sample(), second, sample("mentions"), sample("correction")] }).passed, false);
   const failedAttempt = sample("core", core, { [core[0]]: "Failed" }); failedAttempt.result_bundle = "/retained/core-attempt-0.xcresult";
-  const attempts = verifyUISuiteResults({ selection: "all", results: [failedAttempt, sample(), sample("assistant"), sample("mentions")] });
-  assert.equal(attempts.passed, false); assert.equal(attempts.suites.length, 4, "A failed attempt must not disappear");
+  const attempts = verifyUISuiteResults({ selection: "all", results: [failedAttempt, sample(), sample("assistant"), sample("mentions"), sample("correction")] });
+  assert.equal(attempts.passed, false); assert.equal(attempts.suites.length, 5, "A failed attempt must not disappear");
   const otherBranch = sample("assistant"); otherBranch.source.branch = "another-checkout"; otherBranch.source.working_tree_dirty = false;
-  assert.equal(verifyUISuiteResults({ selection: "all", results: [sample(), otherBranch, sample("mentions")] }).passed, true);
+  assert.equal(verifyUISuiteResults({ selection: "all", results: [sample(), otherBranch, sample("mentions"), sample("correction")] }).passed, true);
 });
 
 test("invalid API selections cannot silently fall back to core", () => {
   assert.throws(() => verifyUISuiteResults({ selection: "all", results: null }), /must be an array/);
   assert.throws(() => verifyUISuiteResults({ selection: "core", results: [{ suite: "all" }] }), /Each xcresult/);
-  assert.throws(() => verifyUISuiteResults({ results: [] }), /exactly core, assistant, mentions or all/);
+  assert.throws(() => verifyUISuiteResults({ results: [] }), /exactly core, assistant, mentions, correction or all/);
 });

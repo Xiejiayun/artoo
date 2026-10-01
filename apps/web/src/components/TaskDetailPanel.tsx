@@ -11,6 +11,7 @@ import { RunUsageSummary } from "./RunUsageSummary.js";
 import { TaskActions } from "./TaskActions.js";
 import { CancelRun } from "./CancelRun.js";
 import { TaskDependencies } from "./TaskDependencies.js";
+import { ActionError } from "./ActionError.js";
 
 function DetailSkeleton(): React.ReactNode {
   return (
@@ -50,7 +51,7 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
   if (snapshot.isLoading) {
     return <DetailSkeleton />;
   }
-  if (snapshot.isError || snapshot.data === undefined) {
+  if (snapshot.data === undefined) {
     return (
       <ErrorState
         title="Failed to load detail"
@@ -72,6 +73,7 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
         <h2 className="t-h2">{task.title}</h2>
         <StatusBadge status={task.status} />
       </header>
+      {snapshot.isError && <div className="u-stack-sm"><ActionError error={snapshot.error} /><Button size="sm" onClick={() => void snapshot.refetch()}>Retry loading task details</Button></div>}
 
       <dl className="task-detail__meta">
         <div className="task-detail__meta-row">
@@ -109,7 +111,7 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
         <h3 className="task-detail__section-title">Runs</h3>
         <RunTimeline runs={runs} outputsByRun={outputsByRun} renderUsage={(run) => <RunUsageSummary run={run} />} />
       </section>
-      <ArtifactReview key={`review:${task.id}`} task={task} artifacts={artifacts} versionCursor={snapshot.data.version_cursor} />
+      <ArtifactReview key={`review:${task.id}`} task={task} artifacts={artifacts} reviews={snapshot.data.reviews} versionCursor={snapshot.data.version_cursor} />
       <TaskDependencies key={task.id} task={task} />
     </div>
   );

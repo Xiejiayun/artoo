@@ -24,15 +24,17 @@ export function RunTimeline({ runs, outputsByRun = {}, renderUsage }: RunTimelin
 
   return (
     <ol aria-label="Run timeline" className="run-timeline">
-      {ordered.map((run, index) => {
+      {ordered.map((run) => {
         const output = outputsByRun[run.id] ?? [];
         const failed = run.failure_reason !== null && run.failure_reason !== undefined;
         return (
-          <li key={run.id} className="run-entry" data-status={run.status}>
+          <li key={run.id} className="run-entry" data-status={run.status} data-run-id={run.id} aria-label={`Run ${run.id}`}>
             <header className="run-header">
-              <span className="run-label">Run {ordered.length - index}</span>
+              <span className="run-label">Run</span>
               <RunStatusBadge status={run.status} />
             </header>
+            <code className="run-id">{run.id}</code>
+            <time className="t-subtle" dateTime={run.created_at} title={run.created_at}>{new Date(run.created_at).toLocaleString()}</time>
             {failed ? <p className="run-failure">{run.failure_reason}</p> : null}
             {renderUsage?.(run)}
             {output.length > 0 ? (

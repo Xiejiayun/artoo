@@ -409,7 +409,7 @@ describe("artood node client (worktree materialization, task #19)", () => {
   }
 
   // An adapter whose start() always throws, to exercise the post-materialization
-  // failure path (the worktree must be cleaned up).
+  // failure path (the worktree must be retained, even without a returned handle).
   const failingStartAdapter: RuntimeAdapter = {
     runtimeId: "mock-coder",
     async start() {
@@ -573,7 +573,7 @@ describe("artood node client (worktree materialization, task #19)", () => {
     expect(git.calls).toEqual([]);
   });
 
-  it("removes the worktree if the adapter fails to start after materialization", async () => {
+  it("retains the worktree with recovery identity if the adapter rejects startup after materialization", async () => {
     const channel = createInProcessChannel();
     const git = fakeGit();
     const client = createNodeClient({
@@ -598,9 +598,15 @@ describe("artood node client (worktree materialization, task #19)", () => {
 
     expect(received.filter(isAck)[0]).toMatchObject({
       status: "rejected",
-      error_code: "process_start_failed"
+      error_code: "process_start_failed",
+      message: expect.stringContaining("spawn failed\nWorktree retained for recovery: "),
     });
-    expect(git.calls).toEqual([addCall, removeCall]);
+    const rejectedAck = received.filter(isAck)[0]!;
+    expect(JSON.parse(rejectedAck.message!.split("Worktree retained for recovery: ")[1]!)).toEqual({
+      run_id: runStartCommand.payload.run_id, task_id: runStartCommand.payload.task_id,
+      workspace_root: "C:/ws/run_1", workspace_branch: "task/run_1", outcome: "process_start_failed",
+    });
+    expect(git.calls).toEqual([addCall]);
   });
 
   it("runs an ordinary (branchless) workspace with no git calls", async () => {

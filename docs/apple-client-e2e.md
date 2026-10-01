@@ -33,15 +33,23 @@ Set `ARTOO_CHROMIUM_CHANNEL=chrome` to use an installed Chrome for browser
 peers when the bundled browser is unavailable. Reports record the actual
 browser version; the Mac client under test remains packaged Electron.
 
-The full iOS gate builds and runs unit tests, then runs separate core and
-direct-agent and mentions UI suites. Each uses its own fixture, XCTest selection and
+The full iOS gate builds and runs unit tests, then runs separate core,
+direct-agent, mentions and execution-correction UI suites. Each uses its own fixture, XCTest selection and
 evidence directory. To run one UI subset while diagnosing it:
 
 ```sh
 npm run verify:ios:core
 npm run verify:ios:assistant
 npm run verify:ios:mentions
+npm run verify:ios:correction
 ```
+
+The expected complete native contract is seven core cases plus one each for
+assistant, mentions and correction, alongside the unit gate. A terminal failed
+aggregate remains failed even when its completed earlier suites passed. The core
+XCTest execution budget is 30 minutes, its build/UI parent is 40 minutes, and the
+aggregate allows that parent 42 minutes. These are bounded harness deadlines;
+exact workflow and case-inventory assertions still determine success.
 
 Subset success does not certify the full gate. Keep source files, documentation
 and Git state unchanged during each run: original source fingerprints are
@@ -67,6 +75,7 @@ npm run e2e:auth
 | iOS core UI | `artifacts/ios/attempts/<timestamp>-core/native-ui-<timestamp>.html` | Real pairing, approval recovery across relaunch, explicit goal cancellation, daemon state, discussion/plan acceptance, cross-client threads, and native task creation through approved execution, uploaded artifact preview and human acceptance. |
 | iOS direct-agent UI | `artifacts/ios/attempts/<timestamp>-assistant/native-assistant-<timestamp>.html` | Agent choice, offline waiting/relaunch/draft, automatic dispatch, explicit failed-request Retry, prior-answer context, linked run details and running-request Cancel. Read the actual result: failed attempts do not establish the whole scenario. |
 | iOS mentions UI | `artifacts/ios/attempts/<timestamp>-mentions/native-mentions-<timestamp>.html` | Late-created project, two exact historical replies sent by an independent Web peer, device-scoped pre-handler 503, explicit read retry, unread sentinel and A/B drafts across project changes/relaunch. Nine native and two sender captures are required; implemented scope is not a claim of a successful run. |
+| iOS execution correction | `artifacts/ios/attempts/<timestamp>-correction/native-correction-<timestamp>.html` | UI-created task, four approved isolated-worktree executions, two durable reviews, artifact provenance, failed-work recovery, Retry and exact-run Stop/Keep running. Fifteen named captures and independent process/file observations are required. |
 | Native UI runner | `artifacts/ios/attempts/<timestamp>-<suite>/ArtooUI-<timestamp>.html` | Xcode command results, exact selected-case contract and approved named XCTest screenshots. Earlier single-suite reports remain at the original top-level paths. |
 | Browser and authentication | `apps/web/playwright-report/<suite>-<timestamp>/index.html` | Test results, deliberate workflow screenshots and browser/source metadata. |
 | Local backup/restore | `artifacts/recovery/<timestamp>/report.html` | Production persistent server, real worker artifact upload, offline CLI backup/restore, credential continuity, exact bytes, idempotency and restored Web download. |
@@ -79,9 +88,10 @@ launch explicitly says that no screenshots or visual verification are available.
 
 Raw XCTest bundles and automatic failure attachments remain in the local
 `artifacts/ios` directory for diagnosis. They can contain disposable fixture
-credentials and are not the shareable report. CI uploads HTML, summary JSON
-and deliberate browser screenshots; it does not automatically upload raw
-XCTest bundles or attachment exports. Public HTML accepts only reviewed
+credentials and are not the shareable report. CI uploads HTML, summary JSON,
+deliberate screenshots, test-result exports and correction evidence. Failed raw
+XCTest bundles are a separate diagnostic artifact for trusted recipients under
+the repository's artifact access rules. Public HTML accepts only reviewed
 workflow screenshot names, excluding onboarding failure screenshots.
 The assistant and mentions helpers also retain their newly named guarded
 failure scene after checking that credential controls are absent. These
@@ -115,6 +125,23 @@ The real POSIX worker tests compile their temporary child bundle directly from
 the current daemon, domain and protocol sources. They require no existing
 package `dist` directories; a clean-checkout regression verifies that this
 gate cannot accidentally test stale shared code from a previous build.
+
+The correction fixtures use four independent executions of one task. The first
+produces an artifact; the second reads the actual requested changes, writes
+files and fails; explicit Retry returns the task to Ready; a separately approved
+third execution produces a new artifact. A second review leads to a held fourth
+process. Keep running sends no cancellation; Stop targets that exact run and
+retains written files. Read-only verification binds actual context packs,
+approvals, artifact hashes, worktrees and process identities to each run. The
+normal UI supplies no declared write paths, so this proves zero held leases,
+not release of an acquired lease. Failed, cancelled, undelivered and materialized startup-failure isolated
+worktrees are retained. Successfully delivered worktrees are still deleted;
+preserving or explicitly transferring their non-artifact files remains a separate
+gap. Each correction execution uses a different instance/root, so this scenario
+does not establish same-instance recovery or safe root reuse. Its forced-stop
+path has no graceful-exit receipt: retained observations show the held PID absent
+when the real cancel HTTP response finishes. Evidence copies are saved before
+fixture teardown; they are not live worktrees retained after cleanup.
 
 The recovery gate rebuilds the production packages, then uses only isolated
 temporary storage. It checks online-backup refusal, offline backup hashes,
@@ -157,3 +184,46 @@ after reconnection. The next coverage priorities are member enrollment and
 permission failures, and a compact/iPad layout matrix. Each
 report's actual result determines which scenarios passed; a failed six-scenario
 run does not certify the entire native task flow.
+
+
+## Current execution-correction environment and evidence
+
+The current matching simulator is the task-owned iPhone 16 named
+`iPhone Artoo Correction E2E 26.5`, UDID
+`F5CC9868-D23E-424B-8ADA-A917EF84DDFD`, running iOS 26.5 with Xcode/SDK 26.5.
+It was selected explicitly with `ARTOO_IOS_SIMULATOR_UDID`; earlier iOS 18.2 data
+was preserved and diagnostics remain enabled. This local choice does not change
+the gate's supported-runtime selection rule or prove physical-device coverage.
+
+Final Mac evidence is
+`apps/desktop/release/mac-dmg-smoke-artifacts/history/macos-dmg-2026-10-01T06-15-18-211Z.html`.
+The earlier audited correction-only pass is
+`artifacts/ios/native-suites-2026-10-01T10-34-07-147Z.html`.
+
+Current full invocation 64710 has these independently audited closed results:
+
+| Stage | Closed evidence |
+| --- | --- |
+| Unit | `artifacts/ios/Artoo-2026-10-01T13-08-32-909Z.html`: 144 unique passes. Original source metadata is retained, without a separate finish fingerprint. |
+| Core | `artifacts/ios/attempts/2026-10-01T13-09-07-283Z-core/native-ui-2026-10-01T13-09-09-226Z.html`: seven cases, 1203.737 seconds, 24 inspected originals. |
+| Assistant | `artifacts/ios/attempts/2026-10-01T13-09-07-283Z-assistant/native-assistant-2026-10-01T13-30-59-627Z.html`: one case, 639.622 seconds, seven inspected originals. |
+| Mentions | `artifacts/ios/attempts/2026-10-01T13-09-07-283Z-mentions/native-mentions-2026-10-01T13-43-03-442Z.html`: one case, 608.657 seconds, eleven inspected originals. |
+| Correction | `artifacts/ios/attempts/2026-10-01T13-09-07-283Z-correction/native-correction-2026-10-01T13-54-29-598Z.html`: one case, 1551.643 seconds, fifteen inspected originals. |
+| Complete UI aggregate | `artifacts/ios/native-suites-2026-10-01T13-09-07-283Z.html`: all ten exact cases passed with 57 distinct, reviewed original images. |
+| Matching development archive | `artifacts/ios-device/2026-10-01T14-24-42-929Z/report.html`: Release arm64 archive, strict signature/certificate/Team/profile and matching source verified. |
+
+The completed full gate, all UI parent/child source boundaries and archive
+before/after source agree with the verified `a255…` inventory. All 13 recorded
+parent cleanup flags passed. Archive checks match all 704 repository entries,
+65 iOS snapshot files and 39 product inputs. This is development-archive evidence,
+with no physical-device UI or upload.
+
+Independent audits are under `artifacts/preview-gate/execution-correction/`:
+`native-full-prefocus-{unit,core,assistant,mentions}-audit/`,
+`native-full-prefocus-correction-visual-audit/`, `native-full-prefocus-final-data-audit/`
+and `archive-verification-2026-10-01T14-24-42-791173Z/verification.json`.
+The [milestone ledger](apple-client-milestones.md) records hashes, source differences,
+retained failures and six unresolved nonfatal frame warnings. After all Xcode work
+ended, only the generated UI-test plist was restored; 703 other inventory entries
+still match. Final documentation application, commit/main push and hosted acceptance
+for the actual new commit remain pending.

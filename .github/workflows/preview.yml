@@ -41,9 +41,8 @@ jobs:
           retention-days: 14
   ios:
     runs-on: macos-15
-    # Three independently verified UI suites plus cold Xcode/unit builds.
-    # The preceding two-suite run required about 33 minutes on this runner.
-    timeout-minutes: 60
+    # Four independently verified UI suites plus cold Xcode/unit builds.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -68,8 +67,17 @@ jobs:
             artifacts/ios/attempts/*/*.json
             artifacts/ios/attempts/*/*.html
             artifacts/ios/attempts/*/*.png
+            artifacts/ios/attempts/*/diagnostics/*.json
+            artifacts/ios/attempts/*/correction-evidence/
           if-no-files-found: ignore
           retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ios-failed-xcresult-diagnostics
+          path: artifacts/ios/attempts/*/*.xcresult/
+          if-no-files-found: ignore
+          retention-days: 7
   mac-desktop:
     runs-on: macos-15
     timeout-minutes: 30

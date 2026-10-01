@@ -10,7 +10,7 @@ UI coverage.
 | --- | --- | --- | --- |
 | Identity and devices | Pairing, saved session/relaunch, member permissions, owner Web revocation and fresh member pairing | Pairing, execution enrollment, encrypted credentials, sign-out and restart | Native creation of a personal pairing code, authorized enrollment and native Revoke action |
 | Inbox approvals | Needs-information, restored draft/history and approval; task execution gate | Needs-information, rejection, replacement approval and assignment gate | Native rejection; additional approval types |
-| Task execution | Create, execution approval, readable manual assignment with colliding IDs, offline refusal/retry, actual subprocess/artifact, Quick Look and acceptance; direct-conversation task/run detail | Success chain, approval history, artifact bytes/review and app/server restart; direct-conversation linked task | Request changes, failed task execution retry, running Stop confirmation, manual dependencies, filters and standalone run history |
+| Task execution | Create, execution approval, readable manual assignment with colliding IDs, offline refusal/retry, actual subprocess/artifact, Quick Look and acceptance; direct-conversation task/run detail; durable Request changes across relaunch, actual feedback in later execution, failed-run Retry, artifact versions, explicit Keep running/exact Stop and default-off isolated worktree selection | Success chain, approval history, artifact bytes/review and app/server restart; direct-conversation linked task; the same four-run correction/retained-failure/Stop scenario through installed UI | Successful-work preservation and discoverable recovery, safe same-instance repeat execution, manual dependencies, filters and standalone run history |
 | Team conversation | Root/thread messages, independent Web peer, background catch-up and relaunch | Historical thread navigation, independent Web mentions and separate thread drafts across project changes/reload | Native channel creation/history, unconfirmed-send UI recovery and installed-Mac ordinary root/reply submission |
 | Direct agent requests | Exact colliding-agent selection, offline waiting, relaunch/draft, automatic recovery, failed-request Retry, actual prior-answer context, linked task/run identity and UI Cancel with real PID exit | Installed UI channel/agent creation, Settings worker stop/start, waiting/automatic recovery, failed-request Retry, two actual answers, linked task and Cancel with real PID exit | Long/multiline request disclosure, threaded requests and concurrent requests; optional live `all` helper has no successful real-provider result |
 | Decisions, handoffs and blockers | Not yet covered by native UI | Not yet covered by package smoke | Create/accept decision; create/accept/complete handoff; create/resolve blocker. Existing Web browser scenarios cover these product paths separately |
@@ -30,6 +30,10 @@ Primary source references:
 - [Native historical mentions](../apps/ios/UITests/MentionsUITests.swift),
   [installed historical mentions](../apps/desktop/scripts/installed-mac-mentions.mjs)
   and the [independent Web sender](../scripts/fixtures/mentions-scenario.mjs).
+- [Native correction](../apps/ios/UITests/ExecutionCorrectionUITests.swift),
+  [installed correction](../apps/desktop/scripts/installed-mac-correction.mjs)
+  and the [shared four-run fixture](../scripts/fixtures/execution-correction-scenario.mjs). The milestone ledger
+  records actual correction passes and their original-image/data audits.
 - Native [collaboration](../apps/ios/Sources/Views/CollaborationView.swift),
   [team/devices](../apps/ios/Sources/Views/TeamViews.swift),
   [workspace/goals](../apps/ios/Sources/Views/WorkspaceViews.swift) and
@@ -47,13 +51,26 @@ Primary source references:
    100 entries and failed project-access refresh with explicit Retry. Historical
    thread targets, read Retry and draft isolation now have passing local native
    and installed-Mac evidence in the milestone ledger.
-2. **Execution correction and stopping.** Request changes after reviewing an
-   artifact, preserve feedback, retry a failed execution, and dismiss then
-   confirm stopping an active run. Check exact run counts, artifact retention,
-   approval consumption and absence of duplicate subprocesses.
+2. **Successful-work preservation and repeat execution.** Preserve or explicitly
+   transfer successful implementation files before cleanup, expose recoverable
+   locations, and exercise safe retry/reuse on the same instance. Current correction
+   passes use four distinct worktrees and preserve failed/stopped work; they do not
+   establish this next scope. Isolated next-stage patches remain unapplied.
+3. **Native device management.** Exercise personal pairing-code creation, authorized
+   enrollment and Revoke through the actual native UI. Isolated device patches are
+   outside current verified coverage.
 
 Each scenario must retain a separate HTML report with actual client captures,
 including failed attempts. Server reads may verify identities and counts;
 they must not replace the user actions under test. Distribution, real-provider
 quality, deployed identity and operator policy remain separate
 [release gates](apple-release-readiness.md).
+
+Current execution-correction local acceptance is complete for the recorded scope:
+final installed Mac passed 21 checks; full native 64710 passed 144 units and all
+ten cases (core 7/assistant 1/mentions 1/correction 1), with 24/7/11/15 individually
+inspected originals and 57 unique aggregate images. The matching signed arm64
+development archive passed. The milestone ledger records exact reports, independent
+audits, source boundaries and retained failures. Successfully delivered worktree
+preservation and same-instance recovery remain separate unapplied work; local
+acceptance does not establish the external commercial release gates.

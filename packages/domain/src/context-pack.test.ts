@@ -20,4 +20,34 @@ describe("ContextPack", () => {
     const result = ContextPackSchema.safeParse({ ...validPack, policy: undefined });
     expect(result.success).toBe(false);
   });
+
+  const reviewFeedback = {
+    version: 1,
+    entries: [{
+      event_id: "evt_review", position: 42, task_id: "task_1",
+      actor: { type: "user", id: "user_reviewer" },
+      occurred_at: "2026-10-01T00:00:00.000Z", comment: "  Fix 修正\n\twithout trimming  ",
+    }],
+  };
+
+  it("preserves versioned review feedback with exact text and event provenance", () => {
+    const pack = { ...validPack, review_feedback: reviewFeedback };
+    expect(ContextPackSchema.parse(pack)).toEqual(pack);
+  });
+
+  it.each([{ artifact_ids: null }, { artifact_ids: [] }, { artifact_ids: ["artifact_first"] }])("preserves known or legacy artifact attribution: %j", ({ artifact_ids }) => {
+    const pack = { ...validPack, review_feedback: { ...reviewFeedback,
+      entries: [{ ...reviewFeedback.entries[0], artifact_ids }] } };
+    expect(ContextPackSchema.parse(pack)).toEqual(pack);
+  });
+
+  it.each([
+    { event_id: "" }, { position: 0 }, { task_id: "" }, { actor: { type: "user", id: "" } },
+    { occurred_at: "" }, { comment: " \n\t" },
+  ])("rejects review feedback with invalid provenance or empty content: %j", (override) => {
+    expect(ContextPackSchema.safeParse({
+      ...validPack,
+      review_feedback: { ...reviewFeedback, entries: [{ ...reviewFeedback.entries[0], ...override }] },
+    }).success).toBe(false);
+  });
 });

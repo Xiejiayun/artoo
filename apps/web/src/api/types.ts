@@ -22,6 +22,7 @@ import type {
   Run,
   SkillInstall,
   Task,
+  TaskReview,
   AuditBundleExport,
   TaskAuditBundle,
 } from "@artoo/domain";
@@ -54,6 +55,8 @@ export interface TaskSnapshot {
   runs: Run[];
   approvals: Approval[];
   artifacts: Artifact[];
+  /** Absent on older servers that do not expose durable review history. */
+  reviews?: TaskReview[];
 }
 
 export interface CreateTaskResponse {

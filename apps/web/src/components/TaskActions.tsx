@@ -44,9 +44,11 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
   const commands = useCommands();
   const queryClient = useQueryClient();
   const [assignee, setAssignee] = useState("");
+  const [branchBacked, setBranchBacked] = useState(false);
   const [approvalSummary, setApprovalSummary] = useState("");
   const [approvalRisk, setApprovalRisk] = useState<"low" | "medium" | "high">("medium");
   const approvalReasonId = useId();
+  const worktreeHelpId = useId();
   const approvalBlockReason = executionApprovalBlockReason(task.id, approvals);
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(), enabled: task.status === "ready" });
 
@@ -65,7 +67,8 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
   const assign = useMutation({
     mutationFn: () => {
       const key = newIdempotencyKey();
-      return commands.submit(() => api.assignTask(task.id, assignee ? { mode: "manual", agent_instance_id: assignee } : { mode: "auto" }, key), { key });
+      const body = { ...(assignee ? { mode: "manual" as const, agent_instance_id: assignee } : { mode: "auto" as const }), ...(branchBacked ? { branch_backed: true } : {}) };
+      return commands.submit(() => api.assignTask(task.id, body, key), { key });
     },
     onSuccess: invalidate,
   });
@@ -98,6 +101,8 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
       ) : null}
       {task.status === "ready" ? (
         <><Select label="Assignment" value={assignee} onChange={(event) => setAssignee(event.target.value)} disabled={busy}><option value="">Automatic selection</option>{bootstrap.data?.agent_instances.filter((instance) => instance.status !== "disabled").map((instance) => <option key={instance.id} value={instance.id}>{bootstrap.data.agents.find((agent) => agent.id === instance.agent_id)?.display_name ?? instance.id} · {instance.runtime}</option>)}</Select>
+        <div className="assignment-worktree u-stack-sm"><label><input type="checkbox" checked={branchBacked} onChange={(event) => setBranchBacked(event.target.checked)} disabled={busy} aria-describedby={worktreeHelpId} /> Use an isolated Git worktree</label>
+          <p className="t-subtle" id={worktreeHelpId}>Requires a Git repository configured on the execution computer and an unused workspace path. Use a different workspace when previous failed or cancelled work is retained.</p></div>
         <Button variant="primary" loading={assign.isPending} disabled={busy || !!approvalBlockReason} aria-describedby={approvalBlockReason ? approvalReasonId : undefined} onClick={() => assign.mutate()}>
           Assign
         </Button>

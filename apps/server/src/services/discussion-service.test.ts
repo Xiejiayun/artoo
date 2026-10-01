@@ -60,6 +60,7 @@ describe("bounded agent discussion and reviewable task decomposition", () => {
     const secondRun = (await server.db.db.select().from(runs).where(eq(runs.id, second.runId!)))[0]!;
     const pack = (await server.db.db.select().from(contextPacks).where(eq(contextPacks.id, secondRun.contextPackId!)))[0]!.payload as any;
     expect(pack.policy).toMatchObject({ execution_mode: "discussion", filesystem_write_scope: [] });
+    expect(pack).not.toHaveProperty("review_feedback");
     expect(pack.conversation.messages.some((message: any) => message.body === "Design proposal: implement the API first.")).toBe(true);
     expect(pack.conversation.thread_root_id).toBe(discussion.thread_root_id);
     await restarted.pump();

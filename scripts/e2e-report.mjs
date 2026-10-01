@@ -95,17 +95,35 @@ const nativeMentionsImages = [
   "Native mentions project A draft restored",
   "Native mentions project B draft restored after relaunch",
 ];
-const nativeWorkflowImages = [...nativeCoreImages, ...nativeAssistantImages, ...nativeMentionsImages];
+const nativeCorrectionImages = [
+  "Native correction initial artifact details",
+  "Native correction initial patch in Quick Look",
+  "Native correction feedback after relaunch",
+  "Native correction failed run",
+  "Native correction retained initial artifact after failure",
+  "Native correction ready after explicit Retry",
+  "Native correction original and corrected artifacts",
+  "Native correction corrected patch in Quick Look",
+  "Native correction second feedback",
+  "Native correction exact Stop confirmation",
+  "Native correction kept running",
+  "Native correction cancelled task",
+  "Native correction retained first review after Stop",
+  "Native correction retained second review after Stop",
+  "Native correction retained artifacts after Stop",
+];
+const nativeWorkflowImages = [...nativeCoreImages, ...nativeAssistantImages, ...nativeMentionsImages, ...nativeCorrectionImages];
 // These two XCTest helpers explicitly refuse captures whenever onboarding or
 // generated pairing-code controls exist. Retain their controlled failure
 // scene for CI diagnosis, without accepting Xcode's automatic failure images
 // or counting a diagnostic as a required successful workflow screenshot.
-const nativeDiagnosticImages = ["Native assistant guarded failure diagnostics", "Native mentions guarded failure diagnostics"];
+const nativeDiagnosticImages = ["Native assistant guarded failure diagnostics", "Native mentions guarded failure diagnostics", "Native correction guarded failure diagnostics"];
 export function expectedNativeScreenshots(suite) {
   if (suite === "core") return [...nativeCoreImages];
   if (suite === "assistant") return [...nativeAssistantImages];
   if (suite === "mentions") return [...nativeMentionsImages];
-  throw new Error("Native screenshot scope must be core, assistant or mentions");
+  if (suite === "correction") return [...nativeCorrectionImages];
+  throw new Error("Native screenshot scope must be core, assistant, mentions or correction");
 }
 export function readXCTestScreenshots(directory) {
   let manifest, canonicalDirectory;

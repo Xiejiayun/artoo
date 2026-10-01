@@ -6,6 +6,7 @@ import {
   artifacts,
   computers,
   effortProfiles,
+  eventLog,
   modelProfiles,
   organizations,
   projects,
@@ -24,14 +25,15 @@ import {
   type ModelProfile,
   type Room,
   type Task,
+  type TaskReview,
 } from "@artoo/domain";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { effectiveTeamRole } from "../auth/request-auth.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
-import { currentTaskVersion } from "./sync-service.js";
+import { listTaskReviews } from "./review-history-service.js";
 import {
   mapAgent,
   mapAgentInstance,
@@ -225,6 +227,7 @@ export interface TaskSnapshot {
   runs: ReturnType<typeof mapRun>[];
   approvals: ReturnType<typeof mapApproval>[];
   artifacts: ReturnType<typeof mapArtifact>[];
+  reviews: TaskReview[];
   /**
    * Task-scoped optimistic-concurrency version (#27 v2-B slice 2): the task's
    * highest `event_log.position`. A client that hydrated this snapshot sends it
@@ -235,33 +238,39 @@ export interface TaskSnapshot {
   version_cursor: number;
 }
 
-/** GET /api/v1/tasks/:id — task + room + runs[] + approvals[] + artifacts[]. */
+/** GET /api/v1/tasks/:id — one consistent task, review and artifact snapshot. */
 export async function getTaskSnapshot(ctx: ServerContext, id: string): Promise<TaskSnapshot> {
-  const db = ctx.db.db;
-  const taskRow = (
-    await db
-      .select()
-      .from(tasks)
-      .where(and(eq(tasks.id, id), eq(tasks.organizationId, ctx.organizationId)))
-  )[0];
-  if (taskRow === undefined) {
-    throw AppError.notFound(`task not found: ${id}`, { task_id: id });
-  }
-  const task = mapTask(taskRow);
-  const roomRow =
-    task.room_id != null
-      ? (await db.select().from(rooms).where(eq(rooms.id, task.room_id)))[0]
-      : undefined;
-  const runRows = await db.select().from(runs).where(eq(runs.taskId, id));
-  const approvalRows = await db.select().from(approvals).where(eq(approvals.taskId, id));
-  const artifactRows = await db.select().from(artifacts).where(eq(artifacts.taskId, id));
+  return ctx.db.db.transaction(async (db) => {
+    const taskRow = (
+      await db
+        .select()
+        .from(tasks)
+        .where(and(eq(tasks.id, id), eq(tasks.organizationId, ctx.organizationId)))
+    )[0];
+    if (taskRow === undefined) {
+      throw AppError.notFound(`task not found: ${id}`, { task_id: id });
+    }
+    const task = mapTask(taskRow);
+    const roomRow =
+      task.room_id != null
+        ? (await db.select().from(rooms).where(and(eq(rooms.id, task.room_id), eq(rooms.organizationId, ctx.organizationId))))[0]
+        : undefined;
+    const runRows = await db.select().from(runs).where(and(eq(runs.taskId, id), eq(runs.organizationId, ctx.organizationId)));
+    const approvalRows = await db.select().from(approvals).where(and(eq(approvals.taskId, id), eq(approvals.organizationId, ctx.organizationId)));
+    const artifactRows = await db.select().from(artifacts).where(and(eq(artifacts.taskId, id), eq(artifacts.organizationId, ctx.organizationId)));
+    const reviews = await listTaskReviews(ctx, db, id, task.project_id);
+    const [version] = await db.select({ position: eventLog.position }).from(eventLog)
+      .where(and(eq(eventLog.organizationId, ctx.organizationId), eq(eventLog.taskId, id)))
+      .orderBy(desc(eventLog.position)).limit(1);
 
-  return {
-    task,
-    room: roomRow !== undefined ? mapRoom(roomRow) : null,
-    runs: runRows.map(mapRun),
-    approvals: approvalRows.map(mapApproval),
-    artifacts: artifactRows.map(mapArtifact),
-    version_cursor: await currentTaskVersion(ctx, id),
-  };
+    return {
+      task,
+      room: roomRow !== undefined ? mapRoom(roomRow) : null,
+      runs: runRows.map(mapRun),
+      approvals: approvalRows.map(mapApproval),
+      artifacts: artifactRows.map(mapArtifact),
+      reviews,
+      version_cursor: version?.position ?? 0,
+    };
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }

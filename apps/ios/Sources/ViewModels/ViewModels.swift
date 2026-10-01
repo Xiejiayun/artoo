@@ -219,6 +219,8 @@ public final class TaskDetailViewModel: ObservableObject {
     @Published public private(set) var state: ViewState<TaskSnapshot> = .idle
     @Published public private(set) var actionInFlight = false
     @Published public private(set) var actionError: String?
+    @Published public var reviewComment = ""
+    @Published public private(set) var stopConfirmation: Run?
 
     public let taskId: String
     private let client: ApiClientProtocol
@@ -233,8 +235,13 @@ public final class TaskDetailViewModel: ObservableObject {
         do {
             let snapshot = try await client.getTask(taskId: taskId)
             state = .loaded(snapshot)
+            if let captured = stopConfirmation,
+               !snapshot.runs.contains(where: { $0.id == captured.id && $0.canStop }) {
+                stopConfirmation = nil
+            }
         } catch {
             state = .failed(describe(error))
+            stopConfirmation = nil
         }
     }
 
@@ -244,26 +251,58 @@ public final class TaskDetailViewModel: ObservableObject {
     /// Returns whether the server accepted assignment. A later status-read
     /// failure remains in state rather than changing the command outcome.
     @discardableResult
-    public func assign(mode: String = "auto", agentInstanceId: String? = nil) async -> Bool {
+    public func assign(mode: String = "auto", agentInstanceId: String? = nil, branchBacked: Bool? = nil) async -> Bool {
         await run {
             try await self.client.assign(
                 taskId: self.taskId,
-                request: AssignRequest(mode: mode, agentInstanceId: agentInstanceId)
+                request: AssignRequest(mode: mode, agentInstanceId: agentInstanceId, branchBacked: branchBacked)
             )
         }
     }
 
-    public func review(accept: Bool, comment: String? = nil) async {
-        _ = await run {
-            try await self.client.review(
-                taskId: self.taskId,
-                request: ReviewRequest(outcome: accept ? "accepted" : "changes_requested", comment: comment)
+    /// A confirmed command stays accepted even if its subsequent read fails.
+    /// A rejected command refreshes the snapshot without losing its own error.
+    @discardableResult
+    public func review(accept: Bool, comment: String? = nil) async -> Bool {
+        guard !actionInFlight else { return false }
+        guard let snapshot = state.value, snapshot.task.status == .review else {
+            actionError = "Load the latest task in Review before submitting feedback."
+            return false
+        }
+        actionInFlight = true; actionError = nil
+        defer { actionInFlight = false }
+        do {
+            _ = try await client.review(
+                taskId: taskId,
+                request: ReviewRequest(outcome: accept ? "accepted" : "changes_requested", comment: comment, baseVersion: snapshot.versionCursor)
             )
+            if reviewComment == (comment ?? "") { reviewComment = "" }
+            await load()
+            return true
+        } catch {
+            actionError = describe(error)
+            await load()
+            return false
         }
     }
+
+    public func requestStop(runId: String) {
+        guard !actionInFlight else { return }
+        stopConfirmation = state.value?.runs.first { $0.id == runId && $0.canStop }
+    }
+
+    public func keepRunning() { stopConfirmation = nil }
 
     public func cancel(runId: String) async {
-        guard !actionInFlight else { return }; actionInFlight = true; actionError = nil
+        guard !actionInFlight else { return }
+        // A dialog may have captured a run before a realtime refresh ended it
+        // or replaced it. Never substitute the latest run for that identity.
+        guard state.value?.runs.contains(where: { $0.id == runId && $0.canStop }) == true else {
+            stopConfirmation = nil
+            return
+        }
+        stopConfirmation = nil
+        actionInFlight = true; actionError = nil
         defer { actionInFlight = false }
         do { _ = try await client.command(path: "/api/v1/runs/\(apiPart(runId))/cancel", method: "POST", body: .object([:])); await load() }
         catch { actionError = describe(error) }

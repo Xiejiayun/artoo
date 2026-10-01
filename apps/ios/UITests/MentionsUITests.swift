@@ -297,6 +297,9 @@ final class MentionsUITests: XCTestCase {
         try require(app.keyboards.firstMatch.waitForExistence(timeout: 10), "Tapping the visible input must establish keyboard focus before typing")
         if let value = input.value as? String, !value.isEmpty && value != input.placeholderValue { input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: value.count)) }
         input.typeText(text)
+        let enteredInput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", text), object: input)
+        try require(XCTWaiter.wait(for: [enteredInput], timeout: 45) == .completed, "The original native typing operation must finish with the exact intended text")
+        try require(input.value as? String == text, "The native input must exactly match the replacement text")
     }
     @MainActor
     private func dismissKeyboard() throws {

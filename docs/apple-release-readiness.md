@@ -73,13 +73,14 @@ collection. Before distribution, the publisher must:
 
 | Priority | Current gap and evidence | Implementable next step | External information or credential |
 | --- | --- | --- | --- |
-| P1 | A real development-signed arm64 archive now passes; [project.yml](../apps/ios/project.yml) still uses `dev.artoo.app` and version/build defaults. | Repeat the [archive gate](apple-development-archive.md) for release source, then verify distribution export and TestFlight on supported phone/tablet sizes. | Distribution provisioning and App Store Connect app/bundle registration, build metadata and available physical devices. |
+| P1 | The matching execution-correction development-signed arm64 archive passed; physical-device/TestFlight and distribution acceptance remain open. [project.yml](../apps/ios/project.yml) uses `dev.artoo.app` and version/build defaults. | Repeat the [archive gate](apple-development-archive.md) for release source, then verify distribution export and TestFlight on supported phone/tablet sizes. | Distribution provisioning and App Store Connect app/bundle registration, build metadata and available physical devices. |
 | P1 | Fresh unsigned DMG/ZIP installation passes on local x64 and hosted arm64; this does not prove a distributable trust chain. | Run the [Developer ID/notarization gate](../apps/desktop/MAC-DISTRIBUTION.md), then test signed installation, upgrade and removal on a clean Mac and each supported architecture. | Developer ID identity/private key, notarization profile and actual release hosting. |
 | P1 | Desktop source has no implemented trusted update channel in [main.cjs](../apps/desktop/main.cjs) or package configuration. | Define a signed manual-update or automatic-update flow, publish version/checksum metadata, and verify upgrade preserves connection/settings and server compatibility. | Update policy, release endpoint and signing custody. |
 | P1 | Operator policy details cannot be established from the source tree. | Complete the privacy steps above; keep onboarding and settings disclosures reachable without signing in. | Operator identity/contact, privacy-policy URL, retention/deletion terms and provider choices. |
 | P1 | Production startup requires configured auth and durable storage in [main.ts](../apps/server/src/main.ts) and [auth-config.ts](../apps/server/src/auth/auth-config.ts). Fixture auth is not deployed Google login evidence. | Run real HTTPS/OIDC and WebSocket flows, device revocation and cross-client updates against the chosen staging deployment. | Controlled HTTPS origin, registered Google OAuth client/redirect, team allowlist/owners and securely managed secrets. |
 | P1 | Mac/iOS execution gates use deterministic CLI fixtures. The installed Mac real-provider entry and missing-configuration failure are verified, but no successful live inference is established. | Run the explicit [provider gate](mac-live-provider-verification.md), retain usage/session evidence and reviewed answers, then validate actual implementation tasks against the selected provider. | Reachable authorized Responses API, model and private key file, or a separately verified existing CLI login. |
 | P1 | The isolated production-mode backup/restore drill passes, including credentials, records and exact artifact bytes after the original data is removed. | Repeat recovery on the chosen deployment, including off-site backup retrieval, host loss and documented recovery objectives. | Durable host/storage, backup destination/access, retention and recovery objectives. |
+| P1 | Successfully delivered isolated worktrees are still removed, so non-artifact implementation changes can be lost. Failed/cancelled/undelivered/startup-failure recovery does not close this gap. | Preserve or explicitly transfer all successful work before cleanup; verify discoverable recovery, safe reuse and repeated execution on the same instance. The next-stage implementation remains unapplied. | Product recovery/retention policy and actual release-source client evidence. |
 | P1 | Native and packaged-client acceptance must match the binary being shipped. | Save an HTML report with actual app screenshots for each Mac/iOS E2E run, including failure state and authentication/model-execution limits; retain reports in CI. | A usable Mac/Xcode simulator or device environment and credentials only for gates explicitly exercising real external services. |
 
 No new P0 issue was confirmed by this source audit. That statement is limited
@@ -211,3 +212,55 @@ byte-compared. The milestone ledger preserves those limits, failed attempts,
 non-failing layout warnings and the still-intermittent local DMG detach issue.
 These results extend local functional acceptance; they do not close the
 external release gates above or prove hosted acceptance of the new commit.
+
+
+## Execution correction evidence, 2026-10-01
+
+Durable review history, real feedback in later execution context, version-bound
+review commands, preserved rejected/conflicting drafts, readable artifact identity,
+exact-run Stop and default-off worktree selection are implemented. Failed,
+cancelled, undelivered and materialized startup-failure work retain recoverable
+files. Successfully delivered work is still cleaned up; the next retention,
+recovery and device-workflow patches remain unapplied.
+
+The final installed Mac attempt passed 21 checks with 38 caption entries/37 unique
+images, independent data/visual audits and all nine cleanup checks. Current full
+native invocation 64710 passed 144 units and all ten Release UI cases: core seven
+(1203.737 seconds/24 originals), assistant one (639.622 seconds/seven originals),
+mentions one (608.657 seconds/eleven originals), and correction one
+(1551.643 seconds/fifteen originals). All **57 distinct aggregate images** were
+individually inspected through the suite audits; aggregate bytes, captions and
+full-size links match. Source checks and all 13 recorded parent cleanup flags
+passed. Every earlier failed invocation remains failed.
+
+The matching Release arm64 iPhoneOS development archive also passed strict
+signature, certificate/Team/profile and source verification. All 704 repository
+entries, 65 iOS snapshot files and 39 product inputs matched before/after archive
+and its isolated snapshot. Its report is
+`artifacts/ios-device/2026-10-01T14-24-42-929Z/report.html`. No physical-device UI or
+upload occurred. The [milestone ledger](apple-client-milestones.md) records hashes,
+source differences and the completed suite, correction-visual, final-data and
+archive audits.
+
+The verified 704-file inventory differs from final Mac in two native product
+views, four UI-test files and three native harness files; the other 695 entries,
+including Mac product inputs, match. After all native/archive work ended, the
+generated UI-test plist alone was restored, leaving 703 matching entries before
+the final documentation changes. All implementation and test sources remain
+unchanged after those documentation updates. Exact-new-commit hosted acceptance
+is tracked separately and is not claimed by this local verification.
+
+Current correction verifies explicit Keep/Stop, retained reviews/artifacts and
+failed/stopped files. Keep preserved the same held PID with zero cancellation
+and no new launch across 18.470832961 seconds; Stop evidence was stable across
+3.380175036 seconds. PID absence is observed at cancel HTTP completion, without
+proof of earlier canonical-event ordering or a graceful-exit receipt. Zero leases
+were declared, so exercised lease release is not claimed. Six nonfatal frame
+warnings and screenshot viewport limits remain recorded. PGlite tests do not prove
+multi-connection PostgreSQL behavior.
+
+These results extend functional preview evidence only. Successful-work preservation
+and safe same-instance recovery, live-provider answer/implementation quality,
+physical devices/TestFlight, Developer ID/notarization/trusted updates, deployed
+HTTPS/Google OAuth, operator privacy/deletion policy and deployment-specific
+recovery remain separate release requirements.

@@ -54,6 +54,7 @@ export function loadNativeSuiteEvidence(directory, suite) {
     assert.ok(parent.peer_screenshots?.length === 2 && peerImages.length === 2
       && peerNames.every((name) => peerImages.some(({ path }) => path === resolve(attempt, name))), "Both independent sender captures must remain complete");
   }
+  if (suite === "correction") assert.equal(parent.correction?.passed, true, "Correction production-record and retained-work verification must pass");
   assert.ok(native.xcresult_tests === resolve(attempt, "diagnostics/xcresult-tests.json")
     && native.xcresult_summary === resolve(attempt, "diagnostics/xcresult-summary.json"), "Raw exports must belong to this attempt");
   const input = { suite, source: native.source, result_bundle: native.result_bundle,

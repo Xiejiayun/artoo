@@ -72,6 +72,7 @@ describe("durable assistant conversation dispatch", () => {
     expect((await pack(secondRun)).conversation).toMatchObject({ current_request: "Follow-up question", messages: [
       { role: "user", body: "First request" }, { role: "assistant", body: "The first actual answer" },
     ] });
+    expect(await pack(secondRun)).not.toHaveProperty("review_feedback");
     await dispatcher.pump();
     expect(await server.db.db.select().from(runs)).toHaveLength(2);
     expect(errors).not.toHaveBeenCalled();

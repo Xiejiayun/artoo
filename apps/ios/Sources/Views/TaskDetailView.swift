@@ -7,11 +7,9 @@ public struct TaskDetailView: View {
     private enum InputField: Hashable { case approval, review }
     @StateObject private var model: TaskDetailViewModel
     @State private var showingAssign = false
-    @State private var cancellingRun: Run?
     @State private var artifactURL: URL?
     @State private var artifactError: String?
     @State private var downloading = false
-    @State private var reviewComment = ""
     @State private var executionApprovalDraft = ExecutionApprovalDraft()
     @State private var executionApprovalExpanded = false
     @FocusState private var focusedField: InputField?
@@ -30,11 +28,13 @@ public struct TaskDetailView: View {
                     Section("Description") { Text(description) }
                 }
                 criteriaSection(snapshot.task)
+                reviewHistorySection(snapshot)
                 if snapshot.task.status == .ready { executionApprovalSection }
                 if snapshot.task.status == .review {
-                    Section("Review feedback") {
-                        TextField("Comment or requested changes", text: $reviewComment, axis: .vertical).lineLimit(2...6)
+                    Section("New review feedback") {
+                        TextField("Comment or requested changes", text: $model.reviewComment, axis: .vertical).lineLimit(2...6)
                             .focused($focusedField, equals: .review)
+                            .disabled(model.actionInFlight)
                             .accessibilityIdentifier("task.review.comment.\(model.taskId)")
                     }
                 }
@@ -47,7 +47,7 @@ public struct TaskDetailView: View {
                 actionsSection
                 runsSection(snapshot.runs)
                 approvalsSection(snapshot.approvals)
-                artifactsSection(snapshot.artifacts)
+                artifactsSection(snapshot.artifacts, runs: snapshot.runs)
                 if let artifactError { Section { Text(artifactError).foregroundStyle(.red) } }
             }
             .listStyle(.insetGrouped)
@@ -55,6 +55,17 @@ public struct TaskDetailView: View {
         }
         .navigationTitle("Task")
         .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom) {
+            if let error = model.actionError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(ArtooTokens.ColorToken.danger)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .background(.regularMaterial)
+                    .accessibilityIdentifier("task.action.error.\(model.taskId)")
+            }
+        }
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 if focusedField != nil {
@@ -70,8 +81,13 @@ public struct TaskDetailView: View {
         .refreshable { await model.load() }
         .liveRefresh { await model.load() }
         .quickLookPreview($artifactURL)
-        .confirmationDialog("Stop this execution?", isPresented: Binding(get: { cancellingRun != nil }, set: { if !$0 { cancellingRun = nil } })) {
-            Button("Stop run", role: .destructive) { if let run = cancellingRun { Task { await model.cancel(runId: run.id); cancellingRun = nil } } }
+        .alert("Stop this execution?", isPresented: Binding(get: { model.stopConfirmation != nil }, set: { if !$0 { model.keepRunning() } }), presenting: model.stopConfirmation) { run in
+            Button("Stop run and cancel task", role: .destructive) { Task { await model.cancel(runId: run.id) } }
+                .accessibilityIdentifier("task.run.stop.confirm.\(run.id)")
+            Button("Keep running", role: .cancel) { model.keepRunning() }
+                .accessibilityIdentifier("task.run.stop.keep.\(run.id)")
+        } message: { run in
+            Text("\(run.displayTitle) · \(run.id)\n\nStopping this execution also cancels its task. Files already written to the workspace are kept for recovery. Existing artifacts remain available.")
         }
     }
 
@@ -176,7 +192,7 @@ public struct TaskDetailView: View {
     @ViewBuilder
     private var actionsSection: some View {
         let actions = model.availableActions
-        if !actions.isEmpty || model.actionError != nil {
+        if !actions.isEmpty {
             Section("Actions") {
                 ForEach(actions, id: \.self) { action in
                     Button {
@@ -198,11 +214,6 @@ public struct TaskDetailView: View {
                     .accessibilityIdentifier("task.action.\(action.rawValue).\(model.taskId)")
                     .accessibilityHint(action.accessibilityHint)
                 }
-                if let error = model.actionError {
-                    Text(error)
-                        .foregroundStyle(ArtooTokens.ColorToken.danger)
-                        .font(ArtooTokens.Typography.body)
-                }
             }
         }
     }
@@ -217,8 +228,11 @@ public struct TaskDetailView: View {
                     } label: {
                         RunTimelineRow(run: run)
                     }
-                    if [.queued, .starting, .running, .awaitingInput, .paused].contains(run.status) {
-                        Button("Stop \(run.id)", role: .destructive) { cancellingRun = run }.disabled(model.actionInFlight)
+                    .accessibilityIdentifier("task.run.\(run.id)")
+                    if run.canStop {
+                        Button("Stop \(run.displayTitle.lowercased())", role: .destructive) { model.requestStop(runId: run.id) }
+                            .disabled(model.actionInFlight)
+                            .accessibilityIdentifier("task.run.stop.request.\(run.id)")
                     }
                 }
             }
@@ -237,17 +251,17 @@ public struct TaskDetailView: View {
     }
 
     @ViewBuilder
-    private func artifactsSection(_ artifacts: [Artifact]) -> some View {
+    private func artifactsSection(_ artifacts: [Artifact], runs: [Run]) -> some View {
         if !artifacts.isEmpty {
             Section("Artifacts") {
                 ForEach(artifacts) { artifact in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(artifact.type)
+                    VStack(alignment: .leading, spacing: ArtooTokens.Spacing.sm) {
+                        Text(artifact.displayName)
                             .font(ArtooTokens.Typography.subheadline.weight(.semibold))
-                        Text(artifact.uri)
-                            .font(ArtooTokens.Typography.caption)
-                            .foregroundStyle(ArtooTokens.ColorToken.textMuted)
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("artifact.name.\(artifact.id)")
+                        ArtifactProvenance(artifact: artifact, runs: runs)
+                            .accessibilityIdentifier("artifact.details.\(artifact.id)")
                         if artifact.uri.hasPrefix("/api/v1/artifacts/") {
                             Button(downloading ? "Downloading…" : "Preview or share") { Task { await download(artifact) } }.disabled(downloading)
                                 .accessibilityIdentifier("artifact.preview.\(artifact.id)")
@@ -260,12 +274,56 @@ public struct TaskDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private func reviewHistorySection(_ snapshot: TaskSnapshot) -> some View {
+        if !snapshot.reviews.isEmpty {
+            Section("Review history") {
+                ForEach(snapshot.reviews) { review in
+                    VStack(alignment: .leading, spacing: ArtooTokens.Spacing.sm) {
+                        Label(review.outcomeLabel, systemImage: review.outcome == "accepted" ? "checkmark.seal" : "arrow.uturn.backward.circle")
+                            .font(.headline)
+                        Text(review.reviewerLabel).font(.subheadline)
+                            .accessibilityIdentifier("task.review.reviewer.\(review.eventId)")
+                        Text(ConversationMetadata.timestamp(review.occurredAt))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .accessibilityValue(review.occurredAt)
+                            .accessibilityIdentifier("task.review.date.\(review.eventId)")
+                        Text(review.comment ?? "No written comment.")
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("task.review.feedback.\(review.eventId)")
+                        if let ids = review.artifactIds {
+                            Text(ids.isEmpty ? "No artifacts were recorded for this review." : "Artifacts included in this task review")
+                                .font(.caption).foregroundStyle(.secondary)
+                            ForEach(ids, id: \.self) { id in
+                                if let artifact = snapshot.artifacts.first(where: { $0.id == id }) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(artifact.displayName).font(.subheadline.weight(.semibold))
+                                        ArtifactProvenance(artifact: artifact, runs: snapshot.runs)
+                                    }
+                                } else {
+                                    Text("Artifact unavailable · \(id)").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        } else {
+                            Text("Reviewed artifacts were not recorded for this earlier review.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, ArtooTokens.Spacing.xs)
+                }
+            }
+        }
+    }
+
     private func perform(_ action: TaskAction) {
         switch action {
         case .markReady: Task { await model.markReady() }
         case .retry: Task { await model.retry() }
-        case .accept: Task { await model.review(accept: true, comment: reviewComment.isEmpty ? nil : reviewComment) }
-        case .requestChanges: Task { await model.review(accept: false, comment: reviewComment.isEmpty ? nil : reviewComment) }
+        case .accept, .requestChanges:
+            let comment = model.reviewComment
+            focusedField = nil
+            Task { await model.review(accept: action == .accept, comment: comment.isEmpty ? nil : comment) }
         case .assign: showingAssign = true
         }
     }
@@ -274,6 +332,27 @@ public struct TaskDetailView: View {
         downloading = true; artifactError = nil; defer { downloading = false }
         do { artifactURL = try await client.downloadArtifact(artifact: artifact) }
         catch { artifactError = String(describing: error) }
+    }
+}
+
+private struct ArtifactProvenance: View {
+    let artifact: Artifact
+    let runs: [Run]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let runId = artifact.runId {
+                Text("From \(artifact.originatingRun(in: runs)?.displayTitle.lowercased() ?? "execution")")
+                Text(runId).textSelection(.enabled)
+            } else {
+                Text("Originating run was not recorded")
+            }
+            if let createdAt = artifact.createdAt { Text("Created \(createdAt)") }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -289,6 +368,7 @@ private struct AssignSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var mode = "auto"
     @State private var agentInstanceId = ""
+    @State private var branchBacked = false
     @State private var instances: [WorkspaceRecord] = []
     @State private var agents: [WorkspaceRecord] = []
     @State private var computers: [WorkspaceRecord] = []
@@ -305,6 +385,10 @@ private struct AssignSheet: View {
                 }
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("task.assignment.mode")
+                Toggle("Use an isolated Git worktree", isOn: $branchBacked)
+                    .accessibilityIdentifier("task.assignment.worktree")
+                Text("Requires a Git repository on the execution computer and an unused workspace location. Failed or stopped work stays there for recovery.")
+                    .font(.caption).foregroundStyle(.secondary)
                 if mode == "manual" {
                     Picker("Agent instance", selection: $agentInstanceId) {
                         Text("Choose agent").tag("")
@@ -356,9 +440,10 @@ private struct AssignSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Assign") {
                         let selectedMode = mode
+                        let selectedBranchBacked: Bool? = branchBacked ? true : nil
                         let trimmed = agentInstanceId.trimmingCharacters(in: .whitespaces)
                         Task {
-                            if await model.assign(mode: selectedMode, agentInstanceId: trimmed.isEmpty ? nil : trimmed) { dismiss() }
+                            if await model.assign(mode: selectedMode, agentInstanceId: trimmed.isEmpty ? nil : trimmed, branchBacked: selectedBranchBacked) { dismiss() }
                         }
                     }
                     .disabled(model.actionInFlight || (mode == "manual" && agentInstanceId.trimmingCharacters(in: .whitespaces).isEmpty))
@@ -403,7 +488,7 @@ public struct RunSummaryView: View {
                 ArtooSectionCard {
                     VStack(alignment: .leading, spacing: ArtooTokens.Spacing.sm) {
                         HStack(alignment: .firstTextBaseline) {
-                            Text("Run \(run.sequence.map(String.init) ?? run.id)")
+                            Text(run.displayTitle)
                                 .font(ArtooTokens.Typography.headline)
                                 .foregroundStyle(ArtooTokens.ColorToken.text)
                             Spacer()
@@ -491,7 +576,7 @@ private struct RunTimelineRow: View {
 
             VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xs) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(run.id)
+                    Text(run.displayTitle)
                         .font(ArtooTokens.Typography.subheadline.weight(.semibold))
                         .foregroundStyle(ArtooTokens.ColorToken.text)
                         .lineLimit(1)
@@ -499,6 +584,7 @@ private struct RunTimelineRow: View {
                     RunStatusBadge(run.status)
                 }
                 ArtooMetadataGrid([
+                    ("Run", run.id),
                     ("Runtime", run.runtimeId),
                     ("Agent", run.agentInstanceId),
                     ("Started", run.startedAt ?? run.createdAt)

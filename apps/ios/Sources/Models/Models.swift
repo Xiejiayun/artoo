@@ -465,6 +465,7 @@ public struct Artifact: Codable, Equatable, Identifiable {
     public let uri: String
     public let checksum: String?
     public let createdAt: String?
+    public let metadata: JSONValue?
 
     public init(
         id: String,
@@ -473,7 +474,8 @@ public struct Artifact: Codable, Equatable, Identifiable {
         type: String,
         uri: String,
         checksum: String? = nil,
-        createdAt: String? = nil
+        createdAt: String? = nil,
+        metadata: JSONValue? = nil
     ) {
         self.id = id
         self.taskId = taskId
@@ -482,7 +484,24 @@ public struct Artifact: Codable, Equatable, Identifiable {
         self.uri = uri
         self.checksum = checksum
         self.createdAt = createdAt
+        self.metadata = metadata
     }
+}
+
+/// A durable task-level review. Nil artifact IDs mean attribution was not
+/// recorded; they must never be inferred from later runs or timestamps.
+public struct TaskReview: Codable, Equatable, Identifiable {
+    public let eventId: String
+    public let position: Int
+    public let taskId: String
+    public let outcome: String
+    public let comment: String?
+    public let actor: ActorRef
+    public let actorName: String?
+    public let occurredAt: String
+    public let artifactIds: [String]?
+
+    public var id: String { eventId }
 }
 
 public struct Room: Codable, Equatable, Identifiable {
@@ -574,19 +593,40 @@ public struct TaskSnapshot: Codable, Equatable {
     public let runs: [Run]
     public let approvals: [Approval]
     public let artifacts: [Artifact]
+    public let reviews: [TaskReview]
+    public let versionCursor: Int?
 
     public init(
         task: TaskItem,
         room: Room? = nil,
         runs: [Run] = [],
         approvals: [Approval] = [],
-        artifacts: [Artifact] = []
+        artifacts: [Artifact] = [],
+        reviews: [TaskReview] = [],
+        versionCursor: Int? = nil
     ) {
         self.task = task
         self.room = room
         self.runs = runs
         self.approvals = approvals
         self.artifacts = artifacts
+        self.reviews = reviews
+        self.versionCursor = versionCursor
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case task, room, runs, approvals, artifacts, reviews, versionCursor
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        task = try values.decode(TaskItem.self, forKey: .task)
+        room = try values.decodeIfPresent(Room.self, forKey: .room)
+        runs = try values.decode([Run].self, forKey: .runs)
+        approvals = try values.decode([Approval].self, forKey: .approvals)
+        artifacts = try values.decode([Artifact].self, forKey: .artifacts)
+        reviews = try values.decodeIfPresent([TaskReview].self, forKey: .reviews) ?? []
+        versionCursor = try values.decodeIfPresent(Int.self, forKey: .versionCursor)
     }
 }
 
@@ -695,12 +735,14 @@ public struct AssignRequest: Codable, Equatable {
     public let agentInstanceId: String?
     public let modelProfileId: String?
     public let effort: String?
+    public let branchBacked: Bool?
 
-    public init(mode: String = "auto", agentInstanceId: String? = nil, modelProfileId: String? = nil, effort: String? = nil) {
+    public init(mode: String = "auto", agentInstanceId: String? = nil, modelProfileId: String? = nil, effort: String? = nil, branchBacked: Bool? = nil) {
         self.mode = mode
         self.agentInstanceId = agentInstanceId
         self.modelProfileId = modelProfileId
         self.effort = effort
+        self.branchBacked = branchBacked
     }
 }
 
@@ -708,10 +750,12 @@ public struct ReviewRequest: Codable, Equatable {
     /// "accepted" or "changes_requested".
     public let outcome: String
     public let comment: String?
+    public let baseVersion: Int?
 
-    public init(outcome: String, comment: String? = nil) {
+    public init(outcome: String, comment: String? = nil, baseVersion: Int? = nil) {
         self.outcome = outcome
         self.comment = comment
+        self.baseVersion = baseVersion
     }
 }
 

@@ -220,7 +220,7 @@ struct GoalDetailView: View {
                 if let exportError { Text(exportError).foregroundStyle(.red) }
             }
         }.navigationTitle("Goal").sheet(isPresented: $planning) { PlanEditor(goalId: goalId, model: model) }
-            .confirmationDialog("Cancel this goal?", isPresented: $confirmingCancellation, titleVisibility: .visible) {
+            .alert("Cancel this goal?", isPresented: $confirmingCancellation) {
                 Button("Cancel goal", role: .destructive) {
                     Task { await model.perform(path: "/api/v1/goals/\(apiPart(goalId))/cancel") }
                 }.disabled(model.busy).accessibilityIdentifier("goal.cancel.confirm.\(goalId)")

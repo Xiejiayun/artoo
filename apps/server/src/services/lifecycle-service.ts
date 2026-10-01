@@ -1,6 +1,7 @@
 import {
   agentInstances,
   appendEvent,
+  artifacts,
   assistantTurns,
   goals,
   plans,
@@ -22,7 +23,7 @@ import {
   type TaskStatus,
   TaskSpecSchema,
 } from "@artoo/domain";
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import type { DrizzleDb } from "@artoo/storage";
 
 import type { ServerContext } from "../context.js";
@@ -369,6 +370,7 @@ export async function reviewTask(
         .select()
         .from(tasks)
         .where(and(eq(tasks.id, taskId), eq(tasks.organizationId, ctx.organizationId)))
+        .for("update")
     )[0];
     if (row === undefined) {
       throw AppError.notFound(`task not found: ${taskId}`, { task_id: taskId });
@@ -403,6 +405,9 @@ export async function reviewTask(
         );
       }
     }
+    const artifactRows = await tx.select({ id: artifacts.id }).from(artifacts).where(and(
+      eq(artifacts.organizationId, ctx.organizationId), eq(artifacts.taskId, taskId),
+    )).orderBy(asc(artifacts.id));
     const result = await transitionTask(tx, ctx, {
       taskId,
       from: "review",
@@ -417,7 +422,7 @@ export async function reviewTask(
           projectId: row.projectId,
           taskId,
           roomId: row.roomId,
-          payload: { outcome: req.outcome, comment: req.comment ?? null },
+          payload: { outcome: req.outcome, comment: req.comment ?? null, artifact_ids: artifactRows.map((artifact) => artifact.id) },
         }),
         buildEvent(ctx, {
           type: "task.updated",

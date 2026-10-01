@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Approval } from "@artoo/domain";
+import { ApiClientError } from "../api/client.js";
 
 import { approvalFixture, bootstrapFixture, fakeApi, renderWithProviders, taskFixture } from "../test/utils.js";
 import { TaskActions } from "./TaskActions.js";
@@ -38,7 +39,39 @@ describe("TaskActions", () => {
     const [id, body, key] = assignTask.mock.calls[0] as [string, { mode: string }, string];
     expect(id).toBe("task_1");
     expect(body.mode).toBe("auto");
+    expect(body).not.toHaveProperty("branch_backed");
     expect(key.length).toBeGreaterThan(0);
+  });
+
+  it("opts into an isolated worktree through UI and retains its instance and checkbox after failure", async () => {
+    const assignTask = vi.fn().mockRejectedValueOnce(new ApiClientError("conflict", "Workspace is already in use", 409))
+      .mockResolvedValue({ run: { id: "new_run" }, scheduler_decision: { reason: "selected", score: 1 } });
+    renderWithProviders(<TaskActions task={taskFixture({ id: "task_1", title: "T", status: "ready" })} approvals={[]} />,
+      { client: fakeApi({ assignTask, bootstrap: async () => bootstrapFixture() }) });
+    await screen.findByRole("option", { name: /Mock Coder/ });
+    const checkbox = screen.getByRole("checkbox", { name: "Use an isolated Git worktree" });
+    expect(checkbox).not.toBeChecked();
+    expect(checkbox).toHaveAccessibleDescription(/Git repository configured on the execution computer and an unused workspace path/);
+    await userEvent.selectOptions(screen.getByLabelText("Assignment"), "instance_mock_coder");
+    await userEvent.click(checkbox);
+    await userEvent.click(screen.getByRole("button", { name: "Assign" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Workspace is already in use");
+    expect(checkbox).toBeChecked();
+    expect(screen.getByLabelText("Assignment")).toHaveValue("instance_mock_coder");
+    expect(assignTask).toHaveBeenCalledWith("task_1", { mode: "manual", agent_instance_id: "instance_mock_coder", branch_backed: true }, expect.any(String));
+    await userEvent.click(checkbox);
+    await userEvent.click(screen.getByRole("button", { name: "Assign" }));
+    await waitFor(() => expect(assignTask).toHaveBeenCalledTimes(2));
+    expect(assignTask).toHaveBeenLastCalledWith("task_1", { mode: "manual", agent_instance_id: "instance_mock_coder" }, expect.any(String));
+  });
+
+  it("sends worktree opt-in for automatic assignment as well", async () => {
+    const assignTask = vi.fn().mockResolvedValue({ run: { id: "new_run" }, scheduler_decision: { reason: "auto", score: 1 } });
+    renderWithProviders(<TaskActions task={taskFixture({ id: "task_1", title: "T", status: "ready" })} approvals={[]} />,
+      { client: fakeApi({ assignTask, bootstrap: async () => bootstrapFixture() }) });
+    await userEvent.click(screen.getByRole("checkbox", { name: "Use an isolated Git worktree" }));
+    await userEvent.click(screen.getByRole("button", { name: "Assign" }));
+    expect(assignTask).toHaveBeenCalledWith("task_1", { mode: "auto", branch_backed: true }, expect.any(String));
   });
 
   it("Retry calls retryTask (blocked)", async () => {

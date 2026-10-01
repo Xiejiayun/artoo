@@ -25,6 +25,7 @@ final class SharedServerChatUITests: XCTestCase {
         try require(create.waitForExistence(timeout: 15), "Tasks must expose native creation")
         create.tap()
         try replace(editableField("task.create.title"), with: fixture.executionTaskTitle)
+        try dismissKeyboard(using: "task.create.keyboard.done")
         try replace(editableField("task.create.criteria"), with: "\(fixture.executionCriterion1)\n\(fixture.executionCriterion2)")
         try dismissKeyboard(using: "task.create.keyboard.done")
         try replace(editableField("task.create.capabilities"), with: "code.modify")
@@ -198,9 +199,18 @@ final class SharedServerChatUITests: XCTestCase {
             fixture.executionArtifactFilename, basename, fixture.executionArtifactFilename, basename)).firstMatch
         try require(previewBar.waitForExistence(timeout: 10), "Quick Look must identify the uploaded filename")
         attachScreenshot("Native uploaded execution report in Quick Look")
-        let done = previewBar.buttons["Done"].firstMatch
-        let close = done.waitForExistence(timeout: 2) ? done : app.buttons["Close"].firstMatch
-        try require(close.waitForExistence(timeout: 10), "The system preview must expose its dismissal control")
+        let identified = previewBar.buttons.matching(identifier: "QLOverlayDoneButtonAccessibilityIdentifier")
+        let done = previewBar.buttons.matching(NSPredicate(format: "label == %@", "Done"))
+        let controls: XCUIElementQuery
+        if identified.firstMatch.waitForExistence(timeout: 2) {
+            controls = identified
+        } else {
+            controls = done.firstMatch.waitForExistence(timeout: 2) ? done : app.buttons.matching(NSPredicate(format: "label == %@", "Close"))
+        }
+        let close = controls.firstMatch
+        try require(close.waitForExistence(timeout: 10) && controls.count == 1
+                    && ["Done", "Close", "close"].contains(close.label) && close.isEnabled && close.isHittable,
+                    "The system preview must offer one enabled, hittable close control with its expected label")
         close.tap()
         try require(app.navigationBars["Task"].waitForExistence(timeout: 15), "Closing Quick Look must return to the task")
         // Quick Look returns to the artifact's scroll position. SwiftUI List
@@ -300,7 +310,7 @@ final class SharedServerChatUITests: XCTestCase {
         try waitForValue(visibleStatus, initial.goal.status, message: "The independent goal must display its initial server status")
         let request = app.buttons["goal.cancel.request.\(fixture.cancellationGoalId)"]
         try reveal(request); request.tap()
-        let keep = cancellationDialogButton("dismiss", label: "Keep goal")
+        let keep = try cancellationDialogButton("dismiss", label: "Keep goal")
         try require(keep.waitForExistence(timeout: 10), "Cancelling a goal must first expose a Keep goal choice")
         let beforeDecision = try await peerGoalBundle(goalId: fixture.cancellationGoalId)
         XCTAssertEqual(beforeDecision.goal.status, initial.goal.status)
@@ -317,7 +327,7 @@ final class SharedServerChatUITests: XCTestCase {
         try reveal(request)
         attachScreenshot("Native goal preserved after dismissing cancellation")
         request.tap()
-        let confirm = cancellationDialogButton("confirm", label: "Cancel goal")
+        let confirm = try cancellationDialogButton("confirm", label: "Cancel goal")
         try require(confirm.waitForExistence(timeout: 10), "The destructive confirmation must be available on the second attempt")
         confirm.tap()
         let cancelled = try await waitForCancelledGoal()
@@ -614,7 +624,10 @@ final class SharedServerChatUITests: XCTestCase {
                 let displayedHash = "sha256:" + SHA256.hash(data: Data(originalInstruction.label.utf8)).map { String(format: "%02x", $0) }.joined()
                 try require(displayedHash == instructionHash, "The full displayed instruction must retain its server-body hash")
                 try attachConnectedScreenshot("Native original coordinator instruction expanded")
-                try reveal(toggle); toggle.tap()
+                try revealText(toggle, preferTop: true)
+                try require(toggle.isEnabled && toggle.isHittable, "Hide agent instructions must be reachable")
+                try require(toggle.value as? String == "Expanded", "The coordinator prompt must remain expanded before testing Hide")
+                toggle.tap()
                 try waitForValue(toggle, "Collapsed", message: "Hide agent instructions must collapse the prompt again")
                 let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: originalInstruction)
                 try require(XCTWaiter.wait(for: [hidden], timeout: 5) == .completed, "Collapsing coordinator instructions must remove the original text")
@@ -669,7 +682,10 @@ final class SharedServerChatUITests: XCTestCase {
         try waitForValue(originalToggle, "Expanded", message: "Tapping the original-reply button must expand the exact reply")
         try revealText(originalBody); XCTAssertEqual(originalBody.label, synthesis.body, "Expanding the original must preserve the exact server reply")
         attachScreenshot("Native suggested plan with original reply expanded")
-        try reveal(originalToggle); originalToggle.tap()
+        try revealText(originalToggle, preferTop: true)
+        try require(originalToggle.isEnabled && originalToggle.isHittable, "Hide original reply must be reachable")
+        try require(originalToggle.value as? String == "Expanded", "The original reply must remain expanded before testing Hide")
+        originalToggle.tap()
         try waitForValue(originalToggle, "Collapsed", message: "Tapping the original-reply button again must collapse the reply")
         let collapsed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: originalBody)
         try require(XCTWaiter.wait(for: [collapsed], timeout: 5) == .completed, "The original reply must collapse without changing the suggested plan")
@@ -812,14 +828,39 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func cancellationDialogButton(_ action: String, label: String) -> XCUIElement {
-        let identified = app.buttons["goal.cancel.\(action).\(fixture.cancellationGoalId)"]
-        if identified.waitForExistence(timeout: 2) { return identified }
-        // Some OS versions expose confirmationDialog actions through the
-        // system sheet without preserving the SwiftUI identifier.
-        let sheetButton = app.sheets.buttons[label].firstMatch
-        if sheetButton.exists { return sheetButton }
-        return app.alerts.buttons[label].firstMatch
+    private func cancellationDialogButton(_ action: String, label: String) throws -> XCUIElement {
+        let title = "Cancel this goal?"
+        let alerts = app.alerts.containing(.staticText, identifier: title), sheets = app.sheets.containing(.staticText, identifier: title)
+        try require(alerts.firstMatch.waitForExistence(timeout: 10) || sheets.firstMatch.waitForExistence(timeout: 2),
+                    "The native goal cancellation confirmation must be presented")
+        let dialogs = alerts.allElementsBoundByIndex + sheets.allElementsBoundByIndex
+        try require(dialogs.count == 1, "Exactly one titled goal cancellation confirmation must be active")
+        let dialog = dialogs[0]
+        try require(dialog.staticTexts.matching(NSPredicate(format: "label == %@", title)).count == 1,
+                    "The goal confirmation must expose its exact title once")
+        let warning = "This cancels the goal and its unfinished tasks. Active runs must stop before cancellation completes. A cancelled goal cannot be resumed."
+        let messages = dialog.staticTexts.matching(NSPredicate(format: "label == %@", warning))
+        try require(messages.firstMatch.waitForExistence(timeout: 10) && messages.count == 1,
+                    "The active goal confirmation must expose its exact cancellation warning")
+        try require(dialog.frame.contains(messages.element(boundBy: 0).frame), "The goal cancellation warning must be fully contained in its confirmation")
+        let identifier = "goal.cancel.\(action).\(fixture.cancellationGoalId)", expectedLabel = NSPredicate(format: "label == %@", label)
+        let identified = dialog.buttons.matching(identifier: identifier)
+        let hasIdentifier = identified.firstMatch.waitForExistence(timeout: 2)
+        let matches = hasIdentifier ? identified.matching(expectedLabel) : dialog.buttons.matching(expectedLabel)
+        try require(matches.firstMatch.waitForExistence(timeout: 5), "The goal confirmation must expose its exact \(label) action")
+        let candidates = matches.allElementsBoundByIndex
+        let leaves = candidates.filter { $0.descendants(matching: .button).count == 0 }
+        try require(leaves.count == 1, "The goal confirmation must expose exactly one leaf \(label) button")
+        let button = leaves[0]
+        try require(candidates.allSatisfy { candidate in
+            if candidate === button { return true }
+            let descendants = candidate.descendants(matching: .button).allElementsBoundByIndex
+            return candidate.frame.contains(button.frame) && !descendants.isEmpty
+                && descendants.allSatisfy { $0.label == label && (!hasIdentifier || $0.identifier == identifier) }
+        }, "Only nested wrappers of the exact goal action may share its identity")
+        try require(button.label == label && button.isEnabled && button.isHittable,
+                    "The goal confirmation's unique \(label) button must be actionable")
+        return button
     }
 
     @MainActor
@@ -1034,6 +1075,9 @@ final class SharedServerChatUITests: XCTestCase {
             field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
         }
         field.typeText(text)
+        let enteredInput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", text), object: field)
+        try require(XCTWaiter.wait(for: [enteredInput], timeout: 45) == .completed, "The original native typing operation must finish with the exact intended text")
+        try require(field.value as? String == text, "The native input must exactly match the replacement text")
     }
 
     @MainActor
@@ -1049,10 +1093,10 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func revealText(_ element: XCUIElement) throws {
+    private func revealText(_ element: XCUIElement, preferTop: Bool = false) throws {
         // Selectable SwiftUI text can be visibly rendered yet make XCTest's
-        // activation-point lookup throw. Read-only checks need visible content;
-        // buttons and editable fields still use the strict hittability helper.
+        // activation-point lookup throw. Read-only checks need visible content.
+        // Disclosure callers also require enabled/hittable controls before taps.
         let list = app.collectionViews.firstMatch
         try require(list.exists, "The displayed text must belong to a visible list")
         try require(!app.keyboards.firstMatch.exists, "Read-only content must not be covered by the keyboard")
@@ -1065,7 +1109,7 @@ final class SharedServerChatUITests: XCTestCase {
             viewport = CGRect(x: viewport.minX, y: top, width: viewport.width, height: max(0, bottom - top)).insetBy(dx: 2, dy: 2)
             try require(!viewport.isEmpty && !viewport.isNull && !viewport.isInfinite,
                         "The list must have an unobscured content viewport")
-            var scrollUp = attempt < 12
+            var scrollUp = preferTop ? attempt >= 12 : attempt < 12
             if element.exists {
                 let frame = element.frame
                 if !frame.isEmpty && !frame.isNull && !frame.isInfinite {

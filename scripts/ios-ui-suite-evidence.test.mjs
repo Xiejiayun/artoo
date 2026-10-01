@@ -22,8 +22,8 @@ function attempt(suite = "assistant") {
     xcresult_tests: join(directory, "diagnostics/xcresult-tests.json"), xcresult_summary: join(directory, "diagnostics/xcresult-summary.json") };
   const device = { deviceId: "unit-fixture" }, configuration = { configurationId: "1" };
   const counts = { passedTests: 1, failedTests: 0, skippedTests: 0, expectedFailures: 0 };
-  const method = suite === "mentions" ? "testCrossProjectHistoricalMentionReadRetryAndDraftIsolation" : "testDirectAgentConversationAndRecovery";
-  const className = suite === "mentions" ? "MentionsUITests" : "AssistantConversationUITests";
+  const method = suite === "correction" ? "testTaskCorrectionRetainsWorkAndConfirmsExactStop" : suite === "mentions" ? "testCrossProjectHistoricalMentionReadRetryAndDraftIsolation" : "testDirectAgentConversationAndRecovery";
+  const className = suite === "correction" ? "ExecutionCorrectionUITests" : suite === "mentions" ? "MentionsUITests" : "AssistantConversationUITests";
   const testCase = { nodeType: "Test Case", name: `${method}()`, result: "Passed",
     nodeIdentifier: `${className}/${method}()`,
     nodeIdentifierURL: `test://com.apple.xcode/Artoo/ArtooUITests/${className}/${method}` };
@@ -49,6 +49,7 @@ function attempt(suite = "assistant") {
     for (const image of parent.peer_screenshots) writeFileSync(image.path,
       Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP8KuTxn4GBgYGJAQoAI8UCUpBcPuMAAAAASUVORK5CYII=", "base64"));
   }
+  if (suite === "correction") parent.correction = { passed: true };
   const save = () => {
     for (const [name, value] of [["suite-result.json", parent], ["xctest-result.json", native],
       ["diagnostics/xcresult-tests.json", tests], ["diagnostics/xcresult-summary.json", summary]]) {
@@ -113,3 +114,14 @@ for (const [name, mutate] of [
     finally { fixture.close(); }
   });
 }
+
+
+test("correction requires successful process verification as well as exact XCTest and every required image", () => {
+  const fixture = attempt("correction");
+  try {
+    fixture.save();
+    assert.equal(loadNativeSuiteEvidence(fixture.directory, "correction").contract.passed, true);
+    fixture.parent.correction.passed = false; fixture.save();
+    assert.throws(() => loadNativeSuiteEvidence(fixture.directory, "correction"));
+  } finally { fixture.close(); }
+});

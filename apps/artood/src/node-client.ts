@@ -156,18 +156,45 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         runStart: payload
       });
     } catch (err) {
-      // The adapter never started: tear down a worktree we just materialized.
-      await safeCleanup(plan);
-      await ackRejected(command.id, "process_start_failed", errorMessage(err));
+      // start() can reject after a child already wrote files (for example, a
+      // process guardian failed to launch). Preserve the materialized worktree
+      // even when the adapter never returned a handle to this client.
+      const recovery = plan.kind === "worktree" ? `\nWorktree retained for recovery: ${JSON.stringify({
+        run_id: payload.run_id, task_id: payload.task_id, workspace_root: plan.root,
+        workspace_branch: plan.branch, outcome: "process_start_failed",
+      })}` : "";
+      await ackRejected(command.id, "process_start_failed", `${errorMessage(err)}${recovery}`);
       return;
     }
     runs.set(payload.run_id, { handle, adapter });
     ready();
     await ackAccepted(command.id);
     let delivered = false;
+    let completed = false;
+    let unsuccessful = false;
     let sequence = 0;
+    let retentionReported = false;
+    const reportRetainedWorkspace = async (outcome: "failed" | "cancelled" | "incomplete_delivery" | "unconfirmed"): Promise<void> => {
+      if (plan.kind !== "worktree" || retentionReported) return;
+      retentionReported = true;
+      // Managed desktop workers discard process stderr. Keep the recovery
+      // location in the existing persisted run-output channel, without adding
+      // credentials, task content or a new protocol/API field.
+      try {
+        await transport.send({ kind: "run.event", node_id: nodeId, run_id: payload.run_id, sequence: sequence++,
+          event: { type: "run.output", payload: { stream: "stderr", text: `Worktree retained for recovery: ${JSON.stringify({
+            run_id: payload.run_id, task_id: payload.task_id, workspace_root: plan.root,
+            workspace_branch: plan.branch, outcome,
+          })}` } },
+        });
+      } catch { /* A diagnostic failure must not replace the actual outcome. */ }
+    };
     try {
       for await (const rawEvent of adapter.streamEvents(handle)) {
+        if (rawEvent.type === "run.lifecycle" && (rawEvent.payload.phase === "failed" || rawEvent.payload.phase === "cancelled")) {
+          unsuccessful = true;
+          await reportRetainedWorkspace(rawEvent.payload.phase);
+        }
         const event = rawEvent.type === "artifact.created" && options.uploadArtifact
           ? await options.uploadArtifact(payload.run_id, payload.workspace.root, rawEvent) : rawEvent;
         const message: RunEventMessage = {
@@ -179,6 +206,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         };
         sequence += 1;
         await transport.send(message);
+        if (event.type === "run.lifecycle") completed = event.payload.phase === "completed";
       }
       delivered = true;
     } catch (error) {
@@ -186,15 +214,18 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       // A delivery error can occur while the process is still writing. Confirm
       // process stop before reporting failure and allowing lease release.
       await adapter.stop(handle, "user_cancelled");
+      await reportRetainedWorkspace("incomplete_delivery");
       await transport.send({
-        kind: "run.event", node_id: nodeId, run_id: payload.run_id, sequence,
+        kind: "run.event", node_id: nodeId, run_id: payload.run_id, sequence: sequence++,
         event: { type: "run.lifecycle", payload: { phase: "failed", reason: errorMessage(error) } },
       }).catch(() => {});
     } finally {
       runs.delete(payload.run_id);
       finished.add(payload.run_id);
-      // Preserve recoverable work if any output/artifact could not be delivered.
-      if (delivered) await safeCleanup(plan);
+      // A delivered failure/cancellation is not successful execution. Preserve
+      // its modified and new files, including when no artifact was uploaded.
+      if (delivered && completed && !unsuccessful) await safeCleanup(plan);
+      else await reportRetainedWorkspace("unconfirmed");
     }
   }
 
