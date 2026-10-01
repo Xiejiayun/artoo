@@ -71,6 +71,7 @@ final class MentionsUITests: XCTestCase {
         try reveal(field("mentions.unreadSummary"))
         try screenshot("Native mentions global unread across projects")
         try openNotice(publication.first.notificationId)
+        try await waitForInitialMention(publication.first)
         try assertDestination(publication.first, publication: publication)
         let failure = field("mention.readError"), retry = app.buttons["retryMentionRead"]
         try require(failure.waitForExistence(timeout: 20) && failure.label.contains("503"), "A real read 503 must remain visible with the loaded historical target")
@@ -270,6 +271,24 @@ final class MentionsUITests: XCTestCase {
                     "Native Mentions must show the exact global unread count")
     }
     @MainActor
+    private func waitForInitialMention(_ target: MentionsTarget) async throws {
+        let message = app.staticTexts["message.\(target.messageId)"]
+        let deadline = Date().addingTimeInterval(15)
+        repeat {
+            if message.exists && app.collectionViews.firstMatch.exists && !app.keyboards.firstMatch.exists {
+                let view = try viewport(), rect = message.frame
+                if !rect.isEmpty && !rect.isNull && !rect.isInfinite {
+                    let visible = rect.intersection(view)
+                    if !visible.isNull && visible.width >= rect.width - 1 && visible.height >= rect.height - 1 { return }
+                }
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        } while Date() < deadline
+        // Observe the product's initial landing before any test gesture can
+        // reveal the root or move the selected historical reply into view.
+        try require(false, "Opening a mention must show its complete historical reply before any scrolling")
+    }
+    @MainActor
     private func assertDestination(_ target: MentionsTarget, publication: MentionsPublication) throws {
         let root = app.staticTexts["message.\(publication.rootB.id)"]; try revealText(root)
         try require(root.label == publication.rootB.body, "The mention must render the exact B root")
@@ -376,7 +395,21 @@ final class MentionsUITests: XCTestCase {
                 if !rect.isEmpty && !rect.isNull && !rect.isInfinite {
                     let visible = rect.intersection(view)
                     if !visible.isNull && visible.width >= rect.width - 1 && visible.height >= rect.height - 1 { return }
-                    upward = rect.midY > view.midY
+                    let above = max(0, view.minY - rect.minY), below = max(0, rect.maxY - view.maxY)
+                    try require(above > 0 || below > 0, "Vertical scrolling cannot resolve horizontal historical text clipping")
+                    upward = below > 0
+                    // Align the measured overflow instead of flinging a nearly
+                    // visible reply past the opposite edge of the viewport.
+                    let distance = min(view.height * 0.3, max(24, (upward ? below : above) + 12))
+                    let start = CGPoint(x: view.midX, y: view.midY + (upward ? distance : -distance) / 2)
+                    let end = CGPoint(x: view.midX, y: view.midY - (upward ? distance : -distance) / 2)
+                    try require(distance.isFinite && distance > 0 && view.contains(start) && view.contains(end),
+                                "Historical text alignment must stay inside the unobscured viewport")
+                    let origin = app.coordinate(withNormalizedOffset: .zero)
+                    origin.withOffset(CGVector(dx: start.x, dy: start.y))
+                        .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: end.x, dy: end.y)),
+                               withVelocity: .slow, thenHoldForDuration: 0.2)
+                    continue
                 }
             }
             let origin = app.coordinate(withNormalizedOffset: .zero)
