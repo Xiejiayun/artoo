@@ -238,6 +238,7 @@ struct CollaborationView: View {
         .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 10)
         .background(ArtooTokens.ColorToken.surfaceRaised)
         .overlay(alignment: .top) { Divider() }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation.composer")
     }
 
