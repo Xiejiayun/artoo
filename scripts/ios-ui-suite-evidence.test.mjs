@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { expectedNativeScreenshots } from "./e2e-report.mjs";
+import { nativeRetentionReportFixture } from "./fixtures/native-retention-report-test-fixture.mjs";
 import { loadNativeSuiteEvidence } from "./ios-ui-suite-evidence.mjs";
 
 // Reduced xcresult shape; these files are evidence-validator unit fixtures,
@@ -22,8 +24,8 @@ function attempt(suite = "assistant") {
     xcresult_tests: join(directory, "diagnostics/xcresult-tests.json"), xcresult_summary: join(directory, "diagnostics/xcresult-summary.json") };
   const device = { deviceId: "unit-fixture" }, configuration = { configurationId: "1" };
   const counts = { passedTests: 1, failedTests: 0, skippedTests: 0, expectedFailures: 0 };
-  const method = suite === "correction" ? "testTaskCorrectionRetainsWorkAndConfirmsExactStop" : suite === "mentions" ? "testCrossProjectHistoricalMentionReadRetryAndDraftIsolation" : "testDirectAgentConversationAndRecovery";
-  const className = suite === "correction" ? "ExecutionCorrectionUITests" : suite === "mentions" ? "MentionsUITests" : "AssistantConversationUITests";
+  const method = suite === "retention" ? "testSuccessfulWorkspaceRetainsFilesWithoutArtifactsAfterRelaunch" : suite === "correction" ? "testTaskCorrectionRetainsWorkAndConfirmsExactStop" : suite === "mentions" ? "testCrossProjectHistoricalMentionReadRetryAndDraftIsolation" : "testDirectAgentConversationAndRecovery";
+  const className = suite === "retention" ? "SuccessfulWorkspaceRetentionUITests" : suite === "correction" ? "ExecutionCorrectionUITests" : suite === "mentions" ? "MentionsUITests" : "AssistantConversationUITests";
   const testCase = { nodeType: "Test Case", name: `${method}()`, result: "Passed",
     nodeIdentifier: `${className}/${method}()`,
     nodeIdentifierURL: `test://com.apple.xcode/Artoo/ArtooUITests/${className}/${method}` };
@@ -49,14 +51,33 @@ function attempt(suite = "assistant") {
     for (const image of parent.peer_screenshots) writeFileSync(image.path,
       Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP8KuTxn4GBgYGJAQoAI8UCUpBcPuMAAAAASUVORK5CYII=", "base64"));
   }
-  if (suite === "correction") parent.correction = { passed: true };
+  if (suite === "correction") {
+    parent.correction = { passed: true, counts: { runs: 4, launches: 4, approvals: 4, reviews: 2, artifacts: 2, retained_worktrees: 4, live_owned_processes: 0 }, attempts: [] };
+    parent.retained_workspace_export = { files: [] };
+    for (const [index, mode] of ["initial", "failed", "corrected", "hold"].entries()) {
+      const slot = index + 1, target = join(directory, "correction-evidence/retained-workspaces", `slot-${slot}`);
+      mkdirSync(target, { recursive: true });
+      const value = { slot, mode, run_id: `unit_run_${slot}`, workspace_root: join(directory, `original-${slot}`), retention_event_id: `unit_retention_${slot}`, retained: true };
+      for (const name of ["implementation.txt", "unsaved.txt", "ignored.bin", "context_pack.md", ...([1, 3].includes(slot) ? ["changes.patch"] : [])]) {
+        const bytes = Buffer.from(`unit fixture ${slot}/${name}`), hash = createHash("sha256").update(bytes).digest("hex"), copy = join(target, name);
+        writeFileSync(copy, bytes);
+        parent.retained_workspace_export.files.push({ slot, run_id: value.run_id, source: join(value.workspace_root, name), copy, bytes: bytes.length, sha256: hash });
+        if (name === "context_pack.md") value.context_sha256 = hash;
+        if (name === "ignored.bin") { value.ignored_sha256 = hash; value.ignored_size = bytes.length; }
+        if (name === "changes.patch") value.artifact_sha256 = hash;
+      }
+      parent.correction.attempts.push(value);
+    }
+    writeFileSync(join(directory, "correction-evidence/retained-workspaces/manifest.json"), JSON.stringify(parent.retained_workspace_export));
+  }
+  const retention = suite === "retention" ? nativeRetentionReportFixture(directory, parent) : null;
   const save = () => {
     for (const [name, value] of [["suite-result.json", parent], ["xctest-result.json", native],
       ["diagnostics/xcresult-tests.json", tests], ["diagnostics/xcresult-summary.json", summary]]) {
       writeFileSync(join(directory, name), JSON.stringify(value));
     }
   };
-  return { directory, parent, native, tests, testCase, summary, save, close: () => rmSync(directory, { recursive: true, force: true }) };
+  return { directory, parent, native, tests, testCase, summary, save, retention, close: () => rmSync(directory, { recursive: true, force: true }) };
 }
 
 test("one finalized matching assistant attempt retains its exact subset identity", () => {
@@ -124,4 +145,35 @@ test("correction requires successful process verification as well as exact XCTes
     fixture.parent.correction.passed = false; fixture.save();
     assert.throws(() => loadNativeSuiteEvidence(fixture.directory, "correction"));
   } finally { fixture.close(); }
+});
+
+
+for (const [name, mutate] of [
+  ["missing retained export", (f) => { delete f.parent.retained_workspace_export; }],
+  ["legacy successful-work deletion", (f) => { f.parent.correction.counts.retained_worktrees = 2; }],
+  ["missing ignored-file copy", (f) => { rmSync(f.parent.retained_workspace_export.files.find((file) => file.copy.endsWith("ignored.bin")).copy); }],
+  ["changed successful-work bytes", (f) => { writeFileSync(f.parent.retained_workspace_export.files[0].copy, "changed"); }],
+  ["missing completed-work UI capture", (f) => { const index = expectedNativeScreenshots("correction").indexOf("Native correction completed initial workspace retained"); rmSync(join(f.native.attachments_directory, `${index}.png`)); }],
+]) test(`correction aggregate refuses ${name}`, () => {
+  const fixture = attempt("correction");
+  try { mutate(fixture); fixture.save(); assert.throws(() => loadNativeSuiteEvidence(fixture.directory, "correction")); }
+  finally { fixture.close(); }
+});
+
+
+test("retention aggregate requires its own exact case, native Copy record and post-cleanup four-file export", () => {
+  const fixture = attempt("retention");
+  try { fixture.save(); assert.equal(loadNativeSuiteEvidence(fixture.directory, "retention").contract.passed, true); }
+  finally { fixture.close(); }
+});
+for (const [name, mutate] of [
+  ["protocol pass without native Copy", (f) => { f.retention.record.workspace_retention_views[0].path_and_branch_copied_through_ui = false; f.retention.saveRecord(); }],
+  ["missing zero-artifact UI capture", (f) => { const index = expectedNativeScreenshots("retention").indexOf("Native retention no uploaded artifacts"); rmSync(join(f.native.attachments_directory, `${index}.png`)); }],
+  ["missing native cold-relaunch record", (f) => { rmSync(f.retention.recordPath); }],
+  ["uploaded artifact instead of zero", (f) => { f.parent.retention.counts.artifacts = 1; }],
+  ["deleted retained file", (f) => { rmSync(join(f.retention.target, "ignored.bin")); }],
+]) test(`retention aggregate refuses ${name}`, () => {
+  const fixture = attempt("retention");
+  try { mutate(fixture); fixture.save(); assert.throws(() => loadNativeSuiteEvidence(fixture.directory, "retention")); }
+  finally { fixture.close(); }
 });

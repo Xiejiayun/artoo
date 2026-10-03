@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { selectUISuites, verifyUISuiteResults } from "../apps/ios/scripts/ui-suite-contract.mjs";
+import { selectUISuites, verifyUISuiteResults, nativeUISuiteTimeouts } from "../apps/ios/scripts/ui-suite-contract.mjs";
 import { getE2EReportContext, readXCTestScreenshots, writeE2EReport } from "./e2e-report.mjs";
 import { loadNativeSuiteEvidence, readMentionsPeerScreenshots } from "./ios-ui-suite-evidence.mjs";
 import { closeOwnedProcessGroup } from "./owned-process-group.mjs";
@@ -30,7 +30,7 @@ mkdirSync(output, { recursive: true });
 writeE2EReport({ outputPath: html, title: "Artoo iOS · native suite verification", report });
 try {
   const args = process.argv.slice(2);
-  if (args.length > 1 || args.some((arg) => !/^--suite=(core|assistant|mentions|correction|all)$/.test(arg))) throw new Error("Usage: ios-ui-suites-e2e.mjs [--suite=core|assistant|mentions|correction|all]");
+  if (args.length > 1 || args.some((arg) => !/^--suite=(core|assistant|mentions|correction|retention|all)$/.test(arg))) throw new Error("Usage: ios-ui-suites-e2e.mjs [--suite=core|assistant|mentions|correction|retention|all]");
   const selection = args[0]?.slice(8) ?? "all";
   report.selection = selection;
   const selected = selectUISuites(selection);
@@ -51,13 +51,13 @@ try {
     const entry = { suite, directory: attempt, passed: false };
     report.suites.push(entry);
     let parentPID;
-    const script = { core: "scripts/ios-ui-e2e.mjs", assistant: "scripts/ios-ui-assistant-e2e.mjs", mentions: "scripts/ios-ui-mentions-e2e.mjs", correction: "scripts/ios-ui-correction-e2e.mjs" }[suite];
+    const script = { core: "scripts/ios-ui-e2e.mjs", assistant: "scripts/ios-ui-assistant-e2e.mjs", mentions: "scripts/ios-ui-mentions-e2e.mjs", correction: "scripts/ios-ui-correction-e2e.mjs", retention: "scripts/ios-ui-retention-e2e.mjs" }[suite];
     try {
       entry.exit_code = await new Promise((done, reject) => {
         child = spawn(process.execPath, [join(root, script)], { cwd: root, stdio: "inherit", detached: true,
           env: { ...process.env, ARTOO_IOS_UI_OUTPUT_DIR: attempt, ARTOO_IOS_UI_RESULT_JSON: join(attempt, "xctest-result.json") } });
         parentPID = child.pid;
-        const limit = ["core", "correction"].includes(suite) ? 2_520_000 : 1_920_000;
+        const limit = nativeUISuiteTimeouts(suite).aggregate;
         const timeout = setTimeout(() => { abortReason = new Error(`Native ${suite} parent exceeded ${limit / 60_000} minutes`); terminate(); }, limit);
         child.once("error", (error) => { clearTimeout(timeout); reject(error); });
         child.once("exit", (code) => { clearTimeout(timeout); clearTimeout(killTimer); child = null; done(code); });

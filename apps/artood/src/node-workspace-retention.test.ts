@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -107,8 +107,8 @@ function expectPreserved(fixture: Awaited<ReturnType<typeof runWorkspaceCase>>) 
   expect(fixture.gitCalls.some((args) => args.includes("remove"))).toBe(false);
 }
 
-describe("unsuccessful worktree retention", () => {
-  it.each(["failed", "cancelled"] as const)("preserves existing-file edits and new files after a delivered %s outcome", async (phase) => {
+describe("worktree retention", () => {
+  it.each(["completed", "failed", "cancelled"] as const)("preserves existing-file edits and new files after a delivered %s outcome", async (phase) => {
     const fixture = await runWorkspaceCase({ phase });
     expectPreserved(fixture);
     const events = runEvents(fixture.received), diagnostic = events.find((message) => message.event.type === "run.output");
@@ -124,12 +124,14 @@ describe("unsuccessful worktree retention", () => {
     expect(fixture.stops).toBe(phase === "cancelled" ? 1 : 0);
   });
 
-  it("continues removing a successfully completed worktree after its terminal frame is delivered", async () => {
-    const fixture = await runWorkspaceCase({ phase: "completed" });
-    expect(existsSync(fixture.workspaceRoot)).toBe(false);
-    expect(readFileSync(fixture.baselinePath)).toEqual(fixture.originalBytes);
-    expect(fixture.gitCalls.map((args) => args[3])).toEqual(["add", "remove"]);
-    expect(runEvents(fixture.received).map((message) => message.event.type)).toEqual(["run.lifecycle", "run.lifecycle"]);
+  it.each(["sync", "async"] as const)("does not complete when required recovery output is rejected: %s", async (rejectRetention) => {
+    const fixture = await runWorkspaceCase({ phase: "completed", rejectRetention });
+    expectPreserved(fixture);
+    expect(runEvents(fixture.attempted).some((message) => message.event.type === "run.lifecycle" && message.event.payload.phase === "completed")).toBe(false);
+    expect(runEvents(fixture.received).at(-1)?.event).toMatchObject({ type: "run.lifecycle", payload: {
+      phase: "failed", reason: "retention diagnostic transport unavailable",
+    } });
+    expect(fixture.stops).toBe(1);
   });
 
   it.each([["failed", "sync"], ["failed", "async"], ["cancelled", "sync"], ["cancelled", "async"]] as const)("keeps the actual %s reason when retention output delivery fails: %s", async (phase, rejectRetention) => {
@@ -141,10 +143,16 @@ describe("unsuccessful worktree retention", () => {
     expect(fixture.stops).toBe(phase === "cancelled" ? 1 : 0);
   });
 
-  it.each([false, "async"] as const)("does not clean when completed terminal delivery fails, including diagnostic rejection: %s", async (rejectRetention) => {
-    const fixture = await runWorkspaceCase({ phase: "completed", rejectTerminal: true, rejectRetention });
+  it("corrects the recovery outcome when completed terminal delivery fails", async () => {
+    const fixture = await runWorkspaceCase({ phase: "completed", rejectTerminal: true });
     expectPreserved(fixture);
-    expect(runEvents(fixture.received).at(-1)?.event).toMatchObject({ type: "run.lifecycle", payload: { phase: "failed", reason: "terminal transport unavailable" } });
+    const events = runEvents(fixture.received);
+    expect(events.at(-1)?.event).toMatchObject({ type: "run.lifecycle", payload: { phase: "failed", reason: "terminal transport unavailable" } });
+    const diagnostics = events.flatMap((message) => message.event.type === "run.output"
+      ? [JSON.parse(message.event.payload.text.slice(retentionPrefix.length))] : []);
+    expect(diagnostics.map((diagnostic) => diagnostic.outcome)).toEqual(["completed", "incomplete_delivery"]);
+    expect(events.at(-2)?.event.type).toBe("run.output");
+    expect(runEvents(fixture.attempted).map((message) => message.sequence)).toEqual(runEvents(fixture.attempted).map((_, index) => index));
     expect(fixture.stops).toBe(1);
   });
 
@@ -165,8 +173,8 @@ describe("unsuccessful worktree retention", () => {
     expectPreserved(fixture);
   });
 
-  it("leaves ordinary workspaces intact without adding a worktree-retention diagnostic", async () => {
-    const fixture = await runWorkspaceCase({ phase: "failed", ordinary: true });
+  it.each(["completed", "failed"] as const)("leaves ordinary workspaces intact without a retention diagnostic after %s", async (phase) => {
+    const fixture = await runWorkspaceCase({ phase, ordinary: true });
     expectPreserved(fixture); expect(fixture.gitCalls).toEqual([]);
     expect(runEvents(fixture.received).map((message) => message.event.type)).toEqual(["run.lifecycle", "run.lifecycle"]);
   });

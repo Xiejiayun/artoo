@@ -203,6 +203,7 @@ export function attachNodeBinding(
             root: workspaceRoot,
             ...(run.workspaceBranch != null ? { branch: run.workspaceBranch } : {}),
           },
+          ...(run.workspaceRoot != null && run.workspaceBranch != null ? { workspace_retention_reporting: "typed-v1" } : {}),
           context_pack:
             parsedContextPack?.success === true
               ? { id: contextPackId, payload: parsedContextPack.data }
@@ -315,6 +316,8 @@ function mapRunEvent(message: RunEventMessage): IngestEnvelope | null {
     event = { kind: "answer", text: body.payload.text };
   } else if (body.type === "run.usage") {
     event = { kind: "usage", usage: body.payload };
+  } else if (body.type === "run.workspace.retained") {
+    event = { kind: "workspace_retained", retention: body.payload };
   } else if (body.type === "artifact.created") {
     event = {
       kind: "artifact",
@@ -322,13 +325,15 @@ function mapRunEvent(message: RunEventMessage): IngestEnvelope | null {
       uri: body.payload.uri,
       checksum: body.payload.checksum ?? null,
     };
-  } else {
+  } else if (body.type === "run.lifecycle") {
     const phase = body.payload.phase;
     if (phase === "started" || phase === "completed" || phase === "failed" || phase === "cancelled") {
       event = { kind: "lifecycle", phase, failureReason: body.payload.reason ?? undefined };
     } else {
       event = null; // paused/resumed are not part of the v0.1 core loop
     }
+  } else {
+    event = null;
   }
   if (event === null) {
     return null;

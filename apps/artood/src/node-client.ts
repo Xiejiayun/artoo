@@ -10,19 +10,18 @@ import type {
   ServerToNodeMessage,
   Unsubscribe
 } from "@artoo/protocol";
-import { assertWorkspaceScope } from "@artoo/protocol";
+import { adapterRunEventBodySchema, assertWorkspaceScope } from "@artoo/protocol";
+import { RunWorkspaceRetainedPayloadSchema, type WorkspaceRetentionOutcome } from "@artoo/domain";
 
 import type { AdapterRegistry } from "./adapter-registry.js";
 import { assertRealWorkspaceScope } from "./process-adapter.js";
 import type { ArtifactUploader } from "./artifact-upload.js";
 import {
-  cleanupWorkspace,
   createGitCliExecutor,
   materializeWorkspace,
   planWorkspace,
   type GitExecutor,
-  type WorkspaceConfig,
-  type WorkspacePlan
+  type WorkspaceConfig
 } from "./workspace-binding.js";
 
 /**
@@ -133,7 +132,17 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       return;
     }
     const plan = planResult.plan;
+    // Validate an advertised raw branch even if legacy planning trims it empty.
+    const typedRetention = payload.workspace.branch != null && payload.workspace_retention_reporting === "typed-v1";
     try {
+      if (typedRetention) {
+        if (transport.acknowledgesRunEvents !== true) {
+          throw new Error("typed workspace retention requires committed run-event receipts");
+        }
+        // Reject unsupported identity before materialization or a writer starts.
+        RunWorkspaceRetainedPayloadSchema.parse({ version: 1, workspace_root: plan.root,
+          workspace_branch: payload.workspace.branch, outcome: "unconfirmed" });
+      }
       assertWorkspaceScope(plan.root, payload.policy_snapshot.filesystem_write_scope);
       if (workspaceConfig.allowedRoots) {
         assertRealWorkspaceScope(plan.root, workspaceConfig.allowedRoots);
@@ -168,31 +177,49 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     }
     runs.set(payload.run_id, { handle, adapter });
     ready();
-    await ackAccepted(command.id);
-    let delivered = false;
-    let completed = false;
-    let unsuccessful = false;
     let sequence = 0;
-    let retentionReported = false;
-    const reportRetainedWorkspace = async (outcome: "failed" | "cancelled" | "incomplete_delivery" | "unconfirmed"): Promise<void> => {
-      if (plan.kind !== "worktree" || retentionReported) return;
-      retentionReported = true;
-      // Managed desktop workers discard process stderr. Keep the recovery
-      // location in the existing persisted run-output channel, without adding
-      // credentials, task content or a new protocol/API field.
+    let retentionReported: WorkspaceRetentionOutcome | undefined;
+    const reportRetainedWorkspace = async (outcome: WorkspaceRetentionOutcome): Promise<void> => {
+      if (plan.kind !== "worktree") return;
+      // Only completed delivery can need one subsequent correction. A timed-out
+      // report may already have committed, so its correction uses a new sequence.
+      if (retentionReported && !(retentionReported === "completed" && outcome === "incomplete_delivery")) return;
+      retentionReported = outcome;
+      if (typedRetention) {
+        try {
+          await transport.send({ kind: "run.event", node_id: nodeId, run_id: payload.run_id, sequence: sequence++,
+            event: { type: "run.workspace.retained", payload: { version: 1, workspace_root: plan.root,
+              workspace_branch: plan.branch, outcome } },
+          });
+        } catch (error) {
+          // Success requires committed typed evidence; other outcomes preserve
+          // the actual failure/cancellation even if metadata delivery fails.
+          if (outcome === "completed") throw error;
+        }
+      }
+      // Keep the legacy diagnostic readable, without treating runtime text as
+      // retention authority. In typed mode this diagnostic is only best-effort.
       try {
-        await transport.send({ kind: "run.event", node_id: nodeId, run_id: payload.run_id, sequence: sequence++,
+        const diagnostic = transport.send({ kind: "run.event", node_id: nodeId, run_id: payload.run_id, sequence: sequence++,
           event: { type: "run.output", payload: { stream: "stderr", text: `Worktree retained for recovery: ${JSON.stringify({
             run_id: payload.run_id, task_id: payload.task_id, workspace_root: plan.root,
             workspace_branch: plan.branch, outcome,
           })}` } },
-        });
-      } catch { /* A diagnostic failure must not replace the actual outcome. */ }
+        }, typedRetention ? { delivery: "best-effort" } : undefined);
+        // Typed metadata already supplies the durable authority. Never wait on
+        // the optional diagnostic, including transports that ignore the option.
+        if (typedRetention) void diagnostic.catch(() => {});
+        else await diagnostic;
+      } catch (error) {
+        if (!typedRetention && outcome === "completed") { retentionReported = undefined; throw error; }
+      }
     };
     try {
-      for await (const rawEvent of adapter.streamEvents(handle)) {
-        if (rawEvent.type === "run.lifecycle" && (rawEvent.payload.phase === "failed" || rawEvent.payload.phase === "cancelled")) {
-          unsuccessful = true;
+      await ackAccepted(command.id);
+      for await (const yielded of adapter.streamEvents(handle)) {
+        // Custom adapters and child output have no authority to report retention.
+        const rawEvent = adapterRunEventBodySchema.parse(yielded);
+        if (rawEvent.type === "run.lifecycle" && (rawEvent.payload.phase === "completed" || rawEvent.payload.phase === "failed" || rawEvent.payload.phase === "cancelled")) {
           await reportRetainedWorkspace(rawEvent.payload.phase);
         }
         const event = rawEvent.type === "artifact.created" && options.uploadArtifact
@@ -206,9 +233,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         };
         sequence += 1;
         await transport.send(message);
-        if (event.type === "run.lifecycle") completed = event.payload.phase === "completed";
       }
-      delivered = true;
     } catch (error) {
       // Preserve the worktree when a deliverable could not be safely transferred.
       // A delivery error can occur while the process is still writing. Confirm
@@ -222,19 +247,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     } finally {
       runs.delete(payload.run_id);
       finished.add(payload.run_id);
-      // A delivered failure/cancellation is not successful execution. Preserve
-      // its modified and new files, including when no artifact was uploaded.
-      if (delivered && completed && !unsuccessful) await safeCleanup(plan);
-      else await reportRetainedWorkspace("unconfirmed");
-    }
-  }
-
-  async function safeCleanup(plan: WorkspacePlan): Promise<void> {
-    try {
-      await cleanupWorkspace(plan, git);
-    } catch {
-      // Best-effort: the run outcome is already reported, so a worktree that
-      // fails to remove must not turn a finished run into a failure.
+      // Artifacts do not certify that every modified/new/ignored byte is saved.
+      // Keep owned worktrees for deliberate recovery or cleanup, even on success.
+      await reportRetainedWorkspace("unconfirmed");
     }
   }
 

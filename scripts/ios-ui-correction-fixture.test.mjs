@@ -10,7 +10,7 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
-async function controlFor(t, overrides = {}) {
+async function controlFor(t, overrides = {}, options = {}) {
   const calls = [], errors = [];
   const scenario = {
     async observe() { calls.push("observe"); return { snapshot: null, live_pids: [] }; },
@@ -18,7 +18,7 @@ async function controlFor(t, overrides = {}) {
     async close() { calls.push("close"); },
     ...overrides,
   };
-  const control = await createCorrectionControl({ scenario, errors });
+  const control = await createCorrectionControl({ scenario, errors, ...options });
   t.after(() => control.close());
   const request = async (path, { method = "GET", token = control.token, body } = {}) => {
     const response = await fetch(`${control.url}${path}`, { method, headers: {
@@ -142,4 +142,26 @@ test("an authenticated artifact read cannot follow a redirect or treat a denied 
       artifact: { id, uri: `/api/v1/artifacts/${id}/content` } }));
   }
   assert.equal(redirectedRequests, 0);
+});
+
+
+test("clipboard observer routing is inside the existing private loopback authentication boundary", async (t) => {
+  const calls = [];
+  const clipboard = {
+    handle(req, reply) {
+      if (req.url !== "/clipboard/read") return false;
+      calls.push("read"); req.resume(); reply(200, { observed: true }); return true;
+    },
+    async close() { calls.push("closed"); },
+    evidence() { return [{ infrastructure_only: true }]; },
+  };
+  const { control, request } = await controlFor(t, {}, { clipboard });
+  for (const token of [null, "wrong-token"]) {
+    assert.equal((await request("/clipboard/read", { method: "POST", token, body: "{}" })).status, 401);
+  }
+  assert.deepEqual(calls, []);
+  assert.equal((await request("/clipboard/read", { method: "POST", body: "{}" })).status, 200);
+  assert.deepEqual(calls, ["read"]);
+  assert.deepEqual(control.clipboardEvidence(), [{ infrastructure_only: true }]);
+  await control.close(); assert.deepEqual(calls, ["read", "closed"]);
 });

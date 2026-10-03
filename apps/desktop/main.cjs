@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } = require("electron");
+const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, session, shell } = require("electron");
 const path = require("node:path");
 const { fileURLToPath } = require("node:url");
 const { createDesktopController } = require("./desktop-controller.cjs");
@@ -54,6 +54,11 @@ function installBridge() {
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
   ipcMain.handle("artoo:openExternal", async (event, value) => { checkSender(event); return openExternal(value); });
+  ipcMain.handle("artoo:writeClipboardText", (event, value) => {
+    checkSender(event);
+    if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 64 * 1024) throw new Error("Clipboard text must be a string of at most 64 KiB");
+    clipboard.writeText(value);
+  });
 }
 function createWindow() {
   mainWindow = new BrowserWindow({

@@ -40,103 +40,109 @@ struct CollaborationView: View {
         _chat = StateObject(wrappedValue: RoomMessagesViewModel(client: client, roomId: roomId, threadRootId: threadRoot?.id, allowsAssistantRequests: threadRoot?.isPlanningDiscussion != true))
     }
     var body: some View {
-        ScrollViewReader { proxy in
-            List {
-                Section {
-                    ArtooPageIntro(title: threadRoot == nil ? conversationTitle : "Keep the conversation together",
-                                   message: roomDescription.isEmpty ? (threadRoot == nil ? "Share an update, ask a question, or turn a conversation into work." : "Replies here stay connected to the original message.") : roomDescription,
-                                   systemImage: threadRoot == nil ? "number" : "bubble.left.and.bubble.right")
-                        .listRowSeparator(.hidden)
-                    if !chat.allowsAssistantRequests {
-                        Text("Agents take turns within this goal's discussion limits. Add a team reply to share constraints; manage the discussion from the goal.")
-                            .font(.caption).foregroundStyle(.secondary).listRowSeparator(.hidden)
-                    }
-                }
-                if let root = threadRoot { Section("Original message") { messageContent(root).id(root.id) } }
-                if let focus = focusedMessage, focus.id != threadRoot?.id { Section("Mentioned reply") { messageContent(focus).id(focus.id) } }
-                Section {
-                    if chat.hasOlder {
-                        Button { Task { await chat.loadOlder() } } label: { Label("Load earlier messages", systemImage: "arrow.up") }
-                            .frame(maxWidth: .infinity, minHeight: 44).disabled(chat.loading)
-                    }
-                    if chat.messages.isEmpty && !chat.loading {
-                        EmptyStateView(systemImage: "bubble.left", title: threadRoot == nil ? "Start the conversation" : "Be the first to reply",
-                                       message: "Share context with the team. Mention someone when you need their attention.")
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                List {
+                    Section {
+                        ArtooPageIntro(title: threadRoot == nil ? conversationTitle : "Keep the conversation together",
+                                       message: roomDescription.isEmpty ? (threadRoot == nil ? "Share an update, ask a question, or turn a conversation into work." : "Replies here stay connected to the original message.") : roomDescription,
+                                       systemImage: threadRoot == nil ? "number" : "bubble.left.and.bubble.right")
                             .listRowSeparator(.hidden)
+                        if !chat.allowsAssistantRequests {
+                            Text("Agents take turns within this goal's discussion limits. Add a team reply to share constraints; manage the discussion from the goal.")
+                                .font(.caption).foregroundStyle(.secondary).listRowSeparator(.hidden)
+                        }
                     }
-                    ForEach(Array(visibleMessages.enumerated()), id: \.element.id) { index, item in
-                        VStack(alignment: .leading, spacing: 8) {
-                            if startsNewDay(index) { messageDate(item) }
-                            messageContent(item)
-                            if threadRoot == nil {
-                                NavigationLink {
-                                    CollaborationView(client: model.client, roomId: roomId, taskId: taskId, threadRoot: item,
-                                                      roomName: roomName, roomDescription: roomDescription)
-                                } label: {
-                                    Label((item.replyCount ?? 0) == 0 ? "Reply in thread" : "\(item.replyCount ?? 0) replies", systemImage: "bubble.left.and.bubble.right")
-                                        .font(.caption.weight(.semibold)).foregroundStyle(ArtooTokens.ColorToken.accent)
-                                        .frame(minHeight: 44, alignment: .leading)
+                    if let root = threadRoot { Section("Original message") { messageContent(root).id(root.id) } }
+                    if let focus = focusedMessage, focus.id != threadRoot?.id { Section("Mentioned reply") { messageContent(focus).id(focus.id) } }
+                    Section {
+                        if chat.hasOlder {
+                            Button { Task { await chat.loadOlder() } } label: { Label("Load earlier messages", systemImage: "arrow.up") }
+                                .frame(maxWidth: .infinity, minHeight: 44).disabled(chat.loading)
+                        }
+                        if chat.messages.isEmpty && !chat.loading {
+                            EmptyStateView(systemImage: "bubble.left", title: threadRoot == nil ? "Start the conversation" : "Be the first to reply",
+                                           message: "Share context with the team. Mention someone when you need their attention.")
+                                .listRowSeparator(.hidden)
+                        }
+                        ForEach(Array(visibleMessages.enumerated()), id: \.element.id) { index, item in
+                            VStack(alignment: .leading, spacing: 8) {
+                                if startsNewDay(index) { messageDate(item) }
+                                messageContent(item)
+                                if threadRoot == nil {
+                                    NavigationLink {
+                                        CollaborationView(client: model.client, roomId: roomId, taskId: taskId, threadRoot: item,
+                                                          roomName: roomName, roomDescription: roomDescription)
+                                    } label: {
+                                        Label((item.replyCount ?? 0) == 0 ? "Reply in thread" : "\(item.replyCount ?? 0) replies", systemImage: "bubble.left.and.bubble.right")
+                                            .font(.caption.weight(.semibold)).foregroundStyle(ArtooTokens.ColorToken.accent)
+                                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                            .contentShape(Rectangle())
+                                    }
+                                    .padding(.leading, 50)
+                                    .buttonStyle(.plain)
+                                    .accessibilityIdentifier("thread.\(item.id)")
                                 }
-                                .padding(.leading, 50)
-                                .buttonStyle(.plain)
-                                .accessibilityIdentifier("thread.\(item.id)")
                             }
+                            .padding(.vertical, 5)
+                            .id(item.id)
+                            .onAppear {
+                                visibleMessageIDs.insert(item.id)
+                                if item.id == chat.messages.last?.id { unseenMessageCount = 0 }
+                            }
+                            .onDisappear { visibleMessageIDs.remove(item.id) }
+                            .listRowSeparator(.hidden)
                         }
-                        .padding(.vertical, 5)
-                        .id(item.id)
-                        .onAppear {
-                            visibleMessageIDs.insert(item.id)
-                            if item.id == chat.messages.last?.id { unseenMessageCount = 0 }
-                        }
-                        .onDisappear { visibleMessageIDs.remove(item.id) }
-                        .listRowSeparator(.hidden)
+                        if chat.hasNewer { Button("Load new messages") { Task { await chat.refresh() } }.frame(minHeight: 44).disabled(chat.loading) }
+                        if chat.loading { ProgressView("Loading conversation…") }
                     }
-                    if chat.hasNewer { Button("Load new messages") { Task { await chat.refresh() } }.frame(minHeight: 44).disabled(chat.loading) }
-                    if chat.loading { ProgressView("Loading conversation…") }
+                    if chat.allowsAssistantRequests && chat.draft.target == "assistant" {
+                        Section("Agent for this request") { assistantConfiguration }.id("assistantConfiguration")
+                    }
+                    assistantRequests
+                    deliveryStatus
+                    if let message = error ?? model.actionError ?? model.state.errorMessage {
+                        Section { Text(message).font(.callout).foregroundStyle(ArtooTokens.ColorToken.danger) }
+                    }
                 }
-                if chat.allowsAssistantRequests && chat.draft.target == "assistant" {
-                    Section("Agent for this request") { assistantConfiguration }.id("assistantConfiguration")
-                }
-                assistantRequests
-                deliveryStatus
-                if let message = error ?? model.actionError ?? model.state.errorMessage {
-                    Section { Text(message).font(.callout).foregroundStyle(ArtooTokens.ColorToken.danger) }
-                }
-            }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .background(ArtooTokens.ColorToken.surfaceRaised)
-            .scrollDismissesKeyboard(.interactively)
-            .onChange(of: scrollRequest) { _, _ in
-                unseenMessageCount = 0
-                if let last = chat.messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
-            }
-            .onChange(of: deliveryDetailsRequest) { _, _ in
-                withAnimation { proxy.scrollTo("deliveryStatus", anchor: .top) }
-            }
-            .onChange(of: chat.loading) { _, loading in
-                // A mention can target the root of a thread with no replies.
-                if !loading && chat.messages.isEmpty { placeInitialHistory(using: proxy) }
-            }
-            .onChange(of: chat.messages.map(\.id)) { previous, current in
-                guard let latest = current.last else { return }
-                if !placedInitialHistory {
-                    placeInitialHistory(using: proxy)
-                    return
-                }
-                guard previous.last != latest else { return } // Loading older history keeps the reader's place.
-                if previous.last.map({ visibleMessageIDs.contains($0) }) == true {
-                    proxy.scrollTo(latest, anchor: .bottom)
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(ArtooTokens.ColorToken.surfaceRaised)
+                .scrollDismissesKeyboard(.interactively)
+                .onChange(of: scrollRequest) { _, _ in
                     unseenMessageCount = 0
-                } else {
-                    let known = Set(previous)
-                    unseenMessageCount += current.filter { !known.contains($0) }.count
+                    if let last = chat.messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                }
+                .onChange(of: deliveryDetailsRequest) { _, _ in
+                    withAnimation { proxy.scrollTo("deliveryStatus", anchor: .top) }
+                }
+                .onChange(of: chat.loading) { _, loading in
+                    // A mention can target the root of a thread with no replies.
+                    if !loading && chat.messages.isEmpty { placeInitialHistory(using: proxy) }
+                }
+                .onChange(of: chat.messages.map(\.id)) { previous, current in
+                    guard let latest = current.last else { return }
+                    if !placedInitialHistory {
+                        placeInitialHistory(using: proxy)
+                        return
+                    }
+                    guard previous.last != latest else { return } // Loading older history keeps the reader's place.
+                    if previous.last.map({ visibleMessageIDs.contains($0) }) == true {
+                        proxy.scrollTo(latest, anchor: .bottom)
+                        unseenMessageCount = 0
+                    } else {
+                        let known = Set(previous)
+                        unseenMessageCount += current.filter { !known.contains($0) }.count
+                    }
+                }
+                .onChange(of: isAgentRequest) { _, selected in
+                    if selected { withAnimation { proxy.scrollTo("assistantConfiguration", anchor: .bottom) } }
                 }
             }
-            .onChange(of: isAgentRequest) { _, selected in
-                if selected { withAnimation { proxy.scrollTo("assistantConfiguration", anchor: .bottom) } }
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            composer
         }
+        .modifier(ComposerKeyboardAvoidance(enabled: focusedField == .composer))
         .safeAreaInset(edge: .top, spacing: 0) {
             HStack(spacing: 8) {
                 RealtimeStatusView(connection: container.realtime)
@@ -155,7 +161,6 @@ struct CollaborationView: View {
                 .background(ArtooTokens.ColorToken.surfaceRaised)
                 .overlay(alignment: .bottom) { Divider() }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
         .navigationTitle(threadRoot == nil ? conversationTitle : "Thread")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await refresh() }.liveRefresh { await refresh() }
@@ -166,12 +171,6 @@ struct CollaborationView: View {
                 if threadRoot == nil {
                     Button { showingWorkDetails = true } label: { Label("Channel details and work", systemImage: "info.circle") }
                         .accessibilityIdentifier("conversation.details")
-                }
-            }
-            ToolbarItemGroup(placement: .keyboard) {
-                if focusedField != nil {
-                    Spacer()
-                    Button("Done") { focusedField = nil }.accessibilityIdentifier("conversation.keyboard.done")
                 }
             }
         }
@@ -200,6 +199,7 @@ struct CollaborationView: View {
                     Spacer(minLength: 0)
                     if !isAgentRequest { mentionMenu }
                     deliveryDetailsButton
+                    composerDoneButton
                 }.frame(minHeight: 44)
             } else {
                 HStack {
@@ -207,6 +207,7 @@ struct CollaborationView: View {
                     Spacer()
                     mentionMenu
                     deliveryDetailsButton
+                    composerDoneButton
                 }
             }
             HStack(alignment: .bottom, spacing: 10) {
@@ -242,6 +243,20 @@ struct CollaborationView: View {
         .overlay(alignment: .top) { Divider() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation.composer")
+    }
+
+    @ViewBuilder private var composerDoneButton: some View {
+        if focusedField == .composer {
+            Button { focusedField = nil } label: {
+                Text("Done")
+                    .font(.body.weight(.semibold))
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("conversation.keyboard.done")
+        }
     }
 
     @ViewBuilder private var deliveryDetailsButton: some View {

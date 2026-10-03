@@ -3,8 +3,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { planningHash, planningReceiptPath, verifyMacPlanningTurns } from "./mac-planning-fixture.mjs";
+import { centerCompleteEvidence } from "./installed-mac-visual-evidence.mjs";
 
-export const macPlanningImageNames = ["macos-planning-instructions.png", "macos-planning-original.png", "macos-planning-suggestion.png", "macos-planning-accepted.png", "macos-planning-requests.png"];
+export const macPlanningImageNames = ["macos-planning-instructions.png", "macos-planning-original.png", "macos-planning-suggestion.png", "macos-planning-accepted.png", "macos-planning-requests.png", "macos-planning-dependent-task.png"];
 
 // All writes under test use the installed renderer. The authenticated API is
 // read-only here; the enclosing smoke owns the server, worker and cleanup.
@@ -17,8 +18,9 @@ export async function runInstalledMacPlanning({ page, workspace, configurationPa
   onEvidence(evidence);
   const check = (name) => { evidence.checks.push(name); console.log(`[mac-planning] PASS ${name}`); };
   const capture = async (locator, filename, caption) => {
+    await centerCompleteEvidence(locator, caption);
     const path = join(artifactDir, filename);
-    await locator.screenshot({ path, timeout: 30_000 });
+    await page.screenshot({ path, fullPage: false, animations: "disabled", timeout: 30_000 });
     assert.ok(existsSync(path));
     const image = { path, caption }; evidence.screenshots.push(image); onScreenshot(image);
   };
@@ -107,6 +109,9 @@ export async function runInstalledMacPlanning({ page, workspace, configurationPa
     assert.equal(readdirSync(fixture.context_receipts_directory).length, 3);
     evidence.turns = verifyMacPlanningTurns({ fixture, discussion, turns, root, messages, runs, usages, receipts });
     check("UI-selected instances on the installed computer produced three answers with exact prior-answer context through the bundled worker");
+    await expect(planning.getByRole("progressbar", { name: "Planning progress", exact: true })).toHaveAttribute("value", "3", { timeout: 15_000 });
+    await expect(planning.getByRole("button", { name: "Create plan proposal", exact: true })).toBeEnabled({ timeout: 15_000 });
+    check("The installed planning view shows all three contributions complete and a reviewable proposal before evidence capture");
 
     stage = "review collapsed coordinator summaries and exact original instructions";
     const thread = planning.getByRole("region", { name: "Thread replies", exact: true });
@@ -144,7 +149,12 @@ export async function runInstalledMacPlanning({ page, workspace, configurationPa
     await card.getByText("Show original reply", { exact: true }).click();
     await expect(card.locator("pre")).toBeVisible(); assert.equal(await card.locator("pre").textContent(), synthesis.body);
     await card.getByText("Show original reply", { exact: true }).click(); await expect(card.locator("pre")).not.toBeVisible();
-    await capture(card, macPlanningImageNames[2], "Installed Mac: three process-backed contributions produce a readable dependent plan before acceptance");
+    const proposedTasks = card.getByRole("list", { name: "Suggested tasks", exact: true }).locator(":scope > li");
+    await expect(proposedTasks).toHaveCount(2);
+    await expect(proposedTasks.nth(0).getByRole("heading", { name: `1. ${fixture.task_1_title}`, exact: true })).toBeVisible();
+    await capture(proposedTasks.nth(0), macPlanningImageNames[2], "Installed Mac: the complete first proposed task, criteria and artifact expectation before acceptance");
+    await expect(proposedTasks.nth(1).getByRole("heading", { name: `2. ${fixture.task_2_title}`, exact: true })).toBeVisible();
+    await capture(proposedTasks.nth(1), macPlanningImageNames[5], "Installed Mac: the complete second proposed task and its dependency on the first task before acceptance");
     const audit = async () => (await api(`/goals/${goal.id}/audit-bundle`)).bundle;
     const before = await audit(); assert.equal(before.tasks.length, 0); assert.equal(before.plans.length, 0);
     check("Coordinator summaries and every exact original instruction expand and collapse; viewing suggestions creates no plan or tasks");

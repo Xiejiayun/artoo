@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { inspectInstalledMacRetention } from "./installed-mac-retention-ui.mjs";
 import { hasCompletePNGPixelStream } from "../../../scripts/png-evidence.mjs";
 
 export const macCorrectionImageNames = [
@@ -12,6 +13,12 @@ export const macCorrectionImageNames = [
   "macos-correction-second-review.png", "macos-correction-stop-confirmation.png",
   "macos-correction-kept-running.png", "macos-correction-cancelled-retained.png",
   "macos-correction-final-history.png", "macos-correction-final-artifacts.png",
+  "macos-correction-initial-retained-output.png", "macos-correction-initial-retention-report.png",
+  "macos-correction-initial-retained-after-reload.png", "macos-correction-corrected-retained-output.png",
+  "macos-correction-corrected-retention-report.png", "macos-correction-failed-retention-report.png",
+  "macos-correction-cancelled-retention-report.png", "macos-correction-final-r1-retained.png",
+  "macos-correction-final-r2-retained.png", "macos-correction-final-r3-retained.png",
+  "macos-correction-final-r4-retained.png",
 ];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const sortedIds = (rows) => rows.map(({ id }) => id).sort();
@@ -37,6 +44,33 @@ export function parseMacCorrectionRetention(text, expected) {
   return lines[0];
 }
 
+/** The four-run fixture has one terminal report per run. UI expectations come
+ * from its independently observed compact reads and typed audit identity. */
+export function assertMacCorrectionRetention(observation, runId) {
+  const matches = observation.snapshot.runs.filter((item) => item.id === runId);
+  assert.equal(matches.length, 1); const run = matches[0];
+  assert.equal(run.task_id, observation.snapshot.task.id);
+  const outcomes = { completed: "Execution completed", failed: "Execution failed", cancelled: "Execution cancelled" };
+  assert.ok(Object.hasOwn(outcomes, run.status));
+  const reports = observation.bundle.events.filter((event) => event.type === "run.workspace.retained" && event.run_id === runId);
+  assert.equal(reports.length, 1, "The exact run must have one typed node-owned retention report");
+  const event = reports[0];
+  assert.equal(event.task_id, run.task_id); assert.equal(event.organization_id, observation.snapshot.task.organization_id);
+  assert.deepEqual(event.actor, { type: "system", id: run.computer_id });
+  assert.ok(typeof event.id === "string" && event.id.length > 0);
+  assert.ok(Number.isSafeInteger(event.position) && event.position > 0);
+  assert.ok(Number.isSafeInteger(event.sequence) && event.sequence >= 0);
+  assert.ok(Number.isFinite(Date.parse(event.occurred_at)));
+  assert.deepEqual(event.payload, { version: 1, workspace_root: run.workspace_root, workspace_branch: run.workspace_branch,
+    outcome: run.status, reporter_computer_id: run.computer_id });
+  const report = { ...event.payload, event_id: event.id, position: event.position, sequence: event.sequence,
+    reported_at: new Date(event.occurred_at).toISOString() };
+  assert.deepEqual(run.workspace_retention, report);
+  const reads = observation.run_reads.filter((item) => item.id === runId);
+  assert.equal(reads.length, 1); assert.deepEqual(reads[0], run, "Task snapshot and exact Run GET must agree");
+  return { run, report, outcome_label: outcomes[run.status] };
+}
+
 function stableState(observation) {
   assert.ok(observation.snapshot?.task);
   return {
@@ -47,6 +81,9 @@ function stableState(observation) {
     workspaces: byIdentity(observation.workspaces), live_pids: [...observation.live_pids].sort((a, b) => a - b),
     artifact_bytes: [...observation.artifact_bytes].sort((a, b) => a.artifact_id.localeCompare(b.artifact_id)),
     cancellation: observation.cancellation, base: observation.base,
+    run_reads: byIdentity(observation.run_reads), leases: byIdentity(observation.leases),
+    durable_events: observation.bundle.events.filter((event) => ["run.workspace.retained", "run.started", "run.completed", "run.failed", "run.cancelled", "run.reconciled"].includes(event.type))
+      .sort((a, b) => a.position - b.position),
   };
 }
 
@@ -74,6 +111,11 @@ export async function captureMacCorrectionScreenshot(snapshot, { filename, capti
   return image;
 }
 
+export function assertMacCorrectionScreenshotInventory(screenshots) {
+  assert.deepEqual(screenshots.map((image) => basename(image.path)).sort(), [...macCorrectionImageNames].sort(),
+    "Every named correction screenshot must come from this run");
+}
+
 /** Root owns setup, instance provisioning, observer cleanup, installed-app
  * restart and HTML publication. Every task/approval/review/assignment/retry/stop
  * mutation below originates in the actual installed renderer. */
@@ -84,7 +126,7 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
   let page = initialPage, electronApp = initialApp, taskId;
   const evidence = { passed: false, result: "fail", scope: "Installed Mac UI and actual Git worktrees; deterministic correction CLI, no live-provider claim",
     path_scope: "The earlier baseline uses empty PATH. This owned-app phase explicitly restores system PATH for real Git operations.",
-    screenshots: [], checks: [], ui_commands: [], checkpoints: [], downloads: [], download_paths: [], observations: {} };
+    screenshots: [], checks: [], ui_commands: [], checkpoints: [], downloads: [], download_paths: [], observations: {}, retention_ui: [] };
   onEvidence(evidence);
   const pass = (message) => { evidence.checks.push(message); check(message); };
   const detail = () => page.getByRole("complementary", { name: "Task detail", exact: true });
@@ -216,6 +258,12 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
     assert.equal(visible, true, "The complete actual recovery diagnostic must fit the captured native viewport");
     await capture(null, index, caption);
   };
+  const retainedWorkspace = async (observation, runId, index, caption, boundary) => {
+    const result = await inspectInstalledMacRetention({ page, electronApp, api, taskId, runId,
+      identity: assertMacCorrectionRetention(observation, runId) });
+    await capture(result.card, index, caption);
+    evidence.retention_ui.push({ ...result.evidence, boundary, screenshot: macCorrectionImageNames[index] });
+  };
   let stage = "restart the same installed app with system PATH for actual Git operations";
   try {
     assert.equal(fixture.instances.length, 4); assert.equal(new Set(fixture.instances.map((item) => item.id)).size, 4);
@@ -250,7 +298,7 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
       return daemon?.status === "online" && daemon.connected && daemon.runtimes.some((item) => item.runtime === fixture.runtime_id && item.status === "available");
     }, { timeout: 65_000 }).toBe(true);
     evidence.worker = { device_id: restored.device_id, computer_id: restored.computer_id, allowed_roots: roots, base_repository: fixture.base_repository, cli_configuration_preserved: true };
-    await capture(page.getByRole("button", { name: "Save worker configuration", exact: true }), 0, "Installed Mac: the actual Git repository is saved through Settings before isolated execution");
+    await capture(page.getByLabel("Git repository for isolated worktrees (optional)", { exact: true }), 0, "Installed Mac: the actual Git repository field is shown after saving Settings for isolated execution");
     pass("The same installed device explicitly restores system PATH, configures Git through Settings and starts its paired worker without changing CLI settings");
 
     stage = "create the correction task and mark it Ready through installed UI";
@@ -260,7 +308,7 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
     await page.getByRole("button", { name: "New task", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Create task", exact: true });
     await dialog.getByLabel("Title", { exact: true }).fill(fixture.task_title);
-    await dialog.getByLabel("Description", { exact: true }).fill("Review an actual report, correct it with persisted feedback, and retain recoverable work after failure or an explicit Stop.");
+    await dialog.getByLabel("Description", { exact: true }).fill("Review an actual report, correct it with persisted feedback, and retain recoverable work after completion, failure or an explicit Stop.");
     await dialog.getByLabel("Acceptance criteria (one per line)", { exact: true }).fill(`${fixture.criterion_1}\n${fixture.criterion_2}`);
     await dialog.locator("summary").filter({ hasText: "Required capabilities" }).click();
     await dialog.getByRole("checkbox", { name: "Write code", exact: true }).check();
@@ -315,14 +363,28 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
     const first = await assign(1, "initial"), originalArtifact = first.observation.snapshot.artifacts.find((item) => item.run_id === first.run.id);
     assert.ok(originalArtifact); await assertArtifacts(first.observation); await download(originalArtifact, first.observation, "initial");
     await capture(artifactRow(originalArtifact.id), 1, "Installed Mac: the first real report identifies its original execution and is downloaded through the authenticated UI");
+    await retainedOutput(first.observation, first.run.id, 12, "Installed Mac: the completed first run keeps its original recovery diagnostic visible in actual process output");
+    await retainedWorkspace(first.observation, first.run.id, 13, "Installed Mac: the first completed run reports its computer, time, root and branch; both Copy actions return exact values", "initial");
     stage = "submit the first exact multiline review and restore its durable history after renderer reload";
-    await requestChanges(fixture.review_comment_1); await page.reload(); await reopenTask(); await state("ready");
+    await requestChanges(fixture.review_comment_1);
+    await page.reload();
+    const coldRead = page.waitForRequest((request) => new URL(request.url()).pathname === `/api/v1/tasks/${taskId}` && request.method() === "GET", { timeout: 45_000 });
+    void coldRead.catch(() => {});
+    await reopenTask(); await state("ready");
+    const coldResponse = await (await coldRead).response(); assert.ok(coldResponse); assert.equal(coldResponse.status(), 200);
+    const coldSnapshot = await coldResponse.json();
+    assert.equal(coldSnapshot.task.id, taskId); assert.equal(coldSnapshot.runs.length, 1);
+    assert.deepEqual(coldSnapshot.runs.find((run) => run.id === first.run.id)?.workspace_retention, first.run.workspace_retention);
+    evidence.cold_reload = { path: `/api/v1/tasks/${taskId}`, status: coldResponse.status(), run_id: first.run.id,
+      retention_event_id: first.run.workspace_retention.event_id, run_count_before_any_new_assignment: coldSnapshot.runs.length };
     const changes = await checkpoint("changes_requested"); await assertHistory(changes);
     await capture(eventRow(changes.snapshot.reviews[0].event_id), 2, "Installed Mac: after reload, the first submitted review retains its exact multiline feedback, reviewer and original artifact inventory");
-    pass("The first successful worktree is removed; its downloaded report and exact UI-submitted review survive a real renderer reload");
+    await retainedWorkspace(changes, first.run.id, 14, "Installed Mac: after a cold renderer reload and before any new execution, the original completed report and exact copied root/branch remain available", "cold_reload");
+    pass("The first successful worktree, typed recovery report, downloaded artifact and exact UI-submitted review survive a real renderer reload before any new execution");
 
     const failed = await assign(2, "failed");
     await retainedOutput(failed.observation, failed.run.id, 3, "Installed Mac: the failed correction exposes the exact recovery worktree for its modified and new files");
+    await retainedWorkspace(failed.observation, failed.run.id, 17, "Installed Mac: the failed run reports its original computer, timestamp, root and branch with exact Copy values", "failed");
     stage = "explicitly Retry the failed task without creating another run or deleting its work";
     const retried = await uiPost(`/api/v1/tasks/${taskId}/retry`, () => detail().getByRole("button", { name: "Retry", exact: true }).click());
     assert.ok(!retried.run, "Retry must only return this task to Ready");
@@ -336,6 +398,8 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
     await download(originalArtifact, corrected.observation, "original-again"); await download(correctedArtifact, corrected.observation, "corrected");
     assert.notEqual(originalArtifact.checksum, correctedArtifact.checksum);
     await capture(detail().locator(".artifact-list"), 5, "Installed Mac: both same-named reports remain downloadable and have distinct originating run identities and creation times");
+    await retainedOutput(corrected.observation, corrected.run.id, 15, "Installed Mac: the corrected completed run keeps its own recovery diagnostic and original worktree identity");
+    await retainedWorkspace(corrected.observation, corrected.run.id, 16, "Installed Mac: the corrected completed run reports its retained workspace independently of the first report, with exact root and branch Copy values", "corrected");
     stage = "submit the second review with both immutable report versions recorded";
     await requestChanges(fixture.review_comment_2);
     const secondChanges = await checkpoint("changes_requested_again"); await assertHistory(secondChanges);
@@ -358,14 +422,20 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
     await uiPost(`/api/v1/runs/${held.run.id}/cancel`, () => confirmation.getByRole("button", { name: "Confirm stop", exact: true }).click());
     const stopped = await checkpoint("stopped"); await state("cancelled");
     await retainedOutput(stopped, held.run.id, 9, "Installed Mac: the cancelled fourth run exposes its retained worktree after its actual process has exited");
+    await retainedWorkspace(stopped, held.run.id, 18, "Installed Mac: the cancelled run reports its original root and branch after the owned process exits; both Copy values remain exact", "stopped");
     evidence.observations.stopped = await observeStableMacCorrection(() => scenario.observe(), stopped);
     const final = await checkpoint("stopped_stable"); await assertHistory(final); await assertArtifacts(final);
+    for (const [index, run] of [first.run, failed.run, corrected.run, held.run].entries()) {
+      await retainedWorkspace(final, run.id, 19 + index, `Installed Mac: at the final stable checkpoint, execution ${index + 1} retains its exact historical report, visible identity and both Copy values`, "stopped_stable");
+    }
     await capture(eventRow(final.snapshot.reviews[1].event_id), 10, "Installed Mac: submitted review history remains readable after the task is cancelled");
     await download(originalArtifact, final, "final-original"); await download(correctedArtifact, final, "final-corrected");
     await capture(detail().locator(".artifact-list"), 11, "Installed Mac: both immutable reports still download through the actual UI after cancellation");
-    pass("Keep running issues no cancel; one exact paired-device Stop ends only the fourth process while both failed/cancelled worktrees and both reports remain unchanged");
+    pass("Keep running issues no cancel; one exact paired-device Stop ends only the fourth process while all four worktrees, typed recovery reports and both artifacts remain unchanged");
     stage = "verify all four actual executions, feedback contexts, immutable reports and retained file bytes";
     evidence.verification = await scenario.verify(); assert.equal(evidence.verification.passed, true);
+    assert.deepEqual(evidence.verification.counts, { runs: 4, launches: 4, approvals: 4, reviews: 2, artifacts: 2, retained_worktrees: 4, live_owned_processes: 0 });
+    assertMacCorrectionScreenshotInventory(evidence.screenshots);
     evidence.passed = true; evidence.result = "pass";
     return evidence;
   } catch (error) {

@@ -2,6 +2,7 @@ import { nodeHelloSchema } from "@artoo/protocol";
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import * as nodeRunner from "./node-runner.js";
+import * as processAdapter from "./process-adapter.js";
 
 import {
   buildRegistry,
@@ -23,6 +24,15 @@ function configWith(overrides: Partial<ArtoodConfig> = {}): ArtoodConfig {
 }
 
 describe("loadConfigFromEnv", () => {
+  it("keeps preset artifact collection unless the local operator explicitly disables it", () => {
+    expect(loadConfigFromEnv(baseEnv).reportArtifacts).toBeUndefined();
+    expect(loadConfigFromEnv({ ...baseEnv, ARTOO_REPORT_ARTIFACTS: "  " }).reportArtifacts).toBeUndefined();
+    expect(loadConfigFromEnv({ ...baseEnv, ARTOO_REPORT_ARTIFACTS: "default" }).reportArtifacts).toBe("default");
+    expect(loadConfigFromEnv({ ...baseEnv, ARTOO_REPORT_ARTIFACTS: " none " }).reportArtifacts).toBe("none");
+    for (const value of ["false", "off", "NONE", "some", "none,default"]) {
+      expect(() => loadConfigFromEnv({ ...baseEnv, ARTOO_REPORT_ARTIFACTS: value })).toThrow("ARTOO_REPORT_ARTIFACTS must be default or none");
+    }
+  });
   it("passes only local provider metadata and an env key name to runtime presets", () => {
     const config = loadConfigFromEnv({ ...baseEnv, ARTOO_CODEX_BINARY: process.execPath, ARTOO_CODEX_MODEL: "copilot-test",
       ARTOO_CODEX_PROVIDER_URL: "http://127.0.0.1:18181/v1", ARTOO_CODEX_PROVIDER_KEY: "never-in-config" });
@@ -90,6 +100,23 @@ describe("loadConfigFromEnv", () => {
 });
 
 describe("buildRegistry", () => {
+  it("wires the local no-report setting into both real preset adapters and their prompts", () => {
+    const create = vi.spyOn(processAdapter, "createProcessAdapter");
+    try {
+      const defaults = loadConfigFromEnv(baseEnv);
+      buildRegistry(defaults);
+      for (const [options] of create.mock.calls) expect(options.artifacts).toEqual([{ type: "patch", path: "changes.patch" }]);
+      create.mockClear();
+      buildRegistry(loadConfigFromEnv({ ...baseEnv, ARTOO_REPORT_ARTIFACTS: "none" }));
+      expect(create).toHaveBeenCalledTimes(2);
+      for (const [options] of create.mock.calls) {
+        expect(options.artifacts).toEqual([]);
+        expect(options.command.some((argument) => argument.includes("Automatic report artifact collection is disabled"))).toBe(true);
+        expect(options.command.some((argument) => argument.includes("Otherwise create changes.patch"))).toBe(false);
+        expect(options.allowedRoots).toEqual(["/ws"]);
+      }
+    } finally { create.mockRestore(); }
+  });
   it("registers the configured runtime presets in order", () => {
     const registry = buildRegistry(configWith({ runtimes: ["codex", "claude-code"], allowedRoots: ["/ws"] }));
     expect(registry.runtimes().map((r) => r.runtime)).toEqual(["codex", "claude-code"]);

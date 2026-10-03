@@ -3,6 +3,8 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { verifyUISuiteResults } from "../apps/ios/scripts/ui-suite-contract.mjs";
 import { expectedNativeScreenshots, readXCTestScreenshots } from "./e2e-report.mjs";
+import { verifyNativeRetentionEvidence } from "./ios-ui-retention-evidence.mjs";
+import { verifyNativeCorrectionWorkspaceEvidence } from "./ios-ui-correction-evidence.mjs";
 import { hasCompletePNGPixelStream, MAX_PNG_BYTES } from "./png-evidence.mjs";
 
 const peerNames = ["mentions-peer-first.png", "mentions-peer-second.png"];
@@ -54,7 +56,9 @@ export function loadNativeSuiteEvidence(directory, suite) {
     assert.ok(parent.peer_screenshots?.length === 2 && peerImages.length === 2
       && peerNames.every((name) => peerImages.some(({ path }) => path === resolve(attempt, name))), "Both independent sender captures must remain complete");
   }
-  if (suite === "correction") assert.equal(parent.correction?.passed, true, "Correction production-record and retained-work verification must pass");
+  if (suite === "correction") verifyNativeCorrectionWorkspaceEvidence(parent.correction, parent.retained_workspace_export,
+    resolve(attempt, "correction-evidence/retained-workspaces"));
+  if (suite === "retention") verifyNativeRetentionEvidence(parent, attempt);
   assert.ok(native.xcresult_tests === resolve(attempt, "diagnostics/xcresult-tests.json")
     && native.xcresult_summary === resolve(attempt, "diagnostics/xcresult-summary.json"), "Raw exports must belong to this attempt");
   const input = { suite, source: native.source, result_bundle: native.result_bundle,

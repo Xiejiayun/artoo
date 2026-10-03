@@ -382,6 +382,9 @@ public struct Run: Codable, Equatable, Hashable, Identifiable {
     public let failureReason: String?
     public let sequence: Int?
     public let createdAt: String?
+    public let workspaceRoot: String?
+    public let workspaceBranch: String?
+    public let workspaceRetention: WorkspaceRetention?
 
     public init(
         id: String,
@@ -399,7 +402,10 @@ public struct Run: Codable, Equatable, Hashable, Identifiable {
         endedAt: String? = nil,
         failureReason: String? = nil,
         sequence: Int? = nil,
-        createdAt: String? = nil
+        createdAt: String? = nil,
+        workspaceRoot: String? = nil,
+        workspaceBranch: String? = nil,
+        workspaceRetention: WorkspaceRetention? = nil
     ) {
         self.id = id
         self.organizationId = organizationId
@@ -417,6 +423,41 @@ public struct Run: Codable, Equatable, Hashable, Identifiable {
         self.failureReason = failureReason
         self.sequence = sequence
         self.createdAt = createdAt
+        self.workspaceRoot = workspaceRoot
+        self.workspaceBranch = workspaceBranch
+        self.workspaceRetention = workspaceRetention?.matches(computerId: computerId, workspaceRoot: workspaceRoot, workspaceBranch: workspaceBranch) == true ? workspaceRetention : nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, organizationId, taskId, computerId, agentInstanceId, runtimeId, schedulerDecisionId
+        case modelProfileId, effortProfileId, status, contextPackId, startedAt, endedAt, failureReason
+        case sequence, createdAt, workspaceRoot, workspaceBranch, workspaceRetention
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try values.decode(String.self, forKey: .id),
+            organizationId: try values.decodeIfPresent(String.self, forKey: .organizationId),
+            taskId: try values.decode(String.self, forKey: .taskId),
+            computerId: try values.decodeIfPresent(String.self, forKey: .computerId),
+            agentInstanceId: try values.decodeIfPresent(String.self, forKey: .agentInstanceId),
+            runtimeId: try values.decodeIfPresent(String.self, forKey: .runtimeId),
+            schedulerDecisionId: try values.decodeIfPresent(String.self, forKey: .schedulerDecisionId),
+            modelProfileId: try values.decodeIfPresent(String.self, forKey: .modelProfileId),
+            effortProfileId: try values.decodeIfPresent(String.self, forKey: .effortProfileId),
+            status: try values.decode(RunStatus.self, forKey: .status),
+            contextPackId: try values.decodeIfPresent(String.self, forKey: .contextPackId),
+            startedAt: try values.decodeIfPresent(String.self, forKey: .startedAt),
+            endedAt: try values.decodeIfPresent(String.self, forKey: .endedAt),
+            failureReason: try values.decodeIfPresent(String.self, forKey: .failureReason),
+            sequence: try values.decodeIfPresent(Int.self, forKey: .sequence),
+            createdAt: try values.decodeIfPresent(String.self, forKey: .createdAt),
+            workspaceRoot: try values.decodeIfPresent(String.self, forKey: .workspaceRoot),
+            workspaceBranch: try values.decodeIfPresent(String.self, forKey: .workspaceBranch),
+            // Additive metadata must not make a valid Run disappear.
+            workspaceRetention: try? values.decodeIfPresent(WorkspaceRetention.self, forKey: .workspaceRetention)
+        )
     }
 }
 

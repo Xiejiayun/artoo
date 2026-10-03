@@ -1,17 +1,21 @@
-import { appendEvent, artifacts, assistantTurns, messages, runEventIngest, runs, runUsage, tasks } from "@artoo/db";
+import { isDeepStrictEqual } from "node:util";
+import { appendEvent, artifacts, assistantTurns, eventLog, messages, runEventIngest, runs, runUsage, tasks } from "@artoo/db";
 import {
   canTransitionRun,
   canTransitionTask,
   ID_PREFIXES,
   RunAnswerPayloadSchema,
   RunUsagePayloadSchema,
+  RunWorkspaceRetainedPayloadSchema,
+  StoredWorkspaceRetainedPayloadSchema,
   type ArtifactType,
   type Run,
   type RunStatus,
   type RunUsagePayload,
+  type RunWorkspaceRetainedPayload,
   type TaskStatus,
 } from "@artoo/domain";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -24,19 +28,23 @@ import { releaseRunLeases } from "./lease-service.js";
 import { transitionRun, transitionTask } from "./transition-service.js";
 import { unconfirmedDisconnectRunIds } from "./execution-state.js";
 import { previewForActiveSynthesis } from "./discussion-plan.js";
+import { loadWorkspaceRetentions, projectWorkspaceRetention, WORKSPACE_RETAINED_EVENT } from "./workspace-retention-service.js";
 
 /** GET /api/v1/runs/:id — run snapshot. */
 export async function getRun(ctx: ServerContext, runId: string): Promise<Run> {
-  const row = (
-    await ctx.db.db
-      .select()
-      .from(runs)
-      .where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)))
-  )[0];
-  if (row === undefined) {
-    throw AppError.notFound(`run not found: ${runId}`, { run_id: runId });
-  }
-  return mapRun(row);
+  return ctx.db.db.transaction(async (db) => {
+    const row = (
+      await db
+        .select()
+        .from(runs)
+        .where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)))
+    )[0];
+    if (row === undefined) {
+      throw AppError.notFound(`run not found: ${runId}`, { run_id: runId });
+    }
+    const retention = await loadWorkspaceRetentions(db, ctx.organizationId, [row]);
+    return { ...mapRun(row), workspace_retention: retention.get(row.id) ?? null };
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
 
 /** Provider measurements remain explicitly unknown until the runtime reports them. */
@@ -130,6 +138,7 @@ export type RunIngestEvent =
   | { kind: "output"; stream: "stdout" | "stderr"; text: string }
   | { kind: "answer"; text: string }
   | { kind: "usage"; usage: RunUsagePayload }
+  | { kind: "workspace_retained"; retention: RunWorkspaceRetainedPayload }
   | { kind: "artifact"; artifactType: ArtifactType; uri: string; checksum?: string | null };
 
 export interface IngestEnvelope {
@@ -162,12 +171,8 @@ export async function ingestRunEvent(
   // hook failure can never break the already-committed run ingest.
   let budgetGoalId: string | null = null;
   const result = await ctx.db.transaction(async (tx) => {
-    const run = (
-      await tx
-        .select()
-        .from(runs)
-        .where(and(eq(runs.id, env.runId), eq(runs.organizationId, ctx.organizationId)))
-    )[0];
+    const runQuery = tx.select().from(runs).where(and(eq(runs.id, env.runId), eq(runs.organizationId, ctx.organizationId)));
+    const run = (await (env.event.kind === "workspace_retained" ? runQuery.for("update") : runQuery))[0];
     if (run === undefined) {
       throw AppError.notFound(`run not found: ${env.runId}`, { run_id: env.runId });
     }
@@ -176,6 +181,13 @@ export async function ingestRunEvent(
       throw new Error("ingestRunEvent: task missing for run");
     }
     const roomId = taskRow.roomId;
+
+    const reported = env.event.kind === "workspace_retained" ? RunWorkspaceRetainedPayloadSchema.safeParse(env.event.retention) : undefined;
+    if (reported && (!reported.success || env.nodeId !== run.computerId || run.workspaceRoot === null || run.workspaceBranch === null
+      || reported.data.workspace_root !== run.workspaceRoot || reported.data.workspace_branch !== run.workspaceBranch)) {
+      throw AppError.validation("retention must report the owning node's exact bound worktree");
+    }
+    const retention = reported?.success ? StoredWorkspaceRetainedPayloadSchema.parse({ ...reported.data, reporter_computer_id: run.computerId }) : undefined;
 
     const duplicate = await tx
       .select({ eventId: runEventIngest.eventId })
@@ -188,6 +200,13 @@ export async function ingestRunEvent(
         ),
       );
     if (duplicate.length > 0) {
+      if (retention) {
+        const stored = (await tx.select().from(eventLog).where(and(eq(eventLog.id, duplicate[0]!.eventId), eq(eventLog.organizationId, ctx.organizationId))))[0];
+        const projected = projectWorkspaceRetention(run, stored);
+        if (!projected || projected.sequence !== env.sequence || !isDeepStrictEqual(stored?.payload, retention)) {
+          throw AppError.conflict("retention sequence was already used by a different event");
+        }
+      }
       return {
         deduped: true,
         runStatus: run.status as RunStatus,
@@ -233,7 +252,21 @@ export async function ingestRunEvent(
 
     let eventId: string;
     const ev = env.event;
-    if (ev.kind === "lifecycle" && ev.phase !== "started" && run.status === "failed" && run.failureReason === "daemon_disconnect") {
+    if (ev.kind === "workspace_retained" && retention) {
+      const latest = (await tx.select().from(eventLog).where(and(eq(eventLog.organizationId, ctx.organizationId),
+        eq(eventLog.runId, env.runId), eq(eventLog.type, WORKSPACE_RETAINED_EVENT))).orderBy(desc(eventLog.position)).limit(1))[0];
+      if (latest) {
+        const previous = projectWorkspaceRetention(run, latest);
+        if (!previous || previous.outcome !== "completed" || retention.outcome !== "incomplete_delivery" || env.sequence <= previous.sequence) {
+          throw AppError.conflict("only a later incomplete-delivery correction may follow a completed retention report");
+        }
+      }
+      const event = buildEvent(ctx, { type: WORKSPACE_RETAINED_EVENT, actorType: "system", actorId: run.computerId,
+        correlationId: run.taskId, projectId: taskRow.projectId, taskId: run.taskId, roomId, runId: env.runId,
+        sequence: env.sequence, payload: retention });
+      await appendEvent(tx, event);
+      eventId = event.id;
+    } else if (ev.kind === "lifecycle" && ev.phase !== "started" && run.status === "failed" && run.failureReason === "daemon_disconnect") {
       // A disconnect is uncertainty, not evidence of process exit. The owner's
       // eventual terminal event closes that uncertainty and releases its leases.
       eventId = await emit("run.reconciled", { run_id: env.runId, observed_phase: ev.phase, process_exit_confirmed: true });
@@ -252,6 +285,17 @@ export async function ingestRunEvent(
         await transitionRun(tx, ctx, { runId: env.runId, from: "running", trigger: "run_completed", patch: { endedAt: now } });
         await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_completed", now });
         eventId = await emit("run.completed", { run_id: env.runId }, { kind: "run_event", body: "Run completed; task ready for review" });
+        await releaseRunLeases(ctx, tx, env.runId);
+      } else if (ev.phase === "failed" && (run.status === "queued" || run.status === "starting")) {
+        // The node may confirm stop after start-ACK/first-event delivery fails,
+        // before a started lifecycle commits. Match failRunStart recovery
+        // without inventing a run.started event or leaving an assigned task stuck.
+        await transitionRun(tx, ctx, { runId: env.runId, from: "queued", trigger: "start", patch: { startedAt: now } });
+        await transitionRun(tx, ctx, { runId: env.runId, from: "starting", trigger: "start_failed",
+          patch: { endedAt: now, failureReason: ev.failureReason ?? "unknown" } });
+        await transitionTask(tx, ctx, { taskId: run.taskId, from: "assigned", trigger: "assign_failed_retryable", now });
+        eventId = await emit("run.failed", { run_id: env.runId, failure_reason: ev.failureReason ?? "unknown", recoverable: true },
+          { kind: "run_event", body: "Run failed before start; task ready for assignment" });
         await releaseRunLeases(ctx, tx, env.runId);
       } else if (ev.phase === "failed") {
         await transitionRun(tx, ctx, {
@@ -321,7 +365,7 @@ export async function ingestRunEvent(
       eventId = await emit("run.usage", { ...value });
     } else if (ev.kind === "output") {
       eventId = await emit("run.output", { stream: ev.stream, text: ev.text });
-    } else {
+    } else if (ev.kind === "artifact") {
       const storedArtifact = (await tx.select().from(artifacts).where(and(
         eq(artifacts.organizationId, ctx.organizationId), eq(artifacts.runId, env.runId), eq(artifacts.uri, ev.uri),
       )))[0];
@@ -353,6 +397,8 @@ export async function ingestRunEvent(
         artifactId,
         artifactType: ev.artifactType,
       });
+    } else {
+      throw AppError.validation("invalid retention report");
     }
 
     await tx.insert(runEventIngest).values({

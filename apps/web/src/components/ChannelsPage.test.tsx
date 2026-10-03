@@ -2,6 +2,7 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import type { Channel, Notification } from "@artoo/domain";
 import { ApiClient, ApiClientError } from "../api/client.js";
 import { bootstrapFixture, createTestQueryClient, fakeApi, messageFixture, renderWithProviders, roomFixture } from "../test/utils.js";
@@ -114,6 +115,48 @@ describe("channel collaboration", () => {
     for (const card of [rootCard, mentionedCard, replyCard]) {
       expect(within(card).getByLabelText("Mentioned people")).toHaveTextContent("@Jane @Mock Coder");
     }
+  });
+
+  it("reads the exact full reply and resets dialog state when the cached target changes", async () => {
+    const query = createTestQueryClient();
+    query.setDefaultOptions({ queries: { retry: false, staleTime: Infinity } });
+    query.setQueryData(queryKeys.bootstrap, bootstrapFixture());
+    query.setQueryData(queryKeys.members, { members: [{ id: "colleague", display_name: "Jane" }] });
+    const root = messageFixture({ id: "root_dialog", room_id: channel.id, kind: "text", body: "Historical root" });
+    const first = messageFixture({ id: "reply_dialog_first", room_id: channel.id, thread_root_id: root.id, actor_id: "colleague", kind: "text",
+      body: "A complete historical reply keeps its original words and spacing. ".repeat(6) + "\nFinal line: 雪  stays exact." });
+    const second = { ...first, id: "reply_dialog_second", body: "A different exact reply" };
+    for (const message of [root, first, second]) query.setQueryData(["message", channel.id, message.id], { message });
+    let selectTarget!: (id: string) => void;
+    function SelectedThread(): React.ReactNode {
+      const [target, setTarget] = useState(first.id); selectTarget = setTarget;
+      return <ThreadPanel roomId={channel.id} threadRootId={root.id} focusedMessageId={target} onClose={() => undefined} />;
+    }
+    const getMessage = vi.fn<ApiClient["getMessage"]>(), sendMessage = vi.fn<ApiClient["sendMessage"]>();
+    renderWithProviders(<SelectedThread />, { client: api({ getMessage, sendMessage }), queryClient: query });
+    const thread = screen.getByRole("complementary", { name: "Thread" });
+    await userEvent.type(await within(thread).findByLabelText("Message", { exact: true }), "Keep this unsent draft");
+    const open = within(thread).getByRole("button", { name: "Read full reply" });
+    await userEvent.click(open);
+    let dialog = await screen.findByRole("dialog", { name: "Mentioned reply" });
+    expect(dialog.querySelector(".msg__text")?.textContent).toBe(first.body);
+    expect(within(dialog).getByText("Jane")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Mentioned reply" })).not.toBeInTheDocument();
+    expect(open).toHaveFocus();
+    await userEvent.click(open);
+    // Both replies are already cached: changing the identity never relies on a
+    // loading gap to unmount the previous dialog's state.
+    await act(async () => selectTarget(second.id));
+    expect(screen.queryByRole("dialog", { name: "Mentioned reply" })).not.toBeInTheDocument();
+    await userEvent.click(within(thread).getByRole("button", { name: "Read full reply" }));
+    dialog = await screen.findByRole("dialog", { name: "Mentioned reply" });
+    expect(dialog.querySelector(".msg__text")?.textContent).toBe(second.body);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await act(async () => selectTarget(first.id));
+    expect(screen.queryByRole("dialog", { name: "Mentioned reply" })).not.toBeInTheDocument();
+    expect(within(thread).getByLabelText("Message", { exact: true })).toHaveValue("Keep this unsent draft");
+    expect(getMessage).not.toHaveBeenCalled(); expect(sendMessage).not.toHaveBeenCalled();
   });
 
   it("updates thread identities from the shared cache and keeps missing profiles explicit without extra requests", async () => {

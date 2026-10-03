@@ -21,6 +21,7 @@ import { claudeCodeRuntime, codexRuntime, type CodexSettings, type RuntimePreset
  * - `ARTOO_NODE_ID`            (required) computer/node id sent in node.hello
  * - `ARTOO_RUNTIMES`           csv of runtime presets to register (default: codex,claude-code)
  * - `ARTOO_ALLOWED_ROOTS`      (required) `;`/`,`-separated filesystem roots the adapters may operate in
+ * - `ARTOO_REPORT_ARTIFACTS`   `default` (collect the preset's report) or explicit `none`
  * - `ARTOO_WORKTREE_BASE_REPO` (opt-in) git repo to create per-run worktrees from. Absent ->
  *                              branch-backed runs are rejected with process_start_failed (#19/#23).
  *
@@ -45,6 +46,8 @@ export interface ArtoodConfig {
   /** Heartbeat interval override (ms); omitted = createArtoodNode's 10s default. */
   heartbeatIntervalMs?: number;
   codex?: CodexSettings;
+  /** Local operator choice; never controlled by a task or server payload. */
+  reportArtifacts?: "default" | "none";
 }
 
 function codexSettingsFromEnv(env: NodeJS.ProcessEnv): CodexSettings {
@@ -93,6 +96,10 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
     throw new Error(`artood: missing required env var(s): ${missing.join(", ")}`);
   }
   const runtimes = splitList(env.ARTOO_RUNTIMES, /,/);
+  const reportArtifacts = env.ARTOO_REPORT_ARTIFACTS?.trim() || undefined;
+  if (reportArtifacts !== undefined && reportArtifacts !== "default" && reportArtifacts !== "none") {
+    throw new Error("ARTOO_REPORT_ARTIFACTS must be default or none");
+  }
   return {
     url,
     nodeId,
@@ -100,6 +107,7 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
     allowedRoots,
     trustedExecution: env.ARTOO_TRUSTED_EXECUTION === "1",
     codex: codexSettingsFromEnv(env),
+    ...(reportArtifacts ? { reportArtifacts } : {}),
     worktreeBaseRepo: env.ARTOO_WORKTREE_BASE_REPO?.trim() || undefined,
     heartbeatIntervalMs: parsePositiveMs(env.ARTOO_HEARTBEAT_INTERVAL_MS)
   };
@@ -114,7 +122,9 @@ export function buildRegistry(config: ArtoodConfig): AdapterRegistry {
         `artood: unknown runtime preset '${name}' (known: ${Object.keys(RUNTIME_PRESETS).join(", ")})`
       );
     }
-    return preset({ allowedRoots: config.allowedRoots, trustedExecution: config.trustedExecution, ...(name === "codex" ? { codex: config.codex } : {}) });
+    return preset({ allowedRoots: config.allowedRoots, trustedExecution: config.trustedExecution,
+      ...(config.reportArtifacts === "none" ? { artifacts: [] } : {}),
+      ...(name === "codex" ? { codex: config.codex } : {}) });
   });
   return createAdapterRegistry(registrations);
 }

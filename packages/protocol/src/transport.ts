@@ -32,6 +32,12 @@ export interface NodeTransport {
   close(): Promise<void>;
 }
 
+/** Local delivery policy; never serialized into a protocol frame. */
+export interface NodeSendOptions {
+  /** Only run.output may skip receipts/replay; disconnected output is dropped. */
+  delivery: "best-effort";
+}
+
 /**
  * The node's mirror view of the channel: it sends Node->Server messages (acks,
  * run.events) and subscribes to Server->Node commands. `artood`'s node client
@@ -39,7 +45,10 @@ export interface NodeTransport {
  * endpoint and a real WebSocket node client both satisfy it.
  */
 export interface NodeSideTransport {
-  send(message: NodeToServerMessage): Promise<void>;
+  /** True when required run.event sends resolve after a committed server receipt. */
+  readonly acknowledgesRunEvents?: boolean;
+  /** Explicit best-effort run.output sends settle locally without a receipt. */
+  send(message: NodeToServerMessage, options?: NodeSendOptions): Promise<void>;
   subscribe(handler: (message: ServerToNodeMessage) => void): Unsubscribe;
   close?(): Promise<void>;
 }

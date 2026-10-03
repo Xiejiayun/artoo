@@ -6,6 +6,7 @@ import {
   RunLifecyclePayloadSchema,
   RunOutputPayloadSchema,
   RunStartPayloadSchema,
+  RunWorkspaceRetainedPayloadSchema,
   RunUsagePayloadSchema
 } from "@artoo/domain";
 
@@ -160,12 +161,18 @@ export const commandSchema = z.discriminatedUnion("type", [
 // The event body is a discriminated union over the domain payloads; the wire
 // message adds the transport tuple (node_id, run_id, sequence) used for ordered,
 // idempotent ingest (see RunEventDeduper).
-export const runEventBodySchema = z.discriminatedUnion("type", [
+export const adapterRunEventBodySchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.output"), payload: RunOutputPayloadSchema }),
   z.object({ type: z.literal("run.answer"), payload: RunAnswerPayloadSchema }),
   z.object({ type: z.literal("run.usage"), payload: RunUsagePayloadSchema }),
   z.object({ type: z.literal("run.lifecycle"), payload: RunLifecyclePayloadSchema }),
   z.object({ type: z.literal("artifact.created"), payload: ArtifactPayloadSchema })
+]);
+
+/** Retention evidence is node-owned and cannot be supplied by a RuntimeAdapter. */
+export const runEventBodySchema = z.discriminatedUnion("type", [
+  ...adapterRunEventBodySchema.options,
+  z.object({ type: z.literal("run.workspace.retained"), payload: RunWorkspaceRetainedPayloadSchema }),
 ]);
 
 export const runEventMessageSchema = z.object({
@@ -188,5 +195,6 @@ export type RunResumeCommand = z.infer<typeof runResumeCommandSchema>;
 export type RunEventAckCommand = z.infer<typeof runEventAckCommandSchema>;
 export type Command = z.infer<typeof commandSchema>;
 /** A single adapter-emitted event (domain payload), framed by run.event. */
-export type RunEvent = z.infer<typeof runEventBodySchema>;
+export type RunEvent = z.infer<typeof adapterRunEventBodySchema>;
+export type NodeRunEvent = z.infer<typeof runEventBodySchema>;
 export type RunEventMessage = z.infer<typeof runEventMessageSchema>;

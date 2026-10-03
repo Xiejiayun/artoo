@@ -10,9 +10,9 @@ import { spawn } from "node:child_process";
  *   runs in it as-is and never deletes it.
  * - `branch` present → artood materializes a per-run git worktree at `root` before
  *   spawning the adapter (`git -C <baseRepo> worktree add -b <branch> <root>`), then
- *   removes it after successfully delivered completion. Failed/cancelled
- *   execution and adapter startup rejection retain it for recovery, because a
- *   child may already have written files before startup reports an error.
+ *   retains it after execution for deliberate recovery or cleanup. A completed
+ *   run's declared artifacts may omit modified, new or ignored files. Startup
+ *   rejection also retains it because a child may already have written files.
  *
  * The protocol does not carry the source repository, so worktree mode requires an
  * artood-local `worktreeBaseRepo`. If `branch` is present but no base repo is

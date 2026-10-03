@@ -93,6 +93,39 @@ describe("notification history", () => {
     expect(getMessage.mock.calls.filter(([, id]) => id === reply.id)).toHaveLength(2);
   });
 
+  it("full-reply viewing preserves the failed read, route and draft until an explicit retry", async () => {
+    let acknowledged = false;
+    const readNotification = vi.fn<ApiClient["readNotification"]>().mockRejectedValueOnce(new ApiClientError("network_error", "Read confirmation unavailable", 0))
+      .mockImplementation(async () => { acknowledged = true; return { notification: { ...notice(), read_at: "2026-09-29" }, unread_count: 0 }; });
+    const getMessage = vi.fn<ApiClient["getMessage"]>().mockImplementation(async (_, id) => ({ message: id === root.id ? root : reply }));
+    const sendMessage = vi.fn<ApiClient["sendMessage"]>();
+    renderWithProviders(<><Location /><ChannelsPage /></>, { client: api({ getMessage, readNotification, sendMessage,
+      listNotifications: async () => ({ notifications: [{ ...notice(), read_at: acknowledged ? "2026-09-29" : null }], unread_count: acknowledged ? 0 : 1 }),
+    }), route: "/channels?mentions=1" });
+    await userEvent.click(await screen.findByRole("button", { name: /Open historical mention/ }));
+    await screen.findByRole("button", { name: "Retry marking notification read" });
+    const thread = screen.getByRole("complementary", { name: "Thread" });
+    await userEvent.type(await within(thread).findByLabelText("Message", { exact: true }), "Do not send this draft");
+    const route = screen.getByLabelText("Current route").textContent;
+    const lookups = getMessage.mock.calls.length;
+    const open = within(thread).getByRole("button", { name: "Read full reply" });
+    await userEvent.click(open);
+    const dialog = await screen.findByRole("dialog", { name: "Mentioned reply" });
+    expect(dialog.querySelector(".msg__text")?.textContent).toBe(reply.body);
+    expect(readNotification).toHaveBeenCalledTimes(1);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(open).toHaveFocus();
+    expect(screen.getByLabelText("Current route").textContent).toBe(route);
+    expect(within(thread).getByLabelText("Message", { exact: true })).toHaveValue("Do not send this draft");
+    expect(getMessage).toHaveBeenCalledTimes(lookups); expect(readNotification).toHaveBeenCalledTimes(1);
+    expect(sendMessage).not.toHaveBeenCalled(); expect(acknowledged).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Retry marking notification read" }));
+    await waitFor(() => expect(readNotification).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry marking notification read" })).not.toBeInTheDocument());
+    expect(within(thread).getByLabelText("Message", { exact: true })).toHaveValue("Do not send this draft");
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
   it("does not consume a notification when its exact message belongs to another thread", async () => {
     const readNotification = vi.fn<ApiClient["readNotification"]>();
     renderWithProviders(<ChannelsPage />, { client: api({ getMessage: async (_, id) => ({ message: id === root.id ? root : { ...reply, thread_root_id: "another_root" } }), readNotification }), route: "/channels?mentions=1" });

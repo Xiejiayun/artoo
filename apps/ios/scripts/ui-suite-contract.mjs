@@ -1,4 +1,4 @@
-const TARGETS = { core: "ArtooUITests/SharedServerChatUITests", assistant: "ArtooUITests/AssistantConversationUITests", mentions: "ArtooUITests/MentionsUITests", correction: "ArtooUITests/ExecutionCorrectionUITests" };
+const TARGETS = { core: "ArtooUITests/SharedServerChatUITests", assistant: "ArtooUITests/AssistantConversationUITests", mentions: "ArtooUITests/MentionsUITests", correction: "ArtooUITests/ExecutionCorrectionUITests", retention: "ArtooUITests/SuccessfulWorkspaceRetentionUITests" };
 const METHODS = Object.freeze({
   core: Object.freeze([
     "testApprovalNeedsMoreInfoSurvivesRelaunchAndCanBeApproved",
@@ -12,6 +12,7 @@ const METHODS = Object.freeze({
   assistant: Object.freeze(["testDirectAgentConversationAndRecovery"]),
   mentions: Object.freeze(["testCrossProjectHistoricalMentionReadRetryAndDraftIsolation"]),
   correction: Object.freeze(["testTaskCorrectionRetainsWorkAndConfirmsExactStop"]),
+  retention: Object.freeze(["testSuccessfulWorkspaceRetainsFilesWithoutArtifactsAfterRelaunch"]),
 });
 const STATUS = { Passed: "passed", Failed: "failed", Skipped: "skipped", "Expected Failure": "expected_failures" };
 const SUMMARY_COUNTS = { total: "totalTestCount", passed: "passedTests", failed: "failedTests", skipped: "skippedTests", expected_failures: "expectedFailures" };
@@ -20,11 +21,21 @@ const emptyCounts = () => ({ total: 0, passed: 0, failed: 0, skipped: 0, expecte
 /** Exact selections only. `all` produces separate invocations, not one
  * longer Xcode run. Callers must also isolate fixtures, xcresults and reports. */
 export function selectUISuites(selection) {
-  if (!["core", "assistant", "mentions", "correction", "all"].includes(selection)) throw new Error("UI suite must be exactly core, assistant, mentions, correction or all");
-  return (selection === "all" ? ["core", "assistant", "mentions", "correction"] : [selection]).map((suite) => {
+  if (!["core", "assistant", "mentions", "correction", "retention", "all"].includes(selection)) throw new Error("UI suite must be exactly core, assistant, mentions, correction, retention or all");
+  return (selection === "all" ? ["core", "assistant", "mentions", "correction", "retention"] : [selection]).map((suite) => {
     const expected_case_ids = METHODS[suite].map((method) => `${TARGETS[suite]}/${method}`);
     return { suite, expected_case_ids, only_testing_arguments: expected_case_ids.map((id) => `-only-testing:${id}`) };
   });
+}
+
+/** Wall-clock budgets keep each exact suite bounded; changing a budget never
+ * changes its required cases or workflow assertions. */
+export function nativeUISuiteTimeouts(suite) {
+  if (!Object.hasOwn(METHODS, suite)) throw new Error("Select one native suite for its time budget");
+  // The assistant workflow itself reached 1141.586 seconds before the old
+  // 20-minute xcodebuild limit interrupted result-bundle finalization.
+  const minutes = ["correction", "core"].includes(suite) ? [60, 70, 72] : suite === "assistant" ? [25, 35, 37] : [20, 30, 32];
+  return { xctest: minutes[0] * 60_000, parent: minutes[1] * 60_000, aggregate: minutes[2] * 60_000 };
 }
 
 function sourceIdentity(source, issues) {
@@ -44,7 +55,7 @@ function sourceIdentity(source, issues) {
 }
 
 function inspectSuite(input) {
-  if (!["core", "assistant", "mentions", "correction"].includes(input?.suite)) throw new Error("Each xcresult must identify its core, assistant, mentions or correction suite");
+  if (!["core", "assistant", "mentions", "correction", "retention"].includes(input?.suite)) throw new Error("Each xcresult must identify its core, assistant, mentions, correction or retention suite");
   const { suite, tests, summary } = input;
   const { expected_case_ids } = selectUISuites(suite)[0];
   const issues = [], cases = [], counts = emptyCounts();

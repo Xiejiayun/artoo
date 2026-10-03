@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { StringDecoder } from "node:string_decoder";
@@ -65,15 +65,24 @@ interface RunState {
 /** Resolve existing ancestors so symlinks/junctions cannot bypass root policy. */
 export function assertRealWorkspaceScope(target: string, allowedRoots: readonly string[]): void {
   const canonical = (path: string): string => {
-    let existing = resolve(path);
+    // Keep the original spelling until the OS resolves existing symlinks and
+    // '..'. Lexically normalizing first can authorize a different directory.
+    let existing = path;
     const suffix: string[] = [];
-    while (!existsSync(existing)) {
-      const parent = dirname(existing);
-      if (parent === existing) break;
-      suffix.unshift(basename(existing));
-      existing = parent;
+    while (true) {
+      try { lstatSync(existing); break; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        const parent = dirname(existing), component = basename(existing);
+        // A missing ancestor followed by '..' has no current OS resolution.
+        if (parent === existing || component === "..") throw error;
+        suffix.unshift(component);
+        existing = parent;
+      }
     }
-    return resolve(realpathSync(existing), ...suffix);
+    // lstat recognizes dangling links. Resolve outside the ENOENT fallback so
+    // they fail closed instead of being mistaken for ordinary missing names.
+    return resolve(realpathSync.native(existing), ...suffix);
   };
   assertWorkspaceScope(canonical(target), allowedRoots.map(canonical));
 }
@@ -268,9 +277,12 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
   const runs = new Map<string, RunState>();
 
   function workspacePath(workspaceRoot: string, relativePath: string): string {
-    const absolute = resolve(workspaceRoot, relativePath);
-    assertWorkspaceScope(absolute, [workspaceRoot]);
-    assertRealWorkspaceScope(absolute, [workspaceRoot]);
+    // Resolve the existing root before joining: its raw symlink/.. spelling
+    // must designate the same directory for context files and the child cwd.
+    const physicalRoot = realpathSync.native(workspaceRoot);
+    const absolute = resolve(physicalRoot, relativePath);
+    assertWorkspaceScope(absolute, [physicalRoot]);
+    assertRealWorkspaceScope(absolute, [physicalRoot]);
     return absolute;
   }
 

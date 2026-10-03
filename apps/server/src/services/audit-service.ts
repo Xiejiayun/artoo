@@ -45,6 +45,7 @@ import { mapBlocker, mapDecision, mapHandoff } from "./collaboration-service.js"
 import { mapGoal } from "./goal-service.js";
 import { mapPlan } from "./plan-service.js";
 import { redactGoalAuditBundle, redactTaskAuditBundle } from "./redaction.js";
+import { workspaceRetentionsFromEvents } from "./workspace-retention-service.js";
 
 /** GET /api/v1/tasks/:id/audit-bundle — deterministic read-only task evidence. */
 export async function getTaskAuditBundle(ctx: ServerContext, taskId: string): Promise<TaskAuditBundle> {
@@ -121,11 +122,12 @@ export async function getTaskAuditBundle(ctx: ServerContext, taskId: string): Pr
     .where(and(eq(blockers.organizationId, ctx.organizationId), eq(blockers.taskId, taskId)))
     .orderBy(asc(blockers.createdAt), asc(blockers.id));
 
+  const retention = workspaceRetentionsFromEvents(runRows, eventRows);
   const bundle = TaskAuditBundleSchema.parse({
     task: mapTask(taskRow),
     room: roomRow !== undefined ? mapRoom(roomRow) : null,
     messages: messageRows.map(mapMessage),
-    runs: runRows.map(mapRun),
+    runs: runRows.map((run) => ({ ...mapRun(run), workspace_retention: retention.get(run.id) ?? null })),
     artifacts: artifactRows.map(mapArtifact),
     approvals: approvalRows.map(mapApproval),
     scheduler_decisions: schedulerDecisionRows.map(mapSchedulerDecision),

@@ -115,11 +115,48 @@ test("an approved capture name cannot admit an empty, corrupt, nonregular or uns
 test("only newly guarded diagnostic names are retained, never legacy or automatic failure captures", () => {
   const directory = mkdtempSync(join(tmpdir(), "artoo-guarded-diagnostics-"));
   try {
-    const permitted = ["Native assistant guarded failure diagnostics", "Native mentions guarded failure diagnostics", "Native correction guarded failure diagnostics"];
+    const permitted = ["Native assistant guarded failure diagnostics", "Native mentions guarded failure diagnostics", "Native correction guarded failure diagnostics", "Native retention guarded failure diagnostics"];
     const rejected = ["Native assistant failure diagnostics", "Native mentions failure diagnostics", "Screenshot at failure", "Native UI failure"];
     writeFileSync(join(directory, "guarded.png"), pixels);
     writeFileSync(join(directory, "manifest.json"), JSON.stringify([...permitted, ...rejected].map((name) => ({ name, exportedFileName: "guarded.png" }))));
     assert.deepEqual(readXCTestScreenshots(directory).map((entry) => entry.caption), permitted);
-    for (const suite of ["core", "assistant", "mentions", "correction"]) assert.ok(expectedNativeScreenshots(suite).every((name) => !permitted.includes(name)), "A failure scene cannot satisfy successful workflow coverage");
+    for (const suite of ["core", "assistant", "mentions", "correction", "retention"]) assert.ok(expectedNativeScreenshots(suite).every((name) => !permitted.includes(name)), "A failure scene cannot satisfy successful workflow coverage");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test("native correction requires retained completed/historical work images without losing its original workflow captures", () => {
+  const expected = expectedNativeScreenshots("correction");
+  const retained = ["Native correction completed initial workspace retained", "Native correction initial workspace retained after relaunch",
+    "Native correction failed workspace retained", "Native correction completed corrected workspace retained",
+    "Native correction corrected workspace retained after relaunch", "Native correction cancelled workspace retained"];
+  assert.equal(expected.length, 21); assert.equal(new Set(expected).size, 21);
+  for (const name of retained) {
+    assert.ok(expected.includes(name));
+    for (const suite of ["core", "assistant", "mentions"]) assert.ok(!expectedNativeScreenshots(suite).includes(name));
+  }
+  for (const name of ["Native correction exact Stop confirmation", "Native correction kept running", "Native correction retained artifacts after Stop"])
+    assert.ok(expected.includes(name));
+  const directory = mkdtempSync(join(tmpdir(), "artoo-retention-images-"));
+  try {
+    writeFileSync(join(directory, "native.png"), pixels);
+    writeFileSync(join(directory, "manifest.json"), JSON.stringify([...retained, "Native correction unreviewed workspace", "Native correction pairing credentials"]
+      .map((name) => ({ name, exportedFileName: "native.png" }))));
+    assert.deepEqual(readXCTestScreenshots(directory).map((image) => image.caption), retained);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test("retention requires its separate seven successful UI captures and never counts a guarded failure as success", () => {
+  const expected = expectedNativeScreenshots("retention");
+  assert.deepEqual(expected, ["Native retention task ready before approval", "Native retention completed execution", "Native retention no uploaded artifacts",
+    "Native retention reported recovery details", "Native retention exact workspace path and branch", "Native retention recovery after cold relaunch", "Native retention no artifacts after relaunch"]);
+  const directory = mkdtempSync(join(tmpdir(), "artoo-retention-report-"));
+  try {
+    writeFileSync(join(directory, "native.png"), pixels);
+    writeFileSync(join(directory, "manifest.json"), JSON.stringify([...expected, "Native retention guarded failure diagnostics", "Native retention pairing code"]
+      .map((name) => ({ name, exportedFileName: "native.png" }))));
+    assert.deepEqual(readXCTestScreenshots(directory).map((image) => image.caption), [...expected, "Native retention guarded failure diagnostics"]);
+    assert.ok(!expected.includes("Native retention guarded failure diagnostics"));
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -112,9 +112,28 @@ if(process.argv.includes('--fixture-child')) {
     await server.app.inject({ method: "POST", url: `/api/v1/tasks/${taskId}/ready` });
     const assigned = await server.app.inject({ method: "POST", url: `/api/v1/tasks/${taskId}/assign`, payload: { mode: "auto" } });
     expect(assigned.statusCode, assigned.body).toBe(200);
-    await until(() => existsSync(join(workspace!, "parent.log")) && existsSync(join(workspace!, "child.log")), "CLI fixture did not start writing");
-    cliPid = Number(readFileSync(join(workspace, "parent.pid"), "utf8"));
-    descendantPid = Number(readFileSync(join(workspace, "child.pid"), "utf8"));
+    const runId = assigned.json().run.id as string;
+    const startupStartedAt = Date.now();
+    let lastStartupPoll = startupStartedAt, startupPolls = 0;
+    try {
+      await until(() => {
+        lastStartupPoll = Date.now(); startupPolls++;
+        // Retain ownership even if only one process reaches startup, so a
+        // failed startup still cleans up every PID the fixture published.
+        if (existsSync(join(workspace!, "parent.pid"))) cliPid = Number(readFileSync(join(workspace!, "parent.pid"), "utf8"));
+        if (existsSync(join(workspace!, "child.pid"))) descendantPid = Number(readFileSync(join(workspace!, "child.pid"), "utf8"));
+        return existsSync(join(workspace!, "parent.log")) && existsSync(join(workspace!, "child.log"));
+      }, "CLI fixture did not start writing");
+    } catch (cause) {
+      // Observe files before awaiting the database, preserving the actual
+      // timeout boundary instead of a potentially later state.
+      const observedAt = Date.now();
+      const startup = { elapsed_ms: observedAt - startupStartedAt, last_poll_age_ms: observedAt - lastStartupPoll, polls: startupPolls,
+        files: readdirSync(workspace).map((name) => { const file = statSync(join(workspace!, name)); return { name, bytes: file.size, modified_at: file.mtimeMs }; }),
+        worker_exit: worker.exitCode, worker_signal: worker.signalCode, diagnostic: diagnostic.slice(-4000) };
+      const run = (await server.app.inject({ method: "GET", url: `/api/v1/runs/${runId}` })).json().run;
+      throw new Error(`CLI startup state: ${JSON.stringify({ startup, run_observed_at: Date.now(), run })}`, { cause });
+    }
     await until(async () => {
       const { stdout } = await execute("/bin/ps", ["-axo", "pid=,ppid="]);
       const children = stdout.trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number))
@@ -122,7 +141,7 @@ if(process.argv.includes('--fixture-child')) {
       if (children.length !== 1) return false;
       guardianPid = children[0]![0]; return true;
     }, "Could not identify this worker's independent guardian");
-    return assigned.json().run.id as string;
+    return runId;
   }
 
   async function assertWritersStopped() {

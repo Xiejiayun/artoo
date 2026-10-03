@@ -9,6 +9,31 @@ The [workflow coverage inventory](apple-client-workflow-coverage.md) separately
 tracks implemented features that have not yet been exercised through native
 or installed-Mac UI.
 
+## Current local retention boundary, 2026-10-03
+
+Successful branch-backed work is retained, including partial-artifact and
+zero-artifact success. Web/Mac and native clients expose durable worker-reported
+root, branch, computer, outcome and time, with exact Copy after cold reload/relaunch;
+reported metadata does not assert current disk availability. No automatic
+destructive cleanup is introduced.
+
+Source26 passed 159 fresh native units, all eleven exact native UI cases and a
+matching development-signed arm64 archive. Correction/Retention passed 89/35 data
+checks and 10/6 fresh visual correlations; the aggregate audit passed 44 checks.
+The [current milestone](apple-client-milestones.md#2026-10-03-successful-work-retention-and-recovery-locally-verified) contains exact reports, image counts,
+archive/source pins and failed-attempt links. Historical source10 Mac (22 checks,
+55 originals, 22 Copy values, 14 cleanup flags) and source13 shared tests (1,537
+passed, 30 skipped) retain their own boundaries. The 554-path source26 reuse
+comparison is historical applicability, not a fresh run or compiled-binary match.
+
+Eleven native frame-dimension warnings and the archive's interface-orientation
+and skipped AppIntents metadata warnings remain recorded without diagnosis.
+Physical-device UI and upload were not performed. Per-run allocation and explicit
+continuation, remaining native UI flows, and every external gate below remain open.
+Receiver/WebSocket/allocation/UI-heading candidates are still unapplied and do
+not qualify the current product or a commercial deployment. Source reconciliation,
+commit/push and exact-new-commit hosted CI are separate delivery records.
+
 ## Identity and device trust
 
 Authenticated members can create pairing codes only for their own account in
@@ -73,14 +98,14 @@ collection. Before distribution, the publisher must:
 
 | Priority | Current gap and evidence | Implementable next step | External information or credential |
 | --- | --- | --- | --- |
-| P1 | The matching execution-correction development-signed arm64 archive passed; physical-device/TestFlight and distribution acceptance remain open. [project.yml](../apps/ios/project.yml) uses `dev.artoo.app` and version/build defaults. | Repeat the [archive gate](apple-development-archive.md) for release source, then verify distribution export and TestFlight on supported phone/tablet sizes. | Distribution provisioning and App Store Connect app/bundle registration, build metadata and available physical devices. |
-| P1 | Fresh unsigned DMG/ZIP installation passes on local x64 and hosted arm64; this does not prove a distributable trust chain. | Run the [Developer ID/notarization gate](../apps/desktop/MAC-DISTRIBUTION.md), then test signed installation, upgrade and removal on a clean Mac and each supported architecture. | Developer ID identity/private key, notarization profile and actual release hosting. |
+| P1 | The matching source26 retention development-signed arm64 archive passed; physical-device/TestFlight and distribution acceptance remain open. [project.yml](../apps/ios/project.yml) uses `dev.artoo.app` and version/build defaults. | Repeat the [archive gate](apple-development-archive.md) for release source, then verify distribution export and TestFlight on supported phone/tablet sizes. | Distribution provisioning and App Store Connect app/bundle registration, build metadata and available physical devices. |
+| P1 | Historical unsigned DMG/ZIP installation passed on local x64 and hosted arm64; source26 component applicability does not establish a fresh Mac binary or distributable trust chain. | Run the [Developer ID/notarization gate](../apps/desktop/MAC-DISTRIBUTION.md), then test signed installation, upgrade and removal on a clean Mac and each supported architecture. | Developer ID identity/private key, notarization profile and actual release hosting. |
 | P1 | Desktop source has no implemented trusted update channel in [main.cjs](../apps/desktop/main.cjs) or package configuration. | Define a signed manual-update or automatic-update flow, publish version/checksum metadata, and verify upgrade preserves connection/settings and server compatibility. | Update policy, release endpoint and signing custody. |
 | P1 | Operator policy details cannot be established from the source tree. | Complete the privacy steps above; keep onboarding and settings disclosures reachable without signing in. | Operator identity/contact, privacy-policy URL, retention/deletion terms and provider choices. |
 | P1 | Production startup requires configured auth and durable storage in [main.ts](../apps/server/src/main.ts) and [auth-config.ts](../apps/server/src/auth/auth-config.ts). Fixture auth is not deployed Google login evidence. | Run real HTTPS/OIDC and WebSocket flows, device revocation and cross-client updates against the chosen staging deployment. | Controlled HTTPS origin, registered Google OAuth client/redirect, team allowlist/owners and securely managed secrets. |
 | P1 | Mac/iOS execution gates use deterministic CLI fixtures. The installed Mac real-provider entry and missing-configuration failure are verified, but no successful live inference is established. | Run the explicit [provider gate](mac-live-provider-verification.md), retain usage/session evidence and reviewed answers, then validate actual implementation tasks against the selected provider. | Reachable authorized Responses API, model and private key file, or a separately verified existing CLI login. |
 | P1 | The isolated production-mode backup/restore drill passes, including credentials, records and exact artifact bytes after the original data is removed. | Repeat recovery on the chosen deployment, including off-site backup retrieval, host loss and documented recovery objectives. | Durable host/storage, backup destination/access, retention and recovery objectives. |
-| P1 | Successfully delivered isolated worktrees are still removed, so non-artifact implementation changes can be lost. Failed/cancelled/undelivered/startup-failure recovery does not close this gap. | Preserve or explicitly transfer all successful work before cleanup; verify discoverable recovery, safe reuse and repeated execution on the same instance. The next-stage implementation remains unapplied. | Product recovery/retention policy and actual release-source client evidence. |
+| P1 | Successful branch-backed work and reported recovery now have local Mac/native evidence. Reusing the same instance/root and continuing earlier uncommitted work remain unqualified. | Implement administrator-approved per-run allocation and explicit continuation; verify repeated execution, containment, mixed-version behavior and preserved earlier work through actual clients. | Product allocation/continuation policy and fresh integrated release-source evidence; isolated candidates remain unapplied. |
 | P1 | Native and packaged-client acceptance must match the binary being shipped. | Save an HTML report with actual app screenshots for each Mac/iOS E2E run, including failure state and authentication/model-execution limits; retain reports in CI. | A usable Mac/Xcode simulator or device environment and credentials only for gates explicitly exercising real external services. |
 
 No new P0 issue was confirmed by this source audit. That statement is limited
@@ -216,12 +241,17 @@ external release gates above or prove hosted acceptance of the new commit.
 
 ## Execution correction evidence, 2026-10-01
 
+This dated section records the earlier correction boundary. Its successful-work
+cleanup gap is superseded by the 2026-10-03 local retention verification above;
+its original counts, warnings and source limits remain historical evidence.
+
 Durable review history, real feedback in later execution context, version-bound
 review commands, preserved rejected/conflicting drafts, readable artifact identity,
 exact-run Stop and default-off worktree selection are implemented. Failed,
 cancelled, undelivered and materialized startup-failure work retain recoverable
-files. Successfully delivered work is still cleaned up; the next retention,
-recovery and device-workflow patches remain unapplied.
+files. At that boundary, successfully delivered work was still cleaned up and
+the later retention/recovery implementation was unapplied. Native device-workflow
+coverage remains open.
 
 The final installed Mac attempt passed 21 checks with 38 caption entries/37 unique
 images, independent data/visual audits and all nine cleanup checks. Current full
@@ -259,8 +289,9 @@ were declared, so exercised lease release is not claimed. Six nonfatal frame
 warnings and screenshot viewport limits remain recorded. PGlite tests do not prove
 multi-connection PostgreSQL behavior.
 
-These results extend functional preview evidence only. Successful-work preservation
-and safe same-instance recovery, live-provider answer/implementation quality,
+Those results extended functional preview evidence only. Successful-work preservation
+was then open and is now covered by the local boundary above. Safe same-instance
+recovery, live-provider answer/implementation quality,
 physical devices/TestFlight, Developer ID/notarization/trusted updates, deployed
 HTTPS/Google OAuth, operator privacy/deletion policy and deployment-specific
 recovery remain separate release requirements.

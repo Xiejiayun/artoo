@@ -1,5 +1,6 @@
 import SwiftUI
 import QuickLook
+import UIKit
 
 /// Full task view: status, acceptance criteria, lifecycle actions, runs,
 /// approvals, and artifacts. Drives the create → ready → assign → review loop.
@@ -52,7 +53,7 @@ public struct TaskDetailView: View {
                 }
                 runsSection(snapshot.runs)
                 approvalsSection(snapshot.approvals)
-                artifactsSection(snapshot.artifacts, runs: snapshot.runs)
+                artifactsSection(snapshot.artifacts, runs: snapshot.runs, taskId: snapshot.task.id)
                 if let artifactError { Section { Text(artifactError).foregroundStyle(.red) } }
             }
             .listStyle(.insetGrouped)
@@ -279,7 +280,7 @@ public struct TaskDetailView: View {
     }
 
     @ViewBuilder
-    private func artifactsSection(_ artifacts: [Artifact], runs: [Run]) -> some View {
+    private func artifactsSection(_ artifacts: [Artifact], runs: [Run], taskId: String) -> some View {
         if !artifacts.isEmpty {
             Section("Artifacts") {
                 ForEach(artifacts) { artifact in
@@ -298,6 +299,12 @@ public struct TaskDetailView: View {
                         } else { Text("This older artifact was not uploaded to the server.").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
+            }
+        } else {
+            Section("Artifacts") {
+                Text("No artifacts uploaded.")
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("task.artifacts.empty.\(taskId)")
             }
         }
     }
@@ -425,7 +432,7 @@ private struct AssignSheet: View {
                     Toggle("Use an isolated Git worktree", isOn: $branchBacked)
                         .accessibilityIdentifier("task.assignment.worktree")
                 } header: { Text("Execution workspace") } footer: {
-                    Text("Requires a Git repository on the execution computer and an unused workspace location. Failed or stopped work stays there for recovery.")
+                    Text("Requires a Git repository on the execution computer. Completed, failed and stopped work remains in its worktree for recovery. Each isolated execution needs a new unused workspace location.")
                 }
                 if mode == "manual" {
                     Section("Agent") {
@@ -557,6 +564,7 @@ public struct RunSummaryView: View {
     @State private var usage: RunUsage?
     @State private var usageError: String?
     @State private var usageLoaded = false
+    @State private var computers: [WorkspaceRecord] = []
     private let client: ApiClientProtocol?
 
     public init(run: Run, client: ApiClientProtocol? = nil) { _run = State(initialValue: run); self.client = client }
@@ -592,6 +600,7 @@ public struct RunSummaryView: View {
                         .font(ArtooTokens.Typography.body)
                 }
             }
+            workspaceSection
             Section("Timing") {
                 if let createdAt = run.createdAt { LabeledContent("Created", value: createdAt) }
                 if let startedAt = run.startedAt { LabeledContent("Started", value: startedAt) }
@@ -627,6 +636,54 @@ public struct RunSummaryView: View {
                 usageError = nil
             } catch { usage = nil; usageError = "Usage could not be confirmed: \(error)" }
             usageLoaded = true
+        }
+        .task {
+            guard let client else { return }
+            // A readable current name is optional; the report's stable ID remains visible.
+            if let inventory = try? await client.resource(path: "/api/v1/bootstrap") {
+                computers = inventory["computers"].records
+            }
+        }
+    }
+
+    private var workspaceSection: some View {
+        let details = RunWorkspaceDetails(run: run, computers: computers)
+        return Section("Work retention") {
+            Text(details.heading).font(.headline)
+                .accessibilityIdentifier("run.workspace.retention.\(run.id)")
+            if let report = details.report {
+                LabeledContent("Reported outcome", value: report.outcome.label)
+                if let name = details.reporterDisplayName {
+                    LabeledContent("Computer name (current)", value: name)
+                }
+                LabeledContent("Computer ID", value: report.reporterComputerId)
+                    .textSelection(.enabled)
+                LabeledContent("Server recorded", value: report.reportedAt)
+                    .textSelection(.enabled)
+                Text("This is the worker's report at that time. Current file availability has not been checked.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("No supported retention report is available for this run. Planned workspace details do not confirm files were created or kept.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let path = details.workspaceRoot {
+                workspaceValue(details.workspaceLabel, value: path, copyLabel: "Copy workspace path", identifier: "path")
+            }
+            if let branch = details.workspaceBranch {
+                workspaceValue(details.report == nil ? "Planned branch" : "Reported branch", value: branch, copyLabel: "Copy branch", identifier: "branch")
+            }
+        }
+    }
+
+    private func workspaceValue(_ label: String, value: String, copyLabel: String, identifier: String) -> some View {
+        VStack(alignment: .leading, spacing: ArtooTokens.Spacing.xs) {
+            Text(label).font(.subheadline)
+            Text(value).font(.system(.footnote, design: .monospaced))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("run.workspace.\(identifier).\(run.id)")
+            Button(copyLabel) { UIPasteboard.general.string = value }
+                .accessibilityIdentifier("run.workspace.copy.\(identifier).\(run.id)")
         }
     }
 }
@@ -674,6 +731,10 @@ private struct RunTimelineRow: View {
                     ("Agent", run.agentInstanceId),
                     ("Started", run.startedAt ?? run.createdAt)
                 ])
+                if run.workspaceRetention != nil {
+                    Text("Work retention reported")
+                        .font(ArtooTokens.Typography.caption).foregroundStyle(.secondary)
+                }
                 if let failure = run.failureReason, !failure.isEmpty {
                     Text(failure)
                         .font(ArtooTokens.Typography.caption)

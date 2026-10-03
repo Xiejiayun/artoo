@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { CORRECTION_FAILURE_EXIT, correctionContextPath, correctionExitPath, correctionReceiptPath, correctionReportPath } from "./execution-correction.mjs";
+import { CORRECTION_FAILURE_EXIT, CORRECTION_IGNORED_FILE, correctionContextPath, correctionExitPath, correctionIgnoredBytes, correctionReceiptPath, correctionReportPath } from "./execution-correction.mjs";
 
 // Real CLI subprocess and Git fixture tests. Signals target only children this
 // file starts; user-facing Stop and worktree cleanup remain separate E2E checks.
@@ -42,7 +42,8 @@ function setup(t) {
   git(base, ["init", "--initial-branch=fixture-main"]);
   git(base, ["config", "core.autocrlf", "false"]);
   writeFileSync(join(base, "implementation.txt"), baseline);
-  git(base, ["add", "implementation.txt"]);
+  writeFileSync(join(base, ".gitignore"), `${CORRECTION_IGNORED_FILE}\n`);
+  git(base, ["add", "implementation.txt", ".gitignore"]);
   git(base, ["-c", "user.name=Correction Fixture", "-c", "user.email=correction-fixture@artoo.test", "commit", "-m", "Task-owned baseline"]);
   const commit = git(base, ["rev-parse", "HEAD"]).trim();
   const configuration = { project_id: "project_correction", task_title: "Correct the actual delivered report",
@@ -120,9 +121,14 @@ function assertFileEvidence(state, runId, result) {
   assert.equal(recorded.workspace_root, result.workspace);
   assert.equal(recorded.context_sha256, hash(result.source));
   assert.deepEqual(readFileSync(correctionContextPath(state.receipts, runId)), Buffer.from(result.source));
-  for (const [filename, field] of [["implementation.txt", "implementation_sha256"], ["unsaved.txt", "unsaved_sha256"]]) {
+  for (const [filename, field] of [["implementation.txt", "implementation_sha256"], ["unsaved.txt", "unsaved_sha256"], [CORRECTION_IGNORED_FILE, "ignored_sha256"]]) {
     assert.equal(hash(readFileSync(join(result.workspace, filename))), recorded[field]);
   }
+  const ignored = readFileSync(join(result.workspace, CORRECTION_IGNORED_FILE));
+  assert.deepEqual(ignored, correctionIgnoredBytes(result.pack, runId, recorded.mode, recorded.context_sha256));
+  assert.deepEqual([...ignored.subarray(0, 5)], [0, 255, 128, 13, 10]);
+  assert.equal(ignored.length, recorded.ignored_size);
+  assert.equal(git(result.workspace, ["check-ignore", "--", CORRECTION_IGNORED_FILE]).trim(), CORRECTION_IGNORED_FILE);
   assert.deepEqual(recorded.feedback, (result.pack.review_feedback?.entries ?? []).map((entry) => ({ ...entry, comment_sha256: hash(entry.comment) })));
   assert.deepEqual(git(result.workspace, ["diff", "--name-only"]).trim().split("\n"), ["implementation.txt"]);
   assert.deepEqual(privateTemps(state), []);
@@ -147,6 +153,8 @@ test("initial and corrected children derive distinct real Git-applicable patches
     git(verify, ["apply", "--check", correctionReportPath(state.receipts, runId)]);
     git(verify, ["apply", correctionReportPath(state.receipts, runId)]);
     assert.deepEqual(readFileSync(join(verify, "implementation.txt")), readFileSync(join(result.workspace, "implementation.txt")));
+    assert.equal(existsSync(join(verify, "unsaved.txt")), false);
+    assert.equal(existsSync(join(verify, CORRECTION_IGNORED_FILE)), false, "Uploaded patch cannot reconstruct the real ignored work");
     if (mode === "corrected") {
       assert.ok(patch.toString().includes(JSON.stringify(feedback(1).comment)));
       assert.ok(patch.toString().includes(feedback(1).event_id));
@@ -194,11 +202,12 @@ test("hold is live until owned SIGTERM, then records exact exit hashes without c
   assert.deepEqual(await owned.closed, { status: 0, signal: null });
   const exit = JSON.parse(readFileSync(correctionExitPath(state.receipts, runId), "utf8"));
   assert.deepEqual(exit, { run_id: runId, task_id: input.pack.task.id, pid: owned.child.pid, signal: "SIGTERM",
-    implementation_sha256: recorded.implementation_sha256, unsaved_sha256: recorded.unsaved_sha256 });
+    implementation_sha256: recorded.implementation_sha256, unsaved_sha256: recorded.unsaved_sha256, ignored_sha256: recorded.ignored_sha256 });
   assert.deepEqual(readFileSync(correctionReceiptPath(state.receipts, runId)), originalReceipt);
   assert.deepEqual(readFileSync(correctionContextPath(state.receipts, runId)), originalContext);
   assert.equal(hash(readFileSync(join(input.workspace, "implementation.txt"))), exit.implementation_sha256);
   assert.equal(hash(readFileSync(join(input.workspace, "unsaved.txt"))), exit.unsaved_sha256);
+  assert.equal(hash(readFileSync(join(input.workspace, CORRECTION_IGNORED_FILE))), exit.ignored_sha256);
   assert.ok(!frames(owned.stdout()).some((frame) => frame.type === "turn.completed" || frame.item?.type === "agent_message"));
   assert.equal(existsSync(join(input.workspace, "changes.patch")), false);
   assert.equal(launches(state).length, 1);
@@ -213,7 +222,7 @@ test("forced termination exits the held child without an exit receipt and preser
   assert.ok(existsSync(correctionReceiptPath(state.receipts, runId)), owned.stderr());
   const recorded = assertFileEvidence(state, runId, { ...input, child: owned.child });
   const paths = [correctionReceiptPath(state.receipts, runId), correctionContextPath(state.receipts, runId),
-    join(input.workspace, "implementation.txt"), join(input.workspace, "unsaved.txt")];
+    join(input.workspace, "implementation.txt"), join(input.workspace, "unsaved.txt"), join(input.workspace, CORRECTION_IGNORED_FILE)];
   const before = paths.map((path) => readFileSync(path));
   process.kill(owned.child.pid, 0);
   assert.equal(owned.child.kill("SIGKILL"), true);
@@ -232,7 +241,7 @@ test("a duplicate run remains a counted real launch and cannot overwrite origina
   const state = setup(t), runId = "run_duplicate", first = execute(state, "initial", runId);
   assert.equal(first.child.status, 0, first.child.stderr);
   const paths = [correctionReceiptPath(state.receipts, runId), correctionContextPath(state.receipts, runId), correctionReportPath(state.receipts, runId),
-    join(first.workspace, "implementation.txt"), join(first.workspace, "unsaved.txt"), join(first.workspace, "changes.patch")];
+    join(first.workspace, "implementation.txt"), join(first.workspace, "unsaved.txt"), join(first.workspace, CORRECTION_IGNORED_FILE), join(first.workspace, "changes.patch")];
   const before = paths.map((path) => readFileSync(path));
   const duplicate = execute(state, "initial", runId);
   assert.equal(duplicate.child.status, 1); assert.equal(duplicate.child.stdout, "");
@@ -247,7 +256,7 @@ test("a duplicate run remains a counted real launch and cannot overwrite origina
 test("a fresh run in a retained failed workspace is rejected without overwriting its tracked or new work", (t) => {
   const state = setup(t), first = execute(state, "failed", "run_retained");
   assert.equal(first.child.status, CORRECTION_FAILURE_EXIT);
-  const paths = [join(first.workspace, "implementation.txt"), join(first.workspace, "unsaved.txt"),
+  const paths = [join(first.workspace, "implementation.txt"), join(first.workspace, "unsaved.txt"), join(first.workspace, CORRECTION_IGNORED_FILE),
     correctionReceiptPath(state.receipts, "run_retained"), correctionContextPath(state.receipts, "run_retained")];
   const before = paths.map((path) => readFileSync(path));
   const reuse = execute(state, "failed", "run_reused_workspace");

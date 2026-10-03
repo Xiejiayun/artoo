@@ -1,15 +1,18 @@
 import XCTest
 import CryptoKit
+import UIKit
 
 /// Product mutations use the phone UI. API reads and fixture checkpoints only
 /// observe the real task, production executions and disposable Git workspaces.
 final class ExecutionCorrectionUITests: XCTestCase {
     private let app = XCUIApplication()
     private var fixture: CorrectionFixture!
+    private var retentionViews: [[String: Any]] = []
 
     override func setUpWithError() throws {
         continueAfterFailure = false
         fixture = try CorrectionFixture(ProcessInfo.processInfo.environment)
+        retentionViews = []
     }
 
     override func tearDownWithError() throws { app.terminate() }
@@ -40,6 +43,8 @@ final class ExecutionCorrectionUITests: XCTestCase {
         let firstArtifact = try artifact(runId: firstRun.id, in: initialSnapshot)
         try await verifyDownloadedArtifact(firstArtifact, observation: initial)
         try assertStatus(taskId, "review")
+        try await showRetainedWorkspace(firstRun, slot: 1, outcome: "completed", verifyCopy: true,
+                                        caption: "Native correction completed initial workspace retained")
         try showArtifact(firstArtifact)
         try screenshot("Native correction initial artifact details")
         try preview(firstArtifact, run: firstRun, stage: "initial", reviewEventId: nil, caption: "Native correction initial patch in Quick Look")
@@ -54,6 +59,8 @@ final class ExecutionCorrectionUITests: XCTestCase {
         try assertStatus(taskId, "ready")
         try showReview(firstReview)
         try screenshot("Native correction feedback after relaunch")
+        try await showRetainedWorkspace(firstRun, slot: 1, outcome: "completed", verifyCopy: false,
+                                        caption: "Native correction initial workspace retained after relaunch")
         let reopened: CorrectionSnapshot = try await get("api/v1/tasks/\(taskId)")
         try require(reopened.reviews == snapshot(changed).reviews && reopened.runs.map(\.id).sorted() == [firstRun.id], "Relaunch must preserve the review and run identities without resubmitting work")
 
@@ -63,6 +70,8 @@ final class ExecutionCorrectionUITests: XCTestCase {
         try assertStatus(taskId, "blocked")
         try showRun(failedRun)
         try screenshot("Native correction failed run")
+        try await showRetainedWorkspace(failedRun, slot: 2, outcome: "failed", verifyCopy: false,
+                                        caption: "Native correction failed workspace retained")
         try showArtifact(firstArtifact)
         try screenshot("Native correction retained initial artifact after failure")
         try require(failedSnapshot.artifacts == [firstArtifact], "Failed execution must leave the original report immutable and add no report")
@@ -80,6 +89,8 @@ final class ExecutionCorrectionUITests: XCTestCase {
         try await verifyDownloadedArtifact(firstArtifact, observation: corrected)
         try await verifyDownloadedArtifact(correctedArtifact, observation: corrected)
         try assertStatus(taskId, "review")
+        try await showRetainedWorkspace(thirdRun, slot: 3, outcome: "completed", verifyCopy: true,
+                                        caption: "Native correction completed corrected workspace retained")
         try showBothArtifacts(firstArtifact, correctedArtifact)
         try screenshot("Native correction original and corrected artifacts")
         try preview(correctedArtifact, run: thirdRun, stage: "corrected", reviewEventId: firstReview.eventId, caption: "Native correction corrected patch in Quick Look")
@@ -132,10 +143,32 @@ final class ExecutionCorrectionUITests: XCTestCase {
         try screenshot("Native correction retained artifacts after Stop")
         try await verifyDownloadedArtifact(firstArtifact, observation: stable)
         try await verifyDownloadedArtifact(correctedArtifact, observation: stable)
+        // Reopen historical runs after the task is terminal, without creating
+        // another execution or resubmitting either durable review.
+        app.terminate(); app.launch()
+        try require(app.tabBars.buttons["Tasks"].waitForExistence(timeout: 20), "Relaunch must restore the cancelled task's paired session")
+        try openTask(taskId); try assertStatus(taskId, "cancelled")
+        let historical = try await observations(), historicalSnapshot = try snapshot(historical)
+        try require(historicalSnapshot.runs.sorted { $0.id < $1.id } == final.runs.sorted { $0.id < $1.id }
+                    && historicalSnapshot.reviews == final.reviews
+                    && historicalSnapshot.artifacts.sorted { $0.id < $1.id } == final.artifacts.sorted { $0.id < $1.id }
+                    && historical.cancellation.attempts.count == 1 && historical.livePids.isEmpty,
+                    "Historical relaunch must preserve all four runs/retention records, both reviews/artifacts and the single Stop without redispatch")
+        let retained = try (1...4).map { slot in
+            try workspaceRetention(try run(slot: slot, in: historical), slot: slot,
+                                   outcome: ["completed", "failed", "completed", "cancelled"][slot - 1])
+        }
+        try require(Set(retained.map(\.eventId)).count == 4, "Each terminal run must expose its own typed retention event")
+        try await showRetainedWorkspace(try run(slot: 3, in: historical), slot: 3, outcome: "completed", verifyCopy: false,
+                                        caption: "Native correction corrected workspace retained after relaunch")
+        try await showRetainedWorkspace(try run(slot: 4, in: historical), slot: 4, outcome: "cancelled", verifyCopy: false,
+                                        caption: "Native correction cancelled workspace retained")
         let record: [String: Any] = ["task_id": taskId, "run_ids": [firstRun.id, failedRun.id, thirdRun.id, fourthRun.id],
                                   "review_event_ids": [firstReview.eventId, secondReview.eventId],
                                   "artifact_ids": [firstArtifact.id, correctedArtifact.id], "cancelled_run_id": fourthRun.id,
                                   "cancellation_requests": stable.cancellation.attempts.count,
+                                  "retention_event_ids": retained.map(\.eventId), "retained_workspaces": retained.count,
+                                  "workspace_retention_views": retentionViews,
                                   "runtime_scope": "Deterministic real CLI over the production authenticated node; no live provider inference"]
         let attachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: record, options: .sortedKeys), uniformTypeIdentifier: "public.json")
         attachment.name = "Native correction exact identities and lifecycle boundaries"; attachment.lifetime = .keepAlways; add(attachment)
@@ -285,12 +318,31 @@ final class ExecutionCorrectionUITests: XCTestCase {
         try revealText(button, identifier: identifier)
         try require(matches.count == 1 && button.label == label && button.isEnabled,
                     "The exact task action must expose one enabled button labeled \(label)")
-        let firstArea = try viewport(), firstFrame = button.frame
-        let area = try viewport(), frame = button.frame
-        let finite = [firstArea, firstFrame, area, frame].allSatisfy { finiteNonempty($0) }
-        try require(finite && firstArea == area && firstFrame == frame
-                    && firstArea.contains(firstFrame) && area.contains(frame),
-                    "The exact inline Task button must retain a finite, stable frame fully inside the content viewport")
+        // Read-only resampling after scrolling: retain exact geometry equality
+        // and full containment without touching or scrolling an unsettled row.
+        let deadline = ProcessInfo.processInfo.systemUptime + 20
+        var previous: (area: CGRect, frame: CGRect)?
+        var stable: (area: CGRect, frame: CGRect)?
+        var samples: [String] = []
+        while samples.count < 8 && ProcessInfo.processInfo.systemUptime < deadline {
+            let observedArea = try viewport(), observedFrame = button.frame
+            let complete = finiteNonempty(observedArea) && finiteNonempty(observedFrame)
+                && observedArea.contains(observedFrame)
+            samples.append("sample \(samples.count + 1): viewport=\(observedArea), frame=\(observedFrame), complete=\(complete)")
+            if ProcessInfo.processInfo.systemUptime < deadline, complete,
+               let prior = previous, prior.area == observedArea, prior.frame == observedFrame {
+                stable = (observedArea, observedFrame)
+                break
+            }
+            previous = complete ? (observedArea, observedFrame) : nil
+        }
+        let geometry = XCTAttachment(string: "identifier: \(identifier)\nlabel: \(label)\n" + samples.joined(separator: "\n"))
+        geometry.name = "Native correction \(label) geometry observations"; geometry.lifetime = .keepAlways; add(geometry)
+        try require(stable != nil,
+                    "The exact inline Task button must retain a finite, stable frame fully inside the content viewport after bounded observation")
+        let (area, frame) = stable!
+        try require(matches.count == 1 && button.label == label && button.isEnabled,
+                    "The observed exact Task action must remain unique, correctly labeled and enabled before its one touch")
         try requireForeground("touching an inline Task action")
         try require(app.navigationBars["Task"].exists && !app.keyboards.firstMatch.exists
                     && !app.alerts.firstMatch.exists && !app.sheets.firstMatch.exists,
@@ -323,6 +375,79 @@ final class ExecutionCorrectionUITests: XCTestCase {
         let row = app.buttons["task.run.\(run.id)"]
         try revealText(row, identifier: "task.run.\(run.id)")
         try require(row.isHittable && row.label.contains(run.id) && row.label.localizedCaseInsensitiveContains(run.status), "The fully visible, hittable run row must identify this exact execution and state")
+    }
+
+    private func workspaceRetention(_ run: CorrectionRun, slot: Int, outcome: String) throws -> CorrectionWorkspaceRetention {
+        guard let report = run.workspaceRetention else { throw correctionError("This terminal run must expose a typed workspace retention report") }
+        try require(run.status == outcome && report.version == 1 && report.outcome == outcome
+                    && report.reporterComputerId == fixture.computerId && run.computerId == fixture.computerId
+                    && report.workspaceRoot.utf8.elementsEqual(fixture.instances[slot - 1].root.utf8)
+                    && report.workspaceRoot.utf8.elementsEqual(run.workspaceRoot.utf8)
+                    && report.workspaceBranch == "artoo/run-\(run.id)" && report.workspaceBranch == run.workspaceBranch
+                    && !report.eventId.isEmpty && report.position > 0 && report.sequence >= 0 && !report.reportedAt.isEmpty,
+                    "Typed retention must match the actual terminal outcome, reporter, run, root, branch and durable event")
+        return report
+    }
+
+    @MainActor
+    private func showRetainedWorkspace(_ run: CorrectionRun, slot: Int, outcome: String, verifyCopy: Bool, caption: String) async throws {
+        let report = try workspaceRetention(run, slot: slot, outcome: outcome)
+        let historical: CorrectionRunResponse = try await get("api/v1/runs/\(run.id)")
+        try require(historical.run == run, "The independent historical run read must retain the exact task-snapshot identity and typed report")
+        try showRun(run)
+        let rows = app.buttons.matching(identifier: "task.run.\(run.id)")
+        try require(rows.count == 1 && rows.firstMatch.isEnabled && rows.firstMatch.isHittable,
+                    "Only the exact fully visible run row may open retention history")
+        rows.firstMatch.tap()
+        let navigation = app.navigationBars["Run Summary"]
+        try require(navigation.waitForExistence(timeout: 15), "The actual run must open its native summary")
+        let headingId = "run.workspace.retention.\(run.id)", heading = app.staticTexts[headingId]
+        try revealText(heading, identifier: headingId)
+        try require(heading.label == "Work retention reported", "The native summary must distinguish a durable report from an unconfirmed planned workspace")
+        let outcomeLabel = ["completed": "Execution completed", "failed": "Execution failed", "cancelled": "Execution cancelled"][outcome]!
+        // LabeledContent exposes its title and value as one accessibility label.
+        for value in ["Reported outcome, \(outcomeLabel)", "Server recorded, \(report.reportedAt)",
+                      "This is the worker's report at that time. Current file availability has not been checked."] {
+            let text = app.staticTexts.matching(NSPredicate(format: "label == %@", value)).firstMatch
+            try revealText(text, identifier: value)
+            try require(text.label == value, "The summary must disclose the recorded outcome/time and historical-report limitation")
+        }
+        let pathId = "run.workspace.path.\(run.id)", branchId = "run.workspace.branch.\(run.id)"
+        let path = app.staticTexts[pathId], branch = app.staticTexts[branchId]
+        for (element, identifier, value) in [(path, pathId, report.workspaceRoot), (branch, branchId, report.workspaceBranch)] {
+            try revealText(element, identifier: identifier)
+            try require(element.label.utf8.elementsEqual(value.utf8), "The entire recovery value must match the typed report without truncation or rewriting")
+        }
+        if verifyCopy {
+            try await copyWorkspaceValue(runId: run.id, field: "path", label: "Copy workspace path", expected: report.workspaceRoot)
+            try await copyWorkspaceValue(runId: run.id, field: "branch", label: "Copy branch", expected: report.workspaceBranch)
+        }
+        let branchCopyId = "run.workspace.copy.branch.\(run.id)", branchCopy = app.buttons[branchCopyId]
+        try revealTogether(path, branchCopy, identifiers: (pathId, branchCopyId))
+        try require(branch.label.utf8.elementsEqual(report.workspaceBranch.utf8), "The capture must retain the complete branch beside the workspace path")
+        try screenshot(caption)
+        retentionViews.append(["caption": caption, "run_id": run.id, "task_id": run.taskId, "slot": slot,
+                               "retention_event_id": report.eventId, "outcome": report.outcome,
+                               "reporter_computer_id": report.reporterComputerId, "reported_at": report.reportedAt,
+                               "workspace_root": report.workspaceRoot, "workspace_branch": report.workspaceBranch,
+                               "path_and_branch_copied_through_ui": verifyCopy])
+        let back = navigation.buttons.matching(NSPredicate(format: "label == %@", "Task"))
+        try require(back.count == 1 && back.firstMatch.isEnabled && back.firstMatch.isHittable,
+                    "The run summary must offer its exact Task back navigation")
+        back.firstMatch.tap()
+        try require(app.navigationBars["Task"].waitForExistence(timeout: 10), "Back must return to the same correction task")
+    }
+
+    @MainActor
+    private func copyWorkspaceValue(runId: String, field: String, label: String, expected: String) async throws {
+        let identifier = "run.workspace.copy.\(field).\(runId)", buttons = app.buttons.matching(identifier: identifier)
+        try revealText(buttons.firstMatch, identifier: identifier)
+        try require(buttons.count == 1 && buttons.firstMatch.label == label && buttons.firstMatch.isEnabled && buttons.firstMatch.isHittable,
+                    "The exact recovery value must offer one visible Copy action")
+        try await NativeClipboardProbe.verify(expected: expected, simulatorUDID: fixture.simulatorUDID,
+                                               controlURL: fixture.controlURL, token: fixture.controlToken) {
+            buttons.firstMatch.tap()
+        }
     }
 
     @MainActor
@@ -440,16 +565,7 @@ final class ExecutionCorrectionUITests: XCTestCase {
                             "The existing device name must be a readable, bounded single-line value")
                 try require(app.keyboards.firstMatch.exists && input.isEnabled && input.isHittable,
                             "The identified device name must remain editable with the native keyboard present")
-                let area = try viewport(), frame = input.frame, bounds = app.frame
-                try require(finiteNonempty(frame) && area.contains(frame) && finiteNonempty(bounds) && bounds.contains(area),
-                            "The complete device name field must remain inside the finite content viewport")
-                // A fresh pairing field can retain focus without exposing an edit
-                // menu. Place its caret at the trailing edge before deleting once.
-                let trailing = CGPoint(x: frame.maxX - min(8, frame.width / 2), y: frame.midY)
-                try require(frame.contains(trailing), "The device name caret touch must stay inside its exact field")
-                app.coordinate(withNormalizedOffset: .zero)
-                    .withOffset(CGVector(dx: trailing.x - bounds.minX, dy: trailing.y - bounds.minY)).tap()
-                try require(input.value as? String == current, "Positioning the caret must preserve the observed device name")
+                try NativePairingInput.positionDeviceNameCaret(input, in: app, expected: current)
                 input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
             } else {
                 input.press(forDuration: 1.0)
@@ -742,6 +858,7 @@ private func correctionError(_ message: String) -> NSError {
 
 private struct CorrectionFixture {
     let serverURL: URL; let peerToken: String; let controlURL: URL; let controlToken: String
+    let simulatorUDID: String
     let deviceName: String; let projectId: String; let taskTitle: String; let criteria: [String]
     let reviewComments: [String]; let approvalSummaries: [String]; let instances: [CorrectionInstance]
     let computerId: String; let runtimeId: String
@@ -759,6 +876,7 @@ private struct CorrectionFixture {
         }
         serverURL = try loopback("SERVER_URL"); controlURL = try loopback("FIXTURE_CONTROL_URL")
         peerToken = try value("PEER_CONTROL_TOKEN"); controlToken = try value("FIXTURE_CONTROL_TOKEN")
+        simulatorUDID = try value("SIMULATOR_UDID")
         deviceName = try value("NATIVE_DEVICE_NAME"); projectId = try value("PROJECT_ID"); taskTitle = try value("TASK_TITLE")
         criteria = try [value("CRITERION_1"), value("CRITERION_2")]
         reviewComments = try [value("REVIEW_COMMENT_1"), value("REVIEW_COMMENT_2")]
@@ -776,9 +894,14 @@ private struct CorrectionPairing: Decodable { let code: String }
 private struct CorrectionTasks: Decodable { let tasks: [CorrectionTask] }
 private struct CorrectionTask: Decodable { let id: String; let projectId: String; let title: String; let status: String; let acceptanceCriteria: [String]?; let requiredCapabilities: [String]? }
 private struct CorrectionSnapshot: Decodable { let task: CorrectionTask; let runs: [CorrectionRun]; let approvals: [CorrectionApproval]; let artifacts: [CorrectionArtifact]; let reviews: [CorrectionReview] }
-private struct CorrectionRun: Decodable {
+private struct CorrectionRun: Decodable, Equatable {
     let id: String; let taskId: String; let status: String; let agentInstanceId: String; let computerId: String; let runtimeId: String
-    let workspaceRoot: String; let workspaceBranch: String
+    let workspaceRoot: String; let workspaceBranch: String; let workspaceRetention: CorrectionWorkspaceRetention?
+}
+private struct CorrectionRunResponse: Decodable { let run: CorrectionRun }
+private struct CorrectionWorkspaceRetention: Decodable, Equatable {
+    let version: Int; let workspaceRoot: String; let workspaceBranch: String; let outcome: String
+    let reporterComputerId: String; let eventId: String; let position: Int; let sequence: Int; let reportedAt: String
 }
 private struct CorrectionApproval: Decodable { let id: String; let summary: String?; let status: String; let payloadRef: String?; let runId: String? }
 private struct CorrectionArtifact: Decodable, Equatable {

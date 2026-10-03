@@ -254,15 +254,18 @@ private struct ProductionBadge: View {
     let accessibilityPrefix: String
 
     var body: some View {
-        Label(style.label, systemImage: style.systemImage)
-            .font(ArtooTokens.Typography.badge)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, ArtooTokens.Spacing.xs)
-            .padding(.vertical, ArtooTokens.Spacing.xxs)
-            .foregroundStyle(style.foreground)
-            .background(style.background, in: Capsule())
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(accessibilityPrefix) \(style.label)")
+        HStack(alignment: .firstTextBaseline, spacing: ArtooTokens.Spacing.xxs) {
+            Image(systemName: style.systemImage)
+            Text(style.label)
+        }
+        .font(ArtooTokens.Typography.badge)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, ArtooTokens.Spacing.xs)
+        .padding(.vertical, ArtooTokens.Spacing.xxs)
+        .foregroundStyle(style.foreground)
+        .background(style.background, in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(accessibilityPrefix) \(style.label)")
     }
 }
 

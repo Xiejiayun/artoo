@@ -143,7 +143,7 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
             {approvalBlockReason && <p className="work-assignment__approval" id={approvalReasonId} role="status">{approvalBlockReason}</p>}
             <div className="assignment-worktree u-stack-sm">
               <label><input type="checkbox" checked={branchBacked} onChange={(event) => setBranchBacked(event.target.checked)} disabled={busy} aria-describedby={worktreeHelpId} /> Use an isolated Git worktree</label>
-              <p className="work-help" id={worktreeHelpId}>Requires a Git repository configured on the execution computer and an unused workspace path. Use a different workspace when previous failed or cancelled work is retained.</p>
+              <p className="work-help" id={worktreeHelpId}>Requires a Git repository configured on the execution computer and an unused workspace path. Completed, failed and stopped work stays there. Use a new workspace for each isolated execution.</p>
             </div>
             <Button variant="primary" className="work-assignment__submit" iconRight={ArrowRight} loading={assign.isPending} disabled={busy || !!approvalBlockReason || assigneeUnavailable} aria-describedby={[approvalBlockReason ? approvalReasonId : "", assigneeUnavailable ? availabilityReasonId : ""].filter(Boolean).join(" ") || undefined} onClick={() => assign.mutate()}>Assign</Button>
           </div>

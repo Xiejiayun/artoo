@@ -44,14 +44,10 @@ describe("scheduler eligibility #113 slice 5", () => {
     expect(second.statusCode).toBe(409);
   });
 
-  it("admin status disabled/stopping/failed excludes the instance", async () => {
-    for (const status of ["disabled", "stopping", "failed"]) {
-      srv = await buildTestServer();
-      await srv.db.db.update(agentInstances).set({ status }).where(eq(agentInstances.id, "instance_mock_coder"));
-      expect((await assign(await readyTask())).statusCode).toBe(409);
-      await srv.close();
-      srv = undefined;
-    }
+  it.each(["disabled", "stopping", "failed"])("admin status %s excludes the instance", async (status) => {
+    srv = await buildTestServer();
+    await srv.db.db.update(agentInstances).set({ status }).where(eq(agentInstances.id, "instance_mock_coder"));
+    expect((await assign(await readyTask())).statusCode).toBe(409);
   });
 
   it("stale 'running' instance status is NOT busy by itself (capacity decides) — still eligible", async () => {

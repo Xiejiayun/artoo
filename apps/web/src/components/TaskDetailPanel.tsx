@@ -113,7 +113,7 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
       <ApprovalInbox taskId={task.id} taskStatus={task.status} approvals={approvals} />
       <section className="task-detail__section" aria-label="Runs">
         <h3 className="task-detail__section-title">Runs <span className="work-count">{runs.length}</span></h3>
-        <RunTimeline runs={runs} outputsByRun={outputsByRun} renderUsage={(run) => <RunUsageSummary run={run} />} />
+        <RunTimeline runs={runs} computers={bootstrap.data?.computers} outputsByRun={outputsByRun} renderUsage={(run) => <RunUsageSummary run={run} />} />
       </section>
       <ArtifactReview key={`review:${task.id}`} task={task} artifacts={artifacts} reviews={snapshot.data.reviews} versionCursor={snapshot.data.version_cursor} />
       <TaskDependencies key={task.id} task={task} />

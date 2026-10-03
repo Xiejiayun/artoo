@@ -191,8 +191,8 @@ function inlineFixture(t) {
   assert.ok(start >= 0 && end > start);
   const program = join(directory, "installed-fixture.mjs"), desktopDir = fileURLToPath(new URL("../", import.meta.url));
   const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
-  new Function("writeFileSync", "fixtureEntry", "fixtureKey", "isMac", "pathToFileURL", "join", "desktopDir", "repoRoot", "planningConfigurationPath", "assistantConfigurationPath", "correctionConfigurationPath", "fixturePatch", source.slice(start, end))(
-    writeFileSync, program, "unit-key", true, pathToFileURL, join, desktopDir, repoRoot, join(directory, "must-not-read-planning.json"), assistantConfigurationPath, join(directory, "must-not-read-correction.json"), "must-not-write-artifact");
+  new Function("writeFileSync", "fixtureEntry", "fixtureKey", "isMac", "pathToFileURL", "join", "desktopDir", "repoRoot", "planningConfigurationPath", "assistantConfigurationPath", "correctionConfigurationPath", "zeroArtifactConfigurationPath", "fixturePatch", source.slice(start, end))(
+    writeFileSync, program, "unit-key", true, pathToFileURL, join, desktopDir, repoRoot, join(directory, "must-not-read-planning.json"), assistantConfigurationPath, join(directory, "must-not-read-correction.json"), join(directory, "must-not-read-zero-artifact.json"), "must-not-write-artifact");
   const history = [];
   const prepare = (mode, runId) => {
     const pack = { task: { id: "unit-task" }, project: { id: fixture.project_id }, workspace: { root: fixture.workspace_root },

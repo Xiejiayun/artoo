@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -64,6 +64,33 @@ describe("TaskDetailPanel", () => {
     expect(screen.queryByText("agent:agent_mock_coder")).not.toBeInTheDocument();
   });
 
+  it("hydrates historical work retention from a fresh task read after reopening", async () => {
+    const retention = {
+      version: 1 as const, workspace_root: "/Users/Owner/Artoo/run_1", workspace_branch: "artoo/run-1",
+      outcome: "completed" as const, reporter_computer_id: "computer_local_mock", event_id: "evt_retained",
+      position: 20, sequence: 3, reported_at: "2026-10-01T01:02:03.000Z",
+    };
+    const getTask = vi.fn(async () => ({
+      task: taskFixture({ id: "task_1", title: "Retained work", status: "done" }), room: null, approvals: [], artifacts: [],
+      runs: [runFixture({ id: "run_1", status: "completed", computer_id: retention.reporter_computer_id,
+        workspace_root: retention.workspace_root, workspace_branch: retention.workspace_branch, workspace_retention: retention })],
+    }));
+    const client = fakeApi({ getTask, bootstrap: async () => bootstrapFixture(),
+      listDependencies: async () => ({ dependencies: [] }) });
+    const first = renderWithProviders(<TaskDetailPanel taskId="task_1" />, { client });
+    const initialWorkspace = within(await screen.findByRole("region", { name: "Workspace for run_1" }));
+    expect(initialWorkspace.getByText("Work retention reported")).toBeInTheDocument();
+    expect(await initialWorkspace.findByText("Local Mock")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Runs" })).getByRole("heading", { name: "Runs 1" })).toBeInTheDocument();
+    first.unmount();
+    renderWithProviders(<TaskDetailPanel taskId="task_1" />, { client });
+    const workspace = within(await screen.findByRole("region", { name: "Workspace for run_1" }));
+    expect(workspace.getByText(retention.workspace_root)).toBeInTheDocument();
+    expect(workspace.getByText("Work retention reported")).toBeInTheDocument();
+    expect(screen.queryByText(/output lines/)).not.toBeInTheDocument();
+    expect(getTask).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps assignment blocked until the current approval is confirmed and the snapshot refreshes", async () => {
     let approval = approvalFixture({ id: "approval_current", status: "pending", action: "execution.start", payload_ref: "execution-gate/current", run_id: null });
     const assignTask = vi.fn().mockResolvedValue({ run: { id: "run_1" }, scheduler_decision: { reason: "approved", score: 1 } });
@@ -77,6 +104,8 @@ describe("TaskDetailPanel", () => {
     renderWithProviders(<TaskDetailPanel taskId="task_1" />, { client });
     const assign = await screen.findByRole("button", { name: "Assign" });
     expect(assign).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Use an isolated Git worktree" }))
+      .toHaveAccessibleDescription(/Completed, failed and stopped work stays there\. Use a new workspace for each isolated execution\./);
     await userEvent.click(assign); expect(assignTask).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(assign).toBeEnabled());

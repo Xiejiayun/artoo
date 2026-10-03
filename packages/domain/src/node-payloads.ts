@@ -40,6 +40,8 @@ export const RunStartPayloadSchema = z.object({
     root: z.string().min(1),
     branch: z.string().nullish(),
   }),
+  /** Server support advertisement; unknown versions retain legacy behavior. */
+  workspace_retention_reporting: z.string().min(1).max(64).optional(),
   context_pack: z
     .object({
       id: z.string().min(1),

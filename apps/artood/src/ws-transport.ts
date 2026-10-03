@@ -35,6 +35,8 @@ export interface WebSocketTransportOptions {
   reconnectDelayMs?: number;
   /** Wait for server commit receipts and replay unacknowledged run events. */
   acknowledgeRunEvents?: boolean;
+  /** Deadline from first enqueue for the negotiated retention event receipt. */
+  retentionReceiptTimeoutMs?: number;
   onFatalDisconnect?: () => void;
 }
 
@@ -48,8 +50,9 @@ export interface WebSocketNodeTransport extends NodeSideTransport {
 
 export function createWebSocketTransport(options: WebSocketTransportOptions): WebSocketNodeTransport {
   const WS = options.WebSocketImpl ?? WebSocket;
+  const acknowledgesRunEvents = options.acknowledgeRunEvents === true;
   const handlers = new Set<(message: ServerToNodeMessage) => void>();
-  const pending = new Map<string, { message: NodeToServerMessage; resolve: () => void; reject: (error: Error) => void }>();
+  const pending = new Map<string, { message: NodeToServerMessage; resolve: () => void; reject: (error: Error) => void; retentionTimer?: ReturnType<typeof setTimeout> }>();
   let socket: WebSocket;
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -72,9 +75,15 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = undefined;
   }
+  function settlePending(key: string, error?: Error): void {
+    const item = pending.get(key);
+    if (!item) return;
+    pending.delete(key);
+    if (item.retentionTimer) clearTimeout(item.retentionTimer);
+    if (error) item.reject(error); else item.resolve();
+  }
   function failPending(error: Error): void {
-    for (const item of pending.values()) item.reject(error);
-    pending.clear();
+    for (const key of pending.keys()) settlePending(key, error);
   }
   function sendRaw(message: NodeToServerMessage): void {
     if (socket.readyState !== WS.OPEN) throw new Error('websocket is not open');
@@ -83,9 +92,8 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
   function flush(): void {
     for (const [key, item] of pending) {
       try { sendRaw(item.message); } catch { return; }
-      if (item.message.kind !== 'run.event' || !options.acknowledgeRunEvents) {
-        pending.delete(key);
-        item.resolve();
+      if (item.message.kind !== 'run.event' || !acknowledgesRunEvents) {
+        settlePending(key);
       }
     }
   }
@@ -113,12 +121,7 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
       if (result.data.type === 'run.event.ack') {
         const receipt = result.data.payload;
         const key = eventKey(receipt.run_id, receipt.sequence);
-        const item = pending.get(key);
-        if (item) {
-          pending.delete(key);
-          if (receipt.status === 'accepted') item.resolve();
-          else item.reject(new Error(receipt.message ?? 'run event rejected'));
-        }
+        settlePending(key, receipt.status === 'accepted' ? undefined : new Error(receipt.message ?? 'run event rejected'));
         return;
       }
       for (const handler of [...handlers]) handler(result.data);
@@ -145,21 +148,49 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
 
   return {
     ready,
+    acknowledgesRunEvents,
     get connected(): boolean { return !closed && socket.readyState === WS.OPEN; },
-    async send(message): Promise<void> {
+    async send(message, delivery): Promise<void> {
+      const bestEffort = delivery?.delivery === 'best-effort';
+      if (bestEffort && (message.kind !== 'run.event' || message.event.type !== 'run.output')) {
+        throw new Error('best-effort delivery is only supported for run.output');
+      }
       if (closed) throw new Error('websocket is closed');
+      if (bestEffort && message.kind === 'run.event') {
+        // An optional frame must not make its ACK settle a required event.
+        if (pending.has(eventKey(message.run_id, message.sequence))) {
+          throw new Error('best-effort output cannot reuse a pending run event sequence');
+        }
+        // Optional diagnostics never occupy required receipt/replay capacity.
+        if (socket.readyState === WS.OPEN) sendRaw(message);
+        return;
+      }
       if (message.kind === 'node.heartbeat') {
         if (socket.readyState === WS.OPEN) sendRaw(message);
         return;
       }
       if (pending.size >= 1000) throw new Error('node event delivery buffer is full');
       const key = message.kind === 'run.event' ? eventKey(message.run_id, message.sequence) : 'frame:' + counter++;
+      // Never replace a receipt-bearing retention entry under the same key: its
+      // deadline and promise belong to that first enqueue, including replays.
+      const previous = pending.get(key);
+      if (previous && ((message.kind === 'run.event' && message.event.type === 'run.workspace.retained')
+        || (previous.message.kind === 'run.event' && previous.message.event.type === 'run.workspace.retained'))) {
+        throw new Error('workspace retention event is already pending');
+      }
       return new Promise<void>((resolve, reject) => {
-        pending.set(key, { message, resolve, reject });
+        const item: { message: NodeToServerMessage; resolve: () => void; reject: (error: Error) => void; retentionTimer?: ReturnType<typeof setTimeout> } = { message, resolve, reject };
+        pending.set(key, item);
+        if (message.kind === 'run.event' && message.event.type === 'run.workspace.retained' && acknowledgesRunEvents) {
+          const timeoutMs = options.retentionReceiptTimeoutMs ?? 30_000;
+          item.retentionTimer = setTimeout(() => {
+            settlePending(key, new Error(`workspace retention receipt timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+        }
         if (socket.readyState === WS.OPEN) {
           try {
             sendRaw(message);
-            if (message.kind !== 'run.event' || !options.acknowledgeRunEvents) { pending.delete(key); resolve(); }
+            if (message.kind !== 'run.event' || !acknowledgesRunEvents) settlePending(key);
           } catch { /* replay after reconnect */ }
         }
       });

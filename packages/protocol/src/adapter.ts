@@ -5,7 +5,7 @@ import type { RunEvent } from "./node-messages.js";
 /**
  * RuntimeAdapter contract (design.md §5.2, §5.9). The adapter wraps a concrete
  * agent runtime (Codex CLI, a mock coder, …) behind a uniform lifecycle. It
- * emits {@link RunEvent}s carrying @artoo/domain payloads; the node frames each
+ * emits adapter-only {@link RunEvent}s carrying @artoo/domain payloads; the node frames each
  * one into a run.event wire message with (node_id, run_id, sequence).
  *
  * v0.1-core requires start / streamEvents / stop / collectArtifacts. detect /

@@ -1,13 +1,13 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentInstanceConfig, RunEvent } from "@artoo/protocol";
 import { WorkspaceScopeError } from "@artoo/protocol";
 import { describe, expect, it, vi } from "vitest";
 
-import { createProcessAdapter } from "./process-adapter.js";
+import { assertRealWorkspaceScope, createProcessAdapter } from "./process-adapter.js";
 import { buildRegistry, loadConfigFromEnv } from "./main.js";
 
 const fixture = fileURLToPath(new URL("../test-fixtures/mock-agent.mjs", import.meta.url));
@@ -407,5 +407,108 @@ describe("createProcessAdapter", () => {
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }
+  });
+});
+
+describe.skipIf(process.platform === "win32")("physical workspace scope with POSIX symlink resolution", () => {
+  function scopeFixture() {
+    const owned = realpathSync.native(makeWorkspace());
+    const allowed = join(owned, "allowed"), outside = join(owned, "outside");
+    mkdirSync(allowed); mkdirSync(join(outside, "nested"), { recursive: true });
+    return { owned, allowed, outside };
+  }
+  const markerCommand = [process.execPath, "-e", "require('node:fs').writeFileSync('spawned.marker', 'spawned\\n')"];
+
+  it.each(["symlink-target-dotdot", "direct-symlink-dotdot", "dangling-context", "dangling-artifact"])(
+    "rejects %s before context write or actual child spawn", async (kind) => {
+      const { owned, allowed, outside } = scopeFixture();
+      try {
+        let workspace = allowed;
+        if (kind === "symlink-target-dotdot" || kind === "direct-symlink-dotdot") {
+          const inner = join(allowed, "inner"); symlinkSync(join(outside, "nested"), inner, "dir");
+          if (kind === "symlink-target-dotdot") {
+            const outer = join(allowed, "outer"); symlinkSync(inner + "/..", outer, "dir"); workspace = outer;
+          } else workspace = inner + "/.."; // Preserve the path the OS receives.
+          expect(realpathSync.native(workspace)).toBe(outside);
+        } else {
+          symlinkSync(join(outside, "new-file.txt"), join(allowed, kind === "dangling-context" ? "context_pack.md" : "changes.patch"));
+        }
+        const adapter = createProcessAdapter({ command: markerCommand, allowedRoots: [allowed],
+          ...(kind === "dangling-artifact" ? { artifacts: [{ type: "patch" as const, path: "changes.patch" }] } : {}) });
+        // Assert rejection before invoking the adapter. An unsafe guard must
+        // fail this regression without ever starting the fixture command.
+        const guardedPath = kind.startsWith("dangling-")
+          ? join(allowed, kind === "dangling-context" ? "context_pack.md" : "changes.patch") : workspace;
+        expect(() => assertRealWorkspaceScope(guardedPath, [allowed])).toThrow();
+        await expect(adapter.start(makeConfig(workspace))).rejects.toBeInstanceOf(Error);
+        expect({
+          context_inside: existsSync(join(allowed, "context_pack.md")) && kind !== "dangling-context",
+          context_outside: existsSync(join(outside, "context_pack.md")),
+          dangling_target_written: existsSync(join(outside, "new-file.txt")),
+          spawned_inside: existsSync(join(allowed, "spawned.marker")), spawned_outside: existsSync(join(outside, "spawned.marker")),
+        }).toEqual({ context_inside: false, context_outside: false, dangling_target_written: false,
+          spawned_inside: false, spawned_outside: false });
+      } finally { rmSync(owned, { recursive: true, force: true }); }
+    });
+
+  it.each(["inside-alias", "existing-dotdot", "allowed-root-alias", "allowed-root-dotdot-alias"])(
+    "preserves actual adapter execution for %s", async (kind) => {
+      const { owned, allowed, outside } = scopeFixture();
+      try {
+        const actual = join(allowed, "actual"); mkdirSync(join(actual, "nested"), { recursive: true });
+        let workspace = actual, roots = [allowed];
+        if (kind === "inside-alias") {
+          workspace = join(allowed, "alias"); symlinkSync(actual, workspace, "dir");
+        } else if (kind === "existing-dotdot") {
+          const inner = join(allowed, "inner"); symlinkSync(join(actual, "nested"), inner, "dir");
+          workspace = inner + "/..";
+        } else if (kind === "allowed-root-alias") {
+          const alias = join(owned, "allowed-alias"); symlinkSync(allowed, alias, "dir");
+          workspace = join(alias, "actual"); roots = [alias];
+        } else {
+          const inner = join(allowed, "inner"); symlinkSync(join(outside, "nested"), inner, "dir");
+          workspace = join(allowed, "explicitly-allowed-alias"); symlinkSync(inner + "/..", workspace, "dir");
+          roots = [workspace]; // The operator explicitly allows this physical destination.
+        }
+        const physical = realpathSync.native(workspace);
+        const adapter = createProcessAdapter({ command: markerCommand, allowedRoots: roots });
+        const events = await drain(adapter.streamEvents(await adapter.start(makeConfig(workspace))));
+        expect(events.at(-1)).toMatchObject({ type: "run.lifecycle", payload: { phase: "completed" } });
+        expect(readFileSync(join(physical, "spawned.marker"), "utf8")).toBe("spawned\n");
+        expect(readFileSync(join(physical, "context_pack.md"), "utf8")).toContain(`root: ${workspace}`);
+      } finally { rmSync(owned, { recursive: true, force: true }); }
+    });
+
+  it("allows ordinary missing descendants and relative paths under the actual allowed root", () => {
+    const { owned, allowed } = scopeFixture();
+    try {
+      const alias = join(owned, "allowed-alias"); symlinkSync(allowed, alias, "dir");
+      const missing = join(alias, "new", "nested", "worktree");
+      expect(() => assertRealWorkspaceScope(missing, [alias])).not.toThrow();
+      expect(() => assertRealWorkspaceScope(relative(process.cwd(), missing), [relative(process.cwd(), alias)])).not.toThrow();
+      expect(existsSync(join(allowed, "new"))).toBe(false);
+    } finally { rmSync(owned, { recursive: true, force: true }); }
+  });
+
+  it("resolves existing symlink and dotdot ancestors before checking missing worktree descendants", () => {
+    const { owned, allowed, outside } = scopeFixture();
+    try {
+      const inner = join(allowed, "inner"); symlinkSync(join(outside, "nested"), inner, "dir");
+      const outer = join(allowed, "outer"); symlinkSync(inner + "/..", outer, "dir");
+      for (const target of [outer + "/new/worktree", inner + "/../new/worktree"])
+        expect(() => assertRealWorkspaceScope(target, [allowed])).toThrow();
+      mkdirSync(join(allowed, "existing"));
+      expect(() => assertRealWorkspaceScope(allowed + "/existing/../new/worktree", [allowed])).not.toThrow();
+    } finally { rmSync(owned, { recursive: true, force: true }); }
+  });
+
+  it("does not normalize a nonexistent traversal, a non-directory or a symlink loop into an allowed path", () => {
+    const { owned, allowed } = scopeFixture();
+    try {
+      writeFileSync(join(allowed, "file"), "not a directory");
+      symlinkSync("loop", join(allowed, "loop"));
+      for (const target of [allowed + "/missing/../new", join(allowed, "file", "child"), join(allowed, "loop", "child")])
+        expect(() => assertRealWorkspaceScope(target, [allowed])).toThrow();
+    } finally { rmSync(owned, { recursive: true, force: true }); }
   });
 });

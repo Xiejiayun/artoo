@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { createServer } from "node:http";
+import { createSimulatorClipboard } from "./ios-simulator-clipboard.mjs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -35,8 +36,8 @@ async function readEmptyObject(request) {
     "Checkpoint accepts only an empty object");
 }
 
-/** Authenticated loopback observation only. It never performs a product action. */
-export async function createCorrectionControl({ scenario, errors = [] }) {
+/** Authenticated loopback fixture controls. Product actions remain native UI. */
+export async function createCorrectionControl({ scenario, errors = [], clipboard }) {
   const token = randomBytes(32).toString("hex"), reserved = new Set();
   let operation = Promise.resolve(), closing = false, closePromise;
   const control = createServer((req, res) => {
@@ -51,6 +52,7 @@ export async function createCorrectionControl({ scenario, errors = [] }) {
       req.resume(); reply(401, { error: "Authenticated loopback fixture control required" }); return;
     }
     if (closing) { req.resume(); reply(503, { error: "Fixture closing" }); return; }
+    if (clipboard?.handle(req, reply)) return;
     if (req.method === "GET" && req.url === "/observations") {
       req.resume();
       void scenario.observe().then((observation) => reply(200, observation), (error) => {
@@ -88,9 +90,13 @@ export async function createCorrectionControl({ scenario, errors = [] }) {
     // Abort the observer's wait before awaiting the queue; failure evidence must
     // not be delayed by an abandoned 60-second checkpoint wait.
     try { await scenario.close(); }
-    finally { await operation.catch(() => {}); await stopped; }
+    finally {
+      const results = await Promise.allSettled([clipboard?.close(), operation.catch(() => {}), stopped]);
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed) throw failed.reason;
+    }
   })();
-  return { url: `http://127.0.0.1:${control.address().port}`, token, close };
+  return { url: `http://127.0.0.1:${control.address().port}`, token, close, clipboardEvidence: () => clipboard?.evidence() ?? [] };
 }
 
 function liveOwnedLaunches(setup) {
@@ -108,7 +114,7 @@ function liveOwnedLaunches(setup) {
 
 /** Disposable setup uses production enrollment, node transport, process adapter
  * and artifact upload. Task/review/approval/assign/Stop writes belong to UI only. */
-export async function createCorrectionFixture({ root, temporary, origin, server, projectId, userId, peerToken, suffix, request, until }) {
+export async function createCorrectionFixture({ root, temporary, origin, server, projectId, userId, peerToken, suffix, request, until, simulatorUDID }) {
   const { createAdapterRegistry, createArtoodNode, createArtifactUploader, createProcessAdapter } = await import(pathToFileURL(join(root, "apps/artood/dist/index.js")).href);
   const setup = createCorrectionWorkspaces({ temporary, projectId, platform: "ios", suffix });
   const runtime = "ui-correction", computerName = `Native correction computer ${suffix}`, errors = [];
@@ -151,10 +157,14 @@ export async function createCorrectionFixture({ root, temporary, origin, server,
       return daemon?.status === "online" && daemon.connected && daemon.runtimes.some((value) => value.runtime === runtime);
     }, "Correction node did not publish its authenticated runtime", 60_000);
     await scenario.registerInstances();
-    control = await createCorrectionControl({ scenario, errors });
+    // Protocol-only callers have no simulator. Native callers provide the
+    // selected UDID; an explicitly invalid value must still fail validation.
+    control = await createCorrectionControl({ scenario, errors,
+      clipboard: simulatorUDID === undefined ? undefined : createSimulatorClipboard({ simulatorUDID }) });
     const fields = scenario.fields;
-    Object.assign(fields, { computer_name: computerName, fixture_control_url: control.url, fixture_control_token: control.token });
-    return { fields, node, scenario, setup, close, errors };
+    Object.assign(fields, { computer_name: computerName, ...(simulatorUDID === undefined ? {} : { simulator_udid: simulatorUDID }),
+      fixture_control_url: control.url, fixture_control_token: control.token });
+    return { fields, node, scenario, setup, close, errors, clipboardEvidence: control.clipboardEvidence };
   } catch (error) {
     try { await close(); }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], "Correction fixture initialization and cleanup failed"); }

@@ -8,8 +8,13 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { createCorrectionFixture } from "./ios-ui-correction-fixture.mjs";
+import { exportCorrectionWorkspaceEvidence } from "./fixtures/execution-correction-scenario.mjs";
+import { verifyNativeCorrectionWorkspaceEvidence } from "./ios-ui-correction-evidence.mjs";
 import { expectedNativeScreenshots, getE2EReportContext, readXCTestScreenshots, writeE2EReport } from "./e2e-report.mjs";
+import { nativeUISuiteTimeouts } from "../apps/ios/scripts/ui-suite-contract.mjs";
 import { closeOwnedProcessGroup } from "./owned-process-group.mjs";
+import { selectNativeFixtureSimulator } from "./ios-ui-simulator.mjs";
+import { verifySimulatorClipboardEvidence } from "./ios-ui-clipboard-evidence.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 if (process.argv.length !== 2) throw new Error("Usage: node scripts/ios-ui-correction-e2e.mjs");
@@ -43,6 +48,10 @@ async function main() {
   process.once("SIGINT", interrupt); process.once("SIGTERM", interrupt);
   const check = (name) => { report.checks.push(name); console.log(`[ios-correction] PASS ${name}`); };
   try {
+    const selection = selectNativeFixtureSimulator({ requestedUDID: process.env.ARTOO_IOS_SIMULATOR_UDID });
+    const simulatorUDID = selection.device.udid;
+    report.fixture_simulator = { udid: simulatorUDID, name: selection.device.name, sdk_version: selection.sdkVersion,
+      runtime: selection.runtime.name, selection_mode: selection.mode, newer_than_sdk: selection.newerThanSdk };
     const { startServer } = await import(pathToFileURL(join(root, "apps/server/dist/main.js")).href);
     const { createSession } = await import(pathToFileURL(join(root, "apps/server/dist/auth/auth-service.js")).href);
     const workspace = join(temporary, "server-workspace"); mkdirSync(workspace);
@@ -70,7 +79,7 @@ async function main() {
     const identity = await request("/auth/session", undefined, peer.control_token); assert.equal(identity.user.id, "user_owner");
     const suffix = randomUUID().slice(0, 8);
     fixture = await createCorrectionFixture({ root, temporary, origin, server, projectId: "proj_artoo",
-      userId: identity.user.id, peerToken: peer.control_token, suffix, request, until });
+      userId: identity.user.id, peerToken: peer.control_token, suffix, request, until, simulatorUDID });
     const fields = { ...fixture.fields, server_url: origin, peer_control_token: peer.control_token };
     for (const authorization of [undefined, "Bearer incorrect-correction-token"]) {
       const response = await fetch(`${fields.fixture_control_url}/observations`, {
@@ -83,9 +92,10 @@ async function main() {
     await new Promise((done, reject) => {
       interrupted.signal.throwIfAborted();
       child = spawn(process.execPath, [join(root, "apps/ios/scripts/test-macos.mjs"), "--ui", "--suite=correction"], {
-        cwd: root, env: { ...process.env, ARTOO_IOS_UI_FIXTURE: fixturePath, ARTOO_IOS_UI_OUTPUT_DIR: output, ARTOO_IOS_UI_RESULT_JSON: childResultPath },
+        cwd: root, env: { ...process.env, ARTOO_IOS_SIMULATOR_UDID: simulatorUDID, ARTOO_IOS_UI_FIXTURE: fixturePath, ARTOO_IOS_UI_OUTPUT_DIR: output, ARTOO_IOS_UI_RESULT_JSON: childResultPath },
         stdio: "inherit", windowsHide: true, detached: true });
-      const timeout = setTimeout(() => { stopChild("SIGTERM"); reject(new Error("Native correction build and UI exceeded 40 minutes")); }, 2_400_000);
+      const limit = nativeUISuiteTimeouts("correction").parent;
+      const timeout = setTimeout(() => { stopChild("SIGTERM"); reject(new Error(`Native correction build and UI exceeded ${limit / 60_000} minutes`)); }, limit);
       child.once("error", (error) => { clearTimeout(timeout); reject(error); });
       child.once("exit", (code, signal) => { clearTimeout(timeout); code === 0 ? done() : reject(new Error(`Native correction UI failed (${code ?? signal})`)); });
     });
@@ -95,9 +105,12 @@ async function main() {
     report.xctest = childResult;
     report.correction = await fixture.scenario.verify();
     assert.equal(report.correction.passed, true);
-    check("Exact correction XCTest passed: four real assignments, two durable reviews, preserved failed/stopped work and two original artifact versions");
-    check("Keep running made zero cancel requests; one confirmed request stopped the captured child before terminal cancellation was observed");
+    assert.deepEqual(report.correction.counts, { runs: 4, launches: 4, approvals: 4, reviews: 2, artifacts: 2,
+      retained_worktrees: 4, live_owned_processes: 0 });
+    check("Exact correction XCTest passed: four real assignments, two durable reviews, all four retained workspaces and two original artifact versions");
+    check("Keep running made zero cancel requests; one confirmed request left the captured PID absent at cancellation HTTP completion");
     check("Independent context, launch, approval, artifact, PID and 3.1-second stability checks passed");
+    report.clipboard_probe_integrity = verifySimulatorClipboardEvidence({ receipts: fixture.clipboardEvidence(), simulatorUDID, expectedProbes: 4 });
     report.passed = true;
   } catch (error) {
     report.error = error instanceof Error ? error.message : "Native correction verification failed";
@@ -113,13 +126,6 @@ async function main() {
           ({ name: error.name, message: error.message, stack: error.stack })), null, 2));
         try { writeFileSync(join(evidence, "final-observation.json"), JSON.stringify(await fixture.scenario.observe(), null, 2)); }
         catch { report.observation_error = "Could not obtain a complete final pre-cleanup observation"; }
-        cpSync(fixture.setup.receiptsDirectory, join(evidence, "process-receipts"), { recursive: true });
-        for (const [index, workspace] of fixture.setup.workspaceRoots.entries()) {
-          if (!existsSync(workspace)) continue;
-          const files = join(evidence, `retained-work-${index + 1}`); mkdirSync(files);
-          for (const name of ["implementation.txt", "unsaved.txt", "context_pack.md", "changes.patch"])
-            if (existsSync(join(workspace, name))) cpSync(join(workspace, name), join(files, name));
-        }
         report.process_evidence_directory = evidence;
       }
     } catch { report.evidence_retention_failed = true; report.passed = false; process.exitCode = 1; }
@@ -129,7 +135,28 @@ async function main() {
       catch { nativeGroup = { closed: false, error: "Owned native process group cleanup failed" }; }
     }
     report.native_process_group = nativeGroup;
-    const closed = [...await Promise.allSettled([fixture?.close()]), ...await Promise.allSettled([server?.close()])];
+    const fixtureClosed = await Promise.allSettled([fixture?.close()]);
+    // Capture the unmodified pre-cleanup state above, then stop owned writers
+    // before copying every tracked, untracked, ignored and context/report file.
+    // On failures this is explicitly post-writer-cleanup evidence, not a new
+    // successful lifecycle observation or an additional user Stop command.
+    try {
+      if (fixture && report.process_evidence_directory) {
+        const evidence = report.process_evidence_directory;
+        cpSync(fixture.setup.receiptsDirectory, join(evidence, "process-receipts"), { recursive: true });
+        const destination = join(evidence, "retained-workspaces");
+        report.retained_workspace_export = exportCorrectionWorkspaceEvidence({ setup: fixture.setup, destination });
+        report.workspace_export_timing = "After owned fixture writers close, before disposable directory removal; pre-cleanup lifecycle observation is retained separately";
+        if (report.passed) {
+          verifyNativeCorrectionWorkspaceEvidence(report.correction, report.retained_workspace_export, destination);
+          check("All eighteen workspace files, including four ignored files and both successful implementations, are preserved with exact hashes");
+        }
+      }
+    } catch (error) {
+      report.evidence_retention_failed = true; report.passed = false; process.exitCode = 1;
+      report.evidence_retention_error = error instanceof Error ? error.message : "Workspace evidence export failed";
+    }
+    const closed = [...fixtureClosed, ...await Promise.allSettled([server?.close()])];
     const failedClose = closed.some((result) => result.status === "rejected");
     let removalFailed = false;
     try {
@@ -141,6 +168,19 @@ async function main() {
       temporary_directory_removed: !removalFailed, native_process_group_closed: nativeGroup.closed };
     if (failedClose || removalFailed || !nativeGroup.closed) {
       report.passed = false; report.error ??= "Native correction fixture cleanup failed"; process.exitCode = 1;
+    }
+    if (fixture) {
+      try {
+        report.clipboard_observer = { simulator_udid: fixture.fields.simulator_udid,
+          scope: "Actual native Copy taps; exact UTF-8 pasteboard bytes observed with simulator infrastructure, not a physical-device paste-consent test",
+          receipts: fixture.clipboardEvidence() };
+        writeFileSync(join(output, "clipboard-observer.json"), JSON.stringify(report.clipboard_observer, null, 2));
+        if (report.passed) report.clipboard_probe_integrity = verifySimulatorClipboardEvidence({
+          receipts: report.clipboard_observer.receipts, simulatorUDID: fixture.fields.simulator_udid, expectedProbes: 4 });
+      } catch (error) {
+        report.passed = false; report.error ??= error instanceof Error ? error.message : "Clipboard evidence retention failed";
+        process.exitCode = 1;
+      }
     }
     report.finished_at = new Date().toISOString(); report.html_report = htmlPath;
     if (!childResult) { try { childResult = JSON.parse(readFileSync(childResultPath, "utf8")); report.xctest = childResult; } catch {} }
@@ -155,6 +195,8 @@ async function main() {
     }
     writeFileSync(resultPath, `${JSON.stringify(report, null, 2)}\n`);
     writeE2EReport({ outputPath: htmlPath, title, report, screenshots: images });
+    // Database cleanup can reset Node's exit code; preserve the final failure.
+    if (!report.passed) process.exitCode = 1;
     console.log(`[ios-correction] HTML report: ${htmlPath}`);
   }
 }

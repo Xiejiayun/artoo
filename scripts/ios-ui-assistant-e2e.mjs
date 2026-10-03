@@ -11,8 +11,10 @@ import { createAssistantFixture } from "./ios-ui-assistant-fixture.mjs";
 import { verifyAssistantConversationResults } from "./fixtures/assistant-conversation-results.mjs";
 import { expectedNativeScreenshots, getE2EReportContext, readXCTestScreenshots, writeE2EReport } from "./e2e-report.mjs";
 import { closeOwnedProcessGroup } from "./owned-process-group.mjs";
+import { nativeUISuiteTimeouts } from "../apps/ios/scripts/ui-suite-contract.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const assistantTimeouts = nativeUISuiteTimeouts("assistant");
 if (process.argv.length !== 2) throw new Error("Usage: node scripts/ios-ui-assistant-e2e.mjs");
 if (process.platform !== "darwin") throw new Error("The native assistant suite requires macOS and Xcode");
 async function until(read, message, timeout = 30_000) {
@@ -88,7 +90,7 @@ async function main() {
       child = spawn(process.execPath, [join(root, "apps/ios/scripts/test-macos.mjs"), "--ui", "--suite=assistant"], {
         cwd: root, env: { ...process.env, ARTOO_IOS_UI_FIXTURE: fixturePath, ARTOO_IOS_UI_OUTPUT_DIR: output, ARTOO_IOS_UI_RESULT_JSON: childResultPath },
         stdio: "inherit", windowsHide: true, detached: true });
-      const timeout = setTimeout(() => { stopChild("SIGTERM"); reject(new Error("Native assistant UI exceeded 30 minutes")); }, 1_800_000);
+      const timeout = setTimeout(() => { stopChild("SIGTERM"); reject(new Error(`Native assistant UI exceeded ${assistantTimeouts.parent / 60_000} minutes`)); }, assistantTimeouts.parent);
       child.once("error", (error) => { clearTimeout(timeout); reject(error); });
       child.once("exit", (code, signal) => { clearTimeout(timeout); code === 0 ? done() : reject(new Error(`Native assistant UI failed (${code ?? signal})`)); });
     });

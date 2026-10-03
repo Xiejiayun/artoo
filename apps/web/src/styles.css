@@ -601,6 +601,13 @@ label {
 .run-usage { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin: 8px 0; font-size: 12px; }
 .run-usage dt { color: var(--text-subtle); }
 .run-usage dd { margin: 0; overflow-wrap: anywhere; }
+.run-workspace { margin: 10px 0; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; }
+.run-workspace p { margin: 6px 0; }
+.run-workspace dl { margin: 10px 0; }
+.run-workspace dt { color: var(--text-subtle); margin-top: 8px; }
+.run-workspace dd { margin: 2px 0 0; }
+.run-workspace code { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.run-workspace-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .run-entry[data-status="failed"] { border-left-color: var(--danger); }
 .run-entry[data-status="running"],
 .run-entry[data-status="starting"] { border-left-color: var(--info); }

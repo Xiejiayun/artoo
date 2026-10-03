@@ -1015,3 +1015,53 @@ See `artifacts/preview-gate/execution-correction/delivery-source-reconciliation.
 This milestone packages the validated implementation and its delivery documents.
 Exact-commit hosted acceptance is tracked separately and is not claimed here.
 Earlier hosted run `36810183573` remains failed.
+
+## 2026-10-03: successful-work retention and recovery locally verified
+
+Branch-backed executions now preserve their complete owned worktree after
+success, including partial-artifact and zero-artifact runs. Reserved worker-owned
+`run.workspace.retained` events supply durable run/computer/root/branch/outcome
+and reported time; clients show exact Copy controls after cold reload/relaunch.
+The displayed report does not assert current disk availability. Ordinary workspace
+semantics remain unchanged, and no automatic destructive cleanup is added.
+
+The current native and archive proof share source26's complete **795-file** frozen
+inventory, SHA-256 `23014e90ef6983160770aeef8742c4e864a3a8bb049fe9d1fd286f8de4e45b90`.
+
+| Local verification | Result and evidence boundary |
+| --- | --- |
+| Fresh source26 native units | **159 passed**, zero failed/skipped; 13 independent console/HTML-metadata checks. This is a closed-console inventory, without a new raw xcresult inventory export. [Unit audit](/Users/jeremy/workspace/artoo-retention-verification/artifacts/preview-gate/retention-main/focused-client-validation-20261003T041156Z/native-units-independent-data-audit/README.md). |
+| Genuine source26 native `--suite=all` | **11/11 raw cases passed**: core 7, assistant 1, mentions 1, correction 1, retention 1. The independent aggregate audit passed **44/44**, with 94 original and 39 derived inputs unchanged. [Aggregate audit](/Users/jeremy/workspace/artoo-retention-verification/artifacts/preview-gate/retention-main/native-all-20261003T043953Z/all-independent-data-audit/README.md). |
+| Correction and zero-artifact recovery | Correction **89/89** data checks, four retained worktrees/18 files, two reviews/artifacts and one exact Stop; Retention **35/35**, one retained worktree/four files and zero artifacts/reviews after cold relaunch. Fresh visual/data correlations passed **10/10** and **6/6**. [Correction](/Users/jeremy/workspace/artoo-retention-verification/artifacts/preview-gate/retention-main/native-all-20261003T043953Z/correction-independent-data-audit/README.md), [Retention](/Users/jeremy/workspace/artoo-retention-verification/artifacts/preview-gate/retention-main/native-all-20261003T043953Z/retention-independent-data-audit/README.md). |
+| Current original-image and HTML audit | **71 individually inspected originals** (67 native + four browser); aggregate **71/71** image/link/caption/alt instances, each original once; **138/138** across ten parent/native reports, **209/209** total across eleven original runtime HTML reports. All 125 cross-suite inputs remained unchanged. Correction's **21** and Retention's **7** original photos were individually inspected. [Full-all visual audit](/Users/jeremy/workspace/artoo-retention-verification/artifacts/preview-gate/retention-main/native-all-20261003T043953Z/all-independent-visual-audit/index.html). |
+| Historical installed Mac, source10 | **22 checks**, **55 original captures**, **22 exact UI Copy values** and **14 cleanup flags** passed for the unsigned x64 DMG/ZIP and installed worker. [Retained audit](/Users/jeremy/workspace/artoo/artifacts/preview-gate/retention-main/mac-dmg-20261002T120910Z/independent-data-audit/audit.json). |
+| Historical shared regression, source13 | **1,537 passed, 30 skipped**, zero failed; typecheck exited 0. [Shared receipt](/Users/jeremy/workspace/artoo-retention-verification/artifacts/preview-gate/retention-main/sequential-validation-20261002T132809Z/vitest-result.json), [typecheck](/Users/jeremy/workspace/artoo-retention-verification/artifacts/preview-gate/retention-main/sequential-validation-20261002T132809Z/typecheck-result.json). |
+| Matching development archive | Release arm64 iPhoneOS archive passed strict signature, Team/certificate/profile and source checks: **795 repository / 84 iOS inventory / 72 snapshot / 41 product inputs**. No physical-device UI or upload occurred. [Verification](/Users/jeremy/workspace/artoo-retention-verification/artifacts/preview-gate/retention-main/archive-verification/runs/20261003T072402.909117Z-557f855c/verification.json), [HTML](/Users/jeremy/workspace/artoo-retention-verification/artifacts/ios-device/2026-10-03T07-24-07-927Z/report.html). |
+
+Actual aggregate HTML SHA-256 is
+`e2d5c2acfadefa9bd0bb3d56f6542d3bfc758ca948246eaf3e4930950cc6cfdb`.
+Archive verification SHA-256 is
+`b948f59bc0450764563271edf1665ce329ea87e779de0215b183dc150cf88a3a`;
+archive HTML SHA-256 is
+`187fa70d0297f6ab67515fb5304135efd40c001fdc91603e0757d26a52bf49ec`.
+The [source26 reuse addendum](/Users/jeremy/workspace/artoo-retention-verification/artifacts/preview-gate/retention-main/source26-reuse-addendum/README.md)
+matches **554** Desktop/Web/worker/server/package component paths to the prior
+applicability review. It supports the historical Mac/shared results with their
+original limits; it is neither a fresh source26 run nor compiled-binary equality.
+
+All **11** nonfatal frame-dimension warnings remain recorded. The archive retains
+`All interface orientations must be supported unless the app requires full screen.`
+and the skipped AppIntents metadata-extraction warning. No cause or fix is inferred.
+The [source24 timeout](/Users/jeremy/workspace/artoo-retention-verification/artifacts/preview-gate/retention-main/native-all-20261003T020718Z/core-independent-data-audit/README.md)
+and [source25 Assistant failure](/Users/jeremy/workspace/artoo-retention-verification/artifacts/preview-gate/retention-main/native-all-20261003T025859Z/assistant-independent-data-audit/README.md)
+remain failed; earlier attempts stay in the [retained local evidence](/Users/jeremy/workspace/artoo-retention-verification/artifacts/preview-gate/retention-main/).
+Focused passes do not replace any of this invocation's eleven cases.
+
+Safe repeated execution still needs administrator-approved per-run allocation and
+an explicit continuation policy; a fresh run does not silently resume earlier
+uncommitted work. Receiver, WebSocket, allocation and UI-heading candidates remain
+unapplied and commercially unqualified. Native UI gaps, live-provider quality,
+physical devices/TestFlight, trusted Mac distribution/updates, deployed identity,
+operator policy and deployment recovery remain [release gates](apple-release-readiness.md).
+Final source/generated-plist reconciliation, commit/push and exact-new-commit
+hosted CI are tracked separately from this local verification.

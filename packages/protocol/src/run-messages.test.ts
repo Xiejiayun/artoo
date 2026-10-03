@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   commandSchema,
+  adapterRunEventBodySchema,
   runEventBodySchema,
   runEventMessageSchema,
   runStartCommandSchema
@@ -55,6 +56,14 @@ describe("run.start command", () => {
 });
 
 describe("run.event body", () => {
+  it("reserves retention for the node wire union, never the adapter union", () => {
+    const retained = { type: "run.workspace.retained", payload: { version: 1, workspace_root: "/work/run", workspace_branch: "artoo/run-1", outcome: "completed" } };
+    expect(runEventBodySchema.parse(retained)).toEqual(retained);
+    expect(adapterRunEventBodySchema.safeParse(retained).success).toBe(false);
+    const output = { type: "run.output", payload: { stream: "stdout", text: JSON.stringify(retained) } };
+    expect(adapterRunEventBodySchema.parse(output)).toEqual(output);
+    expect(runEventMessageSchema.parse({ kind: "run.event", node_id: "computer_1", run_id: "run_1", sequence: 4, event: retained }).event).toEqual(retained);
+  });
   it("accepts each domain payload variant", () => {
     expect(runEventBodySchema.safeParse({ type: "run.output", payload: { stream: "stdout", text: "ok" } }).success).toBe(true);
     expect(runEventBodySchema.safeParse({ type: "run.lifecycle", payload: { phase: "completed" } }).success).toBe(true);

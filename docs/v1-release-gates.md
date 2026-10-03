@@ -94,7 +94,7 @@ curl http://127.0.0.1:4000/api/v1/bootstrap
 | Self-host runbook | This document | Local clean-clone validation accepted for v1; separate-machine proof moved to v2 |
 | Secret/policy negatives | Workspace guard, lease, approval tests plus audit-bundle secret redaction coverage | Broader secret storage/rotation remains out of scope |
 | Branch worktree smoke | `ARTOO_GIT_SMOKE=1 npx vitest run apps/server/src/branch-e2e-smoke.test.ts` | Gated automated |
-| iOS verification | Requires macOS/Xcode | Deferred from v1 installable promise; v2 Apple gate |
+| iOS verification | Requires macOS/Xcode; [current Apple evidence](apple-client-milestones.md#2026-10-03-successful-work-retention-and-recovery-locally-verified) | Local source26 units/all11 UI/development archive passed; physical-device/distribution acceptance and the v1 installable deferral remain separate |
 
 ## Clean Local Checkout Validation
 
@@ -152,8 +152,17 @@ ARTOO_GIT_SMOKE=1 npx vitest run apps/server/src/branch-e2e-smoke.test.ts
 Successful proof covers REST `assign { branch_backed: true }`, persisted
 `runs.workspace_branch`, persisted ContextPack dispatch, node-client worktree
 materialization on a new git branch, mock-agent artifact production, terminal
-worktree cleanup, branch retention in the base repo, and task transition to
-`review`.
+process closure, retained branch-backed work and task transition to `review`.
+The current retention contract preserves the complete owned worktree even when a
+successful run uploads only a partial artifact or no artifact. Disposal of a test's
+temporary workspace after evidence export is fixture teardown, not product cleanup.
+
+The [2026-10-03 Apple milestone](apple-client-milestones.md#2026-10-03-successful-work-retention-and-recovery-locally-verified)
+records the separate installed-Mac/native retention evidence and matching archive.
+Safe same-instance repeat execution still requires per-run allocation and explicit
+continuation; isolated allocation/receiver/WebSocket candidates remain unapplied.
+This local proof does not close live-provider, trusted distribution, physical-device,
+operator/deployment or exact-new-commit CI requirements.
 
 ## Gated True Runtime Smoke
 

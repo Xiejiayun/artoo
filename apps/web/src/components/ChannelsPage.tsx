@@ -167,7 +167,21 @@ export function ThreadPanel({ roomId, threadRootId, focusedMessageId, notificati
     {(root.error || focused.error) && <Button onClick={() => { void root.refetch(); if (focusedMessageId && focusedMessageId !== threadRootId) void focused.refetch(); }}>Retry opening message</Button>}
     {read.error && notificationId && ready && <Button onClick={() => markRead(notificationId)}>Retry marking notification read</Button>}
     {ready && root.data && <><MessageCard message={root.data.message} {...messageIdentity(root.data.message, bootstrap.data, members.data?.members)} />
-      {target && target.id !== threadRootId && <section className="product-card u-stack-sm" aria-label="Mentioned reply"><h3>Mentioned reply</h3><MessageCard message={target} {...messageIdentity(target, bootstrap.data, members.data?.members)} /></section>}
+      {target && target.id !== threadRootId && <MentionedReplyCard key={target.id} message={target} {...messageIdentity(target, bootstrap.data, members.data?.members)} />}
       <RoomConversation key={`${roomId}:${threadRootId}`} roomId={roomId} threadRootId={threadRootId} hiddenMessageId={target?.id} allowAssistant={typeof root.data.message.payload.discussion_id !== "string"} /></>}
   </aside>;
+}
+
+/** Keep the thread preview compact while offering the full historical reply. */
+function MentionedReplyCard(props: Pick<React.ComponentProps<typeof MessageCard>, "message" | "actorName" | "mentionNames">): React.ReactNode {
+  const [expanded, setExpanded] = useState(false);
+  return <>
+    <section className="product-card u-stack-sm" aria-label="Mentioned reply">
+      <div className="action-row"><h3>Mentioned reply</h3><Button size="sm" variant="ghost" onClick={() => setExpanded(true)}>Read full reply</Button></div>
+      <MessageCard {...props} />
+    </section>
+    <Modal open={expanded} onClose={() => setExpanded(false)} title="Mentioned reply">
+      <MessageCard {...props} />
+    </Modal>
+  </>;
 }

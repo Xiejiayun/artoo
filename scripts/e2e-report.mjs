@@ -77,6 +77,7 @@ const nativeCoreImages = [
 ];
 const nativeAssistantImages = [
   "Native assistant readable agent selection",
+  "Native assistant focused composer with visible controls",
   "Native assistant waiting with draft restored",
   "Native assistant failed request before retry",
   "Native assistant first completed answer",
@@ -111,19 +112,35 @@ const nativeCorrectionImages = [
   "Native correction retained first review after Stop",
   "Native correction retained second review after Stop",
   "Native correction retained artifacts after Stop",
+  "Native correction completed initial workspace retained",
+  "Native correction initial workspace retained after relaunch",
+  "Native correction failed workspace retained",
+  "Native correction completed corrected workspace retained",
+  "Native correction corrected workspace retained after relaunch",
+  "Native correction cancelled workspace retained",
 ];
-const nativeWorkflowImages = [...nativeCoreImages, ...nativeAssistantImages, ...nativeMentionsImages, ...nativeCorrectionImages];
-// These two XCTest helpers explicitly refuse captures whenever onboarding or
+const nativeRetentionImages = [
+  "Native retention task ready before approval",
+  "Native retention completed execution",
+  "Native retention no uploaded artifacts",
+  "Native retention reported recovery details",
+  "Native retention exact workspace path and branch",
+  "Native retention recovery after cold relaunch",
+  "Native retention no artifacts after relaunch",
+];
+const nativeWorkflowImages = [...nativeCoreImages, ...nativeAssistantImages, ...nativeMentionsImages, ...nativeCorrectionImages, ...nativeRetentionImages];
+// These XCTest helpers explicitly refuse captures whenever onboarding or
 // generated pairing-code controls exist. Retain their controlled failure
 // scene for CI diagnosis, without accepting Xcode's automatic failure images
 // or counting a diagnostic as a required successful workflow screenshot.
-const nativeDiagnosticImages = ["Native assistant guarded failure diagnostics", "Native mentions guarded failure diagnostics", "Native correction guarded failure diagnostics"];
+const nativeDiagnosticImages = ["Native assistant guarded failure diagnostics", "Native mentions guarded failure diagnostics", "Native correction guarded failure diagnostics", "Native retention guarded failure diagnostics"];
 export function expectedNativeScreenshots(suite) {
   if (suite === "core") return [...nativeCoreImages];
   if (suite === "assistant") return [...nativeAssistantImages];
   if (suite === "mentions") return [...nativeMentionsImages];
   if (suite === "correction") return [...nativeCorrectionImages];
-  throw new Error("Native screenshot scope must be core, assistant, mentions or correction");
+  if (suite === "retention") return [...nativeRetentionImages];
+  throw new Error("Native screenshot scope must be core, assistant, mentions, correction or retention");
 }
 export function readXCTestScreenshots(directory) {
   let manifest, canonicalDirectory;

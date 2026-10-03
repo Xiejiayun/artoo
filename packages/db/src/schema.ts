@@ -771,6 +771,8 @@ export const eventLog = pgTable("event_log", {
   index("event_log_correlation_idx").on(t.correlationId, t.occurredAt),
   index("event_log_task_idx").on(t.taskId, t.occurredAt),
   index("event_log_goal_idx").on(t.goalId, t.occurredAt),
+  index("event_log_workspace_retention_run_idx").on(t.organizationId, t.runId, t.position.desc())
+    .where(sql`${t.type} = 'run.workspace.retained'`),
 ]);
 
 // Attempt/run-scoped dedup for ingested node run events (Round 18): a composite

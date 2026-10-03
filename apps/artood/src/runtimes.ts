@@ -38,15 +38,21 @@ export interface CodexSettings {
 
 const DEFAULT_ARTIFACTS: ArtifactSpec[] = [{ type: "patch", path: "changes.patch" }];
 
-const TASK_PROMPT =
+const TASK_PROMPT_BASE =
   "Read the file {{context_pack_path}}. If its payload contains conversation, respond to " +
   "conversation.current_request using its message history and the task context; otherwise implement the task. " +
   "Perform only the requested work in this directory, do not access the network, and give an explicit final " +
   "user-facing answer explaining the result. If policy.execution_mode is discussion, only read and reason: " +
-  "do not modify files or run commands with side effects; follow the assigned discussion role and requested JSON synthesis format. " +
-  "Otherwise create changes.patch when you change files; conversation may have no file changes.";
+  "do not modify files or run commands with side effects; follow the assigned discussion role and requested JSON synthesis format. ";
+
+function taskPrompt(options: RuntimePresetOptions): string {
+  return TASK_PROMPT_BASE + (options.artifacts?.length === 0
+    ? "Automatic report artifact collection is disabled; fulfill the task's requested files in this directory."
+    : "Otherwise create changes.patch when you change files; conversation may have no file changes.");
+}
 
 export function codexRuntime(options: RuntimePresetOptions): RuntimeRegistration {
+  const prompt = taskPrompt(options);
   const local = options.codex;
   const settings: string[] = [];
   if (local?.model) settings.push("-c", `model=${JSON.stringify(local.model)}`);
@@ -78,11 +84,11 @@ export function codexRuntime(options: RuntimePresetOptions): RuntimeRegistration
         "-C",
         "{{workspace_root}}",
         ...settings,
-        TASK_PROMPT,
+        prompt,
       ],
       allowedRoots: options.allowedRoots,
       discussionCommand: options.discussionCommand ?? (options.command ? undefined : [
-        local?.binaryPath ?? "codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-C", "{{workspace_root}}", ...settings, TASK_PROMPT,
+        local?.binaryPath ?? "codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-C", "{{workspace_root}}", ...settings, prompt,
       ]),
       outputFormat: options.outputFormat ?? (options.command ? "plain" : "codex-json"),
       artifacts: options.artifacts ?? DEFAULT_ARTIFACTS,
@@ -91,6 +97,7 @@ export function codexRuntime(options: RuntimePresetOptions): RuntimeRegistration
 }
 
 export function claudeCodeRuntime(options: RuntimePresetOptions): RuntimeRegistration {
+  const prompt = taskPrompt(options);
   return {
     runtime: "claude-code",
     capabilities: options.capabilities ?? ["code.read", "code.modify", "code.review"],
@@ -102,7 +109,7 @@ export function claudeCodeRuntime(options: RuntimePresetOptions): RuntimeRegistr
       command: options.command ?? [
         "claude",
         "-p",
-        TASK_PROMPT,
+        prompt,
         "--output-format",
         "stream-json",
         "--verbose",
@@ -111,7 +118,7 @@ export function claudeCodeRuntime(options: RuntimePresetOptions): RuntimeRegistr
       ],
       allowedRoots: options.allowedRoots,
       discussionCommand: options.discussionCommand ?? (options.command ? undefined : [
-        "claude", "-p", TASK_PROMPT, "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
+        "claude", "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
         "--tools", "Read,Glob,Grep", "--disallowedTools", "mcp__*", "--disable-slash-commands",
       ]),
       outputFormat: options.outputFormat ?? (options.command ? "plain" : "claude-json"),

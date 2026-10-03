@@ -5,7 +5,8 @@ import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expectedNativeScreenshots, getE2EReportContext, readXCTestScreenshots, writeE2EReport } from "../../../scripts/e2e-report.mjs";
 import { selectIPhoneSimulator } from "./simulator-selection.mjs";
-import { selectUISuites, verifyUISuiteResults } from "./ui-suite-contract.mjs";
+import { assertFixtureSimulatorBinding } from "../../../scripts/ios-ui-simulator.mjs";
+import { selectUISuites, verifyUISuiteResults, nativeUISuiteTimeouts } from "./ui-suite-contract.mjs";
 
 const ios = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const baseOutput = resolve(ios, "../../artifacts/ios");
@@ -30,7 +31,7 @@ writeE2EReport({ outputPath: htmlPath, title, report });
 try {
 if (ui) rmSync(resolve(output, "ui-attachments"), { recursive: true, force: true });
 if (process.platform !== "darwin") throw new Error("Xcode/XCTest requires macOS; static checks are not a native test result.");
-if (process.argv.filter((arg) => arg.startsWith("--suite=")).length > 1 || process.argv.slice(2).some((arg) => arg !== "--ui" && !(ui && /^--suite=(core|assistant|mentions|correction)$/.test(arg)))) throw new Error("Usage: test-macos.mjs [--ui --suite=core|assistant|mentions|correction]");
+if (process.argv.filter((arg) => arg.startsWith("--suite=")).length > 1 || process.argv.slice(2).some((arg) => arg !== "--ui" && !(ui && /^--suite=(core|assistant|mentions|correction|retention)$/.test(arg)))) throw new Error("Usage: test-macos.mjs [--ui --suite=core|assistant|mentions|correction|retention]");
 const selected = ui ? selectUISuites(uiSuite)[0] : null;
 if (ui) report.expected_case_ids = selected.expected_case_ids;
 let uiEnvironment;
@@ -67,10 +68,15 @@ if (ui) {
     "draft_a", "draft_b", "first_mention_body", "second_mention_body",
   ].map((field) => [field, field.toUpperCase()]));
   const correctionFields = Object.fromEntries([
-    "server_url", "peer_control_token", "fixture_control_url", "fixture_control_token", "native_device_name",
+    "server_url", "peer_control_token", "fixture_control_url", "fixture_control_token", "native_device_name", "simulator_udid",
     "project_id", "task_title", "criterion_1", "criterion_2", "review_comment_1", "review_comment_2", "computer_id", "runtime_id",
   ].map((field) => [field, field.toUpperCase()]));
-  const fields = uiSuite === "correction" ? correctionFields : uiSuite === "mentions" ? mentionsFields : uiSuite === "assistant" ? assistantFields : coreFields;
+  const retentionFields = Object.fromEntries([
+    "server_url", "peer_control_token", "fixture_control_url", "fixture_control_token", "native_device_name", "simulator_udid",
+    "project_id", "task_title", "criterion_1", "criterion_2", "approval_summary", "computer_id", "computer_name",
+    "runtime_id", "instance_id", "instance_name", "workspace_root",
+  ].map((field) => [field, field.toUpperCase()]));
+  const fields = uiSuite === "retention" ? retentionFields : uiSuite === "correction" ? correctionFields : uiSuite === "mentions" ? mentionsFields : uiSuite === "assistant" ? assistantFields : coreFields;
   uiEnvironment = {};
   for (const [field, variable] of Object.entries(fields)) {
     if (typeof fixture[field] !== "string" || fixture[field].length === 0) throw new Error(`UI fixture is missing ${field}`);
@@ -90,11 +96,12 @@ if (ui) {
 mkdirSync(output, { recursive: true });
 function run(command, args, capture = false) {
   const started = Date.now();
-  // Core runs seven independent UI cases; correction performs four approved
-  // executions, two previews/reviews and explicit Stop decisions. Give both
-  // bounded suites time to finish and close their xcresult on current runtimes.
-  const timeout = ui && ["core", "correction"].includes(uiSuite) && command === "xcodebuild" && args.includes("test-without-building")
-    ? 1_800_000 : 1_200_000;
+  // Correction was still preparing its fourth approval at 2332.18 seconds
+  // when the 40-minute command limit expired; its command budget is now 60 minutes.
+  // Core's first six workflows used 44 minutes when XCTest repeatedly waited
+  // for animation completion; allow 60 minutes for all seven exact workflows.
+  const timeout = ui && command === "xcodebuild" && args.includes("test-without-building")
+    ? nativeUISuiteTimeouts(uiSuite).xctest : 1_200_000;
   const result = spawnSync(command, args, { cwd: ios, stdio: capture ? "pipe" : "inherit", encoding: "utf8", timeout });
   if (["xcodebuild", "xcodegen", "codesign"].includes(command)) report.checks.push({ name: [command, ...args].join(" "), passed: !result.error && result.status === 0, duration_ms: Date.now() - started });
   if (result.error || result.status !== 0) throw new Error(result.error?.message ?? `${command} failed (${result.status}): ${result.stderr ?? "see output"}`);
@@ -111,6 +118,10 @@ const runtimeInventory = JSON.parse(run("xcrun", ["simctl", "list", "runtimes", 
 const requested = process.env.ARTOO_IOS_SIMULATOR_UDID;
 const selection = selectIPhoneSimulator({ sdkVersion, deviceInventory, runtimeInventory, requestedUDID: requested });
 const { device, runtime } = selection;
+if (ui && ["retention", "correction"].includes(uiSuite)) {
+  assertFixtureSimulatorBinding(uiEnvironment.ARTOO_UI_SIMULATOR_UDID, device.udid);
+  report.fixture_simulator_udid = uiEnvironment.ARTOO_UI_SIMULATOR_UDID;
+}
 report.simulator_selection = { mode: selection.mode, newer_than_sdk: selection.newerThanSdk, candidates: selection.diagnostics };
 report.environment.simulator_runtime = `${runtime.name} (${runtime.version})`;
 console.log(`iPhoneSimulator SDK ${sdkVersion}; selected ${device.name} on ${runtime.name} (${selection.mode})`);

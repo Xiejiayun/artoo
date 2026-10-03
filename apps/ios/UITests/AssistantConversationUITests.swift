@@ -237,7 +237,9 @@ final class AssistantConversationUITests: XCTestCase {
 
     @MainActor
     private func send(_ text: String) async throws -> String {
-        try replace(field("messageComposer"), text); try dismissKeyboard()
+        try replace(field("messageComposer"), text)
+        if text == fixture.firstRequest { try screenshot("Native assistant focused composer with visible controls") }
+        try dismissKeyboard()
         let send = app.buttons["sendMessage"]; try reveal(send)
         try require(send.isEnabled && send.label == "Send to agent", "The real composer must send an agent request")
         try require(field("messageComposer").value as? String == text, "The native composer must contain only the exact intended request before Send")
@@ -291,24 +293,33 @@ final class AssistantConversationUITests: XCTestCase {
         try require(field.waitForExistence(timeout: 15) && field.isHittable, "The required exact input must be visible"); field.tap()
         if field.identifier == "messageComposer" { try revealComposerForEditing(field, keyboardRequired: true) }
         if let value = field.value as? String, !value.isEmpty && value != field.placeholderValue {
-            // A restored multiline field can put the caret at its beginning.
-            // Backspacing by length there leaves the previous draft untouched.
-            field.press(forDuration: 1.0)
-            let menuItem = app.menuItems["Select All"].firstMatch
-            let button = app.buttons["Select All"].firstMatch
-            let selectAll = menuItem.waitForExistence(timeout: 2) ? menuItem : button
-            try require(selectAll.waitForExistence(timeout: 5) && selectAll.isHittable, "The native edit menu must offer Select All before replacing existing text")
-            selectAll.tap()
-            field.typeText(XCUIKeyboardKey.delete.rawValue)
+            if field.identifier == "pairingDeviceName" {
+                try require(field.elementType == .textField && value.count <= 128
+                            && !value.contains("\n") && !value.contains("\r"),
+                            "Only the exact bounded single-line device name may use trailing-caret Delete")
+                try NativePairingInput.positionDeviceNameCaret(field, in: app, expected: value)
+                field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: value.count))
+            } else {
+                // A restored multiline field can put the caret at its beginning.
+                // Backspacing by length there leaves the previous draft untouched.
+                field.press(forDuration: 1.0)
+                let menuItem = app.menuItems["Select All"].firstMatch
+                let button = app.buttons["Select All"].firstMatch
+                let selectAll = menuItem.waitForExistence(timeout: 2) ? menuItem : button
+                try require(selectAll.waitForExistence(timeout: 5) && selectAll.isHittable, "The native edit menu must offer Select All before replacing existing text")
+                selectAll.tap()
+                field.typeText(XCUIKeyboardKey.delete.rawValue)
+            }
             let clearedInput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@ OR value == %@", "", field.placeholderValue ?? ""), object: field)
             try require(XCTWaiter.wait(for: [clearedInput], timeout: 45) == .completed, "The existing native Delete action must finish clearing the input")
             let cleared = field.value as? String ?? ""
-            try require(cleared.isEmpty || cleared == field.placeholderValue, "Select All and Delete must clear the complete existing input")
+            try require(cleared.isEmpty || cleared == field.placeholderValue, "The native Delete operation must clear the complete existing input")
         }
         field.typeText(text)
         let enteredInput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", text), object: field)
         try require(XCTWaiter.wait(for: [enteredInput], timeout: 45) == .completed, "The original native typing operation must finish with the exact intended text")
         try require(field.value as? String == text, "The native input must exactly match the replacement text")
+        if field.identifier == "messageComposer" { try revealComposerForEditing(field, keyboardRequired: true) }
     }
     @MainActor
     private func composerEditingViewport(keyboardRequired: Bool) throws -> CGRect {
@@ -318,21 +329,18 @@ final class AssistantConversationUITests: XCTestCase {
         try require(list.exists, "The fixed composer must accompany a visible conversation list")
         if keyboardRequired {
             try require(keyboard.waitForExistence(timeout: 10) && done.waitForExistence(timeout: 10),
-                        "The focused conversation input must expose its keyboard and Done toolbar")
+                        "The focused conversation input must expose its keyboard and Done action")
         }
-        // The composer is a safe-area inset beside the list, so the list's
-        // frame is only a scrolling viewport, not the input's allowed bounds.
+        // The safe-area composer sits beside the list. Its in-layout Done
+        // action is a sibling above the input, not a viewport boundary.
         let screen = app.frame
         let nav = app.navigationBars.firstMatch
         let tabs = app.tabBars.firstMatch
         let top = max(screen.minY, nav.exists ? nav.frame.maxY : screen.minY) + 4
         var bottom = min(screen.maxY, tabs.exists ? tabs.frame.minY : screen.maxY)
         if keyboard.exists {
-            try require(done.exists, "A visible conversation keyboard must expose its Done toolbar")
-            let toolbars = app.toolbars.containing(.button, identifier: "conversation.keyboard.done")
-            try require(toolbars.count <= 1, "The conversation keyboard toolbar must be unambiguous")
-            let toolbarTop = toolbars.count == 1 ? toolbars.element(boundBy: 0).frame.minY : done.frame.minY
-            bottom = min(bottom, min(keyboard.frame.minY, toolbarTop))
+            try require(done.exists, "A visible conversation keyboard must expose Done")
+            bottom = min(bottom, try keyboardOcclusionTop(keyboard))
         }
         let visible = CGRect(x: screen.minX + 2, y: top, width: screen.width - 4, height: bottom - top - 8)
         try require([visible.minX, visible.minY, visible.width, visible.height].allSatisfy { $0.isFinite } && !visible.isEmpty,
@@ -340,26 +348,86 @@ final class AssistantConversationUITests: XCTestCase {
         return visible
     }
     @MainActor
+    private func keyboardOcclusionTop(_ keyboard: XCUIElement) throws -> CGFloat {
+        let keys = keyboard.frame
+        let screen = app.frame
+        try require([keys.minX, keys.minY, keys.width, keys.height].allSatisfy { $0.isFinite }
+                    && !keys.isEmpty && keys.intersects(screen),
+                    "The focused keyboard must expose finite onscreen bounds")
+        var top = keys.minY
+        var observedFullRegion = false
+        for identifier in ["inputView", "SystemInputAssistantView"] {
+            // These are observed accessibility identifiers on separate keyboard
+            // windows. inputView does not contain the Keyboard accessibility node.
+            let matches = app.otherElements.matching(identifier: identifier)
+            try require(matches.count <= 1,
+                        "The keyboard region \(identifier) must be unambiguous")
+            guard matches.count == 1 else { continue }
+            let frame = matches.element(boundBy: 0).frame
+            try require([frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite }
+                        && !frame.isEmpty && frame.intersects(screen)
+                        && frame.minX < keys.maxX && frame.maxX > keys.minX
+                        && frame.minY <= keys.minY && frame.maxY >= keys.minY,
+                        "The keyboard region \(identifier) must meet the onscreen keys")
+            top = min(top, frame.minY)
+            observedFullRegion = true
+        }
+        // Fail explicitly if the selected runtime changes its AX structure;
+        // do not silently mistake the keys alone for the complete occluding region.
+        try require(observedFullRegion,
+                    "The focused keyboard must expose its full input or prediction region")
+        return top
+    }
+
+    @MainActor
+    private func composerControlsAreUnobscured(_ field: XCUIElement, in visible: CGRect) -> Bool {
+        let composer = self.field("conversation.composer")
+        let send = app.buttons["sendMessage"]
+        let doneButtons = app.buttons.matching(identifier: "conversation.keyboard.done")
+        guard composer.exists && field.exists && send.exists && field.isEnabled && field.isHittable else { return false }
+        var frames = [field.frame, send.frame]
+        if doneButtons.count > 0 {
+            guard doneButtons.count == 1 else { return false }
+            let done = doneButtons.firstMatch
+            guard done.isEnabled && done.isHittable,
+                  done.frame.width >= 44 && done.frame.height >= 44,
+                  composer.buttons.matching(identifier: "conversation.keyboard.done").count == 1,
+                  app.toolbars.containing(.button, identifier: "conversation.keyboard.done").count == 0 else { return false }
+            frames.append(done.frame)
+        }
+        // Send may be disabled for an empty draft; its full visible frame is
+        // still required. Every control must be inside the composer and the
+        // native viewport, with no intersection between the controls.
+        guard frames.allSatisfy({ frame in
+            [frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite } &&
+                !frame.isEmpty && visible.contains(frame) && composer.frame.contains(frame)
+        }) else { return false }
+        for index in frames.indices {
+            for other in frames.indices where other > index {
+                if frames[index].intersects(frames[other]) { return false }
+            }
+        }
+        return !send.isEnabled || send.isHittable
+    }
+    @MainActor
     private func revealComposerForEditing(_ field: XCUIElement, keyboardRequired: Bool) throws {
-        // isHittable alone can accept a field covered by the keyboard toolbar.
-        // Wait for the fixed inset to settle and require its entire frame;
-        // dragging the timeline cannot reposition a composer outside the list.
+        // Require the full input and Send bounds, and the in-layout Done
+        // bounds when focused. Timeline scrolling cannot move this inset.
         for _ in 0..<20 {
             let visible = try composerEditingViewport(keyboardRequired: keyboardRequired)
             let frame = field.frame
-            if [frame.minX, frame.minY, frame.width, frame.height].allSatisfy({ $0.isFinite }) &&
-                !frame.isEmpty && visible.contains(frame) && field.isHittable {
+            if composerControlsAreUnobscured(field, in: visible) {
                 RunLoop.current.run(until: Date().addingTimeInterval(0.15))
                 let settledViewport = try composerEditingViewport(keyboardRequired: keyboardRequired)
                 let settled = field.frame
-                if settledViewport.contains(settled) && field.isHittable && abs(settledViewport.minY - visible.minY) < 1 &&
+                if composerControlsAreUnobscured(field, in: settledViewport) && abs(settledViewport.minY - visible.minY) < 1 &&
                     abs(settledViewport.maxY - visible.maxY) < 1 && abs(settled.minY - frame.minY) < 1 &&
                     abs(settled.height - frame.height) < 1 { return }
                 continue
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.15))
         }
-        try require(false, "The composer must be fully between navigation, tabs and any keyboard toolbar before editing")
+        try require(false, "The full input, Send and focused Done controls must remain unobscured inside the native viewport")
     }
     @MainActor
     private func dismissKeyboard() throws {
@@ -367,6 +435,9 @@ final class AssistantConversationUITests: XCTestCase {
         try require(done.waitForExistence(timeout: 10) && done.isHittable, "The native multiline composer must expose Done"); done.tap()
         try require(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)], timeout: 10) == .completed,
                     "Done must dismiss the keyboard before conversation actions")
+        let channels = app.tabBars.buttons["Channels"]
+        try require(channels.waitForExistence(timeout: 10) && channels.isHittable && !done.exists,
+                    "Done must end editing and restore the native tab navigation")
     }
     @MainActor
     private func waitForLiveConnection() throws {

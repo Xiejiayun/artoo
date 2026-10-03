@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { assertCompleteTextVisible } from "./installed-mac-visual-evidence.mjs";
 
 export const macMentionsImageNames = [
   "macos-mentions-a-draft.png", "mentions-peer-first.png", "mentions-peer-second.png",
@@ -86,7 +87,7 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
   const { expect } = await import("@playwright/test");
   const { createMentionsScenario } = await import("../../../scripts/fixtures/mentions-scenario.mjs");
   const evidence = { result: "fail", scope: "Installed Mac recipient and independent sender browser; historical cross-project mentions with one exact pre-handler read failure",
-    checks: [], screenshots: [], observations: {} };
+    checks: [], screenshots: [], observations: {}, full_reply_captures: [] };
   onEvidence(evidence);
   const capture = (target, filename, caption) => captureMacMentionScreenshot(target, { artifactDir, filename, caption, evidence, onScreenshot });
   const viewport = async (target, filename, caption) => {
@@ -130,6 +131,27 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
     const notificationButton = (target) => notificationPanel.getByRole("button")
       .filter({ has: page.getByText(target.body.slice(0, 240), { exact: true }) });
     const mentionedReply = () => thread.getByRole("region", { name: "Mentioned reply", exact: true });
+    const fullReply = async (target, filename, caption) => {
+      const originalRoute = installedMentionRoute(page.url()), originalDraft = await draft().inputValue();
+      await mentionedReply().getByRole("button", { name: "Read full reply", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "Mentioned reply", exact: true });
+      await expect(dialog).toHaveCount(1); await expect(dialog).toBeVisible(); await expect(dialog).toBeInViewport({ ratio: 1 });
+      const visibleLines = [];
+      for (const text of [target.body, fields.sender_name]) {
+        const value = dialog.getByText(text, { exact: true });
+        await expect(value).toHaveCount(1); await expect(value).toBeVisible();
+        assert.equal(await value.textContent(), text, "The full historical reply must preserve its original body and sender");
+        const visibility = await assertCompleteTextVisible(value, "Complete historical reply and sender in the full-reply dialog");
+        visibleLines.push(visibility.rectangles);
+      }
+      await capture(page, filename, caption);
+      evidence.full_reply_captures.push({ message_id: target.message_id, body_sha256: hash(target.body), sender_name: fields.sender_name,
+        screenshot: filename, complete_text_visible: true, text_range_counts: visibleLines });
+      await dialog.getByRole("button", { name: "Close", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      assert.deepEqual(installedMentionRoute(page.url()), originalRoute, "Full-reply viewing must not change the exact destination");
+      assert.equal(await draft().inputValue(), originalDraft, "Full-reply viewing must not change or submit the thread draft");
+    };
     const destination = async (target) => {
       await expect(projectPicker).toHaveValue(publication.project_b.id);
       // A focused thread replaces the main conversation at narrower desktop
@@ -196,7 +218,7 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
     const retry = thread.getByRole("button", { name: "Retry marking notification read", exact: true });
     await expect(retry).toBeVisible();
     await waitBoundary({ firstAttempts: 1 });
-    await viewport(mentionedReply(), "macos-mentions-historical-reply.png", "Installed Mac: the complete historical reply and sender are visible in project B, beyond the notification preview");
+    await fullReply(publication.first, "macos-mentions-historical-reply.png", "Installed Mac: Read full reply shows the complete first historical reply and sender beyond the notification preview");
     await viewport(retry, "macos-mentions-read-failed.png", "Installed Mac: the exact read acknowledgement failed and offers an explicit Retry; all three new notifications remain unread");
     await draft().fill(fields.draft_b); await expect(draft()).toHaveValue(fields.draft_b);
     await viewport(draft(), "macos-mentions-b-draft.png", "Installed Mac: a separate unsent B-thread draft survives while the read acknowledgement remains failed");
@@ -204,7 +226,7 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
       await boundary({ firstAttempts: 1 }); await expect(draft()).toHaveValue(fields.draft_b);
     });
     evidence.observations.failed_boundary = await boundary({ firstAttempts: 1 });
-    check("Exact project, room, root and full reply rendered before a device-bound 503; no automatic read retry occurred for at least 3.1 seconds");
+    check("The exact historical reply is fully readable through its dialog; the device-bound 503 remains unretried for at least 3.1 seconds");
 
     stage = "retry the failed acknowledgement through its existing UI control";
     const successfulRead = responseFor(200);
@@ -212,7 +234,7 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
     evidence.observations.after_retry = await waitBoundary({ firstRead: true, firstAttempts: 2 });
     await expect(retry).toHaveCount(0); await expect(draft()).toHaveValue(fields.draft_b);
     await expect(unread(publication.baseline_unread_count + 2)).toBeVisible();
-    await viewport(mentionedReply(), "macos-mentions-read-retried.png", `Installed Mac: the first historical reply after explicit Retry; the mention badge now reports ${publication.baseline_unread_count + 2} unread`);
+    await viewport(mentionedReply(), "macos-mentions-read-retried.png", `Installed Mac: explicit Retry clears the read error, keeps the compact reply available and leaves ${publication.baseline_unread_count + 2} mentions unread`);
 
     stage = "open the second mention without consuming A's sentinel or losing the B draft";
     await openInlineMentions(); await notificationButton(publication.second).click();
@@ -220,7 +242,7 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
     evidence.observations.after_second = await waitBoundary({ firstRead: true, secondRead: true });
     assert.equal(evidence.observations.after_second.notifications[0].read_at, evidence.observations.after_retry.notifications[0].read_at);
     await expect(unread(publication.baseline_unread_count + 1)).toBeVisible(); await expect(draft()).toHaveValue(fields.draft_b);
-    await viewport(mentionedReply(), "macos-mentions-second-reply.png", "Installed Mac: the second exact historical reply and its sender after read confirmation");
+    await fullReply(publication.second, "macos-mentions-second-reply.png", "Installed Mac: Read full reply shows the complete second historical reply and sender after read confirmation");
     await openInlineMentions(); await notificationButton(publication.first).click(); await destination(publication.first);
     await expect(draft()).toHaveValue(fields.draft_b);
     check("UI Retry performed the production read; the second mention changed unread by exactly one and the unrelated sentinel stayed unread");

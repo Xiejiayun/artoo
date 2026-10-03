@@ -22,8 +22,7 @@ import { createGitCliExecutor } from "./workspace-binding.js";
  * dir (NEVER the project repo), then drives a branch-backed run.start through the
  * real node-client + real git executor + the mock-agent fixture runtime, proving:
  * worktree materialized on a NEW branch (`-b`) -> fixture produces an artifact ->
- * run completes -> worktree removed on cleanup -> the branch persists in the base
- * repo.
+ * run completes -> worktree and branch remain available for recovery.
  */
 const ENABLED = process.env.ARTOO_GIT_SMOKE === "1";
 const fixture = fileURLToPath(new URL("../test-fixtures/mock-agent.mjs", import.meta.url));
@@ -40,7 +39,7 @@ describe.skipIf(!ENABLED)("gated git worktree smoke (real git)", () => {
     }
   });
 
-  it("materializes a real worktree on a new branch, runs a fixture runtime, then cleans up", async () => {
+  it("materializes a real worktree on a new branch and retains completed work for recovery", async () => {
     // 1. Throwaway base git repo (real git init + one commit).
     const baseRepo = mkdtempSync(join(tmpdir(), "artoo-smoke-baserepo-"));
     cleanups.push(() => rmSync(baseRepo, { recursive: true, force: true }));
@@ -121,9 +120,9 @@ describe.skipIf(!ENABLED)("gated git worktree smoke (real git)", () => {
     const runEvents = received.filter(isRunEvent);
     expect(runEvents.some((e) => e.event.type === "artifact.created")).toBe(true);
     expect(runEvents.at(-1)?.event).toMatchObject({ type: "run.lifecycle", payload: { phase: "completed" } });
-    // Worktree was removed on terminal cleanup...
-    expect(existsSync(workspaceRoot)).toBe(false);
-    // ...but the branch the run created persists in the base repo.
+    // Completed work remains available until deliberately recovered or cleaned.
+    expect(existsSync(workspaceRoot)).toBe(true);
+    // The branch the run created also persists in the base repo.
     const branches = execFileSync("git", ["-C", baseRepo, "branch", "--list", branch]).toString();
     expect(branches).toContain(branch);
   });

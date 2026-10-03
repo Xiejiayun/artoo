@@ -9,4 +9,5 @@ contextBridge.exposeInMainWorld("artooDesktop", {
   daemonStatus: invoke("daemonStatus"), configureDaemon: invoke("configureDaemon"),
   startDaemon: invoke("startDaemon"), stopDaemon: invoke("stopDaemon"), restartDaemon: invoke("restartDaemon"),
   chooseDirectory: invoke("chooseDirectory"), chooseExecutable: invoke("chooseExecutable"), openExternal: invoke("openExternal"),
+  writeClipboardText: invoke("writeClipboardText"),
 });

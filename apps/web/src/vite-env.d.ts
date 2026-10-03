@@ -28,6 +28,7 @@ interface Window {
     chooseDirectory?(): Promise<string | null>;
     chooseExecutable?(): Promise<string | null>;
     openExternal?(url: string): Promise<void>;
+    writeClipboardText?(value: string): Promise<void>;
   };
 }
 

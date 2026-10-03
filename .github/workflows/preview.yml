@@ -41,8 +41,8 @@ jobs:
           retention-days: 14
   ios:
     runs-on: macos-15
-    # Four independently verified UI suites plus cold Xcode/unit builds.
-    timeout-minutes: 90
+    # Five independent UI suites, 45-minute core and 60-minute correction budgets, and cold builds.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -69,6 +69,7 @@ jobs:
             artifacts/ios/attempts/*/*.png
             artifacts/ios/attempts/*/diagnostics/*.json
             artifacts/ios/attempts/*/correction-evidence/
+            artifacts/ios/attempts/*/retention-evidence/
           if-no-files-found: ignore
           retention-days: 14
       - uses: actions/upload-artifact@v4

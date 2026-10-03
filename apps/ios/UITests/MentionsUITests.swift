@@ -202,13 +202,27 @@ final class MentionsUITests: XCTestCase {
     private func selectProject(id: String, name: String) throws {
         app.tabBars.buttons["More"].tap()
         let picker = field("workspace.project"); try reveal(picker); picker.tap()
-        let identified = field("workspace.project.option.\(id)")
-        if identified.waitForExistence(timeout: 2) { try reveal(identified); identified.tap() }
-        else {
-            let exact = app.buttons.matching(NSPredicate(format: "label == %@", name))
-            try require(exact.firstMatch.waitForExistence(timeout: 5) && exact.count == 1, "Project fallback must identify the one exact unique fixture project name")
-            exact.firstMatch.tap()
-        }
+        let identified = app.buttons.matching(identifier: "workspace.project.option.\(id)")
+        let exact = app.buttons.matching(NSPredicate(format: "label == %@", name))
+        // A native menu option can enter the accessibility tree before its
+        // activation geometry is ready. It is not a row in the underlying
+        // form: querying hittability or scrolling that form can fail or leave
+        // the popup open. Wait for the actual option, then let tap dispatch it.
+        let menuReady = XCTNSPredicateExpectation(predicate: NSPredicate { [self] _, _ in
+            let matches = identified.count
+            let option = matches == 1 ? identified.firstMatch
+                : matches == 0 && exact.count == 1 ? exact.firstMatch : nil
+            guard let option, option.exists, option.isEnabled, app.windows.firstMatch.exists else { return false }
+            let frame = option.frame, bounds = app.windows.firstMatch.frame
+            return [frame.minX, frame.minY, frame.width, frame.height,
+                    bounds.minX, bounds.minY, bounds.width, bounds.height].allSatisfy { $0.isFinite }
+                && !frame.isEmpty && !bounds.isEmpty && bounds.contains(frame)
+        }, object: app)
+        try require(XCTWaiter.wait(for: [menuReady], timeout: 15) == .completed,
+                    "The native project menu must expose one complete option for the exact project ID or unique fixture name")
+        let option = identified.count == 1 ? identified.firstMatch : exact.firstMatch
+        option.tap()
+        try waitForAbsence(option, "Choosing the exact project must dismiss its native menu before checking the underlying picker")
         try assertSelectedProject(name)
     }
     @MainActor

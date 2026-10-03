@@ -14,6 +14,11 @@ export const correctionReceiptPath = (directory, runId) => join(directory, `run-
 export const correctionContextPath = (directory, runId) => join(directory, `context-${correctionHash(runId)}.md`);
 export const correctionExitPath = (directory, runId) => join(directory, `exit-${correctionHash(runId)}.json`);
 export const correctionReportPath = (directory, runId) => join(directory, `report-${correctionHash(runId)}.patch`);
+export const CORRECTION_IGNORED_FILE = "ignored.bin";
+export const correctionIgnoredBytes = (pack, runId, mode, contextHash) => Buffer.concat([
+  Buffer.from([0x00, 0xff, 0x80, 0x0d, 0x0a]),
+  Buffer.from(`Ignored work: ${pack.task.id}\n${runId}\n${mode}\n`, "utf8"), Buffer.from(contextHash, "hex"), Buffer.from([0x00]),
+]);
 
 function publishExclusive(path, bytes) {
   const temporary = join(dirname(path), `.correction-${randomBytes(16).toString("hex")}.tmp`);
@@ -95,6 +100,7 @@ function readExecution(contextPath, configurationPath) {
   const original = readFileSync(join(workspace, "implementation.txt"), "utf8");
   assert.equal(correctionHash(original), configuration.baseline_sha256, "Every attempt starts from the unchanged Git base");
   assert.ok(!existsSync(join(workspace, "unsaved.txt")) && !existsSync(join(workspace, configuration.artifact_filename)));
+  assert.ok(!existsSync(join(workspace, CORRECTION_IGNORED_FILE)));
   publishExclusive(correctionContextPath(directory, runId), context);
   return { configuration, directory, context, pack, runId, workspace, index, mode, original, entries };
 }
@@ -106,6 +112,8 @@ export async function runExecutionCorrectionFixture({ contextPath, configuration
   const pending = `Unuploaded work for task ${pack.task.id}, run ${runId}, stage ${mode}.\nContext SHA256 ${correctionHash(context)}\n`;
   writeFileSync(join(workspace, "implementation.txt"), implementation, { mode: 0o600 });
   writeFileSync(join(workspace, "unsaved.txt"), pending, { flag: "wx", mode: 0o600 });
+  const ignored = correctionIgnoredBytes(pack, runId, mode, correctionHash(context));
+  writeFileSync(join(workspace, CORRECTION_IGNORED_FILE), ignored, { flag: "wx", mode: 0o600 });
   let reportHash = null;
   if (mode === "initial" || mode === "corrected") {
     const patch = correctionPatch(original, implementation);
@@ -116,6 +124,7 @@ export async function runExecutionCorrectionFixture({ contextPath, configuration
     slot: index + 1, mode, pid: process.pid, run_id: runId, task_id: pack.task.id, project_id: pack.project.id,
     workspace_root: workspace, context_sha256: correctionHash(context),
     implementation_sha256: correctionHash(implementation), unsaved_sha256: correctionHash(pending),
+    ignored_sha256: correctionHash(ignored), ignored_size: ignored.length,
     feedback: entries.map((entry) => ({ ...entry, comment_sha256: correctionHash(entry.comment) })),
     artifact_filename: reportHash ? configuration.artifact_filename : null, artifact_sha256: reportHash,
   };
@@ -135,7 +144,8 @@ export async function runExecutionCorrectionFixture({ contextPath, configuration
   const stopped = (signal) => {
     publishJSON(correctionExitPath(directory, runId), { run_id: runId, task_id: pack.task.id, pid: process.pid, signal,
       implementation_sha256: correctionHash(readFileSync(join(workspace, "implementation.txt"))),
-      unsaved_sha256: correctionHash(readFileSync(join(workspace, "unsaved.txt"))) });
+      unsaved_sha256: correctionHash(readFileSync(join(workspace, "unsaved.txt"))),
+      ignored_sha256: correctionHash(readFileSync(join(workspace, CORRECTION_IGNORED_FILE))) });
     process.exit(0);
   };
   process.once("SIGTERM", () => stopped("SIGTERM")); process.once("SIGINT", () => stopped("SIGINT"));

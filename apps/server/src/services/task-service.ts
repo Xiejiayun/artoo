@@ -34,6 +34,7 @@ import { effectiveTeamRole } from "../auth/request-auth.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { listTaskReviews } from "./review-history-service.js";
+import { loadWorkspaceRetentions } from "./workspace-retention-service.js";
 import {
   mapAgent,
   mapAgentInstance,
@@ -256,6 +257,7 @@ export async function getTaskSnapshot(ctx: ServerContext, id: string): Promise<T
         ? (await db.select().from(rooms).where(and(eq(rooms.id, task.room_id), eq(rooms.organizationId, ctx.organizationId))))[0]
         : undefined;
     const runRows = await db.select().from(runs).where(and(eq(runs.taskId, id), eq(runs.organizationId, ctx.organizationId)));
+    const retention = await loadWorkspaceRetentions(db, ctx.organizationId, runRows);
     const approvalRows = await db.select().from(approvals).where(and(eq(approvals.taskId, id), eq(approvals.organizationId, ctx.organizationId)));
     const artifactRows = await db.select().from(artifacts).where(and(eq(artifacts.taskId, id), eq(artifacts.organizationId, ctx.organizationId)));
     const reviews = await listTaskReviews(ctx, db, id, task.project_id);
@@ -266,7 +268,7 @@ export async function getTaskSnapshot(ctx: ServerContext, id: string): Promise<T
     return {
       task,
       room: roomRow !== undefined ? mapRoom(roomRow) : null,
-      runs: runRows.map(mapRun),
+      runs: runRows.map((run) => ({ ...mapRun(run), workspace_retention: retention.get(run.id) ?? null })),
       approvals: approvalRows.map(mapApproval),
       artifacts: artifactRows.map(mapArtifact),
       reviews,

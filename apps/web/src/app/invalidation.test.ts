@@ -25,6 +25,11 @@ describe("invalidationsForEvent", () => {
     expect(keys).toContainEqual(["task", "task_1"]);
     expect(keys).toContainEqual(["auditBundle", "task_1"]);
   });
+  it("refreshes persisted retention metadata without relying on the live output cache", () => {
+    const keys = invalidationsForEvent("task:task_1", event({ type: "run.workspace.retained", task_id: "task_1", run_id: "run_1" }));
+    expect(keys).toContainEqual(["task", "task_1"]);
+    expect(keys).toContainEqual(["auditBundle", "task_1"]);
+  });
 
   it("invalidates messages for a room event (and the task snapshot)", () => {
     const keys = invalidationsForEvent(

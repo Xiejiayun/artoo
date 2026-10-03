@@ -888,8 +888,11 @@ final class SharedServerChatUITests: XCTestCase {
             try setSwitchOn(localHTTP, message: "Local HTTP must be enabled through the onboarding switch")
         }
         try replace(origin, with: fixture.serverURL.absoluteString)
+        try dismissKeyboard(using: "pairing.keyboard.done")
         try replace(app.textFields["pairingDeviceName"], with: name)
+        try dismissKeyboard(using: "pairing.keyboard.done")
         try replace(app.textFields["pairingCode"], with: code.code)
+        try dismissKeyboard(using: "pairing.keyboard.done")
         let pair = app.buttons["pairDevice"]
         try reveal(pair)
         try require(pair.isEnabled, "Pairing must be enabled after completing the form")
@@ -1078,9 +1081,24 @@ final class SharedServerChatUITests: XCTestCase {
     private func replace(_ field: XCUIElement, with text: String) throws {
         try require(field.waitForExistence(timeout: 10), "Required text field must exist")
         try reveal(field)
+        try require(field.isEnabled && field.isHittable, "The exact native input must be editable")
         field.tap()
+        let keyboard = app.keyboards.firstMatch
+        try require(keyboard.waitForExistence(timeout: 10), "The native keyboard must appear before typing")
         if let current = field.value as? String, !current.isEmpty, current != field.placeholderValue {
+            if field.identifier == "pairingDeviceName" {
+                try require(field.elementType == .textField && current.count <= 128
+                            && !current.contains("\n") && !current.contains("\r"),
+                            "Only the exact bounded single-line device name may use trailing-caret Delete")
+                try NativePairingInput.positionDeviceNameCaret(field, in: app, expected: current)
+            }
             field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+            let clearedInput = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value == %@ OR value == %@", "", field.placeholderValue ?? ""), object: field)
+            try require(XCTWaiter.wait(for: [clearedInput], timeout: 45) == .completed,
+                        "The original native Delete operation must finish clearing the input")
+            let cleared = field.value as? String
+            try require(cleared == "" || cleared == field.placeholderValue, "The native input must be empty before replacement")
         }
         field.typeText(text)
         let enteredInput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", text), object: field)

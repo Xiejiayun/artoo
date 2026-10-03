@@ -423,9 +423,8 @@ describe("artood node client (worktree materialization, task #19)", () => {
   };
 
   const addCall = ["-C", "C:/repo", "worktree", "add", "-b", "task/run_1", "C:/ws/run_1"];
-  const removeCall = ["-C", "C:/repo", "worktree", "remove", "--force", "C:/ws/run_1"];
 
-  it("materializes a worktree before the run and removes it after completion", async () => {
+  it("materializes a worktree before the run and retains it after completion", async () => {
     const channel = createInProcessChannel();
     const adapter = createMockAdapter({ outputLines: ["building"] });
     const git = fakeGit();
@@ -449,10 +448,10 @@ describe("artood node client (worktree materialization, task #19)", () => {
     });
     await channel.serverTransport.send(worktreeStart("task/run_1"));
     await done;
-    await client.stop(); // awaits the run task's finally, where cleanup runs
+    await client.stop(); // awaits final delivery and bookkeeping
 
     expect(received.filter(isAck)[0]).toMatchObject({ status: "accepted" });
-    expect(git.calls).toEqual([addCall, removeCall]);
+    expect(git.calls).toEqual([addCall]);
   });
 
   it("retains the worktree and reports failure when artifact upload fails", async () => {

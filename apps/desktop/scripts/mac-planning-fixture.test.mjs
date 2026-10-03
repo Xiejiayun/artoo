@@ -117,8 +117,8 @@ function embeddedProgram(state, isMac) {
   const end = source.indexOf("\n`);", start) + "\n`);".length;
   assert.ok(start >= 0 && end > start);
   const fixtureEntry = join(state.directory, isMac ? "mac-inline.mjs" : "windows-inline.mjs");
-  new Function("writeFileSync", "fixtureEntry", "fixtureKey", "isMac", "pathToFileURL", "join", "desktopDir", "repoRoot", "planningConfigurationPath", "assistantConfigurationPath", "correctionConfigurationPath", "fixturePatch", source.slice(start, end))(
-    writeFileSync, fixtureEntry, "unit-credential", isMac, pathToFileURL, join, desktopDir, repoRoot, state.configurationPath, join(state.directory, "unused-assistant.json"), join(state.directory, "unused-correction.json"), "unit patch bytes\n");
+  new Function("writeFileSync", "fixtureEntry", "fixtureKey", "isMac", "pathToFileURL", "join", "desktopDir", "repoRoot", "planningConfigurationPath", "assistantConfigurationPath", "correctionConfigurationPath", "zeroArtifactConfigurationPath", "fixturePatch", source.slice(start, end))(
+    writeFileSync, fixtureEntry, "unit-credential", isMac, pathToFileURL, join, desktopDir, repoRoot, state.configurationPath, join(state.directory, "unused-assistant.json"), join(state.directory, "unused-correction.json"), join(state.directory, "unused-zero-artifact.json"), "unit patch bytes\n");
   return fixtureEntry;
 }
 
