@@ -23,6 +23,43 @@ An ad-hoc signature needed by Apple Silicon is not a Developer ID signature.
 These artifacts do not establish Gatekeeper trust or public release readiness;
 the script does not change Gatekeeper settings or strip quarantine attributes.
 
+### DMG build detach policy
+
+Both distribution modes default to the repository's executable
+`scripts/mac-dmgbuild.mjs`, selected through electron-builder's supported
+`CUSTOM_DMGBUILD_PATH`. It passes `--detach-retries 10` to the unmodified vendor
+CLI. All original argument boundaries, stdout/stderr, nonzero exits and signal
+termination are preserved through Node.js 24's POSIX `process.execve` API
+(currently experimental in Node).
+The launcher checks that this API is available; it does not introduce another
+child process or a separate retry loop.
+
+The launcher follows electron-builder → app-builder-lib → dmg-builder, then
+uses `downloadBuilderToolset` from that vendor's own dependency tree. This
+resolves the same `dmg-builder@1.2.5` toolset and archive checksums as
+installed dmg-builder 26.15.3, selecting the host's x64/arm64 tool. It never
+guesses a user cache directory. A changed dependency version or toolset constant
+requires review instead of silently retaining stale vendor pins. The existing
+builder holds its global temporary toolset lock around the launcher; the
+launcher does not reacquire that lock.
+
+Ten attempts allow about 170 seconds of vendor backoff sleeps if every normal
+detach fails; actual disk commands add time and the existing 600 second builder
+command timeout still applies. This gives transient busy volumes more time,
+without establishing the cause or guaranteeing a successful build. The launcher
+adds no force detach or global mount cleanup. The unmodified vendor may perform
+its own forced cleanup after normal retries are exhausted, but still exits with
+failure; that remains a failed distribution and produces no accepted artifacts.
+
+An explicit nonblank `CUSTOM_DMGBUILD_PATH` continues to select the caller's
+executable, resolved relative to `apps/desktop`. Missing paths, directories and
+non-executable files fail. The manifest records the selected path and SHA-256;
+its `dmgbuild.clean_detach_attempts` is 10 for the repository default and null
+for an external override whose policy is unknown. Duplicate or abbreviated
+retry flags are rejected by the repository launcher so its declared policy
+cannot be silently overridden. No signing, notarization, Gatekeeper, fresh
+artifact or installation checks are relaxed by this build policy.
+
 ## Repeatable DMG installation E2E
 
 The root Mac release gate and the Mac CI job run distribution configuration and
@@ -79,12 +116,16 @@ automatically uploaded. The separate `npm run smoke:mac --workspace
 Lightweight tests do not launch Artoo or build an Electron package:
 
 ```sh
-node --test apps/desktop/scripts/mac-distribution.test.mjs
+node --test apps/desktop/scripts/mac-dmgbuild.test.mjs apps/desktop/scripts/mac-distribution.test.mjs
 ARTOO_TEST_REAL_DMG=1 node --test apps/desktop/scripts/mac-distribution.test.mjs
 ```
 
 The opt-in second command creates only a small filesystem fixture DMG and
 checks real mount/detach behavior. It is not product installation evidence.
+The launcher tests use temporary executable subprocess fixtures and simulated
+builder commands; they do not download a toolset, create a disk image or launch
+the app. A fresh real DMG and the full installed-client E2E remain required to
+accept a packaging change.
 
 ## Signed release gate
 

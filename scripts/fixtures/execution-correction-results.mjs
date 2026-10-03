@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { CORRECTION_IGNORED_FILE, correctionHash, correctionIgnoredBytes, correctionImplementation, correctionModes, correctionPatch } from "./execution-correction.mjs";
+import { gitWorktreePath } from "./git-worktree-evidence.mjs";
 
 const requireEvidence = (condition, message) => {
   if (!condition) throw new Error(`Execution correction verification failed: ${message}`);
@@ -40,9 +41,10 @@ function verifyBase(value, fields, configuration, baseHead) {
   requireEvidence(configuration.baseline_files[".gitignore"] === correctionHash(`${CORRECTION_IGNORED_FILE}\n`), "The fixture base must actually ignore the unuploaded binary file");
   equal(value.base.work_files, { "unsaved.txt": null, [CORRECTION_IGNORED_FILE]: null, "changes.patch": null, "context_pack.md": null },
     "Execution work must never leak into the base repository");
-  const expected = [{ root: fields.base_repository, head: baseHead, branch: `refs/heads/${configuration.base_branch}` },
-    ...value.snapshot.runs.map((run) => ({ root: run.workspace_root, head: baseHead, branch: `refs/heads/${run.workspace_branch}` }))];
-  equal(value.base.registrations, expected.sort((a, b) => a.root.localeCompare(b.root)), "Only the base and actually started run worktrees may be registered");
+  const expected = [{ root: gitWorktreePath(fields.base_repository), head: baseHead, branch: `refs/heads/${configuration.base_branch}` },
+    ...value.snapshot.runs.map((run) => ({ root: gitWorktreePath(run.workspace_root), head: baseHead, branch: `refs/heads/${run.workspace_branch}` }))];
+  expected.sort((a, b) => a.root.localeCompare(b.root));
+  equal(value.base.registrations, expected, `Only the base and actually started run worktrees may be registered: ${JSON.stringify({ actual: value.base.registrations, expected })}`);
   equal(value.base.branches, expected.map((item) => item.branch).sort(), "Only the unchanged base and actual per-run branches may exist");
 }
 
@@ -142,7 +144,7 @@ export function verifyCorrectionCheckpoint({ name, observation: value, fields, p
       && workspace.report_sha256 === receipt.artifact_sha256 && workspace.ignored_sha256 === receipt.ignored_sha256
       && workspace.ignored_size === receipt.ignored_size && workspace.ignored_by_git === true,
     "Actual modified, new, ignored, context and report files must remain unchanged in their original Git worktree");
-    equal(workspace.registration, { root: instance.root, head: baseHead, branch: `refs/heads/${run.workspace_branch}` },
+    equal(workspace.registration, { root: gitWorktreePath(instance.root), head: baseHead, branch: `refs/heads/${run.workspace_branch}` },
       "The retained root must remain registered with its exact branch and baseline HEAD");
     const statusLines = [" M implementation.txt", "?? context_pack.md", "?? unsaved.txt", `!! ${CORRECTION_IGNORED_FILE}`,
       ...(receipt.artifact_sha256 === null ? [] : ["?? changes.patch"])].sort();

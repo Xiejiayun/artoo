@@ -1065,3 +1065,94 @@ physical devices/TestFlight, trusted Mac distribution/updates, deployed identity
 operator policy and deployment recovery remain [release gates](apple-release-readiness.md).
 Final source/generated-plist reconciliation, commit/push and exact-new-commit
 hosted CI are tracked separately from this local verification.
+
+
+## 2026-10-03: CI portability and Mac DMG verification repairs
+
+Hosted [Preview gates run 37108276346](https://github.com/Xiejiayun/artoo/actions/runs/37108276346)
+for `3f297a4e2e169cb37c37a49a662baaeb0dc342b6` failed its Mac, iOS and shared
+jobs; Windows desktop was skipped. The Windows shared failure reported a
+base/started-worktree registration mismatch without the actual conflicting root
+values. Drive-letter case was not established as its cause, and new hosted
+Windows acceptance remains required.
+
+The CI repair changes Git evidence parsing, planning screenshot capture,
+native test navigation, failed-iOS diagnostic uploads and DMG build policy.
+Git worktree registration evidence handles platform separators and drive-letter
+case while preserving exact application/recovery paths and branch/HEAD/file
+bytes. Evidence-directory syntax is normalized for comparison. Native tests
+search toward earlier history for
+the first planning instruction and reveal a retained task action before testing
+its existence. Failure-only CI uploads retain attachment manifests, PNGs and
+text diagnostics for seven days, under the existing raw-diagnostics access rules.
+
+| Closed local verification | Result and limit |
+| --- | --- |
+| Git evidence and real protocols | **83 passed**, zero failed/skipped: six parser cases, 53 correction negative cases, 22 zero-artifact negative cases and two actual protocol cases. Root independently rehashed 22 exported files; source and owned cleanup passed. [Report](/Users/jeremy/workspace/artoo-apple-ci-fixes/artifacts/ci-portability/protocol-20261003T083631Z/report.html). This is local evidence, not the failed Windows job's root-cause proof. |
+| Planning capture fixture | Seven browser scenarios/eight reported Node results passed. These cover a fitting target, actual nested scrolling and expected failure on clipping, occlusion, changed text/viewport or exhausted bounds. This is browser-fixture coverage. |
+| DMG policy and configuration | **20 passed, one opt-in tiny-DMG test skipped**. The repository default uses the unmodified pinned vendor with `--detach-retries 10`; explicit valid overrides retain their own policy. Argument/output/exit/signal behavior and nested dependency resolution passed subprocess fixtures. |
+| Fresh installed Mac, source 798 | **22 checks, 55 captures (54 unique PNG payloads) and 14 cleanup flags passed**. The driver ran 09:37:02.250Z–09:44:12.070Z; 09:36:51Z identifies the enclosing attempt directory. Fresh unsigned x64 DMG/ZIP, installed renderer/daemon bytes and source preservation passed. [Actual HTML](/Users/jeremy/workspace/artoo-apple-ci-fixes/artifacts/apple-ci/mac-dmg-20261003T093651Z/macos-dmg-desktop-smoke.html). |
+
+The [independent Mac audit](/Users/jeremy/workspace/artoo-apple-ci-fixes/artifacts/apple-ci/mac-dmg-20261003T093651Z/independent-review/audit.html)
+passed 102 data checks, 17 planning checks and 10 manual correlations. All 119
+originals remained unchanged; 22 exported fixture files total 18,744 bytes.
+The saved source inventory has 798 stable identities and all 33 observed owned
+process groups were absent. Its image, Stop and current-disk evidence limits
+remain explicit in the audit. Audit HTML SHA-256:
+`7d82a60717ede1535b0dff5902b2573225786e7b2267aae30559842e13f539ea`.
+
+The fresh Mac window was 1280×800. All six planning captures used one complete
+viewport frame, so this installed run did **not** exercise the oversized
+sequential-capture branch. That branch has the seven-scenario browser fixture
+above; the smaller hosted window still needs a fresh exact-new-commit run.
+No product CSS defect or smaller-window installed acceptance is inferred.
+
+Two earlier local attempts remain failed before client launch and contain zero
+client screenshots: 08:59:44Z exceeded the 600 second Electron dependency-download
+budget; 09:12:30Z exhausted vendor normal-detach retries with `disk16 Resource busy`.
+Their owned processes closed and original failed reports remain available. The
+new normal-detach policy adds no force-unmount or global cleanup, and a vendor
+failure still fails distribution.
+
+The fresh native Core-only XCTest, parent and aggregate each passed **7/7**
+(zero failed/skipped/unknown), including the repaired earlier-history and Assign
+navigation. XCTest took 2321.291 seconds. The report retains **24 original
+images: 22 native and two browser**. All **798 source identities** and **1279
+runtime inputs** remained unchanged during this invocation. The parent reports
+all three cleanup flags true; native and parent groups closed. [Core HTML](/Users/jeremy/workspace/artoo-apple-ci-fixes/artifacts/ios/native-suites-2026-10-03T10-49-37-908Z.html)
+SHA-256: `70b30b862ce2fdaf2ae36d43060b2438dbaa43faf1d8d628b1e0040cc199a057`.
+
+The stricter external orchestration attempt **remains failed**. Although its
+Core command exited zero, an observed Xcode `DTServiceHub` descendant remained;
+the owner-checked cleanup sent TERM then KILL to group 27631 before confirming
+ESRCH. All 26 Core-observed groups were then absent, with no observer uncertainty
+or deadline expiry. Its fixture directory had already been removed, but the
+outer temporary parent was deliberately retained. This establishes the seven
+business flows and physical closure after intervention, not a clean outer pass.
+[Original failed outer HTML, with the same 24 photos](/Users/jeremy/workspace/artoo/artifacts/preview-gate/next-ios-core-gate/runs/core-20261003T104902Z-21472d83/owned-report.html)
+SHA-256: `556fccbb899d966eda44863d3ffe7f7c3776ff0c45d74849d6b2c1a34898d77d`.
+
+The earlier 09:52Z attempt also **remains failed**: three tests passed before
+planning was interrupted by a two-second process-observer timeout, with three
+cases not started. Its [recovered failure HTML](/Users/jeremy/workspace/artoo-apple-ci-fixes/artifacts/ios/attempts/2026-10-03T09-52-51-600Z-core/independent-failure-review/failure-review.html)
+contains seven approved original photos; recovery did not alter that failure.
+The new raw xcresult retains seven nonfatal invalid-frame-dimension warnings,
+one per case. No cause or warning fix is claimed. Visual review covered all 24
+images through four contact sheets and four full-size originals. Expanded
+instructions extend beyond one viewport; screenshots do not independently prove
+full message bytes, server decisions or process state.
+
+After native closure, the generated UI-test plist was preserved and restored:
+all 798 files matched the pre-generation source again, and all other 797 files
+and runtime inputs remained unchanged. This milestone changes only delivery
+documentation after that reconciliation. The complete `all` inventory remains
+11 cases; the new Core result does not replace source26 full-all or archive
+acceptance. Exact-new-commit hosted acceptance remains a separate gate.
+
+
+These changes do not integrate the isolated receiver/WebSocket/allocation or
+UI-heading candidates. Existing Stop ordering/graceful-exit limitations and
+external release requirements remain. Live providers, physical devices,
+Developer ID/notarization/updates, deployed identity and operator policy remain
+separate gates. A normal single-parent main commit/push and exact-new-commit
+hosted results are separate delivery steps; the failed 3f run is not relabeled.

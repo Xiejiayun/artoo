@@ -34,22 +34,27 @@ peers when the bundled browser is unavailable. Reports record the actual
 browser version; the Mac client under test remains packaged Electron.
 
 The full iOS gate builds and runs unit tests, then runs separate core,
-direct-agent, mentions and execution-correction UI suites. Each uses its own fixture, XCTest selection and
-evidence directory. To run one UI subset while diagnosing it:
+direct-agent, mentions, execution-correction and successful-work-retention UI
+suites. Each uses its own fixture, XCTest selection and evidence directory.
+To run one UI subset while diagnosing it:
 
 ```sh
 npm run verify:ios:core
 npm run verify:ios:assistant
 npm run verify:ios:mentions
 npm run verify:ios:correction
+npm run verify:ios:retention
 ```
 
-The expected complete native contract is seven core cases plus one each for
-assistant, mentions and correction, alongside the unit gate. A terminal failed
-aggregate remains failed even when its completed earlier suites passed. The core
-XCTest execution budget is 30 minutes, its build/UI parent is 40 minutes, and the
-aggregate allows that parent 42 minutes. These are bounded harness deadlines;
-exact workflow and case-inventory assertions still determine success.
+The complete native contract is 11 cases: seven core plus one each for
+assistant, mentions, correction and retention, alongside the unit gate. A
+terminal failed aggregate remains failed even when earlier suites passed.
+Core and correction use 60/70/72 minute XCTest/parent/aggregate budgets;
+assistant uses 25/35/37 minutes and mentions/retention use 20/30/32 minutes.
+Exact workflow and case-inventory assertions still determine success.
+Common XcodeGen preparation precedes the aggregate source fingerprint because
+it can rewrite the tracked UI-test plist. Freeze external inventories after
+generation too; retain original runtime evidence before later delivery cleanup.
 
 Subset success does not certify the full gate. Keep source files, documentation
 and Git state unchanged during each run: original source fingerprints are
@@ -75,7 +80,8 @@ npm run e2e:auth
 | iOS core UI | `artifacts/ios/attempts/<timestamp>-core/native-ui-<timestamp>.html` | Real pairing, approval recovery across relaunch, explicit goal cancellation, daemon state, discussion/plan acceptance, cross-client threads, and native task creation through approved execution, uploaded artifact preview and human acceptance. |
 | iOS direct-agent UI | `artifacts/ios/attempts/<timestamp>-assistant/native-assistant-<timestamp>.html` | Agent choice, offline waiting/relaunch/draft, automatic dispatch, explicit failed-request Retry, prior-answer context, linked run details and running-request Cancel. Read the actual result: failed attempts do not establish the whole scenario. |
 | iOS mentions UI | `artifacts/ios/attempts/<timestamp>-mentions/native-mentions-<timestamp>.html` | Late-created project, two exact historical replies sent by an independent Web peer, device-scoped pre-handler 503, explicit read retry, unread sentinel and A/B drafts across project changes/relaunch. Nine native and two sender captures are required; implemented scope is not a claim of a successful run. |
-| iOS execution correction | `artifacts/ios/attempts/<timestamp>-correction/native-correction-<timestamp>.html` | UI-created task, four approved isolated-worktree executions, two durable reviews, artifact provenance, failed-work recovery, Retry and exact-run Stop/Keep running. Fifteen named captures and independent process/file observations are required. |
+| iOS execution correction | `artifacts/ios/attempts/<timestamp>-correction/native-correction-<timestamp>.html` | UI-created task, four approved isolated-worktree executions, two durable reviews, artifact provenance, retained success/failure/stopped work, Retry and exact-run Stop/Keep running. 21 named captures and independent process/file observations are required. |
+| iOS successful-work retention | `artifacts/ios/attempts/<timestamp>-retention/native-retention-<timestamp>.html` | One approved execution with zero artifacts; exact workspace/branch Copy values and recovery after cold relaunch. Seven named captures and independent retained-file evidence are required. |
 | Native UI runner | `artifacts/ios/attempts/<timestamp>-<suite>/ArtooUI-<timestamp>.html` | Xcode command results, exact selected-case contract and approved named XCTest screenshots. Earlier single-suite reports remain at the original top-level paths. |
 | Browser and authentication | `apps/web/playwright-report/<suite>-<timestamp>/index.html` | Test results, deliberate workflow screenshots and browser/source metadata. |
 | Local backup/restore | `artifacts/recovery/<timestamp>/report.html` | Production persistent server, real worker artifact upload, offline CLI backup/restore, credential continuity, exact bytes, idempotency and restored Web download. |
@@ -135,9 +141,9 @@ retains written files. Read-only verification binds actual context packs,
 approvals, artifact hashes, worktrees and process identities to each run. The
 normal UI supplies no declared write paths, so this proves zero held leases,
 not release of an acquired lease. Failed, cancelled, undelivered and materialized startup-failure isolated
-worktrees are retained. Successfully delivered worktrees are still deleted;
-preserving or explicitly transferring their non-artifact files remains a separate
-gap. Each correction execution uses a different instance/root, so this scenario
+worktrees are retained. Successfully delivered branch-backed worktrees are
+also retained, including files absent from the artifact list; the separate
+retention suite verifies the zero-artifact case after cold relaunch. Each correction execution uses a different instance/root, so this scenario
 does not establish same-instance recovery or safe root reuse. Its forced-stop
 path has no graceful-exit receipt: retained observations show the held PID absent
 when the real cancel HTTP response finishes. Evidence copies are saved before
@@ -186,7 +192,7 @@ report's actual result determines which scenarios passed; a failed six-scenario
 run does not certify the entire native task flow.
 
 
-## Current execution-correction environment and evidence
+## Historical execution-correction environment and evidence
 
 The current matching simulator is the task-owned iPhone 16 named
 `iPhone Artoo Correction E2E 26.5`, UDID
@@ -227,3 +233,23 @@ retained failures and six unresolved nonfatal frame warnings. After all Xcode wo
 ended, only the generated UI-test plist was restored; 703 other inventory entries
 still match. Final documentation application, commit/main push and hosted acceptance
 for the actual new commit remain pending.
+
+
+## Current CI repair evidence, 2026-10-03
+
+The [latest milestone](apple-client-milestones.md#2026-10-03-ci-portability-and-mac-dmg-verification-repairs)
+records the failed hosted 3f run, local 83-case parser/protocol validation and the
+new unsigned installed Mac run: 22 checks and 55 captures (54 unique PNG payloads). Its 1280×800 window produced
+six single-frame planning captures. The oversized sequential branch has seven
+browser-fixture scenarios/eight Node results and still needs hosted small-window
+acceptance. The new native Core XCTest/parent/aggregate passed all seven cases
+with 24 original photos, while its stricter external wrapper remains failed:
+an owned Xcode helper required TERM/KILL before confirmed closure. The earlier
+observer-timeout failure is also retained. No new full-all or archive pass is
+claimed. Mac distribution now defaults to ten normal vendor detach attempts;
+see [the exact policy](../apps/desktop/MAC-DISTRIBUTION.md#dmg-build-detach-policy).
+
+On iOS failure, CI additionally retains exported attachment manifests, PNGs and
+text diagnostics for seven days. These raw files may contain disposable fixture
+credentials and are for trusted recipients; approved workflow HTML still uses
+its existing screenshot allowlist. Preserve every failed HTML/JSON/xcresult.

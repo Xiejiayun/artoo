@@ -4,6 +4,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ZERO_ARTIFACT_FILES, zeroArtifactContextPath, zeroArtifactHash as hash, zeroArtifactWork } from "./zero-artifact-workspace.mjs";
+import { gitWorktreePath, parseGitWorktreeRegistrations } from "./git-worktree-evidence.mjs";
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === "ESRCH") return false; throw error; } };
 function git(directory, ...args) {
@@ -74,7 +75,7 @@ export function createZeroArtifactWorkspaceObserver({ setup, request, computerId
         branch: git(baseRepo, "branch", "--show-current").trim(),
         refs: git(baseRepo, "for-each-ref", "--format=%(refname)", "refs/heads").trim().split("\n").sort(),
         status: git(baseRepo, "status", "--porcelain", "--untracked-files=all", "--ignored"),
-        baseline_sha256: hash(readFileSync(join(baseRepo, "implementation.txt"))), registrations: git(baseRepo, "worktree", "list", "--porcelain") },
+        baseline_sha256: hash(readFileSync(join(baseRepo, "implementation.txt"))), registrations: git(baseRepo, "-c", "core.quotePath=false", "worktree", "list", "--porcelain") },
       workspace: existsSync(workspaceRoot) ? { root: workspaceRoot, head: git(workspaceRoot, "rev-parse", "HEAD").trim(),
         branch: git(workspaceRoot, "branch", "--show-current").trim(),
         common_directory: realpathSync(resolve(workspaceRoot, git(workspaceRoot, "rev-parse", "--git-common-dir").trim())),
@@ -235,10 +236,10 @@ export function verifyZeroArtifactWorkspace({ fields, configuration, baseHead, b
   assert.deepEqual(run.workspace_retention, { ...event.payload, event_id: event.id, position: event.position, sequence: event.sequence, reported_at: new Date(event.occurred_at).toISOString() });
   assert.equal(value.base.head, baseHead); assert.equal(value.base.index_sha256, baseIndex); assert.equal(value.base.status, ""); assert.equal(value.base.baseline_sha256, configuration.baseline_sha256);
   assert.equal(value.base.branch, "fixture-base"); assert.deepEqual(value.base.refs, ["refs/heads/fixture-base", `refs/heads/${run.workspace_branch}`].sort());
-  assert.deepEqual(value.base.registrations.trim().split("\n\n").sort(), [
-    `worktree ${baseRepo}\nHEAD ${baseHead}\nbranch refs/heads/fixture-base`,
-    `worktree ${fields.workspace_root}\nHEAD ${baseHead}\nbranch refs/heads/${run.workspace_branch}`,
-  ].sort());
+  assert.deepEqual(parseGitWorktreeRegistrations(value.base.registrations), [
+    { root: gitWorktreePath(baseRepo), head: baseHead, branch: "refs/heads/fixture-base" },
+    { root: gitWorktreePath(fields.workspace_root), head: baseHead, branch: `refs/heads/${run.workspace_branch}` },
+  ].sort((a, b) => a.root.localeCompare(b.root)));
   assert.equal(value.workspace.root, run.workspace_root); assert.equal(value.workspace.head, baseHead); assert.equal(value.workspace.branch, run.workspace_branch);
   assert.equal(value.workspace.common_directory, baseCommonDirectory); assert.equal(value.workspace.ignored, "ignored.bin"); assert.equal(value.workspace.report_exists, false);
   assert.deepEqual(value.workspace.status.split("\n").filter(Boolean).sort(), [" M implementation.txt", "?? context_pack.md", "?? unuploaded.txt", "!! ignored.bin"].sort());

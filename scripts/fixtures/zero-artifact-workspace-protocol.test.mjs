@@ -32,7 +32,8 @@ function copiedInputs() {
   }
   collect(join(root, "packages/db/migrations"));
   for (const path of ["package.json", "package-lock.json", "tsconfig.base.json", "scripts/fixtures/zero-artifact-workspace.mjs",
-    "scripts/fixtures/zero-artifact-workspace-scenario.mjs", "scripts/fixtures/zero-artifact-workspace-protocol.test.mjs"]) files.push({ path, sha256: hash(readFileSync(join(root, path))) });
+    "scripts/fixtures/zero-artifact-workspace-scenario.mjs", "scripts/fixtures/zero-artifact-workspace-protocol.test.mjs",
+    "scripts/fixtures/git-worktree-evidence.mjs"]) files.push({ path, sha256: hash(readFileSync(join(root, path))) });
   files.sort((a, b) => a.path.localeCompare(b.path));
   return { scope: "Direct copied source/build/runtime and lockfile hashes; no inherited parent Git attribution", files, sha256: hash(JSON.stringify(files)), node: process.version };
 }

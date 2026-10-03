@@ -7,6 +7,7 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { CORRECTION_IGNORED_FILE, correctionHash, correctionModes, correctionContextPath, correctionReportPath } from "./execution-correction.mjs";
 import { verifyCorrectionResults, verifyCorrectionCheckpoint } from "./execution-correction-results.mjs";
+import { gitWorktreePath, parseGitWorktreeRegistrations } from "./git-worktree-evidence.mjs";
 
 const gitRaw = (root, ...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", timeout: 15_000 });
 const git = (root, ...args) => gitRaw(root, ...args).trim();
@@ -21,13 +22,7 @@ function registrations(root) {
   // The installed Git supports porcelain but not worktree-list -z.
   // Preserve spaces/Unicode and reject quoted control-character paths rather
   // than silently decoding a different workspace identity.
-  return gitRaw(root, "-c", "core.quotePath=false", "worktree", "list", "--porcelain").trimEnd().split("\n\n").filter(Boolean).map((block) => {
-    const fields = Object.fromEntries(block.split("\n").filter(Boolean).map((line) => {
-      const space = line.indexOf(" "); return space < 0 ? [line, true] : [line.slice(0, space), line.slice(space + 1)];
-    }));
-    assert.ok(typeof fields.worktree === "string" && isAbsolute(fields.worktree) && !fields.worktree.startsWith('"'), "Fixture worktree path must be unambiguous in Git porcelain");
-    return { root: resolve(fields.worktree), head: fields.HEAD, branch: fields.branch ?? null };
-  }).sort((a, b) => a.root.localeCompare(b.root));
+  return parseGitWorktreeRegistrations(gitRaw(root, "-c", "core.quotePath=false", "worktree", "list", "--porcelain"));
 }
 export const correctionProcessAlive = (pid) => {
   assert.ok(Number.isSafeInteger(pid) && pid > 0);
@@ -163,7 +158,7 @@ export async function createCorrectionObserver({ root, setup, server, origin, re
       branch: existsSync(root) ? git(root, "branch", "--show-current") : null,
       head: existsSync(root) ? git(root, "rev-parse", "HEAD") : null,
       common_directory: existsSync(root) ? realpathSync(resolve(root, git(root, "rev-parse", "--git-common-dir"))) : null,
-      registration: registered.find((item) => item.root === root) ?? null,
+      registration: registered.find((item) => item.root === gitWorktreePath(root)) ?? null,
       status: existsSync(root) ? gitRaw(root, "status", "--porcelain", "--untracked-files=all", "--ignored") : null,
       ignored_by_git: existsSync(root) ? ignoredByGit(root) : null,
       implementation_sha256: fileHash(join(root, "implementation.txt")), unsaved_sha256: fileHash(join(root, "unsaved.txt")),

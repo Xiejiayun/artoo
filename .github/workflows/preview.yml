@@ -75,6 +75,16 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
+          name: ios-failed-ui-attachments
+          path: |
+            artifacts/ios/attempts/*/ui-attachments/manifest.json
+            artifacts/ios/attempts/*/ui-attachments/*.png
+            artifacts/ios/attempts/*/ui-attachments/*.txt
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
           name: ios-failed-xcresult-diagnostics
           path: artifacts/ios/attempts/*/*.xcresult/
           if-no-files-found: ignore

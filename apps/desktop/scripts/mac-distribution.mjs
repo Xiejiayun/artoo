@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getE2EReportContext, redact } from "../../../scripts/e2e-report.mjs";
+import { configureDmgbuild } from "./mac-dmgbuild.mjs";
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const root = resolve(desktop, "../..");
@@ -86,6 +87,8 @@ export function buildMacDistribution({ mode = "preview", submitNotarization = fa
     // Do not import an unrelated signing certificate from inherited CI settings.
     for (const key of Object.keys(buildEnv)) if (key.startsWith("CSC_") || key.startsWith("APPLE_")) delete buildEnv[key];
     if (mode === "preview") buildEnv.CSC_IDENTITY_AUTO_DISCOVERY = "false";
+    const dmgbuild = configureDmgbuild(buildEnv, desktop);
+    report.dmgbuild = { ...dmgbuild.policy, sha256: fileSha256(dmgbuild.env.CUSTOM_DMGBUILD_PATH) };
     for (const script of ["prepare-renderer", "bundle-daemon"]) {
       console.log(`[mac-distribution] ${script}`);
       run(process.execPath, [npm, "run", script, "--workspace", "@artoo/desktop"], { cwd: root, env: buildEnv });
@@ -97,7 +100,7 @@ export function buildMacDistribution({ mode = "preview", submitNotarization = fa
     const configPath = join(output, "builder-config.json");
     writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
     const builder = require.resolve("electron-builder/out/cli/cli.js");
-    const build = (args) => run(process.execPath, [builder, "--config", configPath, `--${architecture}`, "--publish", "never", ...args], { cwd: desktop, env: buildEnv });
+    const build = (args) => run(process.execPath, [builder, "--config", configPath, `--${architecture}`, "--publish", "never", ...args], { cwd: desktop, env: dmgbuild.env });
     const app = join(output, architecture === "arm64" ? "mac-arm64" : "mac", "Artoo.app");
     if (mode === "release") {
       build(["--mac", "dir"]);

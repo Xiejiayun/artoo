@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { planningHash, planningReceiptPath, verifyMacPlanningTurns } from "./mac-planning-fixture.mjs";
-import { centerCompleteEvidence } from "./installed-mac-visual-evidence.mjs";
+import { capturePlanningEvidence } from "./installed-mac-planning-evidence.mjs";
 
 export const macPlanningImageNames = ["macos-planning-instructions.png", "macos-planning-original.png", "macos-planning-suggestion.png", "macos-planning-accepted.png", "macos-planning-requests.png", "macos-planning-dependent-task.png"];
 
@@ -18,11 +18,17 @@ export async function runInstalledMacPlanning({ page, workspace, configurationPa
   onEvidence(evidence);
   const check = (name) => { evidence.checks.push(name); console.log(`[mac-planning] PASS ${name}`); };
   const capture = async (locator, filename, caption) => {
-    await centerCompleteEvidence(locator, caption);
-    const path = join(artifactDir, filename);
-    await page.screenshot({ path, fullPage: false, animations: "disabled", timeout: 30_000 });
-    assert.ok(existsSync(path));
-    const image = { path, caption }; evidence.screenshots.push(image); onScreenshot(image);
+    const proof = { filename, caption }; (evidence.viewport_captures ??= []).push(proof);
+    await capturePlanningEvidence({ locator, description: caption, evidence: proof,
+      captureFrame: async (part, sequential) => {
+        const name = part === 1 ? filename : filename.replace(/\.png$/, `-viewport-${String(part).padStart(2, "0")}.png`);
+        const path = join(artifactDir, name);
+        const png = await page.screenshot({ path, fullPage: false, animations: "disabled", timeout: 30_000 });
+        assert.ok(existsSync(path));
+        const image = { path, caption: sequential ? `${caption} — viewport ${part}; complete content spans the recorded sequence` : caption };
+        evidence.screenshots.push(image); onScreenshot(image);
+        return { ...image, bytes: png.length, sha256: createHash("sha256").update(png).digest("hex") };
+      } });
   };
   const api = async (route) => {
     const response = await fetch(`${baseUrl}/api/v1${route}`, { headers: { Cookie: ownerCookie }, signal: AbortSignal.timeout(15_000) });
@@ -36,7 +42,13 @@ export async function runInstalledMacPlanning({ page, workspace, configurationPa
     task_1_criterion: "The client presents the documented planning contract", task_2_criterion: "Verification follows implementation and checks both outcomes" };
   let stage = "start the installed planning worker through Settings";
   try {
-    for (const name of macPlanningImageNames) rmSync(join(artifactDir, name), { force: true });
+    for (const name of macPlanningImageNames) {
+      rmSync(join(artifactDir, name), { force: true });
+      const prefix = name.replace(/\.png$/, "-viewport-");
+      for (const existing of readdirSync(artifactDir)) {
+        if (existing.startsWith(prefix) && /^\d{2}\.png$/.test(existing.slice(prefix.length))) rmSync(join(artifactDir, existing), { force: true });
+      }
+    }
     mkdirSync(planningWorkspace); mkdirSync(fixture.context_receipts_directory, { mode: 0o700 });
     const connection = await page.evaluate(() => window.artooDesktop.getConnection());
     fixture.computer_id = connection.computerId;
@@ -131,8 +143,10 @@ export async function runInstalledMacPlanning({ page, workspace, configurationPa
       if (index === 0) await capture(instruction, macPlanningImageNames[0], "Installed Mac: coordinator instructions appear as a readable summary by default");
       await instruction.getByText("Show agent instructions", { exact: true }).click();
       await expect(instruction.locator("pre")).toBeVisible();
-      assert.equal(await instruction.locator("pre").textContent(), messages.find((message) => message.id === turn.user_message_id).body);
+      const originalInstruction = messages.find((message) => message.id === turn.user_message_id).body;
+      assert.equal(await instruction.locator("pre").textContent(), originalInstruction);
       if (index === 0) await capture(instruction, macPlanningImageNames[1], "Installed Mac: expanded coordinator instructions match the exact server message");
+      assert.equal(await instruction.locator("pre").textContent(), originalInstruction);
       await instruction.getByText("Show agent instructions", { exact: true }).click();
       await expect(instruction.locator("pre")).not.toBeVisible();
     }

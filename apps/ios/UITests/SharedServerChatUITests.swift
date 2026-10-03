@@ -97,8 +97,10 @@ final class SharedServerChatUITests: XCTestCase {
         XCTAssertNil(approved.approvals.first?.runId)
         try require(app.navigationBars["Today"].waitForExistence(timeout: 15), "Approving execution must finish and return to Inbox")
         app.tabBars.buttons["Tasks"].tap()
+        // The retained detail can return below its virtualized action rows.
+        try reveal(assign, searchTowardTop: true)
         try require(assign.waitForExistence(timeout: 15), "The approved task must offer assignment")
-        try reveal(assign); assign.tap()
+        assign.tap()
         try require(app.navigationBars["Assign Task"].waitForExistence(timeout: 10), "Assign must open the real assignment form")
         let manual = app.segmentedControls["task.assignment.mode"].buttons["Manual"]
         try reveal(manual); manual.tap()
@@ -599,7 +601,8 @@ final class SharedServerChatUITests: XCTestCase {
         for instruction in instructions {
             let step = try XCTUnwrap(instruction.payload?.discussionStep)
             let title = app.staticTexts["message.planning.title.\(instruction.id)"]
-            try reveal(title)
+            // Threads open at the latest reply; the first instruction is earlier.
+            try reveal(title, searchTowardTop: step == 0)
             try require(title.label == "Planning instruction · Step \(step + 1)", "Each real coordinator step must display its readable summary title")
             let brief = app.staticTexts["message.planning.summary.\(instruction.id)"]
             try reveal(brief)
@@ -1188,7 +1191,7 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func reveal(_ element: XCUIElement) throws {
+    private func reveal(_ element: XCUIElement, searchTowardTop: Bool = false) throws {
         for attempt in 0..<10 {
             if element.exists && element.isHittable { return }
             // App-wide swipes can begin on the keyboard after a form grows.
@@ -1209,7 +1212,9 @@ final class SharedServerChatUITests: XCTestCase {
                         "Control scrolling must stay inside finite content bounds above the keyboard")
             let frame = element.exists ? element.frame : .zero
             let known = !frame.isEmpty && [frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite }
-            let upward = known ? frame.midY > viewport.midY : attempt < 5
+            // A caller with a known earlier target should not spend half its
+            // search moving farther toward the end of a virtualized list.
+            let upward = known ? frame.midY > viewport.midY : (!searchTowardTop && attempt < 5)
             let origin = app.coordinate(withNormalizedOffset: .zero)
             origin.withOffset(CGVector(dx: viewport.midX, dy: viewport.minY + viewport.height * (upward ? 0.7 : 0.3)))
                 .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: viewport.midX, dy: viewport.minY + viewport.height * (upward ? 0.3 : 0.7))))

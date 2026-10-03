@@ -40,7 +40,8 @@ function copiedInputs() {
   collect(join(root, "packages/db/migrations"));
   for (const name of ["package.json", "package-lock.json", "tsconfig.base.json", "scripts/ios-ui-correction-fixture.mjs",
     "scripts/fixtures/execution-correction.mjs", "scripts/fixtures/execution-correction-scenario.mjs",
-    "scripts/fixtures/execution-correction-results.mjs", "scripts/fixtures/execution-correction-results.test.mjs"]) {
+    "scripts/fixtures/execution-correction-results.mjs", "scripts/fixtures/execution-correction-results.test.mjs",
+    "scripts/fixtures/git-worktree-evidence.mjs"]) {
     files.push({ path: name, sha256: correctionHash(readFileSync(join(root, name))) });
   }
   files.sort((a, b) => a.path.localeCompare(b.path));
