@@ -8,6 +8,9 @@ function inspectPlanningTarget(element, { scrollKey } = {}) {
   const clip = (parent) => {
     const bounds = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
     for (let node = parent; node; node = node.parentElement) {
+      // The document scrollport is the viewport already represented above.
+      // Its element box moves with scrollY and is not a clipping rectangle.
+      if (node === document.scrollingElement) continue;
       const style = getComputedStyle(node), box = node.getBoundingClientRect();
       if (/auto|scroll|hidden|clip/.test(style.overflowX)) {
         bounds.left = Math.max(bounds.left, box.left + node.clientLeft);
@@ -52,7 +55,8 @@ function inspectPlanningTarget(element, { scrollKey } = {}) {
         || !(ancestor === document.scrollingElement || /auto|scroll/.test(style.overflowY))) continue;
       const rect = unit.range.getBoundingClientRect(), box = ancestor.getBoundingClientRect();
       const before = ancestor.scrollTop;
-      ancestor.scrollTop += rect.top - (box.top + ancestor.clientTop + 8);
+      const scrollportTop = ancestor === document.scrollingElement ? 0 : box.top + ancestor.clientTop;
+      ancestor.scrollTop += rect.top - (scrollportTop + 8);
       if (Math.abs(ancestor.scrollTop - before) > 0.5) scrolls.push({
         element: ancestor.tagName, className: ancestor.className, before, after: ancestor.scrollTop,
         clientHeight: ancestor.clientHeight, scrollHeight: ancestor.scrollHeight,

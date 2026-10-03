@@ -235,9 +235,9 @@ still match. Final documentation application, commit/main push and hosted accept
 for the actual new commit remain pending.
 
 
-## Current CI repair evidence, 2026-10-03
+## Prior CI repair evidence, 2026-10-03
 
-The [latest milestone](apple-client-milestones.md#2026-10-03-ci-portability-and-mac-dmg-verification-repairs)
+The [prior milestone](apple-client-milestones.md#2026-10-03-ci-portability-and-mac-dmg-verification-repairs)
 records the failed hosted 3f run, local 83-case parser/protocol validation and the
 new unsigned installed Mac run: 22 checks and 55 captures (54 unique PNG payloads). Its 1280×800 window produced
 six single-frame planning captures. The oversized sequential branch has seven
@@ -253,3 +253,22 @@ On iOS failure, CI additionally retains exported attachment manifests, PNGs and
 text diagnostics for seven days. These raw files may contain disposable fixture
 credentials and are for trusted recipients; approved workflow HTML still uses
 its existing screenshot allowlist. Preserve every failed HTML/JSON/xcresult.
+
+
+## Compact installed Mac profile
+
+`runPackagedSmoke("darwin", { macDistribution: "dmg", macViewport: { width: 1024,
+height: 656 } })` establishes a real native content size before each workflow and
+again after every app relaunch. Each launch records the requested size and native
+before/after values; the renderer dimensions must agree. The ordinary invocation
+keeps the app's default window behavior. The capture helper only scrolls the
+existing content and never enlarges the window during capture.
+
+The [compact milestone](apple-client-milestones.md#2026-10-03-compact-mac-planning-and-native-windows-fixture-paths)
+records the actual two-frame instruction proof, 22 client checks, 56 captures
+(55 unique PNGs) and 14 driver cleanup flags. Its outer priority guard remains
+failed despite zero exit and normal closure; read both original reports. The
+preceding dependency-download failure remains preserved with no client photos.
+Local 83-case protocol acceptance does not establish the Windows alias fix on a
+Windows host. Hosted iOS currently has 159 unit passes and six of seven Core
+passes; its pairing-input failure precedes cancellation business behavior.

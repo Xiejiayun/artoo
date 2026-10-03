@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -64,7 +64,7 @@ test("actual four-run protocol produces verifiable correction evidence and rejec
     assert.ok(inside && !isAbsolute(inside) && inside !== ".." && !inside.startsWith(`..${sep}`), "Evidence must stay inside this tested repository copy");
     assert.equal(existsSync(evidenceDirectory), false, "Use a fresh evidence directory"); mkdirSync(evidenceDirectory, { recursive: true, mode: 0o700 });
   }
-  const temporary = mkdtempSync(join(tmpdir(), "artoo-correction-integration-"));
+  const temporary = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-correction-integration-")));
   const report = { passed: false, scope: "Authenticated loopback HTTP/WebSocket, real Git and owned deterministic subprocess protocol integration; NOT client UI/E2E certification",
     started_at: new Date().toISOString(), input, patch_checkpoints: patchCheckpoints(),
     patch_note: "Checkpoint patches describe preparation; the direct copied source/build hashes above identify executed bytes", temporary };

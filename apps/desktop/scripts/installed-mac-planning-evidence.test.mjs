@@ -29,13 +29,13 @@ test("planning evidence uses actual fixture viewport coverage", { skip: !enabled
   mkdirSync(output, { recursive: true });
   const browser = await chromium.launch({ headless: true, ...(process.env.ARTOO_CHROMIUM_CHANNEL ? { channel: process.env.ARTOO_CHROMIUM_CHANNEL } : {}) });
   const results = [];
-  async function exercise(name, { text = longText, overflow = "auto", before, mutateCapture, expectedError, oldRejects = false, maxFrames } = {}) {
+  async function exercise(name, { text = longText, overflow = "auto", standardsMode = false, before, mutateCapture, expectedError, oldRejects = false, maxFrames } = {}) {
     const context = await browser.newContext({ viewport: { width: 720, height: 480 }, deviceScaleFactor: 1 });
     const page = await context.newPage();
     const evidence = { name }, images = [];
-    let caught;
+    let caught, verified = false;
     try {
-      await page.setContent(fixture(text, overflow));
+      await page.setContent((standardsMode ? "<!doctype html>" : "") + fixture(text, overflow));
       const target = page.getByRole("region", { name: "Planning instruction", exact: true });
       assert.equal(await target.locator("pre").textContent(), text);
       if (oldRejects) await assert.rejects(centerCompleteEvidence(target, "whole-card baseline"), /toBeInViewport/);
@@ -66,9 +66,10 @@ test("planning evidence uses actual fixture viewport coverage", { skip: !enabled
         assert.deepEqual(page.viewportSize(), { width: 720, height: 480 });
         assert.ok(images.every((image) => image.bytes > 0));
       }
-      results.push({ name, passed: true, expected_failure: !!expectedError, observed_error: caught?.message, evidence, images });
+      verified = true;
       return evidence;
     } finally {
+      results.push({ name, passed: verified, expected_failure: !!expectedError, observed_error: caught?.message, evidence, images });
       await context.close();
       writeFileSync(join(output, "fixture-results.json"), JSON.stringify({ scope: "Headless fixture pages only; no installed client/provider acceptance", browser: browser.version(), results }, null, 2) + "\n");
     }
@@ -84,6 +85,31 @@ test("planning evidence uses actual fixture viewport coverage", { skip: !enabled
       const scrolled = new Set(proof.frames.flatMap((frame) => frame.scrolls.map((entry) => entry.className)));
       assert.ok(scrolled.has("history") && scrolled.has("outer"));
     });
+    for (const rootOverflow of ["auto", "visible"]) {
+      await t.test(`nonzero document scrolling with ${rootOverflow} root overflow preserves complete nested text coverage`, async () => {
+        const proof = await exercise(`document-${rootOverflow}-and-nested`, { standardsMode: true, before: async (page) => {
+          await page.evaluate((overflow) => {
+            document.documentElement.style.overflowY = overflow;
+            document.body.style.paddingTop = "700px";
+            document.body.style.paddingBottom = "700px";
+            window.scrollTo(0, 350);
+          }, rootOverflow);
+          assert.ok(await page.evaluate(() => document.scrollingElement === document.documentElement
+            && document.scrollingElement.scrollTop > 0));
+        }, mutateCapture: async (page) => {
+          assert.deepEqual(await page.evaluate(() => ({
+            overflow: document.documentElement.style.overflowY,
+            top: document.body.style.paddingTop,
+            bottom: document.body.style.paddingBottom,
+          })), { overflow: rootOverflow, top: "700px", bottom: "700px" });
+        } });
+        assert.equal(proof.method, "sequential-viewport"); assert.ok(proof.frames.length > 1);
+        const scrolls = proof.frames.flatMap((frame) => frame.scrolls);
+        assert.ok(scrolls.some((entry) => entry.element === "HTML" && entry.before > 0));
+        assert.ok(scrolls.some((entry) => entry.className === "history"));
+        assert.ok(scrolls.some((entry) => entry.className === "outer"));
+      });
+    }
     await t.test("non-scrollable clipping is a failure", async () => {
       await exercise("hidden-clip", { overflow: "hidden", expectedError: /no new complete, unobscured text|no real scroll progress/ });
     });

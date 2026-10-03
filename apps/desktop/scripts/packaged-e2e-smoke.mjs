@@ -89,7 +89,7 @@ async function removeTemp(directory) {
   await until(() => { try { rmSync(canonical, { recursive: true, force: true }); return !existsSync(canonical); } catch { return false; } }, "Smoke temporary files remained locked", 15_000);
 }
 
-export async function runPackagedSmoke(platform, { macDistribution } = {}) {
+export async function runPackagedSmoke(platform, { macDistribution, macViewport } = {}) {
   const isMac = platform === "darwin";
   const fromDmg = macDistribution === "dmg";
   const label = isMac ? (fromDmg ? "macos-dmg" : "macos") : "windows";
@@ -177,6 +177,22 @@ export async function runPackagedSmoke(platform, { macDistribution } = {}) {
     page.on("pageerror", (error) => console.error(liveActive ? "[renderer] Renderer failure during live verification" : `[renderer] ${error.message}`));
     page.on("requestfailed", (request) => console.error(`[renderer] ${request.method()} ${new URL(request.url()).pathname}: ${request.failure()?.errorText}`));
     await page.waitForLoadState("domcontentloaded");
+    if (macViewport) {
+      assert.ok(isMac && Number.isSafeInteger(macViewport.width) && macViewport.width >= 360
+        && Number.isSafeInteger(macViewport.height) && macViewport.height >= 540, "Valid native Mac viewport required");
+      // Establish the profile through the real window before any workflow or
+      // capture. A relaunch establishes the same size and records it again.
+      const native = await electronApp.evaluate(({ BrowserWindow }, target) => {
+        const window = BrowserWindow.getAllWindows()[0];
+        const before = window.getContentSize();
+        window.setContentSize(target.width, target.height);
+        return { before, after: window.getContentSize() };
+      }, macViewport);
+      assert.deepEqual(native.after, [macViewport.width, macViewport.height]);
+      await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
+        .toEqual(macViewport);
+      (report.native_viewport_launches ??= []).push({ requested: { ...macViewport }, ...native });
+    }
   }
   async function captureScene(filename, caption) {
     const path = join(artifactDir, filename);

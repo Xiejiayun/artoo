@@ -46,8 +46,8 @@ test("one successful zero-artifact run keeps every local work byte with durable 
     const inside = relative(root, evidence); assert.ok(inside && !isAbsolute(inside) && inside !== ".." && !inside.startsWith(`..${sep}`));
     assert.equal(existsSync(evidence), false); mkdirSync(evidence, { recursive: true, mode: 0o700 });
   }
-  const temporary = mkdtempSync(join(tmpdir(), "artoo-zero-artifact-integration-"));
-  const exportParent = evidence ?? realpathSync(mkdtempSync(join(tmpdir(), "artoo-zero-artifact-proof-")));
+  const temporary = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-zero-artifact-integration-")));
+  const exportParent = evidence ?? realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-zero-artifact-proof-")));
   const report = { passed: false, started_at: new Date().toISOString(), input,
     scope: "Authenticated loopback HTTP/WebSocket with production server/node and real Git/owned subprocess; NOT client UI/E2E", cleanup: {} };
   let server, scenario, exported, primaryError;

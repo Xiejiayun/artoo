@@ -1156,3 +1156,72 @@ external release requirements remain. Live providers, physical devices,
 Developer ID/notarization/updates, deployed identity and operator policy remain
 separate gates. A normal single-parent main commit/push and exact-new-commit
 hosted results are separate delivery steps; the failed 3f run is not relabeled.
+
+
+## 2026-10-03: compact Mac planning and native Windows fixture paths
+
+Hosted [run 37120642443](https://github.com/Xiejiayun/artoo/actions/runs/37120642443)
+on `d65d4598443343ad63b57cd8a36785ce3ea1a5e2` failed Mac, shared Windows and iOS;
+Windows desktop was skipped. The original outcomes remain failed.
+
+The Mac failure exposed document scrolling in the actual 1024×656 renderer.
+The first expanded-instruction frame covered 594 of 855 ranges before scrolling
+made no further progress. The helper treated the document's translated element
+box as its viewport. Document clipping and scroll alignment now use viewport
+coordinates while preserving nested clipping, hit-testing, text/layout stability
+and complete range coverage. Partial sequence captions no longer claim that
+coverage has already completed. Both new browser cases reproduced the old
+failure; all seven old cases still passed. After the correction, all nine browser
+scenarios passed (ten Node results), each document variant covering 2144 ranges
+in five frames. These are browser fixtures, not installed-client acceptance.
+
+The Windows failure was in the sixth real-Git parser test: Git reported
+`C:\Users\runneradmin`, while the fixture expected its `C:\Users\RUNNER~1`
+short-name alias. HEAD and branches matched. Test-owned temporary roots now use
+`realpathSync.native` when created; the same alias handling covers the correction
+and zero-artifact test fixtures. The latter protocols were not reached by this
+hosted invocation, so they are not reported as observed failures. Parser semantics,
+application/recovery paths, containment checks and all assertions remain intact.
+The local three-file gate passed **83/83** with source stability and owned cleanup.
+Fresh Windows CI is still required. [Local protocol report](/Users/jeremy/workspace/artoo-mac-planning-scroll/artifacts/apple-ci/protocol-20261003T124440Z/report.html).
+
+A fresh unsigned x64 DMG/ZIP and installed app passed **22 client checks**
+at a real **1024×656** content size. All five app launches/relaunches measured the
+requested native and renderer size before the workflow. All six planning proofs
+completed, and the expanded original instruction required **two actual viewport
+frames**. The complete run retained **56 captures / 55 unique PNG payloads**,
+all **14** driver cleanup flags, matching installed package bytes and unchanged
+**799-file** source. The driver ran 12:33:50.868Z–12:40:52.052Z.
+[Client HTML](/Users/jeremy/workspace/artoo-mac-planning-scroll/artifacts/apple-ci/mac-small-20261003T123347Z/macos-dmg-desktop-smoke.html)
+SHA-256 `0e50b9fe4ce8936ad82692d991dea6523946fc8182a819ea84c7976b3f6668a0`.
+
+The external wrapper **remains failed** on its process-priority condition. One
+sampled `(Artoo)` row (PID/PGID 56652, state `?Es`) reported `nice=0`; all other
+recorded rows reported 10. No explanation for that observation is assumed.
+The command exited zero, all 34 observed groups were absent, and there were no
+signals, timeout, observer uncertainty or cleanup errors. This establishes the
+client workflows and normal process closure, but not the wrapper's all-process
+nice10 condition. [Original outer report](/Users/jeremy/workspace/artoo-mac-planning-scroll/artifacts/apple-ci/mac-small-20261003T123347Z/owned-report.html).
+
+The earlier compact attempt at 12:20:31Z remains a prelaunch failure: Electron
+dependency download exhausted the 600-second budget, with zero client photos.
+Its source remained stable and owned process closure was confirmed. The exact
+stock Electron 44.4.3 archive was then matched to the package's vendor checksum,
+installed with the vendor extractor, verified as x64 and accepted by the vendor
+installation check. The app and DMG above were built freshly after that setup.
+
+On this hosted iOS run, **159 native unit tests passed** and **6/7 Core cases
+passed**. Both previously repaired planning and execution-navigation cases passed.
+Goal cancellation failed while preparing the pairing device-name input, before
+its goal interaction. Four later suites did not start. The current
+[hosted iOS diagnostic report](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37120642443/ios-diagnosis.html)
+retains 22 original photos; the failure location lacks a captured field/toolbar
+geometry record or approved failure-instant PNG. Subsequent original-video frames show the name
+briefly becoming visible during a drag and returning under the Done toolbar after
+release. The [video supplement](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37120642443/ios-diagnostic/report.html)
+labels its six frames as derived and redacted. The underlying layout/scroll cause
+remains undetermined, and no goal cancellation business defect is inferred.
+
+This milestone does not change native product code or enable managed execution.
+Its new hosted results, iOS input investigation, resource-priority observation
+and external commercial-release requirements remain separate gates.

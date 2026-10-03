@@ -54,6 +54,22 @@ frame warnings remain in raw xcresult. The earlier observer-timeout failure is
 retained. Earlier source26 all 11 and development-archive results retain their
 original source limits; they are not new results for this CI repair. See the [milestone ledger](apple-client-milestones.md#2026-10-03-ci-portability-and-mac-dmg-verification-repairs).
 
+## Compact Mac and current hosted follow-up
+
+The compact Mac repair has a fresh unsigned x64 installed-app functional pass:
+22 checks, 56 captures (55 unique PNGs), 14 driver cleanup flags, five measured
+1024×656 launches and complete two-frame expanded-instruction coverage. Its
+external priority guard remains failed after one `nice=0` observation; command
+exit, source stability and normal process closure passed.
+
+The Windows short-name fixture correction passed the local 83-case gate; actual
+Windows acceptance remains pending. Hosted d65 iOS passed 159 units and six of
+seven Core cases, failing in device-name pairing preparation before the goal
+cancellation interaction; later suites were unstarted. This does not qualify a
+new full native pass, physical devices or distribution. The
+[milestone ledger](apple-client-milestones.md#2026-10-03-compact-mac-planning-and-native-windows-fixture-paths)
+keeps the exact failure and report boundaries.
+
 ## Identity and device trust
 
 Authenticated members can create pairing codes only for their own account in
@@ -119,7 +135,7 @@ collection. Before distribution, the publisher must:
 | Priority | Current gap and evidence | Implementable next step | External information or credential |
 | --- | --- | --- | --- |
 | P1 | The matching source26 retention development-signed arm64 archive passed; physical-device/TestFlight and distribution acceptance remain open. [project.yml](../apps/ios/project.yml) uses `dev.artoo.app` and version/build defaults. | Repeat the [archive gate](apple-development-archive.md) for release source, then verify distribution export and TestFlight on supported phone/tablet sizes. | Distribution provisioning and App Store Connect app/bundle registration, build metadata and available physical devices. |
-| P1 | The CI repair has a fresh local unsigned x64 DMG/ZIP installation pass (22 checks/55 captures, 54 unique PNG payloads); hosted arm64 results retain their earlier boundaries. This establishes no Developer ID/notarization or trusted-update chain. | Run the [Developer ID/notarization gate](../apps/desktop/MAC-DISTRIBUTION.md), then test signed installation, upgrade and removal on a clean Mac and each supported architecture. | Developer ID identity/private key, notarization profile and actual release hosting. |
+| P1 | The compact repair has a fresh local unsigned x64 DMG/ZIP functional pass (22 checks/56 captures, 55 unique PNGs); its external priority guard remains failed after one nice=0 observation. Hosted arm64 results retain their earlier boundaries. This establishes no Developer ID/notarization or trusted-update chain. | Run the [Developer ID/notarization gate](../apps/desktop/MAC-DISTRIBUTION.md), then test signed installation, upgrade and removal on a clean Mac and each supported architecture. | Developer ID identity/private key, notarization profile and actual release hosting. |
 | P1 | Desktop source has no implemented trusted update channel in [main.cjs](../apps/desktop/main.cjs) or package configuration. | Define a signed manual-update or automatic-update flow, publish version/checksum metadata, and verify upgrade preserves connection/settings and server compatibility. | Update policy, release endpoint and signing custody. |
 | P1 | Operator policy details cannot be established from the source tree. | Complete the privacy steps above; keep onboarding and settings disclosures reachable without signing in. | Operator identity/contact, privacy-policy URL, retention/deletion terms and provider choices. |
 | P1 | Production startup requires configured auth and durable storage in [main.ts](../apps/server/src/main.ts) and [auth-config.ts](../apps/server/src/auth/auth-config.ts). Fixture auth is not deployed Google login evidence. | Run real HTTPS/OIDC and WebSocket flows, device revocation and cross-client updates against the chosen staging deployment. | Controlled HTTPS origin, registered Google OAuth client/redirect, team allowlist/owners and securely managed secrets. |

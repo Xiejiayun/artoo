@@ -49,7 +49,7 @@ test("ambiguous or malformed Git records fail instead of losing identity", () =>
 });
 
 test("actual Git base and separate worktree retain exact registered identities", (t) => {
-  const directory = realpathSync(mkdtempSync(join(tmpdir(), "artoo-git-registration-")));
+  const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-git-registration-")));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const base = join(directory, "base 中文"), work = join(directory, "work 资料"), hooks = join(directory, "hooks");
   mkdirSync(base); mkdirSync(hooks); writeFileSync(join(directory, "gitconfig"), "");

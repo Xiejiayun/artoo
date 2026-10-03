@@ -25,7 +25,7 @@ export async function runInstalledMacPlanning({ page, workspace, configurationPa
         const path = join(artifactDir, name);
         const png = await page.screenshot({ path, fullPage: false, animations: "disabled", timeout: 30_000 });
         assert.ok(existsSync(path));
-        const image = { path, caption: sequential ? `${caption} — viewport ${part}; complete content spans the recorded sequence` : caption };
+        const image = { path, caption: sequential ? `${caption} — viewport ${part} in the scrolling sequence` : caption };
         evidence.screenshots.push(image); onScreenshot(image);
         return { ...image, bytes: png.length, sha256: createHash("sha256").update(png).digest("hex") };
       } });
