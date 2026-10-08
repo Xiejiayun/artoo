@@ -198,6 +198,7 @@ export function mapRun(row: typeof runs.$inferSelect): Run {
     sequence: row.sequence,
     workspace_root: row.workspaceRoot,
     workspace_branch: row.workspaceBranch,
+    ...(row.workspaceAllocation != null ? { workspace_allocation: row.workspaceAllocation } : {}),
     created_at: row.createdAt,
   });
 }

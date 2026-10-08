@@ -17,6 +17,7 @@ artifacts/ios/
 artifacts/apple-ci/
 artifacts/ios-device/
 artifacts/recovery/
+artifacts/managed-workspaces/
 artifacts/live/
 artifacts/notification-navigation-*/
 artifacts/ui-refresh/

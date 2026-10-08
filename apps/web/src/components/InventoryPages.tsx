@@ -7,6 +7,7 @@ import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { Badge, Button, EmptyState, ErrorState, Icon, SearchInput, Select, Skeleton, type Tone } from "../ui/index.js";
 import { AgentEnabledControl, AgentRegistration, SkillInstallForm, SkillPermissionSummary } from "./InventorySetup.js";
+import { AgentWorkspaceAllocation } from "./AgentWorkspaceAllocation.js";
 import { DaemonBadge } from "./DaemonBadge.js";
 import { CAPABILITY_LABELS } from "./taskPresentation.js";
 import "../ui/resource-management.css";
@@ -75,7 +76,8 @@ export function AgentsPage(): React.ReactNode {
   const [filter, setFilter] = useState("all");
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(), refetchInterval: 10000 });
   if (bootstrap.isLoading) return <InventoryLoading label="Loading agents" />;
-  if (bootstrap.isError || !bootstrap.data) return <section className="inventory-page resources-page" aria-label="Agents"><ErrorState title="Failed to load agents" action={<Button onClick={() => void bootstrap.refetch()}>Try again</Button>} /></section>;
+  if (!bootstrap.data) return <section className="inventory-page resources-page" aria-label="Agents"><ErrorState title="Failed to load agents" action={<Button onClick={() => void bootstrap.refetch()}>Try again</Button>} /></section>;
+  const role = bootstrap.data.user.role;
   const agents = new Map(bootstrap.data.agents.map((agent) => [agent.id, agent]));
   const computers = new Map(bootstrap.data.computers.map((computer) => [computer.id, computer]));
   const models = new Map(bootstrap.data.model_profiles.map((profile) => [profile.id, profile]));
@@ -85,6 +87,7 @@ export function AgentsPage(): React.ReactNode {
   const filtered = instances.filter((instance) => (filter === "all" || (filter === "disabled" ? disabled(instance) : filter === "enabled" ? !disabled(instance) : ["running", "queued", "stopping"].includes(instance.status))) && matches(search, agents.get(instance.agent_id)?.display_name, computers.get(instance.computer_id)?.display_name, instance.id, instance.runtime, instance.workspace_root, ...(agents.get(instance.agent_id)?.capabilities ?? [])));
   return <section className="inventory-page resources-page" aria-label="Agents">
     <ResourceHeader title="Agents" description="Find the right teammate for the next piece of work." icon={Bot}><Link className="ui-btn ui-btn--primary ui-btn--md" to="/computers"><Plus size={16} aria-hidden="true" />Register an agent</Link></ResourceHeader>
+    {bootstrap.isError && <div className="resource-inline-error" role="alert"><span>Agent settings could not be refreshed. Showing the last loaded settings.</span><Button size="sm" onClick={() => void bootstrap.refetch()}>Retry agent settings</Button></div>}
     <div className="resources-stats"><div><strong>{instances.length}</strong><span>Agent workspaces</span></div><div><strong>{instances.filter((instance) => !disabled(instance)).length}</strong><span>Enabled for work</span></div><div><strong>{instances.filter((instance) => ["running", "queued", "stopping"].includes(instance.status)).length}</strong><span>Work in progress</span></div></div>
     <ResourceSearch title="agents" search={search} onSearch={setSearch} count={filtered.length}><Select label="Agent state" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">All states</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="working">Working</option></Select></ResourceSearch>
     {instances.length === 0 ? <EmptyState icon={Bot} title="No agent instances registered." description="Open Computers to register a runtime and workspace for your first agent." /> : filtered.length === 0 ? <NoMatches onClear={() => { setSearch(""); setFilter("all"); }} /> : <div className="resources-grid">
@@ -96,7 +99,7 @@ export function AgentsPage(): React.ReactNode {
           <DaemonBadge computerId={instance.computer_id} />
           <dl className="resource-highlights"><div><dt>Model</dt><dd>{model?.name ?? "Not configured"}</dd></div><div><dt>Effort</dt><dd>{effort ? `${effort.effort} · ${effort.max_runtime_minutes}m limit` : "Not configured"}</dd></div></dl>
           <ul className="resource-chips" aria-label="Agent capabilities">{agent?.capabilities.map((capability) => <li key={capability} title={capability}>{CAPABILITY_LABELS[capability] ?? capability}</li>)}</ul>
-          <details className="resource-details"><summary>Workspace & configuration</summary><dl className="inv-meta"><Row label="Instance"><code>{instance.id}</code></Row><Row label="Workspace root"><code>{value(instance.workspace_root)}</code></Row><Row label="Model profile">{model ? `${model.name} (${model.provider}/${model.model})` : "Not configured"}</Row><Row label="Effort profile">{effort?.name ?? "Not configured"}</Row></dl></details>
+          <details className="resource-details"><summary>Workspace & configuration</summary><dl className="inv-meta"><Row label="Instance"><code>{instance.id}</code></Row><Row label="Workspace root"><code>{value(instance.workspace_root)}</code></Row><Row label="Model profile">{model ? `${model.name} (${model.provider}/${model.model})` : "Not configured"}</Row><Row label="Effort profile">{effort?.name ?? "Not configured"}</Row></dl><AgentWorkspaceAllocation instance={instance} role={role} computerOs={computer?.os} /></details>
           <footer className="resource-card__footer"><AgentEnabledControl instance={instance} /></footer>
         </article>;
       })}

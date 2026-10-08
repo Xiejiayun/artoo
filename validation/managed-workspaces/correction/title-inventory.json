@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "scope": "Prepared original titles only; no runtime acceptance",
+  "phases": {
+    "correction": {
+      "expected_total_tests": 12,
+      "files": {
+        "validation/managed-workspaces/correction/correction.git.test.ts": [
+          "closed-run claims hold completed, remove legacy ACK bypass and reject an unclaimed terminal ACK",
+          "a paused previously claimed completed frame remains possible exposure; late ACK cannot undo correction",
+          "independent clients preserve one claim/correction after only the observed SQLite busy unavailability",
+          "correction failure retries only the same pair within persistent budgets and preserves late accepted attempts",
+          "the original monotonic receipt deadline survives a real process restart and creates one correction",
+          "an actual abrupt client exit after correction commit and before reply reopens with the same pair",
+          "failure of the second SQL correction insert rolls back the pair, failure state and supersession",
+          "live rows, no-launch fences, wrong namespace/key/receipt and fabricated attempts cannot enter closed delivery",
+          "failed/cancelled settlement reasons survive metadata failure and their terminals can still be claimed",
+          "a full allowed ordinary backlog still reserves both original settlement and correction rows",
+          "int32 sequence slots are reserved through the final correction without wrapping or reuse",
+          "unknown boot continuity blocks future claims while an exact historical accepted receipt remains recordable"
+        ]
+      }
+    }
+  }
+}

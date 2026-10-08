@@ -1,5 +1,6 @@
 import { devices, deviceTokens, users } from "@artoo/db";
 import { parseDeviceToken } from "@artoo/domain";
+import type { DrizzleDb } from "@artoo/storage";
 import { and, eq } from "drizzle-orm";
 import type { FastifyRequest } from "fastify";
 
@@ -106,7 +107,8 @@ export async function mayAdministerRoute(
   // Adding an execution host is a separate team-administrator decision.
   const adminOnly = route === "/api/v1/devices/:id/enroll" || route === "/api/v1/skills/install" ||
     route === "/api/v1/projects" || route === "/api/v1/projects/:id" ||
-    route === "/api/v1/computers/:id/instances" || route === "/api/v1/agent-instances/:id";
+    route === "/api/v1/computers/:id/instances" || route === "/api/v1/agent-instances/:id" ||
+    route === "/api/v1/agent-instances/:id/worktree-workspace-base";
   const ownDevice = route === "/api/v1/devices/:id/revoke";
   if (!adminOnly && !ownDevice) return true;
   if (principal.user.role === "owner" || principal.user.role === "admin") return true;
@@ -121,11 +123,13 @@ export async function mayAdministerRoute(
   return false;
 }
 
-/** Service-level administrative authorization, including configured owner changes. */
-export async function requireAdministrator(ctx: ServerContext): Promise<void> {
-  const user = (await ctx.db.db.select().from(users).where(and(
+/** Service-level administrative authorization, including configured owner changes.
+ * With a transaction, hold the actor row against role/email changes until commit. */
+export async function requireAdministrator(ctx: ServerContext, tx?: DrizzleDb): Promise<void> {
+  const query = (tx ?? ctx.db.db).select().from(users).where(and(
     eq(users.id, ctx.actorUserId), eq(users.organizationId, ctx.organizationId),
-  )))[0];
+  ));
+  const user = (await (tx === undefined ? query : query.for("share")))[0];
   if (user === undefined || !isAllowedTeamEmail(ctx, user.email)) throw AppError.permissionDenied("an owner or admin is required");
   const role = effectiveTeamRole(ctx, user.email, user.role);
   if (role !== "owner" && role !== "admin") throw AppError.permissionDenied("an owner or admin is required");

@@ -29,4 +29,6 @@ export interface ServerContext {
    * REST tests (the dev mock-execute path drives ingestion directly instead).
    */
   onRunQueued?: (runId: string) => Promise<void>;
+  /** Query an exact execution contract on the current accepted node session. */
+  supportsExecutionFeature?: (computerId: string, feature: string) => boolean;
 }

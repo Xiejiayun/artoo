@@ -121,6 +121,9 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     app.addHook("onClose", async () => { await budgetMonitor?.stop(); });
   }
   const nodeRegistry = options.nodeRegistry ?? createNodeRegistry();
+  // Resolve every query through the current binding; never cache by computer.
+  ctx.supportsExecutionFeature = (computerId, feature) =>
+    nodeRegistry.get(computerId)?.supportsExecutionFeature(feature) ?? false;
   // Recover from durable run rows before accepting new client/node connections.
   const graceWindow =
     options.graceWindow ??

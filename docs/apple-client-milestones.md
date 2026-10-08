@@ -1302,3 +1302,7 @@ was exercised or supplies finalized XCTest warning counts. Historical process
 exit/cleanup receipts are missing and were not reconstructed. The candidate
 remains incomplete and unqualified, independently of the successful hosted
 `a196` baseline; no earlier failure or mixed result is relabeled.
+
+## 2026-10-08: consolidated development closeout
+
+At the user's request, the current per-run allocation, managed journal, mixed Mac execution, desktop preparation/settings and iOS focus/visibility work are consolidated into one main commit. The [closeout record](apple-client-closeout-2026-10-08.md) distinguishes the verified foundation and fresh integrated compilation/regressions from failed iOS UI and unrun installed mixed-client gates. This preserves the current work for resumption; it does not declare commercial readiness.

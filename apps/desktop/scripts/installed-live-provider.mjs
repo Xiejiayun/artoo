@@ -79,7 +79,9 @@ export async function runInstalledLiveProvider({ page, workspace, userData, base
 
     stage = "save real provider settings through installed UI";
     await page.getByRole("link", { name: "Settings", exact: true }).click();
-    await page.getByRole("button", { name: "Stop worker", exact: true }).click();
+    if ((await status()).state !== "stopped") {
+      await page.getByRole("button", { name: "Stop worker", exact: true }).click();
+    }
     await until(async () => (await status()).state === "stopped");
     await page.getByLabel("Codex program (optional)", { exact: true }).fill(binary);
     await page.getByLabel("Model connection", { exact: true }).selectOption("responses");

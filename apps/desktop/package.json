@@ -29,7 +29,7 @@
     "electronVersion": "44.4.3",
     "asar": true,
     "npmRebuild": false,
-    "files": ["main.cjs", "preload.cjs", "connection-store.cjs", "desktop-controller.cjs", "codex-settings.cjs", "resources/AppIcon.ico", "renderer/**", "daemon/**"],
+    "files": ["main.cjs", "preload.cjs", "connection-store.cjs", "atomic-store.cjs", "managed-profile-store.cjs", "desktop-controller.cjs", "codex-settings.cjs", "resources/AppIcon.ico", "renderer/**", "daemon/**"],
     "asarUnpack": ["daemon/**"],
     "directories": { "output": "release" },
     "mac": { "target": "dir", "category": "public.app-category.developer-tools", "icon": "resources/AppIcon.icns" },

@@ -158,7 +158,7 @@ describe("desktop secure connection and worker lifecycle", () => {
     expect(requests.find((r) => r.route.endsWith("/claim"))?.authorization).toBeUndefined();
     expect(requests.find((r) => r.route.endsWith("/enroll"))?.authorization).toBe("Bearer control");
     const stop = controller.stopDaemon();
-    await vi.waitFor(() => expect(spawned[0].child.send).toHaveBeenCalledWith({ type: "shutdown" }));
+    await vi.waitFor(() => expect(spawned[0].child.send).toHaveBeenCalledWith({ type: "shutdown", launchId: spawned[0].options.env.ARTOO_WORKER_LAUNCH_ID }, expect.any(Function)));
     expect((await controller.daemonStatus()).state).toBe("stopping");
     spawned[0].child.emit("exit", 0); await stop;
     expect((await controller.daemonStatus()).state).toBe("stopped");

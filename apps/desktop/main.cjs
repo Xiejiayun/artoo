@@ -43,6 +43,7 @@ function installBridge() {
   for (const method of ["getConnection", "getToken", "configureServer", "pairDevice", "logout", "daemonStatus", "configureDaemon", "startDaemon", "stopDaemon", "restartDaemon"]) {
     ipcMain.handle(`artoo:${method}`, (event, input) => { checkSender(event); return controller[method](input); });
   }
+  ipcMain.handle("artoo:prepareManagedWorkspace", (event) => { checkSender(event); return controller.prepareManagedWorkspace(); });
   ipcMain.handle("artoo:chooseDirectory", async (event) => {
     checkSender(event);
     const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });

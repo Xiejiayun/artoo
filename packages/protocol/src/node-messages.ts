@@ -28,6 +28,9 @@ export const machineSchema = z.object({
   arch: z.string().min(1)
 });
 
+export const MANAGED_RECEIPT_CONTRACT = "run-event-body-v1" as const;
+const sessionIdentifier = z.string().min(1).max(128);
+
 // --- Node -> Server -------------------------------------------------------
 
 export const nodeHelloSchema = z.object({
@@ -35,8 +38,14 @@ export const nodeHelloSchema = z.object({
   node_id: z.string().min(1),
   protocol_version: z.string().min(1),
   artood_version: z.string().min(1),
-  machine: machineSchema
+  machine: machineSchema,
+  execution_features: z.array(z.string().min(1).max(128)).max(32).optional(),
+  managed_receipts: z.object({ version: z.number().int().positive(), nonce: z.string().uuid(),
+    required_contract: z.string().min(1).max(128) }).optional()
 });
+
+export const nodeSessionProbeSchema = z.object({ kind: z.literal("node.session.probe"),
+  node_id: sessionIdentifier, session_id: z.string().uuid(), probe_id: z.string().uuid() });
 
 export const runtimeStatusSchema = z.object({
   runtime: z.string().min(1),
@@ -100,6 +109,14 @@ const commandEnvelope = {
   deadline_at: z.string().datetime().optional()
 };
 
+export const nodeSessionReadyCommandSchema = z.object({ ...commandEnvelope, type: z.literal("node.session.ready"),
+  payload: z.object({ version: z.number().int().positive(), node_id: sessionIdentifier,
+    hello_nonce: z.string().uuid(), session_id: z.string().uuid(), receipt_contract: z.string().min(1).max(128),
+    sequence_max: z.number().int().positive(), liveness: z.object({
+      probe_interval_ms: z.number().int().positive(), probe_timeout_ms: z.number().int().positive() }) }) });
+export const nodeSessionPongCommandSchema = z.object({ ...commandEnvelope, type: z.literal("node.session.pong"),
+  payload: z.object({ node_id: sessionIdentifier, session_id: z.string().uuid(), probe_id: z.string().uuid() }) });
+
 export const runStopCommandSchema = z.object({
   ...commandEnvelope,
   type: z.literal("run.stop"),
@@ -134,7 +151,7 @@ export const runEventAckCommandSchema = z.object({
   ...commandEnvelope,
   type: z.literal("run.event.ack"),
   payload: z.object({
-    run_id: z.string().min(1), sequence: z.number().int().nonnegative(),
+    run_id: z.string().min(1), sequence: z.number().int().nonnegative().max(2147483647),
     status: z.enum(["accepted", "rejected"]), message: z.string().optional(),
   }),
 });
@@ -150,6 +167,8 @@ export const runStartCommandSchema = z.object({
 
 /** All Server -> Node commands, discriminated on `type`. */
 export const commandSchema = z.discriminatedUnion("type", [
+  nodeSessionReadyCommandSchema,
+  nodeSessionPongCommandSchema,
   runStartCommandSchema,
   runStopCommandSchema,
   artifactCollectCommandSchema,
@@ -179,12 +198,15 @@ export const runEventMessageSchema = z.object({
   kind: z.literal("run.event"),
   node_id: z.string().min(1),
   run_id: z.string().min(1),
-  sequence: z.number().int().nonnegative(),
+  sequence: z.number().int().nonnegative().max(2147483647),
   event: runEventBodySchema
 });
 
 export type Machine = z.infer<typeof machineSchema>;
 export type NodeHello = z.infer<typeof nodeHelloSchema>;
+export type NodeSessionProbe = z.infer<typeof nodeSessionProbeSchema>;
+export type NodeSessionReadyCommand = z.infer<typeof nodeSessionReadyCommandSchema>;
+export type NodeSessionPongCommand = z.infer<typeof nodeSessionPongCommandSchema>;
 export type RuntimeStatus = z.infer<typeof runtimeStatusSchema>;
 export type NodeHeartbeat = z.infer<typeof nodeHeartbeatSchema>;
 export type CommandAck = z.infer<typeof commandAckSchema>;

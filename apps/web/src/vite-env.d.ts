@@ -20,8 +20,9 @@ interface Window {
     configureServer?(serverUrl: string): Promise<void>;
     pairDevice?(input: { code: string; displayName: string }): Promise<DesktopConnection>;
     logout?(): Promise<void>;
-    daemonStatus?(): Promise<{ state: string; pid?: number; lastError?: string; config: DesktopDaemonConfig }>;
+    daemonStatus?(): Promise<{ state: string; pid?: number; lastError?: string; config: DesktopDaemonConfig; configurationLocked?: boolean; managedWorkspace?: DesktopManagedWorkspaceStatus }>;
     configureDaemon?(config: DesktopDaemonInput): Promise<void>;
+    prepareManagedWorkspace?(): Promise<void>;
     startDaemon?(): Promise<void>;
     stopDaemon?(): Promise<void>;
     restartDaemon?(): Promise<void>;
@@ -41,5 +42,6 @@ interface DesktopCodexConfig {
   authMode: "none" | "api-key";
   hasKey: boolean;
 }
-interface DesktopDaemonConfig { allowedRoots: string[]; runtimes: string[]; worktreeBaseRepo?: string; trustedExecution: boolean; codex?: DesktopCodexConfig }
+interface DesktopManagedWorkspaceStatus { state: "unsupported" | "unprepared" | "preparing" | "incomplete" | "ready"; lastError?: string }
+interface DesktopDaemonConfig { allowedRoots: string[]; runtimes: string[]; worktreeBaseRepo?: string; trustedExecution: boolean; allowNewAllocations?: boolean; codex?: DesktopCodexConfig }
 type DesktopDaemonInput = Omit<DesktopDaemonConfig, "codex"> & { codex?: Omit<DesktopCodexConfig, "hasKey"> & { apiKey?: string } };

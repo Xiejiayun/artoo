@@ -512,6 +512,7 @@ export const runs = pgTable("runs", {
   sequence: bigint("sequence", { mode: "number" }).notNull().default(0),
   workspaceRoot: text("workspace_root"),
   workspaceBranch: text("workspace_branch"),
+  workspaceAllocation: jsonb("workspace_allocation"),
   createdAt: ts("created_at").notNull(),
 }, (t) => [
   check(
@@ -782,8 +783,12 @@ export const runEventIngest = pgTable("run_event_ingest", {
   runId: text("run_id").notNull(),
   sequence: integer("sequence").notNull(),
   eventId: text("event_id").notNull(),
+  bodyIdentity: text("body_identity"),
   createdAt: ts("created_at").notNull(),
-}, (t) => [unique("run_event_ingest_unique").on(t.nodeId, t.runId, t.sequence)]);
+}, (t) => [
+  unique("run_event_ingest_unique").on(t.nodeId, t.runId, t.sequence),
+  check("run_event_ingest_body_identity_shape", sql`${t.bodyIdentity} is null or ${t.bodyIdentity} ~ '^run-event-body-v1:sha256:[0-9a-f]{64}$'`),
+]);
 
 // Idempotency-Key store. `scope` is attempt/run-scoped for re-entrant writes
 // (assign/retry derive scope from run_id, not task_id) per Round 17/18.

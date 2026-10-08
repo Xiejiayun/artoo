@@ -1,11 +1,13 @@
 import { computers } from "@artoo/db";
-import type { NodeToServerMessage } from "@artoo/protocol";
+import { randomUUID } from "node:crypto";
+import type { NodeHello, NodeToServerMessage, NodeTransport } from "@artoo/protocol";
 import { and, eq } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { ServerContext } from "../context.js";
 import { attachNodeBinding, type NodeBinding } from "../node-binding.js";
 import { resolveNodeToken } from "../services/device-service.js";
+import { QUALIFIED_RECEIPT_PROFILE, requireQualifiedReceiptSchema } from "../services/run-event-receipt.js";
 import { recordDeviceActivity } from "../services/presence-service.js";
 import { activeRunIdsForComputer, activeSnapshotRunIdsForComputer, unconfirmedProcessRunIdsForComputer } from "../services/run-service.js";
 import { recordHeartbeatRuntimes } from "../services/runtime-registry-service.js";
@@ -67,188 +69,172 @@ function helloComputerId(auth: NodeAuth, helloNodeId: string): string | null {
  * the first app frame and its node_id must be consistent with the credential.
  */
 export function registerNodeWsRoute(
-  app: FastifyInstance,
-  ctx: ServerContext,
-  registry: NodeRegistry,
-  deviceConnections?: DeviceConnectionRegistry,
-  graceWindow?: GraceWindowManager,
+  app: FastifyInstance, ctx: ServerContext, registry: NodeRegistry,
+  deviceConnections?: DeviceConnectionRegistry, graceWindow?: GraceWindowManager,
 ): void {
-  // A database snapshot can outlive the socket-close callback. Reconnect must
-  // consume that pending read as well as a timer already armed from it.
   const disconnectSnapshots = new Map<string, Promise<string[]>>();
   app.get("/api/v1/node", { websocket: true }, (socket: unknown, req: FastifyRequest) => {
     const raw = socket as RawServerSocket;
     const token = (req.query as { token?: string }).token;
-
     const transport = createServerNodeTransport(raw);
-    let binding: NodeBinding | undefined;
-    let nodeId: string | undefined;
-    let auth: NodeAuth | undefined;
-    let terminated = false;
+    let binding: NodeBinding | undefined, nodeId: string | undefined, auth: NodeAuth | undefined;
+    let terminated = false, registered = false, managedRequested = false;
     let releaseDeviceConn: (() => void) | undefined;
+    let initializationTimer: ReturnType<typeof setTimeout> | undefined;
+    let initializationDeadline: number | undefined;
+    let managed: { id: string; nonce: string; active: boolean; firstPongPending: boolean } | undefined;
     const earlyQueue: NodeToServerMessage[] = [];
-
     const close = (code: number, reason: string): void => {
-      if (terminated) {
-        return;
-      }
-      terminated = true;
+      if (terminated) return;
+      terminated = true; clearTimeout(initializationTimer); earlyQueue.length = 0;
       raw.close(code, reason);
     };
-
+    function armManagedInitialization(): void {
+      if (initializationTimer !== undefined) return;
+      initializationDeadline = performance.now() + 10000;
+      initializationTimer = setTimeout(() => close(1008, "managed session initialization expired"), 10000);
+    }
+    function activate(): void {
+      if (terminated || registered || !binding || !nodeId || !auth) return;
+      if (managedRequested && !managed?.active) return;
+      if (managedRequested && (raw.readyState !== 1 || initializationDeadline === undefined || performance.now() >= initializationDeadline)) {
+        close(1008, "managed session closed or initialization expired before activation"); return;
+      }
+      registered = true; clearTimeout(initializationTimer);
+      registry.register(nodeId, binding);
+      void setComputerOnline(ctx, nodeId);
+      if (auth.mode === "device") void recordDeviceActivity(ctx, auth.deviceId, "node").catch(() => {});
+      const resumeSnapshot = graceWindow?.disarm(nodeId) ?? [];
+      const pendingSnapshot = disconnectSnapshots.get(nodeId);
+      disconnectSnapshots.delete(nodeId);
+      const resumeNodeId = nodeId, resumeBinding = binding;
+      void (async () => {
+        const captured = pendingSnapshot === undefined ? [] : await pendingSnapshot;
+        const active = await activeSnapshotRunIdsForComputer(ctx, resumeNodeId, [...new Set([...resumeSnapshot, ...captured])]);
+        const uncertain = await unconfirmedProcessRunIdsForComputer(ctx, resumeNodeId);
+        for (const runId of [...new Set([...active, ...uncertain])]) {
+          if (registry.get(resumeNodeId) !== resumeBinding || terminated) break;
+          await resumeBinding.dispatchRunResume(runId).catch(() => {});
+        }
+      })().catch(() => {});
+    }
+    function attach(features: readonly string[] | undefined, gated: boolean): void {
+      const privateTransport: NodeTransport = gated ? {
+        send: (message) => transport.send(message), close: () => transport.close(),
+        subscribe: (handler) => transport.subscribe((message) => {
+          if (terminated) return;
+          if (message.kind !== "run.event" && message.kind !== "command.ack") return;
+          if (!registered || !managed?.active || registry.get(nodeId!) !== binding) {
+            close(1008, "managed application frame before current session activation"); return;
+          }
+          handler(message);
+        }),
+      } : transport;
+      const computerId = nodeId!;
+      binding = attachNodeBinding(ctx, privateTransport, computerId, features,
+        () => !terminated && registered && registry.get(computerId) === binding && (!gated || managed?.active === true));
+    }
+    async function initializeManaged(message: NodeHello): Promise<void> {
+      const request = message.managed_receipts!;
+      if (request.version !== 1 || request.required_contract !== QUALIFIED_RECEIPT_PROFILE) {
+        close(1008, "unsupported managed receipt request"); return;
+      }
+      try {
+        await requireQualifiedReceiptSchema(ctx);
+        if (terminated) return;
+        if (raw.readyState !== 1 || initializationDeadline === undefined || performance.now() >= initializationDeadline) {
+          close(1008, "managed session closed or initialization expired"); return;
+        }
+        managed = { id: randomUUID(), nonce: request.nonce, active: false, firstPongPending: false };
+        attach(message.execution_features, true);
+        await transport.send({ kind: "command", id: `session:${managed.id}`, idempotency_key: `session:${managed.id}`,
+          type: "node.session.ready", payload: { version: 1, node_id: nodeId!, hello_nonce: managed.nonce,
+            session_id: managed.id, receipt_contract: QUALIFIED_RECEIPT_PROFILE, sequence_max: 2147483647,
+            liveness: { probe_interval_ms: 10000, probe_timeout_ms: 10000 } } });
+        // Registration deliberately waits for the first authenticated probe/pong.
+      } catch { close(1008, "managed receipt session initialization failed"); }
+    }
     const handleMessage = (message: NodeToServerMessage): void => {
       const currentAuth = auth;
-      if (terminated || currentAuth === undefined) {
-        return;
-      }
-      if (nodeId === undefined && message.kind !== "node.hello") {
-        close(1008, "node.hello required");
-        return;
-      }
+      if (terminated || currentAuth === undefined) return;
+      if (nodeId === undefined && message.kind !== "node.hello") { close(1008, "node.hello required"); return; }
       if (message.kind === "node.hello") {
-        if (nodeId !== undefined) {
-          return; // already registered; ignore duplicate hello
-        }
+        if (nodeId !== undefined) return;
         const computerId = helloComputerId(currentAuth, message.node_id);
-        if (computerId === null) {
-          close(1008, "node.hello node_id does not match credential");
-          return;
-        }
+        if (computerId === null) { close(1008, "node.hello node_id does not match credential"); return; }
         nodeId = computerId;
-        void setComputerOnline(ctx, nodeId);
-        // Device-level presence (#28 4c): an accepted authenticated device node
-        // connection is device activity. Dev-escape nodes carry no device identity.
-        if (currentAuth.mode === "device") {
-          void recordDeviceActivity(ctx, currentAuth.deviceId, "node").catch(() => {});
-        }
-        binding = attachNodeBinding(ctx, transport, nodeId);
-        registry.register(nodeId, binding);
-        // #115 P2-S3: a reconnect within the grace window cancels the pending
-        // failure and resumes only the disconnect snapshot, re-verified by
-        // org/computer/status so terminal or newly-created runs are not resumed.
-        const resumeSnapshot = graceWindow?.disarm(nodeId) ?? [];
-        const pendingSnapshot = disconnectSnapshots.get(nodeId);
-        disconnectSnapshots.delete(nodeId);
-        {
-          const resumeNodeId = nodeId;
-          const resumeBinding = binding;
-          void (async (): Promise<void> => {
-            const captured = pendingSnapshot === undefined ? [] : await pendingSnapshot;
-            const active = await activeSnapshotRunIdsForComputer(ctx, resumeNodeId, [...new Set([...resumeSnapshot, ...captured])]);
-            const uncertain = await unconfirmedProcessRunIdsForComputer(ctx, resumeNodeId);
-            for (const runId of [...new Set([...active, ...uncertain])]) {
-              if (registry.get(resumeNodeId) !== resumeBinding) break;
-              await resumeBinding.dispatchRunResume(runId).catch(() => {});
-            }
-          })().catch(() => {});
-        }
-      } else if (message.kind === "node.heartbeat") {
-        const sessionNodeId = nodeId;
-        if (sessionNodeId === undefined) {
-          close(1008, "node.hello required");
-          return;
-        }
-        // Persist advertised runtime capabilities (#15 Part 2). Best-effort: a db
-        // hiccup must not tear down the node connection. The accepted hello's
-        // nodeId is the session/computer key; heartbeat node_id is not trusted.
-        void touchHeartbeat(ctx, sessionNodeId);
-        void recordHeartbeatRuntimes(ctx, sessionNodeId, message.runtimes).catch(() => {});
-        // Device presence refresh (#28 4c) — throttled inside the service so a
-        // heartbeat cadence does not become a write/event storm.
-        if (currentAuth.mode === "device") {
-          void recordDeviceActivity(ctx, currentAuth.deviceId, "node").catch(() => {});
-        }
+        managedRequested = message.managed_receipts !== undefined;
+        if (managedRequested) { armManagedInitialization(); void initializeManaged(message); }
+        else { attach(message.execution_features, false); activate(); }
+        return;
       }
-      // command.ack / run.event are consumed by the binding's own subscription.
+      if (message.kind === "node.session.probe") {
+        const session = managed;
+        if (!managedRequested || !session || message.node_id !== nodeId || message.session_id !== session.id
+          || (registered && registry.get(nodeId!) !== binding)) { close(1008, "managed probe session mismatch"); return; }
+        if (!session.active && session.firstPongPending) return;
+        if (!session.active) session.firstPongPending = true;
+        void transport.send({ kind: "command", id: `pong:${session.id}:${message.probe_id}`,
+          idempotency_key: `pong:${session.id}:${message.probe_id}`, type: "node.session.pong",
+          payload: { node_id: nodeId!, session_id: session.id, probe_id: message.probe_id } }).then(() => {
+          if (terminated || managed !== session) return;
+          if (raw.readyState !== 1 || (!registered && (initializationDeadline === undefined || performance.now() >= initializationDeadline))) {
+            close(1008, "managed pong completed after closing or initialization expiry"); return;
+          }
+          session.active = true; activate();
+        }, () => close(1008, "managed pong write failed"));
+        return;
+      }
+      if (managedRequested && (!managed?.active || !registered || registry.get(nodeId!) !== binding)) {
+        close(1008, "managed application frame before current session activation"); return;
+      }
+      if (message.kind === "node.heartbeat") {
+        void touchHeartbeat(ctx, nodeId!);
+        void recordHeartbeatRuntimes(ctx, nodeId!, message.runtimes).catch(() => {});
+        if (currentAuth.mode === "device") void recordDeviceActivity(ctx, currentAuth.deviceId, "node").catch(() => {});
+      }
     };
-
-    // Queue frames until auth resolves, then dispatch live. The queue is bounded:
-    // an unauthenticated peer cannot make us buffer without limit (a legitimate
-    // node sends only node.hello before auth completes).
     const MAX_PREAUTH_FRAMES = 16;
     let dispatch: (message: NodeToServerMessage) => void = (message) => {
-      if (terminated) {
-        return;
-      }
+      if (terminated) return;
+      if (message.kind === "node.hello" && message.managed_receipts !== undefined) armManagedInitialization();
       earlyQueue.push(message);
-      if (earlyQueue.length > MAX_PREAUTH_FRAMES) {
-        earlyQueue.length = 0;
-        close(1008, "too many frames before authentication");
-      }
+      if (earlyQueue.length > MAX_PREAUTH_FRAMES) { earlyQueue.length = 0; close(1008, "too many frames before authentication"); }
     };
-    const unsubscribe = transport.subscribe((message) => {
-      dispatch(message);
-    });
-
+    const unsubscribe = transport.subscribe((message) => dispatch(message));
     void (async () => {
       let result: NodeAuth | null;
-      try {
-        result = await authenticateNodeToken(ctx, token);
-      } catch {
-        // A failing auth path (e.g. db error) must close, not leave an
-        // unauthenticated socket open with a growing queue.
-        earlyQueue.length = 0;
-        close(1008, "node authentication error");
-        return;
-      }
-      if (result === null) {
-        earlyQueue.length = 0;
-        close(1008, "invalid node credential");
-        return;
-      }
-      if (terminated) {
-        earlyQueue.length = 0;
-        return; // socket already closed during auth (e.g. queue overflow)
-      }
+      try { result = await authenticateNodeToken(ctx, token); }
+      catch { earlyQueue.length = 0; close(1008, "node authentication error"); return; }
+      if (result === null) { earlyQueue.length = 0; close(1008, "invalid node credential"); return; }
+      if (terminated) { earlyQueue.length = 0; return; }
       auth = result;
-      // Index this live socket by device id so a device revoke can close it
-      // (not only reject a future reconnect). Dev-escape connections carry no
-      // device identity and are not indexed.
-      if (result.mode === "device" && deviceConnections !== undefined) {
-        releaseDeviceConn = deviceConnections.add(result.deviceId, {
-          close: (code, reason) => close(code, reason),
-        });
-      }
+      if (result.mode === "device" && deviceConnections !== undefined) releaseDeviceConn = deviceConnections.add(result.deviceId, { close });
       dispatch = handleMessage;
       for (const queued of earlyQueue) {
-        if (terminated) {
-          break;
-        }
+        if (terminated) break;
         handleMessage(queued);
-        // Run-event replay may follow hello before async token verification
-        // finishes. Those frames predate the binding's transport subscription.
-        if (queued.kind === "run.event" || queued.kind === "command.ack") binding?.receive(queued);
+        // Only legacy replay may precede async auth completion. Managed peers
+        // have no business-frame authority until ready plus the first pong.
+        if (!managedRequested && (queued.kind === "run.event" || queued.kind === "command.ack")) binding?.receive(queued);
       }
       earlyQueue.length = 0;
     })();
-
     raw.on("close", () => {
-      terminated = true;
-      releaseDeviceConn?.();
-      unsubscribe();
-      binding?.close();
-      if (nodeId !== undefined) {
-        const removedCurrent = registry.unregister(nodeId, binding);
-        if (removedCurrent) {
-          void setComputerOffline(ctx, nodeId);
-          // #115 P2-S3: don't fail this computer's active runs immediately — arm a
-          // grace window over a snapshot of them. Reconnect disarms + resumes;
-          // expiry fails them (daemon_disconnect). Presence still goes offline
-          // (grace only delays run failure, #113 unchanged).
-          if (graceWindow !== undefined) {
-            const closedNodeId = nodeId;
-            const capture = activeRunIdsForComputer(ctx, closedNodeId);
-            disconnectSnapshots.set(closedNodeId, capture);
-            void (async (): Promise<void> => {
-              const snapshot = await capture;
-              // A reconnect can complete while the DB snapshot is pending. Do
-              // not arm a stale disconnect timer over the new live binding;
-              // that connection now owns/awaits this snapshot.
-              if (disconnectSnapshots.get(closedNodeId) !== capture) return;
-              disconnectSnapshots.delete(closedNodeId);
-              if (registry.get(closedNodeId) === undefined) graceWindow.arm(closedNodeId, snapshot);
-            })().catch(() => {});
-          }
+      terminated = true; clearTimeout(initializationTimer); earlyQueue.length = 0;
+      releaseDeviceConn?.(); unsubscribe(); binding?.close();
+      // A failed private handshake must never unregister another live binding.
+      if (registered && nodeId !== undefined && binding !== undefined && registry.unregister(nodeId, binding)) {
+        void setComputerOffline(ctx, nodeId);
+        if (graceWindow !== undefined) {
+          const closedNodeId = nodeId, capture = activeRunIdsForComputer(ctx, closedNodeId);
+          disconnectSnapshots.set(closedNodeId, capture);
+          void (async () => {
+            const snapshot = await capture;
+            if (disconnectSnapshots.get(closedNodeId) !== capture) return;
+            disconnectSnapshots.delete(closedNodeId);
+            if (registry.get(closedNodeId) === undefined) graceWindow.arm(closedNodeId, snapshot);
+          })().catch(() => {});
         }
       }
     });

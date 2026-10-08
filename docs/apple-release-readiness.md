@@ -1,5 +1,7 @@
 # Apple client release readiness
 
+The [2026-10-08 closeout snapshot](apple-client-closeout-2026-10-08.md) consolidates the current managed-execution and iOS work. It records passing foundation/build checks, the failed latest iOS UI gate, and the remaining installed mixed-execution qualification. It supersedes earlier statements below that describe these candidates as unapplied. It is not a commercial release acceptance.
+
 Source review started 2026-09-30. This document distinguishes implemented
 behavior from release evidence and operator-supplied information. It is not an
 App Store approval, a production acceptance report, or a legal privacy policy.

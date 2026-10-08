@@ -11,6 +11,7 @@ import { EventEnvelopeSchema } from "./events.js";
 import { ArtifactTypeSchema } from "./node-payloads.js";
 import { ApprovalStatusSchema, RunStatusSchema, TaskStatusSchema } from "./state.js";
 import { WorkspaceRetentionProjectionSchema } from "./workspace-retention.js";
+import { WorkspaceAllocationRecordSchema } from "./workspace-allocation.js";
 
 export const PrioritySchema = z.enum(["p0", "p1", "p2", "p3"]);
 export const PRIORITIES = PrioritySchema.options;
@@ -254,6 +255,8 @@ export const RunSchema = z.object({
   /** Allocated workspace (#20). Real FS/git paths — source-case preserved. */
   workspace_root: z.string().nullish(),
   workspace_branch: z.string().nullish(),
+  /** Persisted assignment snapshot; null/omission preserves ordinary and legacy rows. */
+  workspace_allocation: WorkspaceAllocationRecordSchema.nullish(),
   /** Latest validated worker report; absence says nothing about current disk state. */
   workspace_retention: WorkspaceRetentionProjectionSchema.nullish(),
   created_at: z.string(),

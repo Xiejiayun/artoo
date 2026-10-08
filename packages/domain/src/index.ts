@@ -19,6 +19,7 @@ export * from "./resume.js";
 export * from "./budget.js";
 export * from "./node-payloads.js";
 export * from "./workspace-retention.js";
+export * from "./workspace-allocation.js";
 export * from "./schemas.js";
 export * from "./api.js";
 export * from "./dag.js";

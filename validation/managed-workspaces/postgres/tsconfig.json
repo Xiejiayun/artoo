@@ -1,0 +1,15 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "incremental": false,
+    "declaration": false,
+    "declarationMap": false,
+    "rootDir": "../../..",
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": { "pg": ["./node_modules/@types/pg/index.d.ts"] }
+  },
+  "include": ["./*.ts", "./receipt/*.ts", "./admin/*.ts", "./assignment/*.ts"]
+}

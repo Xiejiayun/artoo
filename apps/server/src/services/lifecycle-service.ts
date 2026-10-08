@@ -3,6 +3,7 @@ import {
   appendEvent,
   artifacts,
   assistantTurns,
+  computers,
   goals,
   plans,
   runs,
@@ -21,10 +22,13 @@ import {
   type Run,
   type Task,
   type TaskStatus,
+  type WorkspaceAllocationRecord,
   TaskSpecSchema,
 } from "@artoo/domain";
 import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import type { DrizzleDb } from "@artoo/storage";
+import { allocateWorkspaceRoot, validateWorktreeBaseConfiguration, WorkspaceAllocationError } from "@artoo/protocol";
+import { isDeepStrictEqual } from "node:util";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -209,12 +213,31 @@ export async function assignTask(
     await assertExecutionApprovalGranted(ctx, tx, taskId);
     const writePaths = req.write_paths ?? (assistantTurnId || row.executionPolicyTaskId ? await inheritedWritePaths(ctx, tx, row, policyTask) : []);
 
-    const outcome = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], {
+    const scheduleOptions = {
       mode: req.mode,
       projectId: row.projectId,
       agentInstanceId: req.agent_instance_id ?? null,
       allowedRuntimes,
+      branchBacked: req.workspace_branch != null || req.branch_backed === true,
+    };
+    const outcome = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], scheduleOptions);
+
+    // Share the administrator configuration fence. Only this selected instance
+    // is locked; candidate revalidation must use a fresh post-wait query.
+    const [instance] = await tx.select().from(agentInstances).where(and(
+      eq(agentInstances.id, outcome.selected.agent_instance_id), eq(agentInstances.organizationId, ctx.organizationId),
+    )).for("update");
+    if (!instance) throw AppError.conflict("Selected agent instance is no longer available");
+    const rechecked = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], {
+      ...scheduleOptions, mode: "manual", agentInstanceId: instance.id,
     });
+    if (!isDeepStrictEqual(rechecked.selected, outcome.selected)) {
+      throw AppError.conflict("Selected agent instance changed before assignment; retry the request");
+    }
+    const [computer] = await tx.select({ id: computers.id, os: computers.os }).from(computers).where(and(
+      eq(computers.id, instance.computerId), eq(computers.organizationId, ctx.organizationId),
+    ));
+    if (!computer) throw AppError.conflict("Selected execution computer is no longer available");
 
     const decisionId = ctx.idGen.generate(ID_PREFIXES.schedulerDecision);
     const runId = ctx.idGen.generate(ID_PREFIXES.run);
@@ -245,18 +268,6 @@ export async function assignTask(
       createdAt: now,
     });
 
-    // Record the assigned instance's workspace root (#20). Real FS path — source
-    // case preserved. branch stays null in Phase A (ordinary workspace; branch
-    // activation waits for artood worktreeBaseRepo + gated git worktree smoke).
-    const instance = (
-      await tx
-        .select({ workspaceRoot: agentInstances.workspaceRoot })
-        .from(agentInstances)
-        .where(eq(agentInstances.id, outcome.selected.agent_instance_id))
-    )[0];
-
-    const workspaceRoot = instance?.workspaceRoot ?? null;
-
     // Branch-backed worktree opt-in (#23): an explicit branch is used verbatim; a
     // `branch_backed` request generates a deterministic per-run `artoo/run-<id>`;
     // neither -> null (ordinary workspace, unchanged). Branch spelling is a git ref
@@ -268,6 +279,26 @@ export async function assignTask(
         : req.branch_backed === true
           ? `artoo/run-${runId}`
           : null;
+
+    const config = instance.config;
+    const setting = config !== null && typeof config === "object" && !Array.isArray(config)
+      && "worktree_workspace_base" in config ? config.worktree_workspace_base : undefined;
+    let workspaceRoot: string | null;
+    let workspaceAllocation: WorkspaceAllocationRecord | null = null;
+    try {
+      const validated = workspaceBranch !== null && setting !== undefined
+        ? validateWorktreeBaseConfiguration(setting, computer.os) : undefined;
+      // Only new assignment resolves a root. Existing runs are never reallocated.
+      workspaceRoot = allocateWorkspaceRoot({ workspaceRoot: instance.workspaceRoot,
+        branchBacked: workspaceBranch !== null, targetComputerOs: computer.os,
+        agentInstanceId: instance.id, runId, worktreeBase: setting });
+      if (validated) workspaceAllocation = { version: 1, strategy: "per-run", base_path: validated.basePath };
+    } catch (error) {
+      if (error instanceof WorkspaceAllocationError) {
+        throw AppError.validation("Invalid per-run workspace allocation", { reason: error.code });
+      }
+      throw error;
+    }
 
     // Build + persist the run's ContextPack (#21 Part D): select accepted memories
     // for this context and record source_memory_ids for audit; the run links it.
@@ -293,6 +324,7 @@ export async function assignTask(
       contextPackId: contextPack.contextPackId,
       workspaceRoot,
       workspaceBranch,
+      workspaceAllocation,
       createdAt: now,
     });
     await bindExecutionApprovalToRun(ctx, tx, taskId, runId);

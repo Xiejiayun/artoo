@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "scope": "Prepared titles only; no runtime acceptance",
+  "phases": {
+    "live": {
+      "expected_total_tests": 20,
+      "files": {
+        "validation/managed-workspaces/managed/live.git.test.ts": [
+          "held writer streams started/output durably; actual post-exit answer/usage/artifact preserve full transformed content",
+          "started receipt rejection stops genuine execution before failed/incomplete settlement and never becomes user_cancelled",
+          "output receipt rejection stops genuine execution before failed/incomplete settlement and never becomes user_cancelled",
+          "answer receipt rejection stops genuine execution before failed/incomplete settlement and never becomes user_cancelled",
+          "usage receipt rejection stops genuine execution before failed/incomplete settlement and never becomes user_cancelled",
+          "artifact receipt rejection stops genuine execution before failed/incomplete settlement and never becomes user_cancelled",
+          "upload failure before append keeps its cause and confirms real closure before any terminal",
+          "a real prior failed terminal retains its reason through metadata rejection",
+          "an explicit user Stop stays cancelled and duplicates cannot launch another writer",
+          "natural CLI/group exit between bridge and recordStarted still preserves the genuine receipt through held settlement",
+          "a real live receipt timeout latches failure, stops the held writer, and late ACK cannot revive completion",
+          "journal loss while live still stops the captured producer; replacement worker/Node cannot adopt or create a terminal",
+          "postsettlement retention rejection uses one durable correction after live events have committed",
+          "large labelled committed-history storage fixture does not consume active capacity or change live replay identity",
+          "a copied producer is rejected before any execution or fake durable startup",
+          "durable Stop-before-start fences repeated managed starts without inventing accepted startup",
+          "one possible transport exposure retries the same durable frame within the unchanged deadline",
+          "a held10s startup control ACK stops the genuine writer before any failed terminal",
+          "genuine spawned startup cancellation can resume closed pending delivery without an execution handle",
+          "a labelled failure after real recordStarted commit retains the genuine handle until pending delivery drains"
+        ]
+      }
+    },
+    "ws": {
+      "expected_total_tests": 26,
+      "files": {
+        "validation/managed-workspaces/managed/managed-transport.test.ts": [
+          "T01 legacy real receiver keeps existing business flow without unsolicited managed ready",
+          "T02 absent ready expires real 10s handshake and cannot release buffered work",
+          "T03 unknown version, receipt profile and int32 contract fail without fallback",
+          "T04 wrong hello nonce rejects buffered commands",
+          "T05 wrong node and pong session cannot admit a managed session",
+          "T06 stale generation callbacks cannot alter a replacement qualified session",
+          "T07 wrong tuple, malformed and overflow ACKs cannot settle another observer",
+          "T08 ordinary send forbids run.event and exposure snapshots reject pending body changes",
+          "T09 cancellation, expiry and bounded pre-ready buffers cannot release stale work",
+          "T10 receipt count/bytes and late observers are finite; close cancels without replay"
+        ],
+        "validation/managed-workspaces/managed/managed-writer.test.ts": [
+          "W01 actual auth/admin/assignment dispatch streams durable writer events and qualified receipts",
+          "W02 committed receipt ACK loss retries exact immutable claim through a new session",
+          "W03 exactly three possible exposure failures stop the genuine writer without a fourth claim",
+          "W04 prolonged unqualified reconnect keeps original deadline and cannot send expired output",
+          "W05 real ACK held beyond 30s records history after genuine stop without restoring success",
+          "W06 completed before correction retains server completed/review and late ACK is historical",
+          "W07 correction before held original completed keeps failed/blocked and immutable physical outcome",
+          "W08 explicit local user Stop during reconnect closes the writer and preserves cancellation",
+          "W09 policy-close fatal cause survives distinct post-commit startup rejection and genuine closure",
+          "W10 shutdown with held genuine receipt joins CLI/guardian closure and retains pending history",
+          "W11 reopened journal and new Node deliver genuine closed history without another writer",
+          "W12 actual control send failure after startup preserves history and never replays command ACK",
+          "W13 genuinely silent writer survives compatible reconnect before unchanged loss deadline",
+          "W14 silent writer stops at first loss deadline despite repeated heartbeat-write failures",
+          "W15 private real WS no-pong proxy expires silent writer without renewing loss grace",
+          "W16 actual live journal loss then new managed WS Node keeps nonclosed ownership unknown"
+        ]
+      }
+    }
+  }
+}

@@ -5,12 +5,13 @@ import { and, eq, inArray, notInArray } from "drizzle-orm";
 import type { ServerContext } from "../context.js";
 
 /** A disconnect timeout is not process exit, even when no write lease exists. */
-export async function unconfirmedDisconnectRunIds(ctx: ServerContext, tx: DrizzleDb, filter: { goalId?: string; computerId?: string; taskId?: string }): Promise<string[]> {
+export async function unconfirmedDisconnectRunIds(ctx: ServerContext, tx: DrizzleDb, filter: { goalId?: string; computerId?: string; taskId?: string; agentInstanceId?: string }): Promise<string[]> {
   const candidates = await tx.select({ id: runs.id }).from(runs).innerJoin(tasks, eq(tasks.id, runs.taskId)).where(and(
     eq(runs.organizationId, ctx.organizationId), eq(tasks.organizationId, ctx.organizationId), eq(runs.status, "failed"), eq(runs.failureReason, "daemon_disconnect"),
     filter.goalId ? eq(tasks.goalId, filter.goalId) : undefined,
     filter.computerId ? eq(runs.computerId, filter.computerId) : undefined,
     filter.taskId ? eq(runs.taskId, filter.taskId) : undefined,
+    filter.agentInstanceId ? eq(runs.agentInstanceId, filter.agentInstanceId) : undefined,
   ));
   if (candidates.length === 0) return [];
   const evidence = await tx.select({ runId: eventLog.runId, payload: eventLog.payload }).from(eventLog).where(and(

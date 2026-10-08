@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "scope": "Exact source titles and real case receipt names; static expansion only, no execution",
+  "phases": {
+    "receipt": {
+      "expected_total_tests": 15,
+      "files": {
+        "validation/managed-workspaces/postgres/receipt/run-event-receipt-concurrency.test.ts": [
+          "qualified full-body receipts on owned PostgreSQL PG01 concurrent identical started",
+          "qualified full-body receipts on owned PostgreSQL PG02 concurrent identical output",
+          "qualified full-body receipts on owned PostgreSQL PG03 concurrent identical answer",
+          "qualified full-body receipts on owned PostgreSQL PG04 concurrent identical usage",
+          "qualified full-body receipts on owned PostgreSQL PG05 concurrent identical artifact",
+          "qualified full-body receipts on owned PostgreSQL PG06 concurrent identical retention",
+          "qualified full-body receipts on owned PostgreSQL PG07 concurrent identical terminal",
+          "qualified full-body receipts on owned PostgreSQL PG08 concurrent changed output",
+          "qualified full-body receipts on owned PostgreSQL PG09 concurrent metadata-only artifact change",
+          "qualified full-body receipts on owned PostgreSQL PG10 retention tuple cannot be replayed as output",
+          "qualified full-body receipts on owned PostgreSQL PG11 aborted first insert rolls back effects and lets identical B commit",
+          "qualified full-body receipts on owned PostgreSQL PG12 committed answer survives ACK loss and fresh binding replay",
+          "qualified full-body receipts on owned PostgreSQL PG13 additive SQL preserves NULL legacy history without qualification",
+          "qualified full-body receipts on owned PostgreSQL PG14 terminal ordering completed-first",
+          "qualified full-body receipts on owned PostgreSQL PG15 terminal ordering correction-first"
+        ]
+      },
+      "case_evidence_names": [
+        "PG01 concurrent identical started",
+        "PG02 concurrent identical output",
+        "PG03 concurrent identical answer",
+        "PG04 concurrent identical usage",
+        "PG05 concurrent identical artifact",
+        "PG06 concurrent identical retention",
+        "PG07 concurrent identical terminal",
+        "PG08 concurrent changed output",
+        "PG09 concurrent metadata-only artifact change",
+        "PG10 retention tuple cannot be replayed as output",
+        "PG11 aborted first insert rolls back effects and lets identical B commit",
+        "PG12 committed answer survives ACK loss and fresh binding replay",
+        "PG13 additive SQL preserves NULL legacy history without qualification",
+        "PG14 terminal ordering completed-first",
+        "PG15 terminal ordering correction-first"
+      ],
+      "expected_backends": 4
+    },
+    "admin": {
+      "expected_total_tests": 10,
+      "files": {
+        "validation/managed-workspaces/postgres/admin/admin-concurrency.test.ts": [
+          "revision 2 administrator serialization on owned PostgreSQL PATCH: demotion while route waits for instance (committed-before-release)",
+          "revision 2 administrator serialization on owned PostgreSQL PATCH: demotion while route waits for instance (actor-wait-commit)",
+          "revision 2 administrator serialization on owned PostgreSQL PATCH: demotion while route waits for instance (actor-wait-rollback)",
+          "revision 2 administrator serialization on owned PostgreSQL PATCH: SHARE blocks demotion through event commit",
+          "revision 2 administrator serialization on owned PostgreSQL PATCH: SHARE blocks demotion through event forced-rollback",
+          "revision 2 administrator serialization on owned PostgreSQL DELETE: demotion while route waits for instance (committed-before-release)",
+          "revision 2 administrator serialization on owned PostgreSQL DELETE: demotion while route waits for instance (actor-wait-commit)",
+          "revision 2 administrator serialization on owned PostgreSQL DELETE: demotion while route waits for instance (actor-wait-rollback)",
+          "revision 2 administrator serialization on owned PostgreSQL DELETE: SHARE blocks demotion through event commit",
+          "revision 2 administrator serialization on owned PostgreSQL DELETE: SHARE blocks demotion through event forced-rollback"
+        ]
+      },
+      "case_evidence_names": [
+        "PATCH/instance/committed-before-release",
+        "PATCH/instance/actor-wait-commit",
+        "PATCH/instance/actor-wait-rollback",
+        "PATCH/event/commit",
+        "PATCH/event/forced-rollback",
+        "DELETE/instance/committed-before-release",
+        "DELETE/instance/actor-wait-commit",
+        "DELETE/instance/actor-wait-rollback",
+        "DELETE/event/commit",
+        "DELETE/event/forced-rollback"
+      ],
+      "expected_backends": 4
+    },
+    "assignment": {
+      "expected_total_tests": 4,
+      "files": {
+        "validation/managed-workspaces/postgres/assignment/assignment-concurrency.test.ts": [
+          "four assignment lock cases on owned PostgreSQL config commits first: new-base",
+          "four assignment lock cases on owned PostgreSQL config commits first: delete-to-exact-legacy",
+          "four assignment lock cases on owned PostgreSQL assignment commits first: real administrator configuration is rejected after its wait",
+          "four assignment lock cases on owned PostgreSQL capacity one: waiting second assignment aborts without reselection or orphan writes"
+        ]
+      },
+      "case_evidence_names": [
+        "config-first/new-base",
+        "config-first/delete-to-exact-legacy",
+        "assignment-first/admin-conflict",
+        "capacity-one/no-reselection"
+      ],
+      "expected_backends": 5
+    }
+  }
+}

@@ -5,6 +5,7 @@ import {
   commandSchema,
   adapterRunEventBodySchema,
   runEventBodySchema,
+  runEventAckCommandSchema,
   runEventMessageSchema,
   runStartCommandSchema
 } from "./node-messages.js";
@@ -99,6 +100,18 @@ describe("run.event message", () => {
 
   it("rejects a negative sequence", () => {
     expect(runEventMessageSchema.safeParse({ ...message, sequence: -1 }).success).toBe(false);
+  });
+
+  it.each([0, 2147483647])("accepts int32 boundary sequence %s for events and receipts", (sequence) => {
+    expect(runEventMessageSchema.safeParse({ ...message, sequence }).success).toBe(true);
+    expect(runEventAckCommandSchema.safeParse({ kind: "command", id: "receipt", idempotency_key: "receipt",
+      type: "run.event.ack", payload: { run_id: "run_1", sequence, status: "accepted" } }).success).toBe(true);
+  });
+
+  it.each([-1, 2147483648, 0.5, NaN, Infinity])("rejects non-int32 sequence %s for events and receipts", (sequence) => {
+    expect(runEventMessageSchema.safeParse({ ...message, sequence }).success).toBe(false);
+    expect(runEventAckCommandSchema.safeParse({ kind: "command", id: "receipt", idempotency_key: "receipt",
+      type: "run.event.ack", payload: { run_id: "run_1", sequence, status: "accepted" } }).success).toBe(false);
   });
 
   it("rejects an empty node_id / run_id", () => {

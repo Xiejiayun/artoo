@@ -4,6 +4,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from
 import { dirname, basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { StringDecoder } from "node:string_decoder";
+import { performance } from "node:perf_hooks";
 
 import type { ArtifactPayload, ArtifactType } from "@artoo/domain";
 import type {
@@ -17,6 +18,107 @@ import type {
 import { assertWorkspaceScope } from "@artoo/protocol";
 import { resolveCliCommand } from "./cli-resolver.js";
 import { createStructuredOutput, type ProcessOutputFormat } from "./structured-output.js";
+import { assertOwnedContextForLaunch, assertOwnedContextLocalBoundary, writeOwnedContextFile } from "./owned/owned-context.js";
+import { assertOwnedMaterializedWorktree, assertOwnedWorktreeLocalBoundary, WorktreeReservationError, type MaterializedWorktree } from "./owned/worktree-reservation.js";
+import { OwnedGitError } from "./owned/owned-git.js";
+import type { OwnedAdmissionIdentity, OwnedPhysicalFacts, OwnedRunAdmission, OwnedRunRuntimeAdapter, OwnedRunStatusReceipt, OwnedStartupReceipt, OwnedStopReceipt } from "./process-adapter-owned-receipts.js";
+export type { OwnedAdmissionIdentity, OwnedPhysicalFacts, OwnedRunAdmission, OwnedRunRuntimeAdapter, OwnedRunStatusReceipt, OwnedStartupReceipt, OwnedStopReceipt } from "./process-adapter-owned-receipts.js";
+
+interface AdmissionState { identity: Readonly<OwnedAdmissionIdentity>; claimed: boolean }
+interface ReceiptScope { admission: WeakRef<OwnedRunAdmission>; worktree: WeakRef<MaterializedWorktree>; handle?: WeakRef<AgentInstanceHandle> }
+interface StartupAuthentication extends ReceiptScope { receipt: OwnedStartupReceipt }
+interface PhysicalAuthentication extends ReceiptScope { receipt: OwnedStopReceipt | OwnedRunStatusReceipt }
+interface OwnedControl {
+  facts(): OwnedPhysicalFacts;
+  confirmClosed(): Promise<OwnedPhysicalFacts>;
+  stop(reason: StopReason): Promise<OwnedPhysicalFacts>;
+  inspect(): Promise<"running" | "confirmed_closed" | "uncertain">;
+}
+interface OwnedInvocation extends ReceiptScope {
+  owner: object;
+  genuine: boolean;
+  spawnAttempted: boolean;
+  helperUncertain: boolean;
+  control?: OwnedControl;
+  closedFacts?: OwnedPhysicalFacts;
+  queue?: AsyncEventQueue<RunEvent>;
+  workspaceRoot: string;
+  discussion: boolean;
+}
+const ownedAdmissions = new WeakMap<OwnedRunAdmission, AdmissionState>();
+const ownedAdapters = new WeakMap<RuntimeAdapter, Readonly<Record<string, unknown>>>();
+const ownedStartupErrors = new WeakMap<object, StartupAuthentication>();
+const ownedStopReceipts = new WeakMap<object, PhysicalAuthentication>();
+const ownedStatusReceipts = new WeakMap<object, PhysicalAuthentication>();
+const ownedExecutions = new WeakMap<AgentInstanceHandle, OwnedInvocation>();
+const weakKey = (value: unknown): value is object => (typeof value === "object" && value !== null) || typeof value === "function";
+
+export function createOwnedRunAdmission(identity: OwnedAdmissionIdentity): OwnedRunAdmission {
+  const value = Object.freeze({ launchKey: identity.launchKey, runId: identity.runId, taskId: identity.taskId,
+    agentInstanceId: identity.agentInstanceId, runtime: identity.runtime, workspaceRoot: identity.workspaceRoot,
+    workspaceBranch: identity.workspaceBranch });
+  if (Object.values(value).some((item) => typeof item !== "string" || !item || item.includes("\0"))) throw new Error("A complete local owned admission identity is required");
+  const admission = Object.freeze({}) as OwnedRunAdmission;
+  ownedAdmissions.set(admission, { identity: value, claimed: false });
+  return admission;
+}
+
+export function isOwnedRunAdapter(adapter: RuntimeAdapter): adapter is OwnedRunRuntimeAdapter {
+  const methods = ownedAdapters.get(adapter);
+  if (!methods) return false;
+  // Do not invoke arbitrary getters while checking a capability boundary.
+  return Object.entries(methods).every(([name, method]) => Object.getOwnPropertyDescriptor(adapter, name)?.value === method);
+}
+
+function matchesScope(scope: ReceiptScope, admission: OwnedRunAdmission, handle?: AgentInstanceHandle): boolean {
+  return scope.admission.deref() === admission && ownedAdmissions.has(admission)
+    && (handle === undefined || scope.handle?.deref() === handle);
+}
+export function getOwnedStartupReceipt(error: unknown, admission: OwnedRunAdmission, worktree: MaterializedWorktree): OwnedStartupReceipt | undefined {
+  const value = weakKey(error) ? ownedStartupErrors.get(error) : undefined;
+  return value && matchesScope(value, admission) && value.worktree.deref() === worktree ? value.receipt : undefined;
+}
+export function getOwnedStopReceipt(value: unknown, admission: OwnedRunAdmission, handle: AgentInstanceHandle): OwnedStopReceipt | undefined {
+  const found = weakKey(value) ? ownedStopReceipts.get(value) : undefined;
+  return found && matchesScope(found, admission, handle) ? found.receipt as OwnedStopReceipt : undefined;
+}
+export function getOwnedRunStatusReceipt(value: unknown, admission: OwnedRunAdmission, handle: AgentInstanceHandle): OwnedRunStatusReceipt | undefined {
+  const found = weakKey(value) ? ownedStatusReceipts.get(value) : undefined;
+  return found && matchesScope(found, admission, handle) ? found.receipt as OwnedRunStatusReceipt : undefined;
+}
+
+function confirmedHelperFailure(error: unknown, signal: AbortSignal): boolean {
+  const seen = new Set<unknown>();
+  for (let item = error; item && !seen.has(item);) {
+    seen.add(item);
+    if (item instanceof OwnedGitError) return item.receipt.cleanupConfirmed === true;
+    if (signal.aborted && item === signal.reason) return true;
+    if (!(item instanceof WorktreeReservationError)) return false;
+    item = Object.getOwnPropertyDescriptor(item, "cause")?.value;
+  }
+  return false;
+}
+
+async function ownedPreparation<T>(invocation: OwnedInvocation | undefined, signal: AbortSignal | undefined, operation: () => Promise<T>): Promise<T> {
+  if (invocation) invocation.helperUncertain = true;
+  try {
+    const result = await operation();
+    if (invocation) invocation.helperUncertain = false;
+    return result;
+  } catch (error) {
+    if (invocation && signal) invocation.helperUncertain = !confirmedHelperFailure(error, signal);
+    throw error;
+  }
+}
+
+async function boundedOwnedWait(promise: Promise<unknown>, deadline: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([promise, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("Owned physical closure remains uncertain")), Math.max(1, deadline - performance.now()));
+    })]);
+  } finally { clearTimeout(timer); }
+}
 
 /**
  * Process-based {@link RuntimeAdapter} (design §5.2 minimal model). Runs a CLI
@@ -270,11 +372,18 @@ function renderContextPack(config: AgentInstanceConfig): string {
   return `${lines.join("\n")}\n`;
 }
 
-export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAdapter {
+/** Local execution seam; the materialized handle is never a wire field. */
+export interface OwnedWorktreeRuntimeAdapter extends RuntimeAdapter {
+  /** Startup signal only. Use the same controller in helper preparation for prompt Git cancellation. */
+  startOwnedWorktree(config: AgentInstanceConfig, worktree: MaterializedWorktree, startupSignal?: AbortSignal): Promise<AgentInstanceHandle>;
+}
+
+export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorktreeRuntimeAdapter & OwnedRunRuntimeAdapter {
   const runtimeId = options.runtimeId ?? "process";
   const contextPackFilename = options.contextPackFilename ?? "context_pack.md";
   const artifactSpecs = options.artifacts ?? [];
   const runs = new Map<string, RunState>();
+  const ownedOwner = Object.freeze({});
 
   function workspacePath(workspaceRoot: string, relativePath: string): string {
     // Resolve the existing root before joining: its raw symlink/.. spelling
@@ -309,20 +418,29 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
     return descriptors;
   }
 
-  return {
-    runtimeId,
-
-    async start(config: AgentInstanceConfig): Promise<AgentInstanceHandle> {
-      // Enforce the workspace allowlist before doing anything else.
+  async function startProcess(config: AgentInstanceConfig, worktree?: MaterializedWorktree, startupSignal?: AbortSignal, invocation?: OwnedInvocation): Promise<AgentInstanceHandle> {
+      const workspaceRoot = config.workspaceRoot, runId = config.runId;
+      if (worktree) {
+        if (config.workspaceRoot !== worktree.root || config.runStart.workspace.root !== worktree.root
+          || config.runStart.workspace.branch !== worktree.branch || config.runId !== config.runStart.run_id
+          || config.taskId !== config.runStart.task_id || config.agentInstanceId !== config.runStart.agent_instance_id
+          || config.runtime !== config.runStart.runtime) throw new Error("Owned worktree start identity differs");
+      }
+      // Enforce the workspace allowlist before context writes or process launch.
       assertWorkspaceScope(config.workspaceRoot, options.allowedRoots);
       assertRealWorkspaceScope(config.workspaceRoot, options.allowedRoots);
 
       const discussion = config.runStart.context_pack.payload?.policy.execution_mode === "discussion";
       if (discussion && !options.discussionCommand) throw new Error("runtime has no explicitly configured read-only discussion command");
 
-      const contextPackPath = workspacePath(config.workspaceRoot, contextPackFilename);
+      const legacyContextPath = worktree ? undefined : workspacePath(config.workspaceRoot, contextPackFilename);
       artifactPaths(config.workspaceRoot);
-      writeFileSync(contextPackPath, renderContextPack(config));
+      startupSignal?.throwIfAborted();
+      const ownedContext = worktree ? await ownedPreparation(invocation, startupSignal,
+        () => writeOwnedContextFile(worktree, contextPackFilename, renderContextPack(config))) : undefined;
+      startupSignal?.throwIfAborted();
+      const contextPackPath = ownedContext?.path ?? legacyContextPath!;
+      if (!ownedContext) writeFileSync(contextPackPath, renderContextPack(config));
 
       const argv = (discussion ? options.discussionCommand! : options.command).map((part) =>
         part
@@ -336,6 +454,16 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
 
       const resolved = resolveCliCommand(cmd);
       if (!resolved) throw new Error(`runtime executable is unavailable or has an unsupported shell wrapper: ${cmd}`);
+      if (ownedContext) {
+        await ownedPreparation(invocation, startupSignal, () => assertOwnedContextForLaunch(ownedContext));
+        // Fresh async Git observations end here. Keep the local boundary and
+        // cancellation check adjacent to spawn, without an intervening await.
+        if (invocation) invocation.helperUncertain = true;
+        assertOwnedContextLocalBoundary(ownedContext);
+        if (invocation) invocation.helperUncertain = false;
+      }
+      startupSignal?.throwIfAborted();
+      if (invocation) invocation.spawnAttempted = true;
       const child = spawn(resolved[0]!, [...resolved.slice(1), ...args], { cwd: config.workspaceRoot, detached: process.platform !== "win32", windowsHide: true });
       // The agent receives its task via the command template + context pack, not
       // stdin. Close stdin so CLIs that read it (e.g. `codex exec` prints
@@ -345,10 +473,15 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
       const queue = new AsyncEventQueue<RunEvent>();
       let finalized = false;
       let spawned = false;
+      let childExitObserved = false, childStdioClosed = false, childSpawnFailed = false, groupAbsent = false;
       let resolveClosed!: () => void;
       const closed = new Promise<void>((resolveClose) => { resolveClosed = resolveClose; });
       let termination: Promise<void> | undefined;
       let guardian: ChildProcess | undefined;
+      let guardianClosed: Promise<void> | undefined;
+      let guardianCloseObserved = false, guardianSpawned = false, guardianSpawnFailed = false;
+      let guardianAttempted = false, guardianExitObserved = false, guardianGroupAbsent = false;
+      let guardianStatus: number | null = null, guardianSignal: NodeJS.Signals | null = null;
       const structured = createStructuredOutput(options.outputFormat ?? "plain");
       // CLI diagnostics may echo authentication headers. Parse original JSON
       // first: a short key such as "type" must not alter protocol field names.
@@ -398,15 +531,104 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
 
       const state: RunState = {
         queue,
-        workspaceRoot: config.workspaceRoot,
+        workspaceRoot,
         discussion,
         kill: async () => {
           if (finalized) return;
-          termination ??= child.pid === undefined ? Promise.resolve() : stopProcessTree(child.pid);
-          await termination;
+          await beginTermination();
           await closed;
         }
       };
+
+      function beginTermination(): Promise<void> {
+        if (!termination) {
+          termination = child.pid === undefined ? Promise.resolve() : stopProcessTree(child.pid);
+          void termination.then(() => { groupAbsent = true; }, () => {});
+        }
+        return termination;
+      }
+      function zeroProbe(pid: number): "present" | "absent" | "unknown" {
+        // POSIX signal zero is an existence query; it sends no signal.
+        try { process.kill(pid, 0); return "present"; }
+        catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "absent" : "unknown"; }
+      }
+      function physicalFacts(): OwnedPhysicalFacts {
+        const childNeverSpawned = childSpawnFailed && !spawned && child.pid === undefined && childStdioClosed;
+        const guardianNeverSpawned = !guardianAttempted || guardianSpawnFailed && !guardianSpawned && guardian?.pid === undefined && guardianCloseObserved;
+        return Object.freeze({ childPid: child.pid ?? null, childSpawned: spawned, childExitObserved,
+          childStdioClosed, groupAbsent: groupAbsent || childNeverSpawned,
+          guardianPid: guardian?.pid ?? null, guardianAttempted, guardianSpawned, guardianExitObserved,
+          guardianStdioClosed: guardianCloseObserved || !guardianAttempted,
+          guardianGroupAbsent: guardianGroupAbsent || guardianNeverSpawned });
+      }
+      function observeFullClosure(): OwnedPhysicalFacts | undefined {
+        const childNeverSpawned = childSpawnFailed && !spawned && child.pid === undefined && childStdioClosed;
+        if (!(childNeverSpawned || childExitObserved && childStdioClosed && groupAbsent)) return;
+        if (guardianAttempted) {
+          const neverSpawned = guardianSpawnFailed && !guardianSpawned && guardian?.pid === undefined && guardianCloseObserved;
+          if (!neverSpawned) {
+            if (!guardianExitObserved || !guardianCloseObserved || guardianStatus !== 0 || guardianSignal !== null || guardian?.pid === undefined) return;
+            if (!guardianGroupAbsent) guardianGroupAbsent = zeroProbe(-guardian.pid) === "absent";
+            if (!guardianGroupAbsent) return;
+          }
+        }
+        const facts = physicalFacts();
+        if (invocation) {
+          invocation.closedFacts = facts;
+          invocation.control = undefined; // Closed tokens must not retain the child/guardian graph.
+        }
+        return facts;
+      }
+      async function confirmOwnedClosure(): Promise<OwnedPhysicalFacts> {
+        const existing = invocation?.closedFacts ?? observeFullClosure();
+        if (existing) return existing;
+        const deadline = performance.now() + 5000;
+        await boundedOwnedWait(closed, deadline);
+        if (guardianAttempted && guardianClosed) await boundedOwnedWait(guardianClosed, deadline);
+        for (;;) {
+          const facts = observeFullClosure();
+          if (facts) return facts;
+          if (performance.now() >= deadline) throw new Error("Owned child, stdio, group or guardian closure remains uncertain");
+          await new Promise((resolveCheck) => setTimeout(resolveCheck, 10));
+        }
+      }
+      function childObservedRunning(): boolean {
+        return spawned && !childExitObserved && !childStdioClosed && child.exitCode === null && child.signalCode === null
+          && child.pid !== undefined && zeroProbe(child.pid) === "present" && zeroProbe(-child.pid) === "present";
+      }
+      if (invocation) {
+        invocation.queue = queue;
+        invocation.workspaceRoot = workspaceRoot;
+        invocation.discussion = discussion;
+        invocation.control = {
+          facts: physicalFacts,
+          confirmClosed: confirmOwnedClosure,
+          stop: async (reason) => {
+            const existing = invocation.closedFacts ?? observeFullClosure();
+            if (existing) return existing;
+            // Natural exit already has a real terminal outcome. Confirm its
+            // closure without turning a buffered completion into cancellation.
+            if (!childExitObserved && !childStdioClosed && child.exitCode === null && child.signalCode === null) {
+              if (!childObservedRunning()) throw new Error("Owned child liveness is uncertain");
+              state.stopReason = reason;
+              await boundedOwnedWait(state.kill(), performance.now() + 5000);
+            }
+            return confirmOwnedClosure();
+          },
+          inspect: async () => {
+            if (invocation.closedFacts ?? observeFullClosure()) return "confirmed_closed";
+            if (childExitObserved || childStdioClosed || child.exitCode !== null || child.signalCode !== null) {
+              try { await confirmOwnedClosure(); return "confirmed_closed"; } catch { return "uncertain"; }
+            }
+            return childObservedRunning() && guardianSpawned && !guardianExitObserved && !guardianCloseObserved
+              && guardian?.pid !== undefined && guardian.exitCode === null && guardian.signalCode === null
+              && zeroProbe(guardian.pid) === "present" && zeroProbe(-guardian.pid) === "present" ? "running" : "uncertain";
+          }
+        };
+      }
+      function compactOwnedAfterClose(): void {
+        if (invocation) void confirmOwnedClosure().catch(() => {});
+      }
 
       function finishWith(event: RunEvent): void {
         if (finalized) {
@@ -419,24 +641,28 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
         emit(event);
         queue.end();
         resolveClosed();
+        compactOwnedAfterClose();
       }
 
       child.on("error", (err: Error) => {
         if (!spawned) {
+          childSpawnFailed = child.pid === undefined;
           return;
         }
         stderr.feed(`${err.message}\n`);
       });
       child.on("exit", () => {
+        childExitObserved = true;
         if (process.platform === "win32" || child.pid === undefined) return;
         // The CLI leader can exit while a writer either ignores or inherits
         // stdio. Start group cleanup on exit, before waiting for pipe closure.
-        termination ??= stopProcessTree(child.pid);
-        void termination.catch((error: unknown) => stderr.feed(`CLI cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`));
+        const closing = beginTermination();
+        void closing.catch((error: unknown) => stderr.feed(`CLI cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`));
       });
       child.on("close", async (code: number | null, signal: NodeJS.Signals | null) => {
+        childStdioClosed = true;
         if (process.platform !== "win32" && child.pid !== undefined) {
-          termination ??= stopProcessTree(child.pid);
+          beginTermination();
           try { await termination; } catch { return; }
         }
         // Only disarm after the POSIX group has actually disappeared. A leader
@@ -460,7 +686,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
             return;
           }
           let descriptors: ArtifactDescriptor[];
-          try { descriptors = discussion ? [] : collectDescriptors(config.workspaceRoot); }
+          try { descriptors = discussion ? [] : collectDescriptors(workspaceRoot); }
           catch (error) {
             finishWith({ type: "run.lifecycle", payload: { phase: "failed", reason: error instanceof Error ? error.message : "artifact collection failed" } });
             return;
@@ -475,6 +701,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
           queue.push({ type: "run.lifecycle", payload: { phase: "completed", reason: null } });
           queue.end();
           resolveClosed();
+          compactOwnedAfterClose();
           return;
         }
 
@@ -489,6 +716,40 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
         });
       });
 
+      let startupStop: Promise<void> | undefined;
+      let startupAbortHandled = false;
+      const onStartupAbort = (): void => {
+        state.stopReason = "user_cancelled";
+        startupStop ??= state.kill();
+        // The startup continuation awaits and reports cleanup failure below.
+        void startupStop.catch(() => {});
+      };
+      async function rejectAfterStartupAbort(): Promise<never> {
+        startupAbortHandled = true;
+        onStartupAbort();
+        try {
+          await startupStop;
+          if (guardian) {
+            if (!guardianClosed) throw new Error("Startup guardian closure was not observed");
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+              await Promise.race([guardianClosed, new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error("Startup guardian did not close after disarm")), 5000);
+              })]);
+            } finally { clearTimeout(timer); }
+            const neverSpawned = guardianSpawnFailed && !guardianSpawned && guardian.pid === undefined;
+            if (!neverSpawned && (!guardianCloseObserved || guardianStatus !== 0 || guardianSignal !== null)) {
+              throw new Error("Startup guardian closure was not successful");
+            }
+          }
+        } catch (error) {
+          throw new Error("Owned startup cleanup is uncertain; worktree and context retained", { cause: error });
+        }
+        throw startupSignal!.reason;
+      }
+      startupSignal?.addEventListener("abort", onStartupAbort, { once: true });
+      if (startupSignal?.aborted) onStartupAbort();
+      try {
       await new Promise<void>((resolveSpawn, rejectSpawn) => {
         child.once("spawn", () => {
           spawned = true;
@@ -501,12 +762,32 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
           }
         });
       });
+      if (startupSignal?.aborted) await rejectAfterStartupAbort();
 
       if (!finalized && child.pid !== undefined) {
+        guardianAttempted = true;
         guardian = spawn(process.execPath, ["-e", PROCESS_GUARDIAN, String(child.pid)], {
           stdio: ["pipe", "ignore", "ignore"], windowsHide: true, detached: process.platform !== "win32",
           env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
         });
+        if (startupSignal) {
+          // Observe the actual guardian at creation, before its spawn/close
+          // callbacks can run. Only startup cancellation waits on this proof.
+          const observedGuardian = guardian;
+          guardianClosed = new Promise<void>((resolveGuardianClose) => {
+            observedGuardian.once("spawn", () => { guardianSpawned = true; });
+            observedGuardian.once("exit", () => { guardianExitObserved = true; });
+            observedGuardian.once("close", (code, signal) => {
+              guardianCloseObserved = true; guardianStatus = code; guardianSignal = signal;
+              resolveGuardianClose();
+            });
+            observedGuardian.once("error", () => {
+              if (!guardianSpawned && observedGuardian.pid === undefined) {
+                guardianSpawnFailed = true; resolveGuardianClose();
+              }
+            });
+          });
+        }
         guardian.stdin?.on("error", () => {});
         try {
           await new Promise<void>((resolveGuard, rejectGuard) => {
@@ -521,11 +802,134 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
         if (finalized) guardian.stdin?.end("disarm");
       }
 
-      runs.set(config.runId, state);
-      return { runId: config.runId };
+      if (startupSignal?.aborted) await rejectAfterStartupAbort();
+      if (invocation) {
+        const handle = Object.freeze({ runId });
+        invocation.handle = new WeakRef(handle);
+        ownedExecutions.set(handle, invocation);
+        return handle;
+      }
+      runs.set(runId, state);
+      return { runId };
+      } catch (error) {
+        if (startupSignal?.aborted && !startupAbortHandled) await rejectAfterStartupAbort();
+        throw error;
+      } finally {
+        startupSignal?.removeEventListener("abort", onStartupAbort);
+      }
+  }
+
+  function ownedExecution(handle: AgentInstanceHandle, admission: OwnedRunAdmission): OwnedInvocation | undefined {
+    const execution = ownedExecutions.get(handle);
+    return execution?.owner === ownedOwner && matchesScope(execution, admission, handle) ? execution : undefined;
+  }
+  function stopReceipt(execution: OwnedInvocation, kind: OwnedStopReceipt["kind"]): OwnedStopReceipt {
+    const facts = execution.closedFacts ?? execution.control?.facts();
+    const receipt = Object.freeze({ kind, observedAt: new Date().toISOString(), ...(facts ? { facts } : {}) });
+    ownedStopReceipts.set(receipt, { admission: execution.admission, worktree: execution.worktree,
+      handle: execution.handle, receipt });
+    return receipt;
+  }
+  function statusReceipt(execution: OwnedInvocation, kind: OwnedRunStatusReceipt["kind"]): OwnedRunStatusReceipt {
+    const facts = execution.closedFacts ?? execution.control?.facts();
+    const receipt = Object.freeze({ kind, observedAt: new Date().toISOString(), ...(facts ? { facts } : {}) });
+    ownedStatusReceipts.set(receipt, { admission: execution.admission, worktree: execution.worktree,
+      handle: execution.handle, receipt });
+    return receipt;
+  }
+  const adapter: OwnedWorktreeRuntimeAdapter & OwnedRunRuntimeAdapter = {
+    runtimeId,
+
+    async start(config: AgentInstanceConfig): Promise<AgentInstanceHandle> {
+      if (config.runStart.workspace_allocation !== undefined) throw new Error("Explicit allocation requires an owned worktree start");
+      return startProcess(config);
+    },
+
+    async startOwnedWorktree(config: AgentInstanceConfig, worktree: MaterializedWorktree, startupSignal?: AbortSignal): Promise<AgentInstanceHandle> {
+      // Detach caller-owned payload before the first async ownership observation.
+      const snapshot = structuredClone(config);
+      startupSignal?.throwIfAborted();
+      await assertOwnedMaterializedWorktree(worktree);
+      startupSignal?.throwIfAborted();
+      return startProcess(snapshot, worktree, startupSignal);
+    },
+
+    async startOwnedRun(config: AgentInstanceConfig, worktree: MaterializedWorktree, admission: OwnedRunAdmission, signal: AbortSignal): Promise<AgentInstanceHandle> {
+      const admitted = ownedAdmissions.get(admission);
+      if (!admitted || admitted.claimed) throw new Error("A fresh authenticated owned admission is required");
+      admitted.claimed = true;
+      const invocation: OwnedInvocation = { admission: new WeakRef(admission), worktree: new WeakRef(worktree),
+        owner: ownedOwner, genuine: false, spawnAttempted: false, helperUncertain: false,
+        workspaceRoot: admitted.identity.workspaceRoot, discussion: false };
+      try {
+        // Snapshot before any asynchronous ownership observation.
+        const snapshot = structuredClone(config), identity = admitted.identity;
+        if (!(signal instanceof AbortSignal)) throw new Error("An actual startup AbortSignal is required");
+        assertOwnedWorktreeLocalBoundary(worktree);
+        invocation.genuine = true;
+        if (identity.runId !== snapshot.runId || identity.taskId !== snapshot.taskId
+          || identity.agentInstanceId !== snapshot.agentInstanceId || identity.runtime !== snapshot.runtime
+          || identity.runtime !== runtimeId || identity.workspaceRoot !== snapshot.workspaceRoot
+          || identity.workspaceRoot !== worktree.root || identity.workspaceBranch !== worktree.branch
+          || snapshot.runStart.run_id !== identity.runId || snapshot.runStart.task_id !== identity.taskId
+          || snapshot.runStart.agent_instance_id !== identity.agentInstanceId || snapshot.runStart.runtime !== identity.runtime
+          || snapshot.runStart.workspace.root !== identity.workspaceRoot || snapshot.runStart.workspace.branch !== identity.workspaceBranch) {
+          throw new Error("Owned admission does not match this exact frozen launch identity");
+        }
+        signal.throwIfAborted();
+        await ownedPreparation(invocation, signal, () => assertOwnedMaterializedWorktree(worktree));
+        signal.throwIfAborted();
+        return await startProcess(snapshot, worktree, signal, invocation);
+      } catch (cause) {
+        let kind: OwnedStartupReceipt["kind"] = "uncertain";
+        if (invocation.genuine && !invocation.spawnAttempted && !invocation.helperUncertain) kind = "not_spawned";
+        if (invocation.spawnAttempted && invocation.control) {
+          try { await invocation.control.stop("user_cancelled"); } catch { /* Retain authenticated uncertainty. */ }
+        }
+        if (invocation.closedFacts) kind = invocation.closedFacts.childSpawned ? "confirmed_closed" : "not_spawned";
+        const error = new Error("Owned runtime startup failed; workspace and context retained", { cause });
+        if (invocation.genuine) {
+          const facts = invocation.closedFacts ?? invocation.control?.facts();
+          const receipt: OwnedStartupReceipt = Object.freeze({ kind, cancellationRequested: signal instanceof AbortSignal && signal.aborted,
+            observedAt: new Date().toISOString(), ...(facts ? { facts } : {}) });
+          ownedStartupErrors.set(error, { admission: invocation.admission, worktree: invocation.worktree, receipt });
+        }
+        throw error;
+      }
+    },
+
+    async stopOwnedRun(handle: AgentInstanceHandle, admission: OwnedRunAdmission, reason: StopReason): Promise<OwnedStopReceipt> {
+      const execution = ownedExecution(handle, admission);
+      if (!execution) throw new Error("An exact authenticated owned execution handle is required");
+      if (execution.closedFacts) return stopReceipt(execution, "confirmed_closed");
+      try {
+        if (!execution.control) return stopReceipt(execution, "uncertain");
+        await execution.control.stop(reason);
+        return stopReceipt(execution, execution.closedFacts ? "confirmed_closed" : "uncertain");
+      } catch { return stopReceipt(execution, "uncertain"); }
+    },
+
+    async inspectOwnedRun(handle: AgentInstanceHandle, admission: OwnedRunAdmission): Promise<OwnedRunStatusReceipt> {
+      const execution = ownedExecution(handle, admission);
+      if (!execution) throw new Error("An exact authenticated owned execution handle is required");
+      if (execution.closedFacts) return statusReceipt(execution, "confirmed_closed");
+      try {
+        const kind = execution.control ? await execution.control.inspect() : "uncertain";
+        return statusReceipt(execution, kind);
+      } catch { return statusReceipt(execution, "uncertain"); }
     },
 
     streamEvents(handle: AgentInstanceHandle): AsyncIterable<RunEvent> {
+      const execution = ownedExecutions.get(handle);
+      if (execution?.owner === ownedOwner) {
+        const queue = execution.queue;
+        return (async function* () {
+          if (!queue) return;
+          let drained = false;
+          try { yield* queue.drain(); drained = true; }
+          finally { if (drained && execution.queue === queue) execution.queue = undefined; }
+        })();
+      }
       const state = runs.get(handle.runId);
       if (!state) {
         throw new Error(`no active run for ${handle.runId}`);
@@ -534,6 +938,13 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
     },
 
     async stop(handle: AgentInstanceHandle, reason: StopReason): Promise<void> {
+      const execution = ownedExecutions.get(handle);
+      if (execution?.owner === ownedOwner) {
+        if (execution.closedFacts) return;
+        if (!execution.control) throw new Error("Owned execution closure is uncertain");
+        await execution.control.stop(reason);
+        return;
+      }
       const state = runs.get(handle.runId);
       if (state) {
         state.stopReason = reason;
@@ -542,8 +953,14 @@ export function createProcessAdapter(options: ProcessAdapterOptions): RuntimeAda
     },
 
     async collectArtifacts(handle: AgentInstanceHandle): Promise<ArtifactDescriptor[]> {
+      const execution = ownedExecutions.get(handle);
+      if (execution?.owner === ownedOwner) return execution.discussion ? [] : collectDescriptors(execution.workspaceRoot);
       const state = runs.get(handle.runId);
       return state && !state.discussion ? collectDescriptors(state.workspaceRoot) : [];
     }
   };
+  ownedAdapters.set(adapter, Object.freeze({ runtimeId: adapter.runtimeId, startOwnedRun: adapter.startOwnedRun,
+    stopOwnedRun: adapter.stopOwnedRun, inspectOwnedRun: adapter.inspectOwnedRun,
+    streamEvents: adapter.streamEvents, collectArtifacts: adapter.collectArtifacts }));
+  return adapter;
 }

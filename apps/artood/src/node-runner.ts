@@ -37,6 +37,8 @@ export interface ArtoodNode {
   /** Connects, sends node.hello, and starts dispatching commands to the adapter. */
   start(): Promise<void>;
   stop(): Promise<void>;
+  /** Managed lifecycle failure notification; plain nodes keep their existing surface. */
+  readonly failed?: Promise<Error>;
 }
 
 export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {

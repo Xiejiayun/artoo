@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { loadMigrationStatements } from "./migrations.js";
+import { appendEvent } from "./event-writer.js";
 import { organizations, projects, runs, tasks } from "./schema.js";
 
 const NOW = "2026-06-13T00:00:00.000Z";
@@ -78,5 +79,44 @@ describe("db migrations", () => {
       .returning({ sequence: runs.sequence });
 
     expect(inserted[0]?.sequence).toBe(0);
+  });
+
+  it("adds nullable receipt identity without reconstructing or replacing legacy history", async () => {
+    client = await PgliteDbClient.create();
+    const baseline = await loadMigrationStatements("0021_workspace_retention.sql");
+    await client.migrate(baseline);
+    await client.db.insert(organizations).values({ id: "org_legacy", name: "Legacy", createdAt: NOW });
+    await appendEvent(client.db, { id: "event_legacy", organizationId: "org_legacy", type: "run.output",
+      schemaVersion: "1", actorType: "agent", actorId: "agent_legacy", correlationId: "task_legacy",
+      runId: "run_legacy", sequence: 7, payload: { stream: "stdout", text: "original history" }, occurredAt: NOW });
+    await client.db.execute(sql`INSERT INTO run_event_ingest (node_id,run_id,sequence,event_id,created_at)
+      VALUES ('node_legacy','run_legacy',7,'event_legacy',${NOW})`);
+    const before = await client.db.execute(sql`SELECT * FROM event_log WHERE id='event_legacy'`);
+    const all = await loadMigrationStatements();
+    await client.migrate(all);
+    expect((await client.db.execute(sql`SELECT node_id,run_id,sequence,event_id,body_identity FROM run_event_ingest`)).rows)
+      .toEqual([{ node_id: "node_legacy", run_id: "run_legacy", sequence: 7, event_id: "event_legacy", body_identity: null }]);
+    expect((await client.db.execute(sql`SELECT * FROM event_log WHERE id='event_legacy'`)).rows).toEqual(before.rows);
+    const journal = await client.db.execute(sql`SELECT * FROM artoo_meta.migrations ORDER BY position`);
+    await client.migrate(all);
+    expect((await client.db.execute(sql`SELECT * FROM artoo_meta.migrations ORDER BY position`)).rows).toEqual(journal.rows);
+    await expect(client.migrate(baseline)).rejects.toThrow("Migration history changed");
+    await expect(client.db.execute(sql`UPDATE run_event_ingest SET body_identity='caller-supplied'`)).rejects.toThrow();
+    expect((await client.db.execute(sql`SELECT body_identity FROM run_event_ingest`)).rows).toEqual([{ body_identity: null }]);
+  });
+
+  it("rolls back receipt DDL and migration journal together on an invalid suffix", async () => {
+    client = await PgliteDbClient.create();
+    const baseline = await loadMigrationStatements("0021_workspace_retention.sql");
+    await client.migrate(baseline);
+    const before = await client.db.execute(sql`SELECT * FROM artoo_meta.migrations ORDER BY position`);
+    const all = await loadMigrationStatements();
+    await expect(client.migrate([...all, "SELECT artoo_deliberately_missing_migration_function()"])).rejects.toThrow();
+    expect((await client.db.execute(sql`SELECT column_name FROM information_schema.columns
+      WHERE table_name='run_event_ingest' AND column_name='body_identity'`)).rows).toEqual([]);
+    expect((await client.db.execute(sql`SELECT * FROM artoo_meta.migrations ORDER BY position`)).rows).toEqual(before.rows);
+    await client.migrate(all);
+    expect((await client.db.execute(sql`SELECT column_name FROM information_schema.columns
+      WHERE table_name='run_event_ingest' AND column_name='body_identity'`)).rows).toEqual([{ column_name: "body_identity" }]);
   });
 });

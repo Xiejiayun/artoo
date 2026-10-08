@@ -1,5 +1,6 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { atomicWriteJson } = require("./atomic-store.cjs");
 
 function normalizeServerUrl(value) {
   let url;
@@ -19,10 +20,8 @@ function createConnectionStore(directory, safeStorage, initialServer = "http://l
     daemon: { allowedRoots: [], runtimes: ["codex"], trustedExecution: false },
   };
   async function save(next = state) {
-    await fs.mkdir(directory, { recursive: true });
-    const temp = `${filename}.tmp`;
-    await fs.writeFile(temp, JSON.stringify(next), { mode: 0o600 });
-    await fs.rename(temp, filename);
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    await atomicWriteJson(filename, next, { allowUnsupportedWindowsDirectorySync: true });
     state = next;
   }
   function requireSecureStorage() {
@@ -58,18 +57,16 @@ function createConnectionStore(directory, safeStorage, initialServer = "http://l
     async configureServer(value) {
       const serverUrl = normalizeServerUrl(value);
       if (serverUrl !== state.serverUrl) {
-        state = { ...state, serverUrl, deviceId: null, computerId: null, encryptedCredentials: null, encryptedCodexApiKey: null, daemon: { ...state.daemon, trustedExecution: false } };
-        await save();
+        await save({ ...state, serverUrl, deviceId: null, computerId: null, encryptedCredentials: null, encryptedCodexApiKey: null, daemon: { ...state.daemon, trustedExecution: false } });
       }
     },
     async pair(deviceId, controlToken, nodeToken) {
       requireSecureStorage();
       if (typeof deviceId !== "string" || typeof controlToken !== "string" || !controlToken || typeof nodeToken !== "string" || !nodeToken) throw new Error("Server did not return desktop credentials");
       const encrypted = safeStorage.encryptString(JSON.stringify({ controlToken, nodeToken })).toString("base64");
-      state = { ...state, deviceId, computerId: null, encryptedCredentials: encrypted };
-      await save();
+      await save({ ...state, deviceId, computerId: null, encryptedCredentials: encrypted });
     },
-    async setComputer(computerId) { state = { ...state, computerId }; await save(); },
+    async setComputer(computerId) { await save({ ...state, computerId }); },
     async configureDaemon(daemon, keyUpdate) {
       let encryptedCodexApiKey = state.encryptedCodexApiKey;
       if (keyUpdate === null) encryptedCodexApiKey = null;
@@ -80,7 +77,7 @@ function createConnectionStore(directory, safeStorage, initialServer = "http://l
       }
       await save({ ...state, daemon, encryptedCodexApiKey });
     },
-    async clear() { state = { ...state, deviceId: null, computerId: null, encryptedCredentials: null, encryptedCodexApiKey: null }; await save(); },
+    async clear() { await save({ ...state, deviceId: null, computerId: null, encryptedCredentials: null, encryptedCodexApiKey: null }); },
   };
 }
 

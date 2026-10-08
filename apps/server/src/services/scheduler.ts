@@ -55,6 +55,8 @@ export interface SchedulerOutcome {
 export interface ScheduleOptions {
   mode: "auto" | "manual";
   projectId: string;
+  /** Derived from the validated explicit/generated branch request. */
+  branchBacked: boolean;
   agentInstanceId?: string | null;
   /**
    * #115 P3b: the linked goal's budget `allowed_runtimes`. When provided (a goal
@@ -128,8 +130,8 @@ export async function scheduleTask(
       runtimeLastSeen: agentRuntimes.lastSeenAt,
     })
     .from(agentInstances)
-    .innerJoin(computers, eq(agentInstances.computerId, computers.id))
-    .innerJoin(agents, eq(agentInstances.agentId, agents.id))
+    .innerJoin(computers, and(eq(agentInstances.computerId, computers.id), eq(computers.organizationId, ctx.organizationId)))
+    .innerJoin(agents, and(eq(agentInstances.agentId, agents.id), eq(agents.organizationId, ctx.organizationId)))
     .leftJoin(
       agentRuntimes,
       and(
@@ -224,7 +226,15 @@ export async function scheduleTask(
   // no-eligible-instance, so the failure is explainable rather than generic.
   const emptiedByGoalBudget = allowedRuntimes !== null && eligible.length > 0 && permitted.length === 0;
 
-  const candidates: SchedulerCandidate[] = permitted
+  const supported = permitted.filter((r) => {
+    const config = r.instanceConfig;
+    const configured = config !== null && typeof config === "object" && !Array.isArray(config)
+      && "worktree_workspace_base" in config && config.worktree_workspace_base !== undefined;
+    return !opts.branchBacked || !configured
+      || ctx.supportsExecutionFeature?.(r.computerId, "workspace-allocation.per-run-v1") === true;
+  });
+
+  const candidates: SchedulerCandidate[] = supported
     .map((r) => ({
       agent_instance_id: r.instanceId,
       agent_id: r.agentId,
@@ -246,6 +256,9 @@ export async function scheduleTask(
         409,
         { reason: "goal_allowed_runtimes", allowed_runtimes: opts.allowedRuntimes },
       );
+    }
+    if (permitted.length > 0 && supported.length === 0) {
+      throw AppError.conflict("No eligible current node session supports the configured per-run workspace allocation");
     }
     const anyOnline = rows.some((r) => r.computerStatus === "online");
     if (!anyOnline) {

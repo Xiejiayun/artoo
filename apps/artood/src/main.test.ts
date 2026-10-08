@@ -155,6 +155,52 @@ describe("createNodeFromConfig", () => {
 });
 
 describe("desktop worker shutdown", () => {
+  it("joins cleanup after a lifecycle failure and exits nonzero exactly once", async () => {
+    const events: string[] = [];
+    let fail!: (error: Error) => void, finish!: () => void;
+    const failed = new Promise<Error>((resolve) => { fail = resolve; });
+    const cleanup = new Promise<void>((resolve) => { finish = resolve; });
+    const stop = vi.fn(async () => { events.push("stop"); await cleanup; });
+    const host = Object.assign(new EventEmitter(), { connected: true,
+      disconnect: () => events.push("disconnect"), exit: (code: number) => events.push(`exit:${code}`) });
+    const remove = installShutdownHandlers({ start: async () => {}, stop, failed }, host);
+    fail(new Error("journal failed")); await new Promise((resolve) => setImmediate(resolve));
+    host.emit("message", { type: "shutdown" }); host.emit("SIGTERM");
+    expect(events).toEqual(["stop"]); expect(stop).toHaveBeenCalledTimes(1);
+    finish(); await new Promise((resolve) => setImmediate(resolve));
+    expect(events).toEqual(["stop", "disconnect", "exit:1"]); remove();
+  });
+
+  it("a failure arriving during requested Stop cannot turn into exit zero", async () => {
+    let fail!: (error: Error) => void, finish!: () => void;
+    const failed = new Promise<Error>((resolve) => { fail = resolve; });
+    const cleanup = new Promise<void>((resolve) => { finish = resolve; });
+    const stop = vi.fn(() => cleanup), exit = vi.fn(), host = Object.assign(new EventEmitter(), { exit });
+    const remove = installShutdownHandlers({ start: async () => {}, stop, failed }, host);
+    host.emit("SIGTERM"); fail(new Error("late lifecycle failure")); finish();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(stop).toHaveBeenCalledTimes(1); expect(exit).toHaveBeenCalledTimes(1); expect(exit).toHaveBeenCalledWith(1); remove();
+  });
+
+  it("keeps a failed cleanup nonzero and does not exit before it settles", async () => {
+    let reject!: (error: Error) => void;
+    const cleanup = new Promise<void>((_resolve, no) => { reject = no; });
+    const exit = vi.fn(), disconnect = vi.fn(), host = Object.assign(new EventEmitter(), { connected: true, exit, disconnect });
+    const remove = installShutdownHandlers({ start: async () => {}, stop: () => cleanup }, host);
+    host.emit("SIGTERM"); expect(exit).not.toHaveBeenCalled(); reject(new Error("cleanup uncertain"));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(exit).toHaveBeenCalledWith(1); expect(disconnect).not.toHaveBeenCalled(); remove();
+  });
+
+  it("detaches future failure notifications when shutdown handlers are removed", async () => {
+    let fail!: (error: Error) => void;
+    const failed = new Promise<Error>((resolve) => { fail = resolve; });
+    const stop = vi.fn(async () => {}), exit = vi.fn(), host = Object.assign(new EventEmitter(), { exit });
+    const remove = installShutdownHandlers({ start: async () => {}, stop, failed }, host);
+    remove(); fail(new Error("retired owner")); await new Promise((resolve) => setImmediate(resolve));
+    expect(stop).not.toHaveBeenCalled(); expect(exit).not.toHaveBeenCalled();
+  });
+
   it("waits for node process cleanup before disconnecting and exiting, and deduplicates signals", async () => {
     const events: string[] = [];
     let stopped!: () => void;

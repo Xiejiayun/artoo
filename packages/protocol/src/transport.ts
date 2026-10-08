@@ -3,6 +3,9 @@ import type {
   CommandAck,
   NodeHeartbeat,
   NodeHello,
+  NodeSessionProbe,
+  NodeSessionReadyCommand,
+  NodeSessionPongCommand,
   RunEventMessage,
   RunEventAckCommand,
   RunResumeCommand,
@@ -20,9 +23,9 @@ import type {
  * Payloads inside run.start / run.event are owned by @artoo/domain; the wire
  * envelopes are owned by this package (single source of truth, no redefinition).
  */
-export type NodeToServerMessage = NodeHello | NodeHeartbeat | CommandAck | RunEventMessage;
+export type NodeToServerMessage = NodeHello | NodeHeartbeat | CommandAck | RunEventMessage | NodeSessionProbe;
 
-export type ServerToNodeMessage = RunStartCommand | RunStopCommand | ArtifactCollectCommand | RunResumeCommand | RunEventAckCommand;
+export type ServerToNodeMessage = RunStartCommand | RunStopCommand | ArtifactCollectCommand | RunResumeCommand | RunEventAckCommand | NodeSessionReadyCommand | NodeSessionPongCommand;
 
 export type Unsubscribe = () => void;
 

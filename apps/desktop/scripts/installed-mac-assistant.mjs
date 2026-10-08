@@ -128,9 +128,13 @@ export async function runInstalledMacAssistant({ page, workspace, configurationP
     fixture.computer_id = connection.computerId; assert.ok(fixture.computer_id);
     const worker = async (start) => {
       await page.getByRole("link", { name: "Settings", exact: true }).click();
-      await page.getByRole("button", { name: start ? "Start worker" : "Stop worker", exact: true }).click();
+      const target = start ? "running" : "stopped";
+      const current = await page.evaluate(() => window.artooDesktop.daemonStatus());
+      if (current.state !== target) {
+        await page.getByRole("button", { name: start ? "Start worker" : "Stop worker", exact: true }).click();
+      }
       await expect.poll(async () => (await page.evaluate(() => window.artooDesktop.daemonStatus())).state,
-        { timeout: 45_000 }).toBe(start ? "running" : "stopped");
+        { timeout: 45_000 }).toBe(target);
       await expect.poll(async () => {
         const daemon = (await api("/daemons")).daemons.find((item) => item.computer_id === fixture.computer_id);
         return start ? daemon?.status === "online" && daemon.connected === true

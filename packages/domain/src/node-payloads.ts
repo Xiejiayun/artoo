@@ -10,6 +10,7 @@
 import { z } from "zod";
 
 import { ContextPackSchema } from "./context-pack.js";
+import { WorkspaceAllocationRecordSchema } from "./workspace-allocation.js";
 
 export const ArtifactTypeSchema = z.enum([
   "patch",
@@ -40,6 +41,8 @@ export const RunStartPayloadSchema = z.object({
     root: z.string().min(1),
     branch: z.string().nullish(),
   }),
+  /** Structural snapshot only; execution support and coherence must be checked before writes. */
+  workspace_allocation: WorkspaceAllocationRecordSchema.optional(),
   /** Server support advertisement; unknown versions retain legacy behavior. */
   workspace_retention_reporting: z.string().min(1).max(64).optional(),
   context_pack: z

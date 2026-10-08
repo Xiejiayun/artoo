@@ -1,12 +1,11 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { agentInstances, contextPacks, runs } from "@artoo/db";
+import { agentInstances, computers, contextPacks, runs, tasks } from "@artoo/db";
 import { ContextPackSchema, ID_PREFIXES } from "@artoo/domain";
 import type {
   NodeToServerMessage,
   NodeTransport,
-  RunEventMessage,
   RunResumeCommand,
   RunStartCommand,
   RunStopCommand,
@@ -16,17 +15,18 @@ import { and, eq } from "drizzle-orm";
 
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
+import { validatePersistedAllocationStart } from "./persisted-allocation-start.js";
 import {
   failRunDaemonDisconnect,
   failRunStart,
-  ingestRunEvent,
-  type IngestEnvelope,
-  type RunIngestEvent,
+  ingestWireRunEvent,
 } from "./services/run-service.js";
 
 const FALLBACK_WORKSPACE_ROOT = join(tmpdir(), "artoo-workspace");
 
 export interface NodeBinding {
+  /** Exact feature support from this current accepted hello; false once disposed. */
+  supportsExecutionFeature(feature: string): boolean;
   /** Build + send run.start for a queued run over the node transport. */
   dispatchRunStart(runId: string): Promise<void>;
   /** Build + send run.resume for an already-active run (#115 P2-S3 reconnect). */
@@ -43,7 +43,7 @@ export interface NodeBinding {
 /**
  * Server side of the node protocol. Owns a {@link NodeTransport}: dispatches
  * run.start / run.resume commands, and ingests Node->Server messages — run.event
- * through the same {@link ingestRunEvent} path the dev mock-execute uses,
+ * through the qualified full-frame {@link ingestWireRunEvent} receiver,
  * rejected run.start command.ack through {@link failRunStart} recovery, and
  * rejected run.resume command.ack through the daemon_disconnect failure path.
  *
@@ -56,11 +56,17 @@ export function attachNodeBinding(
   ctx: ServerContext,
   transport: NodeTransport,
   computerId: string,
+  executionFeatures: readonly string[] = [],
+  isCurrentBinding: () => boolean = () => true,
 ): NodeBinding {
+  // Copy the accepted hello snapshot so later caller mutation cannot change it.
+  const executionFeatureSet = new Set(executionFeatures);
   const pendingCommandRun = new Map<string, string>(); // command_id -> run_id (run.start)
   const pendingResumeRun = new Map<string, { runId: string; timer: ReturnType<typeof setTimeout> }>();
   const pendingStops = new Map<string, { runId: string; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const stoppingRuns = new Map<string, Promise<void>>();
+  // Coalesces only this binding's concurrent calls, never durable node ownership.
+  const startingRuns = new Map<string, Promise<void>>();
   let closed = false;
   async function ownsRun(runId: string): Promise<boolean> {
     const run = (await ctx.db.db.select({ computerId: runs.computerId }).from(runs)
@@ -79,21 +85,25 @@ export function attachNodeBinding(
     // The credential-bound identity is authoritative for every inbound frame.
     if (closed || message.node_id !== computerId) return;
     if (message.kind === "run.event") {
-      const envelope = mapRunEvent(message);
-      if (envelope !== null) {
-        enqueue(async () => {
-          if (!(await ownsRun(envelope.runId))) return;
-          let status: "accepted" | "rejected" = "accepted";
-          try { await ingestRunEvent(ctx, envelope); } catch { status = "rejected"; }
-          await transport.send({
-            kind: "command", id: `receipt:${envelope.runId}:${envelope.sequence}`,
-            idempotency_key: `receipt:${envelope.runId}:${envelope.sequence}`, type: "run.event.ack",
-            payload: { run_id: envelope.runId, sequence: envelope.sequence, status,
-              ...(status === "rejected" ? { message: "run event could not be accepted" } : {}),
-            },
-          });
+      // Snapshot serialized-wire semantics before queued work can observe caller mutation.
+      let frame: typeof message;
+      try { frame = JSON.parse(JSON.stringify(message)) as typeof message; } catch { return; }
+      enqueue(async () => {
+        if (!(await ownsRun(frame.run_id))) return;
+        let status: "accepted" | "rejected" = "accepted";
+        try {
+          const result = await ingestWireRunEvent(ctx, frame);
+          if (result === null) return;
+          if (!result.receiptBodyIdentity) throw new Error("run event did not obtain a qualified receipt");
+        } catch { status = "rejected"; }
+        await transport.send({
+          kind: "command", id: `receipt:${frame.run_id}:${frame.sequence}`,
+          idempotency_key: `receipt:${frame.run_id}:${frame.sequence}`, type: "run.event.ack",
+          payload: { run_id: frame.run_id, sequence: frame.sequence, status,
+            ...(status === "rejected" ? { message: "run event could not be accepted" } : {}),
+          },
         });
-      }
+      });
     } else if (message.kind === "command.ack" && pendingStops.has(message.command_id)) {
       const pending = pendingStops.get(message.command_id)!;
       pendingStops.delete(message.command_id);
@@ -147,75 +157,115 @@ export function attachNodeBinding(
     await failRunDaemonDisconnect(ctx, runId, computerId, true);
   }
 
+  function assertCurrentStartBinding(runId: string): void {
+    if (closed || !isCurrentBinding()) {
+      throw AppError.conflict("Run start blocked because the node binding is no longer current",
+        { run_id: runId, dispatch: "blocked", reason: closed ? "binding_closed" : "binding_replaced" });
+    }
+  }
+
+  function assertAllocationFeature(runId: string): void {
+    if (!binding.supportsExecutionFeature("workspace-allocation.per-run-v1")) {
+      throw AppError.conflict("Run start blocked because the current node lacks allocation support",
+        { run_id: runId, dispatch: "blocked", reason: "unsupported_execution_feature" });
+    }
+  }
+
+  async function sendRunStart(runId: string): Promise<void> {
+    assertCurrentStartBinding(runId);
+    const [run] = await ctx.db.db.select().from(runs).where(and(
+      eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId),
+    ));
+    assertCurrentStartBinding(runId);
+    if (!run || run.computerId !== computerId) throw AppError.permissionDenied("run is not owned by this node");
+    if (run.status !== "queued") return;
+
+    // Only an explicit null record selects legacy behavior.
+    const allocated = run.workspaceAllocation !== null;
+    if (allocated) assertAllocationFeature(runId);
+    const persistedContextPack = run.contextPackId === null ? undefined
+      : (await ctx.db.db.select().from(contextPacks).where(and(
+        eq(contextPacks.id, run.contextPackId), eq(contextPacks.organizationId, ctx.organizationId),
+      )))[0];
+    assertCurrentStartBinding(runId);
+    let workspaceRoot: string;
+    let workspaceBranch = run.workspaceBranch;
+    let allocation: RunStartCommand["payload"]["workspace_allocation"];
+    let context: RunStartCommand["payload"]["context_pack"];
+
+    if (allocated) {
+      const [[computer], [task]] = await Promise.all([
+        ctx.db.db.select({ os: computers.os }).from(computers).where(and(
+          eq(computers.id, computerId), eq(computers.organizationId, ctx.organizationId),
+        )),
+        ctx.db.db.select({ projectId: tasks.projectId }).from(tasks).where(and(
+          eq(tasks.id, run.taskId), eq(tasks.organizationId, ctx.organizationId),
+        )),
+      ]);
+      assertCurrentStartBinding(runId);
+      const validated = validatePersistedAllocationStart(run, persistedContextPack,
+        { computerOs: computer?.os, projectId: task?.projectId });
+      workspaceRoot = validated.root;
+      workspaceBranch = validated.branch;
+      allocation = validated.allocation;
+      context = validated.context;
+    } else {
+      const instance = run.workspaceRoot === null
+        ? (await ctx.db.db.select({ workspaceRoot: agentInstances.workspaceRoot }).from(agentInstances)
+          .where(eq(agentInstances.id, run.agentInstanceId)))[0]
+        : undefined;
+      assertCurrentStartBinding(runId);
+      workspaceRoot = run.workspaceRoot ?? instance?.workspaceRoot ?? FALLBACK_WORKSPACE_ROOT;
+      const contextPackId = run.contextPackId ?? ctx.idGen.generate(ID_PREFIXES.contextPack);
+      const parsed = persistedContextPack === undefined ? undefined : ContextPackSchema.safeParse(persistedContextPack.payload);
+      context = parsed?.success === true
+        ? { id: contextPackId, payload: parsed.data }
+        : { id: contextPackId, uri: "artoo://contextpack/" + contextPackId };
+    }
+
+    // A changed terminal/ownership state observed during the reads must not send.
+    const [latest] = await ctx.db.db.select({ status: runs.status, computerId: runs.computerId }).from(runs).where(and(
+      eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId),
+    ));
+    assertCurrentStartBinding(runId);
+    if (!latest || latest.computerId !== computerId) throw AppError.permissionDenied("run is not owned by this node");
+    if (latest.status !== "queued") return;
+    if (allocated) assertAllocationFeature(runId);
+
+    const commandId = ctx.idGen.generate("cmd");
+    const command: RunStartCommand = {
+      kind: "command", id: commandId, idempotency_key: runId + ":start", type: "run.start",
+      payload: {
+        run_id: runId, task_id: run.taskId, agent_instance_id: run.agentInstanceId, runtime: run.runtimeId,
+        workspace: { root: workspaceRoot, ...(workspaceBranch !== null ? { branch: workspaceBranch } : {}) },
+        ...(allocation !== undefined ? { workspace_allocation: allocation } : {}),
+        ...(run.workspaceRoot !== null && workspaceBranch !== null ? { workspace_retention_reporting: "typed-v1" } : {}),
+        context_pack: context,
+        // The base is metadata, never a wider write grant.
+        policy_snapshot: { filesystem_write_scope: [workspaceRoot], requires_approval: ["git.push", "external.post"] },
+        artifact_rules: { paths: ["artifacts/**", "*.patch"] },
+      },
+    };
+    assertCurrentStartBinding(runId);
+    if (allocated) assertAllocationFeature(runId);
+    pendingCommandRun.set(commandId, runId);
+    // After send is invoked, disconnect/error may still mean delivery occurred.
+    // Do not fail the run or release leases from this dispatch path.
+    await transport.send(command);
+  }
+
   const binding: NodeBinding = {
     receive,
+    supportsExecutionFeature(feature): boolean {
+      return !closed && isCurrentBinding() && executionFeatureSet.has(feature);
+    },
     async dispatchRunStart(runId: string): Promise<void> {
-      if (!(await ownsRun(runId))) throw AppError.permissionDenied("run is not owned by this node");
-      const run = (
-        await ctx.db.db
-          .select()
-          .from(runs)
-          .where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)))
-      )[0];
-      if (run === undefined || run.status !== "queued") {
-        return;
-      }
-      const instance = (
-        await ctx.db.db
-          .select()
-          .from(agentInstances)
-          .where(eq(agentInstances.id, run.agentInstanceId))
-      )[0];
-      const workspaceRoot = run.workspaceRoot ?? instance?.workspaceRoot ?? FALLBACK_WORKSPACE_ROOT;
-      // Use the ContextPack persisted at assign time (#21 Part D). The transient
-      // fallback only covers legacy/defensive rows with no pack of record.
-      const contextPackId = run.contextPackId ?? ctx.idGen.generate(ID_PREFIXES.contextPack);
-      const persistedContextPack =
-        run.contextPackId === null
-          ? undefined
-          : (
-              await ctx.db.db
-                .select()
-                .from(contextPacks)
-                .where(and(eq(contextPacks.id, run.contextPackId), eq(contextPacks.organizationId, ctx.organizationId)))
-            )[0];
-      const parsedContextPack =
-        persistedContextPack === undefined ? undefined : ContextPackSchema.safeParse(persistedContextPack.payload);
-      const commandId = ctx.idGen.generate("cmd");
-      pendingCommandRun.set(commandId, runId);
-
-      const command: RunStartCommand = {
-        kind: "command",
-        id: commandId,
-        idempotency_key: `${runId}:start`,
-        type: "run.start",
-        payload: {
-          run_id: runId,
-          task_id: run.taskId,
-          agent_instance_id: run.agentInstanceId,
-          runtime: run.runtimeId,
-          // Branch-backed worktree (#23): include `branch` only when the run was
-          // assigned one, so artood materializes a worktree; ordinary runs send
-          // just `root`. The node worktree-root authorization stays governed by
-          // policy_snapshot.filesystem_write_scope = [workspaceRoot] (unchanged) —
-          // write_paths narrowing lives in the ContextPack domain, not here.
-          workspace: {
-            root: workspaceRoot,
-            ...(run.workspaceBranch != null ? { branch: run.workspaceBranch } : {}),
-          },
-          ...(run.workspaceRoot != null && run.workspaceBranch != null ? { workspace_retention_reporting: "typed-v1" } : {}),
-          context_pack:
-            parsedContextPack?.success === true
-              ? { id: contextPackId, payload: parsedContextPack.data }
-              : { id: contextPackId, uri: `artoo://contextpack/${contextPackId}` },
-          policy_snapshot: {
-            filesystem_write_scope: [workspaceRoot],
-            requires_approval: ["git.push", "external.post"],
-          },
-          artifact_rules: { paths: ["artifacts/**", "*.patch"] },
-        },
-      };
-      await transport.send(command);
+      assertCurrentStartBinding(runId);
+      const existing = startingRuns.get(runId);
+      if (existing) return existing;
+      const operation = sendRunStart(runId).finally(() => { startingRuns.delete(runId); });
+      startingRuns.set(runId, operation);
+      return operation;
     },
 
     // #115 P2-S3: ask a reconnected node to continue an already-active run after a
@@ -304,39 +354,4 @@ export function attachNodeBinding(
     },
   };
   return binding;
-}
-
-/** Map a protocol run.event message to the run-service ingest envelope. */
-function mapRunEvent(message: RunEventMessage): IngestEnvelope | null {
-  const body = message.event;
-  let event: RunIngestEvent | null;
-  if (body.type === "run.output") {
-    event = { kind: "output", stream: body.payload.stream, text: body.payload.text };
-  } else if (body.type === "run.answer") {
-    event = { kind: "answer", text: body.payload.text };
-  } else if (body.type === "run.usage") {
-    event = { kind: "usage", usage: body.payload };
-  } else if (body.type === "run.workspace.retained") {
-    event = { kind: "workspace_retained", retention: body.payload };
-  } else if (body.type === "artifact.created") {
-    event = {
-      kind: "artifact",
-      artifactType: body.payload.type,
-      uri: body.payload.uri,
-      checksum: body.payload.checksum ?? null,
-    };
-  } else if (body.type === "run.lifecycle") {
-    const phase = body.payload.phase;
-    if (phase === "started" || phase === "completed" || phase === "failed" || phase === "cancelled") {
-      event = { kind: "lifecycle", phase, failureReason: body.payload.reason ?? undefined };
-    } else {
-      event = null; // paused/resumed are not part of the v0.1 core loop
-    }
-  } else {
-    event = null;
-  }
-  if (event === null) {
-    return null;
-  }
-  return { runId: message.run_id, nodeId: message.node_id, sequence: message.sequence, event };
 }

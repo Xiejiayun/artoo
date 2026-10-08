@@ -16,6 +16,7 @@ import {
   type TaskStatus,
 } from "@artoo/domain";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import type { RunEventMessage } from "@artoo/protocol";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -25,6 +26,7 @@ import { enforceGoalBudget } from "./budget-service.js";
 import * as dagService from "./dag-service.js";
 import { enqueueArtifactForIntegration } from "./integration-service.js";
 import { releaseRunLeases } from "./lease-service.js";
+import { qualifyRunEventMessage } from "./run-event-receipt.js";
 import { transitionRun, transitionTask } from "./transition-service.js";
 import { unconfirmedDisconnectRunIds } from "./execution-state.js";
 import { previewForActiveSynthesis } from "./discussion-plan.js";
@@ -161,10 +163,30 @@ export interface IngestResult {
  * and, for user-facing milestones, a task-room message. High-frequency stdout
  * becomes a run.output event only (it folds into the run timeline, not chat).
  */
-export async function ingestRunEvent(
-  ctx: ServerContext,
-  env: IngestEnvelope,
+export function ingestRunEvent(ctx: ServerContext, env: IngestEnvelope): Promise<IngestResult> {
+  // Domain-only callers never obtain full protocol-body qualification.
+  return ingestRunEventInternal(ctx, env, null);
+}
+
+export interface WireIngestResult extends IngestResult {
+  receiptBodyIdentity: string;
+}
+
+/** Only this full-frame path may supply a qualified accepted run.event ACK. */
+export async function ingestWireRunEvent(ctx: ServerContext, rawFrame: unknown): Promise<WireIngestResult | null> {
+  const qualified = qualifyRunEventMessage(rawFrame);
+  const env = mapRunEvent(qualified.message);
+  if (env === null) return null;
+  const result = await ingestRunEventInternal(ctx, env, qualified.bodyIdentity);
+  return { ...result, receiptBodyIdentity: qualified.bodyIdentity };
+}
+
+async function ingestRunEventInternal(
+  ctx: ServerContext, env: IngestEnvelope, wireIdentity: string | null,
 ): Promise<IngestResult> {
+  if (!Number.isInteger(env.sequence) || env.sequence < 0 || env.sequence > 2147483647) {
+    throw AppError.validation("run event sequence must fit a nonnegative int32");
+  }
   const now = ctx.clock.nowIso();
   // #115 P3a: captured inside the tx; a terminal run event on a goal-linked task
   // triggers budget enforcement AFTER the ingest commits (below), so a budget
@@ -172,9 +194,12 @@ export async function ingestRunEvent(
   let budgetGoalId: string | null = null;
   const result = await ctx.db.transaction(async (tx) => {
     const runQuery = tx.select().from(runs).where(and(eq(runs.id, env.runId), eq(runs.organizationId, ctx.organizationId)));
-    const run = (await (env.event.kind === "workspace_retained" ? runQuery.for("update") : runQuery))[0];
+    const run = (await runQuery.for("update"))[0];
     if (run === undefined) {
       throw AppError.notFound(`run not found: ${env.runId}`, { run_id: env.runId });
+    }
+    if (wireIdentity !== null && env.nodeId !== run.computerId) {
+      throw AppError.permissionDenied("run is not owned by this node");
     }
     const taskRow = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
     if (taskRow === undefined) {
@@ -190,7 +215,7 @@ export async function ingestRunEvent(
     const retention = reported?.success ? StoredWorkspaceRetainedPayloadSchema.parse({ ...reported.data, reporter_computer_id: run.computerId }) : undefined;
 
     const duplicate = await tx
-      .select({ eventId: runEventIngest.eventId })
+      .select({ eventId: runEventIngest.eventId, bodyIdentity: runEventIngest.bodyIdentity })
       .from(runEventIngest)
       .where(
         and(
@@ -200,7 +225,18 @@ export async function ingestRunEvent(
         ),
       );
     if (duplicate.length > 0) {
-      if (retention) {
+      const existing = duplicate[0]!;
+      if (wireIdentity !== null) {
+        if (existing.bodyIdentity === null) {
+          throw AppError.conflict("legacy run event receipt has no qualified body identity");
+        }
+        if (existing.bodyIdentity !== wireIdentity) {
+          throw AppError.conflict("run event receipt body mismatch");
+        }
+      } else if (existing.bodyIdentity !== null) {
+        throw AppError.conflict("qualified run event receipt requires the original wire frame");
+      }
+      if (retention && wireIdentity === null) {
         const stored = (await tx.select().from(eventLog).where(and(eq(eventLog.id, duplicate[0]!.eventId), eq(eventLog.organizationId, ctx.organizationId))))[0];
         const projected = projectWorkspaceRetention(run, stored);
         if (!projected || projected.sequence !== env.sequence || !isDeepStrictEqual(stored?.payload, retention)) {
@@ -406,6 +442,7 @@ export async function ingestRunEvent(
       runId: env.runId,
       sequence: env.sequence,
       eventId,
+      bodyIdentity: wireIdentity,
       createdAt: now,
     });
 
@@ -661,4 +698,39 @@ export async function mockExecuteRun(
     sequence: 4,
     event: { kind: "lifecycle", phase: "completed" },
   });
+}
+
+/** Map a protocol run.event message to the run-service ingest envelope. */
+function mapRunEvent(message: RunEventMessage): IngestEnvelope | null {
+  const body = message.event;
+  let event: RunIngestEvent | null;
+  if (body.type === "run.output") {
+    event = { kind: "output", stream: body.payload.stream, text: body.payload.text };
+  } else if (body.type === "run.answer") {
+    event = { kind: "answer", text: body.payload.text };
+  } else if (body.type === "run.usage") {
+    event = { kind: "usage", usage: body.payload };
+  } else if (body.type === "run.workspace.retained") {
+    event = { kind: "workspace_retained", retention: body.payload };
+  } else if (body.type === "artifact.created") {
+    event = {
+      kind: "artifact",
+      artifactType: body.payload.type,
+      uri: body.payload.uri,
+      checksum: body.payload.checksum ?? null,
+    };
+  } else if (body.type === "run.lifecycle") {
+    const phase = body.payload.phase;
+    if (phase === "started" || phase === "completed" || phase === "failed" || phase === "cancelled") {
+      event = { kind: "lifecycle", phase, failureReason: body.payload.reason ?? undefined };
+    } else {
+      event = null; // paused/resumed are not part of the v0.1 core loop
+    }
+  } else {
+    event = null;
+  }
+  if (event === null) {
+    return null;
+  }
+  return { runId: message.run_id, nodeId: message.node_id, sequence: message.sequence, event };
 }

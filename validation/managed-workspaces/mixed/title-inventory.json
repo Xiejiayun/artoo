@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "scope": "Prepared source titles, not runtime acceptance",
+  "phases": {
+    "mixed": {
+      "expected_total_tests": 2,
+      "files": {
+        "validation/managed-workspaces/mixed/mixed-writer.test.ts": [
+          "M01 one qualified worker executes real assistant, discussion contribution, allocated task and ordinary task routes",
+          "M02 reopened real journal rejects ordinary respawn and both mode changes while a fresh ordinary route still executes"
+        ]
+      }
+    }
+  }
+}

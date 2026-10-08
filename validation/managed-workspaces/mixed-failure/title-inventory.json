@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "scope": "Prepared source titles, not runtime acceptance",
+  "phases": {
+    "mixed-failure": {
+      "expected_total_tests": 2,
+      "files": {
+        "validation/managed-workspaces/mixed-failure/mixed-failure.test.ts": [
+          "F01 real idle prepared opt-out journal failure automatically closes its qualified session",
+          "F02 real journal failure automatically closes simultaneously active ordinary and allocated producers"
+        ]
+      }
+    }
+  }
+}

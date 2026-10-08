@@ -109,13 +109,13 @@ export async function runPackagedSmoke(platform, { macDistribution, macViewport 
     checkedAt: startedAt, started_at: startedAt, run_id: runId, checks, captures, screenshots,
     package_reused: !fromDmg && process.env.ARTOO_SMOKE_SKIP_BUILD === "1",
     package_provenance: fromDmg ? "DMG and ZIP built during this invocation; the app is installed from that verified, read-only mounted DMG" : process.env.ARTOO_SMOKE_SKIP_BUILD === "1" ? "Existing package; recorded source identifies the test harness and does not prove the package was built from this revision" : "Package built from the working tree during this invocation",
-    scope: `${platformName} packaged app: pairing, authenticated realtime, worker lifecycle, task execution, artifact download, review and restart recovery${isMac ? ", process-backed planning, coordinator instruction disclosure, human plan acceptance, direct-assistant waiting/retry/cancellation, cross-project historical mentions with read recovery and draft persistence, four-run task correction with retained Git work, and separate zero-artifact success with historical recovery and exact Copy values" : ""}`,
+    scope: `${platformName} packaged app: pairing, authenticated realtime, worker lifecycle, task execution, artifact download, review and restart recovery${isMac ? ", installed journal preparation with new allocations disabled, ordinary execution through the prepared worker, process-backed planning, coordinator instruction disclosure, human plan acceptance, direct-assistant waiting/retry/cancellation, cross-project historical mentions with read recovery and draft persistence, four-run task correction with retained Git work, and separate zero-artifact success with historical recovery and exact Copy values" : ""}`,
     cleanup_complete: false,
     distribution: isMac ? (fromDmg ? "Unsigned preview DMG installed in an isolated directory; no Developer ID, notarization or Gatekeeper trust claim" : "Unsigned packaged .app copied to an isolated installation; signing, notarization and updates are separate release gates") : "NSIS installed package",
     modelExecution: "Temporary CLI fixture through production Codex adapter; no real model quality claim",
     ownerAuthentication: "Test-provisioned owner cookie; native pairing and authorization use production endpoints" };
   mkdirSync(artifactDir, { recursive: true });
-  for (const filename of [`${label}-desktop-smoke.json`, `${label}-desktop-smoke.html`, `${label}-desktop-smoke.png`, `${label}-desktop-smoke-failure.png`, `${label}-artifact.patch`, `${label}-artifact-after-restart.patch`, `${label}-desktop-connect.png`, `${label}-desktop-worker.png`, `${label}-desktop-restored.png`, `${label}-desktop-approval-needs-info.png`, `${label}-desktop-approval-replaced.png`, ...(!isMac ? ["windows-live-copilot.json", "windows-live-copilot-plan.png"] : [])]) {
+  for (const filename of [`${label}-desktop-smoke.json`, `${label}-desktop-smoke.html`, `${label}-desktop-smoke.png`, `${label}-desktop-smoke-failure.png`, `${label}-artifact.patch`, `${label}-artifact-after-restart.patch`, `${label}-desktop-connect.png`, `${label}-desktop-worker.png`, `${label}-desktop-restored.png`, `${label}-desktop-approval-needs-info.png`, `${label}-desktop-approval-replaced.png`, ...(isMac ? [`${label}-desktop-managed-ready.png`] : ["windows-live-copilot.json", "windows-live-copilot-plan.png"])]) {
     rmSync(join(artifactDir, filename), { force: true });
   }
   for (const path of [liveEvidence.reportPath, liveEvidence.planScreenshotPath, liveEvidence.chatScreenshotPath]) rmSync(path, { force: true });
@@ -296,6 +296,7 @@ export async function runPackagedSmoke(platform, { macDistribution, macViewport 
       report.package = packagedApp;
       report.packageAsarSha256 = createHash("sha256").update(readFileSync(join(packagedApp, "Contents", "Resources", "app.asar"))).digest("hex");
       report.packageDaemonSha256 = createHash("sha256").update(readFileSync(join(packagedApp, "Contents", "Resources", "app.asar.unpacked", "daemon", "artood.mjs"))).digest("hex");
+      report.packageJournalWorkerSha256 = createHash("sha256").update(readFileSync(join(packagedApp, "Contents", "Resources", "app.asar.unpacked", "daemon", "journal-worker.js"))).digest("hex");
     } else {
       const { version } = JSON.parse(readFileSync(join(desktopDir, "package.json"), "utf8"));
       installer = join(desktopDir, "release", `Artoo Setup ${version}.exe`);
@@ -399,12 +400,12 @@ ${isMac ? "}" : ""}
       appExe = join(installDir, "Artoo.app", "Contents", "MacOS", "Artoo");
       appEnv.ARTOO_SMOKE_EXECUTABLE = appExe;
       if (dmgMount) {
-        for (const [path, hash] of [["app.asar", report.packageAsarSha256], ["app.asar.unpacked/daemon/artood.mjs", report.packageDaemonSha256]]) {
+        for (const [path, hash] of [["app.asar", report.packageAsarSha256], ["app.asar.unpacked/daemon/artood.mjs", report.packageDaemonSha256], ["app.asar.unpacked/daemon/journal-worker.js", report.packageJournalWorkerSha256]]) {
           assert.equal(createHash("sha256").update(readFileSync(join(installDir, "Artoo.app", "Contents", "Resources", path))).digest("hex"), hash, "Installed app bytes differ from the mounted DMG");
         }
         dmgMount.detach();
         report.dmg_installation.detached_before_launch = true;
-        check("Installed app and daemon match the DMG; its volume is detached before the complete business workflow starts");
+        check("Installed app, daemon and journal worker match the DMG; its volume is detached before the complete business workflow starts");
       }
     } else {
       run(installer, ["/S", `/D=${installDir}`], 180_000);
@@ -413,6 +414,7 @@ ${isMac ? "}" : ""}
     }
     const resources = isMac ? join(installDir, "Artoo.app", "Contents", "Resources") : join(installDir, "resources");
     assert.ok(existsSync(join(resources, "app.asar.unpacked/daemon/artood.mjs")), "Bundled daemon missing");
+    assert.ok(existsSync(join(resources, "app.asar.unpacked/daemon/journal-worker.js")), "Bundled journal worker missing");
     await launchApp();
     await expect(page.getByRole("heading", { name: "Connect this computer" })).toBeVisible();
     const packagedRenderer = await page.evaluate(() => ({
@@ -459,6 +461,28 @@ ${isMac ? "}" : ""}
     assert.equal(readFileSync(join(userData, "connection.json"), "utf8").includes(fixtureKey), false, "Provider key persisted in plaintext");
     assert.equal(JSON.stringify(savedCodex).includes(fixtureKey), false, "Provider key exposed in native status");
     await expect(page.getByLabel("Model API key", { exact: true })).toHaveValue("");
+    if (isMac) {
+      const beforePreparation = await page.evaluate(() => window.artooDesktop.daemonStatus());
+      assert.equal(beforePreparation.managedWorkspace.state, "unprepared");
+      assert.equal(beforePreparation.config.allowNewAllocations, false);
+      assert.ok(!beforePreparation.config.worktreeBaseRepo, "Initial opt-out preparation must not need a Git repository");
+      await page.getByRole("button", { name: "Prepare separate workspaces", exact: true }).click();
+      const ready = page.getByText("Ready for separate task workspaces", { exact: true });
+      await expect(ready).toBeVisible();
+      const prepared = await page.evaluate(() => window.artooDesktop.daemonStatus());
+      assert.equal(prepared.state, "stopped");
+      assert.equal(prepared.configurationLocked, false);
+      assert.deepEqual(prepared.managedWorkspace, { state: "ready" });
+      assert.equal(prepared.config.allowNewAllocations, false);
+      assert.ok(!prepared.config.worktreeBaseRepo);
+      report.managedPreparation = { state: prepared.managedWorkspace.state,
+        allow_new_allocations: prepared.config.allowNewAllocations,
+        repository_configured: Boolean(prepared.config.worktreeBaseRepo),
+        worker_state_after_provision: prepared.state, configuration_locked: prepared.configurationLocked };
+      await ready.scrollIntoViewIfNeeded();
+      await captureScene(`${label}-desktop-managed-ready.png`, "Installed Mac journal preparation completed; new allocations remain disabled and no Git repository is required");
+      check("Installed Mac prepares its real journal through Settings while stopped, without enabling allocations or requiring a repository");
+    }
     await page.getByRole("button", { name: "Start worker", exact: true }).click(); await workerState("running");
     const firstPid = (await page.evaluate(() => window.artooDesktop.daemonStatus())).pid;
     const duplicate = spawnSync(appExe, [], { cwd: repoRoot, env: appEnv, windowsHide: true, stdio: "ignore", timeout: 20_000 });
@@ -572,6 +596,12 @@ ${isMac ? "}" : ""}
     assert.deepEqual(await page.evaluate(() => window.artooDesktop.getConnection()), connection);
     assert.ok((await page.evaluate(() => window.artooDesktop.daemonStatus())).config.allowedRoots.includes(workspace));
     assert.deepEqual((await page.evaluate(() => window.artooDesktop.daemonStatus())).config.codex, savedCodex);
+    if (isMac) {
+      const restored = await page.evaluate(() => window.artooDesktop.daemonStatus());
+      assert.deepEqual(restored.managedWorkspace, { state: "ready" });
+      assert.equal(restored.config.allowNewAllocations, false);
+      report.managedPreparation.restored_after_app_restart = restored.managedWorkspace.state;
+    }
     await downloadPatch(`${label}-artifact-after-restart.patch`);
     check("App/server restart preserve device identity, worker settings, reviewed task, and downloadable artifact");
     await captureScene(`${label}-desktop-restored.png`, "Completed task and downloadable artifact restored after app and server restart");

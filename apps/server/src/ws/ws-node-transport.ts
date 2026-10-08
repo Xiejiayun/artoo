@@ -2,6 +2,7 @@ import {
   commandAckSchema,
   nodeHeartbeatSchema,
   nodeHelloSchema,
+  nodeSessionProbeSchema,
   runEventMessageSchema,
   type NodeToServerMessage,
   type NodeTransport,
@@ -11,7 +12,8 @@ import {
 
 /** The minimal surface of a `ws` WebSocket we use (avoids a direct ws dep). */
 export interface RawServerSocket {
-  send(data: string): void;
+  readonly readyState?: number;
+  send(data: string, callback?: (error?: Error) => void): void;
   on(event: "message", cb: (data: unknown) => void): void;
   on(event: "close", cb: () => void): void;
   close(code?: number, reason?: string): void;
@@ -39,6 +41,21 @@ export function createServerNodeTransport(socket: RawServerSocket): NodeTranspor
 
   return {
     async send(message: ServerToNodeMessage): Promise<void> {
+      if (message.type === "node.session.ready" || message.type === "node.session.pong") {
+        // This proves only local write completion. A peer's matching probe is
+        // still required; local completion is never a run-event receipt.
+        if (socket.readyState !== 1) throw new Error("Managed session socket is not open");
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("Managed session local write expired")), 10000);
+          try { socket.send(JSON.stringify(message), (error) => {
+            clearTimeout(timer);
+            if (error) reject(error);
+            else if (socket.readyState !== 1) reject(new Error("Managed session socket closed during local write"));
+            else resolve();
+          }); } catch (error) { clearTimeout(timer); reject(error); }
+        });
+        return;
+      }
       socket.send(JSON.stringify(message));
     },
     subscribe(handler): Unsubscribe {
@@ -86,6 +103,8 @@ export function parseNodeToServer(data: unknown): NodeToServerMessage | null {
   switch (kind) {
     case "node.hello":
       return ok(nodeHelloSchema.safeParse(raw));
+    case "node.session.probe":
+      return ok(nodeSessionProbeSchema.safeParse(raw));
     case "node.heartbeat":
       return ok(nodeHeartbeatSchema.safeParse(raw));
     case "command.ack":

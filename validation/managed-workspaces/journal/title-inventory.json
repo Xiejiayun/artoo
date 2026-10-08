@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "scope": "Exact original twelve titles split into independently selected journal11 and history1; both matching-source/runtime reports required",
+  "phases": {
+    "journal": {
+      "expected_total_tests": 11,
+      "files": {
+        "validation/managed-workspaces/journal/journal.git.test.ts": [
+          "two independent clients claim one immutable run; copied/foreign permits and mode changes grant no authority",
+          "Stop-before-start writes a permanent run fence across an actual client restart and blocks mode downgrade",
+          "admitted, preparing and launch_intent survive independent process reopen as unknown with zero respawn",
+          "a real started writer closed without durable settlement reopens unknown rather than acquiring another permit",
+          "trusted bridge uses the frozen full payload and real closure atomically preserves the final outcome plus both event identities",
+          "real post-spawn startup cancellation persists authenticated closure and terminal events without inventing started",
+          "real not_spawned startup evidence remains unknown and cannot be promoted by a fresh journal permit",
+          "durable output events retain sequence/content on restart and reject conflicting same-event content",
+          "a real independent SQLite lock failure disables admission without returning a permit",
+          "a real committed admission whose response arrives after the parent deadline never grants a late permit",
+          "namespace, scope, permissions, missing marker and corrupt storage fail closed without implicit provisioning"
+        ]
+      }
+    },
+    "history": {
+      "expected_total_tests": 1,
+      "files": {
+        "validation/managed-workspaces/journal/history.git.test.ts": [
+          "acknowledged output history does not consume the bounded pending-event backlog"
+        ]
+      }
+    }
+  }
+}
