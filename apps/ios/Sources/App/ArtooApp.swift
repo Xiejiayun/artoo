@@ -311,13 +311,22 @@ private struct PairDeviceView: View {
                 Section { NavigationLink("Privacy and data") { PrivacyView() } }
             }.navigationTitle("Welcome to Artoo").scrollDismissesKeyboard(.interactively)
                 .disabled(!container.restored || container.isConnecting)
-                .toolbar {
-                    ToolbarItemGroup(placement: .keyboard) {
-                        if focusedField != nil {
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if focusedField != nil {
+                        HStack {
                             Spacer()
-                            Button("Done") { focusedField = nil }
-                                .accessibilityIdentifier("pairing.keyboard.done")
+                            Button { focusedField = nil } label: {
+                                Text("Done")
+                                    .frame(minWidth: 44, minHeight: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .accessibilityIdentifier("pairing.keyboard.done")
                         }
+                        .padding(.horizontal, 16)
+                        .background(ArtooTokens.ColorToken.surfaceRaised)
+                        .overlay(alignment: .top) { Divider() }
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("pairing.keyboard.controls")
                     }
                 }
         }
