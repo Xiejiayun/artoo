@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 public struct AppConfig {
     public var useMock: Bool
@@ -246,6 +247,7 @@ public struct RootView: View {
     }
 }
 
+@MainActor
 private struct PairDeviceView: View {
     private enum InputField: Hashable { case server, name, code }
     @EnvironmentObject private var container: AppContainer
@@ -253,63 +255,70 @@ private struct PairDeviceView: View {
     @State private var code = ""
     @State private var deviceName = "My iPhone"
     @State private var localHTTP = false
+    @State private var isVisible = false
+    @State private var focusReveal = FocusRevealController()
     @FocusState private var focusedField: InputField?
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    ArtooPageIntro(title: "Your team, on the go", message: "Chat, review work, and keep projects moving.", systemImage: "bubble.left.and.bubble.right.fill")
-                }
-                Section {
-                    Text("In Web Settings, choose Connect a device → iOS to get your pairing code.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Team server").font(.caption).foregroundStyle(.secondary)
-                        TextField("https://artoo.example.com", text: $server).keyboardType(.URL)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("serverURL")
-                            .focused($focusedField, equals: .server).submitLabel(.next)
-                            .onSubmit { focusedField = .name }
-                    }
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Device name").font(.caption).foregroundStyle(.secondary)
-                        TextField("Device name", text: $deviceName).accessibilityIdentifier("pairingDeviceName")
-                            .focused($focusedField, equals: .name).submitLabel(.next)
-                            .onSubmit { focusedField = .code }
-                    }
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Pairing code").font(.caption).foregroundStyle(.secondary)
-                        TextField("One-time pairing code", text: $code).textInputAutocapitalization(.characters)
-                            .textContentType(.oneTimeCode).privacySensitive()
-                            .autocorrectionDisabled().accessibilityIdentifier("pairingCode")
-                            .focused($focusedField, equals: .code).submitLabel(.done)
-                            .onSubmit { focusedField = nil }
-                    }
-                    Button("Connect") {
-                        focusedField = nil
-                        Task { await container.pair(server: server, code: code, displayName: deviceName, allowLocalHTTP: localHTTP); code = "" }
-                    }
-                        .frame(minHeight: 44)
-                        .disabled(container.isConnecting || server.isEmpty || code.isEmpty)
-                        .accessibilityIdentifier("pairDevice")
-                    if container.isConnecting { ProgressView("Connecting…") }
-                } header: {
-                    Text("Connect to your team")
-                } footer: {
-                    Text("Your phone will use your Web account's permissions. Keep this one-time code private.")
-                }
-                if let error = container.connectionError {
+            ScrollViewReader { proxy in
+                Form {
                     Section {
-                        Text(error).foregroundStyle(.red).accessibilityIdentifier("pairing.connection.error")
-                        Button("Retry saved connection") { Task { await container.retryConnection() } }
-                            .accessibilityIdentifier("pairing.retrySavedConnection")
+                        ArtooPageIntro(title: "Your team, on the go", message: "Chat, review work, and keep projects moving.", systemImage: "bubble.left.and.bubble.right.fill")
                     }
+                    Section {
+                        Text("In Web Settings, choose Connect a device → iOS to get your pairing code.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Team server").font(.caption).foregroundStyle(.secondary)
+                            TextField("https://artoo.example.com", text: $server,
+                                      onEditingChanged: { focusReveal.editingChanged($0, field: .server) }).keyboardType(.URL)
+                                .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("serverURL")
+                                .focused($focusedField, equals: .server).submitLabel(.next)
+                                .onSubmit { focusedField = .name }
+                        }.id(InputField.server)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Device name").font(.caption).foregroundStyle(.secondary)
+                            TextField("Device name", text: $deviceName,
+                                      onEditingChanged: { focusReveal.editingChanged($0, field: .name) }).accessibilityIdentifier("pairingDeviceName")
+                                .focused($focusedField, equals: .name).submitLabel(.next)
+                                .onSubmit { focusedField = .code }
+                        }.id(InputField.name)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Pairing code").font(.caption).foregroundStyle(.secondary)
+                            TextField("One-time pairing code", text: $code,
+                                      onEditingChanged: { focusReveal.editingChanged($0, field: .code) }).textInputAutocapitalization(.characters)
+                                .textContentType(.oneTimeCode).privacySensitive()
+                                .autocorrectionDisabled().accessibilityIdentifier("pairingCode")
+                                .focused($focusedField, equals: .code).submitLabel(.done)
+                                .onSubmit { focusedField = nil }
+                        }.id(InputField.code)
+                        Button("Connect") {
+                            focusedField = nil
+                            Task { await container.pair(server: server, code: code, displayName: deviceName, allowLocalHTTP: localHTTP); code = "" }
+                        }
+                            .frame(minHeight: 44)
+                            .disabled(container.isConnecting || server.isEmpty || code.isEmpty)
+                            .accessibilityIdentifier("pairDevice")
+                        if container.isConnecting { ProgressView("Connecting…") }
+                    } header: {
+                        Text("Connect to your team")
+                    } footer: {
+                        Text("Your phone will use your Web account's permissions. Keep this one-time code private.")
+                    }
+                    if let error = container.connectionError {
+                        Section {
+                            Text(error).foregroundStyle(.red).accessibilityIdentifier("pairing.connection.error")
+                            Button("Retry saved connection") { Task { await container.retryConnection() } }
+                                .accessibilityIdentifier("pairing.retrySavedConnection")
+                        }
+                    }
+                    Section("Local development") {
+                        Toggle("Allow localhost or .local HTTP", isOn: $localHTTP).accessibilityIdentifier("allowLocalHTTP")
+                        Text("Use HTTPS for a shared team server. On a phone, localhost refers to the phone itself.").font(.caption)
+                    }
+                    Section { NavigationLink("Privacy and data") { PrivacyView() } }
                 }
-                Section("Local development") {
-                    Toggle("Allow localhost or .local HTTP", isOn: $localHTTP).accessibilityIdentifier("allowLocalHTTP")
-                    Text("Use HTTPS for a shared team server. On a phone, localhost refers to the phone itself.").font(.caption)
-                }
-                Section { NavigationLink("Privacy and data") { PrivacyView() } }
-            }.navigationTitle("Welcome to Artoo").scrollDismissesKeyboard(.interactively)
+                .navigationTitle("Welcome to Artoo").scrollDismissesKeyboard(.interactively)
                 .disabled(!container.restored || container.isConnecting)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if focusedField != nil {
@@ -329,6 +338,298 @@ private struct PairDeviceView: View {
                         .accessibilityIdentifier("pairing.keyboard.controls")
                     }
                 }
+                .background {
+                    FocusRevealReader(controller: focusReveal, focusedField: isVisible ? focusedField : nil) { field in
+                        guard isVisible, focusedField == field else { return }
+                        proxy.scrollTo(field, anchor: .center)
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                }
+                .onAppear { isVisible = true }
+                .onDisappear { isVisible = false; focusedField = nil; focusReveal.disappear() }
+            }
+        }
+    }
+
+    // Public editing callbacks provide field identity independently of the
+    // order in which FocusState and keyboard notifications arrive.
+    @MainActor
+    private struct FocusRevealReader: UIViewRepresentable {
+        let controller: FocusRevealController
+        let focusedField: InputField?
+        let reveal: (InputField) -> Void
+
+        func makeUIView(context: Context) -> FocusRevealScopeView {
+            let view = FocusRevealScopeView()
+            view.isUserInteractionEnabled = false
+            view.isAccessibilityElement = false
+            view.accessibilityElementsHidden = true
+            view.controller = controller
+            controller.attach(view)
+            controller.configure(focusedField: focusedField, reveal: reveal)
+            return view
+        }
+
+        func updateUIView(_ view: FocusRevealScopeView, context: Context) {
+            controller.configure(focusedField: focusedField, reveal: reveal)
+        }
+
+        static func dismantleUIView(_ view: FocusRevealScopeView, coordinator: Void) { view.controller?.detach(view) }
+    }
+
+    @MainActor
+    private final class FocusRevealScopeView: UIView {
+        weak var controller: FocusRevealController?
+        override func didMoveToWindow() { super.didMoveToWindow(); controller?.windowChanged() }
+    }
+
+    private final class ObserverTokens {
+        var values: [NSObjectProtocol] = []
+        func removeAll() {
+            for token in values { NotificationCenter.default.removeObserver(token) }
+            values.removeAll()
+        }
+        deinit { removeAll() }
+    }
+
+    @MainActor
+    private final class FocusRevealController: NSObject {
+        private enum Phase { case active, environmentSuspended, userSuppressed, keyboardHidden, ended }
+        private final class Activation {
+            let field: InputField
+            var token = UUID()
+            weak var window: UIWindow?
+            weak var responder: UIView?
+            var phase = Phase.active
+            var initialSent = false
+            var completionSent = false
+
+            init(field: InputField) { self.field = field }
+        }
+
+        private final class KeyboardCompletion {
+            weak var window: UIWindow?
+            weak var responder: UIView?
+
+            init(window: UIWindow, responder: UIView) {
+                self.window = window; self.responder = responder
+            }
+        }
+
+        private let observers = ObserverTokens()
+        private weak var scope: FocusRevealScopeView?
+        private var focusedField: InputField?
+        private var reveal: ((InputField) -> Void)?
+        private var activation: Activation?
+        private weak var observedPan: UIPanGestureRecognizer?
+        private var keyboardCompletion: KeyboardCompletion?
+        private var request: DispatchWorkItem?
+
+        func editingChanged(_ editing: Bool, field: InputField) {
+            if !editing {
+                // An old field can finish after the next field began editing.
+                guard let activation, activation.field == field else { return }
+                activation.phase = .ended
+                cancelRequest()
+                if keyboardCompletion?.responder === activation.responder { keyboardCompletion = nil }
+                stopObservingPan()
+                return
+            }
+            let previous = activation
+            cancelRequest()
+            stopObservingPan()
+            if previous?.field == field { keyboardCompletion = nil }
+            activation = Activation(field: field)
+            // Bind the native responder on the next main turn, once the fixed
+            // editing identity and FocusState agree, not inside the callback.
+            scheduleReveal()
+        }
+
+        func configure(focusedField next: InputField?, reveal: @escaping (InputField) -> Void) {
+            self.reveal = reveal
+            if next != focusedField { cancelRequest(); focusedField = next }
+            resumeEnvironment()
+            scheduleReveal()
+        }
+
+        func attach(_ view: FocusRevealScopeView) {
+            scope = view
+            guard observers.values.isEmpty else { return }
+            for name in [UIResponder.keyboardDidShowNotification, UIResponder.keyboardDidChangeFrameNotification,
+                         UIResponder.keyboardWillHideNotification, UIResponder.keyboardDidHideNotification,
+                         UITextField.textDidBeginEditingNotification, UIWindow.didBecomeKeyNotification,
+                         UIWindow.didResignKeyNotification, UIScene.didActivateNotification, UIScene.willDeactivateNotification] {
+                observers.values.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                    MainActor.assumeIsolated { self?.receive(notification) }
+                })
+            }
+        }
+
+        func windowChanged() {
+            if let activation, let previousWindow = activation.window, previousWindow !== scope?.window {
+                suspendEnvironment()
+            }
+            resumeEnvironment()
+            scheduleReveal()
+        }
+
+        private var activeWindow: UIWindow? {
+            guard let window = scope?.window, window.isKeyWindow,
+                  window.windowScene?.activationState == .foregroundActive else { return nil }
+            return window
+        }
+
+        private func firstResponder(in view: UIView) -> UIView? {
+            if view.isFirstResponder { return view }
+            for child in view.subviews { if let responder = firstResponder(in: child) { return responder } }
+            return nil
+        }
+
+        private func scheduleReveal() {
+            guard request == nil, let activation, activation.phase == .active,
+                  focusedField == activation.field,
+                  !activation.initialSent || (!activation.completionSent && completedKeyboard(for: activation)) else { return }
+            let token = activation.token
+            let work = DispatchWorkItem { [weak self, weak activation] in
+                MainActor.assumeIsolated {
+                    guard let self, let activation, self.activation === activation, activation.token == token else { return }
+                    self.request = nil
+                    guard activation.phase == .active, self.focusedField == activation.field,
+                          let window = self.activeWindow, let responder = self.firstResponder(in: window) else { return }
+                    if let bound = activation.responder {
+                        guard bound === responder, activation.window === window else { return }
+                    } else {
+                        activation.responder = responder; activation.window = window
+                        self.observePan(above: responder)
+                    }
+                    guard activation.phase == .active else { return }
+                    if !activation.initialSent {
+                        activation.initialSent = true
+                        self.reveal?(activation.field)
+                        // A keyboard may already have finished before the
+                        // editing callback and FocusState agreed.
+                        if self.completedKeyboard(for: activation) { self.scheduleReveal() }
+                    } else if !activation.completionSent, self.completedKeyboard(for: activation) {
+                        activation.completionSent = true
+                        self.reveal?(activation.field)
+                    }
+                }
+            }
+            request = work
+            DispatchQueue.main.async(execute: work)
+        }
+
+        private func completedKeyboard(for activation: Activation) -> Bool {
+            guard let completion = keyboardCompletion else { return false }
+            return completion.window === activation.window && completion.responder === activation.responder
+        }
+
+        private func receive(_ notification: Notification) {
+            guard let window = scope?.window ?? activation?.window else { return }
+            if notification.name == UIWindow.didBecomeKeyNotification || notification.name == UIWindow.didResignKeyNotification {
+                guard let eventWindow = notification.object as? UIWindow, eventWindow === window else { return }
+                if notification.name == UIWindow.didResignKeyNotification { suspendEnvironment() }
+                else { resumeEnvironment(); scheduleReveal() }
+                return
+            }
+            if notification.name == UIScene.didActivateNotification || notification.name == UIScene.willDeactivateNotification {
+                guard let scene = notification.object as? UIWindowScene, scene === window.windowScene else { return }
+                if notification.name == UIScene.willDeactivateNotification { suspendEnvironment() }
+                else { resumeEnvironment(); scheduleReveal() }
+                return
+            }
+            if notification.name == UITextField.textDidBeginEditingNotification {
+                if let field = notification.object as? UITextField, field.window === window { scheduleReveal() }
+                return
+            }
+            let screen = window.windowScene?.screen ?? window.screen
+            if let eventScreen = notification.object as? UIScreen, eventScreen !== screen { return }
+            guard (notification.userInfo?[UIResponder.keyboardIsLocalUserInfoKey] as? Bool) != false else { return }
+            // Hide still invalidates queued work after the responder is gone.
+            if notification.name == UIResponder.keyboardWillHideNotification || notification.name == UIResponder.keyboardDidHideNotification {
+                keyboardHidden(); return
+            }
+            guard activeWindow === window, let responder = firstResponder(in: window),
+                  let rawEnd = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
+            let end = window.convert(rawEnd, from: screen.coordinateSpace)
+            guard !end.isNull, !end.isInfinite, end.intersects(window.bounds) else { keyboardHidden(); return }
+            // The keyboard belongs to the window. Its completed layout can
+            // reveal the current editor regardless of which field began it.
+            keyboardCompletion = KeyboardCompletion(window: window, responder: responder)
+            if let activation, activation.phase == .keyboardHidden,
+               focusedField == activation.field,
+               activation.window == nil || activation.window === window,
+               activation.responder == nil || activation.responder === responder {
+                activation.phase = .active
+            }
+            scheduleReveal()
+        }
+
+        private func keyboardHidden() {
+            cancelRequest(); keyboardCompletion = nil
+            if activation?.phase == .active { activation?.phase = .keyboardHidden }
+        }
+
+        private func suspendEnvironment() {
+            guard let activation, activation.phase == .active || activation.phase == .keyboardHidden else { return }
+            activation.phase = .environmentSuspended
+            cancelRequest(); keyboardCompletion = nil
+        }
+
+        private func resumeEnvironment() {
+            guard let activation, activation.phase == .environmentSuspended,
+                  focusedField == activation.field, let window = activeWindow,
+                  activation.window == nil || activation.window === window,
+                  let responder = firstResponder(in: window),
+                  activation.responder == nil || activation.responder === responder else { return }
+            // A resumed editing environment gets a fresh bounded reveal. A
+            // user's pan is a separate phase and can never enter this path.
+            cancelRequest(); stopObservingPan()
+            self.activation = Activation(field: activation.field)
+        }
+
+        private func observePan(above responder: UIView) {
+            var ancestor: UIView? = responder
+            while let view = ancestor {
+                if let scroll = view as? UIScrollView {
+                    let pan = scroll.panGestureRecognizer
+                    if pan.state == .began || pan.state == .changed { suppressForPan(); return }
+                    observedPan = pan
+                    pan.addTarget(self, action: #selector(didPan(_:)))
+                    return
+                }
+                ancestor = view.superview
+            }
+        }
+
+        @objc private func didPan(_ pan: UIPanGestureRecognizer) {
+            if pan.state == .began || pan.state == .changed { suppressForPan() }
+        }
+
+        private func suppressForPan() {
+            activation?.phase = .userSuppressed
+            cancelRequest(); keyboardCompletion = nil
+        }
+
+        private func stopObservingPan() {
+            observedPan?.removeTarget(self, action: #selector(didPan(_:)))
+            observedPan = nil
+        }
+
+        private func cancelRequest() {
+            activation?.token = UUID()
+            request?.cancel(); request = nil
+        }
+
+        func disappear() {
+            cancelRequest(); stopObservingPan()
+            activation = nil; keyboardCompletion = nil; focusedField = nil
+        }
+
+        func detach(_ view: FocusRevealScopeView) {
+            guard scope === view else { return }
+            disappear(); observers.removeAll(); scope = nil; reveal = nil
         }
     }
 }
