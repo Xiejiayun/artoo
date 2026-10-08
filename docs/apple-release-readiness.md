@@ -45,8 +45,9 @@ source. Ten normal vendor detach attempts are now the repository default;
 no force-detach policy or distribution trust gate was added or relaxed.
 
 The local Mac used 1280×800 and all six planning captures were single-frame.
-Oversized sequential capture has seven browser-fixture scenarios/eight Node
-results, awaiting exact-new-commit hosted small-window confirmation. The new
+At this earlier boundary, oversized sequential capture had seven browser-fixture
+scenarios/eight Node results; the later a196 hosted small-window follow-up is
+recorded below. The new
 native XCTest/parent/aggregate passed Core 7 with 24 original photos and stable
 source/runtime inputs. Its stricter external wrapper remains failed because an
 owned Xcode helper required TERM/KILL before confirmed closure; seven nonfatal
@@ -62,11 +63,13 @@ The compact Mac repair has a fresh unsigned x64 installed-app functional pass:
 external priority guard remains failed after one `nice=0` observation; command
 exit, source stability and normal process closure passed.
 
-The Windows short-name fixture correction passed the local 83-case gate; actual
-Windows acceptance remains pending. Hosted d65 iOS passed 159 units and six of
+The Windows short-name fixture correction passed the local 83-case gate; those
+three target groups subsequently passed 83/83 in the Windows shared job for
+hosted a196. The original failed run remains failed. Hosted d65 iOS passed 159 units and six of
 seven Core cases, failing in device-name pairing preparation before the goal
-cancellation interaction; later suites were unstarted. This does not qualify a
-new full native pass, physical devices or distribution. The
+cancellation interaction; later suites were unstarted. That failure remains
+separate from the later full `a196` pass recorded below and provides no
+physical-device or distribution qualification. The
 [milestone ledger](apple-client-milestones.md#2026-10-03-compact-mac-planning-and-native-windows-fixture-paths)
 keeps the exact failure and report boundaries.
 
@@ -135,7 +138,7 @@ collection. Before distribution, the publisher must:
 | Priority | Current gap and evidence | Implementable next step | External information or credential |
 | --- | --- | --- | --- |
 | P1 | The matching source26 retention development-signed arm64 archive passed; physical-device/TestFlight and distribution acceptance remain open. [project.yml](../apps/ios/project.yml) uses `dev.artoo.app` and version/build defaults. | Repeat the [archive gate](apple-development-archive.md) for release source, then verify distribution export and TestFlight on supported phone/tablet sizes. | Distribution provisioning and App Store Connect app/bundle registration, build metadata and available physical devices. |
-| P1 | The compact repair has a fresh local unsigned x64 DMG/ZIP functional pass (22 checks/56 captures, 55 unique PNGs); its external priority guard remains failed after one nice=0 observation. Hosted arm64 results retain their earlier boundaries. This establishes no Developer ID/notarization or trusted-update chain. | Run the [Developer ID/notarization gate](../apps/desktop/MAC-DISTRIBUTION.md), then test signed installation, upgrade and removal on a clean Mac and each supported architecture. | Developer ID identity/private key, notarization profile and actual release hosting. |
+| P1 | Hosted a196 has a fresh unsigned arm64 DMG/ZIP pass (22 client checks, 56 unique client photos, 14 cleanup flags). The earlier local x64 compact run retains its 22-check/56-capture functional pass (55 unique PNGs) and failed external priority guard after one nice=0 observation. This establishes no Developer ID/notarization or trusted-update chain. | Run the [Developer ID/notarization gate](../apps/desktop/MAC-DISTRIBUTION.md), then test signed installation, upgrade and removal on a clean Mac and each supported architecture. | Developer ID identity/private key, notarization profile and actual release hosting. |
 | P1 | Desktop source has no implemented trusted update channel in [main.cjs](../apps/desktop/main.cjs) or package configuration. | Define a signed manual-update or automatic-update flow, publish version/checksum metadata, and verify upgrade preserves connection/settings and server compatibility. | Update policy, release endpoint and signing custody. |
 | P1 | Operator policy details cannot be established from the source tree. | Complete the privacy steps above; keep onboarding and settings disclosures reachable without signing in. | Operator identity/contact, privacy-policy URL, retention/deletion terms and provider choices. |
 | P1 | Production startup requires configured auth and durable storage in [main.ts](../apps/server/src/main.ts) and [auth-config.ts](../apps/server/src/auth/auth-config.ts). Fixture auth is not deployed Google login evidence. | Run real HTTPS/OIDC and WebSocket flows, device revocation and cross-client updates against the chosen staging deployment. | Controlled HTTPS origin, registered Google OAuth client/redirect, team allowlist/owners and securely managed secrets. |
@@ -331,3 +334,60 @@ recovery, live-provider answer/implementation quality,
 physical devices/TestFlight, Developer ID/notarization/trusted updates, deployed
 HTTPS/Google OAuth, operator privacy/deletion policy and deployment-specific
 recovery remain separate release requirements.
+
+## 2026-10-03: hosted a196 Mac, iOS and Windows shared follow-up
+
+Hosted run [37124968804](https://github.com/Xiejiayun/artoo/actions/runs/37124968804)
+completed its Mac, iOS and Windows shared jobs successfully at validated head
+`a1968a450b21f31f224dfd23e0a863218f57abdb`. These historical job results retain
+their recorded source boundaries. This update changes no application code; later
+product candidates require their own qualification. The
+[dated milestone ledger](apple-client-milestones.md#2026-10-03-a196-hosted-mac-ios-and-windows-shared-acceptance)
+keeps the exact job and original-evidence references.
+
+The [independent Mac review](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37124968804/independent-review/report.html)
+supports fresh unsigned **arm64** packaging, **22 client checks**, **56 unique
+client photos** and **14 cleanup flags**, with clean source unchanged through the
+client run. Six planning proofs record 1024×656; expanded instructions cover
+855 ranges in two frames. The hosted report has no native-launch profile list,
+so the five-launch measurement belongs only to the earlier local compact run.
+The separate recovery stage passed **eight checks**, complete cleanup and
+**two additional original browser photos**. Its isolated production-mode drill
+does not establish deployed or off-site recovery.
+
+The [Windows shared review](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37124968804/shared-review/NOTE.md)
+confirms **83/83** target results: six Git-evidence cases, 54 correction results
+and 23 zero-artifact results, with no failures or skips in those groups. The
+real-Git regression passed; the log does not print the temporary root, so this
+does not independently establish that this attempt exposed an 8.3 alias.
+Broader counts remain separate: Vitest **1,519 passed / 48 skipped**, Node gates
+**321 passed / 2 skipped**, Web E2E **16 passed**, and auth E2E **6 passed**. The
+installed Windows desktop job was skipped, leaving that client UI unqualified.
+
+The [iOS original-photo report](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37124968804/ios-review/photo-review/report.html)
+confirms **159 native unit passes and 11 UI passes across five suites**, with
+**71 captures / 70 unique PNGs** (67 native, four browser; Retention #66/#67 are
+identical). The [root visual review](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37124968804/ios-review/photo-review/ROOT-VISUAL-REVIEW.json)
+viewed seven contact sheets representing every capture and three full originals
+(#18, #51, #67); long-text and uninspected full-resolution pixels retain their
+limits. Stable source was recorded after XcodeGen with `working_tree_dirty: true`
+and tracked diff `61717b07761f860b4d2e2d918a2d13b4d502100b6ccf1d10e611bb95c2c8c377`.
+The diff bytes are not established by these reports; no pristine-source claim
+is made. Original HTML and selected members passed length/CRC32/SHA256 checks;
+no whole-iOS-ZIP digest or raw `.xcresult`/native-manifest review is claimed.
+
+Earlier hosted failures, the local compact download timeout with zero client
+photos, and the local nice0 mixed verdict remain unchanged. This milestone only
+updates documentation. Signing, notarization, trusted updates, live providers,
+physical devices and deployed identity/operator requirements remain open; the
+application is not qualified for commercial release.
+
+## 2026-10-08: local candidate remains unqualified
+
+The [recovered interrupted Core attempt](/Users/jeremy/workspace/artoo/artifacts/preview-gate/ios-pairing-qualification/runs/core-20261003T140134Z-5227f0aa/recovery-20261008T021645Z/report.html)
+has six logged passes and a seventh started case without a terminal result,
+two browser photos, zero recovered native photos, zero bounded-recovery markers
+and 34 literal invalid-frame warning strings in raw app logs. The unfinished
+`.xcresult` and missing historical exit/cleanup receipts do not establish a
+completed native gate or exercised recovery branch. This candidate remains
+separate from the hosted `a196` baseline; no old failure is relabeled.

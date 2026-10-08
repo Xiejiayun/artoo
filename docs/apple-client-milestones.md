@@ -1183,7 +1183,8 @@ and zero-artifact test fixtures. The latter protocols were not reached by this
 hosted invocation, so they are not reported as observed failures. Parser semantics,
 application/recovery paths, containment checks and all assertions remain intact.
 The local three-file gate passed **83/83** with source stability and owned cleanup.
-Fresh Windows CI is still required. [Local protocol report](/Users/jeremy/workspace/artoo-mac-planning-scroll/artifacts/apple-ci/protocol-20261003T124440Z/report.html).
+Fresh Windows CI was still required at this local checkpoint; the later
+[`a1968a4` hosted acceptance](#2026-10-03-a196-hosted-mac-ios-and-windows-shared-acceptance) is recorded below. [Local protocol report](/Users/jeremy/workspace/artoo-mac-planning-scroll/artifacts/apple-ci/protocol-20261003T124440Z/report.html).
 
 A fresh unsigned x64 DMG/ZIP and installed app passed **22 client checks**
 at a real **1024×656** content size. All five app launches/relaunches measured the
@@ -1223,5 +1224,81 @@ labels its six frames as derived and redacted. The underlying layout/scroll caus
 remains undetermined, and no goal cancellation business defect is inferred.
 
 This milestone does not change native product code or enable managed execution.
-Its new hosted results, iOS input investigation, resource-priority observation
-and external commercial-release requirements remain separate gates.
+Hosted Mac, iOS and shared Windows follow-up for validated source `a1968a4` is
+recorded below. iOS input investigation, resource-priority observation and external
+commercial-release requirements remain separate gates.
+
+
+## 2026-10-03: a196 hosted Mac, iOS and Windows shared acceptance
+
+The validated source head was `a1968a450b21f31f224dfd23e0a863218f57abdb`. Its
+[Preview gates run 37124968804](https://github.com/Xiejiayun/artoo/actions/runs/37124968804)
+completed the Mac, iOS and shared Windows jobs successfully. This is historical
+acceptance for that run and its recorded source boundaries. This documentation
+update leaves application source unchanged; product changes in later local
+candidates still require their own client qualification.
+
+| Hosted gate | Retained result |
+| --- | --- |
+| [Mac job 111208300239](https://github.com/Xiejiayun/artoo/actions/runs/37124968804/job/111208300239) | Fresh unsigned **arm64** preview DMG/ZIP, **22 client checks, 18 gate commands and 14 driver cleanup flags** passed. The client ran 13:05:54.837Z–13:10:10.172Z and retained **56 client photos / 56 unique PNG payloads**. All six planning proofs record **1024×656**; the expanded instruction covers **855 ranges in two actual frames**, adding 619 then 236 ranges. |
+| Separate recovery in the Mac job | **Eight checks and two recovery photos** passed for isolated production-mode offline backup/restore. These photos are separate from the 56 installed-client captures. |
+| [iOS job 111208300365](https://github.com/Xiejiayun/artoo/actions/runs/37124968804/job/111208300365) | **159/159 native units and 11/11 UI cases across five suites passed** (Core 7; Assistant, Mentions, Correction and Retention 1 each). Release, iPhone 16 / iOS 18.5, Xcode 16.4. **71 captures / 70 unique PNG payloads**: 67 native and four independent browser captures. |
+| [Shared Windows job 111208300433](https://github.com/Xiejiayun/artoo/actions/runs/37124968804/job/111208300433) | The real-Git sixth case passed; the Git, correction-protocol and zero-artifact-protocol groups passed **6 + 54 + 23 = 83/83**, with no skips in those groups. Overall Vitest: **201 files / 1519 tests passed**, **11 files / 48 tests skipped**. Node gates: **321 passed / 2 skipped**. Web and auth E2E passed **16 and 6** cases. |
+
+The [Mac independent audit](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37124968804/independent-review/report.html)
+verified the complete 24,053,495-byte evidence archive against its published
+SHA256 (`0119b28b5ce17bea5f066b697edc3f92a5d644d3eee02addb3bfecce7bf1eead`),
+all 121 ZIP entries and the retained originals. The hosted JSON contains no
+`native_viewport_launches` ledger; the five measured launches in the preceding
+section belong to the local compact attempt. Its **56/55-unique** image count and
+**nice0 outer failure remain unchanged**, as do the earlier failed hosted runs.
+
+The [shared audit](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37124968804/shared-review/NOTE.md)
+retains the exact original job log and its test summaries. The sixth Git case
+establishes execution of that regression on Windows; its log does not print the
+actual temporary-root spelling. The two Node skips remain explicit, including
+the unsupported POSIX SIGTERM-handler case on Windows. The installed Windows
+desktop job was skipped and supplies no installed-client UI qualification.
+
+The [iOS original-photo report](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37124968804/ios-review/photo-review/report.html)
+correlates all required captions with unchanged original PNG bytes. Retention
+captures #66 and #67 are byte-identical and count as one distinct image. The
+[root visual review](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37124968804/ios-review/photo-review/ROOT-VISUAL-REVIEW.json)
+viewed all seven contact sheets representing all 71 captures plus original
+PNGs #18, #51 and #67; it found no material blocker in those captured workflows.
+This is not full-resolution inspection of every image or full long-text coverage.
+
+The iOS source was recorded after common XcodeGen preparation and stayed stable
+across all five parent/native start and finish boundaries, with
+`working_tree_dirty: true` and tracked diff
+`61717b07761f860b4d2e2d918a2d13b4d502100b6ccf1d10e611bb95c2c8c377`.
+The retained evidence does not identify those changed bytes or establish pristine
+`a196` source. The complete job log, 77 previously fetched ZIP members and restored
+74,210,499-byte original aggregate HTML were checked; the HTML SHA256 is
+`37368e288d6186420b83dfd04c18df96591e47a0adb25b17b197f9b73161c464`.
+Selected members have byte-length, CRC32 and SHA256 checks. No whole-iOS-archive
+digest or raw `.xcresult`/native-attachment-manifest review is claimed; those raw
+bundles are absent from this success artifact. Original partial downloads and
+prior timeout receipts remain preserved.
+
+This acceptance covers deterministic subprocess fixtures and unsigned previews.
+The retained Stop response establishes that its process was no longer alive;
+no graceful-exit receipt is inferred. Live providers, physical devices and trusted
+distribution/deployment remain open release gates. Separate recovery does not
+qualify deployed or off-site recovery, and exported fixture copies do not assert
+current execution-computer contents. Earlier failed CI and local mixed results
+retain their original verdicts. This documentation milestone adds no product or
+harness code and does not establish commercial completion.
+
+## 2026-10-08: interrupted local iOS candidate evidence recovered
+
+The [recovered candidate report](/Users/jeremy/workspace/artoo/artifacts/preview-gate/ios-pairing-qualification/runs/core-20261003T140134Z-5227f0aa/recovery-20261008T021645Z/report.html)
+retains an interrupted Core attempt: six logged case passes, a seventh case
+started without a terminal result, two browser photos and zero admitted native
+photos. Its unfinalized `.xcresult` cannot provide the missing native exports.
+There are zero bounded-recovery markers and 34 literal invalid-frame warning
+strings in retained raw app logs; neither number proves that the recovery branch
+was exercised or supplies finalized XCTest warning counts. Historical process
+exit/cleanup receipts are missing and were not reconstructed. The candidate
+remains incomplete and unqualified, independently of the successful hosted
+`a196` baseline; no earlier failure or mixed result is relabeled.

@@ -231,8 +231,10 @@ and `archive-verification-2026-10-01T14-24-42-791173Z/verification.json`.
 The [milestone ledger](apple-client-milestones.md) records hashes, source differences,
 retained failures and six unresolved nonfatal frame warnings. After all Xcode work
 ended, only the generated UI-test plist was restored; 703 other inventory entries
-still match. Final documentation application, commit/main push and hosted acceptance
-for the actual new commit remain pending.
+still match. At that checkpoint, final documentation application, commit/main
+push and hosted acceptance for the new commit remained pending. The later delivered source was
+`a1968a450b21f31f224dfd23e0a863218f57abdb`; its successful Mac, full iOS and
+shared Windows follow-up is recorded below with separate source boundaries.
 
 
 ## Prior CI repair evidence, 2026-10-03
@@ -241,8 +243,9 @@ The [prior milestone](apple-client-milestones.md#2026-10-03-ci-portability-and-m
 records the failed hosted 3f run, local 83-case parser/protocol validation and the
 new unsigned installed Mac run: 22 checks and 55 captures (54 unique PNG payloads). Its 1280×800 window produced
 six single-frame planning captures. The oversized sequential branch has seven
-browser-fixture scenarios/eight Node results and still needs hosted small-window
-acceptance. The new native Core XCTest/parent/aggregate passed all seven cases
+browser-fixture scenarios/eight Node results; hosted small-window acceptance
+was still pending at that checkpoint. The later `a1968a4` proof is recorded below.
+The new native Core XCTest/parent/aggregate passed all seven cases
 with 24 original photos, while its stricter external wrapper remains failed:
 an owned Xcode helper required TERM/KILL before confirmed closure. The earlier
 observer-timeout failure is also retained. No new full-all or archive pass is
@@ -269,6 +272,63 @@ records the actual two-frame instruction proof, 22 client checks, 56 captures
 (55 unique PNGs) and 14 driver cleanup flags. Its outer priority guard remains
 failed despite zero exit and normal closure; read both original reports. The
 preceding dependency-download failure remains preserved with no client photos.
-Local 83-case protocol acceptance does not establish the Windows alias fix on a
-Windows host. Hosted iOS currently has 159 unit passes and six of seven Core
-passes; its pairing-input failure precedes cancellation business behavior.
+Local 83-case protocol acceptance alone does not establish Windows-host
+acceptance; the later `a1968a4` shared job below supplies that separate evidence.
+The prior `d65d4598` hosted iOS run recorded 159 unit passes and six of seven Core
+passes; its pairing-input failure precedes cancellation business behavior. That
+failed attempt remains failed; the later full `a196` run is recorded separately.
+
+
+## Hosted follow-up at a196, 2026-10-03
+
+The [hosted acceptance ledger](apple-client-milestones.md#2026-10-03-a196-hosted-mac-ios-and-windows-shared-acceptance)
+records successful Mac, iOS and shared Windows jobs in
+[run 37124968804](https://github.com/Xiejiayun/artoo/actions/runs/37124968804)
+at validated source head `a1968a450b21f31f224dfd23e0a863218f57abdb`. These
+results identify the tested application source. This documentation update changes
+no application code; later product candidates require their own qualification.
+
+The [hosted Mac audit](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37124968804/independent-review/report.html)
+retains a fresh unsigned **arm64** DMG/ZIP client run with **22 checks, 56 unique
+client PNGs and 14 cleanup flags**. Six planning proofs record 1024×656; the
+expanded instruction's two frames cover all 855 ranges (619 + 236). Separate
+backup/restore recovery passed eight checks with **two additional recovery
+photos**. The hosted report has no `native_viewport_launches` ledger, so the local
+five-launch measurements above remain local evidence. The local compact run's
+56 captures / 55 unique PNGs and failed outer nice10 condition are preserved.
+
+The [Windows shared audit](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37124968804/shared-review/NOTE.md)
+confirms the actual sixth real-Git case and both production-protocol groups:
+**6 + 54 + 23 = 83 passed**, zero failed/skipped in those groups. Overall results
+retain their skips: Vitest **1519 passed / 48 skipped** across **201 passed / 11
+skipped files**; Node gates **321 passed / 2 skipped**; Web E2E **16 passed** and
+auth E2E **6 passed**. The Git log identifies the regression case but does not
+print its temporary-root spelling. The installed Windows desktop job was skipped;
+its UI qualification remains separate.
+
+The [hosted iOS photo report](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37124968804/ios-review/photo-review/report.html)
+records **159/159 native units and 11/11 UI cases across five suites** on iPhone
+16 / iOS 18.5, Xcode 16.4. Its **71 captures / 70 unique PNGs** comprise 67 native
+and four browser captures; Retention #66/#67 share the same bytes. The
+[root visual review](/Users/jeremy/workspace/artoo/artifacts/preview-gate/apple-ci-fixes-delivery-prep/finalized/hosted-37124968804/ios-review/photo-review/ROOT-VISUAL-REVIEW.json)
+inspected seven contact sheets covering all 71 captures and three originals
+(#18, #51, #67), without claiming full-resolution review of every image.
+
+All five parent/native source boundaries agree with the stable post-XcodeGen
+tracked diff `61717b07761f860b4d2e2d918a2d13b4d502100b6ccf1d10e611bb95c2c8c377`
+on `a196`, with `working_tree_dirty: true`; this is not pristine-source evidence.
+Original HTML and selected ZIP-member length/CRC32/SHA256 checks passed. The whole
+iOS ZIP digest and raw `.xcresult`/attachment manifests were not verified. Earlier
+failed CI and local mixed verdicts remain in the ledger. Provider, physical-device,
+distribution-trust and deployed-recovery qualifications remain separate.
+
+## Local candidate follow-up, 2026-10-08
+
+The [interrupted candidate recovery report](/Users/jeremy/workspace/artoo/artifacts/preview-gate/ios-pairing-qualification/runs/core-20261003T140134Z-5227f0aa/recovery-20261008T021645Z/report.html)
+records six logged Core passes, a seventh case started without a terminal result,
+two browser photos and zero admitted native photos. The unfinished bundle does
+not yield native exports; zero recovery markers and 34 literal invalid-frame
+warning strings in raw app logs do not establish candidate acceptance or final
+XCTest warning counts. Missing historical exit/cleanup receipts stay missing.
+This documentation-only milestone neither changes the harness nor promotes that
+candidate or any old failure to a pass.
