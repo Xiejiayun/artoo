@@ -179,7 +179,9 @@ final class SuccessfulWorkspaceRetentionUITests: XCTestCase {
         try reveal(worktree, identifier: "task.assignment.worktree"); try require(worktree.value as? String == "0", "Git worktrees must remain an explicit opt-in for every new sheet")
         try setSwitch("task.assignment.worktree", enabled: true)
         let manual = app.segmentedControls["task.assignment.mode"].buttons["Manual"]
-        try reveal(manual, identifier: "task.assignment.mode.Manual"); manual.tap(); try tap("task.assignment.instance")
+        try reveal(manual, identifier: "task.assignment.mode.Manual")
+        try NativeAssignmentInput.selectManual(in: app)
+        try tap("task.assignment.instance")
         let option = field("task.assignment.option.\(instance.id)")
         try reveal(option, identifier: "task.assignment.option.\(instance.id)")
         try require(option.label.contains(instance.name) && option.label.contains(instance.root) && option.label.contains(fixture.runtimeId), "The chosen exact instance must show its readable name, own workspace and runtime")
