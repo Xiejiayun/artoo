@@ -67,6 +67,8 @@ targets:
     platform: iOS
     sources:
       - path: Tests
+      # Exercise the same snapshot measurement used by native UI preparation.
+      - path: UITests/NativePairingInput.swift
     dependencies:
       - target: Artoo
     settings:
