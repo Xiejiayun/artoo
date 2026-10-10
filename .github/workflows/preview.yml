@@ -56,13 +56,15 @@ jobs:
       - name: Verify release SDK requirements
         run: node apps/ios/scripts/release-toolchain.mjs
       - name: Verify distribution signing contracts
-        run: node --test apps/ios/scripts/archive-device.test.mjs apps/ios/scripts/archive-distribution.test.mjs apps/ios/scripts/release-toolchain.test.mjs
+        run: node --test apps/ios/scripts/archive-device.test.mjs apps/ios/scripts/archive-distribution.test.mjs apps/ios/scripts/release-toolchain.test.mjs apps/ios/scripts/release-ui.test.mjs
       - run: npm ci
       - run: npx playwright install chromium
         working-directory: apps/web
       - name: Ensure XcodeGen
         run: command -v xcodegen >/dev/null || brew install xcodegen
       - run: npm run verify:ios
+      - name: Verify publisher links on iPhone and iPad
+        run: npm run verify:ios:release
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -78,6 +80,11 @@ jobs:
             artifacts/ios/attempts/*/diagnostics/*.json
             artifacts/ios/attempts/*/correction-evidence/
             artifacts/ios/attempts/*/retention-evidence/
+            artifacts/ios/release-ui-*/*.html
+            artifacts/ios/release-ui-*/*.json
+            artifacts/ios/release-ui-*/*.log
+            artifacts/ios/release-ui-*/devices/*/*.json
+            artifacts/ios/release-ui-*/devices/*/ui-attachments/
           if-no-files-found: ignore
           retention-days: 14
       - uses: actions/upload-artifact@v4

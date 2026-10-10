@@ -77,6 +77,21 @@ service and the chosen public/private and free/paid distribution model.
 
 ## Remaining release sequence
 
+The independent publisher UI gate runs on a fresh iPhone and iPad simulator:
+
+```sh
+npm run verify:ios:release
+```
+
+It opens the native privacy page before pairing, follows both real public
+links into Safari, returns to the app and checks landscape. Screenshots must
+contain rendered text at the expected element frames and stable display
+geometry. UIImage orientation is applied once for display, with raw screen
+PNG attachments retained separately. Each attempt produces HTML and JSON under
+`artifacts/ios/release-ui-<timestamp>/`, including failures; only the exact
+simulator UUIDs created by that attempt are shut down and removed. This gate
+supplements the eleven business cases and does not qualify physical devices.
+
 1. Complete all native E2E suites on the intended source and current toolchain.
 2. Supply the real publisher policy/support metadata and review environment.
 3. Create the verified distribution archive/IPA and validate/upload it through

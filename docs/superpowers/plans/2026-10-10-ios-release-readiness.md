@@ -52,6 +52,7 @@
 
 ## Task 5: Device and release acceptance
 
+- [ ] Add `ReleaseReadinessUITests.testPublisherPolicyAndSupportBeforePairing` as a separate release UI check. Use fresh, owned iPhone/iPad simulators; open the native privacy page and actual public policy/support websites, retain XCTest PNGs and HTML, and remove only simulators created by this check. This supplements the eleven business cases and cannot replace physical-device/TestFlight acceptance.
 - [ ] Run the distribution build on supported iPhone/iPad sizes through pairing, real-provider execution, approval, artifacts, cancellation/recovery and privacy links. Retain an HTML/photo report for each attempt and distinguish simulator from physical hardware.
 - [ ] Verify the deployed HTTPS/authentication service and review environment, including recovery and relevant server/worker release requirements.
 - [ ] Perform TestFlight internal testing and resolve observed regressions before public submission. Track Apple processing/review separately from local checks.
