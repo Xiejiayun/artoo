@@ -45,10 +45,16 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+      - name: Select stable Xcode 26
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26'
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
+      - name: Verify release SDK requirements
+        run: node apps/ios/scripts/release-toolchain.mjs
       - run: npm ci
       - run: npx playwright install chromium
         working-directory: apps/web

@@ -103,7 +103,8 @@ final class SharedServerChatUITests: XCTestCase {
         assign.tap()
         try require(app.navigationBars["Assign Task"].waitForExistence(timeout: 10), "Assign must open the real assignment form")
         let manual = app.segmentedControls["task.assignment.mode"].buttons["Manual"]
-        try reveal(manual); manual.tap()
+        try reveal(manual)
+        try NativeAssignmentInput.selectManual(in: app)
         let picker = app.descendants(matching: .any).matching(identifier: "task.assignment.instance").firstMatch
         try reveal(picker); picker.tap()
         try require(fixture.executorInstanceId != fixture.executorCollisionInstanceId, "The same-name fixture must contain two distinct execution instances")
