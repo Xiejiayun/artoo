@@ -27,6 +27,7 @@
     "verify:mac": "node scripts/preview-gate.mjs --suite=mac",
     "verify:recovery": "npm run build:preview && node --test scripts/recovery-e2e.test.mjs && node scripts/recovery-e2e.mjs",
     "archive:ios:development": "node apps/ios/scripts/archive-device.mjs",
+    "archive:ios:distribution": "node apps/ios/scripts/archive-distribution.mjs",
     "verify:desktop": "node scripts/preview-gate.mjs --suite=desktop",
     "dev": "npm run dev --workspace @artoo/server",
     "dev:web": "npm run dev --workspace @artoo/web",

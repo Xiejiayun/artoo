@@ -166,7 +166,18 @@ function MessageTimeline({ items, identity, people, hiddenMessageId, threadRootI
     return () => observer.disconnect();
   }, []);
   return <div className="conversation__history">
-    <div className="conversation__viewport" ref={viewport} role="region" aria-label="Message history" tabIndex={0} onScroll={() => {
+    <div className="conversation__viewport" ref={viewport} role="region" aria-label="Message history" tabIndex={0} onKeyDown={(event) => {
+      if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.key === "Home") {
+        event.preventDefault();
+        stickToLatest.current = false;
+        event.currentTarget.scrollTop = 0;
+        setAwayFromLatest(event.currentTarget.scrollHeight > event.currentTarget.clientHeight);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        jumpToLatest();
+      }
+    }} onScroll={() => {
       const element = viewport.current;
       if (!element) return;
       const nearBottom = element.scrollHeight - element.clientHeight - element.scrollTop <= 64;

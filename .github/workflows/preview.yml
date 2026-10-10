@@ -55,6 +55,8 @@ jobs:
           cache: npm
       - name: Verify release SDK requirements
         run: node apps/ios/scripts/release-toolchain.mjs
+      - name: Verify distribution signing contracts
+        run: node --test apps/ios/scripts/archive-device.test.mjs apps/ios/scripts/archive-distribution.test.mjs apps/ios/scripts/release-toolchain.test.mjs
       - run: npm ci
       - run: npx playwright install chromium
         working-directory: apps/web

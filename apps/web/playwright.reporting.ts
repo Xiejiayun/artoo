@@ -8,7 +8,11 @@ import { getE2EReportContext } from "../../scripts/e2e-report.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 
 export function htmlEvidence(suite: string, scope: string) {
-  const run = `${suite}-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  // Playwright reloads configuration in its worker process. Inherit one run
+  // directory so worker screenshots and the parent's HTML reporter agree.
+  const runKey = `ARTOO_PLAYWRIGHT_EVIDENCE_${suite.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+  const run = process.env[runKey] ??= `${suite}-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  if (!run.startsWith(`${suite}-`) || !/^[A-Za-z0-9-]+$/.test(run)) throw new Error("Invalid browser evidence run directory");
   const context = getE2EReportContext();
   return {
     globalSetup: join(here, "playwright.browser-metadata.ts"),
@@ -39,7 +43,7 @@ export default class WorkflowScreenshotReporter implements Reporter {
     if (!directory) return;
     let files;
     try { files = readdirSync(directory, { withFileTypes: true, recursive: true }); } catch { return; }
-    for (const file of files.filter((item) => item.isFile() && /^(?:historical-mention|suggested-plan-\d+|workspace(?:-review)?-\d+|channels-\d+)\.png$/.test(item.name))) {
+    for (const file of files.filter((item) => item.isFile() && /^(?:historical-mention|suggested-plan-\d+|workspace(?:-review)?-\d+|channels-\d+|(?:channel|thread)-(?:short-mobile|multiline-short-mobile))\.png$/.test(item.name))) {
       const path = join(file.parentPath, file.name);
       if (this.seen.has(path)) continue;
       this.seen.add(path);

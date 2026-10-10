@@ -34,10 +34,13 @@
 .channel-header > .ui-btn { flex: none; }
 .channel-main > .conversation { flex: 1; min-height: 0; overflow-y: auto; border: 0; border-radius: 0; box-shadow: none; }
 .channel-main > .conversation > .conversation__header { display: none; }
-/* The history owns its minimum height. A taller inner scrollport would paint
-   over the composer when the window shrinks or a draft grows. Short windows
-   can scroll the conversation while keeping a usable history scrollport. */
+/* Reserve usable scroll space separately from the Jump-to-latest strip. The
+   outer conversation scrolls when a tall composer cannot fit the window. */
 .channels-page .conversation__history { min-height: 120px; }
+.channels-page .conversation__history:has(.conversation__jump) {
+  /* The jump strip uses a 32px button, space-2 padding and a 1px border. */
+  min-height: calc(120px + 32px + var(--space-2) * 2 + 1px);
+}
 .channel-main .conversation__viewport { min-height: 0; max-height: none; }
 .channel-welcome { display: grid; place-items: center; padding: 32px; }
 .channel-welcome .ui-state { max-width: 430px; padding: 40px; background: transparent; }

@@ -41,10 +41,20 @@ targets:
       properties:
         CFBundleDisplayName: Artoo
         CFBundleShortVersionString: "0.1.0"
+        # The client uses Apple's TLS/Keychain APIs and no custom encryption.
+        ITSAppUsesNonExemptEncryption: false
+        ArtooPublisherName: Jiayun Xie
+        ArtooPrivacyPolicyURL: https://xiejiayun.github.io/artoo/privacy.html
+        ArtooSupportURL: https://xiejiayun.github.io/artoo/support.html
         UILaunchScreen:
           UIColorName: ""
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSLocalNetworkUsageDescription: Connect to your team's local Artoo server.

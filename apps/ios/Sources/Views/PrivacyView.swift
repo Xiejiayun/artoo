@@ -2,8 +2,19 @@ import SwiftUI
 
 /// Available before pairing as well as from the connected workspace.
 struct PrivacyView: View {
+    private let publisher = PublisherInformation.bundled
+
     var body: some View {
         List {
+            if let publisher {
+                Section("Publisher") {
+                    Text(publisher.name)
+                    Link("Privacy policy", destination: publisher.privacyPolicyURL)
+                        .accessibilityIdentifier("privacy.publisher.policy")
+                    Link("Support", destination: publisher.supportURL)
+                        .accessibilityIdentifier("privacy.publisher.support")
+                }
+            }
             Section {
                 Text("Artoo connects to the team server you choose. Your team's server operator manages access to your workspace and provides the privacy policy that applies to that service.")
             }
