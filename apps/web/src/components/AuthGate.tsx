@@ -7,6 +7,7 @@ import { useApi, useCommands } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { clearRoomDrafts } from "../app/roomDrafts.js";
 import { Button, ErrorState } from "../ui/index.js";
+import { AIConsentProvider } from "./AIDataSharing.js";
 import { LoginPage } from "./LoginPage.js";
 import { DesktopSetup } from "./DesktopSetup.js";
 
@@ -24,7 +25,7 @@ export function AuthGate({
   children: React.ReactNode;
 }): React.ReactNode {
   if (!enabled) {
-    return <>{children}</>;
+    return <AIConsentProvider>{children}</AIConsentProvider>;
   }
   return <AuthGuard>{children}</AuthGuard>;
 }
@@ -91,7 +92,7 @@ function AuthGuard({ children }: { children: React.ReactNode }): React.ReactNode
   }
 
   if (accountId !== session.data.user.id) return <div className="auth-state" role="status">Loading your account…</div>;
-  return <>{children}</>;
+  return <AIConsentProvider key={accountId} userId={accountId}>{children}</AIConsentProvider>;
 }
 
 /** Retryable error state for a failed/unusable `/auth/session` probe. */

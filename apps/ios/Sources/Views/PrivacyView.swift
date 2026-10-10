@@ -33,7 +33,7 @@ struct PrivacyView: View {
 
             Section("Agents and AI providers") {
                 Text("When you request an agent response or start work, the team's execution computer may send your request, conversation and task context, and relevant workspace files to its configured AI provider.")
-                Text("The provider depends on your team's setup. Ask your administrator which providers are used and how they handle submitted content before sending sensitive information.")
+                Text("Your team lists its configured providers in More → AI data sharing. Review their privacy policies and give explicit permission before starting external AI work. You can withdraw permission there at any time; information already sent cannot be recalled.")
             }
 
             Section("Tracking") {

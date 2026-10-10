@@ -94,9 +94,19 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
     public let sessionID = UUID().uuidString
     private let stateLock = NSLock()
     private var invalidated = false
+    private var consentHandler: (@Sendable () async -> Bool)?
+
+    public func setAIConsentHandler(_ handler: (@Sendable () async -> Bool)?) {
+        stateLock.lock(); defer { stateLock.unlock() }
+        consentHandler = handler
+    }
+    private func currentConsentHandler() -> (@Sendable () async -> Bool)? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return invalidated ? nil : consentHandler
+    }
 
     public func invalidate() {
-        stateLock.lock(); invalidated = true; stateLock.unlock()
+        stateLock.lock(); invalidated = true; consentHandler = nil; stateLock.unlock()
         session.invalidateAndCancel()
     }
     private func requireActive() throws {
@@ -336,6 +346,12 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
             request.setValue(idempotencyKey ?? UUID().uuidString, forHTTPHeaderField: "Idempotency-Key")
         }
 
+        return try await execute(request, allowConsent: !path.hasPrefix("/api/v1/privacy/"))
+    }
+
+    private func execute(_ request: URLRequest, allowConsent: Bool) async throws -> (Data, HTTPURLResponse) {
+        try requireActive()
+        try Task.checkCancellation()
         let data: Data
         let response: URLResponse
         do {
@@ -353,6 +369,13 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
                 NotificationCenter.default.post(name: .artooAuthenticationExpired, object: sessionID)
             }
             let errorBody = try? JSONDecoder().decode(JSONValue.self, from: data)
+            if allowConsent, http.statusCode == 428, errorBody?["error"]["code"].text == "ai_consent_required",
+               let handler = currentConsentHandler(), await handler() {
+                try requireActive()
+                try Task.checkCancellation()
+                // Retry the exact body and idempotency key only once, on this connection.
+                return try await execute(request, allowConsent: false)
+            }
             let body = errorBody?["error"]["message"].text ?? "Request failed"
             throw ApiError.http(status: http.statusCode, body: body)
         }

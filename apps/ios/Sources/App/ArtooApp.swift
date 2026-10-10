@@ -26,6 +26,7 @@ public final class AppContainer: ObservableObject {
     @Published public private(set) var unreadNotificationCount: Int?
     @Published public private(set) var notificationCountError: String?
     public let realtime = RealtimeConnection()
+    let aiConsent = AIConsentPresenter()
     private let credentials: CredentialStore
     private var bootstrapOperationSequence = 0
     private var bootstrapPublicationSequence = 0
@@ -41,6 +42,14 @@ public final class AppContainer: ObservableObject {
     public init(client: ApiClientProtocol, config: AppConfig = .default, credentials: CredentialStore = KeychainCredentialStore()) {
         self.client = client; self.config = config; self.credentials = credentials
         isAuthenticated = true; restored = true
+        configureAIConsent()
+    }
+    private func configureAIConsent() {
+        guard let live = client as? ApiClient else { return }
+        live.setAIConsentHandler { [weak self, weak live] in
+            guard let self, let live else { return false }
+            return await self.aiConsent.request(client: live)
+        }
     }
     public var projectId: String { selectedProjectId.isEmpty ? (bootstrap.value?.projects.first?.id ?? config.projectId) : selectedProjectId }
     public var isAdministrator: Bool { identity?.isAdministrator ?? false }
@@ -83,6 +92,7 @@ public final class AppContainer: ObservableObject {
     }
     public func retryConnection() async { restored = false; await restore() }
     private func connect(_ stored: StoredConnection) async throws {
+        aiConsent.finish(false)
         realtime.stop(); (client as? ApiClient)?.invalidate()
         sessionGeneration = UUID(); isAuthenticated = false
         unreadNotificationCount = nil; notificationCountError = nil
@@ -93,6 +103,7 @@ public final class AppContainer: ObservableObject {
         let initial = try await live.bootstrap()
         guard generation == sessionGeneration else { live.invalidate(); throw CancellationError() }
         client = live; identity = authenticated; serverURL = stored.serverURL
+        configureAIConsent()
         bootstrap = .loaded(initial); isAuthenticated = true; connectionError = nil
         if !initial.projects.contains(where: { $0.id == selectedProjectId }) { selectedProjectId = initial.projects.first?.id ?? "" }
         try realtime.configure(origin: url, controlToken: stored.controlToken, sessionID: live.sessionID,
@@ -190,6 +201,7 @@ public final class AppContainer: ObservableObject {
     }
     public func authenticationExpired(session: String?) {
         guard session == (client as? ApiClient)?.sessionID else { return }
+        aiConsent.finish(false)
         realtime.stop(); (client as? ApiClient)?.invalidate(); sessionGeneration = UUID()
         isAuthenticated = false; identity = nil; bootstrap = .idle
         unreadNotificationCount = nil; notificationCountError = nil
@@ -200,6 +212,7 @@ public final class AppContainer: ObservableObject {
         guard !isConnecting else { return }; isConnecting = true
         defer { isConnecting = false }
         let live = client as? ApiClient
+        aiConsent.finish(false)
         realtime.stop(); sessionGeneration = UUID()
         isAuthenticated = false; identity = nil; bootstrap = .idle; connectionError = nil
         unreadNotificationCount = nil; notificationCountError = nil
@@ -239,6 +252,7 @@ public struct RootView: View {
             } else { PairDeviceView() }
         }
         .task { await container.restore() }
+        .background(AIConsentAnchor(presenter: container.aiConsent).frame(width: 0, height: 0))
         .onChange(of: container.sessionGeneration) { _, _ in selectedTab = .channels }
         .onChange(of: scenePhase) { _, phase in container.realtime.setActive(phase == .active) }
         .onReceive(NotificationCenter.default.publisher(for: .artooAuthenticationExpired).receive(on: RunLoop.main)) { notification in
@@ -670,7 +684,10 @@ private struct WorkspaceSettingsView: View {
                     NavigationLink { DevicesView(client: container.client) } label: { Label("Devices", systemImage: "laptopcomputer.and.iphone") }
                 }
                 if let error = container.connectionError { Section { Text(error).foregroundStyle(.red) } }
-                Section { NavigationLink("Privacy and data") { PrivacyView() } }
+                Section {
+                    NavigationLink("AI data sharing") { AIDataSharingView(client: container.client) }.accessibilityIdentifier("aiSharing.settings")
+                    NavigationLink("Privacy and data") { PrivacyView() }
+                }
                 Section { Button("Sign out", role: .destructive) { Task { await container.logout() } }.disabled(container.isConnecting).accessibilityIdentifier("signOut") }
             }.navigationTitle("More")
         }

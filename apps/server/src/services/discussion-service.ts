@@ -1,3 +1,4 @@
+import { requireAiSharingAuthorization } from "./ai-data-sharing-service.js";
 import { agentInstances, appendEvent, assistantTurns, discussions, goals, messages, plans, rooms, runs, tasks } from "@artoo/db";
 import { canProposePlan, DiscussionSchema, ID_PREFIXES, StartDiscussionRequestSchema, type Discussion, type GoalStatus, type StartDiscussionRequest } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
@@ -53,6 +54,7 @@ export async function listDiscussions(ctx: ServerContext, goalId: string) {
 export async function startDiscussion(ctx: ServerContext, goalId: string, request: StartDiscussionRequest) {
   const input = StartDiscussionRequestSchema.parse(request);
   return ctx.db.transaction(async (tx) => {
+    const sharing = await requireAiSharingAuthorization(ctx, tx);
     const goal = (await tx.select().from(goals).where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId))).for("update"))[0];
     if (!goal) throw AppError.notFound("Goal not found");
     if (!canProposePlan(goal.status as GoalStatus, goal.currentPlanId !== null)) throw AppError.invalidState("Pause the goal before discussing a replacement plan");
@@ -78,6 +80,7 @@ export async function startDiscussion(ctx: ServerContext, goalId: string, reques
       body: `Discuss and break down: ${goal.title}\n\n${goal.objective}\n\nAcceptance criteria:\n${(goal.acceptanceCriteria as string[]).map((criterion) => `- ${criterion}`).join("\n")}`,
       payload: { discussion_id: id, participants: input.participants }, createdAt: now });
     const [row] = await tx.insert(discussions).values({ id, organizationId: ctx.organizationId, goalId, roomId: room.id, threadRootId: rootId, taskId,
+      aiDataSharingConsentId: sharing.consentId, aiDataSharingPolicyVersion: sharing.policyVersion,
       actorUserId: ctx.actorUserId, participants: input.participants, rounds: input.rounds, maxMinutes: input.max_minutes,
       status: "running", createdAt: now, updatedAt: now, deadlineAt: new Date(ctx.clock.now().getTime() + input.max_minutes * 60000).toISOString() }).returning();
     await appendEvent(tx, buildEvent(ctx, { type: "message.created", actorType: "user", actorId: ctx.actorUserId, correlationId: id,
@@ -122,6 +125,14 @@ async function advance(ctx: ServerContext, id: string): Promise<Row> {
         ...(done ? { status: "ready", finalMessageId: turn.responseMessageId } : {}) });
       if (done) return row;
     }
+    let sharing;
+    try {
+      sharing = await requireAiSharingAuthorization({ ...ctx, actorUserId: row.actorUserId }, tx,
+        { consentId: row.aiDataSharingConsentId, policyVersion: row.aiDataSharingPolicyVersion });
+    } catch (error) {
+      if (!(error instanceof AppError) || !["ai_consent_required", "ai_sharing_unconfigured"].includes(error.code)) throw error;
+      return update(ctx, tx, row, { status: "stopping", error: error.message });
+    }
     const team = participants(row), participant = team[row.currentStep < row.rounds * team.length ? row.currentStep % team.length : 0]!;
     const now = ctx.clock.nowIso(), turnId = ctx.idGen.generate("turn"), messageId = ctx.idGen.generate(ID_PREFIXES.message);
     await tx.insert(messages).values({ id: messageId, organizationId: ctx.organizationId, roomId: row.roomId, threadRootId: row.threadRootId, taskId: row.taskId,
@@ -129,6 +140,7 @@ async function advance(ctx: ServerContext, id: string): Promise<Row> {
       payload: { discussion_id: row.id, discussion_step: row.currentStep, assistant_turn_id: turnId, intent: "discussion" }, createdAt: now });
     await tx.update(messages).set({ replyCount: sql`${messages.replyCount} + 1` }).where(eq(messages.id, row.threadRootId));
     await tx.insert(assistantTurns).values({ id: turnId, organizationId: ctx.organizationId, roomId: row.roomId, threadRootId: row.threadRootId, taskId: row.taskId,
+      aiDataSharingConsentId: sharing.consentId, aiDataSharingPolicyVersion: sharing.policyVersion,
       actorUserId: row.actorUserId, clientRequestId: `${row.id}_step_${row.currentStep}`, agentInstanceId: participant.agent_instance_id,
       userMessageId: messageId, status: "queued", createdAt: now, updatedAt: now });
     await appendEvent(tx, buildEvent(ctx, { type: "message.created", actorType: "system", actorId: "discussion-coordinator", correlationId: row.id,

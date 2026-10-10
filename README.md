@@ -53,6 +53,11 @@ npm run demo:v1
 `npm run verify:v1` includes typecheck, build, full Vitest, Playwright, the
 production dependency audit (`npm audit --omit=dev`), and `git diff --check`.
 
+Before starting agent work, configure the team's actual AI recipients using
+[the AI data sharing guide](docs/ai-data-sharing.md). Missing disclosure blocks
+agent execution while workspace browsing remains available. Users review the
+providers and explicitly allow sharing in the iOS or Web/Mac client.
+
 Run the server after building:
 
 ```bash

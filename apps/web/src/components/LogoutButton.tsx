@@ -25,6 +25,7 @@ export function LogoutButton(): React.ReactNode {
 
   const logout = useMutation({
     mutationFn: async () => {
+      api.invalidateAIConsent();
       commands.cancelPending();
       clearRoomDrafts();
       if (window.artooDesktop?.logout) { await window.artooDesktop.logout(); window.location.reload(); }

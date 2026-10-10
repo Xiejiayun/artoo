@@ -74,7 +74,7 @@ async function main() {
     const { createSession, provisionUser } = await import(pathToFileURL(join(root, "apps/server/dist/auth/auth-service.js")).href);
     interrupted.signal.throwIfAborted();
     server = await startServer({
-      NODE_ENV: "production", ARTOO_HOST: "127.0.0.1", ARTOO_PORT: "0",
+      NODE_ENV: "production", ARTOO_AI_DATA_SHARING_POLICY: JSON.stringify({ mode: "local", providers: [] }), ARTOO_HOST: "127.0.0.1", ARTOO_PORT: "0",
       ARTOO_DATA_DIR: join(temporary, "server-data"), ARTOO_WORKSPACE_ROOT: workspace,
       ARTOO_PAIRING_PEPPER: randomBytes(32).toString("hex"), ARTOO_WEB_DIST: join(root, "apps/web/dist"),
       GOOGLE_CLIENT_ID: "ios-ui-fixture", GOOGLE_CLIENT_SECRET: "unused-local-fixture",

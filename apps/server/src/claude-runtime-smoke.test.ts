@@ -1,3 +1,4 @@
+import { authorizeLiveSmokeSharing } from "./live-sharing-test-support.js";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -56,6 +57,7 @@ describe.skipIf(!ENABLED)("gated true Claude runtime smoke (real claude CLI)", (
       mkdirSync(workspaceRoot, { recursive: true });
 
       server = await buildTestServer({ workspaceRoot });
+      await authorizeLiveSmokeSharing(server.ctx);
 
       const channel = createInProcessChannel();
       const binding = attachNodeBinding(server.ctx, channel.serverTransport, "computer_local_mock");

@@ -77,6 +77,19 @@ export async function runInstalledLiveProvider({ page, workspace, userData, base
     const responseTo = (path) => page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1${path}` && response.request().method() === "POST");
     const consume = async (pending) => { const response = await pending; assert.ok(response.ok()); return response.json(); };
 
+    const { loadAiDataSharingPolicy } = await import("../../server/dist/config/ai-data-sharing.js");
+    const sharingPolicy = loadAiDataSharingPolicy(env);
+    assert.ok(sharingPolicy?.mode === "external" && env.ARTOO_LIVE_AI_SHARING_CONSENT === "1",
+      "Installed live verification requires actual external AI recipients and explicit ARTOO_LIVE_AI_SHARING_CONSENT=1");
+    server.ctx.aiDataSharingPolicy = sharingPolicy;
+    stage = "review actual AI recipients through installed UI";
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "Review AI data sharing", exact: true }).click();
+    for (const provider of sharingPolicy.providers) await expect(page.getByText(provider.name, { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Allow AI data sharing", exact: true }).click();
+    await expect(page.getByText("You have allowed this team's current disclosure.", { exact: true })).toBeVisible();
+    check("Actual configured AI recipients explicitly accepted through the installed client");
+
     stage = "save real provider settings through installed UI";
     await page.getByRole("link", { name: "Settings", exact: true }).click();
     if ((await status()).state !== "stopped") {

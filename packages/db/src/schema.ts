@@ -15,6 +15,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 /**
@@ -52,6 +53,17 @@ export const users = pgTable("users", {
   role: text("role").notNull(),
   createdAt: ts("created_at").notNull(),
 }, (t) => [check("users_role_chk", sql`${t.role} in ('owner','admin','member')`)]);
+
+/** A new grant gets a new ID, so re-consenting cannot revive withdrawn jobs. */
+export const aiDataSharingConsents = pgTable("ai_data_sharing_consents", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  userId: text("user_id").notNull().references(() => users.id),
+  policyVersion: text("policy_version").notNull(),
+  policySnapshot: jsonb("policy_snapshot").notNull(),
+  grantedAt: ts("granted_at").notNull(),
+  revokedAt: ts("revoked_at"),
+}, (t) => [uniqueIndex("ai_data_sharing_active_user_idx").on(t.organizationId, t.userId).where(sql`${t.revokedAt} is null`)]);
 
 export const agents = pgTable("agents", {
   id: text("id").primaryKey(),
@@ -514,6 +526,9 @@ export const runs = pgTable("runs", {
   workspaceBranch: text("workspace_branch"),
   workspaceAllocation: jsonb("workspace_allocation"),
   createdAt: ts("created_at").notNull(),
+  requestedByUserId: text("requested_by_user_id").references(() => users.id),
+  aiDataSharingConsentId: text("ai_data_sharing_consent_id").references(() => aiDataSharingConsents.id),
+  aiDataSharingPolicyVersion: text("ai_data_sharing_policy_version"),
 }, (t) => [
   check(
     "runs_status_chk",
@@ -643,6 +658,8 @@ export const assistantTurns = pgTable("assistant_turns", {
   error: text("error"),
   createdAt: ts("created_at").notNull(),
   updatedAt: ts("updated_at").notNull(),
+  aiDataSharingConsentId: text("ai_data_sharing_consent_id").references(() => aiDataSharingConsents.id),
+  aiDataSharingPolicyVersion: text("ai_data_sharing_policy_version"),
 }, (t) => [
   unique("assistant_turns_request_unique").on(t.organizationId, t.roomId, t.actorUserId, t.clientRequestId),
   check("assistant_turns_status_chk", sql`${t.status} in ('queued','waiting','running','completed','failed','cancelled')`),
@@ -1004,6 +1021,8 @@ export const discussions = pgTable("discussions", {
   createdAt: ts("created_at").notNull(),
   updatedAt: ts("updated_at").notNull(),
   deadlineAt: ts("deadline_at").notNull(),
+  aiDataSharingConsentId: text("ai_data_sharing_consent_id").references(() => aiDataSharingConsents.id),
+  aiDataSharingPolicyVersion: text("ai_data_sharing_policy_version"),
 }, (t) => [
   check("discussions_status_chk", sql`${t.status} in ('running','stopping','ready','failed','cancelled')`),
   check("discussions_rounds_chk", sql`${t.rounds} between 1 and 3`),

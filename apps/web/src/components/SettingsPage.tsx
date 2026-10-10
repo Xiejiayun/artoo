@@ -8,6 +8,7 @@ import { useProject } from "../app/useProject.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { Badge, Button, EmptyState, Input, Modal, Select } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
+import { AIDataSharingSettings } from "./AIDataSharing.js";
 import { DesktopSettings } from "./DesktopSetup.js";
 import "../ui/settings.css";
 
@@ -30,6 +31,7 @@ export function SettingsPage(): React.ReactNode {
   return <section className="product-page settings-page" aria-label="Settings">
     <header className="settings-page__heading"><div><h1 className="t-h1">Settings</h1><p>Manage your workspace and the devices you use with your team.</p></div></header>
     <ActionError error={bootstrap.error} />
+    <AIDataSharingSettings />
     <nav className="settings-sections" aria-label="Settings sections"><button type="button" onClick={() => document.getElementById("project-settings")?.scrollIntoView()}><FolderKanban size={16} />Project</button>{window.artooDesktop?.getConnection && <button type="button" onClick={() => document.getElementById("desktop-settings")?.scrollIntoView()}><Monitor size={16} />This computer</button>}<button type="button" onClick={() => document.getElementById("pairing-settings")?.scrollIntoView()}><Link2 size={16} />Connect a device</button><button type="button" onClick={() => document.getElementById("device-settings")?.scrollIntoView()}><Laptop size={16} />Devices</button></nav>
     <section id="project-settings" className="settings-section" aria-label="Projects"><header className="settings-section__heading"><div><h2>Projects</h2><p>Name your shared workspace and choose where agents work by default.</p></div>{canManage && <Button onClick={() => setCreating(true)}>New project</Button>}</header>
       {creating && <ProjectForm onSaved={(id) => { setSelectedProjectId(id); setCreating(false); }} onClose={() => setCreating(false)} />}

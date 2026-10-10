@@ -146,6 +146,7 @@ async function startTemporaryServer() {
     cwd: repoRoot,
     env: {
       ...process.env,
+      ARTOO_AI_DATA_SHARING_POLICY: JSON.stringify({ mode: "local", providers: [] }),
       ARTOO_HOST: host,
       ARTOO_PORT: String(port),
       ARTOO_WORKSPACE_ROOT: workspaceRoot,

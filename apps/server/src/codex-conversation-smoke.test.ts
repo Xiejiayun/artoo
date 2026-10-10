@@ -1,3 +1,4 @@
+import { authorizeLiveSmokeSharing } from "./live-sharing-test-support.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -97,6 +98,7 @@ describe.skipIf(!enabled)("gated real Codex conversation", () => {
     const command = conversationCommand();
     workspace = mkdtempSync(join(tmpdir(), "artoo-codex-chat-"));
     server = await buildTestServer({ workspaceRoot: workspace });
+    await authorizeLiveSmokeSharing(server.ctx);
     await server.db.db.update(agentInstances).set({ runtime: "codex" }).where(eq(agentInstances.id, "instance_mock_coder"));
     await server.db.db.update(agentRuntimes).set({ runtime: "codex" }).where(eq(agentRuntimes.id, "runtime_mock"));
     const channel = createInProcessChannel();

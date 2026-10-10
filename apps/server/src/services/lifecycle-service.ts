@@ -1,3 +1,4 @@
+import { requireAiSharingAuthorization } from "./ai-data-sharing-service.js";
 import {
   agentInstances,
   appendEvent,
@@ -180,6 +181,7 @@ export async function assignTask(
 ): Promise<AssignResult> {
   const now = ctx.clock.nowIso();
   const result = await ctx.db.transaction(async (tx) => {
+    let sharing = await requireAiSharingAuthorization(ctx, tx);
     const row = (
       await tx
         .select()
@@ -199,6 +201,7 @@ export async function assignTask(
       const turn = (await tx.select().from(assistantTurns).where(and(eq(assistantTurns.id, assistantTurnId),
         eq(assistantTurns.taskId, taskId), eq(assistantTurns.organizationId, ctx.organizationId))).for("update"))[0];
       if (!turn || !["queued", "waiting"].includes(turn.status) || turn.runId !== null) throw AppError.conflict("Assistant turn was cancelled, changed, or already dispatched");
+      sharing = await requireAiSharingAuthorization(ctx, tx, { consentId: turn.aiDataSharingConsentId, policyVersion: turn.aiDataSharingPolicyVersion });
       const active = await tx.select({ id: assistantTurns.id }).from(assistantTurns).where(and(
         eq(assistantTurns.roomId, turn.roomId), turn.threadRootId ? eq(assistantTurns.threadRootId, turn.threadRootId) : isNull(assistantTurns.threadRootId), eq(assistantTurns.status, "running")));
       if (active.length) throw AppError.conflict("Another assistant turn is still running in this room");
@@ -312,6 +315,7 @@ export async function assignTask(
 
     await tx.insert(runs).values({
       id: runId,
+      requestedByUserId: ctx.actorUserId, aiDataSharingConsentId: sharing.consentId, aiDataSharingPolicyVersion: sharing.policyVersion,
       organizationId: ctx.organizationId,
       taskId,
       computerId: outcome.selected.computer_id,

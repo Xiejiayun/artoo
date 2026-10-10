@@ -5,6 +5,7 @@
  * responses use the fixed `{ error: { code, message, details } }` envelope and
  * are surfaced as {@link ApiClientError}.
  */
+import type { AiDataSharingState } from "./aiDataSharing.js";
 import type {
   ApiErrorCode,
   AssignRequest,
@@ -85,6 +86,31 @@ interface RequestOptions {
 }
 
 export class ApiClient {
+  private consentScope?: { request: () => Promise<boolean>; cancel: () => void; userId?: string };
+  private consentEpoch = 0;
+
+  setAIConsentHandler(request: () => Promise<boolean>, cancel: () => void, userId?: string): () => void {
+    this.invalidateAIConsent();
+    const scope = { request, cancel, userId };
+    this.consentScope = scope;
+    return () => {
+      if (this.consentScope === scope) { this.invalidateAIConsent(); this.consentScope = undefined; }
+    };
+  }
+  invalidateAIConsent(): void { this.consentEpoch++; this.consentScope?.cancel(); }
+  async aiDataSharing(): Promise<AiDataSharingState> {
+    const userId = this.consentScope?.userId;
+    const state = await this.request<AiDataSharingState>("GET", "/privacy/ai-sharing");
+    if (userId && state.user_id !== userId) throw new ApiClientError("conflict", "Your account changed. Reload this workspace before managing AI permission.", 409);
+    return state;
+  }
+  allowAIDataSharing(version: string, expectedUserId: string): Promise<AiDataSharingState> {
+    return this.request("POST", "/privacy/ai-sharing/consent", { body: { policy_version: version, expected_user_id: expectedUserId } });
+  }
+  withdrawAIDataSharing(expectedUserId: string): Promise<AiDataSharingState> {
+    return this.request("DELETE", "/privacy/ai-sharing/consent", { body: { stop_my_agent_work: true, expected_user_id: expectedUserId } });
+  }
+
   private readonly baseUrl: string;
   /** Origin root for auth endpoints (`/auth/*`), i.e. baseUrl without `/api/v1`. */
   private readonly authBaseUrl: string;
@@ -101,6 +127,8 @@ export class ApiClient {
   }
 
   private async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
+    const scope = this.consentScope;
+    const epoch = this.consentEpoch;
     const headers: Record<string, string> = { Accept: "application/json" };
     const token = await this.tokenProvider?.();
     if (token) headers.Authorization = `Bearer ${token}`;
@@ -114,35 +142,37 @@ export class ApiClient {
     // Resolve the global fetch lazily so test interceptors (MSW) that replace
     // globalThis.fetch after construction are honored.
     const fetchImpl = this.fetchOverride ?? globalThis.fetch;
-    let response: Response;
-    try {
-      response = await fetchImpl(`${this.baseUrl}${path}`, {
-        method,
-        headers,
-        // Send the session cookie (#34 web auth) so the server's protected guard
-        // can authenticate the request.
-        credentials: this.credentials,
-        redirect: "error",
-        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-      });
-    } catch (cause) {
-      throw new ApiClientError("network_error", `Network request failed: ${String(cause)}`, 0);
-    }
-
-    const text = await response.text();
-    const json: unknown = parseResponse(text);
-
-    if (!response.ok) {
-      const envelope = (json as { error?: { code?: ApiErrorCode; message?: string; details?: Record<string, unknown> } } | undefined)?.error;
-      throw new ApiClientError(
-        envelope?.code ?? "unknown",
-        envelope?.message ?? response.statusText,
-        response.status,
-        envelope?.details ?? {},
-      );
-    }
-
-    return json as T;
+    const init: RequestInit = {
+      method, headers, credentials: this.credentials, redirect: "error",
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    };
+    const execute = async (allowConsent: boolean): Promise<T> => {
+      let response: Response;
+      try { response = await fetchImpl(`${this.baseUrl}${path}`, init); }
+      catch (cause) { throw new ApiClientError("network_error", `Network request failed: ${String(cause)}`, 0); }
+      const json: unknown = parseResponse(await response.text());
+      if (!response.ok) {
+        const envelope = (json as { error?: { code?: ApiErrorCode; message?: string; details?: Record<string, unknown> } } | undefined)?.error;
+        if (response.status === 401) this.invalidateAIConsent();
+        if (allowConsent && response.status === 428 && envelope?.code === "ai_consent_required"
+          && scope && scope === this.consentScope && epoch === this.consentEpoch) {
+          const identity = scope.userId ?? (await this.getSession()).user.id;
+          if (await scope.request()) {
+            // Cookies and native connection tokens may change while a dialog is open.
+            const current = await this.getSession();
+            if (scope !== this.consentScope || epoch !== this.consentEpoch || current.user.id !== identity
+              || token !== await this.tokenProvider?.()) {
+              throw new ApiClientError("conflict", "Your account changed. Start this action again in your current workspace.", 409);
+            }
+            return execute(false);
+          }
+        }
+        throw new ApiClientError(envelope?.code ?? "unknown", envelope?.message ?? response.statusText,
+          response.status, envelope?.details ?? {});
+      }
+      return json as T;
+    };
+    return execute(!path.startsWith("/privacy/"));
   }
 
   bootstrap(): Promise<BootstrapResponse> {
@@ -406,6 +436,7 @@ export class ApiClient {
   }
 
   async logout(): Promise<void> {
+    this.invalidateAIConsent();
     await this.authRequest<unknown>("POST", "/auth/logout");
   }
 
@@ -428,6 +459,7 @@ export class ApiClient {
     const text = await response.text();
     const json: unknown = parseResponse(text);
     if (!response.ok) {
+      if (response.status === 401) this.invalidateAIConsent();
       const envelope = (json as { error?: { code?: ApiErrorCode; message?: string } } | undefined)
         ?.error;
       throw new ApiClientError(

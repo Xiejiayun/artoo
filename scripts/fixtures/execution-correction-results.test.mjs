@@ -73,7 +73,7 @@ test("actual four-run protocol produces verifiable correction evidence and rejec
     const { startServer } = await import(pathToFileURL(join(root, "apps/server/dist/main.js")).href);
     const { createSession } = await import(pathToFileURL(join(root, "apps/server/dist/auth/auth-service.js")).href);
     const workspace = join(temporary, "workspace"); mkdirSync(workspace);
-    server = await startServer({ NODE_ENV: "production", ARTOO_HOST: "127.0.0.1", ARTOO_PORT: "0",
+    server = await startServer({ NODE_ENV: "production", ARTOO_AI_DATA_SHARING_POLICY: JSON.stringify({ mode: "local", providers: [] }), ARTOO_HOST: "127.0.0.1", ARTOO_PORT: "0",
       ARTOO_DATA_DIR: join(temporary, "server-data"), ARTOO_WORKSPACE_ROOT: workspace,
       ARTOO_PAIRING_PEPPER: randomBytes(32).toString("hex"),
       GOOGLE_CLIENT_ID: "correction-integration", GOOGLE_CLIENT_SECRET: "unused-local-integration",

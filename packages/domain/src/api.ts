@@ -34,6 +34,8 @@ export const ApiErrorCodeSchema = z.enum([
   "validation_error",
   "not_found",
   "permission_denied",
+  "ai_consent_required",
+  "ai_sharing_unconfigured",
   "conflict",
   "invalid_state",
   "runtime_unavailable",

@@ -1,3 +1,4 @@
+import { authorizeLiveSmokeSharing } from "./live-sharing-test-support.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,6 +55,7 @@ describe.skipIf(!enabled)("gated real Claude conversation", () => {
     // production preset's unattended permission denial; never enable bypass.
     vi.stubEnv("CLAUDE_CODE_SAFE_MODE", "1");
     server = await buildTestServer({ workspaceRoot: workspace });
+    await authorizeLiveSmokeSharing(server.ctx);
     await server.db.db.update(agentInstances).set({ runtime: "claude-code" }).where(eq(agentInstances.id, "instance_mock_coder"));
     await server.db.db.update(agentRuntimes).set({ runtime: "claude-code" }).where(eq(agentRuntimes.id, "runtime_mock"));
     const channel = createInProcessChannel();

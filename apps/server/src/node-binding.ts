@@ -1,3 +1,4 @@
+import { requireRunAiSharingAuthorization } from "./services/ai-data-sharing-service.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +18,7 @@ import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import { validatePersistedAllocationStart } from "./persisted-allocation-start.js";
 import {
+  cancelRun,
   failRunDaemonDisconnect,
   failRunStart,
   ingestWireRunEvent,
@@ -171,6 +173,28 @@ export function attachNodeBinding(
     }
   }
 
+  async function requireAuthorizedRun(runId: string, run: typeof runs.$inferSelect): Promise<void> {
+    try { await requireRunAiSharingAuthorization(ctx, run); }
+    catch (error) {
+      if (!(error instanceof AppError) || !["ai_consent_required", "ai_sharing_unconfigured"].includes(error.code)) throw error;
+      // A previous delivery may have reached the node even when the stored run
+      // still says queued. Confirm exact stop before changing status or leases.
+      let stopped = false;
+      try {
+        if (run.status === "failed" && run.failureReason === "daemon_disconnect") {
+          await binding.dispatchRunStop(runId);
+          await failRunDaemonDisconnect(ctx, runId, computerId, true);
+        } else {
+          await cancelRun({ ...ctx, actorUserId: run.requestedByUserId ?? ctx.actorUserId }, runId,
+            () => binding.dispatchRunStop(runId));
+        }
+        stopped = true;
+      } catch { /* Keep existing run/lease state when stop cannot be confirmed. */ }
+      throw new AppError(error.code, error.message, error.httpStatus,
+        { ...error.details, run_id: runId, stop_confirmed: stopped });
+    }
+  }
+
   async function sendRunStart(runId: string): Promise<void> {
     assertCurrentStartBinding(runId);
     const [run] = await ctx.db.db.select().from(runs).where(and(
@@ -248,6 +272,8 @@ export function attachNodeBinding(
     };
     assertCurrentStartBinding(runId);
     if (allocated) assertAllocationFeature(runId);
+    await requireAuthorizedRun(runId, run);
+    assertCurrentStartBinding(runId);
     pendingCommandRun.set(commandId, runId);
     // After send is invoked, disconnect/error may still mean delivery occurred.
     // Do not fail the run or release leases from this dispatch path.
@@ -274,7 +300,10 @@ export function attachNodeBinding(
     // fails the run through the daemon_disconnect path.
     async dispatchRunResume(runId: string): Promise<void> {
       if (closed) return;
-      if (!(await ownsRun(runId))) throw AppError.permissionDenied("run is not owned by this node");
+      const [run] = await ctx.db.db.select().from(runs).where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)));
+      if (!run || run.computerId !== computerId) throw AppError.permissionDenied("run is not owned by this node");
+      await requireAuthorizedRun(runId, run);
+      assertCurrentStartBinding(runId);
       const commandId = ctx.idGen.generate("cmd");
       const timer = setTimeout(() => {
         if (closed || !pendingResumeRun.delete(commandId)) return;

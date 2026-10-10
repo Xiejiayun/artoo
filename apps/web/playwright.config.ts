@@ -28,6 +28,7 @@ export default defineConfig({
       // Explicit dev env: the server fails closed without a pairing pepper, and
       // the dev node-token escape is opt-in (never silently enabled in main.ts).
       env: {
+        ARTOO_AI_DATA_SHARING_POLICY: JSON.stringify({ mode: "local", providers: [] }),
         ARTOO_PORT: SERVER_PORT,
         ARTOO_HOST: "127.0.0.1",
         ARTOO_PAIRING_PEPPER: "e2e-pairing-pepper",

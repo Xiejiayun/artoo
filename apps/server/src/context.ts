@@ -1,3 +1,4 @@
+import type { AiDataSharingPolicy } from "./config/ai-data-sharing.js";
 import type { Clock, IdGen } from "@artoo/domain";
 import type { DbClient } from "@artoo/storage";
 
@@ -12,6 +13,8 @@ import type { DeviceAuthConfig } from "./config/device-auth.js";
  */
 export interface ServerContext {
   db: DbClient;
+  /** Explicit operator declaration; absent configuration cannot authorize AI. */
+  aiDataSharingPolicy?: AiDataSharingPolicy | null;
   clock: Clock;
   idGen: IdGen;
   organizationId: string;

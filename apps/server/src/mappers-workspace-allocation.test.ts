@@ -5,6 +5,7 @@ import { ZodError } from "zod";
 import { mapRun } from "./mappers.js";
 
 const row: typeof runs.$inferSelect = {
+  requestedByUserId: null, aiDataSharingConsentId: null, aiDataSharingPolicyVersion: null,
   id: "run_A", organizationId: "org_A", taskId: "task_A", computerId: "computer_A",
   agentInstanceId: "ai_A", runtimeId: "mock", schedulerDecisionId: null, modelProfileId: null,
   effortProfileId: null, status: "queued", contextPackId: null, startedAt: null, endedAt: null,

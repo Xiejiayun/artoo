@@ -107,6 +107,66 @@ final class ApiClientTests: XCTestCase {
         ApiClient(baseURL: URL(string: "https://team.example.com")!, session: session, authToken: token)
     }
 
+    func testConsentRetryPreservesRequestAndIdempotencyKey() async throws {
+        var attempts: [URLRequest] = []
+        APIProtocol.handler = { request in
+            attempts.append(request)
+            return attempts.count == 1
+                ? (428, Data(#"{"error":{"code":"ai_consent_required","message":"Review AI sharing"}}"#.utf8))
+                : (200, Data(#"{"accepted":true}"#.utf8))
+        }
+        let api = client()
+        api.setAIConsentHandler { true }
+        _ = try await api.command(path: "/api/v1/tasks/task/assign", method: "POST", body: .object(["mode": .string("auto")]), idempotencyKey: "original-action-key")
+        XCTAssertEqual(attempts.count, 2)
+        XCTAssertEqual(attempts[0].allHTTPHeaderFields, attempts[1].allHTTPHeaderFields)
+        XCTAssertEqual(try Self.body(attempts[0]), try Self.body(attempts[1]))
+        XCTAssertEqual(attempts[1].value(forHTTPHeaderField: "Idempotency-Key"), "original-action-key")
+    }
+
+    func testConsentDeclineDoesNotRetryAndInvalidationCancelsAllowedReplay() async throws {
+        for invalidated in [false, true] {
+            var attempts = 0
+            APIProtocol.handler = { _ in
+                attempts += 1
+                return (428, Data(#"{"error":{"code":"ai_consent_required","message":"Review AI sharing"}}"#.utf8))
+            }
+            // Each invalidation owns a separate URLSession.
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [APIProtocol.self]
+            let isolated = URLSession(configuration: configuration)
+            defer { isolated.invalidateAndCancel() }
+            let api = ApiClient(baseURL: URL(string: "https://team.example.com")!, session: isolated, authToken: "original-token")
+            api.setAIConsentHandler { [weak api] in
+                if invalidated { api?.invalidate(); return true }
+                return false
+            }
+            do {
+                _ = try await api.command(path: "/api/v1/tasks/task/assign", method: "POST", body: .object([:]))
+                XCTFail("Declined or invalidated work must not succeed")
+            } catch {
+                if invalidated { XCTAssertTrue(error is CancellationError) }
+                else { XCTAssertEqual(error as? ApiError, .http(status: 428, body: "Review AI sharing")) }
+            }
+            XCTAssertEqual(attempts, 1)
+        }
+    }
+
+    func testConsentRetriesAtMostOnce() async throws {
+        var attempts = 0
+        APIProtocol.handler = { _ in
+            attempts += 1
+            return (428, Data(#"{"error":{"code":"ai_consent_required","message":"Disclosure changed"}}"#.utf8))
+        }
+        let api = client()
+        api.setAIConsentHandler { true }
+        do {
+            _ = try await api.command(path: "/api/v1/tasks/task/assign", method: "POST", body: .object([:]))
+            XCTFail("A changing disclosure requires another explicit user action")
+        } catch { XCTAssertEqual(error as? ApiError, .http(status: 428, body: "Disclosure changed")) }
+        XCTAssertEqual(attempts, 2)
+    }
+
     func testNativeSessionUsesBearerAndNoTokenInURL() async throws {
         APIProtocol.handler = { request in
             XCTAssertEqual(request.url?.path, "/auth/session")

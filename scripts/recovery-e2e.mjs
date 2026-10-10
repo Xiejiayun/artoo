@@ -108,7 +108,7 @@ async function main() {
       import(pathToFileURL(join(root, "apps/server/dist/auth/auth-service.js")).href),
       import(pathToFileURL(join(root, "apps/artood/dist/index.js")).href),
     ]);
-    const production = { NODE_ENV: "production", ARTOO_HOST: "127.0.0.1", ARTOO_PORT: "0",
+    const production = { NODE_ENV: "production", ARTOO_AI_DATA_SHARING_POLICY: JSON.stringify({ mode: "local", providers: [] }), ARTOO_HOST: "127.0.0.1", ARTOO_PORT: "0",
       ARTOO_WORKSPACE_ROOT: workspace, ARTOO_WEB_DIST: join(root, "apps/web/dist"), ARTOO_PAIRING_PEPPER: randomBytes(32).toString("hex"),
       GOOGLE_CLIENT_ID: "local-recovery-fixture", GOOGLE_CLIENT_SECRET: "unused-local-recovery-fixture",
       GOOGLE_REDIRECT_URI: "http://localhost/auth/google/callback", AUTH_ALLOWED_EMAILS: "owner@recovery.test", AUTH_OWNER_EMAILS: "owner@recovery.test" };

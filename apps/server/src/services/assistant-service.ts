@@ -1,3 +1,4 @@
+import { requireAiSharingAuthorization } from "./ai-data-sharing-service.js";
 import { appendEvent, approvals, assistantTurns, discussions, goals, messages, rooms, runs, tasks, users } from "@artoo/db";
 import { AssistantTurnSchema, ID_PREFIXES, type AssistantTurn, type SendAssistantTurnRequest } from "@artoo/domain";
 import { and, asc, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
@@ -64,6 +65,7 @@ export async function enqueueAssistantTurn(ctx: ServerContext, roomId: string, r
       if (message.body !== request.body || duplicate.agentInstanceId !== (request.agent_instance_id ?? null) || duplicate.threadRootId !== (request.thread_root_id ?? null)) throw AppError.conflict("This assistant request identity was already used for different content");
       return { turn: mapAssistantTurn(duplicate), message: mapMessage(message) };
     }
+    const sharing = await requireAiSharingAuthorization(ctx, tx);
     const pending = await tx.select({ id: assistantTurns.id }).from(assistantTurns).where(and(eq(assistantTurns.roomId, roomId), inArray(assistantTurns.status, pendingStatuses))).limit(20);
     if (pending.length >= 20) throw AppError.rateLimited("This conversation already has 20 pending turns; wait or cancel a queued turn");
     const scope = request.thread_root_id ? eq(assistantTurns.threadRootId, request.thread_root_id) : isNull(assistantTurns.threadRootId);
@@ -115,6 +117,7 @@ export async function enqueueAssistantTurn(ctx: ServerContext, roomId: string, r
     const [turn] = await tx.insert(assistantTurns).values({ id, organizationId: ctx.organizationId, roomId, taskId: task.id,
       threadRootId: request.thread_root_id ?? null,
       actorUserId: ctx.actorUserId, clientRequestId: request.client_request_id, agentInstanceId: request.agent_instance_id ?? null,
+      aiDataSharingConsentId: sharing.consentId, aiDataSharingPolicyVersion: sharing.policyVersion,
       userMessageId: messageId, status: "queued", createdAt: now, updatedAt: now }).returning();
     await appendEvent(tx, buildEvent(ctx, { type: "message.created", actorType: "user", actorId: ctx.actorUserId,
       correlationId: id, projectId: room.projectId, taskId: task.id, roomId, payload: { message_id: messageId, kind: "text", ...(root ? { thread_root_id: root.id, root_reply_count: updatedRoot!.replyCount } : {}) } }));
@@ -213,6 +216,7 @@ export async function cancelAssistantTurn(ctx: ServerContext, id: string, stopPr
 export async function retryAssistantTurn(ctx: ServerContext, id: string): Promise<AssistantTurn> {
   const original = await requireTurn(ctx, id);
   await ctx.db.transaction(async (tx) => {
+    const sharing = await requireAiSharingAuthorization(ctx, tx);
     await tx.select().from(tasks).where(eq(tasks.id, original.taskId)).for("update");
     const row = (await tx.select().from(assistantTurns).where(eq(assistantTurns.id, id)).for("update"))[0]!;
     if (!["waiting", "failed"].includes(row.status)) throw AppError.invalidState("Only a waiting or failed assistant turn can be retried");
@@ -224,7 +228,7 @@ export async function retryAssistantTurn(ctx: ServerContext, id: string): Promis
       row.threadRootId ? eq(assistantTurns.threadRootId, row.threadRootId) : isNull(assistantTurns.threadRootId),
       lt(assistantTurns.position, row.position), inArray(assistantTurns.status, pendingStatuses))).limit(1))[0];
     if (later) throw AppError.conflict("An earlier turn is still pending");
-    const [updated] = await tx.update(assistantTurns).set({ status: "queued", runId: null, responseMessageId: null, error: null, updatedAt: ctx.clock.nowIso() }).where(eq(assistantTurns.id, id)).returning();
+    const [updated] = await tx.update(assistantTurns).set({ aiDataSharingConsentId: sharing.consentId, aiDataSharingPolicyVersion: sharing.policyVersion, status: "queued", runId: null, responseMessageId: null, error: null, updatedAt: ctx.clock.nowIso() }).where(eq(assistantTurns.id, id)).returning();
     await turnEvent(ctx, tx, updated!);
   });
   return mapAssistantTurn(await requireTurn(ctx, id));

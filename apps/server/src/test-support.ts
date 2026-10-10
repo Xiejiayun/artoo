@@ -1,3 +1,4 @@
+import { buildAiDataSharingPolicy, type AiDataSharingPolicy } from "./config/ai-data-sharing.js";
 import { loadMigrationStatements, seed } from "@artoo/db";
 import type { Clock, IdGen } from "@artoo/domain";
 import { PgliteDbClient } from "@artoo/storage";
@@ -49,6 +50,8 @@ export interface TestServer {
 }
 
 export interface BuildTestServerOptions {
+  /** Default fixtures use deterministic local processes. Live provider tests must override this declaration. */
+  aiDataSharingPolicy?: AiDataSharingPolicy | null;
   assistantDispatcher?: boolean;
   resetPresenceOnStart?: boolean;
   budgetMonitorIntervalMs?: number | false;
@@ -96,6 +99,7 @@ export async function buildTestServer(
   });
   const ctx: ServerContext = {
     db,
+    aiDataSharingPolicy: options.aiDataSharingPolicy === undefined ? buildAiDataSharingPolicy({ mode: "local", providers: [] }) : options.aiDataSharingPolicy,
     clock: fixedClock(),
     idGen: sequentialIdGen(),
     organizationId: "org_default",

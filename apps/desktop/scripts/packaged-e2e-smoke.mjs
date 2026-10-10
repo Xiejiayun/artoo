@@ -356,7 +356,7 @@ ${isMac ? "}" : ""}
 `);
     const port = await freePort(); baseUrl = `http://127.0.0.1:${port}`;
     serverEnv = {
-      NODE_ENV: "production", ARTOO_HOST: "127.0.0.1", ARTOO_PORT: String(port),
+      NODE_ENV: "production", ARTOO_AI_DATA_SHARING_POLICY: JSON.stringify({ mode: "local", providers: [] }), ARTOO_HOST: "127.0.0.1", ARTOO_PORT: String(port),
       ARTOO_DATA_DIR: join(tempRoot, "server-data"), ARTOO_WORKSPACE_ROOT: workspace,
       ARTOO_PAIRING_PEPPER: randomBytes(32).toString("hex"), ARTOO_DESKTOP_CORS: "1",
       ARTOO_WEB_DIST: join(repoRoot, "apps/web/dist"),

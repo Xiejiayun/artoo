@@ -1,3 +1,4 @@
+import { authorizeLiveSmokeSharing } from "./live-sharing-test-support.js";
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
@@ -96,6 +97,7 @@ describe.skipIf(!enabled)("gated real Codex multi-agent discussion", () => {
     const command = discussionCommand();
     workspace = mkdtempSync(join(tmpdir(), "artoo-codex-discussion-"));
     server = await buildTestServer({ workspaceRoot: workspace });
+    await authorizeLiveSmokeSharing(server.ctx);
     await server.db.db.update(agentRuntimes).set({ runtime: "codex", capabilities: ["code.read"] }).where(eq(agentRuntimes.id, "runtime_mock"));
     const channel = createInProcessChannel();
     binding = attachNodeBinding(server.ctx, channel.serverTransport, "computer_local_mock");
