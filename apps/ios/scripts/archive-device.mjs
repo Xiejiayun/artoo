@@ -42,12 +42,12 @@ export function signingSettings(team, selected) {
     "CODE_SIGNING_ALLOWED=YES", "CODE_SIGNING_REQUIRED=YES"];
 }
 
-function readCommand(command, args, input) {
+export function readCommand(command, args, input) {
   const result = spawnSync(command, args, { input, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 30_000 });
   if (result.error || result.status !== 0) throw new Error(`${command} ${args.slice(0, 2).join(" ")} could not read the requested public metadata`);
   return result.stdout;
 }
-function plistField(plist, key, format = "raw") {
+export function plistField(plist, key, format = "raw") {
   const value = readCommand("/usr/bin/plutil", ["-extract", key, format, "-o", "-", "-"], plist).trim();
   return format === "json" ? JSON.parse(value) : value;
 }
@@ -56,14 +56,19 @@ export function profileIsXcodeManaged(plist) {
   // value so an actual true flag cannot silently become a manual profile.
   try { return plistField(plist, "IsXcodeManaged") === "true"; } catch { return false; }
 }
-function readProfile(path) {
+export function readProfile(path) {
   const plist = readCommand("/usr/bin/security", ["cms", "-D", "-i", path]);
   const entitlements = plistField(plist, "Entitlements", "json");
   const certificates = [...plistField(plist, "DeveloperCertificates", "xml1").matchAll(/<data>([\s\S]*?)<\/data>/g)]
     .map((match) => createHash("sha1").update(Buffer.from(match[1].replace(/\s/g, ""), "base64")).digest("hex").toUpperCase());
   return { path, uuid: plistField(plist, "UUID"), teams: plistField(plist, "TeamIdentifier", "json"),
     platforms: plistField(plist, "Platform", "json"), expires: plistField(plist, "ExpirationDate"), created: plistField(plist, "CreationDate"),
-    applicationIdentifier: entitlements["application-identifier"] ?? "", development: entitlements["get-task-allow"] === true, certificates, xcodeManaged: profileIsXcodeManaged(plist) };
+    applicationIdentifier: entitlements["application-identifier"] ?? "", development: entitlements["get-task-allow"] === true,
+    getTaskAllow: entitlements["get-task-allow"], profileTeam: entitlements["com.apple.developer.team-identifier"],
+    betaReportsActive: entitlements["beta-reports-active"] === true,
+    provisionedDevicesPresent: /<key>ProvisionedDevices<\/key>/.test(plist),
+    provisionsAllDevicesPresent: /<key>ProvisionsAllDevices<\/key>/.test(plist),
+    certificates, xcodeManaged: profileIsXcodeManaged(plist) };
 }
 
 async function main() {

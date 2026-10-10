@@ -244,7 +244,9 @@ final class MentionsUITests: XCTestCase {
         try require(XCTWaiter.wait(for: [destination], timeout: 15) == .completed, "Selecting A must expose its channel inventory or retained thread")
         if !app.navigationBars["Thread"].exists {
             let channel = app.buttons["channel.\(fixture.channelAId)"]; try reveal(channel); channel.tap()
-            let thread = app.buttons["thread.\(fixture.rootAId)"]; try reveal(thread); thread.tap()
+            let thread = app.buttons["thread.\(fixture.rootAId)"]
+            try require(thread.waitForExistence(timeout: 15), "The selected channel must load the exact project A thread before scrolling")
+            try reveal(thread); thread.tap()
         }
         try require(app.navigationBars["Thread"].waitForExistence(timeout: 15), "The exact A thread must open")
         let root = app.staticTexts["message.\(fixture.rootAId)"]; try revealText(root)

@@ -48,4 +48,5 @@ regressions passed locally.
 TestFlight/App Store export needs an appropriate distribution profile and an
 App Store Connect app. Developer ID signing and notarization for a standalone
 Mac installer use a different certificate path. See
-[Apple release readiness](apple-release-readiness.md).
+[Apple release readiness](apple-release-readiness.md) and the separate
+[App Store distribution command](ios-app-store-distribution.md).

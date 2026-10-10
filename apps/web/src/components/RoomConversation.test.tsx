@@ -83,6 +83,25 @@ describe("RoomConversation", () => {
     expect(history.scrollTop).toBe(1300);
   });
 
+  it("Home preserves the reader at the start and End resumes following arrivals", async () => {
+    const first = messageFixture({ id: "first", kind: "text", body: "First message", sequence: 1 });
+    const query = createTestQueryClient();
+    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ listMessages: async () => ({ messages: [first] }) }), queryClient: query });
+    const history = await screen.findByRole("region", { name: "Message history" });
+    let height = 1000, top = 700;
+    Object.defineProperties(history, { scrollHeight: { get: () => height }, clientHeight: { get: () => 300 }, scrollTop: { get: () => top, set: (value: number) => { top = Math.min(value, height - 300); } } });
+    fireEvent.keyDown(history, { key: "Home" });
+    expect(history.scrollTop).toBe(0);
+    const second = messageFixture({ id: "second", kind: "text", body: "Later arrival", sequence: 2 });
+    height = 1200;
+    await act(async () => { query.setQueryData(queryKeys.messages("room_1"), { messages: [first, second] }); });
+    expect(history.scrollTop).toBe(0);
+    expect(await screen.findByRole("button", { name: "1 new message" })).toBeInTheDocument();
+    fireEvent.keyDown(history, { key: "End" });
+    expect(history.scrollTop).toBe(900);
+    expect(screen.queryByRole("button", { name: /new message|Jump to latest/ })).not.toBeInTheDocument();
+  });
+
   it("preserves the visible history offset when an earlier page is prepended", async () => {
     const latest = messageFixture({ id: "latest", kind: "text", body: "Latest message", sequence: 2 });
     const oldest = messageFixture({ id: "oldest", kind: "text", body: "Older message", sequence: 1 });

@@ -128,7 +128,13 @@ const nativeRetentionImages = [
   "Native retention recovery after cold relaunch",
   "Native retention no artifacts after relaunch",
 ];
-const nativeWorkflowImages = [...nativeCoreImages, ...nativeAssistantImages, ...nativeMentionsImages, ...nativeCorrectionImages, ...nativeRetentionImages];
+export const nativeReleaseImages = Object.freeze([
+  "Native release publisher links before pairing",
+  "Native release public privacy website",
+  "Native release public support website",
+  "Native release publisher links landscape",
+]);
+const nativeWorkflowImages = [...nativeCoreImages, ...nativeAssistantImages, ...nativeMentionsImages, ...nativeCorrectionImages, ...nativeRetentionImages, ...nativeReleaseImages];
 // These XCTest helpers explicitly refuse captures whenever onboarding or
 // generated pairing-code controls exist. Retain their controlled failure
 // scene for CI diagnosis, without accepting Xcode's automatic failure images
