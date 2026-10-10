@@ -9,15 +9,15 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildTestServer } from "../apps/server/dist/test-support.js";
 import { buildAiDataSharingPolicy } from "../apps/server/dist/config/ai-data-sharing.js";
-import { createSession } from "../apps/server/dist/auth/auth-service.js";
+import { createSession, provisionUser } from "../apps/server/dist/auth/auth-service.js";
 import { getE2EReportContext, writeE2EReport } from "./e2e-report.mjs";
 
-const output = resolve("artifacts/ai-data-sharing", `native-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+const output = resolve("artifacts/content-moderation", `native-${new Date().toISOString().replace(/[:.]/g, "-")}`);
 mkdirSync(output, { recursive: true });
 const report = { ...getE2EReportContext(), started_at: new Date().toISOString(), passed: false, phases: [], checks: [], cleanup: {},
-  scope: "iPhone native UI against authenticated migrated fixture server. Explicit fictional AI recipient; no external AI, Google OAuth, physical device, or App Store acceptance." };
+  scope: "iPhone native reporting and staff management against an authenticated fixture server; no external AI, Google OAuth, physical-device or App Store acceptance." };
 const photos = [];
-const save = () => { writeFileSync(join(output, "report.json"), JSON.stringify(report, null, 2)); writeE2EReport({ outputPath: join(output, "report.html"), title: "Artoo iOS · AI data sharing", report, screenshots: photos }); };
+const save = () => { writeFileSync(join(output, "report.json"), JSON.stringify(report, null, 2)); writeE2EReport({ outputPath: join(output, "report.html"), title: "Artoo iOS · content moderation", report, screenshots: photos }); };
 save();
 async function run(name, command, args, cwd = process.cwd()) {
   const phase = { name, started_at: new Date().toISOString() }; report.phases.push(phase); save();
@@ -42,7 +42,7 @@ try {
   const derived = join(output, "DerivedData");
   await run("build", "xcodebuild", ["-project", join(source, "Artoo.xcodeproj"), "-scheme", "ArtooUI", "-configuration", "Release", "-derivedDataPath", derived,
     "-jobs", "2", "-destination", "generic/platform=iOS Simulator", "CODE_SIGNING_ALLOWED=YES", "CODE_SIGN_IDENTITY=-", "CODE_SIGNING_REQUIRED=YES", "build-for-testing"]);
-  server = await buildTestServer({ aiDataSharingPolicy: buildAiDataSharingPolicy({ mode: "external", providers: [{ id: "fixture", name: "Fixture AI recipient (test only)", privacy_url: "https://provider.example.com/privacy" }] }),
+  server = await buildTestServer({
     authConfig: { enforceApiAuth: true }, deviceAuth: { devNodeToken: null, devControlEscape: false, pairingPepper: randomUUID() }, enableDevRoutes: false });
   await server.app.listen({ host: "127.0.0.1", port: 0 });
   const origin = `http://localhost:${server.app.server.address().port}`;
@@ -51,9 +51,12 @@ try {
     const res = await server.app.inject({ method: "POST", url: path, headers: { authorization: `Bearer ${owner.raw}` }, payload });
     assert.ok(res.statusCode < 300, `${path}: ${res.statusCode}`); return res.json();
   };
-  const { task } = await request("/api/v1/tasks", { project_id: "proj_artoo", title: "Native consent acceptance task", acceptance_criteria: ["Share only after permission"], required_capabilities: ["code.modify"] });
-  await request(`/api/v1/tasks/${task.id}/ready`, {});
-  device = (await run("create", "xcrun", ["simctl", "create", "Artoo AI consent E2E", "com.apple.CoreSimulator.SimDeviceType.iPhone-16", "com.apple.CoreSimulator.SimRuntime.iOS-26-5"])).trim();
+  const author = await provisionUser(server.ctx, { subject: "native-author", email: "native-author@moderation.test", emailVerified: true, displayName: "Native author" });
+  const authorSession = await createSession(server.ctx, { ttlMs: 3600000 }, { userId: author.userId });
+  const { channel } = await request("/api/v1/channels", { project_id: "proj_artoo", name: "native-moderation-fixture" });
+  const posted = await server.app.inject({ method: "POST", url: `/api/v1/rooms/${channel.id}/messages`, headers: { authorization: `Bearer ${authorSession.raw}` }, payload: { kind: "text", body: "Native moderation fixture message" } });
+  assert.equal(posted.statusCode, 201); const message = posted.json().message;
+  device = (await run("create", "xcrun", ["simctl", "create", "Artoo moderation E2E", "com.apple.CoreSimulator.SimDeviceType.iPhone-16", "com.apple.CoreSimulator.SimRuntime.iOS-26-5"])).trim();
   report.owned_simulator = device; save();
   await run("boot", "xcrun", ["simctl", "boot", device]); await run("boot-ready", "xcrun", ["simctl", "bootstatus", device, "-b"]);
   const pairing = await request("/api/v1/devices/pairings", { intended_platform: "ios" });
@@ -73,40 +76,40 @@ try {
     if (!value || typeof value !== "object") return value;
     const next = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, prepare(item)]));
     if (next.BlueprintName === "ArtooUITests" || next.TestBundlePath?.includes("ArtooUITests.xctest")) {
-      next.EnvironmentVariables = { ...next.EnvironmentVariables, ARTOO_AI_ORIGIN: origin, ARTOO_AI_CODE: pairing.code, ARTOO_AI_TASK: task.id, ARTOO_AI_TOKEN: owner.raw }; configured++;
+      next.EnvironmentVariables = { ...next.EnvironmentVariables, ARTOO_MOD_ORIGIN: origin, ARTOO_MOD_CODE: pairing.code, ARTOO_MOD_CHANNEL: channel.id, ARTOO_MOD_MESSAGE: message.id, ARTOO_MOD_AUTHOR: author.userId, ARTOO_MOD_TOKEN: owner.raw }; configured++;
     }
     return next;
   }
   manifest = prepare(manifest); assert.equal(configured, 1);
-  secretDirectory = mkdtempSync(join(tmpdir(), "artoo-ai-consent-runner-"));
+  secretDirectory = mkdtempSync(join(tmpdir(), "artoo-moderation-runner-"));
   const json = join(secretDirectory, "runner.json"), path = join(secretDirectory, "runner.xctestrun");
   writeFileSync(json, JSON.stringify(manifest), { mode: 0o600 });
   await run("prepare-runner", "plutil", ["-convert", "xml1", "-o", path, json]);
   await run("native-ui", "xcodebuild", ["-xctestrun", path, "-destination", `platform=iOS Simulator,id=${device}`, "-parallel-testing-enabled", "NO",
-    "-only-testing:ArtooUITests/AIDataSharingUITests/testPermissionAboveAssignmentAndDurableWithdrawal", "-resultBundlePath", join(output, "Consent.xcresult"), "test-without-building"]);
-  const summary = JSON.parse(await run("xctest-summary", "xcrun", ["xcresulttool", "get", "test-results", "summary", "--path", join(output, "Consent.xcresult")]));
-  const tests = JSON.parse(await run("xctest-tests", "xcrun", ["xcresulttool", "get", "test-results", "tests", "--path", join(output, "Consent.xcresult")]));
-  report.native_case = verifyNativeSingleCase(summary, tests, { caseId: "AIDataSharingUITests/testPermissionAboveAssignmentAndDurableWithdrawal()", deviceId: device });
-  report.checks.push("Native nested assignment consent, decline without run, one authorized run, offline withdrawal and relaunch completed");
+    "-only-testing:ArtooUITests/ContentModerationUITests/testReportRemoveFilterAndSuspendFromNativeUI", "-resultBundlePath", join(output, "Moderation.xcresult"), "test-without-building"]);
+  const summary = JSON.parse(await run("xctest-summary", "xcrun", ["xcresulttool", "get", "test-results", "summary", "--path", join(output, "Moderation.xcresult")]));
+  const tests = JSON.parse(await run("xctest-tests", "xcrun", ["xcresulttool", "get", "test-results", "tests", "--path", join(output, "Moderation.xcresult")]));
+  report.native_case = verifyNativeSingleCase(summary, tests, { caseId: "ContentModerationUITests/testReportRemoveFilterAndSuspendFromNativeUI()", deviceId: device });
+  report.checks.push("Native report, staff removal, posting rule, suspension, rejected draft and relaunch completed");
   report.passed = true;
 } catch (error) { report.error = String(error); }
 finally {
   if (secretDirectory) { rmSync(secretDirectory, { recursive: true, force: true }); report.cleanup.runner_credentials_removed = !existsSync(secretDirectory); }
-  if (existsSync(join(output, "Consent.xcresult"))) {
+  if (existsSync(join(output, "Moderation.xcresult"))) {
     try {
       const attachments = join(output, "attachments");
-      await run("attachments", "xcrun", ["xcresulttool", "export", "attachments", "--path", join(output, "Consent.xcresult"), "--output-path", attachments]);
+      await run("attachments", "xcrun", ["xcresulttool", "export", "attachments", "--path", join(output, "Moderation.xcresult"), "--output-path", attachments]);
       const manifest = JSON.parse(readFileSync(join(attachments, "manifest.json"), "utf8"));
       for (const test of manifest) for (const item of test.attachments ?? []) {
         const caption = item.suggestedHumanReadableName ?? "";
-        if (!/^Native (consent pairing ready|AI disclosure|declined disclosure|recorded AI permission|withdrawal reports|withdrawn permission)/.test(caption)) continue;
+        if (!/^Native moderation /.test(caption)) continue;
         const path = join(attachments, item.exportedFileName);
         const data = readFileSync(path);
         if (hasCompletePNGPixelStream(data)) {
           const png = join(output, `native-${photos.length + 1}.png`); writeFileSync(png, data); photos.push({ path: png, caption });
         }
       }
-      if (report.passed) report.photographs = verifyNativePhotos(photos, ["Native consent pairing ready", "Native AI disclosure above assignment", "Native declined disclosure preserves assignment", "Native recorded AI permission in settings", "Native withdrawal reports unconfirmed stop", "Native withdrawn permission survives relaunch"]);
+      if (report.passed) report.photographs = verifyNativePhotos(photos, ["Native moderation pairing ready", "Native moderation original message", "Native moderation report received", "Native moderation report status", "Native moderation staff evidence", "Native moderation saved posting rule", "Native moderation suspended member", "Native moderation removed content in conversation", "Native moderation rejected draft retained", "Native moderation corrected message delivered", "Native moderation removal survives relaunch"]);
     } catch (error) { report.attachment_error = String(error); report.passed = false; }
   }
   if (device) {

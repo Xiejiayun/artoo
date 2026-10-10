@@ -176,6 +176,7 @@ struct CollaborationView: View {
         }
         .sheet(isPresented: $showingWorkDetails) { workDetails }
         .onAppear {
+            chat.trackMessageVisibility([threadRoot?.id, focusedMessage?.id].compactMap { $0 })
             chat.configureDraft(server: container.serverURL, user: container.identity?.user.id ?? "")
             container.realtime.watch("room:\(roomId)")
         }
@@ -478,7 +479,8 @@ struct CollaborationView: View {
         }
     }
 
-    private func messageContent(_ message: Message) -> some View {
+    private func messageContent(_ original: Message) -> some View {
+        let message = chat.messageForDisplay(original)
         let author = ConversationMetadata.author(actorType: message.actorType, actorId: message.actorId,
             members: members, agents: agents, agentInstances: agentInstances,
             currentUserId: container.identity?.user.id ?? container.bootstrap.value?.user.id,
@@ -489,9 +491,13 @@ struct CollaborationView: View {
         return HStack(alignment: .top, spacing: 10) {
             ArtooAvatar(name: author, systemImage: message.actorType == "agent" ? "sparkles" : (message.actorType == "system" ? "circle.hexagongrid" : nil))
             VStack(alignment: .leading, spacing: 6) {
-                ConversationMetadataView(actorType: message.actorType, actorId: message.actorId, createdAt: message.createdAt,
-                                         members: members, agents: agents, agentInstances: agentInstances, prominent: true)
-                    .accessibilityIdentifier("messageAuthor.\(message.id)")
+                HStack(alignment: .top) {
+                    ConversationMetadataView(actorType: message.actorType, actorId: message.actorId, createdAt: message.createdAt,
+                                             members: members, agents: agents, agentInstances: agentInstances, prominent: true)
+                        .accessibilityIdentifier("messageAuthor.\(message.id)")
+                    Spacer(minLength: 8)
+                    if message.payload?["moderation"].text != "removed" { MessageReportButton(message: message, client: model.client) }
+                }
                 MessageBodyView(message: message).font(.body).lineSpacing(3)
                 if !mentions.isEmpty {
                     let labels = mentions.map { "@\($0)" }.joined(separator: " ")

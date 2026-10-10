@@ -1,5 +1,5 @@
 import { DiscussionPlanPreviewSchema, normalizeMessageKind, type Message } from "@artoo/domain";
-import { Bot, MessageSquare, Sparkles } from "lucide-react";
+import { Bot, Flag, MessageSquare, Sparkles } from "lucide-react";
 
 import { Badge, Button, type Tone } from "../ui/index.js";
 import { Icon } from "../ui/Icon.js";
@@ -12,7 +12,7 @@ import { planningInstructionTitle } from "./planningInstruction.js";
  * lifecycle state here (codex guardrail). Unknown kinds degrade to a system
  * notice via normalizeMessageKind.
  */
-export function MessageCard({ message, actorName, mentionNames = [], compact = false, onOpenThread }: { message: Message; actorName?: string; mentionNames?: string[]; compact?: boolean; onOpenThread?: () => void }): React.ReactNode {
+export function MessageCard({ message, actorName, mentionNames = [], compact = false, onOpenThread, onReport }: { message: Message; actorName?: string; mentionNames?: string[]; compact?: boolean; onOpenThread?: () => void; onReport?: () => void }): React.ReactNode {
   const kind = normalizeMessageKind(message.kind);
   const actor = actorName ?? `${message.actor_type}:${message.actor_id}`;
   return (
@@ -29,6 +29,7 @@ export function MessageCard({ message, actorName, mentionNames = [], compact = f
           <time className="msg__time" dateTime={message.created_at} title={formatTime(message.created_at, true)}>
             {formatTime(message.created_at)}
           </time>
+          {onReport && message.payload.moderation !== "removed" && <Button size="sm" variant="ghost" aria-label="Report message" title="Report message" onClick={onReport}><Flag size={14} aria-hidden="true" /></Button>}
         </header>
         {renderBody(kind, message)}
         {mentionNames.length > 0 && <p className="msg__mentions" aria-label="Mentioned people">{mentionNames.map((name) => `@${name}`).join(" ")}</p>}
@@ -83,6 +84,7 @@ const PLAN_DEPENDENCY_LABELS = [
 
 function renderBody(kind: ReturnType<typeof normalizeMessageKind>, message: Message): React.ReactNode {
   const payload = message.payload as Record<string, unknown>;
+  if (payload.moderation === "removed") return <p className="msg__text">{message.body}</p>;
   const instructionTitle = planningInstructionTitle(message);
   if (instructionTitle !== null) {
     return <section className="msg__plan" aria-label="Planning instruction">

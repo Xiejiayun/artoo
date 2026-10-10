@@ -65,6 +65,23 @@ export const aiDataSharingConsents = pgTable("ai_data_sharing_consents", {
   revokedAt: ts("revoked_at"),
 }, (t) => [uniqueIndex("ai_data_sharing_active_user_idx").on(t.organizationId, t.userId).where(sql`${t.revokedAt} is null`)]);
 
+/** Team content policy and restricted review queue. */
+export const contentRules = pgTable("content_rules", {
+  organizationId: text("organization_id").primaryKey().references(() => organizations.id),
+  blockedPhrases: jsonb("blocked_phrases").notNull().$type<string[]>(),
+  updatedByUserId: text("updated_by_user_id").notNull().references(() => users.id),
+  updatedAt: ts("updated_at").notNull(),
+});
+
+export const memberSuspensions = pgTable("member_suspensions", {
+  userId: text("user_id").primaryKey().references(() => users.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  suspendedByUserId: text("suspended_by_user_id").notNull().references(() => users.id),
+  reason: text("reason").notNull(),
+  suspendedAt: ts("suspended_at").notNull(),
+  reinstatedAt: ts("reinstated_at"),
+});
+
 export const agents = pgTable("agents", {
   id: text("id").primaryKey(),
   organizationId: text("organization_id")
@@ -615,14 +632,33 @@ export const messages = pgTable("messages", {
   kind: text("kind").notNull(),
   body: text("body").notNull().default(""),
   payload: jsonbObject("payload"),
+  moderatedAt: ts("moderated_at"),
+  moderatedByUserId: text("moderated_by_user_id").references(() => users.id),
   createdAt: ts("created_at").notNull(),
 }, (t) => [
+  check("messages_moderation_pair_chk", sql`(${t.moderatedAt} is null) = (${t.moderatedByUserId} is null)`),
   check("messages_actor_type_chk", sql`${t.actorType} in ('user','agent','system','bridge')`),
   index("messages_room_created_idx").on(t.roomId, t.createdAt),
   index("messages_room_position_idx").on(t.roomId, t.position),
   index("messages_thread_position_idx").on(t.threadRootId, t.position),
   unique("messages_client_request_unique").on(t.organizationId, t.roomId, t.actorType, t.actorId, t.clientRequestId),
 ]);
+
+export const contentReports = pgTable("content_reports", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  messageId: text("message_id").notNull().references(() => messages.id),
+  reporterUserId: text("reporter_user_id").notNull().references(() => users.id),
+  reason: text("reason").notNull(),
+  bodySnapshot: text("body_snapshot").notNull(),
+  status: text("status").notNull().default("open"),
+  reviewedByUserId: text("reviewed_by_user_id").references(() => users.id),
+  resolutionNote: text("resolution_note"),
+  createdAt: ts("created_at").notNull(),
+  resolvedAt: ts("resolved_at"),
+}, (t) => [uniqueIndex("content_reports_reporter_message_idx").on(t.organizationId, t.reporterUserId, t.messageId),
+  check("content_reports_status_chk", sql`${t.status} in ('open','resolved','dismissed')`),
+  index("content_reports_queue_idx").on(t.organizationId, t.status, t.createdAt, t.id)]);
 
 export const notifications = pgTable("notifications", {
   id: text("id").primaryKey(),

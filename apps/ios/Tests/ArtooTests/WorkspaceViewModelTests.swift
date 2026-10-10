@@ -91,6 +91,8 @@ private final class DeferredWorkspaceResponse {
 
 @MainActor
 private final class WorkspaceTestClient: ApiClientProtocol {
+    // This deterministic fixture has no moderated content.
+    public func messageVisibility(roomId: String, messageIds: [String]) async throws -> [String] { [] }
     private let resourceHandler: @MainActor (String) async throws -> JSONValue
     private let preview = MockApiClient.demo()
     init(resource: @escaping @MainActor (String) async throws -> JSONValue) { resourceHandler = resource }

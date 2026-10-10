@@ -23,3 +23,5 @@ artifacts/notification-navigation-*/
 artifacts/ui-refresh/
 artifacts/ui-channels-empty.png
 apps/ios/Artoo.xcodeproj/
+artifacts/ai-data-sharing/
+artifacts/content-moderation/

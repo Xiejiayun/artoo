@@ -4,6 +4,8 @@ import Foundation
 /// holds a mutable task/approval store so view-model state transitions can be
 /// exercised without a server. Construct with `.demo` for populated fixtures.
 public actor MockApiClient: ApiClientProtocol {
+    // This deterministic fixture has no moderated content.
+    public func messageVisibility(roomId: String, messageIds: [String]) async throws -> [String] { [] }
     private var tasks: [TaskItem]
     private var snapshots: [String: TaskSnapshot]
     private var approvals: [Approval]

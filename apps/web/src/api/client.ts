@@ -1,3 +1,5 @@
+import { isRemovedMessage, removedMessage } from "./messageModeration.js";
+import type { ContentReport, ContentRules, ModerationMember } from "./contentModeration.js";
 /**
  * Typed REST client for the artoo v0.1-core API (design.md §10.6; codex Round
  * 12/15). Request/response types come from `@artoo/domain`; mutating calls take
@@ -111,6 +113,20 @@ export class ApiClient {
     return this.request("DELETE", "/privacy/ai-sharing/consent", { body: { stop_my_agent_work: true, expected_user_id: expectedUserId } });
   }
 
+  private readonly removedMessages = new Map<string, Set<string>>();
+  noteMessageRemoved(roomId: string, messageId: string): void {
+    const ids = this.removedMessages.get(roomId) ?? new Set<string>(); ids.add(messageId); this.removedMessages.set(roomId, ids);
+  }
+  messageForDisplay(message: Message): Message {
+    if (isRemovedMessage(message)) this.noteMessageRemoved(message.room_id, message.id);
+    return this.removedMessages.get(message.room_id)?.has(message.id) ? removedMessage(message) : message;
+  }
+  async messageVisibility(roomId: string, messageIds: string[]): Promise<string[]> {
+    const result = await this.request<{ removed_message_ids: string[] }>("POST", `/rooms/${encodeURIComponent(roomId)}/messages/visibility`, { body: { message_ids: messageIds } });
+    for (const id of result.removed_message_ids) this.noteMessageRemoved(roomId, id);
+    return result.removed_message_ids;
+  }
+
   private readonly baseUrl: string;
   /** Origin root for auth endpoints (`/auth/*`), i.e. baseUrl without `/api/v1`. */
   private readonly authBaseUrl: string;
@@ -173,6 +189,25 @@ export class ApiClient {
       return json as T;
     };
     return execute(!path.startsWith("/privacy/"));
+  }
+
+  reportMessage(messageId: string, reason: string, key: string): Promise<ContentReport> {
+    return this.request("POST", `/messages/${encodeURIComponent(messageId)}/report`, { body: { reason }, idempotencyKey: key });
+  }
+  myContentReports(before?: string): Promise<{ reports: ContentReport[]; next_before?: string | null }> { return this.request("GET", `/moderation/my-reports${before ? `?before=${encodeURIComponent(before)}` : ""}`); }
+  contentReports(before?: string): Promise<{ reports: ContentReport[]; next_before: string | null }> {
+    return this.request("GET", `/moderation/reports${before ? `?before=${encodeURIComponent(before)}` : ""}`);
+  }
+  resolveContentReport(id: string, action: "remove" | "dismiss", note: string, key: string): Promise<ContentReport> {
+    return this.request("POST", `/moderation/reports/${encodeURIComponent(id)}/resolve`, { body: { action, note }, idempotencyKey: key });
+  }
+  contentRules(): Promise<ContentRules> { return this.request("GET", "/moderation/rules"); }
+  saveContentRules(blocked_phrases: string[], version: string, key: string): Promise<ContentRules> {
+    return this.request("PUT", "/moderation/rules", { body: { blocked_phrases, version }, idempotencyKey: key });
+  }
+  moderationMembers(): Promise<{ members: ModerationMember[] }> { return this.request("GET", "/moderation/members"); }
+  suspendMember(id: string, suspended: boolean, reason: string, key: string): Promise<{ user_id: string; suspended: boolean; execution_notice: string }> {
+    return this.request("POST", `/moderation/members/${encodeURIComponent(id)}/suspension`, { body: { suspended, reason }, idempotencyKey: key });
   }
 
   bootstrap(): Promise<BootstrapResponse> {
@@ -268,14 +303,15 @@ export class ApiClient {
     });
   }
 
-  listMessages(roomId: string, options: MessagePageOptions = {}): Promise<MessagesResponse> {
+  async listMessages(roomId: string, options: MessagePageOptions = {}): Promise<MessagesResponse> {
     const params = new URLSearchParams();
     if (options.limit !== undefined) params.set("limit", String(options.limit));
     if (options.before !== undefined) params.set("before", options.before);
     if (options.after !== undefined) params.set("after", options.after);
     if (options.thread_root_id !== undefined) params.set("thread_root_id", options.thread_root_id);
     const query = params.toString();
-    return this.request<MessagesResponse>("GET", `/rooms/${encodeURIComponent(roomId)}/messages${query ? `?${query}` : ""}`);
+    const response = await this.request<MessagesResponse>("GET", `/rooms/${encodeURIComponent(roomId)}/messages${query ? `?${query}` : ""}`);
+    return { ...response, messages: response.messages.map((message) => this.messageForDisplay(message)) };
   }
 
   listChannels(projectId: string): Promise<{ channels: Channel[] }> { return this.request("GET", `/channels?project_id=${encodeURIComponent(projectId)}`); }
@@ -293,7 +329,10 @@ export class ApiClient {
   }
   readNotification(id: string, key: string): Promise<{ notification: Notification; unread_count?: number }> { return this.request("POST", `/notifications/${encodeURIComponent(id)}/read`, { idempotencyKey: key }); }
   getRoom(roomId: string): Promise<{ room: Room }> { return this.request("GET", `/rooms/${encodeURIComponent(roomId)}`); }
-  getMessage(roomId: string, messageId: string): Promise<{ message: Message }> { return this.request("GET", `/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(messageId)}`); }
+  async getMessage(roomId: string, messageId: string): Promise<{ message: Message }> {
+    const result = await this.request<{ message: Message }>("GET", `/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(messageId)}`);
+    return { message: this.messageForDisplay(result.message) };
+  }
   listDaemons(): Promise<{ daemons: DaemonPresence[] }> { return this.request("GET", "/daemons"); }
 
   sendMessage(

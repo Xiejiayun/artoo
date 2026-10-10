@@ -1,3 +1,4 @@
+import { registerContentModerationRoutes } from "./content-moderation-routes.js";
 import { registerAiDataSharingRoutes } from "./ai-data-sharing-routes.js";
 import { runs } from "@artoo/db";
 import {
@@ -192,6 +193,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (options.enableDevRoutes === true && run.runtime_id === "mock") return;
     throw AppError.conflict("Execution computer is offline; process stop cannot be confirmed");
   };
+  registerContentModerationRoutes(app, ctx, (id) => deviceConnections.closeForDevice(id, 1008, "member suspended"));
   registerAiDataSharingRoutes(app, ctx, stopProcess);
   registerAssistantRoutes(app, ctx, { enabled: options.assistantDispatcher, stopProcess });
   registerChannelRoutes(app, ctx);

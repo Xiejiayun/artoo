@@ -1,3 +1,4 @@
+import { REMOVED_MESSAGE } from "./config/content-rules.js";
 import {
   agentInstances,
   agentRuntimes,
@@ -238,6 +239,9 @@ export function mapArtifact(row: typeof artifacts.$inferSelect): Artifact {
 }
 
 export function mapMessage(row: typeof messages.$inferSelect): Message {
+  const moderated = !!row.moderatedAt && !!row.moderatedByUserId;
+  const payload = { ...MessageSchema.shape.payload.parse(row.payload) };
+  delete payload.moderation;
   return MessageSchema.parse({
     id: row.id,
     sequence: row.position,
@@ -250,8 +254,8 @@ export function mapMessage(row: typeof messages.$inferSelect): Message {
     actor_type: row.actorType,
     actor_id: row.actorId,
     kind: row.kind,
-    body: row.body,
-    payload: row.payload,
+    body: moderated ? REMOVED_MESSAGE : row.body,
+    payload: moderated ? { moderation: "removed", ...(typeof payload.discussion_id === "string" ? { discussion_id: payload.discussion_id } : {}) } : payload,
     created_at: row.createdAt,
   });
 }

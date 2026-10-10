@@ -1,3 +1,4 @@
+import { ReportMessageModal } from "./ContentReporting.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Member, Message } from "@artoo/domain";
@@ -29,6 +30,7 @@ export function RoomConversation({ roomId, taskId, goalId, threadRootId, onOpenT
   const api = useApi();
   const query = useQueryClient();
   const [followRequest, setFollowRequest] = useState(0);
+  const [reporting, setReporting] = useState<Message | null>(null);
   const key = queryKeys.messages(roomId, threadRootId);
   const threadQuery = threadRootId ? { thread_root_id: threadRootId } : {};
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
@@ -54,7 +56,17 @@ export function RoomConversation({ roomId, taskId, goalId, threadRootId, onOpenT
         const latest = await api.listMessages(roomId, { limit: 50 });
         received = mergeMessages(received, latest.messages);
       }
-      const current = query.getQueryData<MessagesResponse>(key);
+      const trackedIds = [...new Set([...(cached?.messages ?? []).map((message) => message.id), ...received.map((message) => message.id), ...[threadRootId, hiddenMessageId].filter((id): id is string => !!id)])];
+      for (let start = 0; start < trackedIds.length; start += 100) {
+        await api.messageVisibility(roomId, trackedIds.slice(start, start + 100));
+      }
+      for (const id of [threadRootId, hiddenMessageId].filter((id): id is string => !!id)) {
+        query.setQueryData<{ message: Message }>(["message", roomId, id], (current) => current && current.message.payload.moderation !== "removed"
+          ? { message: api.messageForDisplay(current.message) } : current);
+      }
+      received = received.map((message) => api.messageForDisplay(message));
+      const cachedNow = query.getQueryData<MessagesResponse>(key);
+      const current = cachedNow ? { ...cachedNow, messages: cachedNow.messages.map((message) => api.messageForDisplay(message)) } : undefined;
       const result = { ...initialPage, messages: received, next_after: page.next_after ?? initialPage.next_after };
       // Read the latest cache after awaiting to preserve concurrently loaded history.
       return cached?.next_after && current ? appendMessages(current, result) : { ...result, messages: mergeMessages(current?.messages ?? [], result.messages) };
@@ -82,7 +94,8 @@ export function RoomConversation({ roomId, taskId, goalId, threadRootId, onOpenT
     <header className="conversation__header"><h2><Icon icon={MessageSquare} size={15} />{threadRootId ? "Replies" : "Conversation"}</h2><span>{visibleCount} {threadRootId ? visibleCount === 1 ? "reply" : "replies" : visibleCount === 1 ? "message" : "messages"}</span></header>
     <ActionError error={messages.error ?? earlier.error} />
     {messages.error && <Button size="sm" onClick={() => void messages.refetch()}>Retry message sync</Button>}
-    <MessageTimeline key={`${roomId}:${threadRootId ?? ""}`} items={items} identity={identity} people={people} hiddenMessageId={hiddenMessageId} threadRootId={threadRootId} onOpenThread={onOpenThread} followRequest={followRequest} hasEarlier={!!messages.data.has_more && !!messages.data.next_before} loadingEarlier={earlier.isPending} onLoadEarlier={() => earlier.mutate()}><AssistantTurns roomId={roomId} threadRootId={threadRootId} messages={items} allowActions={allowAssistant} /></MessageTimeline>
+    {reporting && <ReportMessageModal key={reporting.id} message={reporting} onClose={() => setReporting(null)} />}
+    <MessageTimeline onReport={setReporting} key={`${roomId}:${threadRootId ?? ""}`} items={items} identity={identity} people={people} hiddenMessageId={hiddenMessageId} threadRootId={threadRootId} onOpenThread={onOpenThread} followRequest={followRequest} hasEarlier={!!messages.data.has_more && !!messages.data.next_before} loadingEarlier={earlier.isPending} onLoadEarlier={() => earlier.mutate()}><AssistantTurns roomId={roomId} threadRootId={threadRootId} messages={items} allowActions={allowAssistant} /></MessageTimeline>
     {storageKey && identity ? <MessageComposer key={`${storageKey}:${allowAssistant}`} roomId={roomId} threadRootId={threadRootId} storageKey={storageKey} bootstrap={identity} people={people} peopleError={members.error} allowAssistant={allowAssistant} onMessageSent={() => setFollowRequest((value) => value + 1)} /> : <div className="conversation__account"><ActionError error={bootstrap.error} /><p role="status">Loading your account before composing a message…</p>{bootstrap.error && <Button onClick={() => void bootstrap.refetch()}>Retry account</Button>}</div>}
     {!threadRootId && (taskId || goalId) && <CollaborationPanel key={`collaboration:${roomId}`} roomId={roomId} taskId={taskId} goalId={goalId} />}
   </section>;
@@ -112,7 +125,7 @@ function isContinuation(previous: Message | undefined, message: Message): boolea
 
 /** Only follow arrivals while the reader is at the bottom. Loading history
  * preserves the visible offset; arriving messages get an explicit jump action. */
-function MessageTimeline({ items, identity, people, hiddenMessageId, threadRootId, onOpenThread, followRequest, hasEarlier, loadingEarlier, onLoadEarlier, children }: { items: Message[]; identity?: BootstrapResponse; people: Member[]; hiddenMessageId?: string; threadRootId?: string; onOpenThread?: (messageId: string) => void; followRequest: number; hasEarlier: boolean; loadingEarlier: boolean; onLoadEarlier: () => void; children: React.ReactNode }): React.ReactNode {
+function MessageTimeline({ onReport, items, identity, people, hiddenMessageId, threadRootId, onOpenThread, followRequest, hasEarlier, loadingEarlier, onLoadEarlier, children }: { onReport: (message: Message) => void; items: Message[]; identity?: BootstrapResponse; people: Member[]; hiddenMessageId?: string; threadRootId?: string; onOpenThread?: (messageId: string) => void; followRequest: number; hasEarlier: boolean; loadingEarlier: boolean; onLoadEarlier: () => void; children: React.ReactNode }): React.ReactNode {
   const visible = useMemo(() => items.filter((item) => item.id !== hiddenMessageId), [items, hiddenMessageId]);
   const viewport = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -196,7 +209,7 @@ function MessageTimeline({ items, identity, people, hiddenMessageId, threadRootI
         const startsDate = !previous || dateKey(previous.created_at) !== dateKey(message.created_at);
         return <li key={message.id}>
           {startsDate && <div className="conversation__date" role="separator" aria-label={dateLabel(message.created_at)}><time dateTime={message.created_at}>{dateLabel(message.created_at)}</time></div>}
-          <MessageCard message={message} {...messageIdentity(message, identity, people)} compact={isContinuation(previous, message)} onOpenThread={onOpenThread && !threadRootId ? () => onOpenThread(message.id) : undefined} />
+          <MessageCard message={message} onReport={() => onReport(message)} {...messageIdentity(message, identity, people)} compact={isContinuation(previous, message)} onOpenThread={onOpenThread && !threadRootId ? () => onOpenThread(message.id) : undefined} />
         </li>;
       })}</ul>}
       {children}

@@ -33,6 +33,10 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
     keys.push(queryKeys.assistantTurns(event.room_id));
     keys.push(["collaboration", event.room_id]);
   }
+  if (event.type === "message.moderated") {
+    keys.push(queryKeys.notifications);
+    if (event.room_id && typeof event.payload.message_id === "string") keys.push(["message", event.room_id, event.payload.message_id]);
+  }
   if (event.type.startsWith("channel.")) keys.push(["channels"]);
   if (event.type === "message.mention" || event.type.startsWith("notification.")) keys.push(queryKeys.notifications);
   if (event.type.startsWith("computer.") || event.type.startsWith("daemon.") || event.type.startsWith("agent.")) keys.push(queryKeys.daemons);

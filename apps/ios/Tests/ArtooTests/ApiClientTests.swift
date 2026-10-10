@@ -2,13 +2,18 @@ import XCTest
 @testable import Artoo
 
 private final class APIProtocol: URLProtocol {
+    static var visibilityHandler: ((URLRequest) throws -> (Int, Data))?
     static var handler: ((URLRequest) throws -> (Int, Data))?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         do {
             guard let handler = Self.handler, let url = request.url else { throw ApiError.transport("No test handler") }
-            let (status, data) = try handler(request)
+            let status: Int, data: Data
+            if url.path.hasSuffix("/messages/visibility") {
+                // Existing endpoint fixtures have no moderated content; targeted tests override this route.
+                (status, data) = try Self.visibilityHandler?(request) ?? (200, Data(#"{"removed_message_ids":[]}"#.utf8))
+            } else { (status, data) = try handler(request) }
             let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
@@ -102,9 +107,33 @@ final class ApiClientTests: XCTestCase {
         configuration.protocolClasses = [APIProtocol.self]
         session = URLSession(configuration: configuration)
     }
-    override func tearDown() { session.invalidateAndCancel(); APIProtocol.handler = nil; super.tearDown() }
+    override func tearDown() { session.invalidateAndCancel(); APIProtocol.handler = nil; APIProtocol.visibilityHandler = nil; super.tearDown() }
     private func client(token: String? = "control-secret") -> ApiClient {
         ApiClient(baseURL: URL(string: "https://team.example.com")!, session: session, authToken: token)
+    }
+
+    @MainActor
+    func testRemovedMessageCannotReturnThroughStaleHistoryAndAnchoredRows() async throws {
+        APIProtocol.handler = { _ in (200, Data(#"{"messages":[{"id":"old","room_id":"r","actor_type":"user","actor_id":"u","body":"Original fixture","payload":{}}],"has_more":false}"#.utf8)) }
+        APIProtocol.visibilityHandler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(try Self.body(request)["message_ids"].array.map(\.text).sorted(), ["anchor", "old"])
+            return (200, Data(#"{"removed_message_ids":["old","anchor"]}"#.utf8))
+        }
+        let model = RoomMessagesViewModel(client: client(), roomId: "r")
+        model.trackMessageVisibility(["anchor"])
+        await model.refresh()
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.messages.first?.body, "This message was removed by a team administrator.")
+        let anchor = Message(id: "anchor", roomId: "r", actorType: "user", actorId: "u", body: "Previously fetched anchor", payload: .object(["discussion_id": .string("discussion_team"), "private_content": .string("Do not retain")]))
+        XCTAssertEqual(model.messageForDisplay(anchor).body, "This message was removed by a team administrator.")
+        XCTAssertTrue(model.messageForDisplay(anchor).isPlanningDiscussion)
+        XCTAssertEqual(model.messageForDisplay(anchor).payload?["private_content"], .null)
+        APIProtocol.visibilityHandler = { _ in (200, Data(#"{"removed_message_ids":[]}"#.utf8)) }
+        await model.refresh()
+        XCTAssertEqual(model.messages.first?.body, "This message was removed by a team administrator.")
+        let foreign = Message(id: "anchor", roomId: "other", actorType: "user", actorId: "u", body: "Another room")
+        XCTAssertEqual(model.messageForDisplay(foreign).body, "Another room")
     }
 
     func testConsentRetryPreservesRequestAndIdempotencyKey() async throws {
@@ -243,6 +272,37 @@ final class ApiClientTests: XCTestCase {
         let old = client(); old.invalidate()
         do { _ = try await old.command(path: "/api/v1/rooms/r/messages", body: .object(["body": .string("old")]), idempotencyKey: "old-send"); XCTFail("Old session accepted") }
         catch { XCTAssertTrue(error is CancellationError) }
+    }
+
+    @MainActor
+    func testDefinitePostingRejectionPreservesAnEditableDraftAndAllowsOneCorrectedSend() async throws {
+        for status in [403, 428] {
+            let suite = "artoo.rejected-draft.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
+            let store = RoomDraftStore(defaults: defaults)
+            var keys: [String] = []
+            var bodies: [String] = []
+            APIProtocol.handler = { request in
+                if request.httpMethod == "GET" { return (200, Data(#"{"messages":[],"has_more":false}"#.utf8)) }
+                keys.append(try XCTUnwrap(request.value(forHTTPHeaderField: "Idempotency-Key")))
+                bodies.append(try Self.body(request)["body"].text)
+                if keys.count == 1 { return (status, Data(#"{"error":{"message":"Posting rejected"}}"#.utf8)) }
+                return (201, Data(#"{"message":{"id":"corrected"}}"#.utf8))
+            }
+            let model = RoomMessagesViewModel(client: client(), roomId: "room", drafts: store)
+            model.configureDraft(server: "https://team.example.com", user: "owner")
+            model.draft.text = "Rejected text"
+            let first = await model.send()
+            XCTAssertFalse(first); XCTAssertNil(model.draft.pending); XCTAssertEqual(model.draft.text, "Rejected text")
+            XCTAssertFalse(model.error?.contains("same send identifier") ?? true)
+            let restored = RoomMessagesViewModel(client: client(), roomId: "room", drafts: store)
+            restored.configureDraft(server: "https://team.example.com", user: "owner")
+            XCTAssertNil(restored.draft.pending); XCTAssertEqual(restored.draft.text, "Rejected text")
+            restored.draft.text = "Corrected text"
+            let second = await restored.send()
+            XCTAssertTrue(second); XCTAssertEqual(bodies, ["Rejected text", "Corrected text"])
+            XCTAssertEqual(keys.count, 2); XCTAssertNotEqual(keys[0], keys[1])
+        }
     }
 
     @MainActor

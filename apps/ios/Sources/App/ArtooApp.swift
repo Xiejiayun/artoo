@@ -686,6 +686,8 @@ private struct WorkspaceSettingsView: View {
                 if let error = container.connectionError { Section { Text(error).foregroundStyle(.red) } }
                 Section {
                     NavigationLink("AI data sharing") { AIDataSharingView(client: container.client) }.accessibilityIdentifier("aiSharing.settings")
+                    NavigationLink("My reports") { MyContentReportsView(client: container.client) }.accessibilityIdentifier("moderation.myReports")
+                    if container.isAdministrator { NavigationLink("Content management") { ContentManagementView(client: container.client) }.accessibilityIdentifier("moderation.management") }
                     NavigationLink("Privacy and data") { PrivacyView() }
                 }
                 Section { Button("Sign out", role: .destructive) { Task { await container.logout() } }.disabled(container.isConnecting).accessibilityIdentifier("signOut") }

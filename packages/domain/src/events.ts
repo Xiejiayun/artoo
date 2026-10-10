@@ -25,6 +25,7 @@ export const CoreEventTypeSchema = z.enum([
   "task.created",
   "room.created",
   "message.created",
+  "message.moderated",
   "task.updated",
   "task.assigned",
   "run.started",

@@ -14,16 +14,10 @@ final class AIDataSharingUITests: XCTestCase {
     @MainActor
     func testPermissionAboveAssignmentAndDurableWithdrawal() async throws {
         app.launch()
-        let server = app.textFields["serverURL"]
-        XCTAssertTrue(server.waitForExistence(timeout: 30))
-        let local = app.switches["allowLocalHTTP"]
-        try reveal(local)
-        if local.value as? String != "1" {
-            let nested = local.switches.firstMatch
-            (nested.exists ? nested : local).tap()
-        }
-        let switched = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1"), object: local)
-        XCTAssertEqual(XCTWaiter.wait(for: [switched], timeout: 10), .completed)
+        let server = app.textFields.matching(identifier: "serverURL").matching(NSPredicate(format: "enabled == 1")).firstMatch
+        try require(server.waitForExistence(timeout: 30), "The fresh pairing form must finish restoring before entry")
+        photo("Native consent pairing ready")
+        try setSwitchOn(app.switches["allowLocalHTTP"])
         try type(server, values["ORIGIN"]!)
         try type(app.textFields["pairingCode"], values["CODE"]!)
         let connect = app.buttons["pairDevice"]
@@ -74,17 +68,44 @@ final class AIDataSharingUITests: XCTestCase {
         photo("Native withdrawn permission survives relaunch")
     }
 
+    private func require(_ condition: Bool, _ message: String) throws {
+        if !condition { throw NSError(domain: "AIConsentUI", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+    }
+    @MainActor private func setSwitchOn(_ element: XCUIElement) throws {
+        // Same bounded native-state verification as the existing business suite.
+        for _ in 0..<3 {
+            let nested = element.switches.firstMatch
+            let control = nested.exists ? nested : element
+            try reveal(control)
+            try require(control.isEnabled, "The onboarding switch must be enabled")
+            if element.value as? String == "1" { return }
+            try require(element.value as? String == "0", "The onboarding switch must expose a known off/on state")
+            control.tap()
+            let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1"), object: element)
+            if XCTWaiter.wait(for: [changed], timeout: 3) == .completed { return }
+        }
+        let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1"), object: element)
+        try require(XCTWaiter.wait(for: [changed], timeout: 15) == .completed, "Local HTTP must be enabled before pairing")
+    }
+
     @MainActor private func type(_ field: XCUIElement, _ value: String) throws {
         try reveal(field); field.tap()
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+        try require(app.keyboards.firstMatch.waitForExistence(timeout: 10), "The selected input must have a keyboard before typing")
         field.typeText(value)
+        // UI synthesis may return before the accessibility value catches up.
+        // Observe this one typing operation; never append/retype on a timeout.
+        let entered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: field)
+        try require(XCTWaiter.wait(for: [entered], timeout: 45) == .completed, "The one typing operation must settle to its complete intended value")
         XCTAssertEqual(field.value as? String, value)
         let done = app.buttons["pairing.keyboard.done"]
-        if done.exists { done.tap() }
+        try require(done.waitForExistence(timeout: 10) && done.isHittable, "The pairing input must expose its Done action")
+        done.tap()
+        let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        try require(XCTWaiter.wait(for: [hidden], timeout: 15) == .completed, "Keyboard dismissal must finish before the next input")
     }
     @MainActor private func reveal(_ element: XCUIElement) throws {
         for _ in 0..<10 {
-            if element.exists && element.isHittable { return }
+            if element.exists && element.isEnabled && element.isHittable { return }
             let scroll = app.collectionViews.firstMatch
             if element.exists && element.frame.midY < app.frame.midY {
                 if scroll.exists { scroll.swipeDown() } else { app.swipeDown() }

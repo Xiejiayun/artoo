@@ -1,3 +1,5 @@
+import { removedMessage } from "../api/messageModeration.js";
+import type { Message } from "@artoo/domain";
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
 
@@ -10,6 +12,7 @@ import type { MessagesResponse } from "../api/types.js";
 const RealtimeContext = createContext<RealtimeClient | null>(null);
 
 export interface RealtimeProviderProps {
+  onMessageRemoved?: (roomId: string, messageId: string) => void;
   tokenProvider?: () => string | null | undefined | Promise<string | null | undefined>;
   url?: string;
   /** Injectable for tests; defaults to a real WebSocket. */
@@ -28,6 +31,7 @@ export function RealtimeProvider({
   reconnectDelayMs,
   tokenProvider,
   children,
+  onMessageRemoved,
 }: RealtimeProviderProps): ReactNode {
   const queryClient = useQueryClient();
   const ref = useRef<RealtimeClient | null>(null);
@@ -39,6 +43,14 @@ export function RealtimeProvider({
       reconnectDelayMs,
       tokenProvider,
       onEvent: (topic, event) => {
+        if (event.type === "message.moderated" && event.room_id && typeof event.payload.message_id === "string") {
+          const id = event.payload.message_id;
+          onMessageRemoved?.(event.room_id, id);
+          queryClient.setQueriesData<MessagesResponse>({ queryKey: queryKeys.messages(event.room_id) }, (current) => current ? {
+            ...current, messages: current.messages.map((message) => message.id === id ? removedMessage(message) : message),
+          } : current);
+          queryClient.setQueryData<{ message: Message }>(["message", event.room_id, id], (current) => current ? { message: removedMessage(current.message) } : current);
+        }
         if (event.type === "sync.required") { void queryClient.invalidateQueries(); return; }
         if (event.room_id && typeof event.payload.thread_root_id === "string") {
           const rootId = event.payload.thread_root_id;

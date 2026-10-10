@@ -46,7 +46,7 @@ export function fakeApi(overrides: Partial<ApiClient>): ApiClient {
     baseUrl: "http://test.local/api/v1",
     fetch: () => Promise.reject(new Error("network disabled in component test")),
   });
-  return Object.assign(base, overrides);
+  return Object.assign(base, { messageVisibility: async () => [] }, overrides);
 }
 
 export function bootstrapFixture(partial: Partial<BootstrapResponse> = {}): BootstrapResponse {

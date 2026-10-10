@@ -1,3 +1,4 @@
+import { isMemberSuspended } from "../services/member-status.js";
 import { devices, deviceTokens, users } from "@artoo/db";
 import { parseDeviceToken } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
@@ -82,7 +83,7 @@ export async function resolveRequestPrincipal(
   const user = (await ctx.db.db.select().from(users).where(and(
     eq(users.id, userId), eq(users.organizationId, ctx.organizationId),
   )))[0];
-  if (user === undefined) return null;
+  if (user === undefined || await isMemberSuspended(ctx, userId)) return null;
   if (!isAllowedTeamEmail(ctx, user.email)) return null;
   const role = effectiveTeamRole(ctx, user.email, user.role);
   return { user: { id: user.id, email: user.email, name: user.displayName, role }, credential };
@@ -130,7 +131,7 @@ export async function requireAdministrator(ctx: ServerContext, tx?: DrizzleDb): 
     eq(users.id, ctx.actorUserId), eq(users.organizationId, ctx.organizationId),
   ));
   const user = (await (tx === undefined ? query : query.for("share")))[0];
-  if (user === undefined || !isAllowedTeamEmail(ctx, user.email)) throw AppError.permissionDenied("an owner or admin is required");
+  if (user === undefined || await isMemberSuspended(ctx, ctx.actorUserId, tx) || !isAllowedTeamEmail(ctx, user.email)) throw AppError.permissionDenied("an owner or admin is required");
   const role = effectiveTeamRole(ctx, user.email, user.role);
   if (role !== "owner" && role !== "admin") throw AppError.permissionDenied("an owner or admin is required");
 }

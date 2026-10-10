@@ -1,3 +1,5 @@
+import { ContentManagementSettings } from "./ContentManagement.js";
+import { MyContentReports } from "./ContentReporting.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { FolderKanban, Laptop, Link2, Monitor, Smartphone } from "lucide-react";
@@ -32,6 +34,8 @@ export function SettingsPage(): React.ReactNode {
     <header className="settings-page__heading"><div><h1 className="t-h1">Settings</h1><p>Manage your workspace and the devices you use with your team.</p></div></header>
     <ActionError error={bootstrap.error} />
     <AIDataSharingSettings />
+    <MyContentReports />
+    {canManage && <ContentManagementSettings />}
     <nav className="settings-sections" aria-label="Settings sections"><button type="button" onClick={() => document.getElementById("project-settings")?.scrollIntoView()}><FolderKanban size={16} />Project</button>{window.artooDesktop?.getConnection && <button type="button" onClick={() => document.getElementById("desktop-settings")?.scrollIntoView()}><Monitor size={16} />This computer</button>}<button type="button" onClick={() => document.getElementById("pairing-settings")?.scrollIntoView()}><Link2 size={16} />Connect a device</button><button type="button" onClick={() => document.getElementById("device-settings")?.scrollIntoView()}><Laptop size={16} />Devices</button></nav>
     <section id="project-settings" className="settings-section" aria-label="Projects"><header className="settings-section__heading"><div><h2>Projects</h2><p>Name your shared workspace and choose where agents work by default.</p></div>{canManage && <Button onClick={() => setCreating(true)}>New project</Button>}</header>
       {creating && <ProjectForm onSaved={(id) => { setSelectedProjectId(id); setCreating(false); }} onClose={() => setCreating(false)} />}

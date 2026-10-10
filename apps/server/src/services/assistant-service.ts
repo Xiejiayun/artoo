@@ -1,3 +1,4 @@
+import { requireContentAllowed } from "./content-moderation-service.js";
 import { requireAiSharingAuthorization } from "./ai-data-sharing-service.js";
 import { appendEvent, approvals, assistantTurns, discussions, goals, messages, rooms, runs, tasks, users } from "@artoo/db";
 import { AssistantTurnSchema, ID_PREFIXES, type AssistantTurn, type SendAssistantTurnRequest } from "@artoo/domain";
@@ -65,6 +66,7 @@ export async function enqueueAssistantTurn(ctx: ServerContext, roomId: string, r
       if (message.body !== request.body || duplicate.agentInstanceId !== (request.agent_instance_id ?? null) || duplicate.threadRootId !== (request.thread_root_id ?? null)) throw AppError.conflict("This assistant request identity was already used for different content");
       return { turn: mapAssistantTurn(duplicate), message: mapMessage(message) };
     }
+    await requireContentAllowed(ctx, request.body, tx);
     const sharing = await requireAiSharingAuthorization(ctx, tx);
     const pending = await tx.select({ id: assistantTurns.id }).from(assistantTurns).where(and(eq(assistantTurns.roomId, roomId), inArray(assistantTurns.status, pendingStatuses))).limit(20);
     if (pending.length >= 20) throw AppError.rateLimited("This conversation already has 20 pending turns; wait or cancel a queued turn");

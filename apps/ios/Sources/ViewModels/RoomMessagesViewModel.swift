@@ -59,6 +59,30 @@ public final class RoomDraftStore {
 @MainActor
 public final class RoomMessagesViewModel: ObservableObject {
     @Published public private(set) var messages: [Message] = []
+    @Published public private(set) var removedMessageIds = Set<String>()
+    private var trackedMessageIds = Set<String>()
+    public func trackMessageVisibility(_ ids: [String]) { trackedMessageIds.formUnion(ids) }
+    public func messageForDisplay(_ message: Message) -> Message {
+        guard message.roomId == roomId, removedMessageIds.contains(message.id) || message.payload?["moderation"].text == "removed" else { return message }
+        var structure: [String: JSONValue] = ["moderation": .string("removed")]
+        if let id = message.payload?["discussion_id"].text, !id.isEmpty { structure["discussion_id"] = .string(id) }
+        return Message(id: message.id, roomId: message.roomId, actorType: message.actorType, actorId: message.actorId,
+            kind: message.kind, body: "This message was removed by a team administrator.", createdAt: message.createdAt,
+            sequence: message.sequence, threadRootId: message.threadRootId, replyCount: message.replyCount,
+            payload: .object(structure))
+    }
+    private func recordRemovedMessages(_ ids: [String]) {
+        guard !Set(ids).isSubset(of: removedMessageIds) else { return }
+        removedMessageIds.formUnion(ids)
+        messages = messages.map(messageForDisplay)
+    }
+    private func reconcileMessageVisibility() async throws {
+        let ids = Array(trackedMessageIds.union(messages.map(\.id))).sorted()
+        for start in stride(from: 0, to: ids.count, by: 100) {
+            let removed = try await client.messageVisibility(roomId: roomId, messageIds: Array(ids[start..<min(start + 100, ids.count)]))
+            recordRemovedMessages(removed)
+        }
+    }
     @Published public private(set) var turns: [AssistantTurn] = []
     @Published public private(set) var turnActionInFlight: String?
     @Published public private(set) var turnError: String?
@@ -111,6 +135,7 @@ public final class RoomMessagesViewModel: ObservableObject {
                 hasNewer = !initial && page.hasMore == true
                 if !hasNewer { break }
             }
+            try await reconcileMessageVisibility()
         } catch { self.error = String(describing: error) }
         loading = false
         if refreshPending { refreshPending = false; await refresh() }
@@ -121,6 +146,7 @@ public final class RoomMessagesViewModel: ObservableObject {
         do {
             let page = try await client.messagePage(roomId: roomId, before: before, after: nil, threadRootId: threadRootId)
             merge(page.messages); self.before = page.nextBefore; hasOlder = page.hasMore == true
+            try await reconcileMessageVisibility()
         } catch { self.error = String(describing: error) }
         loading = false
         if refreshPending { refreshPending = false; await refresh() }
@@ -161,8 +187,10 @@ public final class RoomMessagesViewModel: ObservableObject {
             if pending.path.hasSuffix("/assistant-turns") { await refreshTurns() }
             return true
         } catch {
-            if case let ApiError.http(status, _) = error, [400, 422].contains(status) {
-                // Validation failures did not create a send; allow correction.
+            if case let ApiError.http(status, _) = error, [400, 403, 422, 428].contains(status) {
+                // Validation, permission and consent precondition rejections did not
+                // create a send. Keep the draft editable; transport/5xx/conflict
+                // outcomes still retain the original uncertain request identity.
                 draft.pending = nil; self.error = String(describing: error)
             } else { self.error = "\(error) Retry keeps the same send identifier." }
             return false
@@ -171,6 +199,9 @@ public final class RoomMessagesViewModel: ObservableObject {
     public func applyRealtime(_ frames: [JSONValue]) {
         for frame in frames where frame["event"]["room_id"].text == roomId {
             let payload = frame["event"]["payload"]
+            if frame["event"]["type"].text == "message.moderated", !payload["message_id"].text.isEmpty {
+                recordRemovedMessages([payload["message_id"].text])
+            }
             guard let count = Int(payload["root_reply_count"].text),
                   let index = messages.firstIndex(where: { $0.id == payload["thread_root_id"].text }) else { continue }
             // Replay may arrive behind live; reply counts only increase.
@@ -212,6 +243,8 @@ public final class RoomMessagesViewModel: ObservableObject {
     private func merge(_ incoming: [Message]) {
         var byId = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
         for var item in incoming {
+            if item.payload?["moderation"].text == "removed" && !removedMessageIds.contains(item.id) { removedMessageIds.insert(item.id) }
+            item = messageForDisplay(item)
             if let previous = byId[item.id]?.replyCount { item.replyCount = max(previous, item.replyCount ?? 0) }
             byId[item.id] = item
         }

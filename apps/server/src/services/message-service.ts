@@ -1,3 +1,4 @@
+import { requireContentAllowed } from "./content-moderation-service.js";
 import { createHash } from "node:crypto";
 import { appendEvent, messages, notifications, rooms, users } from "@artoo/db";
 import { ID_PREFIXES, type Message, type Room, type SendMessageRequest } from "@artoo/domain";
@@ -128,6 +129,8 @@ export async function postMessage(
       }
     }
     if (!req.body.trim() || req.body.length > 20000) throw AppError.validation("Message body must contain between 1 and 20000 characters");
+    if (Object.hasOwn(req.payload, "moderation")) throw AppError.validation("Moderation status is managed by the server.");
+    await requireContentAllowed(ctx, req.body, tx);
     let rootReplyCount: number | undefined;
     if (req.thread_root_id) {
       const [root] = await tx.select().from(messages).where(and(eq(messages.id, req.thread_root_id), eq(messages.roomId, roomId), eq(messages.organizationId, ctx.organizationId)));

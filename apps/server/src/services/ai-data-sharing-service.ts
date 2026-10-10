@@ -1,3 +1,4 @@
+import { requireActiveMember } from "./member-status.js";
 import { aiDataSharingConsents, users } from "@artoo/db";
 import type { DrizzleDb } from "@artoo/storage";
 import { and, eq, isNull } from "drizzle-orm";
@@ -38,6 +39,7 @@ export async function aiDataSharingState(ctx: ServerContext) {
 export async function requireAiSharingAuthorization(ctx: ServerContext, db: DrizzleDb = ctx.db.db,
   expected?: { consentId: string | null; policyVersion: string | null }): Promise<AiSharingAuthorization> {
   const policy = configuredPolicy(ctx);
+  await requireActiveMember(ctx, ctx.actorUserId, db);
   if (policy.mode === "local") {
     if (expected && (expected.consentId !== null || (expected.policyVersion !== null && expected.policyVersion !== policy.version))) throw consentRequired();
     return { consentId: null, policyVersion: policy.version };

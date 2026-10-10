@@ -1,3 +1,4 @@
+import { requireActiveMember } from "../services/member-status.js";
 /**
  * Google Auth storage service (#34 slice 34-1b). Owns the OAuth flow lifecycle,
  * user provisioning from a verified provider identity, and server-owned
@@ -215,6 +216,7 @@ export async function provisionUser(
         eq(users.id, identity.userId), eq(users.organizationId, ctx.organizationId),
       )))[0];
       if (existingUser === undefined) throw AppError.permissionDenied("account is unavailable");
+      await requireActiveMember(ctx, existingUser.id, tx);
       await tx.update(users).set({
         email,
         displayName: input.displayName.trim() || email,
@@ -233,6 +235,7 @@ export async function provisionUser(
         .where(and(sql`lower(${users.email}) = ${email}`, eq(users.organizationId, ctx.organizationId)))
     )[0];
     if (byEmail !== undefined) {
+      await requireActiveMember(ctx, byEmail.id, tx);
       await tx.update(users).set({
         email,
         role: isConfiguredOwner ? "owner" :
@@ -300,7 +303,9 @@ export async function createSession(
   const id = ctx.idGen.generate(ID_PREFIXES.session);
   const now = ctx.clock.nowIso();
   const expiresAt = isoPlusMs(now, config.ttlMs);
-  await ctx.db.db.insert(sessions).values({
+  await ctx.db.transaction(async (tx) => {
+    await requireActiveMember(ctx, input.userId, tx);
+    await tx.insert(sessions).values({
     id,
     organizationId: ctx.organizationId,
     userId: input.userId,
@@ -310,6 +315,7 @@ export async function createSession(
     expiresAt,
     lastSeenAt: null,
     revokedAt: null,
+  });
   });
   return { raw: token.raw, sessionId: id, expiresAt };
 }

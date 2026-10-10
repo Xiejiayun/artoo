@@ -38,7 +38,7 @@ export function App({ client, queryClient, authEnabled }: AppProps = {}): React.
     <QueryClientProvider client={resolvedQueryClient}>
       <ApiProvider client={apiClient}>
         <DesktopGate>
-        <RealtimeProvider url={desktop?.wsUrl} tokenProvider={desktop === undefined ? undefined : () => window.artooDesktop?.getToken?.()}>
+        <RealtimeProvider onMessageRemoved={(roomId, messageId) => apiClient.noteMessageRemoved(roomId, messageId)} url={desktop?.wsUrl} tokenProvider={desktop === undefined ? undefined : () => window.artooDesktop?.getToken?.()}>
           <SelectionProvider>
             <Router>
               <AuthGate enabled={resolvedAuth || !!window.artooDesktop?.getConnection}>

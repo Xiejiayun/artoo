@@ -477,6 +477,8 @@ private struct MentionMemoryCredentials: CredentialStore {
 
 @MainActor
 private final class MentionProjectClient: ApiClientProtocol {
+    // This deterministic fixture has no moderated content.
+    public func messageVisibility(roomId: String, messageIds: [String]) async throws -> [String] { [] }
     var bootstrapHandler: () async throws -> Bootstrap = { throw ApiError.notImplemented("Test bootstrap") }
     var resourceHandler: (String) async throws -> JSONValue = { _ in throw ApiError.notImplemented("Test resource") }
     var readHandler: (String) async throws -> JSONValue = { _ in throw ApiError.notImplemented("Test read") }

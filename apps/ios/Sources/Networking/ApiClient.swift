@@ -46,6 +46,7 @@ public protocol ApiClientProtocol: Sendable {
     func resolveApproval(approvalId: String, request: ResolveApprovalRequest) async throws -> Approval
     func listMessages(roomId: String) async throws -> [Message]
     func messagePage(roomId: String, before: String?, after: String?, threadRootId: String?) async throws -> MessagesResponse
+    func messageVisibility(roomId: String, messageIds: [String]) async throws -> [String]
     func resource(path: String) async throws -> JSONValue
     func command(path: String, method: String, body: JSONValue) async throws -> JSONValue
     func command(path: String, method: String, body: JSONValue, idempotencyKey: String) async throws -> JSONValue
@@ -232,6 +233,13 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
         if let after { path += "&after=\(escape(after))" }
         if let threadRootId { path += "&thread_root_id=\(escape(threadRootId))" }
         return try await send(path: path, method: "GET")
+    }
+
+    private struct MessageVisibilityResponse: Decodable { let removedMessageIds: [String] }
+    public func messageVisibility(roomId: String, messageIds: [String]) async throws -> [String] {
+        let response: MessageVisibilityResponse = try await send(path: "/api/v1/rooms/\(escape(roomId))/messages/visibility", method: "POST",
+            body: JSONValue.object(["message_ids": .strings(messageIds)]))
+        return response.removedMessageIds
     }
 
     public func currentSession() async throws -> SessionIdentity {

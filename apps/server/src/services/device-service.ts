@@ -1,3 +1,4 @@
+import { isMemberSuspended, requireActiveMember } from "./member-status.js";
 /**
  * Device auth storage service (#28 v2-C, slice 2). Owns the device / token /
  * pairing-code tables: create a pairing, atomically claim it into a device with
@@ -163,7 +164,10 @@ export async function createPairing(
     createdAt: now,
     claimedAt: null as string | null,
   };
-  await ctx.db.db.insert(pairingCodes).values(row);
+  await ctx.db.transaction(async (tx) => {
+    await requireActiveMember(ctx, input.createdByUserId, tx);
+    await tx.insert(pairingCodes).values(row);
+  });
   return { pairing: mapPairingCode(row), code };
 }
 
@@ -235,6 +239,11 @@ export async function claimPairing(
   }
 
   return ctx.db.transaction(async (tx) => {
+    try { await requireActiveMember(ctx, existing.createdByUserId, tx); }
+    catch (error) {
+      if (error instanceof AppError && error.code === "permission_denied") throw invalidPairing();
+      throw error;
+    }
     const device = {
       id: ctx.idGen.generate(ID_PREFIXES.device),
       organizationId: ctx.organizationId,
@@ -353,6 +362,7 @@ export async function resolveDeviceToken(
   if (device === undefined || device.trust !== "active" || device.revokedAt !== null) {
     return null;
   }
+  if (await isMemberSuspended(ctx, device.enrolledByUserId)) return null;
   return { deviceId: device.id, computerId: device.computerId, kind: token.kind };
 }
 
