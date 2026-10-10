@@ -32,6 +32,8 @@ async function run(name, command, args, cwd = process.cwd()) {
 }
 let server, device, secretDirectory;
 try {
+  assert.ok(report.source.commit && report.source.tracked_diff_sha256 && report.source.untracked_source_complete
+    && report.source.untracked_source_sha256, "A complete source fingerprint is required before E2E");
   const source = join(output, "source"); mkdirSync(source);
   for (const name of ["project.yml", "Sources", "Resources", "Configuration", "Tests", "UITests"]) cpSync(resolve("apps/ios", name), join(source, name), { recursive: true });
   await run("generate", "xcodegen", ["generate"], source);
@@ -106,6 +108,10 @@ finally {
     catch (error) { report.cleanup.simulator_error = String(error); report.passed = false; }
   }
   if (server) { try { await server.close(); report.cleanup.server_closed = true; } catch (error) { report.cleanup.server_error = String(error); report.passed = false; } }
+  report.source_at_finish = getE2EReportContext().source;
+  report.source_stable = report.source_at_finish.untracked_source_complete === true && !!report.source_at_finish.untracked_source_sha256
+    && JSON.stringify(report.source_at_finish) === JSON.stringify(report.source);
+  if (!report.source_stable) report.passed = false;
   report.finished_at = new Date().toISOString(); save();
 }
 console.log(JSON.stringify({ passed: report.passed, report: join(output, "report.html"), error: report.error }));

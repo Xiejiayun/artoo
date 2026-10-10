@@ -23,6 +23,8 @@ const save = () => {
 save();
 let server, browserServer, browser, page;
 try {
+  assert.ok(report.source.commit && report.source.tracked_diff_sha256 && report.source.untracked_source_complete
+    && report.source.untracked_source_sha256, "A complete source fingerprint is required before E2E");
   const policy = buildAiDataSharingPolicy({ mode: "external", providers: [{ id: "fixture", name: "Fixture AI recipient (test only)", privacy_url: "https://provider.example.com/privacy" }] });
   server = await buildTestServer({ aiDataSharingPolicy: policy, authConfig: { enforceApiAuth: true },
     deviceAuth: { devNodeToken: null, devControlEscape: false, pairingPepper: "isolated-consent-fixture" }, enableDevRoutes: false,
@@ -90,6 +92,10 @@ try {
 } finally {
   if (browserServer) { report.cleanup.browser = await closeOwnedBrowser(browserServer); if (!report.cleanup.browser.closed) report.passed = false; }
   if (server) { try { await server.close(); report.cleanup.server = true; } catch (error) { report.cleanup.server = String(error); report.passed = false; } }
+  report.source_at_finish = getE2EReportContext().source;
+  report.source_stable = report.source_at_finish.untracked_source_complete === true && !!report.source_at_finish.untracked_source_sha256
+    && JSON.stringify(report.source_at_finish) === JSON.stringify(report.source);
+  if (!report.source_stable) report.passed = false;
   report.finished_at = new Date().toISOString(); save();
 }
 console.log(JSON.stringify({ passed: report.passed, report: join(output, "report.html"), checks: report.checks, error: report.error }));

@@ -1,5 +1,7 @@
 import { PgliteDbClient } from "@artoo/storage";
-import { sql } from "drizzle-orm";
+import { getTableName, is, sql } from "drizzle-orm";
+import { PgTable } from "drizzle-orm/pg-core";
+import * as schema from "./schema.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { loadMigrationStatements } from "./migrations.js";
@@ -20,15 +22,12 @@ describe("db migrations", () => {
     client = await PgliteDbClient.create();
     await client.migrate(await loadMigrationStatements());
     const res = await client.db.execute(
-      sql`select count(*)::int as c from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'`,
+      sql`select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE' order by table_name`,
     );
-    // 41 domain tables (25 v1 core + devices/device_tokens/pairing_codes from
-    // #28 + user_identities/sessions/oauth_flows from #34 + decision_records/
-    // handoffs/blockers from V3 #114 + goals/plans/checkpoints from V3 #115
-    // + assistant_turns/run_usage/notifications/discussions).
-    // Drizzle adds its own bookkeeping table only when using its migrator; we
-    // apply raw statements, so exactly the schema tables exist.
-    expect((res.rows[0] as { c: number }).c).toBe(41);
+    // Compare the exact migrated inventory with the declared domain schema.
+    // A fixed count misses renamed/missing tables and becomes stale on additions.
+    const expected = Object.values(schema).filter((value) => is(value, PgTable)).map(getTableName).sort();
+    expect(res.rows.map((row: { table_name: string }) => row.table_name)).toEqual(expected);
     const collaboration = await client.db.execute(sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('assistant_turns','run_usage','notifications','discussions') ORDER BY table_name`);
     expect(collaboration.rows.map((row: { table_name: string }) => row.table_name)).toEqual(["assistant_turns", "discussions", "notifications", "run_usage"]);
   });

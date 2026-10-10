@@ -21,7 +21,8 @@ describe("combined receipt and allocation migration history", () => {
   async function histories() {
     const baseline = await loadMigrationStatements("0021_workspace_retention.sql");
     const receiver = await loadMigrationStatements("0022_run_event_body_identity.sql");
-    const combined = await loadMigrationStatements();
+    const combined = await loadMigrationStatements("0023_workspace_allocation.sql");
+    expect((await loadMigrationStatements()).slice(0, combined.length)).toEqual(combined);
     expect(baseline).toHaveLength(220);
     expect(receiver).toHaveLength(222);
     expect(combined).toHaveLength(223);

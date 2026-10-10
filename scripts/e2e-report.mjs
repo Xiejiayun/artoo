@@ -22,20 +22,24 @@ export function redact(value, key = "") {
   return value;
 }
 
-export function getE2EReportContext() {
+export function getE2EReportContext(sourceRoot = root) {
   const git = (...args) => {
-    const result = spawnSync("git", args, { cwd: root, encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    const result = spawnSync("git", args, { cwd: sourceRoot, encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
     return result.status === 0 ? result.stdout : null;
   };
   const status = git("status", "--porcelain", "--untracked-files=normal");
   const diff = git("diff", "HEAD", "--binary", "--no-ext-diff", "--no-textconv");
-  const untracked = git("ls-files", "--others", "--exclude-standard", "-z");
+  const generatedDirectories = ["artifacts", "node_modules", "dist", "release", "test-results", "test-results-auth", "playwright-report", "Artoo.xcodeproj"];
+  // Apply the same existing generated-file exclusion before capturing stdout.
+  // Xcode DerivedData can otherwise overflow spawnSync while real source is tiny.
+  const untracked = git("ls-files", "--others", "--exclude-standard", "-z", "--", ".",
+    ...generatedDirectories.map((name) => `:(glob,exclude)**/${name}/**`));
   const paths = (untracked?.split("\0").filter(Boolean) ?? []).filter((path) => !/(^|\/)(artifacts|node_modules|dist|release|test-results(?:-auth)?|playwright-report|Artoo\.xcodeproj)(\/|$)/.test(path)).sort();
   const digest = createHash("sha256");
   let complete = untracked !== null;
   for (const path of paths) {
     try {
-      const file = resolve(root, path);
+      const file = resolve(sourceRoot, path);
       const bytes = lstatSync(file).isSymbolicLink() ? Buffer.from(readlinkSync(file)) : readFileSync(file);
       digest.update(path).update("\0").update(createHash("sha256").update(bytes).digest()).update("\0");
     } catch { complete = false; }
