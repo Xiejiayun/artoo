@@ -3,7 +3,7 @@ import { ContextPackSchema } from "./context-pack.js";
 import { TaskSpecSchema } from "./goal.js";
 import {
   AcceptedProductInputsSchema, DevelopmentStageSchema, ProductDesignSchema, ProductResearchReportSchema, ProductValidationReportSchema,
-  ProductDesignV1Schema, ProductValidationReportV1Schema,
+  ProductDesignV1Schema, ProductDesignV2Schema, ProductValidationReportV1Schema,
   productDevelopmentContext, validateProductDevelopmentHandoff, validateProductDevelopmentPlan,
 } from "./product-development.js";
 
@@ -72,6 +72,29 @@ describe("product development stage contracts", () => {
     expect(ProductDesignSchema.safeParse({ ...value, requirement_ids: ["save", "delete"] }).success).toBe(false);
     expect(ProductDesignSchema.safeParse({ ...value, validation_cases: [{ ...value.validation_cases[0], requirement_ids: ["invented"] }] }).success).toBe(false);
     expect(ProductDesignSchema.safeParse({ ...value, screens: [] }).success).toBe(false);
+  });
+
+  it("keeps V1 parsing and V2 strict coverage checks independent after sharing the design shape", () => {
+    const legacy = design(), baseCase = legacy.validation_cases[0]!;
+    expect(ProductDesignV1Schema.parse({ ...legacy, extension: true })).not.toHaveProperty("extension");
+    const program = { version: 3, contract_digest: "sha256:" + "a".repeat(64), steps: [
+      { action: "navigate", page: "main", path: "/" },
+      { action: "assert_text", page: "main", selector: "#saved", text: "Saved" },
+    ] };
+    expect(ProductDesignV1Schema.safeParse({ ...legacy, validation_cases: [{
+      ...baseCase, browser_program: program,
+      browser_steps: [{ action: "navigate", path: "/" }, { action: "assert_text", selector: "#saved", text: "Saved" }],
+    }] }).success).toBe(false);
+
+    const next = { ...legacy, version: 2, validation_cases: [{
+      ...baseCase, method: "workspace-check", requirement_criteria: [{ requirement_id: "save", criterion_index: 0 }],
+      browser_program: program,
+    }] };
+    expect(ProductDesignV2Schema.parse(next)).toEqual(next);
+    expect(ProductDesignV2Schema.safeParse({ ...next, extension: true }).success).toBe(false);
+    expect(ProductDesignV2Schema.safeParse({ ...next, validation_cases: [{
+      ...next.validation_cases[0]!, requirement_criteria: [{ requirement_id: "unrelated", criterion_index: 0 }],
+    }] }).success).toBe(false);
   });
 
   it("rejects requirement loss between independently authored stage handoffs", () => {

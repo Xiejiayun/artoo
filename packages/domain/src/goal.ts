@@ -236,7 +236,7 @@ export const CheckpointRefsSchema = z.object({
   active_runs: z.array(z.string()).default([]),
   open_blockers: z.array(z.string()).default([]),
   pending_approvals: z.array(z.string()).default([]),
-  event_cursor: z.number().int().nonnegative(),
+  event_cursor: z.number().refine(Number.isInteger, "Expected an integer").nonnegative(),
 });
 export type CheckpointRefs = z.infer<typeof CheckpointRefsSchema>;
 
@@ -258,10 +258,11 @@ export type Checkpoint = z.infer<typeof CheckpointSchema>;
 // ---------------------------------------------------------------------------
 
 export const GoalBudgetsSchema = z.object({
-  max_elapsed_ms: z.number().int().positive().nullable().default(null),
+  // Existing JSONB budgets accept finite integers beyond Zod 4's safe-only int().
+  max_elapsed_ms: z.number().refine(Number.isInteger, "Expected an integer").positive().nullable().default(null),
   max_cost_usd: z.number().positive().nullable().default(null),
-  max_retries: z.number().int().nonnegative().nullable().default(null),
-  max_concurrent_runs: z.number().int().positive().nullable().default(null),
+  max_retries: z.number().refine(Number.isInteger, "Expected an integer").nonnegative().nullable().default(null),
+  max_concurrent_runs: z.number().refine(Number.isInteger, "Expected an integer").positive().nullable().default(null),
   allowed_runtimes: z.array(z.string()).nullable().default(null),
 });
 export type GoalBudgets = z.infer<typeof GoalBudgetsSchema>;

@@ -41,6 +41,14 @@
     "vite": "^8.0.16",
     "vitest": "^4.1.9"
   },
+  "overrides": {
+    "@fastify/static": {
+      "glob": {
+        ".": "14.0.2",
+        "minimatch": "11.0.1"
+      }
+    }
+  },
   "engines": {
     "node": ">=24.0.0",
     "npm": ">=11.0.0"

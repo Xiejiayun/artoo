@@ -69,7 +69,7 @@ export type ProductResearchReportV2 = z.infer<typeof ProductResearchReportV2Sche
 export const ProductResearchReportSchema = z.union([ProductResearchReportV1Schema, ProductResearchReportV2Schema]);
 export type ProductResearchReport = z.infer<typeof ProductResearchReportSchema>;
 
-export const ProductDesignV1Schema = z.object({
+const ProductDesignBaseSchema = z.object({
   version: z.literal(1),
   requirement_ids: references,
   information_architecture: strings,
@@ -86,7 +86,9 @@ export const ProductDesignV1Schema = z.object({
     storage_checks: ProductStorageChecksV1Schema.optional(),
     storage_precondition: z.never().optional(),
   })).min(1).max(200),
-}).superRefine((design, ctx) => {
+});
+// Each version owns its checks; V2 must not inherit V1-only validation-case rules.
+export const ProductDesignV1Schema = ProductDesignBaseSchema.superRefine((design, ctx) => {
   design.validation_cases.forEach((item, index) => {
     if (item.browser_steps !== undefined && item.browser_program !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom,
       path: ["validation_cases", index], message: "Choose browser_steps v1 or one explicitly versioned browser_program, never both" });
@@ -128,7 +130,7 @@ export const ReleaseValidationCaseV2Schema = z.object({ ...designCaseBase, metho
   browser_steps: z.never().optional(), browser_program: z.never().optional(), storage_checks: z.never().optional(),
   storage_precondition: z.never().optional(),
 }).strict();
-export const ProductDesignV2Schema = ProductDesignV1Schema.innerType().omit({ version: true, validation_cases: true }).extend({
+export const ProductDesignV2Schema = ProductDesignBaseSchema.omit({ version: true, validation_cases: true }).extend({
   version: z.literal(2), validation_cases: z.array(z.discriminatedUnion("method", [WorkspaceValidationCaseV2Schema, ReleaseValidationCaseV2Schema])).min(1).max(200),
 }).strict().superRefine((design, ctx) => {
   const requirements = new Set(design.requirement_ids);

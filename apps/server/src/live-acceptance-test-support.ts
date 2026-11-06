@@ -34,7 +34,7 @@ const toolNames = ["context", "list", "read", "mkdir", "write", "edit", "remove"
 const toolFrame = z.object({ type: z.enum(["item.started", "item.completed"]), item: z.object({
   id: z.string().regex(/^item_[0-9]{1,16}$/), type: z.literal("mcp_tool_call"),
   server: z.enum(["artoo_workspace", "artoo_research"]), tool: z.enum(toolNames),
-  status: z.enum(["in_progress", "completed", "failed"]), arguments: z.record(z.unknown()),
+  status: z.enum(["in_progress", "completed", "failed"]), arguments: z.record(z.string(), z.unknown()),
   result: z.unknown().optional(), error: z.unknown().optional(),
 }) });
 const receivedToolEvent = z.object({

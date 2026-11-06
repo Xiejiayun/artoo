@@ -98,7 +98,7 @@ export const EventEnvelopeSchema = z.object({
   correlation_id: z.string().min(1),
   idempotency_key: z.string().nullish(),
   sequence: z.number().int().nullish(),
-  payload: z.record(z.unknown()).default({}),
+  payload: z.record(z.string(), z.unknown()).default({}),
 });
 export type EventEnvelope = z.infer<typeof EventEnvelopeSchema>;
 

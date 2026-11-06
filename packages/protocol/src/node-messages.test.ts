@@ -5,6 +5,9 @@ import {
   commandAckSchema,
   nodeHeartbeatSchema,
   nodeHelloSchema,
+  nodeSessionProbeSchema,
+  nodeSessionReadyCommandSchema,
+  nodeSessionPongCommandSchema,
   runStopCommandSchema,
   runEventBodySchema,
   runtimeStatusSchema
@@ -47,6 +50,35 @@ describe("node.hello", () => {
   });
 });
 
+describe("session identifier compatibility", () => {
+  function frames(token: string) {
+    const node_id = "computer_123", command = { kind: "command", id: "cmd_1", idempotency_key: "key_1" };
+    return [
+      [nodeHelloSchema, { kind: "node.hello", node_id, protocol_version: "2026-06-11", artood_version: "0.1.0",
+        machine: { hostname: "workstation", os: "windows", arch: "x64" },
+        managed_receipts: { version: 1, nonce: token, required_contract: "run-event-body-v1" } }],
+      [nodeSessionProbeSchema, { kind: "node.session.probe", node_id, session_id: token, probe_id: token }],
+      [nodeSessionReadyCommandSchema, { ...command, type: "node.session.ready",
+        payload: { version: 1, node_id, hello_nonce: token, session_id: token, receipt_contract: "run-event-body-v1",
+          sequence_max: 2147483647, liveness: { probe_interval_ms: 1000, probe_timeout_ms: 5000 } } }],
+      [nodeSessionPongCommandSchema, { ...command, type: "node.session.pong",
+        payload: { node_id, session_id: token, probe_id: token } }],
+    ] as const;
+  }
+
+  it.each(["12345678-1234-4000-8000-123456789abc", "ABCDEF12-ABCD-0000-0000-ABCDEF123456"])(
+    "preserves the original opaque hexadecimal token shape and case: %s", (token) => {
+      for (const [schema, frame] of frames(token)) expect(schema.parse(frame)).toEqual(frame);
+    },
+  );
+
+  it.each(["", "ABCDEF12-ABCD-0000-0000-ABCDEF12345Z", "ABCDEF12ABCD00000000ABCDEF123456", " 12345678-1234-4000-8000-123456789abc"])(
+    "still rejects malformed session identifiers: %j", (token) => {
+      for (const [schema, frame] of frames(token)) expect(schema.safeParse(frame).success).toBe(false);
+    },
+  );
+});
+
 describe("node.heartbeat", () => {
   const valid = {
     kind: "node.heartbeat",
@@ -59,6 +91,16 @@ describe("node.heartbeat", () => {
 
   it("accepts a well-formed heartbeat", () => {
     expect(nodeHeartbeatSchema.safeParse(valid).success).toBe(true);
+  });
+
+  it("preserves finite JSON integer sequences beyond the safe range and existing bounds", () => {
+    for (const sequence of [0, 42, 9007199254740992]) {
+      const wire = JSON.parse(JSON.stringify({ ...valid, sequence }));
+      expect(nodeHeartbeatSchema.parse(wire).sequence).toBe(sequence);
+    }
+    for (const sequence of [-1, 1.5, NaN, Infinity, -Infinity, null, undefined]) {
+      expect(nodeHeartbeatSchema.safeParse({ ...valid, sequence }).success).toBe(false);
+    }
   });
 
   it("rejects a negative sequence", () => {

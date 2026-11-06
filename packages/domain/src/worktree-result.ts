@@ -85,7 +85,7 @@ const ownedResultRunAdmissionShape = z.object({ version: z.literal(1),
 export const OwnedResultRunAdmissionV1Schema = z.unknown().transform((raw, ctx) => {
   const parsed = ownedResultRunAdmissionShape.safeParse(raw);
   if (!parsed.success) {
-    for (const issue of parsed.error.issues) ctx.addIssue(issue);
+    for (const issue of parsed.error.issues) ctx.addIssue({ ...issue });
     return z.NEVER;
   }
   try {
@@ -115,7 +115,7 @@ export function canonicalOwnedResultRunAdmissionV1(raw: unknown): string {
 
 /** Projection excludes raw reason/stdout, observation, capabilities and measurement
  * fields. Preserve the ordinary measured profile_digest and subject_digest. */
-const verificationBase = RunVerificationPayloadSchema.innerType().shape;
+const verificationBase = RunVerificationPayloadSchema.shape;
 export const OwnedResultCommandVerificationV1Schema = z.object({
   version: verificationBase.version, request_id: id, profile_id: id,
   profile_digest: verificationBase.profile_digest, subject_digest: digest,
@@ -125,7 +125,7 @@ export const OwnedResultCommandVerificationV1Schema = z.object({
   required_files: z.array(z.object({ path: relativePath, checksum: digest, size: z.number().int().nonnegative() }).strict()).max(128),
 }).strict().superRefine((value, ctx) => {
   const ordinary = RunVerificationPayloadSchema.safeParse(value);
-  if (!ordinary.success) for (const issue of ordinary.error.issues) ctx.addIssue(issue);
+  if (!ordinary.success) for (const issue of ordinary.error.issues) ctx.addIssue({ ...issue });
 });
 export type OwnedResultCommandVerificationV1 = z.infer<typeof OwnedResultCommandVerificationV1Schema>;
 

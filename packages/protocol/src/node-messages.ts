@@ -41,6 +41,7 @@ export const machineSchema = z.object({
 
 export const MANAGED_RECEIPT_CONTRACT = "run-event-body-v1" as const;
 const sessionIdentifier = z.string().min(1).max(128);
+// These opaque identifiers retain the v3 hexadecimal UUID shape; v4 uuid() would add version/variant restrictions.
 
 // --- Node -> Server -------------------------------------------------------
 
@@ -54,12 +55,12 @@ export const nodeHelloSchema = z.object({
   verification_profiles: VerificationProfileAdvertisementsSchema.optional(),
   release_profiles: ReleaseProfileAdvertisementsSchema.optional(),
   owned_result_profiles: NodeOwnedResultProfileDescriptorsV1Schema.optional(),
-  managed_receipts: z.object({ version: z.number().int().positive(), nonce: z.string().uuid(),
+  managed_receipts: z.object({ version: z.number().int().positive(), nonce: z.string().guid(),
     required_contract: z.string().min(1).max(128) }).optional()
 });
 
 export const nodeSessionProbeSchema = z.object({ kind: z.literal("node.session.probe"),
-  node_id: sessionIdentifier, session_id: z.string().uuid(), probe_id: z.string().uuid() });
+  node_id: sessionIdentifier, session_id: z.string().guid(), probe_id: z.string().guid() });
 
 export const runtimeStatusSchema = z.object({
   runtime: z.string().min(1),
@@ -74,7 +75,7 @@ export const runtimeStatusSchema = z.object({
 export const nodeHeartbeatSchema = z.object({
   kind: z.literal("node.heartbeat"),
   node_id: z.string().min(1),
-  sequence: z.number().int().nonnegative(),
+  sequence: z.number().refine(Number.isInteger, "Expected an integer").nonnegative(),
   resources: z.object({
     cpu_load: z.number(),
     memory_used_pct: z.number(),
@@ -125,11 +126,11 @@ const commandEnvelope = {
 
 export const nodeSessionReadyCommandSchema = z.object({ ...commandEnvelope, type: z.literal("node.session.ready"),
   payload: z.object({ version: z.number().int().positive(), node_id: sessionIdentifier,
-    hello_nonce: z.string().uuid(), session_id: z.string().uuid(), receipt_contract: z.string().min(1).max(128),
+    hello_nonce: z.string().guid(), session_id: z.string().guid(), receipt_contract: z.string().min(1).max(128),
     sequence_max: z.number().int().positive(), liveness: z.object({
       probe_interval_ms: z.number().int().positive(), probe_timeout_ms: z.number().int().positive() }) }) });
 export const nodeSessionPongCommandSchema = z.object({ ...commandEnvelope, type: z.literal("node.session.pong"),
-  payload: z.object({ node_id: sessionIdentifier, session_id: z.string().uuid(), probe_id: z.string().uuid() }) });
+  payload: z.object({ node_id: sessionIdentifier, session_id: z.string().guid(), probe_id: z.string().guid() }) });
 
 export const runStopCommandSchema = z.object({
   ...commandEnvelope,

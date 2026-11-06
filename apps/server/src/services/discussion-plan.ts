@@ -15,19 +15,24 @@ const planFields = new Set(["rationale", "task_specs", "development_stage", "tit
 function schemaDiagnostic(issue: PlanIssue): PlanDiagnostic {
   // Only schema field names and array offsets belong in feedback. Never include
   // issue.message, received values or unknown property names from model output.
-  const path = ("$" + issue.path.slice(0, 12).map((part) => typeof part === "number" ? `[${part}]`
-    : planFields.has(part) ? `.${part}` : "[field]").join("")).slice(0, 96);
+  const path = ("$" + issue.path.slice(0, 12).map((part) => typeof part === "number" ? "[" + part + "]"
+    : typeof part === "string" && planFields.has(part) ? "." + part : "[field]").join("")).slice(0, 96);
+  let code: string = issue.code;
   let expected = "a value matching the task plan schema";
-  if (issue.code === "invalid_type") expected = issue.expected;
-  else if (issue.code === "invalid_enum_value") expected = `one of ${issue.options.slice(0, 12).map((option) => JSON.stringify(option)).join(", ")}`;
-  else if (issue.code === "too_small" || issue.code === "too_big") {
+  if (issue.code === "invalid_type") expected = issue.expected === "int" ? "integer" : issue.expected;
+  else if (issue.code === "invalid_value") {
+    // Preserve diagnostic_version 1 using only the fixed schema's allowed values.
+    code = issue.values.length === 1 ? "invalid_literal" : "invalid_enum_value";
+    if (code === "invalid_enum_value") expected = "one of " + issue.values.slice(0, 12).map((option) => JSON.stringify(option)).join(", ");
+  } else if (issue.code === "too_small" || issue.code === "too_big") {
     const limit = issue.code === "too_small" ? issue.minimum : issue.maximum;
-    const relation = issue.exact ? "exactly" : issue.code === "too_small" ? issue.inclusive ? "at least" : "more than" : issue.inclusive ? "at most" : "less than";
-    const unit = issue.type === "array" ? "item" : issue.type === "string" ? "character" : "";
-    expected = `${issue.type} with ${relation} ${limit}${unit ? ` ${unit}${limit === 1 ? "" : "s"}` : ""}`;
-  } else if (issue.code === "invalid_string") expected = "a string matching the required format";
+    const exact = "exact" in issue && issue.exact === true;
+    const relation = exact ? "exactly" : issue.code === "too_small" ? issue.inclusive ? "at least" : "more than" : issue.inclusive ? "at most" : "less than";
+    const unit = issue.origin === "array" ? "item" : issue.origin === "string" ? "character" : "";
+    expected = issue.origin + " with " + relation + " " + limit + (unit ? " " + unit + (limit === 1 ? "" : "s") : "");
+  } else if (issue.code === "invalid_format") { code = "invalid_string"; expected = "a string matching the required format"; }
   else if (issue.code === "unrecognized_keys") expected = "only schema-defined properties";
-  return { code: issue.code, path, expected: expected.slice(0, 128) };
+  return { code, path, expected: expected.slice(0, 128) };
 }
 
 function syntaxDiagnostic(error: SyntaxError, text: string): PlanDiagnostic {

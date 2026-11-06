@@ -50,6 +50,20 @@ describe("goal + plan routes #115", () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it("persists and reads existing finite integer budgets beyond the safe range through the public API", async () => {
+    const value = 9007199254740992;
+    const budgets = { max_elapsed_ms: value, max_retries: value, max_concurrent_runs: value };
+    const created = await server.app.inject({ method: "POST", url: "/api/v1/goals",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ project_id: "proj_artoo", title: "Existing large budgets", budgets }) });
+    expect(created.statusCode).toBe(201);
+    const expected = { ...budgets, max_cost_usd: null, allowed_runtimes: null };
+    expect(created.json().goal.budgets).toEqual(expected);
+    const fetched = await server.app.inject({ method: "GET", url: `/api/v1/goals/${created.json().goal.id}` });
+    expect(fetched.statusCode).toBe(200);
+    expect(fetched.json().goal.budgets).toEqual(expected);
+  });
+
   it("rejects an invalid plan payload with 400", async () => {
     const goalId = await createGoal("bad plan");
     const res = await server.app.inject({

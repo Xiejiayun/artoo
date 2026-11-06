@@ -177,11 +177,35 @@ describe("node-owned declared measurement-plan feasibility", () => {
     for (const issue of detail.issues) expect(Object.keys(issue).every(key => ["path", "code", "expected"].includes(key))).toBe(true);
   });
 
+  it("preserves v1 diagnostic categories for real v4 format and discriminator failures", async () => {
+    const f = fixture(), secret = "PRIVATE_INVALID_SCHEMA_VALUE_467";
+    const malformed = { ...f.research,
+      sources: [{ ...f.research.sources[0]!, retrieved_at: secret }],
+      measurement_plan: { ...f.research.measurement_plan!,
+        entries: f.research.measurement_plan!.entries.map((entry, index) => index ? entry : { ...entry, needs: [{ kind: secret }] }),
+      },
+    };
+    const parsed = ProductResearchReportSchema.safeParse(malformed);
+    if (parsed.success) throw new Error("Expected invalid controlled research");
+    expect(parsed.error.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "invalid_format", path: ["sources", 0, "retrieved_at"] }),
+      expect.objectContaining({ code: "invalid_union", discriminator: "kind" }),
+    ]));
+    write(f.researchPath, JSON.stringify(malformed));
+    const result = await execute(f, "final"), detail = schemaDiagnostic(result);
+    expect(detail.issues).toEqual(expect.arrayContaining([
+      { path: ["sources", 0, "retrieved_at"], code: "invalid_string" },
+      { path: ["measurement_plan", "entries", 0, "needs", 0, "kind"], code: "invalid_union_discriminator", expected: "enum" },
+    ]));
+    expect(result.reason).not.toContain(secret);
+    expect(result.checks).toEqual([]); expect(runOwnedGit).not.toHaveBeenCalled();
+  });
+
   it("bounds and sanitizes unexpected future issue paths and types without serializing custom messages", async () => {
     const f = fixture(), secret = "/private/FUTURE_SCHEMA_SECRET_8128", marker = "PRIVATE_EXPECTED_8128";
     // Controlled schema-error fixture tests the projection boundary; it never supplies a successful receipt.
     const issues = [
-      { code: secret, path: ["measurement_plan", secret, 10001, -1, 0.5], message: secret, received: secret },
+      { code: secret, path: ["measurement_plan", secret, Symbol(secret), 10001, -1, 0.5], message: secret, received: secret },
       { code: "invalid_type", path: ["objective"], expected: marker, message: secret },
       ...Array.from({ length: 20 }, () => ({ code: "invalid_type", path: Array(12).fill("same_browser_context"), expected: "string", message: secret })),
     ];
@@ -189,7 +213,7 @@ describe("node-owned declared measurement-plan feasibility", () => {
       error: { issues } } as unknown as ReturnType<typeof ProductResearchReportSchema.safeParse>);
     try {
       const result = await execute(f, "final"), detail = schemaDiagnostic(result);
-      expect(detail.issues[0]).toEqual({ path: ["measurement_plan", "<field>", "<index>", "<index>", "<index>"], code: "custom" });
+      expect(detail.issues[0]).toEqual({ path: ["measurement_plan", "<field>", "<field>", "<index>", "<index>", "<index>"], code: "custom" });
       expect(detail.issues[1]).toEqual({ path: ["objective"], code: "invalid_type" });
       expect(detail.omitted_issues).toBe(issues.length - detail.issues.length); expect(detail.omitted_issues).toBeGreaterThan(0);
       expect(detail.issues.every(issue => issue.path.length <= 8 && issue.path.every(segment => typeof segment === "number" || segment.length <= 32))).toBe(true);

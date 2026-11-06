@@ -496,7 +496,21 @@ const researchIssueCodes = new Set([
   "invalid_intersection_types", "not_multiple_of", "not_finite",
 ]);
 const researchExpectedTypes = new Set(["string", "number", "integer", "boolean", "array", "object", "null", "undefined"]);
-interface ResearchSchemaIssue { code: string; path: readonly (string | number)[]; expected?: unknown }
+interface ResearchSchemaIssue {
+  code: string; path: readonly PropertyKey[]; expected?: unknown; values?: readonly unknown[]; discriminator?: unknown;
+}
+
+/** Keep the v1 diagnostic vocabulary across Zod versions without exposing schema values or input. */
+function researchIssueCode(issue: ResearchSchemaIssue): string {
+  if (issue.code === "invalid_value") {
+    // Only the count is needed: the fixed research schemas use singleton literals and multi-value enums.
+    if (!Array.isArray(issue.values) || issue.values.length === 0) return "custom";
+    return issue.values.length === 1 ? "invalid_literal" : "invalid_enum_value";
+  }
+  if (issue.code === "invalid_format") return "invalid_string";
+  if (issue.code === "invalid_union" && typeof issue.discriminator === "string") return "invalid_union_discriminator";
+  return researchIssueCodes.has(issue.code) ? issue.code : "custom";
+}
 
 /** Project schema facts only: Zod messages, custom values and unknown keys may contain product input. */
 function researchSchemaFailure(issues: readonly ResearchSchemaIssue[]): string {
@@ -507,11 +521,12 @@ function researchSchemaFailure(issues: readonly ResearchSchemaIssue[]): string {
   for (const issue of issues.slice(0, 8)) {
     const path = issue.path.slice(0, 8).map(segment => typeof segment === "number"
       ? Number.isSafeInteger(segment) && segment >= 0 && segment <= 10000 ? segment : "<index>"
-      : segment.length <= 32 && researchIssueFields.has(segment) ? segment : "<field>");
+      : typeof segment === "string" && segment.length <= 32 && researchIssueFields.has(segment) ? segment : "<field>");
     if (issue.path.length > 8) path[7] = "<truncated>";
-    const code = researchIssueCodes.has(issue.code) ? issue.code : "custom";
-    const expected = code === "invalid_type" && typeof issue.expected === "string" && researchExpectedTypes.has(issue.expected)
-      ? issue.expected : code === "invalid_literal" ? "literal"
+    const code = researchIssueCode(issue);
+    const expectedType = issue.expected === "int" ? "integer" : issue.expected;
+    const expected = code === "invalid_type" && typeof expectedType === "string" && researchExpectedTypes.has(expectedType)
+      ? expectedType : code === "invalid_literal" ? "literal"
         : code === "invalid_enum_value" || code === "invalid_union_discriminator" ? "enum"
           : code === "invalid_union" ? "union" : undefined;
     safe.push({ path, code, ...(expected === undefined ? {} : { expected }) });

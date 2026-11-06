@@ -230,11 +230,12 @@ export type WorktreeMergeOutcome = ({ outcome: "candidate" } & SealedWorktreeRes
   | { outcome: "conflicted"; reference: WorktreeConflictReference; conflict: WorktreeConflict };
 const repositorySchema = z.object({ root: absolutePath, common: absolutePath, root_identity: safeText, common_identity: safeText, config_digest: digest }).strict();
 const storeBoundarySchema = z.object({ root_identity: safeText, operations_identity: safeText, commits_identity: safeText, key_identity: safeText }).strict();
-const markerSchema = z.object({ version: z.literal(1), namespace: z.string().uuid(), profile_digest: digest,
+// Retain the persisted namespace format accepted before Zod v4; generation still uses randomUUID().
+const markerSchema = z.object({ version: z.literal(1), namespace: z.string().guid(), profile_digest: digest,
   repository: repositorySchema, store: storeBoundarySchema, baseline: manifestSchema }).strict();
 type Marker = z.infer<typeof markerSchema>;
 const operationSchema = z.object({ version: z.literal(1), profile_digest: digest, request_id: id, request_digest: digest,
-  request: z.record(z.unknown()), directory_identity: safeText, created_at: z.string().datetime(),
+  request: z.record(z.string(), z.unknown()), directory_identity: safeText, created_at: z.string().datetime(),
   phase: z.enum(["preparing", "sealed", "conflicted", "materialized", "failed", "uncertain"]),
   pending_git: z.array(z.string()).optional(), git: z.array(executionSchema).max(4096),
   receipt: receiptSchema.optional(), conflict: conflictSchema.optional(), failure: z.string().max(128).optional(),

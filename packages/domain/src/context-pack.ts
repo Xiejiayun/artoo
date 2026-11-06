@@ -67,7 +67,7 @@ export const ContextPackSchema = z.object({
     version: z.literal(1),
     entries: z.array(z.object({
       event_id: z.string().min(1),
-      position: z.number().int().positive(),
+      position: z.number().refine(Number.isInteger, "Expected an integer").positive(),
       task_id: z.string().min(1),
       actor: ActorSchema,
       occurred_at: z.string().min(1),

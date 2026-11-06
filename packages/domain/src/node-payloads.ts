@@ -101,7 +101,7 @@ export type RunLifecyclePayload = z.infer<typeof RunLifecyclePayloadSchema>;
 export const ArtifactPayloadSchema = z.object({
   type: ArtifactTypeSchema,
   uri: z.string(),
-  metadata: z.record(z.unknown()).default({}),
+  metadata: z.record(z.string(), z.unknown()).default({}),
   checksum: z.string().nullish(),
 });
 export type ArtifactPayload = z.infer<typeof ArtifactPayloadSchema>;

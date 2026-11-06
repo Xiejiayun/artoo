@@ -52,16 +52,26 @@ describe("bounded discussion plan diagnostics", () => {
       expect(JSON.stringify(error.toEnvelope())).not.toContain("private-provider-credential");
     }
   });
-  it("bounds schema feedback while preserving required fields and collection limits", () => {
-    const error = invalid(JSON.stringify({ rationale: "private-secret".repeat(2000), task_specs: Array.from({ length: 60 }, () => ({ title: "", acceptance_criteria: [] })) }));
+  it("bounds feedback for invalid members within the collection limit", () => {
+    const error = invalid(JSON.stringify({ rationale: "private-secret".repeat(2000), task_specs: Array.from({ length: 50 }, () => ({ title: "", acceptance_criteria: [] })) }));
     expect(error.details.diagnostics).toHaveLength(6);
     expect(error.details.omitted_issues).toBeGreaterThan(0);
     expect(error.message).toContain("$.rationale: too_big; expected string with at most 20000 characters");
-    expect(error.message).toContain("$.task_specs: too_big; expected array with at most 50 items");
     expect(error.message).toContain("expected array with at least 1 item");
     expect(error.message.length).toBeLessThan(2000);
     expect(JSON.stringify(error.toEnvelope()).length).toBeLessThan(4000);
     expect(JSON.stringify(error.toEnvelope())).not.toContain("private-secret");
+  });
+});
+
+describe("discussion plan collection limit", () => {
+  it("accepts exactly 50 tasks and rejects an oversized collection before inspecting invalid members", () => {
+    expect(parseDiscussionPlan(JSON.stringify({ task_specs: Array.from({ length: 50 }, () => spec) })).task_specs).toHaveLength(50);
+    const error = invalid(JSON.stringify({ task_specs: Array.from({ length: 60 }, () => ({ title: "", acceptance_criteria: [] })) }));
+    expect(error.details).toEqual({ diagnostic_version: 1, omitted_issues: 0,
+      diagnostics: [{ code: "too_big", path: "$.task_specs", expected: "array with at most 50 items" }] });
+    expect(error.message).toContain("$.task_specs: too_big; expected array with at most 50 items");
+    expect(error.message).not.toContain("$.task_specs[");
   });
 });
 

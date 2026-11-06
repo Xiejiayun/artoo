@@ -57,6 +57,18 @@ describe("ContextPack", () => {
     expect(ContextPackSchema.parse(pack)).toEqual(pack);
   });
 
+  it("retains finite JSON integer review positions without changing their positive constraint", () => {
+    const pack = (position: unknown) => ({ ...validPack, review_feedback: { ...reviewFeedback,
+      entries: [{ ...reviewFeedback.entries[0], position }] } });
+    for (const position of [1, 42, 9007199254740992]) {
+      const wire = JSON.parse(JSON.stringify(pack(position)));
+      expect(ContextPackSchema.parse(wire)).toEqual(wire);
+    }
+    for (const position of [0, -1, 1.5, NaN, Infinity, -Infinity, null, undefined]) {
+      expect(ContextPackSchema.safeParse(pack(position)).success).toBe(false);
+    }
+  });
+
   it.each([{ artifact_ids: null }, { artifact_ids: [] }, { artifact_ids: ["artifact_first"] }])("preserves known or legacy artifact attribution: %j", ({ artifact_ids }) => {
     const pack = { ...validPack, review_feedback: { ...reviewFeedback,
       entries: [{ ...reviewFeedback.entries[0], artifact_ids }] } };
