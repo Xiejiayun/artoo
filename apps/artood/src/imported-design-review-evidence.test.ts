@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunVerificationPayloadSchema, type BrowserOperationTraceV3, type StaticWebAcceptanceReportV3 } from "@artoo/domain";
@@ -15,8 +15,9 @@ import type { PreparedVerificationProfile } from "./verification.js";
 
 const roots: string[] = [], prefix = "artoo-h4-evidence-";
 afterEach(() => { for (const root of roots.splice(0)) {
-  const parent = resolve(tmpdir()) + sep;
-  if (!root.startsWith(parent) || !root.slice(parent.length).startsWith(prefix)) throw Error("Unexpected controlled fixture root");
+  // Windows TEMP can use an 8.3 alias while the retained root uses its long path.
+  const parent = realpathSync.native(tmpdir()), canonicalRoot = realpathSync.native(root);
+  if (canonicalRoot !== root || dirname(canonicalRoot) !== parent || !basename(canonicalRoot).startsWith(prefix)) throw Error("Unexpected controlled fixture root");
   rmSync(root, { recursive: true, force: true });
 } });
 const sha = (value: string | Buffer) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -32,7 +33,7 @@ function png(): Buffer {
     chunk("IDAT", deflateSync(Buffer.alloc((320 * 4 + 1) * 240))), chunk("IEND", Buffer.alloc(0))]);
 }
 function fixture(stage: "design" | "implementation" = "design") {
-  const root = realpathSync.native(mkdtempSync(join(tmpdir(), prefix))); roots.push(root);
+  const parent = realpathSync.native(tmpdir()), root = realpathSync.native(mkdtempSync(join(parent, prefix))); roots.push(root);
   const evidenceRoot = join(root, "evidence"); mkdirSync(evidenceRoot);
   const { request } = importedDesignReviewRequestFixture();
   if (request.continuation_result.outcome !== "finished" || !request.continuation_result.verified_design) throw Error("Controlled completion missing");

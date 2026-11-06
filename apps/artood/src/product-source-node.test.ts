@@ -1,4 +1,5 @@
 // Native ACL/helper admission and runtime execution are controlled here; no child process is started.
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, readFileSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,8 @@ vi.mock("node:fs", async importOriginal => {
 const control = vi.hoisted(() => ({ prepare: vi.fn(() => Object.freeze({})), current: vi.fn(), close: vi.fn(), client: vi.fn(() => ({})),
   release: vi.fn<(profile: PreparedReleaseProfile) => ReleaseCapabilitiesV1 | undefined>(),
   recovery: vi.fn(() => Object.freeze({})), recoveredSource: vi.fn(() => Object.freeze({})), validation: vi.fn(),
+  recoveredCurrent: vi.fn<typeof import("./windows-source-recovery.js").assertWindowsSourceRuntimeConfiguration>(),
+  recoveryOperation: vi.fn((_runtime: unknown, _descriptor: unknown, work: () => unknown) => work()),
   storage: vi.fn(() => ({})), audit: vi.fn(), backend: vi.fn(), design: vi.fn(), designReview: vi.fn(), execution: vi.fn(), roles: vi.fn(() => ({ semantic: true, measurementV2: true, importedReview: true, importedDesign: true, importedDesignReview: true, importedExecution: true })) }));
 vi.mock("./windows-release-storage.js", () => ({ prepareWindowsReleaseStorage: control.storage, assertWindowsReleaseStorage: vi.fn(), auditWindowsReleaseStorage: control.audit }));
 vi.mock("./owned/windows-owned-process.js", () => ({ assertWindowsProcessBackend: control.backend }));
@@ -26,10 +29,13 @@ vi.mock("./product-source-runtime.js", () => ({ prepareProductSourceRuntime: con
 vi.mock("./product-source-semantic-client.js", () => ({ createProductSourceSemanticClient: control.client }));
 vi.mock("./windows-source-recovery.js", () => ({ prepareWindowsSourceRecoveryConfiguration: control.recovery,
   readWindowsRecoverySourceRuntime: control.recoveredSource,
-  withWindowsSourceRecoveryOperation: (_runtime: unknown, _descriptor: unknown, work: () => unknown) => work() }));
+  assertWindowsSourceRuntimeConfiguration: control.recoveredCurrent,
+  withWindowsSourceRecoveryOperation: control.recoveryOperation }));
 import { prepareProductSourceNode } from "./product-source-node.js";
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 beforeEach(() => { vi.clearAllMocks(); control.release.mockReset(); vi.mocked(readFileSync).mockImplementation(io.read); vi.mocked(lstatSync).mockImplementation(io.stat);
+  control.recoveredCurrent.mockReset().mockImplementation(() => { throw Error("Controlled recovery configuration check was not configured"); });
+  control.recoveryOperation.mockReset().mockImplementation((_runtime, _descriptor, work) => work());
   Object.defineProperty(process, "platform", { ...platform, value: "win32" }); });
 afterEach(() => { Object.defineProperty(process, "platform", platform); });
 const token = "sk_device_fixture_" + "a".repeat(64);
@@ -225,9 +231,35 @@ describe("protected recovery startup selection (controlled authority factory)", 
   it("activates only once and keeps the guardian store fence when the source node closes", () => {
     const f = recoveryConfigurationFixture(), source = prepareProductSourceNode(f.options);
     source.qualifyRecovery({} as never); const recoveredRuntime = Object.freeze({});
+    const calls: string[] = [], descriptor = { operationId: "source-configuration",
+      bindingDigest: "sha256:" + createHash("sha256").update(io.read(f.file)).digest("hex"), serverOperation: null };
+    control.recoveryOperation.mockImplementation((runtime, operation, work) => {
+      expect(runtime).toBe(recoveredRuntime); expect(operation).toEqual(descriptor); calls.push("scope.enter");
+      try { return work(); } finally { calls.push("scope.leave"); }
+    });
+    control.recoveredCurrent.mockImplementation((runtime, nodeId, allowedRoots, profiles) => {
+      expect(runtime).toBe(recoveredRuntime); expect(nodeId).toBe(f.options.nodeId);
+      expect(allowedRoots).toBe(f.options.allowedRoots); expect(profiles).toBe(f.options.profiles); calls.push("configuration");
+    });
     const actual = source.activateRecovery(recoveredRuntime as never);
     expect(control.recoveredSource).toHaveBeenCalledWith(recoveredRuntime); expect(source.runtime).toBe(actual);
+    expect(calls).toEqual(["scope.enter", "configuration", "scope.leave"]);
+    source.assertCurrent();
+    expect(calls).toEqual(["scope.enter", "configuration", "scope.leave", "scope.enter", "configuration", "scope.leave"]);
+    expect(control.recoveredCurrent).toHaveBeenCalledTimes(2); expect(control.current).not.toHaveBeenCalled();
     expect(() => source.activateRecovery(recoveredRuntime as never)).toThrow("already consumed");
+    expect(control.recoveredSource).toHaveBeenCalledOnce(); expect(control.prepare).not.toHaveBeenCalled();
+    source.close(); expect(control.close).not.toHaveBeenCalled();
+  });
+  it("propagates rejected recovery configuration without ordinary-runtime fallback or releasing its owner fence", () => {
+    const f = recoveryConfigurationFixture(), source = prepareProductSourceNode(f.options);
+    source.qualifyRecovery({} as never); const recoveredRuntime = Object.freeze({}), failure = Error("Controlled recovery configuration revoked");
+    control.recoveredCurrent.mockImplementationOnce(() => { throw failure; });
+    expect(() => source.activateRecovery(recoveredRuntime as never)).toThrow(failure);
+    expect(control.recoveredCurrent).toHaveBeenCalledExactlyOnceWith(recoveredRuntime, f.options.nodeId, f.options.allowedRoots, f.options.profiles);
+    expect(control.current).not.toHaveBeenCalled(); expect(control.prepare).not.toHaveBeenCalled();
+    expect(() => source.activateRecovery(recoveredRuntime as never)).toThrow("already consumed");
+    expect(control.recoveredSource).toHaveBeenCalledOnce();
     source.close(); expect(control.close).not.toHaveBeenCalled();
   });
 });

@@ -5,7 +5,8 @@ import type { ServerToNodeMessage } from "@artoo/protocol";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildTestServer, type TestServer } from "./test-support.js";
-import { createGoal } from "./services/goal-service.js";
+import { cancelGoal, createGoal } from "./services/goal-service.js";
+import { createGoalAutomationDispatcher } from "./services/goal-automation-service.js";
 import { acceptPlan, proposePlan } from "./services/plan-service.js";
 import { assignTask, markReady, reviewTask } from "./services/lifecycle-service.js";
 import { ingestWireRunEvent } from "./services/run-service.js";
@@ -182,17 +183,30 @@ describe("durable target-product publication", () => {
     expect((await getGoalProductRelease(server.ctx, f.goal.id))!.health).toBeNull();
   });
   it("validates the restored version and never changes the original publication receipt", async () => {
-    const f = await prepared(); await queue(f.automation);
     const previousDigest = `sha256:${"b".repeat(64)}`, prior = await prepared(previousDigest);
     await queue(prior.automation);
     const previousId = (await getGoalProductRelease(server.ctx, prior.goal.id))!.id;
-    const original = await published(f.goal.id);
     // H8 preserves pre-upgrade history but requires every new attempt to start queued.
     // Build the previous version's own goal/run/evidence and commit its exact receipt;
     // borrowing the current goal's run or inserting a terminal fact would evade that lifecycle.
-    const priorReceipt: ProductReleaseReceipt = { ...await published(prior.goal.id),
-      health_checks: original.health_checks.map((check) => ({ ...check, body_digest: previousDigest })) };
+    const priorOriginal = await published(prior.goal.id);
+    const priorReceipt: ProductReleaseReceipt = { ...priorOriginal,
+      health_checks: priorOriginal.health_checks.map((check) => ({ ...check, body_digest: previousDigest })) };
     await ingestProductReleaseReceipt(server.ctx, prior.run.computerId, priorReceipt);
+    await expect(queue(prior.automation)).resolves.toMatchObject({ status: "succeeded" });
+    // A published receipt does not release the autonomous workspace reservation.
+    // Stop the settled prior goal through its cancellation/runner gates; its exact
+    // published version remains available for rollback by the next goal.
+    await expect(cancelGoal(server.ctx, prior.goal.id)).resolves.toMatchObject({ status: "cancelled" });
+    const errors: unknown[] = [], dispatcher = createGoalAutomationDispatcher(server.ctx,
+      async () => { throw Error("The settled prior publication must not need a process stop"); }, error => errors.push(error));
+    try { await dispatcher.pump(); } finally { await dispatcher.stop(); }
+    expect(errors).toEqual([]);
+    expect((await server.db.db.select().from(goalAutomations).where(eq(goalAutomations.goalId, prior.goal.id)))[0]!.status).toBe("cancelled");
+    expect(await getGoalProductRelease(server.ctx, prior.goal.id)).toMatchObject({ status: "published", receipt: priorReceipt });
+    const f = await prepared(); await queue(f.automation);
+    expect(f.run.computerId).toBe(prior.run.computerId);
+    const original = await published(f.goal.id);
     const receipt = { ...original, previous_release_id: previousId };
     await ingestProductReleaseReceipt(server.ctx, f.run.computerId, receipt);
     const report = health(receipt, 1, { state: "rolled_back", consecutive_failures: 2, active_release_id: previousId,
@@ -205,6 +219,7 @@ describe("durable target-product publication", () => {
     await expect(queue(f.automation)).resolves.toMatchObject({ status: "failed" });
     await expect(ingestProductReleaseHealthReport(server.ctx, f.run.computerId, health(receipt, 2))).rejects.toThrow(/quarantined/);
     expect((await getGoalProductRelease(server.ctx, f.goal.id))!).toMatchObject({ status: "published", receipt, health: report });
+    expect(await getGoalProductRelease(server.ctx, prior.goal.id)).toMatchObject({ status: "published", receipt: priorReceipt });
   });
   it("requires no active version for unavailability and rolls back an ingest if its session expires mid-transaction", async () => {
     const f = await prepared(); await queue(f.automation);
