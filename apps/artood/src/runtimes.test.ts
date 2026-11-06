@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,16 +48,98 @@ function isAck(m: NodeToServerMessage): m is CommandAck {
 }
 
 describe("runtime presets", () => {
+  it("pages the complete author and reviewer context while preserving ordinary file-based prompts", () => {
+    const create = vi.spyOn(processAdapter, "createProcessAdapter");
+    try {
+      codexRuntime({ allowedRoots: ["/ws"] });
+      claudeCodeRuntime({ allowedRoots: ["/ws"] });
+      for (const [options] of create.mock.calls) {
+        for (const argv of [options.productCommand!, options.reviewCommand!]) {
+          const prompt = argv.find(arg => arg.startsWith("First call mcp__artoo_workspace__context"));
+          expect(prompt).toContain("offset:0 and limit:4096");
+          expect(prompt).toContain("artoo-context-text-page.v1");
+          expect(prompt).toContain("every page through eof:true");
+          expect(prompt).toContain("first checksum as expected_checksum");
+          expect(prompt).toContain("same checksum and size");
+          expect(prompt).toContain("never guess omitted instructions");
+          expect(prompt).not.toContain("Read the file {{context_pack_path}}");
+        }
+        for (const argv of [options.command, options.discussionCommand!]) {
+          expect(argv.some(arg => arg.startsWith("Read the file {{context_pack_path}}. If its payload contains conversation"))).toBe(true);
+          expect(argv.join(" ")).not.toContain("artoo-context-text-page.v1");
+        }
+      }
+    } finally { create.mockRestore(); }
+  });
+
+  it("gives product authors only scoped workspace and research tools without changing ordinary commands", () => {
+    const create = vi.spyOn(processAdapter, "createProcessAdapter");
+    try {
+      claudeCodeRuntime({ allowedRoots: ["/ws"], trustedExecution: true });
+      const options = create.mock.calls[0]![0], command = options.productCommand!;
+      expect(options.command).toContain("bypassPermissions");
+      expect(command).toEqual(expect.arrayContaining(["--permission-mode", "dontAsk", "--strict-mcp-config", "{{workspace_tools_mcp_path}}"]));
+      expect(command[command.indexOf("--tools") + 1]).toBe("");
+      const allowed = command[command.indexOf("--allowedTools") + 1]!.split(",");
+      expect(allowed).toEqual(["context", "list", "read", "mkdir", "write", "edit", "remove", "verify", "read_evidence"].map((name) => `mcp__artoo_workspace__${name}`));
+      expect(options.reviewCommand![options.reviewCommand!.indexOf("--allowedTools") + 1]).toBe("mcp__artoo_workspace__context,mcp__artoo_workspace__read_evidence");
+      expect(options.reviewCommand![options.reviewCommand!.indexOf("--tools") + 1]).toBe("Read,Glob,Grep");
+      expect(command).not.toContain("bypassPermissions");
+      for (const argv of [command, options.discussionCommand!]) {
+        expect(argv).toEqual(expect.arrayContaining(["--setting-sources", "user", "--disable-slash-commands", "--no-session-persistence"]));
+        expect(JSON.parse(argv[argv.indexOf("--settings") + 1]!)).toMatchObject({ disableAllHooks: true, disableClaudeAiConnectors: true });
+      }
+      claudeCodeRuntime({ allowedRoots: ["/ws"], command: mockCommand });
+      expect(create.mock.calls[1]![0].productCommand).toBeUndefined();
+    } finally { create.mockRestore(); }
+  });
+  it("wires opt-in broker tools for actual coding presets while keeping read-only discussions restricted", () => {
+    const root = mkdtempSync(join(tmpdir(), "artoo-research-runtime-")), workspace = join(root, "workspace"); mkdirSync(workspace);
+    const create = vi.spyOn(processAdapter, "createProcessAdapter");
+    try {
+      const options = { allowedRoots: [workspace], research: { receiptDirectory: join(root, "receipts"), braveApiKeyEnv: "LOCAL_RESEARCH_KEY" }, initializeRepository: true };
+      expect(codexRuntime(options).capabilities).toContain("research.web");
+      expect(claudeCodeRuntime(options).capabilities).toContain("research.web");
+      const codex = create.mock.calls[0]![0], claude = create.mock.calls[1]![0];
+      expect(codex.command.join(" ")).toContain("mcp_servers.artoo_research.command");
+      expect(codex.command.join(" ")).toContain("{{research_config_json}}");
+      expect(codex.productCommand!.join(" ")).toContain("{{workspace_tools_config_json}}");
+      expect(codex.productCommand!.join(" ")).toContain("mcp_servers.artoo_workspace.tool_timeout_sec=960");
+      expect(codex.productCommand!.join(" ")).toContain("mcp__artoo_workspace__verify");
+      expect(codex.productCommand!.join(" ")).toContain("{{research_config_json}}");
+      const approvalSettings = codex.productCommand!.filter((arg) => arg.includes(".approval_mode="));
+      expect(approvalSettings).toEqual([
+        ...["context", "list", "read", "mkdir", "write", "edit", "remove", "verify", "read_evidence"].map((name) => `mcp_servers.artoo_workspace.tools.${name}.approval_mode="approve"`),
+        ...["fetch", "search"].map((name) => `mcp_servers.artoo_research.tools.${name}.approval_mode="approve"`),
+      ]);
+      expect(codex.productCommand).toContain('mcp_servers.artoo_workspace.enabled_tools=["context","list","read","mkdir","write","edit","remove","verify","read_evidence"]');
+      expect(codex.reviewCommand).toContain('mcp_servers.artoo_workspace.enabled_tools=["context","read_evidence"]');
+      expect(codex.reviewCommand!.filter((arg) => arg.includes(".approval_mode="))).toEqual(["context", "read_evidence"].map((name) => `mcp_servers.artoo_workspace.tools.${name}.approval_mode="approve"`));
+      expect(codex.productCommand).toContain('mcp_servers.artoo_research.enabled_tools=["fetch","search"]');
+      expect(codex.productCommand).toContain('mcp_servers.artoo_workspace.default_tools_approval_mode="prompt"');
+      expect(codex.productCommand).toContain('mcp_servers.artoo_research.default_tools_approval_mode="prompt"');
+      expect(codex.command.join(" ")).not.toContain(".approval_mode=");
+      expect(codex.discussionCommand!.join(" ")).not.toContain(".approval_mode=");
+      expect(codex.command.join(" ")).not.toContain("mcp_servers.artoo_workspace");
+      expect(codex.discussionCommand!.join(" ")).not.toContain("mcp_servers");
+      expect(claude.command).toEqual(expect.arrayContaining(["--mcp-config", "{{research_mcp_path}}", "mcp__artoo_research__fetch,mcp__artoo_research__search"]));
+      expect(claude.discussionCommand).toContain("mcp__*");
+      expect(codex.initializeRepository).toBe(true);
+      expect(codexRuntime({ ...options, command: mockCommand }).capabilities).not.toContain("research.web");
+    } finally { create.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+  });
   it("uses the configured program and Responses provider for tasks and read-only discussions without putting a key in argv", () => {
     const create = vi.spyOn(processAdapter, "createProcessAdapter");
     try {
       codexRuntime({ allowedRoots: ["/ws"], codex: { binaryPath: process.execPath, model: 'model-"quoted"', baseUrl: "http://127.0.0.1:18181/v1", apiKeyEnv: "ARTOO_CODEX_PROVIDER_KEY" } });
       const options = create.mock.calls[0]![0];
-      for (const argv of [options.command, options.discussionCommand!]) {
+      for (const argv of [options.command, options.productCommand!, options.discussionCommand!]) {
         expect(argv[0]).toBe(process.execPath);
         expect(argv).toEqual(expect.arrayContaining(["--json", "--ephemeral", 'model_provider="artoo_desktop"', 'model_providers.artoo_desktop.wire_api="responses"', 'model_providers.artoo_desktop.env_key="ARTOO_CODEX_PROVIDER_KEY"', `model=${JSON.stringify('model-"quoted"')}`]));
       }
       expect(options.command).toContain("workspace-write");
+      expect(options.productCommand).toContain("read-only");
+      expect(options.productCommand).not.toContain("workspace-write");
       expect(options.discussionCommand).toContain("read-only");
       expect(options.discussionCommand).not.toContain("workspace-write");
       expect(options.outputFormat).toBe("codex-json");
@@ -78,6 +160,7 @@ describe("runtime presets", () => {
       expect(claude.discussionCommand).not.toContain("bypassPermissions");
       codexRuntime({ allowedRoots: ["/ws"], command: mockCommand });
       expect(create.mock.calls[2]![0].discussionCommand).toBeUndefined();
+      expect(create.mock.calls[2]![0].productCommand).toBeUndefined();
     } finally { create.mockRestore(); }
   });
 
@@ -87,8 +170,8 @@ describe("runtime presets", () => {
       claudeCodeRuntime({ allowedRoots: ["/ws"] })
     ]);
     expect(registry.runtimes()).toEqual([
-      { runtime: "codex", capabilities: ["code.read", "code.modify"] },
-      { runtime: "claude-code", capabilities: ["code.read", "code.modify", "code.review"] }
+      { runtime: "codex", capabilities: ["code.read", "code.modify", "code.review", "test.run"] },
+      { runtime: "claude-code", capabilities: ["code.read", "code.modify", "code.review", "test.run"] }
     ]);
   });
 

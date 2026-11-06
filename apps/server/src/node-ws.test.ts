@@ -209,12 +209,14 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
     const first = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=dev`);
     await new Promise<void>((resolve) => {
       first.addEventListener("open", () => {
-        first.send(JSON.stringify(hello(NODE_ID)));
+        first.send(JSON.stringify({ ...hello(NODE_ID), execution_features: ["run-verification.v1"],
+          verification_profiles: [{ profile_id: "default", project_id: "proj_artoo", workspace_root: "/work/product" }] }));
         resolve();
       });
     });
     await waitFor(() => server?.nodeRegistry.get(NODE_ID) !== undefined, "first node registered");
     const firstBinding = server.nodeRegistry.get(NODE_ID);
+    expect(server.ctx.supportsVerificationProfile?.(NODE_ID, "default", "proj_artoo", "/work/product")).toBe(true);
 
     const second = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=dev`);
     await new Promise<void>((resolve) => {
@@ -228,6 +230,8 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
       "second node registered",
     );
     const secondBinding = server.nodeRegistry.get(NODE_ID);
+    expect(firstBinding?.supportsVerificationProfile("default", "proj_artoo", "/work/product")).toBe(false);
+    expect(server.ctx.supportsVerificationProfile?.(NODE_ID, "default", "proj_artoo", "/work/product")).toBe(false);
 
     first.close();
     await new Promise((resolve) => setTimeout(resolve, 50));

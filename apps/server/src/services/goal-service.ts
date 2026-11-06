@@ -1,4 +1,4 @@
-import { appendEvent, fileLeases, goals, projects, rooms, runs, tasks } from "@artoo/db";
+import { appendEvent, fileLeases, goalAutomations, goals, projects, rooms, runs, tasks } from "@artoo/db";
 import {
   type Goal,
   type GoalBudgets,
@@ -22,7 +22,10 @@ import { createCheckpointInTx } from "./checkpoint-service.js";
 import { transitionTask } from "./transition-service.js";
 import { propagateBlocked } from "./dag-service.js";
 import { supportedGoalPolicy } from "./budget-policy.js";
-import { unsettledGoalRunIds } from "./execution-state.js";
+import { unsettledGoalRunIds, unsettledGoalExecutionCount } from "./execution-state.js";
+import { stopGoalImportedDesignContinuations } from "./imported-design-continuation-service.js";
+import { stopGoalImportedProductReviews } from "./imported-product-review-service.js";
+import { stopGoalProductHandoffs } from "./goal-product-handoff-service.js";
 
 /**
  * V3 #115 P1c — goal lifecycle service. A goal sits above the task/run/DAG
@@ -121,8 +124,8 @@ export async function createGoal(ctx: ServerContext, input: CreateGoalInput): Pr
       tx,
       buildEvent(ctx, {
         type: "goal.created",
-        actorType: "user",
-        actorId: ctx.actorUserId,
+        actorType: ctx.automationActor?.type ?? "user",
+        actorId: ctx.automationActor?.id ?? ctx.actorUserId,
         correlationId: goalId,
         projectId: input.project_id,
         roomId,
@@ -190,10 +193,15 @@ export async function transitionGoal(
     const row = (await tx.select().from(goals).where(and(eq(goals.id, id), eq(goals.organizationId, ctx.organizationId))).for("update"))[0];
     if (!row) return;
     const existing = mapGoal(row);
-    if (!canTransitionGoal(existing.status, trigger)) {
+    const automation = (await tx.select({ id: goalAutomations.goalId }).from(goalAutomations).where(eq(goalAutomations.goalId, id)))[0];
+    if (automation && trigger === "all_tasks_terminal") {
+      throw AppError.conflict("Autonomous completion requires the goal runner's verified task and release gates");
+    }
+    const pausePlanning = !!automation && existing.status === "draft" && trigger === "pause";
+    if (!pausePlanning && !canTransitionGoal(existing.status, trigger)) {
       throw AppError.invalidState(`cannot '${trigger}' a goal in status '${existing.status}'`, { status: existing.status, trigger });
     }
-    const to = applyGoalTransition(existing.status, trigger);
+    const to = pausePlanning ? "paused" : automation && trigger === "resume" && existing.current_plan_id === null ? "draft" : applyGoalTransition(existing.status, trigger);
     await tx
       .update(goals)
       .set({
@@ -204,8 +212,8 @@ export async function transitionGoal(
       .where(and(eq(goals.id, id), eq(goals.organizationId, ctx.organizationId)));
     const transitionEvent = buildEvent(ctx, {
       type: eventTypeForTrigger(trigger, to),
-      actorType: "user",
-      actorId: ctx.actorUserId,
+      actorType: ctx.automationActor?.type ?? "user",
+      actorId: ctx.automationActor?.id ?? ctx.actorUserId,
       correlationId: id,
       projectId: existing.project_id,
       roomId: existing.room_id,
@@ -256,7 +264,7 @@ async function cancelGoalExecution(ctx: ServerContext, id: string, stopRun?: (ru
     if (row.status !== "paused") {
       await tx.update(goals).set({ status: "paused", updatedAt: now }).where(eq(goals.id, id));
       await appendEvent(tx, buildEvent(ctx, {
-        type: "goal.paused", actorType: "user", actorId: ctx.actorUserId, correlationId: id,
+        type: "goal.paused", actorType: ctx.automationActor?.type ?? "user", actorId: ctx.automationActor?.id ?? ctx.actorUserId, correlationId: id,
         projectId: row.projectId, roomId: row.roomId, goalId: id,
         payload: { goal_id: id, from: row.status, to: "paused", reason: "cancellation_requested" },
       }));
@@ -264,6 +272,11 @@ async function cancelGoalExecution(ctx: ServerContext, id: string, stopRun?: (ru
     return row;
   });
   if (!fenced || fenced.status === "cancelled") return fenced ? mapGoal(fenced) : null;
+  const [automation] = await ctx.db.db.select().from(goalAutomations).where(and(eq(goalAutomations.goalId, id), eq(goalAutomations.organizationId, ctx.organizationId)));
+  if (automation) {
+    const original = { ...ctx, actorUserId: automation.actorUserId, automationActor: { type: "system" as const, id: "goal_runner" as const } };
+    await stopGoalProductHandoffs(original, id); await stopGoalImportedProductReviews(original, id); await stopGoalImportedDesignContinuations(original, id);
+  }
   const childRuns = await ctx.db.db.select({ id: runs.id, status: runs.status }).from(runs)
     .innerJoin(tasks, eq(tasks.id, runs.taskId))
     .where(and(eq(tasks.goalId, id), eq(runs.organizationId, ctx.organizationId)));
@@ -283,14 +296,14 @@ async function cancelGoalExecution(ctx: ServerContext, id: string, stopRun?: (ru
       .where(and(eq(tasks.goalId, id), eq(runs.organizationId, ctx.organizationId)));
     const held = await tx.select({ id: fileLeases.id }).from(fileLeases).innerJoin(tasks, eq(tasks.id, fileLeases.taskId))
       .where(and(eq(tasks.goalId, id), eq(fileLeases.organizationId, ctx.organizationId), eq(fileLeases.status, "held")));
-    if (currentRuns.some((run) => !["completed", "failed", "cancelled"].includes(run.status)) || held.length > 0 || (await unsettledGoalRunIds(ctx, tx, id)).length > 0) {
+    if (currentRuns.some((run) => !["completed", "failed", "cancelled"].includes(run.status)) || held.length > 0 || await unsettledGoalExecutionCount(ctx, tx, id) > 0) {
       throw AppError.conflict("goal paused: process stop is still unconfirmed");
     }
     const children = await tx.select().from(tasks).where(and(eq(tasks.goalId, id), eq(tasks.organizationId, ctx.organizationId)));
     for (const task of children) {
       if (!canTransitionTask(task.status as TaskStatus, "cancel")) continue;
       await transitionTask(tx, ctx, { taskId: task.id, from: task.status as TaskStatus, trigger: "cancel", now,
-        events: (to) => [buildEvent(ctx, { type: "task.updated", actorType: "user", actorId: ctx.actorUserId,
+        events: (to) => [buildEvent(ctx, { type: "task.updated", actorType: ctx.automationActor?.type ?? "user", actorId: ctx.automationActor?.id ?? ctx.actorUserId,
           correlationId: task.id, projectId: task.projectId, taskId: task.id, roomId: task.roomId, goalId: id,
           payload: { status: to, reason: "goal_cancelled" },
         })],
@@ -298,7 +311,7 @@ async function cancelGoalExecution(ctx: ServerContext, id: string, stopRun?: (ru
       await propagateBlocked(ctx, tx, task.id, "goal_cancelled");
     }
     await tx.update(goals).set({ status: "cancelled", updatedAt: now }).where(eq(goals.id, id));
-    await appendEvent(tx, buildEvent(ctx, { type: "goal.cancelled", actorType: "user", actorId: ctx.actorUserId,
+    await appendEvent(tx, buildEvent(ctx, { type: "goal.cancelled", actorType: ctx.automationActor?.type ?? "user", actorId: ctx.automationActor?.id ?? ctx.actorUserId,
       correlationId: id, projectId: row.projectId, roomId: row.roomId, goalId: id,
       payload: { goal_id: id, from: "paused", to: "cancelled", trigger: "cancel", process_exit_confirmed: true },
     }));

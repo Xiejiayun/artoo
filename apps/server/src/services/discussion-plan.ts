@@ -6,10 +6,66 @@ import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { validatePlanTaskSpecs } from "./plan-service.js";
 
+type PlanIssue = Extract<ReturnType<typeof DiscussionPlanOutputSchema.safeParse>, { success: false }>["error"]["issues"][number];
+interface PlanDiagnostic { code: string; path: string; expected: string; position?: number; line?: number; column?: number }
+const MAX_DIAGNOSTICS = 6;
+const planFields = new Set(["rationale", "task_specs", "development_stage", "title", "description", "acceptance_criteria",
+  "required_capabilities", "dependencies", "ref", "type", "approval_gates", "write_scopes", "expected_artifacts"]);
+
+function schemaDiagnostic(issue: PlanIssue): PlanDiagnostic {
+  // Only schema field names and array offsets belong in feedback. Never include
+  // issue.message, received values or unknown property names from model output.
+  const path = ("$" + issue.path.slice(0, 12).map((part) => typeof part === "number" ? `[${part}]`
+    : planFields.has(part) ? `.${part}` : "[field]").join("")).slice(0, 96);
+  let expected = "a value matching the task plan schema";
+  if (issue.code === "invalid_type") expected = issue.expected;
+  else if (issue.code === "invalid_enum_value") expected = `one of ${issue.options.slice(0, 12).map((option) => JSON.stringify(option)).join(", ")}`;
+  else if (issue.code === "too_small" || issue.code === "too_big") {
+    const limit = issue.code === "too_small" ? issue.minimum : issue.maximum;
+    const relation = issue.exact ? "exactly" : issue.code === "too_small" ? issue.inclusive ? "at least" : "more than" : issue.inclusive ? "at most" : "less than";
+    const unit = issue.type === "array" ? "item" : issue.type === "string" ? "character" : "";
+    expected = `${issue.type} with ${relation} ${limit}${unit ? ` ${unit}${limit === 1 ? "" : "s"}` : ""}`;
+  } else if (issue.code === "invalid_string") expected = "a string matching the required format";
+  else if (issue.code === "unrecognized_keys") expected = "only schema-defined properties";
+  return { code: issue.code, path, expected: expected.slice(0, 128) };
+}
+
+function syntaxDiagnostic(error: SyntaxError, text: string): PlanDiagnostic {
+  // JSON.parse diagnostics can quote arbitrary input, including credentials.
+  // Select static explanations and numeric locations instead of forwarding them.
+  let expected = "valid JSON syntax";
+  const message = error.message;
+  if (/^Unexpected end of JSON input/.test(message)) expected = "a complete JSON value";
+  else if (/^Expected (?:double-quoted )?property name/.test(message)) expected = "a double-quoted property name";
+  else if (/^Expected ':'/.test(message)) expected = "a colon after the property name";
+  else if (/^Expected ',' or '}'/.test(message)) expected = "a comma or closing brace after the property value";
+  else if (/^Expected ',' or '\]'/.test(message)) expected = "a comma or closing bracket after the array item";
+  else if (/^Unexpected non-whitespace character after JSON/.test(message)) expected = "one JSON value with no trailing content";
+  else if (/^(?:Unterminated string|Bad control character|Bad escaped character|Bad Unicode escape)/.test(message)) expected = "a closed JSON string with valid escaping";
+  const match = /at position (\d+)(?: \(line \d+ column \d+\))?$/.exec(message);
+  const position = match ? Number(match[1]) : /^Unexpected end of JSON input/.test(message) ? text.length : undefined;
+  if (position === undefined || !Number.isSafeInteger(position) || position < 0 || position > text.length) return { code: "invalid_json", path: "$", expected };
+  const prefix = text.slice(0, position), line = prefix.split("\n").length, column = position - prefix.lastIndexOf("\n");
+  return { code: "invalid_json", path: "$", expected, position, line, column };
+}
+
+function invalidPlan(diagnostics: PlanDiagnostic[], omittedIssues = 0): AppError {
+  const summary = diagnostics.map((issue) => `${issue.path}: ${issue.code}; expected ${issue.expected}${issue.line === undefined ? "" : ` at line ${issue.line}, column ${issue.column} (position ${issue.position})`}.`).join(" ");
+  return AppError.validation(`The final agent reply is not a valid task plan. ${summary}${omittedIssues ? ` ${omittedIssues} additional issues omitted.` : ""} Return one JSON object matching the task plan schema.`,
+    { diagnostic_version: 1, diagnostics, omitted_issues: omittedIssues });
+}
+
 export function parseDiscussionPlan(body: string) {
   const text = body.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i, "$1");
-  try { return DiscussionPlanOutputSchema.parse(JSON.parse(text)); }
-  catch { throw AppError.validation("The final agent reply is not a valid task plan. Review the discussion and create or edit a plan manually."); }
+  let value: unknown;
+  try { value = JSON.parse(text); }
+  catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw invalidPlan([syntaxDiagnostic(error, text)]);
+  }
+  const parsed = DiscussionPlanOutputSchema.safeParse(value);
+  if (!parsed.success) throw invalidPlan(parsed.error.issues.slice(0, MAX_DIAGNOSTICS).map(schemaDiagnostic), Math.max(0, parsed.error.issues.length - MAX_DIAGNOSTICS));
+  return parsed.data;
 }
 
 function preview(body: string, discussionId: string, goalId: string): DiscussionPlanPreview | undefined {

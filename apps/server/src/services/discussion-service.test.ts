@@ -7,7 +7,7 @@ import { cancelDiscussion, createDiscussionDispatcher, getDiscussion, parseDiscu
 import { createGoal } from "./goal-service.js";
 import { failRunDaemonDisconnect, ingestRunEvent } from "./run-service.js";
 import { AppError } from "../errors.js";
-import { acceptPlan } from "./plan-service.js";
+import { acceptPlan, validatePlanTaskSpecs } from "./plan-service.js";
 import { collectCatchUp, createEventPublisher, type EventFrame } from "../ws/event-publisher.js";
 import { createWsHub } from "../ws/ws-hub.js";
 import { getMessage, listMessagePage, postMessage } from "./message-service.js";
@@ -76,6 +76,13 @@ describe("bounded agent discussion and reviewable task decomposition", () => {
     frames.length = 0;
     await finishTurn(current.active_turn_id!, output);
     const [finalTurn] = await server.db.db.select().from(assistantTurns).where(eq(assistantTurns.id, current.active_turn_id!));
+    const [synthesis] = await server.db.db.select().from(messages).where(eq(messages.id, finalTurn!.userMessageId));
+    const example = JSON.parse(/matching: (\{[^\n]+\})\. Use 1 to 50 tasks\./.exec(synthesis!.body)![1]!);
+    const [rootSpec] = validatePlanTaskSpecs(example.task_specs);
+    expect(rootSpec?.dependencies).toEqual([]);
+    expect(rootSpec?.development_stage).toBeUndefined();
+    expect(rootSpec?.expected_artifacts).toEqual([]);
+    expect(synthesis!.body).toContain('For a later task depending on task 0, use dependencies: [{"ref":"0","type":"blocks"}].');
     // The message is fetched before the dispatcher marks the discussion ready.
     // A cursor-only client must receive its preview on this first delivery.
     expect((await getDiscussion(server.ctx, discussion.id)).current_step).toBe(2);

@@ -1,8 +1,10 @@
 import { nodeHelloSchema } from "@artoo/protocol";
 import { EventEmitter } from "node:events";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as nodeRunner from "./node-runner.js";
 import * as processAdapter from "./process-adapter.js";
+import * as windowsInstallation from "./windows-process-installation.js";
+import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 
 import {
   buildRegistry,
@@ -23,7 +25,89 @@ function configWith(overrides: Partial<ArtoodConfig> = {}): ArtoodConfig {
   return { url: "ws://example.invalid", nodeId: "c1", runtimes: ["codex"], allowedRoots: ["/ws"], ...overrides };
 }
 
+describe("Windows process bootstrap (controlled installation admission, not native qualification)", () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const bundle = process.cwd(), manifestSha256 = `sha256:${"a".repeat(64)}`;
+  const nativeEnv = { ...baseEnv, ARTOO_WINDOWS_PROCESS_BUNDLE: bundle, ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256: manifestSha256 };
+  const backend = Object.freeze({}) as PreparedWindowsProcessBackend;
+  beforeEach(() => { Object.defineProperty(process, "platform", { ...platform, value: "win32" }); });
+  afterEach(() => { vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform); });
+
+  it("keeps ordinary unconfigured startup unchanged and does not qualify an installation", () => {
+    const prepare = vi.spyOn(windowsInstallation, "prepareWindowsProcessInstallation");
+    expect(loadConfigFromEnv(baseEnv).windowsProcessBackend).toBeUndefined();
+    expect(typeof createNodeFromConfig(configWith()).start).toBe("function");
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("requires both nonempty local settings and rejects malformed paths or digests before admission", () => {
+    const prepare = vi.spyOn(windowsInstallation, "prepareWindowsProcessInstallation");
+    for (const settings of [
+      { ARTOO_WINDOWS_PROCESS_BUNDLE: bundle }, { ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256: manifestSha256 },
+      { ARTOO_WINDOWS_PROCESS_BUNDLE: "", ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256: "" },
+      { ...nativeEnv, ARTOO_WINDOWS_PROCESS_BUNDLE: "relative" },
+      { ...nativeEnv, ARTOO_WINDOWS_PROCESS_BUNDLE: `${bundle}\0` },
+      { ...nativeEnv, ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256: "not-a-digest" },
+    ]) expect(() => loadConfigFromEnv({ ...baseEnv, ...settings })).toThrow(/ARTOO_WINDOWS_PROCESS/);
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("rejects local Windows settings and opaque handles on other platforms", () => {
+    Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+    const prepare = vi.spyOn(windowsInstallation, "prepareWindowsProcessInstallation");
+    expect(() => loadConfigFromEnv(nativeEnv)).toThrow(/only on Windows/);
+    expect(() => createNodeFromConfig(configWith({ windowsProcessBackend: backend }))).toThrow(/only on Windows/);
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("passes every allowed writable root through local qualification and preserves the exact opaque backend", () => {
+    const prepare = vi.spyOn(windowsInstallation, "prepareWindowsProcessInstallation").mockReturnValue(backend);
+    const create = vi.spyOn(nodeRunner, "createArtoodNode").mockReturnValue({ start: async () => {}, stop: async () => {} });
+    const roots = [process.cwd(), `${process.cwd()}/second-workspace`];
+    const config = loadConfigFromEnv({ ...nativeEnv, ARTOO_ALLOWED_ROOTS: roots.join(";") });
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledWith({ directory: bundle, manifestSha256, writableWorkspaceRoots: roots });
+    expect(config.windowsProcessBackend).toBe(backend);
+    createNodeFromConfig(config);
+    expect(create.mock.calls[0]![0].windowsProcessBackend).toBe(backend);
+    expect(create.mock.calls[0]![0].workspace?.allowedRoots).toEqual(roots);
+    const wire = JSON.stringify(helloFor(config));
+    for (const privateValue of ["windowsProcessBackend", "manifestSha256", "writableWorkspaceRoots", bundle]) expect(wire).not.toContain(privateValue);
+  });
+
+  it("propagates failed protected installation admission instead of producing an enabled config", () => {
+    vi.spyOn(windowsInstallation, "prepareWindowsProcessInstallation").mockImplementation(() => { throw new Error("Unprotected Windows installation"); });
+    expect(() => loadConfigFromEnv(nativeEnv)).toThrow("Unprotected Windows installation");
+  });
+
+  it.each(["0", "1"])("rejects a saved managed journal even when new allocations are %s", mode => {
+    const prepare = vi.spyOn(windowsInstallation, "prepareWindowsProcessInstallation");
+    expect(() => loadConfigFromEnv({ ...nativeEnv, ARTOO_NODE_URL: "ws://127.0.0.1:4000/api/v1/node",
+      ARTOO_MANAGED_EXECUTION: mode, ARTOO_JOURNAL_VERSION: "1", ARTOO_JOURNAL_SERVER_ORIGIN: "http://127.0.0.1:4000",
+      ARTOO_JOURNAL_NODE_ID: baseEnv.ARTOO_NODE_ID, ARTOO_JOURNAL_DIRECTORY: "/tmp/prepared-journal",
+      ARTOO_JOURNAL_NAMESPACE: "namespace", ARTOO_JOURNAL_CONTROLLER_SCOPE: "controller" })).toThrow(/cannot be combined with managed/);
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("rejects direct managed/native configuration before constructing a runtime or node", () => {
+    const create = vi.spyOn(nodeRunner, "createArtoodNode");
+    expect(() => createNodeFromConfig(configWith({ windowsProcessBackend: backend, allowNewAllocations: false,
+      managedJournal: { version: 1, serverOrigin: "http://127.0.0.1:4000", nodeId: "c1", directory: "/tmp/prepared-journal",
+        expectedNamespace: "namespace", controllerScope: "controller" } }))).toThrow(/cannot be combined with managed/);
+    expect(create).not.toHaveBeenCalled();
+  });
+});
+
 describe("loadConfigFromEnv", () => {
+  it("requires local opt-in and protected storage configuration for research and repository initialization", () => {
+    expect(loadConfigFromEnv(baseEnv).research).toBeUndefined();
+    expect(loadConfigFromEnv(baseEnv).initializeRepository).toBeUndefined();
+    expect(() => loadConfigFromEnv({ ...baseEnv, ARTOO_RESEARCH_ENABLED: "1" })).toThrow(/RECEIPTS_DIR/);
+    expect(() => loadConfigFromEnv({ ...baseEnv, ARTOO_INITIALIZE_REPOSITORY: "true" })).toThrow(/0 or 1/);
+    const enabled = loadConfigFromEnv({ ...baseEnv, ARTOO_RESEARCH_ENABLED: "1", ARTOO_RESEARCH_RECEIPTS_DIR: "C:/protected/receipts", ARTOO_RESEARCH_BRAVE_KEY: "do-not-copy", ARTOO_INITIALIZE_REPOSITORY: "1" });
+    expect(enabled.research).toEqual({ receiptDirectory: "C:/protected/receipts", braveApiKeyEnv: "ARTOO_RESEARCH_BRAVE_KEY" });
+    expect(enabled.initializeRepository).toBe(true); expect(JSON.stringify(enabled)).not.toContain("do-not-copy");
+  });
   it("keeps preset artifact collection unless the local operator explicitly disables it", () => {
     expect(loadConfigFromEnv(baseEnv).reportArtifacts).toBeUndefined();
     expect(loadConfigFromEnv({ ...baseEnv, ARTOO_REPORT_ARTIFACTS: "  " }).reportArtifacts).toBeUndefined();
@@ -111,7 +195,8 @@ describe("buildRegistry", () => {
       expect(create).toHaveBeenCalledTimes(2);
       for (const [options] of create.mock.calls) {
         expect(options.artifacts).toEqual([]);
-        expect(options.command.some((argument) => argument.includes("Automatic report artifact collection is disabled"))).toBe(true);
+        // Disabling legacy extra reports must not tell a product agent to omit its required stage handoffs.
+        expect(options.command.some((argument) => argument.includes("No additional artifact files are required beyond the task's requested files and any product stage handoffs"))).toBe(true);
         expect(options.command.some((argument) => argument.includes("Otherwise create changes.patch"))).toBe(false);
         expect(options.allowedRoots).toEqual(["/ws"]);
       }

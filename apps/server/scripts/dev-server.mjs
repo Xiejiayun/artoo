@@ -8,4 +8,8 @@ process.env.ARTOO_PAIRING_PEPPER ??= "dev-pairing-pepper";
 process.env.ARTOO_ALLOW_DEV_NODE_TOKEN ??= "1";
 process.env.ARTOO_ENABLE_DEV_ROUTES ??= "1";
 
-await import("../dist/main.js");
+const { main } = await import("../dist/main.js");
+await main().catch((error) => {
+  console.error(error instanceof Error ? error.message : "Server startup failed");
+  process.exitCode = 1;
+});

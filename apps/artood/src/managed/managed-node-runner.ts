@@ -5,6 +5,7 @@ import { createManagedWebSocketTransport, type ManagedWebSocketTransport } from 
 import { DeliveryStopped, monotonicMs, type RunDeliveryMode } from "./managed-delivery.js";
 import { isOwnedRunAdapter } from "../process-adapter.js";
 import { createRegistryHeartbeat } from "../heartbeat.js";
+import { readOwnedResultProfileDescriptors } from "../owned-worktree-verification.js";
 
 export interface ManagedNodeRunnerOptions extends Omit<NodeClientOptions, "transport" | "managedJournal" | "nodeId"> {
   url: string; hello: NodeHello; journal: Journal; WebSocketImpl?: typeof WebSocket;
@@ -41,8 +42,15 @@ export function createManagedNodeRunner(options: ManagedNodeRunnerOptions): Mana
   const failed = new Promise<Error>((resolve) => { resolveFailure = resolve; });
   // Receipt negotiation is independent of fresh-allocation capability. A
   // prepared opt-out keeps its qualified session and historical recovery.
-  const hello: NodeHello = { ...options.hello,
-    execution_features: options.mixed?.allowNewAllocations === false ? [] : ["workspace-allocation.per-run-v1"] };
+  const descriptors = options.ownedResultProfiles ? readOwnedResultProfileDescriptors(options.ownedResultProfiles, options.hello.node_id) : undefined;
+  if (descriptors && (options.journal.ownedResultFinalizationVersion !== 1 || !options.journal.admitOwnedResultStart
+    || !options.journal.settleOwnedResultProcess || options.mixed?.allowNewAllocations === false)) {
+    throw new Error("Owned result advertisement requires the explicit journal extension and fresh allocation support");
+  }
+  const { owned_result_profiles: _untrustedProfiles, ...ordinaryHello } = options.hello;
+  const hello: NodeHello = { ...ordinaryHello,
+    execution_features: options.mixed?.allowNewAllocations === false ? [] : ["workspace-allocation.per-run-v1", ...(descriptors ? ["owned-result-run.v1" as const] : [])],
+    ...(descriptors ? { owned_result_profiles: [...descriptors] } : {}) };
   const link = createManagedWebSocketTransport({ url: options.url, namespace: options.journal.namespace, hello,
     WebSocketImpl: options.WebSocketImpl,
     allowLegacyRuns: options.mixed !== undefined,

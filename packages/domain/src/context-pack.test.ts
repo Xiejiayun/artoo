@@ -21,6 +21,28 @@ describe("ContextPack", () => {
     expect(result.success).toBe(false);
   });
 
+  it("retains source-plan and dependency evidence without changing legacy packs", () => {
+    const handoff = { ...validPack, goal_context: { version: 1, goal_id: "goal_1", objective: "Build a journal", acceptance_criteria: ["Persists"], plan: { id: "plan_1", version: 2, rationale: "Use local storage", spec_ref: "1" } },
+      dependency_context: { version: 1, truncated: false, entries: [{ task_id: "task_design", title: "Design", dependency_type: "blocks", status: "done", acceptance_criteria: ["Schema defined"], run_id: "run_design", workspace_root: null, artifacts_truncated: false,
+        artifacts: [{ id: "artifact_1", type: "contract", run_id: "run_design", checksum: null, content_path: "/api/v1/artifacts/artifact_1/content" }] }] } };
+    expect(ContextPackSchema.parse(handoff)).toEqual(handoff);
+    expect(ContextPackSchema.safeParse({ ...handoff, dependency_context: { ...handoff.dependency_context, version: 2 } }).success).toBe(false);
+    expect(ContextPackSchema.parse(validPack)).toEqual(validPack);
+  });
+
+  it("keeps legacy review subjects valid while binding optional measured scope to the reviewed stage", () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const subject = { version: 1, task_id: "source_task", run_id: "source_run", evidence_id: "source_evidence",
+      subject_digest: digest, development_stage: "design" };
+    expect(ContextPackSchema.parse({ ...validPack, review_subject: subject }).review_subject).toEqual(subject);
+    const verification = { version: 1, request_id: "source_request", profile_id: "browser", profile_digest: digest,
+      checks: [{ id: "browser", output_digest: digest, observation: { version: 1, format: "static-web-acceptance.v1",
+        scope: "final", stage: "design", cases: [] } }] };
+    const pack = { ...validPack, review_subject: { ...subject, verification } };
+    expect(ContextPackSchema.parse(pack)).toEqual(pack);
+    expect(ContextPackSchema.safeParse({ ...pack, review_subject: { ...pack.review_subject, development_stage: "validation" } }).success).toBe(false);
+  });
+
   const reviewFeedback = {
     version: 1,
     entries: [{

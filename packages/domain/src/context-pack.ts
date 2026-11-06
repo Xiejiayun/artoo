@@ -8,8 +8,55 @@
 import { z } from "zod";
 
 import { ActorSchema } from "./events.js";
+import { ProductDevelopmentContextSchema } from "./product-development.js";
+import { DevelopmentStageSchema } from "./product-development.js";
+import { ReviewVerificationContextSchema } from "./verification-observation.js";
+import { VerificationCapabilitiesContextSchema } from "./verification-capabilities.js";
+import { ReleaseCapabilitiesV1Schema } from "./release-capabilities.js";
+import { ImportedProductReviewSubjectV1Schema } from "./imported-product-review-context.js";
+import { TransferredProductInputV1Schema } from "./transferred-product-input.js";
+import { ProductDesignRevisionContextV1Schema } from "./product-design-revision.js";
 
 export const ContextPackSchema = z.object({
+  product_design_revision: ProductDesignRevisionContextV1Schema.optional(),
+  transferred_product_input: TransferredProductInputV1Schema.optional(),
+  imported_review_subject: ImportedProductReviewSubjectV1Schema.optional(),
+  verification_capabilities: VerificationCapabilitiesContextSchema.optional(),
+  release_capabilities: ReleaseCapabilitiesV1Schema.optional(),
+  review_subject: z.object({
+    version: z.literal(1), task_id: z.string().min(1), run_id: z.string().min(1), evidence_id: z.string().min(1),
+    subject_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/), development_stage: DevelopmentStageSchema.optional(),
+    verification: ReviewVerificationContextSchema.optional(),
+  }).superRefine((subject, ctx) => {
+    if (subject.development_stage && subject.verification?.checks.some((check) => check.observation
+      && check.observation.stage !== subject.development_stage)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["verification"], message: "Review observations must match the bound development stage" });
+    }
+  }).optional(),
+  product_development: ProductDevelopmentContextSchema.optional(),
+  goal_context: z.object({
+    version: z.literal(1),
+    goal_id: z.string().min(1),
+    objective: z.string(),
+    acceptance_criteria: z.array(z.string()),
+    plan: z.object({ id: z.string().min(1), version: z.number().int().positive(), rationale: z.string(), spec_ref: z.string().nullable() }).nullable(),
+  }).optional(),
+  // References are evidence, not instructions or permission to access another
+  // workspace. Artifact bodies remain behind the authenticated content API.
+  dependency_context: z.object({
+    version: z.literal(1),
+    truncated: z.boolean(),
+    entries: z.array(z.object({
+      task_id: z.string().min(1), title: z.string(), dependency_type: z.string(), status: z.string(),
+      acceptance_criteria: z.array(z.string()),
+      run_id: z.string().nullable(), workspace_root: z.string().nullable(),
+      artifacts_truncated: z.boolean(),
+      artifacts: z.array(z.object({
+        id: z.string().min(1), type: z.string(), run_id: z.string().min(1),
+        checksum: z.string().nullable(), content_path: z.string(),
+      })).max(100),
+    })).max(100),
+  }).optional(),
   conversation: z.object({
     room_id: z.string(), turn_id: z.string(), current_request: z.string(),
     thread_root_id: z.string().nullable().optional(),

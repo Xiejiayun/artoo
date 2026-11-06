@@ -10,6 +10,7 @@
  * is the accepted #128 supplement (docs/v3-115-goals-schema-design.md).
  */
 import { z } from "zod";
+import { DevelopmentStageSchema } from "./product-development.js";
 
 import { ActorTypeSchema } from "./events.js";
 import { AuditEventSchema, DependencyTypeSchema, PrioritySchema, RoomSchema, TaskAuditBundleSchema } from "./schemas.js";
@@ -170,6 +171,7 @@ export function canProposePlan(goalStatus: GoalStatus, hasAcceptedPlan: boolean)
 /** A planned task within a plan version. `dependencies[].ref` points at another
  *  spec by its 0-based index in the same plan (string form of the index). */
 export const TaskSpecSchema = z.object({
+  development_stage: DevelopmentStageSchema.optional(),
   title: z.string().min(1),
   description: z.string().default(""),
   // Plan materialization creates ordinary backlog tasks, and the existing task

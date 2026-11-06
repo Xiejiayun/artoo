@@ -28,6 +28,8 @@ interface Window {
     restartDaemon?(): Promise<void>;
     chooseDirectory?(): Promise<string | null>;
     chooseExecutable?(): Promise<string | null>;
+    chooseVerificationProfilesFile?(): Promise<string | null>;
+    choosePublicationProfilesFile?(): Promise<string | null>;
     openExternal?(url: string): Promise<void>;
     writeClipboardText?(value: string): Promise<void>;
   };
@@ -43,5 +45,7 @@ interface DesktopCodexConfig {
   hasKey: boolean;
 }
 interface DesktopManagedWorkspaceStatus { state: "unsupported" | "unprepared" | "preparing" | "incomplete" | "ready"; lastError?: string }
-interface DesktopDaemonConfig { allowedRoots: string[]; runtimes: string[]; worktreeBaseRepo?: string; trustedExecution: boolean; allowNewAllocations?: boolean; codex?: DesktopCodexConfig }
+interface DesktopNativeVerificationConfig { version: 1; profilesFile: string }
+interface DesktopNativePublicationConfig { version: 1; profilesFile: string }
+interface DesktopDaemonConfig { allowedRoots: string[]; runtimes: string[]; worktreeBaseRepo?: string; trustedExecution: boolean; allowNewAllocations?: boolean; codex?: DesktopCodexConfig; nativeVerification?: DesktopNativeVerificationConfig; nativePublication?: DesktopNativePublicationConfig }
 type DesktopDaemonInput = Omit<DesktopDaemonConfig, "codex"> & { codex?: Omit<DesktopCodexConfig, "hasKey"> & { apiKey?: string } };

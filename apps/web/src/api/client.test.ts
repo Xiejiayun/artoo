@@ -24,6 +24,32 @@ const createReq: CreateTaskRequest = {
 };
 
 describe("ApiClient", () => {
+  it("creates an autonomous goal with one objective and keeps the request identity on the wire", async () => {
+    const requestBody = { project_id: "proj_1", objective: "Build a journal\nKeep entries offline", verification_profile_id: "default", max_retries: 3 };
+    server.use(http.post(`${BASE}/autonomous-goals`, async ({ request }) => {
+      expect(request.headers.get("Idempotency-Key")).toBe("autonomy-request");
+      expect(await request.json()).toEqual(requestBody);
+      return HttpResponse.json({ goal: { id: "goal_auto" }, automation: { status: "planning", delivery: "verified_workspace" } }, { status: 201 });
+    }));
+    await expect(client.createAutonomousGoal(requestBody, "autonomy-request")).resolves.toMatchObject({ goal: { id: "goal_auto" }, automation: { delivery: "verified_workspace" } });
+  });
+
+  it("keeps missing automation distinct from completed automation", async () => {
+    server.use(http.get(`${BASE}/goals/:id/automation`, ({ params }) => {
+      expect(params.id).toBe("goal/with space");
+      return HttpResponse.json({ automation: null });
+    }));
+    await expect(client.getGoalAutomation("goal/with space")).resolves.toEqual({ automation: null });
+  });
+
+  it("fetches publication evidence without treating an absent release as a success", async () => {
+    server.use(http.get(`${BASE}/goals/:id/release`, ({ params }) => {
+      expect(params.id).toBe("goal/with space");
+      return HttpResponse.json({ release: null });
+    }));
+    await expect(client.getGoalRelease("goal/with space")).resolves.toEqual({ release: null });
+  });
+
   it("enrolls the selected device with an idempotency key and preserves enrollment errors", async () => {
     let attempts = 0;
     server.use(http.post(`${BASE}/devices/:id/enroll`, async ({ request, params }) => {

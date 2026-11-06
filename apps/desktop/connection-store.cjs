@@ -41,7 +41,9 @@ function createConnectionStore(directory, safeStorage, initialServer = "http://l
     },
     connection: () => ({ serverUrl: state.serverUrl, paired: !!state.encryptedCredentials, deviceId: state.deviceId, computerId: state.computerId }),
     daemonConfig: () => ({ ...state.daemon, allowedRoots: [...state.daemon.allowedRoots], runtimes: [...state.daemon.runtimes],
-      codex: { mode: "default", authMode: "none", ...state.daemon.codex, hasKey: !!state.encryptedCodexApiKey } }),
+      codex: { mode: "default", authMode: "none", ...state.daemon.codex, hasKey: !!state.encryptedCodexApiKey },
+      ...(state.daemon.nativeVerification !== undefined ? { nativeVerification: { ...state.daemon.nativeVerification } } : {}),
+      ...(state.daemon.nativePublication !== undefined ? { nativePublication: { ...state.daemon.nativePublication } } : {}) }),
     codexApiKey() {
       if (!state.encryptedCodexApiKey) return null;
       requireSecureStorage();

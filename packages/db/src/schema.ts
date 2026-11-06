@@ -542,6 +542,9 @@ export const runs = pgTable("runs", {
   workspaceRoot: text("workspace_root"),
   workspaceBranch: text("workspace_branch"),
   workspaceAllocation: jsonb("workspace_allocation"),
+  verificationRequirement: jsonb("verification_requirement"),
+  /** Complete immutable versioned owned-result assignment; SQL NULL preserves ordinary mode. */
+  ownedResultAssignment: jsonb("owned_result_assignment"),
   createdAt: ts("created_at").notNull(),
   requestedByUserId: text("requested_by_user_id").references(() => users.id),
   aiDataSharingConsentId: text("ai_data_sharing_consent_id").references(() => aiDataSharingConsents.id),
@@ -552,6 +555,9 @@ export const runs = pgTable("runs", {
     sql`${t.status} in ('queued','starting','running','awaiting_input','paused','completed','failed','cancelled')`,
   ),
   index("runs_task_status_created_idx").on(t.taskId, t.status, t.createdAt),
+  check("runs_owned_result_assignment_chk", sql`${t.ownedResultAssignment} IS NULL OR
+    (jsonb_typeof(${t.ownedResultAssignment}) = 'object' AND ${t.ownedResultAssignment} -> 'version' = '1'::jsonb
+      AND ${t.workspaceAllocation} IS NOT NULL AND ${t.verificationRequirement} IS NULL) IS TRUE`),
 ]);
 
 export const schedulerDecisions = pgTable("scheduler_decisions", {
@@ -701,6 +707,20 @@ export const assistantTurns = pgTable("assistant_turns", {
   check("assistant_turns_status_chk", sql`${t.status} in ('queued','waiting','running','completed','failed','cancelled')`),
   index("assistant_turns_room_position_idx").on(t.roomId, t.position),
   index("assistant_turns_status_idx").on(t.organizationId, t.status),
+]);
+
+/** Absence is legacy/unknown delivery, never proof that a start was not sent. */
+export const assistantRunDispatches = pgTable("assistant_run_dispatches", {
+  runId: text("run_id").primaryKey().references(() => runs.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  turnId: text("turn_id").notNull().references(() => assistantTurns.id),
+  version: integer("version").notNull().default(1),
+  state: text("state").notNull(),
+  createdAt: ts("created_at").notNull(),
+  exposedAt: ts("exposed_at"),
+}, (t) => [
+  check("assistant_run_dispatches_version_chk", sql`${t.version} = 1`),
+  check("assistant_run_dispatches_state_chk", sql`(${t.state} = 'prepared' AND ${t.exposedAt} IS NULL) OR (${t.state} = 'exposed' AND ${t.exposedAt} IS NOT NULL)`),
 ]);
 
 /** Latest provider-reported aggregate per run; NULL means unreported. */
@@ -1065,3 +1085,275 @@ export const discussions = pgTable("discussions", {
   check("discussions_minutes_chk", sql`${t.maxMinutes} between 2 and 60`),
   index("discussions_goal_idx").on(t.organizationId, t.goalId, t.createdAt),
 ]);
+
+/** Durable opt-in orchestration; actorUserId is the authorizer, not the audit actor. */
+export const goalAutomations = pgTable("goal_automations", {
+  goalId: text("goal_id").primaryKey().references(() => goals.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id),
+  consentId: text("consent_id").references(() => aiDataSharingConsents.id),
+  policyVersion: text("policy_version").notNull(),
+  status: text("status").notNull(),
+  discussionId: text("discussion_id").references(() => discussions.id),
+  planId: text("plan_id").references(() => plans.id),
+  agentInstanceId: text("agent_instance_id").references(() => agentInstances.id),
+  computerId: text("computer_id").references(() => computers.id),
+  workspaceRoot: text("workspace_root"),
+  verificationProfileId: text("verification_profile_id").notNull(),
+  executionMode: text("execution_mode").notNull().default("single_agent"),
+  team: jsonb("team"),
+  // SQL NULL preserves unsampled historical planning; captured unknown scope is a versioned object.
+  planningCapabilitySnapshot: jsonb("planning_capability_snapshot"),
+  releaseProfileId: text("release_profile_id"),
+  lastError: text("last_error"),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+}, (t) => [
+  check("goal_automations_status_chk", sql`${t.status} in ('planning','executing','waiting','completed','failed','cancelled')`),
+  index("goal_automations_status_idx").on(t.organizationId, t.status, t.createdAt),
+  check("goal_automations_mode_chk", sql`${t.executionMode} in ('single_agent','agent_team')`),
+  check("goal_automations_planning_capability_snapshot_chk", sql`${t.planningCapabilitySnapshot} IS NULL OR
+    (jsonb_typeof(${t.planningCapabilitySnapshot}) = 'object' AND ${t.planningCapabilitySnapshot} -> 'version' = '1'::jsonb) IS TRUE`),
+]);
+
+/** Only qualified node-owned verification ingestion creates these immutable rows. */
+export const runEvidence = pgTable("run_evidence", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  runId: text("run_id").notNull().references(() => runs.id),
+  requestId: text("request_id").notNull(),
+  payload: jsonb("payload").notNull(),
+  eventId: text("event_id").notNull().references(() => eventLog.id),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [unique("run_evidence_request_uniq").on(t.organizationId, t.runId, t.requestId)]);
+
+/** One independent decision per immutable execution attempt, with a separate read-only run. */
+export const autonomousReviews = pgTable("autonomous_reviews", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  goalId: text("goal_id").notNull().references(() => goals.id),
+  taskId: text("task_id").notNull().references(() => tasks.id),
+  subjectRunId: text("subject_run_id").notNull().references(() => runs.id),
+  evidenceId: text("evidence_id").notNull().references(() => runEvidence.id),
+  subjectDigest: text("subject_digest").notNull(),
+  reviewerInstanceId: text("reviewer_instance_id").notNull().references(() => agentInstances.id),
+  reviewTaskId: text("review_task_id").notNull().references(() => tasks.id),
+  turnId: text("turn_id").notNull().references(() => assistantTurns.id),
+  status: text("status").notNull().default("pending"),
+  verdict: jsonb("verdict"),
+  error: text("error"),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+}, (t) => [
+  unique("autonomous_reviews_subject_uniq").on(t.organizationId, t.subjectRunId),
+  unique("autonomous_reviews_task_uniq").on(t.reviewTaskId),
+  check("autonomous_reviews_status_chk", sql`${t.status} in ('pending','accepted','changes_requested','failed','cancelled')`),
+  index("autonomous_reviews_goal_idx").on(t.organizationId, t.goalId),
+]);
+
+/** Durable target-product publication, distinct from Artoo distribution. */
+export const productReleases = pgTable("product_releases", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  goalId: text("goal_id").notNull().references(() => goals.id),
+  projectId: text("project_id").notNull().references(() => projects.id),
+  computerId: text("computer_id").notNull().references(() => computers.id),
+  runId: text("run_id").notNull().references(() => runs.id),
+  evidenceId: text("evidence_id").notNull().references(() => runEvidence.id),
+  status: text("status").notNull(),
+  request: jsonb("request").notNull(),
+  receipt: jsonb("receipt"),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
+}, (t) => [
+  unique("product_releases_goal_uniq").on(t.organizationId, t.goalId),
+  check("product_releases_status_chk", sql`${t.status} in ('queued','published','rolled_back','failed')`),
+  index("product_releases_dispatch_idx").on(t.organizationId, t.status, t.createdAt),
+]);
+
+/** Append-only observations; publication receipts remain immutable. */
+export const productReleaseHealthReports = pgTable("product_release_health_reports", {
+  eventId: text("event_id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  releaseId: text("release_id").notNull().references(() => productReleases.id),
+  computerId: text("computer_id").notNull().references(() => computers.id),
+  version: integer("version").notNull(),
+  sequence: integer("sequence").notNull(),
+  payload: jsonb("payload").notNull(),
+  receivedAt: ts("received_at").notNull(),
+}, (t) => [
+  unique("product_release_health_sequence_uniq").on(t.organizationId, t.releaseId, t.sequence),
+  check("product_release_health_version_chk", sql`${t.version} = 1`),
+  check("product_release_health_sequence_chk", sql`${t.sequence} >= 1`),
+]);
+
+/** Durable byte transport only; availability never authorizes destination execution. */
+export const productSourceTransfers = pgTable("product_source_transfers", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  projectId: text("project_id").notNull().references(() => projects.id),
+  goalId: text("goal_id").notNull().references(() => goals.id),
+  planId: text("plan_id").notNull().references(() => plans.id),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id),
+  sourceNodeId: text("source_node_id").notNull().references(() => computers.id),
+  sourceRunId: text("source_run_id").notNull().references(() => runs.id),
+  sourceEvidenceId: text("source_evidence_id").notNull().references(() => runEvidence.id),
+  sourceReviewId: text("source_review_id").notNull().references(() => autonomousReviews.id),
+  destinationNodeId: text("destination_node_id").notNull().references(() => computers.id),
+  requestDigest: text("request_digest").notNull(),
+  request: jsonb("request").notNull(),
+  status: text("status").notNull().default("awaiting_upload"),
+  uploadedByDeviceId: text("uploaded_by_device_id").references(() => devices.id),
+  createdAt: ts("created_at").notNull(),
+  availableAt: ts("available_at"),
+}, (t) => [
+  check("product_source_transfers_status_chk", sql`${t.status} in ('awaiting_upload','available')`),
+  check("product_source_transfers_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check("product_source_transfers_nodes_chk", sql`${t.sourceNodeId} <> ${t.destinationNodeId}`),
+  check("product_source_transfers_availability_chk", sql`(${t.status} = 'available') = (${t.availableAt} IS NOT NULL AND ${t.uploadedByDeviceId} IS NOT NULL)
+    AND (${t.status} <> 'awaiting_upload' OR (${t.availableAt} IS NULL AND ${t.uploadedByDeviceId} IS NULL))`),
+  check("product_source_transfers_request_chk", sql`(jsonb_typeof(${t.request}) = 'object' AND ${t.request}->'version' = '1'::jsonb
+    AND ${t.request}->>'kind' = 'product-source-transfer.v1' AND ${t.request}->>'transfer_id' = ${t.id}
+    AND ${t.request}->>'organization_id' = ${t.organizationId} AND ${t.request}->>'project_id' = ${t.projectId}
+    AND ${t.request}->>'goal_id' = ${t.goalId} AND ${t.request}->>'plan_id' = ${t.planId}
+    AND ${t.request}->'authorization'->>'actor_user_id' = ${t.actorUserId}
+    AND ${t.request}->'source'->>'node_id' = ${t.sourceNodeId} AND ${t.request}->'source'->>'run_id' = ${t.sourceRunId}
+    AND ${t.request}->'source'->>'evidence_id' = ${t.sourceEvidenceId} AND ${t.request}->'source'->>'review_id' = ${t.sourceReviewId}
+    AND ${t.request}->'destination'->>'node_id' = ${t.destinationNodeId}) IS TRUE`),
+  index("product_source_transfers_goal_idx").on(t.organizationId, t.goalId, t.createdAt),
+]);
+
+/** Immutable semantic envelope beside the original v1 byte request; never grants execution. */
+export const productSourceSemanticTransfers = pgTable("product_source_semantic_transfers", {
+  id: text("id").primaryKey().references(() => productSourceTransfers.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  requestDigest: text("request_digest").notNull(),
+  request: jsonb("request").notNull(),
+  sourceExportEventId: text("source_export_event_id").notNull().references(() => eventLog.id),
+  sourceExportDigest: text("source_export_digest").notNull(),
+  createdAt: ts("created_at").notNull(),
+}, (t) => [
+  check("product_source_semantic_transfers_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.sourceExportDigest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check("product_source_semantic_transfers_request_chk", sql`(jsonb_typeof(${t.request}) = 'object'
+    AND ${t.request}->'version' = '2'::jsonb AND ${t.request}->>'kind' = 'product-source-transfer.v2'
+    AND ${t.request}->'byte_request'->>'transfer_id' = ${t.id} AND ${t.request}->'byte_request'->>'organization_id' = ${t.organizationId}
+    AND ${t.request}->'byte_request'->'version' = '1'::jsonb AND ${t.request}->'byte_request'->>'kind' = 'product-source-transfer.v1'
+    AND ${t.request}->'source_export'->'version' = '2'::jsonb AND ${t.request}->>'source_export_digest' = ${t.sourceExportDigest}) IS TRUE`),
+  index("product_source_semantic_transfers_org_idx").on(t.organizationId, t.createdAt),
+]);
+
+/** Durable first-hop intent; a qualified receipt does not authorize review or writing. */
+export const goalProductHandoffs=pgTable("goal_product_handoffs",{
+  id:text("id").primaryKey().references(()=>productSourceSemanticTransfers.id),organizationId:text("organization_id").notNull().references(()=>organizations.id),
+  goalId:text("goal_id").notNull().references(()=>goals.id),planId:text("plan_id").notNull().references(()=>plans.id),nextTaskId:text("next_task_id").notNull().references(()=>tasks.id),
+  sourceRunId:text("source_run_id").notNull().references(()=>runs.id),actorUserId:text("actor_user_id").notNull().references(()=>users.id),consentId:text("consent_id").references(()=>aiDataSharingConsents.id),
+  policyVersion:text("policy_version").notNull(),intentDigest:text("intent_digest").notNull(),intent:jsonb("intent").notNull(),stopRequested:boolean("stop_requested").notNull().default(false),
+  qualifiedReceipt:boolean("qualified_receipt").notNull().default(false),createdAt:ts("created_at").notNull(),updatedAt:ts("updated_at").notNull(),
+},t=>[unique("goal_product_handoffs_source_next_uniq").on(t.organizationId,t.goalId,t.planId,t.sourceRunId,t.nextTaskId),
+  check("goal_product_handoffs_intent_digest_chk",sql`${t.intentDigest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check("goal_product_handoffs_intent_chk",sql`(${t.intent}->'version'='1'::jsonb AND ${t.intent}->>'next_task_id'=${t.nextTaskId} AND ${t.intent}->'request'->'byte_request'->>'transfer_id'=${t.id}) IS TRUE`),
+]);
+export const goalProductHandoffOperations=pgTable("goal_product_handoff_operations",{
+  id:text("id").primaryKey(),handoffId:text("handoff_id").notNull().references(()=>goalProductHandoffs.id),kind:text("kind").notNull(),computerId:text("computer_id").notNull().references(()=>computers.id),
+  payloadDigest:text("payload_digest").notNull(),payload:jsonb("payload").notNull(),result:jsonb("result"),createdAt:ts("created_at").notNull(),
+},t=>[unique("goal_product_handoff_operation_kind_uniq").on(t.handoffId,t.kind),
+  check("goal_product_handoff_operation_kind_chk",sql`${t.kind} IN ('upload','import_verify')`),
+  check("goal_product_handoff_operation_digest_chk",sql`${t.payloadDigest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check("goal_product_handoff_operation_payload_chk",sql`(${t.payload}->'version'='1'::jsonb AND ${t.payload}->>'operation_id'=${t.id} AND ${t.payload}->>'kind'=${t.kind}) IS TRUE`),
+]);
+export const goalProductHandoffDeliveries=pgTable("goal_product_handoff_deliveries",{
+  id:text("id").primaryKey(),operationId:text("operation_id").notNull().references(()=>goalProductHandoffOperations.id),sessionId:text("session_id").notNull(),control:text("control").notNull(),ack:jsonb("ack"),createdAt:ts("created_at").notNull(),
+},t=>[unique("goal_product_handoff_delivery_session_uniq").on(t.operationId,t.sessionId,t.control),
+  check("goal_product_handoff_delivery_control_chk",sql`${t.control} IN ('start','stop','status')`),
+]);
+
+/** Dedicated imported-subject review history. These are not ordinary autonomous_reviews or run verification rows. */
+export const goalImportedProductReviews = pgTable("goal_imported_product_reviews", {
+  id: text("id").primaryKey(), handoffId: text("handoff_id").notNull().references(() => goalProductHandoffs.id),
+  operationId: text("operation_id").notNull().references(() => goalProductHandoffOperations.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id), goalId: text("goal_id").notNull().references(() => goals.id),
+  planId: text("plan_id").notNull().references(() => plans.id), nextTaskId: text("next_task_id").notNull().references(() => tasks.id),
+  sourceRunId: text("source_run_id").notNull().references(() => runs.id), sourceInstanceId: text("source_instance_id").notNull().references(() => agentInstances.id),
+  sourceAgentId: text("source_agent_id").notNull().references(() => agents.id), reviewerInstanceId: text("reviewer_instance_id").notNull().references(() => agentInstances.id),
+  reviewerAgentId: text("reviewer_agent_id").notNull().references(() => agents.id), computerId: text("computer_id").notNull().references(() => computers.id),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id),
+  policyVersion: text("policy_version").notNull(), reviewRunId: text("review_run_id").notNull(), reviewTaskId: text("review_task_id").notNull(),
+  requestDigest: text("request_digest").notNull(), request: jsonb("request").notNull(), result: jsonb("result"),
+  stopRequested: boolean("stop_requested").notNull().default(false), createdAt: ts("created_at").notNull(),
+}, t => [
+  unique("goal_imported_reviews_handoff_uniq").on(t.handoffId), unique("goal_imported_reviews_run_uniq").on(t.reviewRunId), unique("goal_imported_reviews_task_uniq").on(t.reviewTaskId),
+  check("goal_imported_reviews_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check("goal_imported_reviews_distinct_agent_chk", sql`${t.sourceAgentId} <> ${t.reviewerAgentId} AND ${t.sourceInstanceId} <> ${t.reviewerInstanceId}`),
+  check("goal_imported_reviews_request_chk", sql`(${t.request}->'version'='1'::jsonb AND ${t.request}->>'review_id'=${t.id} AND ${t.request}->'review_start'->>'run_id'=${t.reviewRunId} AND ${t.request}->'review_start'->>'task_id'=${t.reviewTaskId}) IS TRUE`),
+  check("goal_imported_reviews_result_chk", sql`${t.result} IS NULL OR (${t.result}->'version'='1'::jsonb AND ${t.result}->>'review_id'=${t.id} AND ${t.result}->>'request_digest'=${t.requestDigest} AND ${t.result}->'execution_authorized'='false'::jsonb AND ${t.result}->>'outcome' IN ('reviewed','failed','uncertain','cancelled_before_start') AND ${t.result}->'closed'=to_jsonb(${t.result}->>'outcome'<>'uncertain')) IS TRUE`),
+]);
+export const goalImportedProductReviewDeliveries = pgTable("goal_imported_product_review_deliveries", {
+  id: text("id").primaryKey(), reviewId: text("review_id").notNull().references(() => goalImportedProductReviews.id), sessionId: text("session_id").notNull(),
+  control: text("control").notNull(), ack: jsonb("ack"), createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_imported_review_delivery_session_uniq").on(t.reviewId, t.sessionId, t.control),
+  check("goal_imported_review_delivery_control_chk", sql`${t.control} IN ('start','stop','status')`)]);
+
+/** One admitted imported research review can reserve only this exact real design run. */
+export const goalImportedDesignContinuations = pgTable("goal_imported_design_continuations", {
+  id: text("id").primaryKey(), reviewId: text("review_id").notNull().references(() => goalImportedProductReviews.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id), goalId: text("goal_id").notNull().references(() => goals.id),
+  planId: text("plan_id").notNull().references(() => plans.id), taskId: text("task_id").notNull().references(() => tasks.id),
+  runId: text("run_id").notNull().references(() => runs.id), contextPackId: text("context_pack_id").notNull().references(() => contextPacks.id),
+  writerInstanceId: text("writer_instance_id").notNull().references(() => agentInstances.id), writerAgentId: text("writer_agent_id").notNull().references(() => agents.id),
+  computerId: text("computer_id").notNull().references(() => computers.id), workspaceRoot: text("workspace_root").notNull(),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id), policyVersion: text("policy_version").notNull(),
+  requestDigest: text("request_digest").notNull(), request: jsonb("request").notNull(), result: jsonb("result"), stopRequested: boolean("stop_requested").notNull().default(false),
+  createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_imported_design_review_uniq").on(t.reviewId), unique("goal_imported_design_task_uniq").on(t.taskId), unique("goal_imported_design_run_uniq").on(t.runId),
+  check("goal_imported_design_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check("goal_imported_design_request_chk", sql`(${t.request}->'version'='1'::jsonb AND ${t.request}->>'continuation_id'=${t.id}
+    AND ${t.request}->'run_start'->>'run_id'=${t.runId} AND ${t.request}->'run_start'->>'task_id'=${t.taskId} AND ${t.request}->'run_start'->'context_pack'->>'id'=${t.contextPackId}
+    AND ${t.request}->'run_start'->>'agent_instance_id'=${t.writerInstanceId} AND ${t.request}->'run_start'->'workspace'->>'root'=${t.workspaceRoot}) IS TRUE`),
+  check("goal_imported_design_result_chk", sql`${t.result} IS NULL OR (${t.result}->'version'='1'::jsonb AND ${t.result}->>'continuation_id'=${t.id}
+    AND ${t.result}->>'request_digest'=${t.requestDigest} AND ${t.result}->>'run_id'=${t.runId} AND ${t.result}->>'outcome' IN ('finished','failed','uncertain','cancelled_before_start')
+    AND ${t.result}->'closed'=to_jsonb(${t.result}->>'outcome'<>'uncertain')) IS TRUE`),
+]);
+export const goalImportedDesignDeliveries = pgTable("goal_imported_design_deliveries", {
+  id: text("id").primaryKey(), continuationId: text("continuation_id").notNull().references(() => goalImportedDesignContinuations.id), sessionId: text("session_id").notNull(),
+  control: text("control").notNull(), ack: jsonb("ack"), createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_imported_design_delivery_session_uniq").on(t.continuationId, t.sessionId, t.control),
+  check("goal_imported_design_delivery_control_chk", sql`${t.control} IN ('start','stop','status')`)]);
+
+/** Immutable qualified revision intent; only a one-way accepted settlement can be added. */
+export const productDesignRevisions = pgTable("product_design_revisions", {
+  id: text("id").primaryKey(), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  goalId: text("goal_id").notNull().references(() => goals.id), planId: text("plan_id").notNull().references(() => plans.id),
+  projectId: text("project_id").notNull().references(() => projects.id), designTaskId: text("design_task_id").notNull().references(() => tasks.id),
+  requestingReviewId: text("requesting_review_id").notNull().references(() => autonomousReviews.id),
+  authorInstanceId: text("author_instance_id").notNull().references(() => agentInstances.id),
+  computerId: text("computer_id").notNull().references(() => computers.id), workspaceRoot: text("workspace_root").notNull(),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id),
+  policyVersion: text("policy_version").notNull(), sequence: integer("sequence").notNull(), intent: jsonb("intent").notNull(),
+  state: text("state").notNull().default("active"),
+  acceptedRunId: text("accepted_run_id").references(() => runs.id), acceptedEvidenceId: text("accepted_evidence_id").references(() => runEvidence.id),
+  acceptedReviewId: text("accepted_review_id").references(() => autonomousReviews.id),
+  createdAt: ts("created_at").notNull(), acceptedAt: ts("accepted_at"),
+}, t => [
+  unique("product_design_revision_request_uniq").on(t.organizationId, t.requestingReviewId),
+  unique("product_design_revision_sequence_uniq").on(t.organizationId, t.goalId, t.sequence),
+  uniqueIndex("product_design_revision_active_uniq").on(t.organizationId, t.goalId).where(sql`${t.state} = 'active'`),
+  check("product_design_revisions_sequence_check", sql`${t.sequence} > 0`),
+  check("product_design_revision_intent_chk", sql`(${t.intent}->'version'='1'::jsonb AND ${t.intent}->>'revision_id'=${t.id}
+    AND ${t.intent}->>'goal_id'=${t.goalId} AND ${t.intent}->>'plan_id'=${t.planId} AND ${t.intent}->>'project_id'=${t.projectId} AND ${t.intent}->>'computer_id'=${t.computerId}
+    AND ${t.intent}->>'workspace_root'=${t.workspaceRoot} AND ${t.intent}->>'design_task_id'=${t.designTaskId} AND NOT ${t.intent} ? 'author_run_id'
+    AND ${t.intent}->'requesting_review'->>'review_id'=${t.requestingReviewId}
+    AND octet_length(${t.intent}->'baseline'->'design'->>'text') BETWEEN 1 AND 1048576
+    AND octet_length(${t.intent}->'baseline'->'design'->>'text')=(${t.intent}->'baseline'->'design'->>'size')::integer) IS TRUE`),
+  check("product_design_revision_state_chk", sql`(${t.state}='active' AND ${t.acceptedRunId} IS NULL AND ${t.acceptedEvidenceId} IS NULL AND ${t.acceptedReviewId} IS NULL AND ${t.acceptedAt} IS NULL)
+    OR (${t.state}='accepted' AND ${t.acceptedRunId} IS NOT NULL AND ${t.acceptedEvidenceId} IS NOT NULL AND ${t.acceptedReviewId} IS NOT NULL AND ${t.acceptedAt} IS NOT NULL)`),
+]);
+
+/** Append-only per-attempt author binding. Reviewer runs retain the author's descriptor. */
+export const productDesignRevisionRuns = pgTable("product_design_revision_runs", {
+  runId: text("run_id").primaryKey().references(() => runs.id), revisionId: text("revision_id").notNull().references(() => productDesignRevisions.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  contextPackId: text("context_pack_id").notNull().references(() => contextPacks.id), attempt: integer("attempt").notNull(),
+  descriptorDigest: text("descriptor_digest").notNull(), createdAt: ts("created_at").notNull(),
+}, t => [unique("product_design_revision_attempt_uniq").on(t.revisionId, t.attempt), unique("product_design_revision_context_uniq").on(t.contextPackId),
+  check("product_design_revision_runs_attempt_check", sql`${t.attempt} > 0`),
+  check("product_design_revision_runs_descriptor_digest_check", sql`${t.descriptorDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);

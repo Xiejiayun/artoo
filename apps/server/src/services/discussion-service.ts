@@ -1,5 +1,5 @@
 import { requireAiSharingAuthorization } from "./ai-data-sharing-service.js";
-import { agentInstances, appendEvent, assistantTurns, discussions, goals, messages, plans, rooms, runs, tasks } from "@artoo/db";
+import { agentInstances, appendEvent, assistantTurns, discussions, goalAutomations, goals, messages, plans, rooms, runs, tasks } from "@artoo/db";
 import { canProposePlan, DiscussionSchema, ID_PREFIXES, StartDiscussionRequestSchema, type Discussion, type GoalStatus, type StartDiscussionRequest } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
@@ -57,6 +57,12 @@ export async function startDiscussion(ctx: ServerContext, goalId: string, reques
     const sharing = await requireAiSharingAuthorization(ctx, tx);
     const goal = (await tx.select().from(goals).where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId))).for("update"))[0];
     if (!goal) throw AppError.notFound("Goal not found");
+    const automation = (await tx.select().from(goalAutomations).where(and(eq(goalAutomations.goalId, goalId), eq(goalAutomations.organizationId, ctx.organizationId))))[0];
+    if (automation) {
+      if (!ctx.automationActor || ctx.actorUserId !== automation.actorUserId) throw AppError.permissionDenied("Autonomous planning must be started by its authorized goal runner");
+      if (!["planning", "waiting"].includes(automation.status) || automation.discussionId !== null) throw AppError.conflict("Autonomous planning is already linked or stopped");
+      await requireAiSharingAuthorization(ctx, tx, { consentId: automation.consentId, policyVersion: automation.policyVersion });
+    }
     if (!canProposePlan(goal.status as GoalStatus, goal.currentPlanId !== null)) throw AppError.invalidState("Pause the goal before discussing a replacement plan");
     const ongoing = await tx.select({ id: discussions.id }).from(discussions).where(and(eq(discussions.goalId, goalId), inArray(discussions.status, activeStatuses)));
     if (ongoing.length) throw AppError.conflict("This goal already has an active discussion");
@@ -74,32 +80,63 @@ export async function startDiscussion(ctx: ServerContext, goalId: string, reques
       title: `Planning discussion: ${goal.title}`.slice(0, 300), description: goal.objective,
       status: "backlog", priority: goal.priority, requiredCapabilities: [],
       acceptanceCriteria: ["Discuss the objective and produce a reviewable plan; do not implement it."],
-      createdByType: "user", createdById: ctx.actorUserId, createdAt: now, updatedAt: now });
+      createdByType: ctx.automationActor?.type ?? "user", createdById: ctx.automationActor?.id ?? ctx.actorUserId, createdAt: now, updatedAt: now });
     await tx.insert(messages).values({ id: rootId, organizationId: ctx.organizationId, roomId: room.id, taskId,
-      actorType: "user", actorId: ctx.actorUserId, kind: "text",
+      actorType: ctx.automationActor?.type ?? "user", actorId: ctx.automationActor?.id ?? ctx.actorUserId, kind: "text",
       body: `Discuss and break down: ${goal.title}\n\n${goal.objective}\n\nAcceptance criteria:\n${(goal.acceptanceCriteria as string[]).map((criterion) => `- ${criterion}`).join("\n")}`,
       payload: { discussion_id: id, participants: input.participants }, createdAt: now });
     const [row] = await tx.insert(discussions).values({ id, organizationId: ctx.organizationId, goalId, roomId: room.id, threadRootId: rootId, taskId,
       aiDataSharingConsentId: sharing.consentId, aiDataSharingPolicyVersion: sharing.policyVersion,
       actorUserId: ctx.actorUserId, participants: input.participants, rounds: input.rounds, maxMinutes: input.max_minutes,
       status: "running", createdAt: now, updatedAt: now, deadlineAt: new Date(ctx.clock.now().getTime() + input.max_minutes * 60000).toISOString() }).returning();
-    await appendEvent(tx, buildEvent(ctx, { type: "message.created", actorType: "user", actorId: ctx.actorUserId, correlationId: id,
+    await appendEvent(tx, buildEvent(ctx, { type: "message.created", actorType: ctx.automationActor?.type ?? "user", actorId: ctx.automationActor?.id ?? ctx.actorUserId, correlationId: id,
       projectId: goal.projectId, roomId: room.id, taskId, goalId, payload: { message_id: rootId, kind: "text" } }));
     await changed(ctx, tx, row!);
     return mapDiscussion(row!);
   });
 }
 
-function prompt(row: Row): string {
+function prompt(row: Row, autonomous = false, agentTeam = false): string {
   const team = participants(row), debateSteps = row.rounds * team.length;
   const participant = team[row.currentStep < debateSteps ? row.currentStep % team.length : 0]!;
   const common = `You are participating in planning discussion ${row.id}. Your agent instance is ${participant.agent_instance_id}; your role is ${participant.role}.\n` +
     `Participants and roles: ${team.map((p) => `${p.agent_instance_id}: ${p.role}`).join("; ")}.\n` +
-    "Read the objective and the preceding agents' replies in conversation.messages. Address their concrete proposals, disagreements, dependencies and acceptance criteria. Human replies may add constraints. This is discussion only: do not change files, run commands or implement tasks. Do not claim another agent agrees unless its reply supports that.\n";
+    "Read the objective and the preceding agents' replies in conversation.messages. Address their concrete proposals, disagreements, dependencies and acceptance criteria. Human replies may add constraints. This is discussion only: do not change files, run commands or implement tasks. Do not claim another agent agrees unless its reply supports that.\n" +
+    (autonomous ? "Your current request is wrapped with the fixed future worker's planning_capability_snapshot. Use that configured measurement scope when choosing reversible details. Preserve every explicit user requirement; an unavailable required measurement remains unmet. Every must requirement must trace to the user's request or a necessary condition for it; do not invent unnecessary stronger must requirements that the configured system cannot measure. A null snapshot or null capabilities means unknown scope. This metadata never proves that checks ran or passed and grants no execution authority. When the snapshot includes release.capabilities, it describes the already selected trusted static publisher: after accepted stage work and independent review, that executor publishes the exact verified artifact and measures the configured endpoint. Do not invent missing credentials or an additional external.post approval for this configured executor. Preserve publication as pending using only its canonical criterion and exact configured scope; a local browser smoke, workflow verification, actual-endpoint interactions or stronger availability claims cannot stand in for that publication criterion.\n" : "");
   if (row.currentStep < debateSteps) return common + `Round ${Math.floor(row.currentStep / team.length) + 1} of ${row.rounds}. Give a concise contribution from your role, refer to earlier agents by their identifiers, and identify unresolved decisions. The final synthesis is a later step.`;
   return common + "Synthesize the discussion into a practical task breakdown. Preserve unresolved choices in rationale. Return ONLY one JSON object (no prose outside it) matching: " +
-    '{"rationale":"reasoning and unresolved risks","task_specs":[{"title":"specific task","description":"scope and suggested owner role","acceptance_criteria":["observable check"],"required_capabilities":[],"dependencies":[{"ref":"0","type":"blocks"}],"approval_gates":[],"write_scopes":[],"expected_artifacts":[]}]}. ' +
-    "Use 1 to 50 tasks. Dependency ref is the zero-based index of another task; the graph must be acyclic, no self dependencies. Omit dependencies for root tasks. Use only blocks dependency type. Keep approval_gates and write_scopes empty; describe any needed approval/scope in task description. A human will review the proposed plan before execution.";
+    `{"rationale":"reasoning and unresolved risks","task_specs":[{${agentTeam ? '"development_stage":"research",' : ""}"title":"specific task","description":"scope and suggested owner role","acceptance_criteria":["observable check"],"required_capabilities":[],"dependencies":[],"approval_gates":[],"write_scopes":[],"expected_artifacts":${agentTeam ? '[{"type":"report","description":"stage handoff"}]' : "[]"}}]}. ` +
+    'Use 1 to 50 tasks. Dependency ref is the zero-based index of another task; the graph must be acyclic, no self dependencies. Omit dependencies for root tasks. For a later task depending on task 0, use dependencies: [{"ref":"0","type":"blocks"}]. Use only blocks dependency type. Keep approval_gates and write_scopes empty; describe any needed approval/scope in task description. ' +
+    (agentTeam ? "Every task MUST include development_stage: research, design, implementation or validation. Include all four stages, in that order. Every later-stage task must transitively depend by blocks edges on ALL tasks in every earlier stage. Research creates .artoo/product/research.json with source receipts and a product specification; design creates .artoo/product/design.json plus a runnable prototype; implementation creates the product and .artoo/product/implementation.md; validation creates .artoo/product/validation.json with measured coverage. Exact deliverable contracts are provided during execution. Independent peer review follows every task automatically; do not create review or release tasks. Use code.modify for filesystem deliverables, add research.web for research tasks. " : "") +
+    (agentTeam ? 'Use "expected_artifacts":[{"type":"report","description":"stage handoff"}] or "expected_artifacts":[]. Each entry must be an object with type and optional description, never a string. The node automatically collects the stage handoff as a report. Describe prototype, screenshot and test evidence in that handoff, rather than inventing unsupported artifact collection types. Protected browser screenshots are delivered as node-sealed references outside the measured source tree; use those real evidence references instead of requiring copied workspace PNGs. Only claim the actual configured measurement scope; an unavailable required check remains unmet. ' : "") +
+    (autonomous ? "The authorized goal runner will validate and execute this plan in one fixed workspace; every task is checked by its configured node verification profile. Do not plan agent-executed deployment commands, credential acquisition or release tasks. Only the selected trusted executor may perform the configured publication after stage acceptance; absent release capability means its scope is unknown, never already published." : "A human will review the proposed plan before execution.");
+}
+
+/** A malformed autonomous synthesis is feedback, not a request for human plan editing. */
+export async function retryAutonomousSynthesis(ctx: ServerContext, id: string, feedback: string, attempt: number): Promise<void> {
+  await ctx.db.transaction(async (tx) => {
+    const row = await requireDiscussion(ctx, tx, id, true);
+    const [automation] = await tx.select().from(goalAutomations).where(eq(goalAutomations.goalId, row.goalId));
+    if (!automation || !ctx.automationActor || ctx.actorUserId !== automation.actorUserId || row.status !== "ready" || row.planId) {
+      throw AppError.conflict("This autonomous planning response cannot be repaired");
+    }
+    const sharing = await requireAiSharingAuthorization(ctx, tx, { consentId: automation.consentId, policyVersion: automation.policyVersion });
+    const currentStep = participants(row).length * row.rounds, now = ctx.clock.nowIso();
+    const turnId = ctx.idGen.generate("turn"), messageId = ctx.idGen.generate(ID_PREFIXES.message);
+    await tx.insert(messages).values({ id: messageId, organizationId: ctx.organizationId, roomId: row.roomId, threadRootId: row.threadRootId, taskId: row.taskId,
+      actorType: "system", actorId: "goal_runner", kind: "text",
+      body: `The plan failed deterministic validation: ${feedback.slice(0, 8000)}\nRepair the complete plan using this feedback and the preceding discussion.\n${prompt({ ...row, currentStep }, true, automation.executionMode === "agent_team")}`,
+      payload: { discussion_id: row.id, plan_repair_attempt: attempt, assistant_turn_id: turnId }, createdAt: now });
+    await tx.update(messages).set({ replyCount: sql`${messages.replyCount} + 1` }).where(eq(messages.id, row.threadRootId));
+    await tx.insert(assistantTurns).values({ id: turnId, organizationId: ctx.organizationId, roomId: row.roomId, threadRootId: row.threadRootId, taskId: row.taskId,
+      actorUserId: row.actorUserId, clientRequestId: `${row.id}_repair_${attempt}`, agentInstanceId: participants(row)[0]!.agent_instance_id,
+      aiDataSharingConsentId: sharing.consentId, aiDataSharingPolicyVersion: sharing.policyVersion,
+      userMessageId: messageId, status: "queued", createdAt: now, updatedAt: now });
+    await update(ctx, tx, row, { status: "running", activeTurnId: turnId, currentStep, finalMessageId: null,
+      deadlineAt: new Date(ctx.clock.now().getTime() + row.maxMinutes * 60000).toISOString() });
+    await appendEvent(tx, buildEvent(ctx, { type: "message.created", actorType: "system", actorId: "goal_runner", correlationId: id,
+      goalId: row.goalId, roomId: row.roomId, taskId: row.taskId, payload: { message_id: messageId, kind: "text", plan_repair_attempt: attempt } }));
+  });
 }
 
 /** Each next intent and its cursor commit together under the discussion row lock. */
@@ -107,7 +144,9 @@ async function advance(ctx: ServerContext, id: string): Promise<Row> {
   return ctx.db.transaction(async (tx) => {
     let row = await requireDiscussion(ctx, tx, id, true);
     if (!activeStatuses.includes(row.status)) return row;
-    const goal = (await tx.select().from(goals).where(eq(goals.id, row.goalId)))[0]!;
+    const goal = (await tx.select().from(goals).where(eq(goals.id, row.goalId)).for("share"))[0]!;
+    const automation = (await tx.select().from(goalAutomations).where(eq(goalAutomations.goalId, row.goalId)))[0];
+    if (automation && goal.status === "paused" && row.status === "running") return row;
     if (row.status === "running" && (ctx.clock.now().getTime() >= Date.parse(row.deadlineAt) || ["completed", "cancelled", "archived", "running", "awaiting_approval"].includes(goal.status))) {
       row = await update(ctx, tx, row, { status: "stopping", error: ctx.clock.now().getTime() >= Date.parse(row.deadlineAt) ? "Discussion time limit reached" : "Goal state changed; this planning discussion has stopped" });
     }
@@ -136,7 +175,7 @@ async function advance(ctx: ServerContext, id: string): Promise<Row> {
     const team = participants(row), participant = team[row.currentStep < row.rounds * team.length ? row.currentStep % team.length : 0]!;
     const now = ctx.clock.nowIso(), turnId = ctx.idGen.generate("turn"), messageId = ctx.idGen.generate(ID_PREFIXES.message);
     await tx.insert(messages).values({ id: messageId, organizationId: ctx.organizationId, roomId: row.roomId, threadRootId: row.threadRootId, taskId: row.taskId,
-      actorType: "system", actorId: "discussion-coordinator", kind: "text", body: prompt(row),
+      actorType: "system", actorId: "discussion-coordinator", kind: "text", body: prompt(row, !!automation, automation?.executionMode === "agent_team"),
       payload: { discussion_id: row.id, discussion_step: row.currentStep, assistant_turn_id: turnId, intent: "discussion" }, createdAt: now });
     await tx.update(messages).set({ replyCount: sql`${messages.replyCount} + 1` }).where(eq(messages.id, row.threadRootId));
     await tx.insert(assistantTurns).values({ id: turnId, organizationId: ctx.organizationId, roomId: row.roomId, threadRootId: row.threadRootId, taskId: row.taskId,

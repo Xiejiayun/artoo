@@ -78,6 +78,11 @@ function DaemonForm({ config, onSave, busy, locked, managedAvailable, managedRea
   const [repo, setRepo] = useState(config.worktreeBaseRepo ?? "");
   const [trusted, setTrusted] = useState(config.trustedExecution);
   const [allowNewAllocations, setAllowNewAllocations] = useState(config.allowNewAllocations === true);
+  const nativeAvailable = window.artooDesktop?.platform === "win32";
+  const [nativeVerification, setNativeVerification] = useState(config.nativeVerification !== undefined);
+  const [profilesFile, setProfilesFile] = useState(config.nativeVerification?.profilesFile ?? "");
+  const [nativePublication, setNativePublication] = useState(config.nativePublication !== undefined);
+  const [publicationProfilesFile, setPublicationProfilesFile] = useState(config.nativePublication?.profilesFile ?? "");
   const [mode, setMode] = useState(config.codex?.mode ?? "default");
   const [binary, setBinary] = useState(config.codex?.binaryPath ?? "");
   const [model, setModel] = useState(config.codex?.model ?? "");
@@ -87,14 +92,19 @@ function DaemonForm({ config, onSave, busy, locked, managedAvailable, managedRea
   const [saved, setSaved] = useState(false);
   const needsRepository = managedAvailable && allowNewAllocations;
   const missingRepository = needsRepository && !repo.trim();
+  const missingProfiles = nativeAvailable && nativeVerification && (!profilesFile.trim() || (nativePublication && !publicationProfilesFile.trim()));
   const savedKey = config.codex?.hasKey && config.codex.mode === "responses" && normalizeApiAddress(config.codex.baseUrl ?? "") === normalizeApiAddress(baseUrl);
   const choose = useMutation({ mutationFn: async () => { const path = await window.artooDesktop!.chooseDirectory!(); if (path) setRoots((current) => [...current.split("\n").filter(Boolean), path].join("\n")); } });
   const chooseBinary = useMutation({ mutationFn: async () => { const path = await window.artooDesktop!.chooseExecutable!(); if (path) { setBinary(path); setSaved(false); } } });
+  const chooseProfiles = useMutation({ mutationFn: async () => { const path = await window.artooDesktop!.chooseVerificationProfilesFile!(); if (path) { setProfilesFile(path); setSaved(false); } } });
+  const choosePublicationProfiles = useMutation({ mutationFn: async () => { const path = await window.artooDesktop!.choosePublicationProfilesFile!(); if (path) { setPublicationProfilesFile(path); setSaved(false); } } });
   return <form className="u-stack worker-configuration" aria-label="Worker configuration" onChange={() => setSaved(false)} onSubmit={async (event) => {
     event.preventDefault();
-    if (busy || locked || missingRepository) return;
+    if (busy || locked || missingRepository || missingProfiles) return;
     try {
       await onSave({ allowedRoots: roots.split("\n").map((root) => root.trim()).filter(Boolean), runtimes, trustedExecution: trusted, allowNewAllocations: managedAvailable && allowNewAllocations,
+        ...(nativeAvailable && nativeVerification ? { nativeVerification: { version: 1, profilesFile: profilesFile.trim() } } : {}),
+        ...(nativeAvailable && nativeVerification && nativePublication ? { nativePublication: { version: 1, profilesFile: publicationProfilesFile.trim() } } : {}),
         ...(repo.trim() ? { worktreeBaseRepo: repo.trim() } : {}), codex: { mode, authMode: mode === "responses" ? authMode as "none" | "api-key" : "none",
           ...(binary.trim() ? { binaryPath: binary.trim() } : {}), ...(model.trim() ? { model: model.trim() } : {}),
           ...(mode === "responses" ? { baseUrl: baseUrl.trim(), ...(authMode === "api-key" && apiKey ? { apiKey } : {}) } : {}) } });
@@ -107,6 +117,21 @@ function DaemonForm({ config, onSave, busy, locked, managedAvailable, managedRea
       helperText={managedAvailable ? "Required when new task allocations are enabled. Preparation and ordinary chats do not require a Git repository." : undefined}
       onChange={(event) => setRepo(event.target.value)} /></fieldset>
     {managedAvailable && <fieldset disabled={busy || locked} className="worker-fieldset u-stack"><legend>New task allocation</legend><label><input type="checkbox" checked={allowNewAllocations} disabled={!managedReady && !allowNewAllocations} onChange={(event) => setAllowNewAllocations(event.target.checked)} />Allow new tasks in separate workspaces</label><p className="t-subtle">Prepare this Mac and choose a Git repository, then save this setting before starting the worker. Saved task records remain in place when it is off.</p></fieldset>}
+    {nativeAvailable && <fieldset disabled={busy || locked} className="worker-fieldset u-stack"><legend>Automatic task verification</legend>
+      <label><input type="checkbox" checked={nativeVerification} onChange={(event) => { setNativeVerification(event.target.checked); if (!event.target.checked) setNativePublication(false); }} />Enable automatic task verification</label>
+      <p className="t-subtle">Use the local verification profiles prepared for this computer. The worker checks them when it starts.</p>
+      {nativeVerification && <><Input label="Verification profiles file" value={profilesFile} required
+        helperText="Choose a JSON file outside every allowed workspace folder." onChange={(event) => setProfilesFile(event.target.value)} />
+        {window.artooDesktop?.chooseVerificationProfilesFile && <div><Button size="sm" loading={chooseProfiles.isPending} onClick={() => chooseProfiles.mutate()}>Choose verification profiles</Button></div>}
+        <ActionError error={chooseProfiles.error} />
+        <label><input type="checkbox" checked={nativePublication} onChange={(event) => setNativePublication(event.target.checked)} />Enable automatic product publication</label>
+        <p className="t-subtle">Publish approved products to the destinations prepared for this computer. The worker checks publication settings, health checks and recovery when it starts.</p>
+        {nativePublication && <><Input label="Publication profiles file" value={publicationProfilesFile} required
+          helperText="Choose the local JSON file containing your publication destinations." onChange={(event) => setPublicationProfilesFile(event.target.value)} />
+          {window.artooDesktop?.choosePublicationProfilesFile && <div><Button size="sm" loading={choosePublicationProfiles.isPending} onClick={() => choosePublicationProfiles.mutate()}>Choose publication profiles</Button></div>}
+          <ActionError error={choosePublicationProfiles.error} /></>}
+      </>}
+    </fieldset>}
     <fieldset disabled={busy || locked} className="worker-fieldset worker-runtimes"><legend>Installed runtimes</legend><p className="t-subtle">Select the tools already installed on this computer.</p>{["codex", "claude-code"].map((runtime) => <label key={runtime}><input type="checkbox" checked={runtimes.includes(runtime)} onChange={(event) => setRuntimes(event.target.checked ? [...runtimes, runtime] : runtimes.filter((value) => value !== runtime))} />{runtime}</label>)}</fieldset>
     <fieldset disabled={busy || locked} className="worker-fieldset u-stack"><legend>Codex connection</legend>
       <Input label="Codex program (optional)" value={binary} onChange={(event) => setBinary(event.target.value)} helperText="Leave blank to find codex on this computer's PATH, or select the installed program." />
@@ -123,7 +148,7 @@ function DaemonForm({ config, onSave, busy, locked, managedAvailable, managedRea
     </fieldset>
     <div className="worker-trust"><label><input type="checkbox" disabled={busy || locked} checked={trusted} onChange={(event) => setTrusted(event.target.checked)} />Allow execution of trusted team tasks on this computer</label>
     <p className="t-subtle">Agent commands can modify files and run programs using your account. Select only folders and tasks your team trusts.</p>
-    </div><div><Button variant="primary" type="submit" disabled={locked || missingRepository || !roots.trim() || runtimes.length === 0} loading={busy}>Save worker configuration</Button></div>
+    </div><div><Button variant="primary" type="submit" disabled={locked || missingRepository || missingProfiles || !roots.trim() || runtimes.length === 0} loading={busy}>Save worker configuration</Button></div>
     {saved && <p role="status">Worker configuration saved.</p>}
   </form>;
 }

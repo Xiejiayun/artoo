@@ -48,9 +48,10 @@ test("old unread notifications remain reachable beyond 100 and display the exact
   // is temporarily failed to prove a failed navigation cannot consume a notice.
   const targetUrl = `**/api/v1/rooms/${channel.id}/messages/${mentioned.id}`;
   let failedLookups = 0;
+  let faultReleased = false;
   await page.route(targetUrl, async (route) => {
-    const retryClicked = await page.evaluate(() => document.documentElement.dataset.notificationRetryClicked === "true");
-    if (retryClicked) await route.continue();
+    if (!faultReleased && await page.evaluate(() => document.documentElement.dataset.notificationRetryClicked === "true")) faultReleased = true;
+    if (faultReleased) await route.continue();
     else {
       failedLookups++;
       await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "unavailable", message: "Temporary message lookup failure" } }) });
@@ -85,7 +86,9 @@ test("old unread notifications remain reachable beyond 100 and display the exact
   });
   await thread.getByRole("button", { name: "Retry opening message", exact: true }).click();
   await expect(thread.getByRole("region", { name: "Mentioned reply", exact: true })).toContainText(mentioned.body!);
-  await page.unroute(targetUrl);
+  // Keep the released route through reload. Removing the last route disables
+  // Chromium interception and can strand the concurrent visibility POST; the
+  // test context owns route cleanup after all assertions have completed.
   await expect(thread.getByRole("list", { name: "Messages", exact: true })).not.toContainText(mentioned.body!);
   await expect.poll(async () => (await inbox(request)).find((item) => item.id === old.id)?.read_at).not.toBeNull();
   await expect(page.getByRole("button", { name: "Mentions, 0 unread", exact: true })).toBeVisible();
@@ -103,7 +106,8 @@ test("project switching clears the old thread and cross-project mentions restore
   const secondChannel = await createChannel(request, second.id, "project-b");
   const firstRoot = await send(request, firstChannel.id, "First project's discussion");
   const secondRoot = await send(request, secondChannel.id, "Second project's discussion");
-  const mention = await send(request, secondChannel.id, "Please review project B specifically", secondRoot.id, bootstrap.user.id);
+  const mentionBody = `Please review project B specifically ${suffix}`;
+  const mention = await send(request, secondChannel.id, mentionBody, secondRoot.id, bootstrap.user.id);
   const notification = (await inbox(request)).find((item) => item.message_id === mention.id)!;
   expect(notification.project_id).toBe(second.id);
   // A conflicting URL hint must be corrected from the room API before a
@@ -129,7 +133,7 @@ test("project switching clears the old thread and cross-project mentions restore
   await expect(page.getByLabel("Project", { exact: true })).toHaveValue(first.id);
   await expect(page.getByRole("heading", { name: "# project-a", exact: true })).toBeVisible();
   await page.getByRole("button", { name: /^Mentions,/ }).click();
-  await page.getByRole("button", { name: /Please review project B specifically/ }).click();
+  await page.getByRole("button", { name: new RegExp(`${mentionBody}$`) }).click();
   await expect(page.getByLabel("Project", { exact: true })).toHaveValue(second.id);
   const thread = page.getByRole("complementary", { name: "Thread", exact: true });
   await expect(thread.getByRole("region", { name: "Mentioned reply", exact: true })).toContainText(mention.body!);

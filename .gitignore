@@ -1,5 +1,6 @@
 node_modules/
 dist/
+apps/artood/native-dist/
 coverage/
 .env
 .env.*
@@ -25,3 +26,4 @@ artifacts/ui-channels-empty.png
 apps/ios/Artoo.xcodeproj/
 artifacts/ai-data-sharing/
 artifacts/content-moderation/
+artifacts/autonomous-validation/

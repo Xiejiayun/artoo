@@ -17,11 +17,11 @@ describe("createRegistryHeartbeat", () => {
     expect(nodeHeartbeatSchema.safeParse(hb).success).toBe(true);
     expect(hb.node_id).toBe("computer_1");
     expect(hb.runtimes).toEqual([
-      { runtime: "codex", status: "available", capabilities: ["code.read", "code.modify"] },
+      { runtime: "codex", status: "available", capabilities: ["code.read", "code.modify", "code.review", "test.run"] },
       {
         runtime: "claude-code",
         status: "available",
-        capabilities: ["code.read", "code.modify", "code.review"]
+        capabilities: ["code.read", "code.modify", "code.review", "test.run"]
       }
     ]);
   });

@@ -1,9 +1,14 @@
+import {productSourceOperationAckSchema,productSourceOperationResultSchema} from "@artoo/protocol";
+import { importedProductReviewAckSchema, importedProductReviewResultSchema } from "@artoo/protocol";
+import { importedDesignContinuationAckSchema, importedDesignContinuationResultSchema } from "@artoo/protocol";
 import {
   commandAckSchema,
   nodeHeartbeatSchema,
   nodeHelloSchema,
   nodeSessionProbeSchema,
   runEventMessageSchema,
+  productReleaseReceiptMessageSchema,
+  productReleaseHealthMessageSchema,
   type NodeToServerMessage,
   type NodeTransport,
   type ServerToNodeMessage,
@@ -111,6 +116,16 @@ export function parseNodeToServer(data: unknown): NodeToServerMessage | null {
       return ok(commandAckSchema.safeParse(raw));
     case "run.event":
       return ok(runEventMessageSchema.safeParse(raw));
+    case "product.source.operation.ack.v1": return ok(productSourceOperationAckSchema.safeParse(raw));
+    case "product.source.review.ack.v1": return ok(importedProductReviewAckSchema.safeParse(raw));
+    case "product.source.review.result.v1": return ok(importedProductReviewResultSchema.safeParse(raw));
+    case "product.source.design.ack.v1": return ok(importedDesignContinuationAckSchema.safeParse(raw));
+    case "product.source.design.result.v1": return ok(importedDesignContinuationResultSchema.safeParse(raw));
+    case "product.source.operation.result.v1": return ok(productSourceOperationResultSchema.safeParse(raw));
+    case "product.release.receipt":
+      return ok(productReleaseReceiptMessageSchema.safeParse(raw));
+    case "product.release.health":
+      return ok(productReleaseHealthMessageSchema.safeParse(raw));
     default:
       return null;
   }

@@ -2,6 +2,7 @@ import type { RunStartPayload } from "@artoo/domain";
 import type { AgentInstanceHandle, NodeRunEvent, RuntimeAdapter } from "@artoo/protocol";
 import type { OwnedRunAdmission } from "../process-adapter.js";
 import type { MaterializedWorktree } from "../owned/worktree-reservation.js";
+import type { PreparedOwnedResultRun, OwnedResultFinalizationV1 } from "../owned-worktree-verification.js";
 
 declare const permitBrand: unique symbol;
 /** Same-process authority only; copying, serializing or casting does not grant it. */
@@ -13,6 +14,7 @@ export interface JournalOptions extends JournalLocation {
 }
 export interface RunQuery { readonly expectedNamespace: string; readonly runId: string }
 export interface StartRequest extends RunQuery { readonly idempotencyKey: string; readonly payload: RunStartPayload }
+export interface OwnedResultStartRequest extends RunQuery { readonly idempotencyKey: string; readonly admission: PreparedOwnedResultRun }
 export type DurablePhase = "admitted" | "preparing" | "launch_intent" | "started" | "closed";
 export interface DurableReceipt {
   readonly id: string;
@@ -29,6 +31,7 @@ export interface JournalRun {
   readonly runId: string;
   readonly mode: "per-run" | "legacy" | "fenced";
   readonly launchKey: string | null;
+  readonly ownedResultAdmissionDigest?: string | null;
   readonly revision: number;
   readonly phase: DurablePhase;
   readonly stopRequested: boolean;
@@ -88,9 +91,12 @@ export interface Journal {
   readonly namespace: string;
   readonly incarnation: string;
   readonly pragmas: Readonly<Record<string, string | number>>;
+  /** Explicit v4 migration; absent on legacy journals. */
+  readonly ownedResultFinalizationVersion?: 1;
   /** First unexpected failure; resolves before cleanup, never rejects. Clean close leaves it pending. */
   readonly failed: Promise<Error>;
   admitStart(request: StartRequest): Promise<AdmissionResult>;
+  admitOwnedResultStart?(request: OwnedResultStartRequest): Promise<AdmissionResult>;
   lookupRun(request: RunQuery): Promise<JournalRun | null>;
   advance(permit: FreshLaunchPermit, phase: "preparing" | "launch_intent"): Promise<JournalRun>;
   requestStop(request: RunQuery & { readonly expectedKey?: string }): Promise<JournalRun>;
@@ -101,6 +107,7 @@ export interface Journal {
   recordStarted(permit: FreshLaunchPermit, adapter: RuntimeAdapter, handle: AgentInstanceHandle): Promise<JournalRun>;
   /** Requires the exact genuine producer receipt and handle for our private admission. */
   settleOwnedProcess(permit: FreshLaunchPermit, handle: AgentInstanceHandle, producerReceipt: unknown, settlement: TerminalSettlement): Promise<JournalRun>;
+  settleOwnedResultProcess?(permit: FreshLaunchPermit, handle: AgentInstanceHandle, producerReceipt: unknown, settlement: OwnedResultFinalizationV1): Promise<JournalRun>;
   /** Only authenticated confirmed_closed + childSpawned startup errors; not_spawned remains unknown. */
   settleOwnedStartupFailure(permit: FreshLaunchPermit, worktree: MaterializedWorktree, startupError: unknown): Promise<JournalRun>;
   /** Persists event identity; an event never grants physical settlement authority. */

@@ -52,7 +52,7 @@ async function git(state: State, cwd: string, args: readonly string[], allowedSt
   const admittedPhase = state.phase;
   assertNotAborted(state.options);
   assertBoundaries(state);
-  const result = await gitOperation(cwd, args, state.options, kind);
+  const result = await gitOperation(cwd, state.input.sourceCommit === undefined ? args : ["--no-replace-objects", ...args], state.options, kind);
   if (state.phase !== admittedPhase) fail("invalid_handle", "The owned attempt changed state during Git validation");
   assertNotAborted(state.options);
   assertBoundaries(state);
@@ -170,7 +170,8 @@ export async function prepareOwnedWorktree(input: FreshWorktreeInput & { readonl
     for (;;) { paths.add(path); const parent = dirname(path); if (parent === path) break; path = parent; }
   }
   const state: State = {
-    input: Object.freeze({ root: input.root, sourceRepo: input.sourceRepo, allowedRoots: Object.freeze([...input.allowedRoots]) }),
+    input: Object.freeze({ root: input.root, sourceRepo: input.sourceRepo, allowedRoots: Object.freeze([...input.allowedRoots]),
+      ...(input.sourceCommit === undefined ? {} : { sourceCommit: input.sourceCommit }) }),
     options, validation, branch: input.branch, allowedPaths,
     boundaries: [...paths].map(observe), phase: "prepared",
   };
