@@ -1,3 +1,4 @@
+import { readWindowsGuardianOperation, startWindowsScopedProcess } from "./owned/windows-guardian-scope.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync, mkdtempSync, chmodSync, rmSync } from "node:fs";
@@ -21,6 +22,7 @@ import { resolveCliCommand } from "./cli-resolver.js";
 import { createStructuredOutput, type ProcessOutputFormat } from "./structured-output.js";
 import { createResearchSession, prepareResearchOptions, type ResearchOptions, type ResearchSession } from "./research.js";
 import { initializeEmptyProductRepository } from "./product-bootstrap.js";
+import { resolveProductBootstrapGit, type PreparedProductBootstrapGit } from "./product-bootstrap-git.js";
 import { validateProductStage } from "./product-stage.js";
 import { createWorkspaceToolSession, takeWorkspaceToolVerifier, takeWorkspaceToolEvidenceReader,
   takeWorkspaceToolCapabilities, assertWorkspaceToolCapabilities, takeWorkspaceToolReleaseCapabilities, type WorkspaceToolSession } from "./workspace-tools.js";
@@ -334,6 +336,8 @@ export interface ProcessAdapterOptions {
   /** Administrator opt-in only; requests cannot enable network tools or bootstrap. */
   research?: ResearchOptions;
   initializeRepository?: boolean;
+  /** Prepared node-local executable choice; never populated by run.start. */
+  productBootstrapGit?: PreparedProductBootstrapGit;
 }
 
 interface RunState {
@@ -509,6 +513,33 @@ function makeLineEmitter(onLine: (text: string) => void): {
   };
 }
 
+function importedValidationInstructions(config: AgentInstanceConfig): string[] {
+  const context = config.runStart.context_pack.payload;
+  if (context?.imported_clean_validation) return ["", "## Product validation after a clean node restart",
+    "The current restart checkpoint contains unverified workspace bytes. Complete a fresh validation attempt against the original goal, accepted research/design, and every declared acceptance case and viewport.",
+    "Use the protected workspace verification tool. Preserve the accepted research/design. Repair product defects and obtain a new complete final verification; a prior run or checkpoint does not prove this product passed."];
+  if (context?.imported_clean_validation_review_subject) return ["", "## Independent product review after a clean node restart",
+    "Review the entire current product against the original goal and accepted inputs using the pinned source and measured evidence. You have read-only tools.",
+    "Return the required JSON verdict with review_id, validation_id, source_digest and subject_digest from imported_clean_validation_review_subject. Report every blocking finding and reject when one remains."];
+  if (context?.imported_recovery_validation) return ["", "## Product validation after interrupted execution",
+    "The current recovery checkpoint records unverified workspace bytes. Complete a new validation attempt against the original goal, accepted research/design, and every declared acceptance case and viewport.",
+    "Inspect the current product and any supplied predecessor findings. You may repair product files, implementation notes, and the validation report. Preserve the exact accepted research.json and design.json bytes and protected measurement configuration.",
+    "Run the node-owned verification tool and write a truthful .artoo/product/validation.json. Only the new final verifier and a new independent product review can establish completion; an earlier run result or checkpoint is not a passing result."];
+  if (context?.imported_recovery_validation_review_subject) return ["", "## Independent product review after recovery",
+    "Review the complete current product against the original goal, accepted plan, every acceptance criterion, complete new browser evidence, regression risks, and the validation report's accuracy.",
+    "Use the workspace evidence index. The retained baseline files describe the actual workspace before this new validation author. Compare that baseline with current product source and the complete new final measurements.",
+    "Return the required JSON verdict with review_id, validation_id, source_digest and subject_digest from imported_recovery_validation_review_subject. Report every blocking finding and reject when one remains. The checkpoint and prior interrupted run provide history, not proof that this product passed."];
+  if (context?.imported_validation) return ["", "## Imported product validation",
+    "Validate the complete final product against the original goal, accepted research/design, and every declared acceptance case and viewport.",
+    "You may repair product files, implementation notes, and the validation report. Preserve the exact accepted research.json and design.json bytes, requirements, measurement programs, and protected configuration.",
+    "Use the supplied prior review findings or typed failure feedback to guide repairs, and run the node-owned verification tool before completing. The independent final verifier and full product review decide completion.",
+    "Write a truthful .artoo/product/validation.json that describes the actual final product and outcomes. A report alone does not establish a passing product."];
+  if (context?.imported_validation_review_subject) return ["", "## Independent final product review",
+    "Review the complete final product, original goal and accepted plan, all acceptance criteria, measured behavior, regression risks, and validation report truthfulness.",
+    "Use the workspace evidence index. baseline.directories and baseline.files[].reference expose retained actual files from before the validation author; read those references to assess changes alongside current product source and complete final browser evidence.",
+    "Reviewing only validation.json is insufficient. Read-only tools cannot change the product. Return the required JSON verdict with validation_id, source_digest and subject_digest from imported_validation_review_subject; reject when any blocking finding remains."];
+  return [];
+}
 function renderContextPack(config: AgentInstanceConfig): string {
   const pack = config.runStart.context_pack;
   const lines: string[] = [
@@ -557,6 +588,7 @@ function renderContextPack(config: AgentInstanceConfig): string {
       JSON.stringify(pack.payload, null, 2)
     );
   }
+  lines.push(...importedValidationInstructions(config));
   return `${lines.join("\n")}\n`;
 }
 
@@ -566,6 +598,7 @@ function renderWorkspaceToolContext(config: AgentInstanceConfig): string {
   const lines = [`# Context Pack ${pack.id}`, `task: ${config.taskId}`, `run: ${config.runId}`];
   if (pack.uri) lines.push(`uri: ${pack.uri}`);
   if (pack.payload) lines.push("", "## Raw Payload", JSON.stringify(pack.payload));
+  lines.push(...importedValidationInstructions(config));
   return `${lines.join("\n")}\n`;
 }
 
@@ -624,6 +657,18 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
   async function startProcess(config: AgentInstanceConfig, worktree?: MaterializedWorktree, startupSignal?: AbortSignal, invocation?: OwnedInvocation,
     externalDiscussion?: ExternalDiscussionContext, windowsExecution?: WindowsVerifiedExecution): Promise<AgentInstanceHandle> {
       const workspaceRoot = config.workspaceRoot, runId = config.runId;
+      if (readWindowsGuardianOperation() && !windowsExecution) throw new Error("Guardian workspace execution requires its locally bound native profile");
+      if (config.runStart.context_pack.payload?.imported_clean_validation || config.runStart.context_pack.payload?.imported_clean_validation_review_subject) {
+        if (!windowsExecution) throw new Error("Clean validation requires its original native execution admission");
+        const { assertWindowsCleanExecutionConfiguration } = await import("./windows-clean-validation-runtime.js");
+        assertWindowsCleanExecutionConfiguration(config, windowsExecution.backend);
+      }
+      if (config.runStart.context_pack.payload?.imported_recovery_validation || config.runStart.context_pack.payload?.imported_recovery_validation_review_subject)
+        {
+        if (!windowsExecution) throw new Error("Recovery requires its original Windows execution admission");
+        const { assertWindowsRecoveryExecutionConfiguration } = await import("./windows-source-recovery.js");
+        assertWindowsRecoveryExecutionConfiguration(config, windowsExecution.backend);
+      }
       if (worktree) {
         if (config.workspaceRoot !== worktree.root || config.runStart.workspace.root !== worktree.root
           || config.runStart.workspace.branch !== worktree.branch || config.runId !== config.runStart.run_id
@@ -649,9 +694,9 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
       if (discussion && !options.discussionCommand) throw new Error("runtime has no explicitly configured read-only discussion command");
       if (!discussion && options.initializeRepository && config.runStart.context_pack.payload?.product_development) {
         if (worktree || config.runStart.workspace.branch != null) throw new Error("Product bootstrap supports ordinary workspaces only");
-        const git = resolveCliCommand("git");
-        if (!git || git.length !== 1) throw new Error("Product bootstrap requires an installed native Git executable");
-        await initializeEmptyProductRepository(config.workspaceRoot, git[0]!, startupSignal, windowsExecution?.backend);
+        const git = resolveProductBootstrapGit(options.productBootstrapGit);
+        await initializeEmptyProductRepository(config.workspaceRoot, git, startupSignal, windowsExecution?.backend);
+        if (options.productBootstrapGit) resolveProductBootstrapGit(options.productBootstrapGit);
       }
 
       const legacyContextPath = worktree || externalDiscussion ? undefined : workspacePath(config.workspaceRoot, contextPackFilename);
@@ -717,11 +762,11 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
       if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
       if (windowsExecution) {
         assertWindowsExecutionIdentity(windowsExecution, config);
-        child = nativeProcess = startWindowsOwnedProcess(windowsExecution.backend, {
+        child = nativeProcess = await startWindowsScopedProcess(windowsExecution.backend, {
           executable: resolved[0]!, args: [...resolved.slice(1), ...args], cwd: workspaceRoot, env: process.env,
           timeoutMs: 43_200_000, maxOutputBytes: 64 * 1024 * 1024, cleanupTimeoutMs: 5000,
           normalExitPolicy: "terminate-descendants", normalExitGraceMs: 250, signal: windowsExecution.signal,
-        });
+        }, "author");
       } else child = spawn(resolved[0]!, [...resolved.slice(1), ...args], { cwd: config.workspaceRoot, detached: process.platform !== "win32", windowsHide: true });
       } catch (error) {
         if (windowsExecution) {

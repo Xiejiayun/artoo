@@ -1,3 +1,4 @@
+import { assertSourceLineageDispatch } from "./source-lineage-fence.js";
 import { appendEvent, goalProductHandoffs as handoffs, goalProductHandoffOperations as operations, goalProductHandoffDeliveries as deliveries, goals, plans, tasks, devices, deviceTokens, agentInstances, computers, runs } from "@artoo/db";
 import { ProductSourceHandoffIntentV1Schema, ProductSourceOperationV1Schema, ProductSourceOperationResultV1Schema,
   productSourceOperationDigestV1, productSourceTransferRequestDigestV2, canonicalProductSourceTransferValueV1 as canonical,
@@ -100,6 +101,7 @@ async function workspaceFence(ctx:ServerContext,tx:DrizzleDb,payload:ProductSour
   if(instance&&instance.computerId!==node.node_id)throw AppError.conflict("Source operation instance belongs to another computer");
   const [computer]=await tx.select().from(computers).where(and(eq(computers.id,node.node_id),eq(computers.organizationId,ctx.organizationId))).for("update");
   if(!computer||computer.status!=="online")throw AppError.conflict("Source operation computer is unavailable");
+  await assertSourceLineageDispatch(ctx,tx,node.node_id,node.workspace_root);
   const uncertain=new Set(await unconfirmedDisconnectRunIds(ctx,tx,{computerId:node.node_id}));
   const neighbors=await tx.select().from(runs).where(and(eq(runs.organizationId,ctx.organizationId),eq(runs.computerId,node.node_id)));
   if(neighbors.some(run=>(!['completed','failed','cancelled'].includes(run.status)||uncertain.has(run.id))
@@ -107,7 +109,7 @@ async function workspaceFence(ctx:ServerContext,tx:DrizzleDb,payload:ProductSour
     throw AppError.conflict("Source operation agent or workspace has an active ordinary execution");
   const standalone=await unsettledStandaloneExecutions(ctx,tx,{computerId:node.node_id});
   if(standalone.some(item=>(item.kind!=="handoff"||item.id!==payload.operation_id)
-    &&(item.agentInstanceId===instanceId||automationWorkspacesOverlap(item.workspaceRoot,node.workspace_root,computer.os))))
+    &&(item.participantInstanceIds.includes(instanceId)||automationWorkspacesOverlap(item.workspaceRoot,node.workspace_root,computer.os))))
     throw AppError.conflict("Source operation agent or workspace has another unsettled operation");
 }
 

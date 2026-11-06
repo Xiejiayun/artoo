@@ -3,6 +3,7 @@ import { createProcessAdapter, type ArtifactSpec } from "./process-adapter.js";
 import type { ProcessOutputFormat } from "./structured-output.js";
 import { fileURLToPath } from "node:url";
 import type { ResearchOptions } from "./research.js";
+import type { PreparedProductBootstrapGit } from "./product-bootstrap-git.js";
 
 /**
  * Runtime presets: ready-to-register {@link RuntimeRegistration}s for the
@@ -30,6 +31,7 @@ export interface RuntimePresetOptions {
   codex?: CodexSettings;
   research?: ResearchOptions;
   initializeRepository?: boolean;
+  productBootstrapGit?: PreparedProductBootstrapGit;
 }
 
 export interface CodexSettings {
@@ -164,6 +166,7 @@ export function codexRuntime(options: RuntimePresetOptions): RuntimeRegistration
       artifacts: options.artifacts ?? DEFAULT_ARTIFACTS,
       research: options.research,
       initializeRepository: options.initializeRepository,
+      productBootstrapGit: options.productBootstrapGit,
     }),
   };
 }
@@ -220,6 +223,7 @@ export function claudeCodeRuntime(options: RuntimePresetOptions): RuntimeRegistr
       artifacts: options.artifacts ?? DEFAULT_ARTIFACTS,
       research: options.research,
       initializeRepository: options.initializeRepository,
+      productBootstrapGit: options.productBootstrapGit,
     }),
   };
 }

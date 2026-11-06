@@ -1,3 +1,4 @@
+import { assertSourceLineageDispatch } from "./source-lineage-fence.js";
 import { agentInstances, agents, appendEvent, computers, devices, deviceTokens, goalAutomations, goals, plans, runs, tasks,
   goalProductHandoffs as handoffs, goalProductHandoffOperations as operations, goalProductHandoffDeliveries as operationDeliveries,
   goalImportedProductReviews as reviews, goalImportedProductReviewDeliveries as deliveries } from "@artoo/db";
@@ -77,8 +78,8 @@ async function nextTaskAndBudget(ctx: ServerContext, tx: DrizzleDb, operation: P
   const standalone = (await unsettledStandaloneExecutions(ctx, tx, { goalId: base.goal_id })).filter(row => row.kind !== "review" || row.id !== currentReviewId);
   if (standalone.some(row => row.result !== null)) throw AppError.conflict("Unconfirmed closure keeps the imported workspace fenced");
   const runIds = new Set(await unsettledGoalRunIds(ctx, tx, base.goal_id));
-  for (const operation of standalone) if (operation.kind === "design") runIds.add(operation.runId);
-  const active = runIds.size + standalone.filter(operation => operation.kind !== "design").length;
+  for (const operation of standalone) if ("runId" in operation) runIds.add(operation.runId);
+  const active = runIds.size + standalone.filter(operation => !("runId" in operation)).length;
   if (budgets.max_concurrent_runs !== null && active >= budgets.max_concurrent_runs) throw AppError.conflict("Goal concurrent run limit has been reached");
   return { goal, next, source };
 }
@@ -116,7 +117,7 @@ async function reviewerAdmission(ctx: ServerContext, tx: DrizzleDb, request: Imp
     && (run.agentInstanceId === instance.id || !run.workspaceRoot || automationWorkspacesOverlap(run.workspaceRoot, base.destination.workspace_root, computer.os))))
     throw AppError.conflict("Imported reviewer or workspace already owns an ordinary execution");
   const active = await unsettledStandaloneExecutions(ctx, tx, { computerId: instance.computerId });
-  if (active.some(row => (row.kind !== "review" || row.id !== request.review_id) && (row.agentInstanceId === instance.id || automationWorkspacesOverlap(row.workspaceRoot, base.destination.workspace_root, computer.os))))
+  if (active.some(row => (row.kind !== "review" || row.id !== request.review_id) && (row.participantInstanceIds.includes(instance.id) || automationWorkspacesOverlap(row.workspaceRoot, base.destination.workspace_root, computer.os))))
     throw AppError.conflict("Imported reviewer or workspace has another unsettled review");
 }
 
@@ -254,7 +255,10 @@ export function createGoalImportedProductReviewBinding(ctx: ServerContext, optio
     return row;
   }
   async function startFence(tx: DrizzleDb, row: Review) {
-    const fresh = await admit(actorContext(ctx, row), tx, row, false, () => credential(tx)); await credential(tx); current(); return fresh;
+    const fresh = await admit(actorContext(ctx, row), tx, row, false, () => credential(tx)); await credential(tx);
+    await assertSourceLineageDispatch(ctx, tx, row.computerId,
+      ImportedProductReviewRequestV1Schema.parse(row.request).operation.intent.request.byte_request.destination.workspace_root);
+    current(); return fresh;
   }
   return {
     async dispatch(id: string, control: Control = "start") {

@@ -13,6 +13,13 @@ import { workspaceCasesForMeasurementPlan } from "./measurement-plan-realization
 import { deriveStoragePreconditionExpectation, type ExpectedStoragePreconditionV1 } from "./web-acceptance-precondition.js";
 import { readImportedDesignResearch } from "./product-source-runtime.js";
 import { readImportedDesignVerifierResearch } from "./imported-design-verifier-context.js";
+import { readImportedDesignReviewVerifierResearch, recheckImportedDesignReviewVerifierContext } from "./imported-design-review-verifier-context.js";
+import { readImportedExecutionVerifierResearch, recheckImportedExecutionVerifierContext } from "./imported-execution-verifier-context.js";
+import { readImportedImplementationVerifierResearch, recheckImportedImplementationVerifierContext } from "./imported-implementation-verifier-context.js";
+import { readImportedValidationVerifierResearch, recheckImportedValidationVerifierContext } from "./imported-validation-verifier-context.js";
+import { readImportedRecoveryValidationVerifierResearch, recheckImportedRecoveryValidationVerifierContext } from "./imported-recovery-validation-verifier-context.js";
+import { readImportedCleanValidationVerifierResearch, recheckImportedCleanValidationVerifierContext } from "./imported-clean-validation-verifier-context.js";
+import { readCleanValidationResearch } from "./windows-clean-validation-runtime.js";
 import { inspectProductDesignRevision, readProductDesignRevision } from "./product-design-revision.js";
 
 export interface ExpectedWebAcceptanceV3 {
@@ -47,12 +54,57 @@ export function deriveWebAcceptanceV3Plan(workspace: string, context: ContextPac
   }
   const json = (path: string) => JSON.parse(readProductFile(workspace, path).toString("utf8")) as unknown;
   const researchBytes = readProductFile(workspace, ".artoo/product/research.json");
-  if (context.transferred_product_input && stage !== "design") throw new Error("Transferred research verification requires its admitted design stage");
+  const cleanContinuation = !!(context.imported_clean_validation || context.imported_clean_validation_review_subject);
+  if (cleanContinuation && (!context.transferred_product_input || stage !== "validation"
+    || !!context.imported_clean_validation === !!context.imported_clean_validation_review_subject
+    || context.imported_recovery_validation || context.imported_recovery_validation_review_subject
+    || context.imported_validation || context.imported_validation_review_subject || context.imported_execution || context.imported_execution_repair
+    || context.imported_execution_review_subject || context.review_subject || context.imported_review_subject || context.imported_design_review_subject
+    || context.product_design_revision || !options.windows_browser_process || options.design_capture_cases !== true))
+    throw Error("Clean restart requires its exclusive native validation measurement and current checkpoint");
+  const recoveryContinuation = !!(context.imported_recovery_validation || context.imported_recovery_validation_review_subject);
+  if (recoveryContinuation && (!context.transferred_product_input || stage !== "validation"
+    || !!context.imported_recovery_validation === !!context.imported_recovery_validation_review_subject
+    || cleanContinuation
+    || context.imported_validation || context.imported_validation_review_subject || context.imported_execution || context.imported_execution_repair
+    || context.imported_execution_review_subject || context.review_subject || context.imported_review_subject || context.imported_design_review_subject
+    || context.product_design_revision || !options.windows_browser_process || options.design_capture_cases !== true))
+    throw Error("Recovery requires its exclusive native validation measurement and current checkpoint");
+  const validationContinuation = !!(context.imported_validation || context.imported_validation_review_subject);
+  if (validationContinuation && (!context.transferred_product_input || stage !== "validation"
+    || !!context.imported_validation === !!context.imported_validation_review_subject || context.imported_execution || context.imported_execution_repair
+    || context.imported_execution_review_subject || context.review_subject || context.imported_review_subject || context.imported_design_review_subject
+    || context.product_design_revision || !options.windows_browser_process || options.design_capture_cases !== true))
+    throw Error("H7 requires its exclusive protected native validation measurement");
+  const implementationContinuation = !!(context.imported_execution_review_subject || context.imported_execution_repair);
+  if (implementationContinuation && (!context.transferred_product_input || stage !== "implementation"
+    || !!context.imported_execution_review_subject === !!context.imported_execution_repair
+    || context.imported_execution || context.review_subject || context.imported_review_subject || context.imported_design_review_subject || context.product_design_revision
+    || !options.windows_browser_process || options.design_capture_cases !== true)) throw new Error("Implementation continuation requires its exclusive protected native measurement");
+  if (context.imported_execution && (!context.transferred_product_input || stage !== "implementation"
+    || context.review_subject || context.imported_review_subject || context.imported_design_review_subject || context.product_design_revision
+    || !options.windows_browser_process || options.design_capture_cases !== true)) throw new Error("H5 requires its exclusive native implementation measurement");
+  if (context.transferred_product_input && !context.imported_execution && !implementationContinuation && !validationContinuation && !recoveryContinuation && !cleanContinuation && stage !== "design") throw new Error("Transferred research verification requires its admitted design stage");
+  if (context.imported_design_review_subject && (!context.transferred_product_input || stage !== "design"
+    || !options.windows_browser_process || options.design_capture_cases !== true)) throw new Error("H4 requires protected native measurement of all imported design cases");
   const research = context.transferred_product_input
-    ? readImportedDesignVerifierResearch(workspace, context, researchBytes) ?? readImportedDesignResearch(workspace, context, researchBytes)
+    ? (cleanContinuation ? readImportedCleanValidationVerifierResearch(workspace, context, researchBytes)
+        ?? readCleanValidationResearch(workspace, context, researchBytes)
+      : recoveryContinuation ? readImportedRecoveryValidationVerifierResearch(workspace, context, researchBytes)
+      : validationContinuation ? readImportedValidationVerifierResearch(workspace, context, researchBytes)
+      : implementationContinuation ? readImportedImplementationVerifierResearch(workspace, context, researchBytes)
+      : context.imported_execution ? readImportedExecutionVerifierResearch(workspace, context, researchBytes)
+      : context.imported_design_review_subject ? readImportedDesignReviewVerifierResearch(workspace, context, researchBytes)
+      : readImportedDesignVerifierResearch(workspace, context, researchBytes)) ?? readImportedDesignResearch(workspace, context, researchBytes)
     : ProductResearchReportSchema.parse(JSON.parse(researchBytes.toString("utf8")));
   if (stage === "research") return { stage, requirements: research.requirements.length, programs: [], casePrograms: [] };
   const designBytes = readProductFile(workspace, ".artoo/product/design.json");
+  if (context.imported_design_review_subject) recheckImportedDesignReviewVerifierContext(workspace, context, researchBytes, designBytes);
+  if (context.imported_execution) recheckImportedExecutionVerifierContext(workspace, context, researchBytes, designBytes);
+  if (implementationContinuation) recheckImportedImplementationVerifierContext(workspace, context, researchBytes, designBytes);
+  if (validationContinuation) recheckImportedValidationVerifierContext(workspace, context, researchBytes, designBytes);
+  if (recoveryContinuation) recheckImportedRecoveryValidationVerifierContext(workspace, context, researchBytes, designBytes);
+  if (cleanContinuation) recheckImportedCleanValidationVerifierContext(workspace, context, researchBytes, designBytes);
   inspectProductDesignRevision(context, researchBytes, designBytes);
   const designText = options.storage_precondition
     ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(designBytes) : designBytes.toString("utf8");

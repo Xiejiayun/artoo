@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { goalImportedExecutions, goalImportedExecutionRepairs, goalImportedValidations, goalRecoveryValidations, goalCleanValidations } from "@artoo/db";
 import { appendEvent, artifacts, assistantTurns, eventLog, goals, messages, runEventIngest, runs, runUsage, tasks } from "@artoo/db";
 import {
   canTransitionRun,
@@ -391,8 +392,14 @@ async function ingestRunEventInternal(
       } else if (ev.phase === "completed") {
         if (ownedAssignment) await assertOwnedResultCompletionPrefix(ctx, tx, run, env.sequence);
         await transitionRun(tx, ctx, { runId: env.runId, from: "running", trigger: "run_completed", patch: { endedAt: now } });
-        await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_completed", now });
-        eventId = await emit("run.completed", { run_id: env.runId }, { kind: "run_event", body: "Run completed; task ready for review" });
+        const [importedExecution] = await tx.select({ id: goalImportedExecutions.id }).from(goalImportedExecutions).where(and(eq(goalImportedExecutions.runId, run.id), eq(goalImportedExecutions.organizationId, ctx.organizationId)));
+        const [importedRepair] = await tx.select({ id: goalImportedExecutionRepairs.id }).from(goalImportedExecutionRepairs).where(and(eq(goalImportedExecutionRepairs.runId, run.id), eq(goalImportedExecutionRepairs.organizationId, ctx.organizationId)));
+        const [importedValidation] = await tx.select({ id: goalImportedValidations.id }).from(goalImportedValidations).where(and(eq(goalImportedValidations.runId, run.id), eq(goalImportedValidations.organizationId, ctx.organizationId)));
+        const [recoveryValidation] = await tx.select({ id: goalRecoveryValidations.id }).from(goalRecoveryValidations).where(and(eq(goalRecoveryValidations.runId, run.id), eq(goalRecoveryValidations.organizationId, ctx.organizationId)));
+        const [cleanValidation] = await tx.select({ id: goalCleanValidations.id }).from(goalCleanValidations).where(and(eq(goalCleanValidations.runId, run.id), eq(goalCleanValidations.organizationId, ctx.organizationId)));
+        // Original author and repairs need separate closed results and committed verification.
+        if (!importedExecution && !importedRepair && !importedValidation && !recoveryValidation && !cleanValidation) await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_completed", now });
+        eventId = await emit("run.completed", { run_id: env.runId }, { kind: "run_event", body: importedValidation || recoveryValidation || cleanValidation ? "Run completed; awaiting dedicated validation verification and closure" : importedExecution || importedRepair ? "Run completed; awaiting dedicated implementation verification and closure" : "Run completed; task ready for review" });
         await releaseRunLeases(ctx, tx, env.runId);
       } else if (ev.phase === "failed" && (run.status === "queued" || run.status === "starting")) {
         // The node may confirm stop after start-ACK/first-event delivery fails,

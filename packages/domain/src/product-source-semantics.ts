@@ -56,6 +56,37 @@ export const PRODUCT_SOURCE_EXPORT_EVENT_V2 = "run.product-source.export.v2" as 
 export const PRODUCT_SOURCE_TRANSFER_FEATURE_V2 = "product-source-transfer.v2" as const;
 export const PRODUCT_SOURCE_TRANSFER_MEASUREMENT_V2_FEATURE_V1 = "product-source-transfer.measurement-v2.v1" as const;
 
+/** Local prepared configuration discovery only. It grants no transfer, review or execution authority. */
+export const ProductSourceDestinationMappingV1Schema = z.object({
+  source_release: ReleaseCapabilitiesV1Schema,
+  destination_release: ReleaseCapabilitiesV1Schema,
+  command_pairs: z.array(z.object({ source_command_id: id, destination_command_id: id }).strict()).min(1).max(32),
+}).strict().superRefine((value, ctx) => {
+  const source = value.source_release, destination = value.destination_release;
+  if (source.binding.project_id !== destination.binding.project_id
+    || source.binding.contract_digest !== destination.binding.contract_digest
+    || canonicalReleaseJson(source.contract) !== canonicalReleaseJson(destination.contract)
+    || new Set(value.command_pairs.map(pair => pair.source_command_id)).size !== value.command_pairs.length
+    || new Set(value.command_pairs.map(pair => pair.destination_command_id)).size !== value.command_pairs.length) {
+    ctx.addIssue({ code: "custom", message: "A prepared route requires the same project/release contract and a one-to-one command mapping" });
+  }
+});
+export const ProductSourceRoutingV1Schema = z.object({
+  version: z.literal(1),
+  source_exports: z.array(ReleaseCapabilitiesV1Schema).max(64),
+  destination_mappings: z.array(ProductSourceDestinationMappingV1Schema).max(64),
+}).strict().superRefine((value, ctx) => {
+  const sources = value.source_exports.map(release => canonicalReleaseJson(release.binding));
+  const destinations = value.destination_mappings.map(mapping => canonicalReleaseJson({
+    source: mapping.source_release.binding, destination: mapping.destination_release.binding,
+  }));
+  if (new Set(sources).size !== sources.length || new Set(destinations).size !== destinations.length) {
+    ctx.addIssue({ code: "custom", message: "Prepared source routes must be unambiguous" });
+  }
+});
+export type ProductSourceRoutingV1 = z.infer<typeof ProductSourceRoutingV1Schema>;
+export type ProductSourceDestinationMappingV1 = z.infer<typeof ProductSourceDestinationMappingV1Schema>;
+
 export const ProductSourceTransferRequestV2Schema = z.object({ version: z.literal(2), kind: z.literal(PRODUCT_SOURCE_TRANSFER_FEATURE_V2),
   byte_request: ProductSourceTransferRequestV1Schema, source_export: ProductSourceExportV2Schema, source_export_digest: digest,
   command_pairs: z.array(z.object({ source_command_id: id, destination_command_id: id }).strict()).min(1).max(32),

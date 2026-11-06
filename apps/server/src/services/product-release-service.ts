@@ -1,3 +1,4 @@
+import { currentImportedDesignBoundary } from "./execution-state.js";
 import { appendEvent, eventLog, goalAutomations, goals, productReleases, productReleaseHealthReports, runs, tasks } from "@artoo/db";
 import { ProductReleaseRequestSchema, ProductReleaseReceiptSchema, ProductReleaseHealthReportSchema, ProductReleaseSchema,
   type ProductRelease, type ProductReleaseReceipt, type ProductReleaseHealthReport } from "@artoo/domain";
@@ -13,6 +14,14 @@ import { inspectFinalReleaseAcceptance, inspectReleaseAcceptanceRun, assertRelea
   type ReleaseAcceptanceAutomation } from "./release-acceptance.js";
 import { persistedPlanningSnapshot } from "./planning-capabilities.js";
 import { assertNoActiveDesignRevision } from "./product-design-revision-guard.js";
+import { bindImportedValidationPublication, hasImportedValidationPublication } from "./imported-validation-release-service.js";
+import { ensureProductReleaseRetry, qualifyProductReleaseRetrySession, recordProductReleaseRetrySource,
+  assertProductReleaseRetryReceiptSession, releaseRequestDigest, releaseReceiptDigest, type ProductReleasePairedSession } from "./product-release-retry-service.js";
+
+import { hasRecoveryValidationPublication, recoveryReleaseSourceOrigin } from "./recovery-validation-release-service.js";
+import { ensureRecoveryProductRelease, assertRecoveryPublicationReceiptSession } from "./product-release-recovery-service.js";
+import { hasCleanValidationPublication, cleanReleaseSourceOrigin } from "./clean-validation-release-service.js";
+import { ensureCleanProductRelease, assertCleanPublicationReceiptSession } from "./product-release-clean-service.js";
 
 type ReleaseRow = typeof productReleases.$inferSelect;
 type Automation = ReleaseAcceptanceAutomation;
@@ -20,12 +29,17 @@ type Automation = ReleaseAcceptanceAutomation;
 export function mapProductRelease(row: ReleaseRow, health: ProductReleaseHealthReport | null = null): ProductRelease {
   return ProductReleaseSchema.parse({ id: row.id, goal_id: row.goalId, project_id: row.projectId,
     computer_id: row.computerId, run_id: row.runId, evidence_id: row.evidenceId,
-    status: row.status, request: row.request, receipt: row.receipt, health, created_at: row.createdAt, updated_at: row.updatedAt });
+    status: row.status, request: row.request, receipt: row.receipt, health,
+    ...(row.status === "interrupted" && row.interruptedCleanGenerationId ? { clean_interruption: { version: 1, clean_generation_id: row.interruptedCleanGenerationId,
+      settlement_event_id: row.interruptionEventId, checkpoint_digest: row.interruptionCheckpointDigest } } : {}),
+    ...(row.status === "interrupted" && row.interruptedRecoveryId ? { interruption: { version: 1, recovery_id: row.interruptedRecoveryId,
+      settlement_event_id: row.interruptionEventId, checkpoint_digest: row.interruptionCheckpointDigest } } : {}), created_at: row.createdAt, updated_at: row.updatedAt });
 }
 export async function getGoalProductRelease(ctx: ServerContext, goalId: string): Promise<ProductRelease | null> {
   const [goal] = await ctx.db.db.select({ id: goals.id }).from(goals).where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId)));
   if (!goal) throw AppError.notFound("Goal not found");
-  const [row] = await ctx.db.db.select().from(productReleases).where(and(eq(productReleases.organizationId, ctx.organizationId), eq(productReleases.goalId, goalId)));
+  const [row] = await ctx.db.db.select().from(productReleases).where(and(eq(productReleases.organizationId, ctx.organizationId), eq(productReleases.goalId, goalId)))
+    .orderBy(desc(productReleases.publicationGeneration)).limit(1);
   if (!row) return null;
   const [last] = await ctx.db.db.select().from(productReleaseHealthReports).where(and(
     eq(productReleaseHealthReports.organizationId, ctx.organizationId), eq(productReleaseHealthReports.releaseId, row.id),
@@ -36,14 +50,15 @@ export async function getGoalProductRelease(ctx: ServerContext, goalId: string):
 /** Recover an already committed completion fact without treating later health as its historical measurement. */
 export async function assertRecordedGoalReleaseCompletion(ctx: ServerContext, tx: DrizzleDb, automation: Automation): Promise<void> {
   const [goal] = await tx.select().from(goals).where(and(eq(goals.id, automation.goalId), eq(goals.organizationId, ctx.organizationId))).for("update");
-  if (!goal || !persistedPlanningSnapshot(automation, goal.projectId)?.release) return;
-  const [release] = await tx.select().from(productReleases).where(and(eq(productReleases.organizationId, ctx.organizationId),
-    eq(productReleases.goalId, goal.id))).for("update");
+  if (!goal || (!persistedPlanningSnapshot(automation, goal.projectId)?.release && !await hasImportedValidationPublication(ctx, tx, goal.id)
+    && !await hasRecoveryValidationPublication(ctx, tx, goal.id) && !await hasCleanValidationPublication(ctx, tx, goal.id))) return;
   const source = await inspectFinalReleaseAcceptance(ctx, tx, automation);
   const [completion] = await tx.select().from(eventLog).where(and(eq(eventLog.organizationId, ctx.organizationId),
     eq(eventLog.goalId, goal.id), eq(eventLog.type, "goal.completed"), eq(eventLog.actorType, "system"), eq(eventLog.actorId, "goal_runner")))
     .orderBy(desc(eventLog.occurredAt), desc(eventLog.id)).limit(1);
-  const payload = completion?.payload as { trigger?: unknown; settlement?: { health_event_id?: unknown } } | undefined;
+  const payload = completion?.payload as { trigger?: unknown; settlement?: { release_id?: unknown; health_event_id?: unknown } } | undefined;
+  const [release] = typeof payload?.settlement?.release_id === "string" ? await tx.select().from(productReleases).where(and(
+    eq(productReleases.id, payload.settlement.release_id), eq(productReleases.organizationId, ctx.organizationId), eq(productReleases.goalId, goal.id))).for("update") : [];
   if (!source || !release || release.status !== "published" || release.runId !== source.run.id || release.evidenceId !== source.evidence.id
     || payload?.trigger !== "product_release_healthy" || !payload.settlement) {
     throw AppError.conflict("Completed publication has no recorded exact acceptance settlement");
@@ -76,15 +91,29 @@ export async function ensureGoalProductRelease(ctx: ServerContext, tx: DrizzleDb
   settlement?: ReturnType<typeof releaseAcceptanceSettlement>;
 }> {
   await assertNoActiveDesignRevision(ctx, tx, automation.goalId);
-  if (!automation.releaseProfileId || !automation.computerId || !automation.workspaceRoot || !automation.planId) throw AppError.validation("Product release is missing its configured execution binding");
+  if (!automation.planId) throw AppError.validation("Product release is missing its accepted plan");
   // Health ingestion takes the same release lock. Keep its latest observation and
   // the caller's completion write in one transaction, after the goal lock.
   const [goal] = await tx.select().from(goals).where(and(eq(goals.id, automation.goalId), eq(goals.organizationId, ctx.organizationId))).for("update");
-  const [existing] = await tx.select().from(productReleases).where(and(eq(productReleases.organizationId, ctx.organizationId), eq(productReleases.goalId, automation.goalId))).for("update");
+  const [existing] = await tx.select().from(productReleases).where(and(eq(productReleases.organizationId, ctx.organizationId), eq(productReleases.goalId, automation.goalId)))
+    .orderBy(desc(productReleases.publicationGeneration)).limit(1).for("update");
   const accepted = await inspectFinalReleaseAcceptance(ctx, tx, automation);
+  if (await currentImportedDesignBoundary(ctx, tx, automation.goalId, automation.planId) && !accepted?.importedOrigin && !accepted?.recoveryOrigin && !accepted?.cleanOrigin) {
+    throw AppError.conflict("Imported publication requires its dedicated accepted H7 or H9 source");
+  }
+  const target = accepted && (accepted.importedOrigin || accepted.recoveryOrigin || accepted.cleanOrigin) ? { computerId: accepted.run.computerId, workspaceRoot: accepted.run.workspaceRoot,
+    verificationProfileId: accepted.evidence.payload.profile_id, releaseProfileId: accepted.capabilities.binding.release_profile_id } : automation;
+  if (!target.releaseProfileId || !target.computerId || !target.workspaceRoot) throw AppError.validation("Product release is missing its configured execution binding");
+  if (accepted?.cleanOrigin && (!existing || existing.status === "interrupted"))
+    return ensureCleanProductRelease(ctx, tx, automation, accepted, existing);
+  if (accepted?.recoveryOrigin && (!existing || existing.status === "interrupted"))
+    return ensureRecoveryProductRelease(ctx, tx, automation, accepted, existing);
   if (existing) {
     const request = ProductReleaseRequestSchema.parse(existing.request);
-    if (!isDeepStrictEqual(request.acceptance_binding, accepted?.binding)
+    if (!isDeepStrictEqual(recoveryReleaseSourceOrigin(request.imported_recovery), accepted?.recoveryOrigin?.releaseOrigin)
+      || !isDeepStrictEqual(cleanReleaseSourceOrigin(request.imported_clean), accepted?.cleanOrigin?.releaseOrigin)
+      || !isDeepStrictEqual(request.imported_validation, accepted?.importedOrigin?.releaseOrigin)
+      || !isDeepStrictEqual(request.acceptance_binding, accepted?.binding)
       || accepted && (existing.runId !== accepted.run.id || existing.evidenceId !== accepted.evidence.id)) {
       throw AppError.conflict("The immutable publication no longer matches the accepted final criteria");
     }
@@ -100,6 +129,9 @@ export async function ensureGoalProductRelease(ctx: ServerContext, tx: DrizzleDb
       return { status: "succeeded", endpoint: receipt.endpoint!,
         ...(accepted ? { settlement: releaseAcceptanceSettlement(accepted, receipt, health) } : {}) };
     }
+    if (receipt && ["failed", "rolled_back"].includes(existing.status)) {
+      return ensureProductReleaseRetry(ctx, tx, existing, accepted);
+    }
     if (existing.status !== "queued") return { status: "failed", reason: receipt?.reason ?? `Product release ${existing.status}` };
     return { status: "pending", reason: "Waiting for publication and endpoint health checks." };
   }
@@ -110,25 +142,27 @@ export async function ensureGoalProductRelease(ctx: ServerContext, tx: DrizzleDb
     eq(runs.organizationId, ctx.organizationId), eq(tasks.organizationId, ctx.organizationId), eq(tasks.goalId, goal.id),
     eq(tasks.sourcePlanId, automation.planId), eq(runs.status, "completed"), isNotNull(runs.verificationRequirement),
   )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
-  if (!last || last.run.computerId !== automation.computerId || last.run.workspaceRoot !== automation.workspaceRoot) throw AppError.conflict("Final verified run is not bound to the publication workspace");
+  if (!last || last.run.computerId !== target.computerId || last.run.workspaceRoot !== target.workspaceRoot) throw AppError.conflict("Final verified run is not bound to the publication workspace");
   const verification = await inspectRunVerification(ctx, tx, last.run);
   if (!verification.passed || !verification.evidence?.payload.subject_digest) throw AppError.conflict("Final product has no successful immutable-source verification evidence");
-  if (ctx.supportsReleaseProfile?.(automation.computerId, automation.releaseProfileId, goal.projectId, automation.workspaceRoot, automation.verificationProfileId) !== true) {
+  if (ctx.supportsReleaseProfile?.(target.computerId, target.releaseProfileId, goal.projectId, target.workspaceRoot, target.verificationProfileId) !== true) {
     return { status: "pending", reason: "Waiting for a connected worker advertising the exact release profile, project and verified workspace." };
   }
-  if (accepted && !isDeepStrictEqual(ctx.getReleaseCapabilities?.(automation.computerId, automation.releaseProfileId,
-    goal.projectId, automation.workspaceRoot, automation.verificationProfileId), accepted.capabilities)) {
+  if (accepted && !isDeepStrictEqual(ctx.getReleaseCapabilities?.(target.computerId, target.releaseProfileId,
+    goal.projectId, target.workspaceRoot, target.verificationProfileId), accepted.capabilities)) {
     return { status: "pending", reason: "Waiting for the exact configured publication acceptance contract." };
   }
   const id = ctx.idGen.generate("release");
   const evidence = verification.evidence;
   const request = ProductReleaseRequestSchema.parse({ version: 1, release_id: id, goal_id: goal.id, project_id: goal.projectId,
-    run_id: last.run.id, release_profile_id: automation.releaseProfileId, verification_request_id: evidence.requestId,
-    verification_profile_id: automation.verificationProfileId, verification_profile_digest: evidence.payload.profile_digest,
-    subject_digest: evidence.payload.subject_digest, ...(accepted ? { acceptance_binding: accepted.binding } : {}) });
+    run_id: last.run.id, release_profile_id: target.releaseProfileId, verification_request_id: evidence.requestId,
+    verification_profile_id: target.verificationProfileId, verification_profile_digest: evidence.payload.profile_digest,
+    subject_digest: evidence.payload.subject_digest, ...(accepted ? { acceptance_binding: accepted.binding } : {}),
+    ...(accepted?.importedOrigin ? { imported_validation: accepted.importedOrigin.releaseOrigin } : {}) });
   await tx.insert(productReleases).values({ id, organizationId: ctx.organizationId, goalId: goal.id, projectId: goal.projectId,
-    computerId: automation.computerId, runId: last.run.id, evidenceId: evidence.id, status: "queued", request,
+    computerId: target.computerId, runId: last.run.id, evidenceId: evidence.id, status: "queued", request,
     createdAt: ctx.clock.nowIso(), updatedAt: ctx.clock.nowIso() });
+  if (accepted?.importedOrigin) await bindImportedValidationPublication(ctx, tx, id, accepted);
   await appendEvent(tx, buildEvent(ctx, { type: "product.release.queued", actorType: "system", actorId: "goal_runner",
     correlationId: id, goalId: goal.id, projectId: goal.projectId, runId: last.run.id, payload: { release_id: id, request } }));
   return { status: "pending", reason: "Publishing the final verified product." };
@@ -136,11 +170,13 @@ export async function ensureGoalProductRelease(ctx: ServerContext, tx: DrizzleDb
 
 /** Only the authenticated currently bound node can deliver this separate, immutable receipt. */
 export async function ingestProductReleaseReceipt(ctx: ServerContext, computerId: string, input: ProductReleaseReceipt,
-  isCurrentSession: () => boolean = () => true): Promise<void> {
+  isCurrentSession: () => boolean = () => true, pairedSession?: ProductReleasePairedSession): Promise<void> {
   const receipt = ProductReleaseReceiptSchema.parse(input);
   const assertCurrent = () => { if (!isCurrentSession()) throw AppError.permissionDenied("Publication receipt session is no longer current"); };
   assertCurrent();
   await ctx.db.transaction(async (tx) => {
+    const [header] = await tx.select({ goalId: productReleases.goalId }).from(productReleases).where(and(eq(productReleases.id, receipt.request.release_id), eq(productReleases.organizationId, ctx.organizationId)));
+    if (header) await tx.select().from(goals).where(and(eq(goals.id, header.goalId), eq(goals.organizationId, ctx.organizationId))).for("update");
     const [row] = await tx.select().from(productReleases).where(and(eq(productReleases.id, receipt.request.release_id), eq(productReleases.organizationId, ctx.organizationId))).for("update");
     assertCurrent();
     if (!row || row.computerId !== computerId) throw AppError.permissionDenied("Release is not owned by this computer");
@@ -150,6 +186,9 @@ export async function ingestProductReleaseReceipt(ctx: ServerContext, computerId
       assertCurrent(); return;
     }
     if (row.status !== "queued") throw AppError.conflict("Release is no longer waiting for a node receipt");
+    await assertProductReleaseRetryReceiptSession(ctx, tx, row, pairedSession);
+    await assertRecoveryPublicationReceiptSession(ctx, tx, row, pairedSession);
+    await assertCleanPublicationReceiptSession(ctx, tx, row, pairedSession);
     const [run] = await tx.select().from(runs).where(and(eq(runs.id, row.runId), eq(runs.organizationId, ctx.organizationId)));
     const result = run && await inspectRunVerification(ctx, tx, run);
     if (!result?.passed || result.evidence?.id !== row.evidenceId || result.evidence.payload.subject_digest !== receipt.request.subject_digest) throw AppError.conflict("Release no longer has matching verified source evidence");
@@ -158,13 +197,16 @@ export async function ingestProductReleaseReceipt(ctx: ServerContext, computerId
       throw AppError.conflict("Publication cannot downgrade its pending acceptance obligations");
     }
     const accepted = receipt.request.acceptance_binding
-      ? await inspectReleaseAcceptanceRun(ctx, tx, run!, row.goalId, receipt.request.acceptance_binding.plan) : undefined;
+      ? await inspectReleaseAcceptanceRun(ctx, tx, run!, row.goalId, receipt.request.acceptance_binding.plan, undefined, row.id) : undefined;
     if (!isDeepStrictEqual(receipt.request.acceptance_binding, accepted?.binding)) throw AppError.conflict("Release criterion binding is missing or changed");
     if (accepted) assertReleaseAcceptanceReceipt(receipt, accepted);
+    const retrySession = receipt.retry_source ? await qualifyProductReleaseRetrySession(ctx, tx, computerId, pairedSession) : undefined;
     assertCurrent();
     await tx.update(productReleases).set({ status: receipt.outcome, receipt, updatedAt: ctx.clock.nowIso() }).where(eq(productReleases.id, row.id));
-    await appendEvent(tx, buildEvent(ctx, { type: "product.release.completed", actorType: "system", actorId: computerId,
-      correlationId: row.id, goalId: row.goalId, projectId: row.projectId, runId: row.runId, payload: { release_id: row.id, receipt } }));
+    const event = await appendEvent(tx, buildEvent(ctx, { type: "product.release.completed", actorType: "system", actorId: computerId,
+      correlationId: row.id, goalId: row.goalId, projectId: row.projectId, runId: row.runId, payload: { release_id: row.id, receipt,
+        ...(retrySession ? { request_digest: releaseRequestDigest(receipt.request), receipt_digest: releaseReceiptDigest(receipt) } : {}) } }));
+    if (retrySession) await recordProductReleaseRetrySource(ctx, tx, row, receipt, event.id, retrySession);
     assertCurrent();
   });
 }

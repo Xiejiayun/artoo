@@ -1,4 +1,31 @@
 /** Serializable diagnostics only. Shape validation never grants process or cleanup authority. */
+export const WINDOWS_NATIVE_FAILURE_CODES = Object.freeze(["native_spawn_failed", "native_timeout", "native_nonzero_exit",
+  "native_protocol_failed", "native_qualification_failed", "native_closure_unconfirmed"] as const);
+export type WindowsNativeFailureCode = typeof WINDOWS_NATIVE_FAILURE_CODES[number];
+const nativeFailures = new WeakMap<Error, WindowsNativeFailureCode>();
+
+/** Local failure tags only; copied fields and exception text cannot supply a category. */
+export function markWindowsNativeFailure(error: Error, code: WindowsNativeFailureCode): Error {
+  if (!(WINDOWS_NATIVE_FAILURE_CODES as readonly string[]).includes(code)) throw new Error("Invalid native failure category");
+  if (!nativeFailures.has(error)) nativeFailures.set(error, code);
+  return error;
+}
+/** Prefer a specific nested failure over its qualification wrapper, with a fixed traversal bound. */
+export function readWindowsNativeFailureCode(error: unknown): WindowsNativeFailureCode | undefined {
+  const seen = new Set<object>(); let code: WindowsNativeFailureCode | undefined, current = error;
+  try {
+    for (let depth = 0; depth < 8; depth++) {
+      if (current === null || typeof current !== "object" && typeof current !== "function" || seen.has(current)) break;
+      seen.add(current); code = nativeFailures.get(current as Error) ?? code;
+      // Unknown failures can be proxies or have accessors; never evaluate cause getters or prototypes.
+      const cause = Object.getOwnPropertyDescriptor(current, "cause");
+      if (!cause || !Object.hasOwn(cause, "value")) break;
+      current = cause.value;
+    }
+  } catch { /* Diagnostics cannot replace the original failure, even for a revoked proxy. */ }
+  return code;
+}
+
 export interface WindowsProcessDiagnosticV1 {
   readonly version: 1;
   readonly failureCode: string | null;

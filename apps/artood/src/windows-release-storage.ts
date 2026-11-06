@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { win32 } from "node:path";
 import { assertCanonicalWindowsPath, assertNativeWindows, collectWindowsAclFacts, MAX_WINDOWS_AUDIT_PATHS,
@@ -30,6 +31,34 @@ function fact(path: string): Identity {
 function identityEqual(left: Identity, right: Identity): boolean {
   return left.path === right.path && left.dev === right.dev && left.ino === right.ino && left.directory === right.directory;
 }
+function diagnosticPath(value: string): { value: string; truncated: boolean; sha256: string } {
+  return { value: value.length <= 240 ? value : `${value.slice(0, 117)}...${value.slice(-120)}`, truncated: value.length > 240,
+    sha256: createHash("sha256").update(value).digest("hex") };
+}
+/** Use only the captured inventories. One entry, fixed field names and bounded ASCII
+ * path displays keep CLI messages useful without reading contents or dumping ACLs.
+ * Hashes identify the complete paths even when their displays are truncated. */
+function inventoryChangeDiagnostic(root: string, before: ReadonlyMap<string, Identity>, after: ReadonlyMap<string, Identity>): string {
+  for (const key of [...new Set([...before.keys(), ...after.keys()])].sort()) {
+    const previous = before.get(key), current = after.get(key), fields: string[] = [];
+    if (!previous) fields.push("added");
+    else if (!current) fields.push("removed");
+    else {
+      if (!identityEqual(previous, current)) fields.push("identity");
+      if (previous.ctimeNs !== current.ctimeNs) fields.push("ctime");
+      if (previous.mtimeNs !== current.mtimeNs) fields.push("mtime");
+      if (previous.size !== current.size) fields.push("size");
+    }
+    if (fields.length > 0) {
+      const item = current ?? previous!;
+      return " " + JSON.stringify({ root: diagnosticPath(root), first_change: {
+        relative: diagnosticPath(win32.relative(root, item.path) || "."), fields,
+      } }).replace(/[\u007f-\uffff]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
+    }
+  }
+  // Preserve the original rejection even if future inventory fields are added.
+  return "";
+}
 function state(authority: PreparedWindowsReleaseStorage): StorageState {
   const saved = authorities.get(authority);
   if (!saved) fail("a locally prepared storage authority is required");
@@ -58,6 +87,14 @@ export function assertWindowsReleaseStorage(authority: PreparedWindowsReleaseSto
   const saved = state(authority);
   if (saved.directory !== expectedDirectory) fail("storage authority is bound to another directory");
   assertFixed(saved);
+}
+
+/** Guardian admission requires the exact workspace in the original complete local write
+ * scope. A different directory cannot be smuggled in beside an unrelated storage permit. */
+export function assertWindowsReleaseStorageWorkspace(authority: PreparedWindowsReleaseStorage, expectedDirectory: string, workspaceRoot: string): void {
+  assertWindowsReleaseStorage(authority, expectedDirectory);
+  const saved = state(authority);
+  if (!saved.roots.includes(workspaceRoot)) fail("guardian workspace is absent from the complete fixed write scope");
 }
 
 /** Execute at preparation and serialized startup/publication/monitor write boundaries, never per HTTP file. */
@@ -94,7 +131,7 @@ export function auditWindowsReleaseStorage(authority: PreparedWindowsReleaseStor
   if (before.size !== after.size || [...before].some(([key, item]) => {
     const now = after.get(key);
     return !now || !identityEqual(item, now) || item.ctimeNs !== now.ctimeNs || item.mtimeNs !== now.mtimeNs || item.size !== now.size;
-  })) fail("storage changed during ACL audit");
+  })) fail("storage changed during ACL audit" + inventoryChangeDiagnostic(saved.directory, before, after));
   for (const name of LAYOUT) {
     const path = win32.join(saved.directory, name), entry = after.get(windowsPathKey(path));
     if (entry) {

@@ -63,7 +63,24 @@ export function assertAcceptedProductInputs(root: string, context: ContextPack |
 /** These format/provenance checks supplement, never replace, the node-local acceptance program. */
 export function validateProductStage(root: string, context: ContextPack, researchOptions?: ResearchOptions): ArtifactDescriptor[] {
   const development = context.product_development;
-  if (context.transferred_product_input && (development?.stage !== "design" || context.policy.execution_mode === "discussion")) {
+  if (context.imported_execution_review_subject || context.imported_validation_review_subject || context.imported_recovery_validation_review_subject) throw new Error("Product review is not an author stage");
+  if (context.imported_recovery_validation && (!context.transferred_product_input || development?.stage !== "validation"
+    || context.imported_validation || context.review_subject || context.imported_review_subject || context.imported_design_review_subject
+    || context.imported_execution || context.imported_execution_repair || context.product_design_revision || context.policy.execution_mode !== undefined))
+    throw Error("Recovery author requires its exclusive fresh validation context");
+  if (context.imported_validation && (!context.transferred_product_input || development?.stage !== "validation"
+    || context.review_subject || context.imported_review_subject || context.imported_design_review_subject || context.imported_execution
+    || context.imported_execution_repair || context.product_design_revision || context.policy.execution_mode !== undefined))
+    throw Error("H7 requires its exclusive imported validation context");
+  if (context.imported_execution_repair && (!context.transferred_product_input || development?.stage !== "implementation"
+    || context.review_subject || context.imported_review_subject || context.imported_design_review_subject || context.imported_execution || context.product_design_revision)) {
+    throw new Error("Repair requires its exclusive imported implementation context");
+  }
+  if (context.imported_execution && (!context.transferred_product_input || development?.stage !== "implementation"
+    || context.review_subject || context.imported_review_subject || context.imported_design_review_subject || context.product_design_revision)) {
+    throw new Error("H5 requires its exclusive imported implementation context");
+  }
+  if (context.transferred_product_input && ((!context.imported_execution && !context.imported_execution_repair && !context.imported_validation && !context.imported_recovery_validation && development?.stage !== "design") || context.policy.execution_mode === "discussion")) {
     throw new Error("Transferred research requires its dedicated admitted design execution");
   }
   if (!development || context.policy.execution_mode === "discussion") return [];

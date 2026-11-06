@@ -1,4 +1,7 @@
+import { goalCleanValidations, goalCleanValidationReviews } from "@artoo/db";
 import { registerContentModerationRoutes } from "./content-moderation-routes.js";
+import { createSourceLifecycleRegistry } from "./services/source-clean-lifecycle-service.js";
+import { registerSourceLifecycleWsRoute } from "./ws/source-lifecycle-ws.js";
 import { registerAiDataSharingRoutes } from "./ai-data-sharing-routes.js";
 import { AssignOwnedResultRequestSchema } from "./services/owned-result-service.js";
 import { productReleases, runs } from "@artoo/db";
@@ -36,7 +39,8 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 
 import type { ServerContext } from "./context.js";
 import { goalImportedProductReviews, goalProductHandoffOperations, goalProductHandoffs } from "@artoo/db";
-import { goalImportedDesignContinuations } from "@artoo/db";
+import { goalImportedDesignContinuations, goalImportedDesignReviews, goalImportedExecutions, goalImportedExecutionReviews, goalImportedExecutionRepairs,
+  goalImportedValidations, goalImportedValidationReviews } from "@artoo/db";
 import { and } from "drizzle-orm";
 import { registerProjectRoutes } from "./project-routes.js";
 import { registerResourceRoutes } from "./resource-routes.js";
@@ -132,6 +136,11 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     app.addHook("onClose", async () => { await budgetMonitor?.stop(); });
   }
   const nodeRegistry = options.nodeRegistry ?? createNodeRegistry();
+  const sourceLifecycle = createSourceLifecycleRegistry(ctx);
+  ctx.sourceLifecycle = sourceLifecycle;
+  app.addHook("onClose", async () => { sourceLifecycle.close(); });
+  ctx.getPairedNodeSession = computerId => nodeRegistry.get(computerId)?.getPairedNodeSession?.();
+  ctx.getProductSourceRouting = computerId => nodeRegistry.get(computerId)?.getProductSourceRouting?.();
   // Resolve every query through the current binding; never cache by computer.
   ctx.supportsExecutionFeature = (computerId, feature) =>
     nodeRegistry.get(computerId)?.supportsExecutionFeature(feature) ?? false;
@@ -164,6 +173,72 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     await binding.dispatchImportedProductReview(reviewId, control);
   };
   ctx.productSourceArtifactDir = options.artifactDir;
+  ctx.onImportedExecutionReviewQueued ??= async (reviewId, control) => {
+    const [row] = await ctx.db.db.select().from(goalImportedExecutionReviews).where(and(eq(goalImportedExecutionReviews.id, reviewId), eq(goalImportedExecutionReviews.organizationId, ctx.organizationId)));
+    const binding = row && nodeRegistry.get(row.computerId);
+    if (!binding?.dispatchImportedExecutionReview) throw AppError.conflict("H6 review destination node is unavailable");
+    await binding.dispatchImportedExecutionReview(reviewId, control);
+  };
+  ctx.onImportedExecutionRepairQueued ??= async (repairId, control) => {
+    const [row] = await ctx.db.db.select().from(goalImportedExecutionRepairs).where(and(eq(goalImportedExecutionRepairs.id, repairId), eq(goalImportedExecutionRepairs.organizationId, ctx.organizationId)));
+    const binding = row && nodeRegistry.get(row.computerId);
+    if (!binding?.dispatchImportedExecutionRepair) throw AppError.conflict("H6 repair destination node is unavailable");
+    await binding.dispatchImportedExecutionRepair(repairId, control);
+  };
+  ctx.onImportedExecutionQueued ??= async (executionId, control) => {
+    const [row] = await ctx.db.db.select().from(goalImportedExecutions).where(and(eq(goalImportedExecutions.id, executionId), eq(goalImportedExecutions.organizationId, ctx.organizationId)));
+    const binding = row && nodeRegistry.get(row.computerId);
+    if (!binding?.dispatchImportedExecution) throw AppError.conflict("H5 destination node is unavailable");
+    await binding.dispatchImportedExecution(executionId, control);
+  };
+  ctx.onImportedValidationQueued ??= async (validationId, control) => {
+    const [row] = await ctx.db.db.select().from(goalImportedValidations).where(and(eq(goalImportedValidations.id, validationId), eq(goalImportedValidations.organizationId, ctx.organizationId)));
+    const binding = row && nodeRegistry.get(row.computerId);
+    if (!binding?.dispatchImportedValidation) throw AppError.conflict("H7 validation destination node is unavailable");
+    await binding.dispatchImportedValidation(validationId, control);
+  };
+  ctx.onSourceRecoveryQueued ??= async (recoveryId, control) => {
+    const [row] = await ctx.db.db.select().from(goalSourceRecoveries).where(and(eq(goalSourceRecoveries.id, recoveryId), eq(goalSourceRecoveries.organizationId, ctx.organizationId)));
+    const binding = row && nodeRegistry.get(row.computerId);
+    if (!binding?.dispatchSourceRecovery) throw AppError.conflict("Recovery destination node is unavailable");
+    await binding.dispatchSourceRecovery(recoveryId, control);
+  };
+  ctx.onRecoveryValidationQueued ??= async (validationId, control) => {
+    const [row] = await ctx.db.db.select().from(goalRecoveryValidations).where(and(eq(goalRecoveryValidations.id, validationId), eq(goalRecoveryValidations.organizationId, ctx.organizationId)));
+    const binding = row && nodeRegistry.get(row.computerId);
+    if (!binding?.dispatchRecoveryValidation) throw AppError.conflict("Recovery validation destination node is unavailable");
+    await binding.dispatchRecoveryValidation(validationId, control);
+  };
+  ctx.onRecoveryValidationReviewQueued ??= async (reviewId, control) => {
+    const [row] = await ctx.db.db.select().from(goalRecoveryValidationReviews).where(and(eq(goalRecoveryValidationReviews.id, reviewId), eq(goalRecoveryValidationReviews.organizationId, ctx.organizationId)));
+    const binding = row && nodeRegistry.get(row.computerId);
+    if (!binding?.dispatchRecoveryValidationReview) throw AppError.conflict("Recovery independent reviewer node is unavailable");
+    await binding.dispatchRecoveryValidationReview(reviewId, control);
+  };
+  ctx.onCleanValidationQueued ??= async (validationId, control) => {
+    const [row] = await ctx.db.db.select().from(goalCleanValidations).where(and(eq(goalCleanValidations.id, validationId), eq(goalCleanValidations.organizationId, ctx.organizationId)));
+    const binding = row && nodeRegistry.get(row.computerId);
+    if (!binding?.dispatchCleanValidation) throw AppError.conflict("Recovery validation destination node is unavailable");
+    await binding.dispatchCleanValidation(validationId, control);
+  };
+  ctx.onCleanValidationReviewQueued ??= async (reviewId, control) => {
+    const [row] = await ctx.db.db.select().from(goalCleanValidationReviews).where(and(eq(goalCleanValidationReviews.id, reviewId), eq(goalCleanValidationReviews.organizationId, ctx.organizationId)));
+    const binding = row && nodeRegistry.get(row.computerId);
+    if (!binding?.dispatchCleanValidationReview) throw AppError.conflict("Recovery independent reviewer node is unavailable");
+    await binding.dispatchCleanValidationReview(reviewId, control);
+  };
+  ctx.onImportedValidationReviewQueued ??= async (reviewId, control) => {
+    const [row] = await ctx.db.db.select().from(goalImportedValidationReviews).where(and(eq(goalImportedValidationReviews.id, reviewId), eq(goalImportedValidationReviews.organizationId, ctx.organizationId)));
+    const binding = row && nodeRegistry.get(row.computerId);
+    if (!binding?.dispatchImportedValidationReview) throw AppError.conflict("H7 final-product review destination node is unavailable");
+    await binding.dispatchImportedValidationReview(reviewId, control);
+  };
+  ctx.onImportedDesignReviewQueued ??= async (reviewId, control) => {
+    const [row] = await ctx.db.db.select().from(goalImportedDesignReviews).where(and(eq(goalImportedDesignReviews.id, reviewId), eq(goalImportedDesignReviews.organizationId, ctx.organizationId)));
+    const binding = row && nodeRegistry.get(row.computerId);
+    if (!binding?.dispatchImportedDesignReview) throw AppError.conflict("H4 destination review node is unavailable");
+    await binding.dispatchImportedDesignReview(reviewId, control);
+  };
   ctx.onImportedDesignContinuationQueued ??= async (continuationId, control) => {
     const [row] = await ctx.db.db.select().from(goalImportedDesignContinuations).where(and(eq(goalImportedDesignContinuations.id, continuationId), eq(goalImportedDesignContinuations.organizationId, ctx.organizationId)));
     const binding = row && nodeRegistry.get(row.computerId);
@@ -220,6 +295,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   });
   void app.register(async (instance) => {
     registerNodeWsRoute(instance, ctx, nodeRegistry, deviceConnections, graceWindow, options.artifactDir);
+    registerSourceLifecycleWsRoute(instance, ctx, sourceLifecycle);
     registerClientWsRoute(instance, ctx, wsHub, options.clientWsHooks, deviceConnections);
   });
 
@@ -1099,3 +1175,4 @@ function readDevicePlatform(value: unknown): DevicePlatform | null {
   }
   return requireDevicePlatform(value);
 }
+import { goalSourceRecoveries, goalRecoveryValidations, goalRecoveryValidationReviews } from "@artoo/db";

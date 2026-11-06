@@ -1,7 +1,7 @@
 import { contextPacks, goalAutomations, goals, plans, runs, tasks } from "@artoo/db";
 import { ContextPackSchema, ReleaseAcceptanceBindingV1Schema, TaskSpecSchema, canonicalReleaseAcceptanceBinding,
   canonicalReleaseJson, type ReleaseAcceptanceBindingV1, type ReleaseCapabilitiesV1, type ProductReleaseReceipt,
-  type ProductReleaseHealthReport } from "@artoo/domain";
+  type ProductReleaseHealthReport, type ImportedValidationReleaseOriginV1, type ImportedRecoveryReleaseOriginV1, type ImportedCleanReleaseOriginV1 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
 import { and, desc, eq } from "drizzle-orm";
 import { createHash } from "node:crypto";
@@ -13,6 +13,10 @@ import { inspectRunVerification, type RunVerificationEvidence } from "./verifica
 import { inspectIndependentReview } from "./independent-review-service.js";
 import { unsettledGoalExecutionCount } from "./execution-state.js";
 import { assertDesignRevisionRunAdmission, assertNoActiveDesignRevision } from "./product-design-revision-guard.js";
+import { inspectImportedFinalReleaseAcceptance, inspectImportedReleaseAcceptanceRun } from "./imported-validation-release-service.js";
+
+import { inspectRecoveryFinalReleaseAcceptance, inspectRecoveryReleaseAcceptanceRun, recoveryReleaseSourceOrigin } from "./recovery-validation-release-service.js";
+import { inspectCleanFinalReleaseAcceptance, inspectCleanReleaseAcceptanceRun, cleanReleaseSourceOrigin } from "./clean-validation-release-service.js";
 
 export type ReleaseAcceptanceAutomation = Pick<typeof goalAutomations.$inferSelect,
   "goalId" | "releaseProfileId" | "computerId" | "workspaceRoot" | "planId" | "verificationProfileId" | "executionMode" | "planningCapabilitySnapshot">;
@@ -21,6 +25,18 @@ export interface AcceptedReleaseSource {
   evidence: RunVerificationEvidence;
   binding: ReleaseAcceptanceBindingV1;
   capabilities: ReleaseCapabilitiesV1;
+  /** Exact H7 ancestry; absent for the unchanged ordinary publication path. */
+  importedOrigin?: { validationId: string; reviewId: string; originReviewId: string; sourceDigest: string; acceptanceEventId: string;
+    releaseOrigin: ImportedValidationReleaseOriginV1 };
+  /** New H9 source; its publication decision is bound separately from the retained H7 history. */
+  recoveryOrigin?: { recoveryId: string; checkpointDigest: string; validationId: string; reviewId: string;
+    originReviewId: string; sourceDigest: string; acceptanceEventId: string;
+    session: { computerId: string; deviceId: string; tokenLookup: string; sessionId: string };
+    releaseOrigin: Omit<ImportedRecoveryReleaseOriginV1, "recovery_of_release_id" | "authorization"> };
+  cleanOrigin?: { cleanGenerationId: string; restartDigest: string; validationId: string; reviewId: string;
+    originReviewId: string; sourceDigest: string; acceptanceEventId: string;
+    session: { computerId: string; deviceId: string; tokenLookup: string; sessionId: string };
+    releaseOrigin: Omit<ImportedCleanReleaseOriginV1, "interrupted_release_id" | "authorization"> };
 }
 const sha = (text: string): string => `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
 export const releaseAcceptanceBindingDigest = (binding: ReleaseAcceptanceBindingV1): string => sha(canonicalReleaseAcceptanceBinding(binding));
@@ -29,6 +45,12 @@ export const releaseAcceptanceBindingDigest = (binding: ReleaseAcceptanceBinding
 export async function inspectFinalReleaseAcceptance(ctx: ServerContext, tx: DrizzleDb,
   automation: ReleaseAcceptanceAutomation): Promise<AcceptedReleaseSource | undefined> {
   await assertNoActiveDesignRevision(ctx, tx, automation.goalId);
+  const clean = await inspectCleanFinalReleaseAcceptance(ctx, tx, automation);
+  if (clean) return clean;
+  const recovered = await inspectRecoveryFinalReleaseAcceptance(ctx, tx, automation);
+  if (recovered) return recovered;
+  const imported = await inspectImportedFinalReleaseAcceptance(ctx, tx, automation);
+  if (imported) return imported;
   const [goal] = await tx.select().from(goals).where(and(eq(goals.id, automation.goalId), eq(goals.organizationId, ctx.organizationId)));
   if (!goal) throw AppError.conflict("Publication goal is missing");
   const snapshot = persistedPlanningSnapshot(automation, goal.projectId);
@@ -63,8 +85,14 @@ export async function inspectFinalReleaseAcceptance(ctx: ServerContext, tx: Driz
 
 /** In-flight publication history may arrive after pause/replan; only final settlement requires the current plan. */
 export async function inspectReleaseAcceptanceRun(ctx: ServerContext, tx: DrizzleDb, run: typeof runs.$inferSelect,
-  goalId: string, plan: ReleaseAcceptanceBindingV1["plan"], expectedCapabilities?: ReleaseCapabilitiesV1): Promise<AcceptedReleaseSource> {
+  goalId: string, plan: ReleaseAcceptanceBindingV1["plan"], expectedCapabilities?: ReleaseCapabilitiesV1, releaseId?: string): Promise<AcceptedReleaseSource> {
   await assertNoActiveDesignRevision(ctx, tx, goalId);
+  const clean = await inspectCleanReleaseAcceptanceRun(ctx, tx, run, goalId, plan, expectedCapabilities, releaseId);
+  if (clean) return clean;
+  const recovered = await inspectRecoveryReleaseAcceptanceRun(ctx, tx, run, goalId, plan, expectedCapabilities, releaseId);
+  if (recovered) return recovered;
+  const imported = await inspectImportedReleaseAcceptanceRun(ctx, tx, run, goalId, plan, expectedCapabilities, releaseId);
+  if (imported) return imported;
   await assertDesignRevisionRunAdmission(ctx, tx, run, { acceptance: true });
   const result = await inspectRunVerification(ctx, tx, run), evidence = result.evidence;
   const [stored] = await tx.select().from(contextPacks).where(and(eq(contextPacks.id, run.contextPackId ?? ""),
@@ -73,7 +101,8 @@ export async function inspectReleaseAcceptanceRun(ctx: ServerContext, tx: Drizzl
   const capabilities = context?.release_capabilities;
   const summary = evidence?.payload.measurement_plan;
   if (run.status !== "completed" || !result.passed || !evidence?.payload.subject_digest || summary?.version !== 2 || summary.scope !== "final"
-    || !summary.pending_release.length || !context || context.review_subject || context.product_development?.stage !== "validation"
+    || !summary.pending_release.length || !context || context.imported_clean_validation || context.imported_clean_validation_review_subject
+    || context.imported_recovery_validation || context.imported_recovery_validation_review_subject || context.review_subject || context.product_development?.stage !== "validation"
     || context.goal_context?.goal_id !== goalId || context.goal_context.plan?.id !== plan.id || context.goal_context.plan.version !== plan.version
     || !capabilities || expectedCapabilities && !isDeepStrictEqual(capabilities, expectedCapabilities)
     || capabilities.binding.workspace_root !== run.workspaceRoot
@@ -93,7 +122,10 @@ export async function inspectReleaseAcceptanceRun(ctx: ServerContext, tx: Drizzl
 
 /** Receipt success is a separate node measurement; stage feasibility and model text cannot settle these criteria. */
 export function assertReleaseAcceptanceReceipt(receipt: ProductReleaseReceipt, source: AcceptedReleaseSource): void {
-  if (!isDeepStrictEqual(receipt.request.acceptance_binding, source.binding) || receipt.request.run_id !== source.run.id
+  if (!isDeepStrictEqual(recoveryReleaseSourceOrigin(receipt.request.imported_recovery), source.recoveryOrigin?.releaseOrigin)
+    || !isDeepStrictEqual(cleanReleaseSourceOrigin(receipt.request.imported_clean), source.cleanOrigin?.releaseOrigin)
+    || !isDeepStrictEqual(receipt.request.imported_validation, source.importedOrigin?.releaseOrigin)
+    || !isDeepStrictEqual(receipt.request.acceptance_binding, source.binding) || receipt.request.run_id !== source.run.id
     || receipt.request.verification_request_id !== source.evidence.requestId || receipt.request.verification_profile_digest !== source.evidence.payload.profile_digest
     || receipt.request.subject_digest !== source.evidence.payload.subject_digest) {
     throw AppError.conflict("Publication receipt differs from the accepted criterion, source or profile binding");

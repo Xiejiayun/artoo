@@ -16,8 +16,24 @@ import { ReleaseCapabilitiesV1Schema } from "./release-capabilities.js";
 import { ImportedProductReviewSubjectV1Schema } from "./imported-product-review-context.js";
 import { TransferredProductInputV1Schema } from "./transferred-product-input.js";
 import { ProductDesignRevisionContextV1Schema } from "./product-design-revision.js";
+import { ImportedDesignReviewSubjectV1Schema } from "./imported-design-review-context.js";
+import { ImportedExecutionContextV1Schema } from "./imported-execution-context.js";
+import { ImportedExecutionReviewSubjectV1Schema, ImportedExecutionRepairContextV1Schema } from "./imported-implementation-context.js";
+import { ImportedValidationContextV1Schema, ImportedValidationReviewSubjectV1Schema } from "./imported-validation-context.js";
+import { ImportedRecoveryValidationContextV1Schema, ImportedRecoveryValidationReviewSubjectV1Schema } from "./source-recovery-context.js";
+import { ImportedCleanValidationContextV1Schema, ImportedCleanValidationReviewSubjectV1Schema } from "./clean-validation-context.js";
 
 export const ContextPackSchema = z.object({
+  imported_clean_validation: ImportedCleanValidationContextV1Schema.optional(),
+  imported_clean_validation_review_subject: ImportedCleanValidationReviewSubjectV1Schema.optional(),
+  imported_recovery_validation: ImportedRecoveryValidationContextV1Schema.optional(),
+  imported_recovery_validation_review_subject: ImportedRecoveryValidationReviewSubjectV1Schema.optional(),
+  imported_validation: ImportedValidationContextV1Schema.optional(),
+  imported_validation_review_subject: ImportedValidationReviewSubjectV1Schema.optional(),
+  imported_execution_review_subject: ImportedExecutionReviewSubjectV1Schema.optional(),
+  imported_execution_repair: ImportedExecutionRepairContextV1Schema.optional(),
+  imported_execution: ImportedExecutionContextV1Schema.optional(),
+  imported_design_review_subject: ImportedDesignReviewSubjectV1Schema.optional(),
   product_design_revision: ProductDesignRevisionContextV1Schema.optional(),
   transferred_product_input: TransferredProductInputV1Schema.optional(),
   imported_review_subject: ImportedProductReviewSubjectV1Schema.optional(),

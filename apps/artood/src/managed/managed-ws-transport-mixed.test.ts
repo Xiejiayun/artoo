@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { MANAGED_RECEIPT_CONTRACT, type NodeHello, type NodeToServerMessage, type RunEventMessage } from "@artoo/protocol";
+import { commandSchema, MANAGED_RECEIPT_CONTRACT, type NodeHello, type NodeToServerMessage, type RunEventMessage } from "@artoo/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { monotonicMs, type ManagedExposureContext } from "./managed-delivery.js";
 import { createManagedWebSocketTransport, type ManagedWebSocketOptions, type ManagedWebSocketTransport } from "./managed-ws-transport.js";
@@ -352,6 +352,39 @@ describe("ordinary and managed lanes on one qualified socket", () => {
     socket.pong(); await link.ready; await link.transport.send(ack);
     expect(received).toHaveLength(1); expect(received[0]).toMatchObject({ type: "run.resume", payload: { run_id: "ordinary" } });
     expect(socket.frames().at(-1)).toEqual(ack); expect(sockets).toHaveLength(1);
+  });
+
+  it.each([false, true])("delivers untimed lifecycle receipts while retaining ordinary command expiry (queued=%s)", async (queued) => {
+    const { link, socket } = harness({}, false), received: unknown[] = [];
+    link.transport.subscribe((message) => received.push(message));
+    const lifecycle = [
+      commandSchema.parse(command("product.source.lifecycle.registered.v1", { version: 1, observer_id: randomUUID(),
+        lineage_id: randomUUID(), registration_id: randomUUID(), registration_digest: `sha256:${"a".repeat(64)}` })),
+      commandSchema.parse(command("product.source.lifecycle.rejected.v1", { version: 1, control: "register",
+        correlation_id: randomUUID(), reason: "Controlled registration rejection" })),
+    ];
+    const expired = commandSchema.parse({ ...command("run.resume", { run_id: "expired-ordinary" }),
+      deadline_at: new Date(Date.now() + (queued ? 1 : -1)).toISOString() });
+    const future = commandSchema.parse({ ...command("run.resume", { run_id: "future-ordinary" }),
+      deadline_at: new Date(Date.now() + 60000).toISOString() });
+    socket.open(); socket.ready();
+    if (!queued) { socket.pong(); await link.ready; }
+    for (const receipt of lifecycle) {
+      expect(receipt).not.toHaveProperty("deadline_at");
+      const widened = { ...receipt, deadline_at: new Date(Date.now() + 60000).toISOString() };
+      expect(commandSchema.safeParse(widened).success).toBe(false);
+      socket.server(widened); socket.server(receipt);
+    }
+    socket.server(expired); socket.server(future);
+    if (queued) {
+      expect(received).toEqual([]); await vi.advanceTimersByTimeAsync(2);
+      socket.pong(); await link.ready;
+    }
+    expect(received).toEqual([...lifecycle, future]);
+    expect(socket.frames().filter((message) => message.kind === "command.ack")).toEqual([
+      { kind: "command.ack", node_id: hello.node_id, command_id: expired.id, status: "rejected",
+        error_code: "process_start_failed", message: "Command expired before managed session dispatch" },
+    ]);
   });
 
   it("bounds ordinary entry count independently from managed observers without reclassifying either lane", async () => {

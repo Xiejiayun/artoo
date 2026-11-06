@@ -187,6 +187,9 @@ export function registerApiAuthGuard(app: FastifyInstance, ctx: ServerContext, c
     if (req.method === "GET" && (route === "/api/v1/node" || route === "/api/v1/ws")) {
       return;
     }
+    if (req.method === "GET" && route === "/api/v1/node/source-lifecycle") {
+      return; // Exact WS route authenticates a paired node bearer; no dev escape.
+    }
     if (req.method === "PUT" && route === "/api/v1/node/runs/:id/artifacts") {
       return;
     }

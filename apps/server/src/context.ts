@@ -1,5 +1,6 @@
 import type { AiDataSharingPolicy } from "./config/ai-data-sharing.js";
-import type { Clock, IdGen, VerificationCapabilities, ReleaseCapabilitiesV1, NodeOwnedResultProfileDescriptorV1 } from "@artoo/domain";
+import type { SourceLifecycleRegistry } from "./services/source-clean-lifecycle-service.js";
+import type { Clock, IdGen, VerificationCapabilities, ReleaseCapabilitiesV1, NodeOwnedResultProfileDescriptorV1, ProductSourceRoutingV1 } from "@artoo/domain";
 import type { DbClient } from "@artoo/storage";
 
 import type { AuthConfig } from "./auth/auth-config.js";
@@ -12,6 +13,8 @@ import type { DeviceAuthConfig } from "./config/device-auth.js";
  * Clock and IdGen are injected (Gate 0) so flows are deterministic under test.
  */
 export interface ServerContext {
+  /** Process-local original-parent observers; never reconstructed from DB JSON. */
+  sourceLifecycle?: Pick<SourceLifecycleRegistry, "registerDaemon" | "checkpoint">;
   db: DbClient;
   /** Explicit operator declaration; absent configuration cannot authorize AI. */
   aiDataSharingPolicy?: AiDataSharingPolicy | null;
@@ -55,4 +58,19 @@ export interface ServerContext {
   /** Server-local artifact store configured by app startup, never supplied by a task or frame. */
   productSourceArtifactDir?: string;
   onImportedDesignContinuationQueued?: (continuationId: string, control: "start" | "stop" | "status") => Promise<void>;
+  onImportedDesignReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;
+  onImportedExecutionQueued?: (executionId: string, control: "start" | "stop" | "status") => Promise<void>;
+  onImportedExecutionReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;
+  onImportedExecutionRepairQueued?: (repairId: string, control: "start" | "stop" | "status") => Promise<void>;
+  onImportedValidationQueued?: (validationId: string, control: "start" | "stop" | "status") => Promise<void>;
+  onImportedValidationReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;
+  onSourceRecoveryQueued?: (recoveryId: string, control: "start" | "stop" | "status") => Promise<void>;
+  onRecoveryValidationQueued?: (validationId: string, control: "start" | "stop" | "status") => Promise<void>;
+  onCleanValidationQueued?: (validationId: string, control: "start" | "stop" | "status") => Promise<void>;
+  onRecoveryValidationReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;
+  onCleanValidationReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;
+  /** Current paired transport identity. Frames and profile metadata cannot populate this. */
+  getPairedNodeSession?: (computerId: string) => { computerId: string; deviceId: string; tokenLookup: string; sessionId: string } | undefined;
+  /** Current paired node's prepared routing description; never an execution grant. */
+  getProductSourceRouting?: (computerId: string) => ProductSourceRoutingV1 | undefined;
 }

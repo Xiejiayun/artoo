@@ -24,6 +24,8 @@ import { propagateBlocked } from "./dag-service.js";
 import { supportedGoalPolicy } from "./budget-policy.js";
 import { unsettledGoalRunIds, unsettledGoalExecutionCount } from "./execution-state.js";
 import { stopGoalImportedDesignContinuations } from "./imported-design-continuation-service.js";
+import { stopGoalImportedDesignReviews } from "./imported-design-review-service.js";
+import { stopGoalImportedExecutions } from "./imported-execution-service.js";
 import { stopGoalImportedProductReviews } from "./imported-product-review-service.js";
 import { stopGoalProductHandoffs } from "./goal-product-handoff-service.js";
 
@@ -275,7 +277,7 @@ async function cancelGoalExecution(ctx: ServerContext, id: string, stopRun?: (ru
   const [automation] = await ctx.db.db.select().from(goalAutomations).where(and(eq(goalAutomations.goalId, id), eq(goalAutomations.organizationId, ctx.organizationId)));
   if (automation) {
     const original = { ...ctx, actorUserId: automation.actorUserId, automationActor: { type: "system" as const, id: "goal_runner" as const } };
-    await stopGoalProductHandoffs(original, id); await stopGoalImportedProductReviews(original, id); await stopGoalImportedDesignContinuations(original, id);
+    await stopGoalProductHandoffs(original, id); await stopGoalImportedProductReviews(original, id); await stopGoalImportedDesignContinuations(original, id); await stopGoalImportedDesignReviews(original, id); await stopGoalImportedExecutions(original, id);
   }
   const childRuns = await ctx.db.db.select({ id: runs.id, status: runs.status }).from(runs)
     .innerJoin(tasks, eq(tasks.id, runs.taskId))

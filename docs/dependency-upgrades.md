@@ -67,10 +67,21 @@ snapshot fixture exceeding its existing 10-second PowerShell subprocess limit.
 The unchanged isolated fixture later passed, but the original cause remains
 unconfirmed. Temporary diagnostic variants and their failed runs are retained
 outside the source changes; no timeout, assertion or production behavior is
-relaxed. A complete final-source rerun and the current PR checks remain required
-before merge; a focused rerun does not replace that gate.
+relaxed. The complete dependency-stage rerun on source committed as `5cb6cc3`
+then passed: 4,375 tests passed, 90 conditional skips and zero failures. This
+does not identify the cause of the earlier timeout.
 
-The macOS focused gate and POSIX static-file behavior still require their own
-platform results. Earlier acceptance on another dependency snapshot does not
-validate this one. These checks do not establish live-provider, physical
-multi-computer, signed-distribution or product-deployment acceptance.
+The macOS CI job on `5cb6cc3` also passed its installed DMG application and
+recovery gates. Its four selected source suites passed all 93 tests, including
+all eight static-file tests and the POSIX ownership cases. Shared and iOS checks
+were still running when the Windows continuation integration began; the installed
+Windows job was skipped. Later source integrations require their own checks.
+
+The continuation integration also updates three explicit Zod generic annotations:
+strict objects retain their named shapes with `z.core.$strict`, and the named
+command union uses the Zod 4 option/discriminator parameter order. Their runtime
+schemas and declaration-size safeguards remain unchanged.
+
+Earlier acceptance on another dependency snapshot does not validate this one.
+These checks do not establish live-provider, physical multi-computer,
+signed-distribution or product-deployment acceptance.

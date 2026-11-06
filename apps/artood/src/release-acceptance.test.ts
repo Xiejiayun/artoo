@@ -9,7 +9,7 @@ import { CONFIGURED_STATIC_PUBLICATION_CLAIM, CONFIGURED_STATIC_PUBLICATION_STAT
   canonicalReleaseAcceptanceBinding, productDevelopmentContext, type ContextPack, type ProductResearchReport,
   type ProductReleaseRequest, type RunStartPayload, type RunVerificationPayload } from "@artoo/domain";
 import * as verification from "./verification.js";
-import { createProductReleaseExecutor, createReleaseCapabilityReader, prepareReleaseProfiles, readReleaseCapabilities, type ReleaseProfile } from "./product-release.js";
+import { createProductReleaseExecutor, createReleaseCapabilityReader, prepareReleaseCapabilityReader, prepareReleaseProfiles, readReleaseCapabilities, type ReleaseProfile } from "./product-release.js";
 
 const roots: string[] = [], executors: ReturnType<typeof createProductReleaseExecutor>[] = [];
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -96,6 +96,35 @@ async function fixture() {
 }
 
 describe("node-owned configured publication criterion", () => {
+  it("returns the checked initial capability in one read while every later reader call revalidates it", async () => {
+    const f = await fixture(), reads = vi.spyOn(verification, "readVerificationCapabilities");
+    const prepared = prepareReleaseCapabilityReader(f.profile);
+    expect(prepared.capabilities).toEqual(f.release); expect(Object.isFrozen(prepared)).toBe(true);
+    expect(reads).toHaveBeenCalledExactlyOnceWith(f.verifier);
+    expect(prepared.readCapabilities()).toEqual(f.release); expect(reads).toHaveBeenCalledTimes(2);
+  });
+  it("keeps both factories eager and rejects cloned or non-opted-in release profiles", async () => {
+    const f = await fixture();
+    expect(() => prepareReleaseCapabilityReader(structuredClone(f.profile))).toThrow(/locally prepared/);
+    const { criterion_acceptance: _, ...legacyRaw } = f.raw;
+    const legacy = prepareReleaseProfiles([legacyRaw], [f.verifier])[0]!;
+    expect(() => prepareReleaseCapabilityReader(legacy)).toThrow(/does not opt in/);
+    expect(() => createReleaseCapabilityReader(legacy)).toThrow(/does not opt in/);
+    write(f.config, `${readFileSync(f.config, "utf8")} `);
+    expect(() => prepareReleaseCapabilityReader(f.profile)).toThrow(/verifier changed/);
+    expect(() => createReleaseCapabilityReader(f.profile)).toThrow(/verifier changed/);
+  });
+  it("does not reuse the initial capability after protected files change before the first reader call", async () => {
+    const f = await fixture(), prepared = prepareReleaseCapabilityReader(f.profile);
+    write(f.config, `${readFileSync(f.config, "utf8")} `);
+    expect(prepared.readCapabilities).toThrow(/verifier changed/);
+  });
+  it("rechecks physical storage before the first reader call even when initial capabilities were already read", async () => {
+    const f = await fixture(), prepared = prepareReleaseCapabilityReader(f.profile), moved = `${f.storage}-old`;
+    renameSync(f.storage, moved); mkdirSync(f.storage);
+    try { expect(prepared.readCapabilities).toThrow(/physical directory identity/); }
+    finally { rmdirSync(f.storage); renameSync(moved, f.storage); }
+  });
   it("reuses exact prepared authority and rejects serialized clones without changing legacy digests", async () => {
     const f = await fixture();
     expect(prepareReleaseProfiles([f.profile], verification.prepareVerificationProfiles([f.verifier]))[0]).toBe(f.profile);

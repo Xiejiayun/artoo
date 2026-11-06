@@ -27,6 +27,7 @@ import * as windowsProcess from "./owned/windows-owned-process.js";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import * as nodeClient from "./node-client.js";
 import { PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE } from "./product-release.js";
+import { PRODUCT_RELEASE_RETRY_FEATURE_V1 } from "@artoo/domain";
 
 const fixture = fileURLToPath(new URL("../test-fixtures/mock-agent.mjs", import.meta.url));
 
@@ -167,7 +168,7 @@ describe("Windows node activation (controlled backend admission; no native helpe
   }
   const injectedHello = (): NodeHello => ({ ...hello, execution_features: [VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE,
     VERIFICATION_CAPABILITIES_FEATURE, MEASUREMENT_PLAN_FEATURE, MEASUREMENT_PLAN_V2_FEATURE, PRODUCT_RELEASE_FEATURE,
-    PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE, "product-source-transfer.v1", "product-source-transfer.v2", "other-feature"],
+    PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE, PRODUCT_RELEASE_RETRY_FEATURE_V1, "product-source-transfer.v1", "product-source-transfer.v2", "other-feature"],
     verification_profiles: [{ profile_id: "forged", project_id: "forged", workspace_root: "/forged" }],
     release_profiles: [{ profile_id: "forged", project_id: "forged", workspace_root: "/forged", verification_profile_id: "forged", target_kind: "static_site" }] });
 
@@ -295,7 +296,7 @@ describe("createArtoodNode (WS + ProcessAdapter end-to-end)", () => {
   });
   it("drops injected profile discovery and verification capability when no local profiles exist", async () => {
     const node = createArtoodNode({ url: "ws://example.invalid/api/v1/node?token=dev", adapter: idleAdapter,
-      hello: { ...hello, execution_features: [VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE, VERIFICATION_CAPABILITIES_FEATURE, MEASUREMENT_PLAN_FEATURE, PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, "other-feature"],
+      hello: { ...hello, execution_features: [VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE, VERIFICATION_CAPABILITIES_FEATURE, MEASUREMENT_PLAN_FEATURE, PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_RETRY_FEATURE_V1, "other-feature"],
         release_profiles: [{ profile_id: "forged", project_id: "p", workspace_root: "/forged", verification_profile_id: "forged", target_kind: "static_site" }],
         verification_profiles: [{ profile_id: "forged", project_id: "p", workspace_root: "/forged" }] },
       WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
@@ -388,6 +389,7 @@ describe("createArtoodNode (WS + ProcessAdapter end-to-end)", () => {
       expect(sent.release_profiles).toEqual([{ profile_id: "local-release", project_id: "project",
         verification_profile_id: "local-verify", workspace_root: realpathSync.native(workspace), target_kind: "static_site" }]);
       expect(sent.execution_features).toContain(PRODUCT_RELEASE_FEATURE);
+      expect(sent.execution_features).toContain(PRODUCT_RELEASE_RETRY_FEATURE_V1);
       expect(sent.execution_features.includes(PRODUCT_RELEASE_HEALTH_FEATURE)).toBe(monitoring);
       expect(JSON.stringify(sent)).not.toContain(storage); expect(JSON.stringify(sent)).not.toContain("health_checks");
     } finally { await node.stop(); supported.mockRestore(); rmSync(root, { recursive: true, force: true }); }

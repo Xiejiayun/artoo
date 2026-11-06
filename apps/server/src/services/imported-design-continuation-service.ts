@@ -1,3 +1,4 @@
+import { assertSourceLineageDispatch } from "./source-lineage-fence.js";
 import { agentInstances, agents, approvals, appendEvent, computers, contextPacks, devices, deviceTokens, goals, goalAutomations, plans, runs, tasks,
   goalProductHandoffs, goalImportedProductReviews as reviews, goalImportedDesignContinuations as continuations, goalImportedDesignDeliveries as deliveries } from "@artoo/db";
 import { AutonomousTeamSchema, ContextPackSchema, TaskSpecSchema, ImportedProductReviewRequestV1Schema, ImportedProductReviewResultV1Schema,
@@ -26,6 +27,8 @@ import { assertSupportedPlanTaskControls } from "./plan-policy.js";
 import { assertExecutionApprovalGranted, bindExecutionApprovalToRun, EXECUTION_GATE_CURRENT, EXECUTION_GATE_SUPERSEDED } from "./approval-service.js";
 import { transitionRun, transitionTask } from "./transition-service.js";
 import { releaseRunLeases } from "./lease-service.js";
+import { goalImportedDesignCompletions } from "@artoo/db";
+import { inspectCompletedImportedDesign } from "./imported-design-completion-service.js";
 
 const sha = (value: string | Uint8Array) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const hash = (value: unknown) => sha(canonical(value));
@@ -109,7 +112,7 @@ async function facts(ctx: ServerContext, tx: DrizzleDb, reviewId: string, own?: 
     && (run.agentInstanceId === writer.id || !run.workspaceRoot || automationWorkspacesOverlap(run.workspaceRoot, root, computer.os))))
     throw AppError.conflict("Imported design writer or workspace already has another execution");
   if ((await unsettledStandaloneExecutions(ctx, tx, { computerId: computer.id })).some(operation => (operation.kind !== "design" || operation.id !== own?.id)
-    && (operation.agentInstanceId === writer.id || automationWorkspacesOverlap(operation.workspaceRoot, root, computer.os))))
+    && (operation.participantInstanceIds.includes(writer.id) || automationWorkspacesOverlap(operation.workspaceRoot, root, computer.os))))
     throw AppError.conflict("Imported design workspace has an unsettled source operation");
   const reservations = await tx.select().from(goalAutomations).where(and(eq(goalAutomations.organizationId, ctx.organizationId), eq(goalAutomations.computerId, computer.id)));
   if (reservations.some(reservation => reservation.goalId !== goal.id && ["planning", "executing", "waiting"].includes(reservation.status)
@@ -237,7 +240,8 @@ export function createImportedDesignContinuationBinding(ctx: ServerContext, opti
     if (prior.some(delivery => delivery.sessionId !== options.sessionId)) throw AppError.conflict("Exposed imported design permits only dedicated status or stop in a new session");
     inspectImportedDesignContinuationRequestV1(request, value.bytes, sha);
     await credential(tx); assertMeasurementV2TransferSessions(ctx, request.review_request.operation.intent.request); current();
-    return fresh;
+    await assertSourceLineageDispatch(ctx, tx, row.computerId, row.workspaceRoot);
+    current(); return fresh;
   }
   return {
     async requestStop(id: string) {
@@ -307,12 +311,26 @@ export function createImportedDesignContinuationBinding(ctx: ServerContext, opti
           await appendEvent(tx, buildEvent(ctx, { type: "run.cancelled", actorType: "system", actorId: identity.computerId, correlationId: row.id, runId: row.runId, taskId: row.taskId,
             goalId: row.goalId, projectId: task?.projectId, payload: { run_id: row.runId, continuation_id: row.id, cancelled_before_start: true, process_exit_confirmed: true } }));
         }
-        if (locked!.result === null) await tx.update(continuations).set({ result }).where(eq(continuations.id, row.id));
+        if (result.outcome === "finished" && result.verified_design) {
+          const completed = await inspectCompletedImportedDesign(ctx, tx, row, result);
+          const starts = await tx.select().from(deliveries).where(and(eq(deliveries.continuationId, row.id), eq(deliveries.control, "start")));
+          if (starts.length !== 1 || starts[0]!.sessionId !== options.sessionId) throw AppError.conflict("Verified completion requires its original author session");
+          if (locked!.result === null) {
+            await tx.update(continuations).set({ result }).where(eq(continuations.id, row.id));
+            await tx.insert(goalImportedDesignCompletions).values({ continuationId: row.id, organizationId: ctx.organizationId, runId: row.runId,
+              evidenceId: completed.evidence.id, contextPackId: row.contextPackId, deliveryId: delivery.id, sessionId: options.sessionId,
+              resultDigest: hash(result), completedDesignDigest: hash(completed.completed), verifiedDesign: completed.completed, createdAt: ctx.clock.nowIso() });
+          }
+        } else if (locked!.result === null) await tx.update(continuations).set({ result }).where(eq(continuations.id, row.id));
         await credential(tx);
       });
       await ctx.db.transaction(async tx => {
         await credential(tx); await options.transport.send({ kind: "command", id: message.command_id, idempotency_key: `receipt:${message.command_id}`, type: "product.source.design.receipt.v1",
           payload: { version: 1, continuation_id: message.payload.continuation_id, request_digest: message.payload.request_digest, run_id: message.payload.run_id }, result_digest: hash(message.payload), status: "accepted" }); current();
+        // A failed send/transaction leaves this unset; replay may acknowledge only the same original session.
+        await tx.update(goalImportedDesignCompletions).set({ receiptSentAt: ctx.clock.nowIso() }).where(and(
+          eq(goalImportedDesignCompletions.continuationId, message.payload.continuation_id), eq(goalImportedDesignCompletions.organizationId, ctx.organizationId),
+          eq(goalImportedDesignCompletions.sessionId, options.sessionId), eq(goalImportedDesignCompletions.resultDigest, hash(message.payload)), isNull(goalImportedDesignCompletions.receiptSentAt)));
       });
     },
     async inspect(id: string) { return ctx.db.transaction(async tx => { await credential(tx); return importedDesignContinuationView(await load(tx, id)); }); },

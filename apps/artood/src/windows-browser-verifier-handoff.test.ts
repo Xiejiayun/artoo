@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { productDevelopmentContext } from "@artoo/domain";
-import { attachWindowsVerificationBackend, prepareVerificationProfiles, readVerificationCapabilities, runVerification,
+import { attachWindowsVerificationBackend, prepareVerificationProfiles, readVerificationCapabilities, readWindowsVerificationBackend, runVerification,
   subjectManifest, type VerificationProfile } from "./verification.js";
 import { prepareWindowsBrowserProcessFromDescriptor } from "./windows-browser-process-authority.js";
 import { runProtectedCommand } from "./protected-command.js";
@@ -56,7 +56,11 @@ function fixture(enabled = true) {
   const profile = prepareVerificationProfiles([raw])[0]!;
   const backend = state.backend as unknown as PreparedWindowsProcessBackend;
   const installation = { directory: join(directory, "protected-host"), manifestSha256: `sha256:${"d".repeat(64)}`, writableWorkspaceRoots: [workspace] };
-  state.describe.mockImplementation(value => { if (value !== backend) throw new Error("Unqualified controlled installation"); return installation; });
+  state.describe.mockImplementation(value => {
+    if (value !== backend) throw new Error("Unqualified controlled installation");
+    state.assertBackend(value); // The real installation reader includes the full backend audit.
+    return installation;
+  });
   state.prepare.mockReturnValue(state.child);
   attachWindowsVerificationBackend(profile, backend);
   const capabilities = readVerificationCapabilities(profile)!;
@@ -78,6 +82,26 @@ function writeControlledObservation(f: ReturnType<typeof fixture>, requestId: st
 }
 
 describe.runIf(process.platform === "win32")("node to browser private Job handoff (controlled process)", () => {
+  it("qualifies browser attachment through one complete installation and backend audit", () => {
+    const f = fixture(), profile = prepareVerificationProfiles([f.raw])[0]!;
+    state.describe.mockClear(); state.assertBackend.mockClear();
+    attachWindowsVerificationBackend(profile, f.backend);
+    expect(state.describe).toHaveBeenCalledExactlyOnceWith(f.backend);
+    expect(state.assertBackend).toHaveBeenCalledExactlyOnceWith(f.backend);
+  });
+  it.each(["revoked-backend", "changed-protected-config", "outside-write-roots"] as const)
+  ("does not attach browser authority after %s", variant => {
+    const f = fixture(), profile = prepareVerificationProfiles([f.raw])[0]!;
+    if (variant === "revoked-backend") state.assertBackend.mockImplementation(() => { throw Error("Controlled backend revoked"); });
+    if (variant === "changed-protected-config") {
+      const config = f.raw.commands[0]!.argv[2]!; writeFileSync(config, `${readFileSync(config, "utf8")} `);
+    }
+    if (variant === "outside-write-roots") f.installation.writableWorkspaceRoots = [f.evidence];
+    expect(() => attachWindowsVerificationBackend(profile, f.backend)).toThrow(variant === "revoked-backend"
+      ? /backend revoked/ : variant === "changed-protected-config" ? /administrator verifier changed/ : /outside.*configured write roots/);
+    expect(readWindowsVerificationBackend(profile)).toBeUndefined();
+    expect(runProtectedCommand).not.toHaveBeenCalled();
+  });
   it("binds the exact request, command, source, profile and workspace outside the public ContextPack", async () => {
     const f = fixture();
     expect(JSON.stringify(f.context)).not.toContain("windows_browser_process");

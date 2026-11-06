@@ -38,7 +38,7 @@ export function inspectProductSourceVerificationEnvelopeV1(input: unknown, bytes
     || destination.workspace_root !== base.destination.workspace_root || start.workspace.root !== destination.workspace_root
     || start.workspace.branch != null || start.workspace_allocation || !start.verification
     || start.verification.profile_id !== destination.profile_id || start.verification.expected_subject_digest !== destination.subject_digest
-    || start.verification.release_capability_binding || context?.release_capabilities || context?.review_subject
+    || start.verification.release_capability_binding || context?.release_capabilities || context?.imported_validation || context?.imported_validation_review_subject || context?.review_subject || context?.imported_execution || context?.imported_execution_review_subject || context?.imported_execution_repair
     || context?.product_development?.stage !== "research" || context.project.id !== base.project_id
     || context.task.id !== start.task_id || context.workspace.root !== destination.workspace_root
     || context.goal_context?.goal_id !== base.goal_id || context.goal_context.plan?.id !== base.plan_id
@@ -78,7 +78,7 @@ export function inspectProductSourceVerificationEnvelopeV2(input: unknown, bytes
     || destination.workspace_root !== base.destination.workspace_root || start.workspace.root !== destination.workspace_root
     || start.workspace.branch != null || start.workspace_allocation || !start.verification
     || start.verification.profile_id !== destination.profile_id || start.verification.expected_subject_digest !== destination.subject_digest
-    || context?.review_subject || context?.product_development?.stage !== "research" || context.project.id !== base.project_id
+    || context?.imported_validation || context?.imported_validation_review_subject || context?.review_subject || context?.imported_execution || context?.imported_execution_review_subject || context?.imported_execution_repair || context?.product_development?.stage !== "research" || context.project.id !== base.project_id
     || context.task.id !== start.task_id || context.workspace.root !== destination.workspace_root
     || context.goal_context?.goal_id !== base.goal_id || context.goal_context.plan?.id !== base.plan_id
     || !context.verification_capabilities || context.verification_capabilities.profile_id !== destination.profile_id) {

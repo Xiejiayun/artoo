@@ -4,6 +4,7 @@ import { OwnedGitError, runOwnedGit, type OwnedGitOptions, type OwnedGitRequest 
 import { assertWindowsProcessBackend, isWindowsOwnedClosureReceipt, startWindowsOwnedProcess,
   type PreparedWindowsProcessBackend, type WindowsOwnedClosureReceipt } from "./owned/windows-owned-process.js";
 import { VerificationCleanupError } from "./verification-cleanup-error.js";
+import { startWindowsScopedProcess } from "./owned/windows-guardian-scope.js";
 
 /** Ordinary bootstrap/verifier commands only; this does not produce a managed-worktree receipt. */
 export interface ProtectedCommandResult {
@@ -11,6 +12,17 @@ export interface ProtectedCommandResult {
   readonly stdout: Buffer;
   readonly stderr: Buffer;
   readonly elapsedMs: number;
+}
+const nativeResults = new WeakMap<ProtectedCommandResult, { backend: PreparedWindowsProcessBackend; receipt: WindowsOwnedClosureReceipt;
+  status: number; stdout: Buffer; stderr: Buffer; elapsedMs: number }>();
+/** Only an original successful native owner return proves its real process exit and pipe EOF. */
+export function assertProtectedNativeCommandClosed(result: ProtectedCommandResult): void {
+  const saved = nativeResults.get(result);
+  if (!saved) throw Error("Original protected native command result is required");
+  assertWindowsProcessBackend(saved.backend);
+  if (!isWindowsOwnedClosureReceipt(saved.receipt) || !saved.receipt.cleanupConfirmed || windowsFailure(saved.receipt)
+    || saved.receipt.rootExitCode !== saved.status || result.status !== saved.status || result.elapsedMs !== saved.elapsedMs
+    || !result.stdout.equals(saved.stdout) || !result.stderr.equals(saved.stderr)) throw Error("Protected native command closure or output changed");
 }
 export type ProtectedCommandErrorCode = "aborted" | "timeout" | "output_limit" | "lingering_processes" | "spawn_failed" | "execution_failed";
 export class ProtectedCommandError extends Error {
@@ -79,7 +91,8 @@ export async function runProtectedCommand(request: OwnedGitRequest, options: Omi
     normalExitPolicy: "require-empty" as const, normalExitGraceMs: options.normalExitDrainMs ?? 250, signal: request.signal };
   // The bridge guarantees synchronous errors here precede target creation; after
   // creation, every failure is carried by closed and is conservatively retained.
-  const child = startWindowsOwnedProcess(windowsBackend, input);
+  const child = await startWindowsScopedProcess(windowsBackend, input,
+    options.environment?.ARTOO_VERIFICATION_CONTEXT_FILE ? "verifier" : "git");
   const stdout: Buffer[] = [], stderr: Buffer[] = [];
   const out = (bytes: Buffer) => stdout.push(Buffer.from(bytes));
   const err = (bytes: Buffer) => stderr.push(Buffer.from(bytes));
@@ -101,5 +114,7 @@ export async function runProtectedCommand(request: OwnedGitRequest, options: Omi
   }
   const output = Buffer.concat(stdout), errorOutput = Buffer.concat(stderr), code = windowsFailure(receipt);
   if (code) throw new ProtectedCommandError(code, receipt.rootExitCode, receipt.elapsedMs, output, errorOutput);
-  return { status: receipt.rootExitCode!, stdout: output, stderr: errorOutput, elapsedMs: receipt.elapsedMs };
+  const result = { status: receipt.rootExitCode!, stdout: output, stderr: errorOutput, elapsedMs: receipt.elapsedMs };
+  nativeResults.set(result, { backend: windowsBackend, receipt, status: result.status, stdout: Buffer.from(output), stderr: Buffer.from(errorOutput), elapsedMs: result.elapsedMs });
+  return result;
 }

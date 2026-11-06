@@ -9,13 +9,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PreparedWindowsProcessBackend, WindowsOwnedClosureReceipt, WindowsOwnedProcess, WindowsOwnedStart } from "./owned/windows-owned-process.js";
 
 const controlled = vi.hoisted(() => ({ start: vi.fn(), directSpawn: vi.fn(), connect: vi.fn(), observer: vi.fn(),
+  makeProfile: vi.fn(), removeProfile: vi.fn(),
   backends: new WeakSet<object>(), receipts: new WeakSet<object>() }));
+vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>(), mkdtempSync: controlled.makeProfile, rmSync: controlled.removeProfile }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: controlled.directSpawn }));
 vi.mock("playwright", () => ({ chromium: { connectOverCDP: controlled.connect, executablePath: () => process.execPath } }));
 vi.mock("./owned/windows-browser-session.js", () => ({ WindowsBrowserObserverSession: class { constructor() { controlled.observer(); throw new Error("Unexpected global observer"); } } }));
 vi.mock("./owned/windows-owned-process.js", () => ({ startWindowsOwnedProcess: controlled.start,
   isWindowsOwnedClosureReceipt: (value: unknown) => typeof value === "object" && value !== null && controlled.receipts.has(value) }));
 import { launchOwnedBrowser } from "./owned-browser.js";
+import { formatBrowserFailure } from "./browser-failure-diagnostic.js";
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const pid = 59110, directories: string[] = [], backend = Object.freeze({}) as PreparedWindowsProcessBackend;
@@ -41,10 +44,12 @@ function workspace() { const path = mkdtempSync(join(realpathSync.native(tmpdir(
 function launch(signal?: AbortSignal, launchTimeoutMs = 1000) {
   return launchOwnedBrowser({ workspace: workspace(), executablePath: process.execPath, windowsProcessBackend: backend, signal, launchTimeoutMs });
 }
-beforeEach(() => {
+beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   Object.defineProperty(process, "platform", { ...originalPlatform, value: "win32" });
   vi.clearAllMocks(); controlled.backends.add(backend); profile = "";
+  const filesystem = await vi.importActual<typeof import("node:fs")>("node:fs");
+  controlled.makeProfile.mockImplementation(filesystem.mkdtempSync); controlled.removeProfile.mockImplementation(filesystem.rmSync);
   closeConnection = vi.fn().mockResolvedValue(undefined);
   send = vi.fn(async (method: string) => { if (method === "SystemInfo.getProcessInfo") return { processInfo: [{ id: pid, type: "browser" }] }; complete(); return {}; });
   controlled.connect.mockImplementation(async () => ({ newBrowserCDPSession: async () => ({ send, detach: vi.fn().mockResolvedValue(undefined) }), close: closeConnection }));
@@ -71,12 +76,45 @@ afterEach(async () => {
 
 describe("owned browser with a locally prepared Windows Job backend", () => {
   it("keeps Chrome/CDP setup and removes the profile only after complete authenticated Job closure", async () => {
+    const stderr = vi.spyOn(process.stderr, "write"), consoleError = vi.spyOn(console, "error");
     const owned = await launch(); expect(owned.processId).toBe(pid);
     expect(controlled.observer).not.toHaveBeenCalled(); expect(controlled.directSpawn).not.toHaveBeenCalled();
     expect(controlled.start.mock.calls[0]![1]).toMatchObject({ normalExitPolicy: "terminate-descendants", timeoutMs: 43_200_000 });
     expect(controlled.start.mock.calls[0]![1].args).toContain("--remote-debugging-port=0");
     const first = owned.close(); expect(owned.close()).toBe(first); await first;
     expect(closeConnection).toHaveBeenCalledTimes(1); expect(existsSync(profile)).toBe(false);
+    expect(stderr).not.toHaveBeenCalled(); expect(consoleError).not.toHaveBeenCalled();
+  });
+  it("propagates the exact profile-create OS error before starting a browser", async () => {
+    const filesystem = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const error = Object.assign(new Error("Controlled mkdir permission error"), { code: "EPERM", errno: -4048, syscall: "mkdir", path: "controlled-uncreated-prefix" });
+    controlled.makeProfile.mockImplementation((prefix: string, options?: Parameters<typeof mkdtempSync>[1]) => {
+      if (prefix.includes("artoo-owned-browser-")) throw error;
+      return filesystem.mkdtempSync(prefix, options);
+    });
+    await expect(launch()).rejects.toBe(error);
+    expect(controlled.start).not.toHaveBeenCalled(); expect(controlled.removeProfile).not.toHaveBeenCalled();
+    const record = JSON.parse(formatBrowserFailure(error).split("\n")[0]!).errors[0];
+    expect(record).toMatchObject({ phase: "profile-create", code: "EPERM", errno: -4048, syscall: "mkdir", profile_path: null, close_checks_completed: false });
+  });
+  it("propagates the exact remove OS error after existing closure checks without changing retry options", async () => {
+    const owned = await launch();
+    const error = Object.assign(new Error("Controlled rmdir permission error"), { code: "EPERM", errno: -4048, syscall: "rmdir", path: profile });
+    controlled.removeProfile.mockImplementationOnce(() => { throw error; });
+    const closing = owned.close(); await expect(closing).rejects.toBe(error); expect(owned.close()).toBe(closing);
+    expect(closeConnection).toHaveBeenCalledTimes(1); expect(existsSync(profile)).toBe(true);
+    expect(controlled.removeProfile).toHaveBeenCalledExactlyOnceWith(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    const record = JSON.parse(formatBrowserFailure(error).split("\n")[0]!).errors[0];
+    expect(record).toMatchObject({ phase: "profile-remove", code: "EPERM", errno: -4048, syscall: "rmdir", profile_path: profile,
+      process_close_observed: true, close_checks_completed: true });
+  });
+  it("keeps a browser-close failure and its cause without attempting profile removal", async () => {
+    const owned = await launch(), cause = Object.assign(new Error("Controlled pipe error"), { code: "EPIPE", syscall: "write" });
+    const error = new Error("Controlled CDP disconnect failure", { cause }); closeConnection.mockRejectedValue(error);
+    await expect(owned.close()).rejects.toBe(error);
+    expect(error.cause).toBe(cause); expect(existsSync(profile)).toBe(true); expect(controlled.removeProfile).not.toHaveBeenCalled();
+    const summary = JSON.parse(formatBrowserFailure(error).split("\n").at(-1)!.slice("browser_failure_summary ".length));
+    expect(summary).toMatchObject({ phase: "browser-close", code: "EPIPE", syscall: "write", close_checks_completed: false, profile_path: profile });
   });
   it("does not substitute root exit for Job-empty/helper-close/pipe completion", async () => {
     const owned = await launch(); send.mockImplementation(async () => { exitRoot(); });

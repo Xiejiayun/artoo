@@ -1,3 +1,5 @@
+import { assertSourceLineageDispatch } from "./source-lineage-fence.js";
+import { currentImportedDesignBoundary } from "./execution-state.js";
 import { requireAiSharingAuthorization } from "./ai-data-sharing-service.js";
 import {
   agentInstances,
@@ -100,6 +102,7 @@ async function assertGoalAllowsExecution(ctx: ServerContext, tx: DrizzleDb, goal
   if (["paused", "cancelled", "completed", "archived", "awaiting_approval"].includes(goal.status)) {
     throw AppError.invalidState(`goal is '${goal.status}'; resume the goal before assigning or retrying tasks`, { goal_id: goalId, status: goal.status });
   }
+  if (await currentImportedDesignBoundary(ctx, tx, goalId, sourcePlanId)) throw AppError.conflict("Imported design requires dedicated H4 acceptance and separate H5 implementation authority");
   const { budgets } = supportedGoalPolicy(goal.budgets, goal.stopConditions);
   if (budgets.max_elapsed_ms !== null && goal.runningSince !== null) {
     const elapsed = Math.max(0, Date.parse(ctx.clock.nowIso()) - Date.parse(goal.runningSince));
@@ -428,9 +431,10 @@ export async function assignTask(
     // Manual runs keep their existing path spelling; autonomous runs must not send
     // a trailing-slash/dot alias that the node correctly rejects as a different binding.
     if (executionAutomation) workspaceRoot = executionAutomation.workspaceRoot;
+    await assertSourceLineageDispatch(ctx, tx, instance.computerId, workspaceRoot);
     // H2 holds the same instance -> computer fence when issuing its delivery.
     const standalone = await unsettledStandaloneExecutions(ctx, tx, { computerId: instance.computerId });
-    if (standalone.some(operation => operation.agentInstanceId === instance.id || !workspaceRoot || automationWorkspacesOverlap(operation.workspaceRoot, workspaceRoot, computer.os)))
+    if (standalone.some(operation => operation.participantInstanceIds.includes(instance.id) || !workspaceRoot || automationWorkspacesOverlap(operation.workspaceRoot, workspaceRoot, computer.os)))
       throw AppError.conflict("The selected agent or workspace is reserved by an active or unconfirmed source operation");
     if (ownedSelection && (!workspaceRoot || !workspaceBranch || !workspaceAllocation)) {
       throw AppError.conflict("Owned result execution requires configured per-run workspace allocation");
@@ -638,6 +642,7 @@ export async function reviewTask(
       });
     }
     const automation = await automationForTask(ctx, tx, row);
+    if (row.goalId && await currentImportedDesignBoundary(ctx, tx, row.goalId, row.sourcePlanId)) throw AppError.conflict("Imported design cannot be accepted through ordinary task review; H4 and H5 remain separately fenced");
     let verifiedReview: {
       verified_run_id: string; verification_evidence_id: string; verification_request_id: string;
       profile_digest: string; subject_digest: string | null;
@@ -797,6 +802,7 @@ async function completeGoalIfAllTasksDone(
   if (goal === undefined) {
     return;
   }
+  if (await currentImportedDesignBoundary(ctx, tx, goalId)) return;
   const [automation] = await tx.select().from(goalAutomations).where(and(eq(goalAutomations.goalId, goalId), eq(goalAutomations.organizationId, ctx.organizationId)));
   // Publication has its own immutable artifact and health gate, after all task reviews.
   if (automation?.releaseProfileId) return;

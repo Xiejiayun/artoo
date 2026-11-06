@@ -1,6 +1,18 @@
 import {productSourceOperationCommandSchema,productSourceOperationStopSchema,productSourceOperationStatusSchema,productSourceOperationReceiptSchema} from "./product-source-operations.js";
 import { importedProductReviewCommandSchema, importedProductReviewStopSchema, importedProductReviewStatusSchema, importedProductReviewReceiptSchema } from "./imported-product-review.js";
 import { importedDesignContinuationCommandSchema, importedDesignContinuationStopSchema, importedDesignContinuationStatusSchema, importedDesignContinuationReceiptSchema } from "./imported-design-continuation.js";
+import { importedDesignReviewCommandSchema, importedDesignReviewStopSchema, importedDesignReviewStatusSchema, importedDesignReviewReceiptSchema } from "./imported-design-review.js";
+import { importedExecutionCommandSchema, importedExecutionStopSchema, importedExecutionStatusSchema, importedExecutionReceiptSchema } from "./imported-execution.js";
+import { importedExecutionReviewCommandSchema, importedExecutionReviewStopSchema, importedExecutionReviewStatusSchema, importedExecutionReviewReceiptSchema } from "./imported-execution-review.js";
+import { importedExecutionRepairCommandSchema, importedExecutionRepairStopSchema, importedExecutionRepairStatusSchema, importedExecutionRepairReceiptSchema } from "./imported-execution-repair.js";
+import { importedValidationCommandSchema, importedValidationStopSchema, importedValidationStatusSchema, importedValidationReceiptSchema } from "./imported-validation.js";
+import { importedValidationReviewCommandSchema, importedValidationReviewStopSchema, importedValidationReviewStatusSchema, importedValidationReviewReceiptSchema } from "./imported-validation-review.js";
+import { productSourceRecoveryCommandSchema, productSourceRecoveryStopSchema, productSourceRecoveryStatusSchema, productSourceRecoveryReceiptSchema, productSourceRecoveryRegisteredSchema, productSourceRecoverySessionSchema } from "./source-recovery.js";
+import { sourceLifecycleRegisteredCommandSchema, sourceCleanCheckpointCommittedCommandSchema, sourceLifecycleRejectedCommandSchema } from "./source-clean-lifecycle.js";
+import { importedRecoveryValidationCommandSchema, importedRecoveryValidationStopSchema, importedRecoveryValidationStatusSchema, importedRecoveryValidationReceiptSchema } from "./imported-recovery-validation.js";
+import { importedCleanValidationCommandSchema, importedCleanValidationStopSchema, importedCleanValidationStatusSchema, importedCleanValidationReceiptSchema } from "./imported-clean-validation.js";
+import { importedRecoveryValidationReviewCommandSchema, importedRecoveryValidationReviewStopSchema, importedRecoveryValidationReviewStatusSchema, importedRecoveryValidationReviewReceiptSchema } from "./imported-recovery-validation-review.js";
+import { importedCleanValidationReviewCommandSchema, importedCleanValidationReviewStopSchema, importedCleanValidationReviewStatusSchema, importedCleanValidationReviewReceiptSchema } from "./imported-clean-validation-review.js";
 import { z } from "zod";
 
 import {
@@ -18,7 +30,7 @@ import {
   ProductReleaseHealthReportSchema,
   RunUsagePayloadSchema
 } from "@artoo/domain";
-import { ProductSourceExportV1Schema, ProductSourceExportV2Schema, NodeOwnedResultProfileDescriptorsV1Schema, NodeOwnedResultVerificationEvidenceV1Schema,
+import { ProductSourceExportV1Schema, ProductSourceExportV2Schema, ProductSourceRoutingV1Schema, NodeOwnedResultProfileDescriptorsV1Schema, NodeOwnedResultVerificationEvidenceV1Schema,
   OwnedResultRunAdmissionV1Schema } from "@artoo/domain";
 
 import { nodeErrorCodeSchema } from "./errors.js";
@@ -55,6 +67,7 @@ export const nodeHelloSchema = z.object({
   verification_profiles: VerificationProfileAdvertisementsSchema.optional(),
   release_profiles: ReleaseProfileAdvertisementsSchema.optional(),
   owned_result_profiles: NodeOwnedResultProfileDescriptorsV1Schema.optional(),
+  product_source_routing: ProductSourceRoutingV1Schema.optional(),
   managed_receipts: z.object({ version: z.number().int().positive(), nonce: z.string().guid(),
     required_contract: z.string().min(1).max(128) }).optional()
 });
@@ -187,6 +200,14 @@ const legacyRunStartPayloadSchema = z.unknown().superRefine((raw, ctx) => {
     for (const key of Object.keys(ownedResultModeMarkers)) if (Object.hasOwn(raw, key)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: "Owned result requests require run.start.owned-result.v1" });
     }
+    const pack = (raw as Record<string, unknown>).context_pack;
+    const payload = pack && typeof pack === "object" ? (pack as Record<string, unknown>).payload : undefined;
+    if (payload && typeof payload === "object") {
+      for (const key of ["imported_recovery_validation", "imported_recovery_validation_review_subject", "imported_clean_validation", "imported_clean_validation_review_subject"]) {
+        if (Object.hasOwn(payload, key) && (payload as Record<string, unknown>)[key] !== undefined)
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["context_pack", "payload", key], message: "Recovery contexts require their dedicated command and current local admission" });
+      }
+    }
   }
 }).pipe(RunStartPayloadSchema);
 export const runStartCommandSchema = z.object({
@@ -221,9 +242,99 @@ export const productReleaseHealthAckCommandSchema = z.object({
     message: z.string().max(2000).optional() }).strict(),
 });
 
+// Name each existing option so declaration emit preserves exact types without expanding the entire graph.
+type CommandSchemaOptions = [
+  typeof sourceLifecycleRegisteredCommandSchema,
+  typeof sourceCleanCheckpointCommittedCommandSchema,
+  typeof sourceLifecycleRejectedCommandSchema,
+  typeof productSourceRecoverySessionSchema,
+  typeof productSourceRecoveryRegisteredSchema,
+  typeof productSourceRecoveryCommandSchema,
+  typeof productSourceRecoveryStopSchema,
+  typeof productSourceRecoveryStatusSchema,
+  typeof productSourceRecoveryReceiptSchema,
+  typeof importedRecoveryValidationCommandSchema,
+  typeof importedRecoveryValidationStopSchema,
+  typeof importedRecoveryValidationStatusSchema,
+  typeof importedRecoveryValidationReceiptSchema,
+  typeof importedCleanValidationCommandSchema,
+  typeof importedCleanValidationStopSchema,
+  typeof importedCleanValidationStatusSchema,
+  typeof importedCleanValidationReceiptSchema,
+  typeof importedRecoveryValidationReviewCommandSchema,
+  typeof importedRecoveryValidationReviewStopSchema,
+  typeof importedRecoveryValidationReviewStatusSchema,
+  typeof importedRecoveryValidationReviewReceiptSchema,
+  typeof importedCleanValidationReviewCommandSchema,
+  typeof importedCleanValidationReviewStopSchema,
+  typeof importedCleanValidationReviewStatusSchema,
+  typeof importedCleanValidationReviewReceiptSchema,
+  typeof importedDesignContinuationCommandSchema,
+  typeof importedDesignContinuationStopSchema,
+  typeof importedDesignContinuationStatusSchema,
+  typeof importedDesignContinuationReceiptSchema,
+  typeof importedDesignReviewCommandSchema,
+  typeof importedDesignReviewStopSchema,
+  typeof importedDesignReviewStatusSchema,
+  typeof importedDesignReviewReceiptSchema,
+  typeof importedExecutionCommandSchema,
+  typeof importedExecutionStopSchema,
+  typeof importedExecutionStatusSchema,
+  typeof importedExecutionReceiptSchema,
+  typeof importedExecutionReviewCommandSchema,
+  typeof importedExecutionReviewStopSchema,
+  typeof importedExecutionReviewStatusSchema,
+  typeof importedExecutionReviewReceiptSchema,
+  typeof importedExecutionRepairCommandSchema,
+  typeof importedExecutionRepairStopSchema,
+  typeof importedExecutionRepairStatusSchema,
+  typeof importedExecutionRepairReceiptSchema,
+  typeof importedValidationCommandSchema,
+  typeof importedValidationStopSchema,
+  typeof importedValidationStatusSchema,
+  typeof importedValidationReceiptSchema,
+  typeof importedValidationReviewCommandSchema,
+  typeof importedValidationReviewStopSchema,
+  typeof importedValidationReviewStatusSchema,
+  typeof importedValidationReviewReceiptSchema,
+  typeof importedProductReviewCommandSchema,
+  typeof importedProductReviewStopSchema,
+  typeof importedProductReviewStatusSchema,
+  typeof importedProductReviewReceiptSchema,
+  typeof productSourceOperationCommandSchema,
+  typeof productSourceOperationStopSchema,
+  typeof productSourceOperationStatusSchema,
+  typeof productSourceOperationReceiptSchema,
+  typeof nodeSessionReadyCommandSchema,
+  typeof nodeSessionPongCommandSchema,
+  typeof runStartCommandSchema,
+  typeof runStartOwnedResultCommandSchema,
+  typeof runStopCommandSchema,
+  typeof artifactCollectCommandSchema,
+  typeof runResumeCommandSchema,
+  typeof runEventAckCommandSchema,
+  typeof productReleaseCommandSchema,
+  typeof productReleaseCancelCommandSchema,
+  typeof productReleaseHealthAckCommandSchema,
+];
+
 /** All Server -> Node commands, discriminated on `type`. */
-export const commandSchema = z.discriminatedUnion("type", [
+export const commandSchema: z.ZodDiscriminatedUnion<CommandSchemaOptions, "type"> = z.discriminatedUnion("type", [
+  sourceLifecycleRegisteredCommandSchema, sourceCleanCheckpointCommittedCommandSchema, sourceLifecycleRejectedCommandSchema,
+  productSourceRecoverySessionSchema,
+  productSourceRecoveryRegisteredSchema,
+  productSourceRecoveryCommandSchema, productSourceRecoveryStopSchema, productSourceRecoveryStatusSchema, productSourceRecoveryReceiptSchema,
+  importedRecoveryValidationCommandSchema, importedRecoveryValidationStopSchema, importedRecoveryValidationStatusSchema, importedRecoveryValidationReceiptSchema,
+  importedCleanValidationCommandSchema, importedCleanValidationStopSchema, importedCleanValidationStatusSchema, importedCleanValidationReceiptSchema,
+  importedRecoveryValidationReviewCommandSchema, importedRecoveryValidationReviewStopSchema, importedRecoveryValidationReviewStatusSchema, importedRecoveryValidationReviewReceiptSchema,
+  importedCleanValidationReviewCommandSchema, importedCleanValidationReviewStopSchema, importedCleanValidationReviewStatusSchema, importedCleanValidationReviewReceiptSchema,
   importedDesignContinuationCommandSchema, importedDesignContinuationStopSchema, importedDesignContinuationStatusSchema, importedDesignContinuationReceiptSchema,
+  importedDesignReviewCommandSchema, importedDesignReviewStopSchema, importedDesignReviewStatusSchema, importedDesignReviewReceiptSchema,
+  importedExecutionCommandSchema, importedExecutionStopSchema, importedExecutionStatusSchema, importedExecutionReceiptSchema,
+  importedExecutionReviewCommandSchema, importedExecutionReviewStopSchema, importedExecutionReviewStatusSchema, importedExecutionReviewReceiptSchema,
+  importedExecutionRepairCommandSchema, importedExecutionRepairStopSchema, importedExecutionRepairStatusSchema, importedExecutionRepairReceiptSchema,
+  importedValidationCommandSchema, importedValidationStopSchema, importedValidationStatusSchema, importedValidationReceiptSchema,
+  importedValidationReviewCommandSchema, importedValidationReviewStopSchema, importedValidationReviewStatusSchema, importedValidationReviewReceiptSchema,
   importedProductReviewCommandSchema, importedProductReviewStopSchema, importedProductReviewStatusSchema, importedProductReviewReceiptSchema,
   productSourceOperationCommandSchema,productSourceOperationStopSchema,productSourceOperationStatusSchema,productSourceOperationReceiptSchema,
   nodeSessionReadyCommandSchema,

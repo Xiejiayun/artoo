@@ -7,6 +7,7 @@ import { ImportedProductReviewRequestV1Schema, ImportedProductReviewResultV1Sche
   type ImportedProductReviewRequestV1, type ImportedProductReviewResultV1 } from "./imported-product-review.js";
 import { canonicalProductSourceTransferValueV1 as canonical } from "./product-source-transfer.js";
 import type { SourceOperationSha } from "./product-source-operations.js";
+import { ImportedCompletedDesignV1Schema } from "./imported-design-completion.js";
 
 const id = z.string().min(1).max(128).regex(/^[^\u0000-\u001f\u007f]+$/u);
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -17,7 +18,9 @@ export interface ImportedDesignRunStartV1 extends Omit<RunStartPayload, "context
   context_pack: { id: string; payload: ContextPack & { transferred_product_input: TransferredProductInputV1 } };
 }
 const startSchema: z.ZodType<ImportedDesignRunStartV1> = RunStartPayloadSchema.extend({
-  context_pack: z.object({ id, payload: ContextPackSchema.extend({ transferred_product_input: TransferredProductInputV1Schema }) }).strict(),
+  context_pack: z.object({ id, payload: ContextPackSchema.extend({ transferred_product_input: TransferredProductInputV1Schema,
+    imported_clean_validation: z.never().optional(), imported_clean_validation_review_subject: z.never().optional(),
+    imported_recovery_validation: z.never().optional(), imported_recovery_validation_review_subject: z.never().optional() }) }).strict(),
 });
 export interface ImportedDesignContinuationRequestV1 {
   version: 1; continuation_id: string;
@@ -58,7 +61,7 @@ export const ImportedDesignContinuationRequestV1Schema: z.ZodType<ImportedDesign
     || start.runtime === "mock" || context.task.id !== start.task_id || context.project.id !== transfer.byte_request.project_id
     || canonical(context.project) !== canonical(original.context_pack.payload?.project)
     || context.workspace.root !== destination.workspace_root || !sameGoal
-    || context.policy.execution_mode !== undefined || context.review_subject || context.imported_review_subject
+    || context.policy.execution_mode !== undefined || context.review_subject || context.imported_review_subject || context.imported_design_review_subject || context.imported_validation || context.imported_validation_review_subject || context.product_design_revision || context.imported_execution || context.imported_execution_review_subject || context.imported_execution_repair
     || context.product_development?.stage !== "design" || canonical(context.product_development.accepted_inputs) !== canonical(accepted)
     || canonical(context.policy.filesystem_write_scope) !== canonical([destination.workspace_root])
     || canonical(context.policy.filesystem_write_scope) !== canonical(start.policy_snapshot.filesystem_write_scope)
@@ -105,7 +108,7 @@ const resultIdentity = { version: z.literal(1), continuation_id: id, request_dig
 const reason = z.string().min(1).max(2048);
 /** Lifecycle facts only. A finished result cannot substitute for verification or independent review. */
 export const ImportedDesignContinuationResultV1Schema = z.discriminatedUnion("outcome", [
-  z.object({ ...resultIdentity, outcome: z.literal("finished"), closed: z.literal(true) }).strict(),
+  z.object({ ...resultIdentity, outcome: z.literal("finished"), closed: z.literal(true), verified_design: ImportedCompletedDesignV1Schema.optional() }).strict(),
   z.object({ ...resultIdentity, outcome: z.literal("cancelled_before_start"), closed: z.literal(true) }).strict(),
   z.object({ ...resultIdentity, outcome: z.literal("failed"), closed: z.literal(true), reason }).strict(),
   z.object({ ...resultIdentity, outcome: z.literal("uncertain"), closed: z.literal(false), reason }).strict(),

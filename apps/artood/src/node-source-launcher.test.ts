@@ -13,7 +13,8 @@ import { createArtoodNode } from "./node-runner.js";
 const allSourceFeatures = ["product-source-transfer.v1", "product-source-transfer.v2", "product-source-transfer.measurement-v2.v1",
   "product-source-operations.v1", "imported-product-review.v1", "imported-design-continuation.v1"];
 const hello: NodeHello = { kind: "node.hello", node_id: "node", protocol_version: "2026-06-11", artood_version: "0.1.0",
-  machine: { hostname: "fixture", os: "windows", arch: "x64" }, execution_features: [...allSourceFeatures] };
+  machine: { hostname: "fixture", os: "windows", arch: "x64" }, execution_features: [...allSourceFeatures, "imported-design-review.v1", "imported-execution.v1"],
+  product_source_routing: { version: 1, source_exports: [], destination_mappings: [] } };
 const adapter: RuntimeAdapter = { runtimeId: "fixture", async start() { throw Error("No execution is allowed in a launcher fixture"); },
   async *streamEvents() {}, async stop() {}, async collectArtifacts() { return []; } };
 const sockets: Socket[] = [];
@@ -33,16 +34,20 @@ beforeEach(() => {
   vi.spyOn(runtime, "assertProductSourceRuntimeConfiguration").mockImplementation(() => {});
 });
 afterEach(() => { vi.restoreAllMocks(); sockets.length = 0; Object.defineProperty(process, "platform", platform); });
-function fixture(importedReview = true, importedDesign = true) {
+function fixture(importedReview = true, importedDesign = true, importedDesignReview = false, importedExecution = false) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-source-launcher-"))), workspace = join(root, "workspace"); mkdirSync(workspace);
   const program = join(root, "check.mjs"); writeFileSync(program, "throw Error('never execute launcher fixtures');\n");
   const backend = Object.freeze({}) as native.PreparedWindowsProcessBackend;
   const profile: verification.VerificationProfile = { id: "local", project_id: "project", workspace_root: workspace,
     commands: [{ id: "test", argv: [process.execPath, program], timeout_ms: 1000 }], required_files: [], subject_paths: ["src"] };
   const source = { runtime: Object.freeze({}) as runtime.PreparedProductSourceRuntime,
-    semanticClient: { upload: vi.fn(), download: vi.fn() }, importedReview, importedDesign, assertCurrent: vi.fn(), assertDiscovery: vi.fn(), close: vi.fn() };
+    recoveryRequired: false, recoveryConfiguration: undefined, features: Object.freeze([]),
+    routing: { version: 1 as const, source_exports: [], destination_mappings: [] },
+    qualifyRecovery: vi.fn(() => { throw Error("Ordinary launcher fixture must not qualify recovery"); }),
+    activateRecovery: vi.fn(() => { throw Error("Ordinary launcher fixture must not activate recovery"); }),
+    semanticClient: { upload: vi.fn(), download: vi.fn() }, importedReview, importedDesign, importedDesignReview, importedExecution, importedExecutionReview: false, importedValidation: false, assertCurrent: vi.fn(), assertDiscovery: vi.fn(), close: vi.fn() };
   const prepare = vi.spyOn(sourceNode, "prepareProductSourceNode").mockReturnValue(source);
-  vi.spyOn(runtime, "readProductSourceRuntimeCapabilities").mockReturnValue({ semantic: true, measurementV2: true, importedReview: true, importedDesign: true });
+  vi.spyOn(runtime, "readProductSourceRuntimeCapabilities").mockReturnValue({ semantic: true, measurementV2: true, importedReview: true, importedDesign: true, importedDesignReview: false, importedExecution: false, importedValidation: false });
   const create = vi.spyOn(clients, "createNodeClient");
   const options = { hello, url: "wss://control.example/api/v1/node?token=sk_device_fixture_secret", adapter,
     workspace: { allowedRoots: [workspace] }, windowsProcessBackend: backend, verificationProfiles: [profile],
@@ -57,6 +62,8 @@ describe("standard native source launcher", () => {
     try {
       const socket = await start(node), advertised = JSON.parse(socket.sent[0]!);
       expect(advertised.execution_features.filter((feature: string) => allSourceFeatures.includes(feature))).toEqual([]);
+      expect(advertised.execution_features).not.toContain("imported-execution.v1");
+      expect(advertised).not.toHaveProperty("product_source_routing");
       expect(f.prepare).not.toHaveBeenCalled(); expect(f.create.mock.calls[0]![0].productSourceRuntime).toBeUndefined();
     } finally { await node.stop(); }
   });
@@ -68,6 +75,7 @@ describe("standard native source launcher", () => {
       expect(verification.readWindowsVerificationBackend(configured.profiles[0]!)).toBe(f.backend);
       expect(client.productSourceRuntime).toBe(f.source.runtime); expect(client.productSourceOperations!.isCurrent()).toBe(true);
       expect(JSON.parse(socket.sent[0]!).execution_features.filter((feature: string) => allSourceFeatures.includes(feature))).toEqual(allSourceFeatures);
+      expect(JSON.parse(socket.sent[0]!).product_source_routing).toEqual(f.source.routing);
       expect(JSON.stringify(JSON.parse(socket.sent[0]!))).not.toContain("source.json");
     } finally { await node.stop(); }
     expect(f.source.close).toHaveBeenCalledTimes(1);
@@ -78,6 +86,37 @@ describe("standard native source launcher", () => {
       const socket = await start(node);
       expect(JSON.parse(socket.sent[0]!).execution_features.filter((feature: string) => allSourceFeatures.includes(feature))).toEqual(allSourceFeatures.slice(0, 4));
     } finally { await node.stop(); }
+  });
+  it("advertises H4 only after explicit configured-controller opt-in and local all-case qualification", async () => {
+    const f = fixture(true, true, true);
+    vi.mocked(runtime.readProductSourceRuntimeCapabilities).mockReturnValue({ semantic: true, measurementV2: true, importedReview: true, importedDesign: true, importedDesignReview: true, importedExecution: false, importedValidation: false });
+    const node = createArtoodNode(f.options);
+    try {
+      const socket = await start(node);
+      expect(f.create.mock.calls[0]![0].productSourceOperations?.importedDesignReview).toBe(true);
+      expect(JSON.parse(socket.sent[0]!).execution_features).toContain("imported-design-review.v1");
+    } finally { await node.stop(); }
+  });
+  it("strips caller H4 claims when the local profile or explicit controller flag is absent", async () => {
+    const f = fixture(), node = createArtoodNode(f.options);
+    try { const socket = await start(node); expect(JSON.parse(socket.sent[0]!).execution_features).not.toContain("imported-design-review.v1"); }
+    finally { await node.stop(); }
+  });
+  it.each([false, true])("advertises H5 only for an explicitly configured controller and qualified local profile (qualified: %s)", async qualified => {
+    const f = fixture(true, true, true, true);
+    vi.mocked(runtime.readProductSourceRuntimeCapabilities).mockReturnValue({ semantic: true, measurementV2: true, importedReview: true,
+      importedDesign: true, importedDesignReview: true, importedExecution: qualified, importedValidation: false });
+    const node = createArtoodNode(f.options);
+    try {
+      const socket = await start(node), features = JSON.parse(socket.sent[0]!).execution_features;
+      expect(f.create.mock.calls[0]![0].productSourceOperations?.importedExecution).toBe(true);
+      expect(features.includes("imported-execution.v1")).toBe(qualified);
+    } finally { await node.stop(); }
+  });
+  it("strips caller H5 claims when the explicit controller flag is absent", async () => {
+    const f = fixture(), node = createArtoodNode(f.options);
+    try { const socket = await start(node); expect(JSON.parse(socket.sent[0]!).execution_features).not.toContain("imported-execution.v1"); }
+    finally { await node.stop(); }
   });
   it("ends source session authority immediately on disconnect, settles once and never reconnects or restarts it", async () => {
     const f = fixture(), node = createArtoodNode(f.options), socket = await start(node), operations = f.create.mock.calls[0]![0].productSourceOperations!;

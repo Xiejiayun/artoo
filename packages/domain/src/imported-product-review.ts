@@ -39,7 +39,7 @@ export const ImportedProductReviewRequestV1Schema:z.ZodType<ImportedProductRevie
     ||context?.task.id!==review.task_id||context.project.id!==base.project_id||context.workspace.root!==review.workspace.root
     ||context.goal_context?.goal_id!==base.goal_id||context.goal_context.plan?.id!==base.plan_id
     ||canonical(context.goal_context)!==canonical(original.context_pack.payload?.goal_context)||canonical(context.project)!==canonical(original.context_pack.payload?.project)
-    ||context.policy.execution_mode!=="discussion"||context.policy.filesystem_write_scope.length!==0||review.policy_snapshot.filesystem_write_scope.length!==0||context.product_development||context.review_subject
+    ||context.policy.execution_mode!=="discussion"||context.policy.filesystem_write_scope.length!==0||review.policy_snapshot.filesystem_write_scope.length!==0||context.imported_clean_validation || context.imported_clean_validation_review_subject || context.imported_recovery_validation||context.imported_recovery_validation_review_subject||context.product_development||context.imported_validation ||context.imported_validation_review_subject ||context.review_subject||context.imported_execution || context.imported_execution_review_subject || context.imported_execution_repair
     ||!subject||subject.review_id!==value.review_id||subject.author_agent_id!==value.source_author.agent_id
     ||subject.reviewer_agent_id!==value.reviewer.agent_id||subject.reviewer_instance_id!==value.reviewer.instance_id
     ||canonical(context.verification_capabilities)!==canonical({...base.destination.capabilities,profile_id:base.destination.profile_id})

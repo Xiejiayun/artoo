@@ -6,29 +6,37 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import type { PreparedVerificationProfile } from "./verification.js";
 import type { PreparedReleaseProfile } from "./product-release.js";
+import { ProductSourceTransferRequestV2Schema, type ReleaseCapabilitiesV1 } from "@artoo/domain";
 const io = vi.hoisted(() => ({ read: undefined as unknown as typeof readFileSync, stat: undefined as unknown as typeof lstatSync }));
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>(); io.read = actual.readFileSync; io.stat = actual.lstatSync;
   return { ...actual, readFileSync: vi.fn(actual.readFileSync), lstatSync: vi.fn(actual.lstatSync) };
 });
 const control = vi.hoisted(() => ({ prepare: vi.fn(() => Object.freeze({})), current: vi.fn(), close: vi.fn(), client: vi.fn(() => ({})),
-  storage: vi.fn(() => ({})), audit: vi.fn(), backend: vi.fn(), design: vi.fn(), roles: vi.fn(() => ({ semantic: true, measurementV2: true, importedReview: true, importedDesign: true })) }));
+  release: vi.fn<(profile: PreparedReleaseProfile) => ReleaseCapabilitiesV1 | undefined>(),
+  recovery: vi.fn(() => Object.freeze({})), recoveredSource: vi.fn(() => Object.freeze({})), validation: vi.fn(),
+  storage: vi.fn(() => ({})), audit: vi.fn(), backend: vi.fn(), design: vi.fn(), designReview: vi.fn(), execution: vi.fn(), roles: vi.fn(() => ({ semantic: true, measurementV2: true, importedReview: true, importedDesign: true, importedDesignReview: true, importedExecution: true })) }));
 vi.mock("./windows-release-storage.js", () => ({ prepareWindowsReleaseStorage: control.storage, assertWindowsReleaseStorage: vi.fn(), auditWindowsReleaseStorage: control.audit }));
 vi.mock("./owned/windows-owned-process.js", () => ({ assertWindowsProcessBackend: control.backend }));
-vi.mock("./verification.js", () => ({ assertImportedDesignVerificationProfile: control.design }));
+vi.mock("./verification.js", () => ({ assertImportedDesignVerificationProfile: control.design, assertImportedDesignReviewVerificationProfile: control.designReview,
+  assertImportedExecutionVerificationProfile: control.execution, assertImportedValidationVerificationProfile: control.validation }));
+vi.mock("./product-release.js", () => ({ readReleaseCapabilities: control.release }));
 vi.mock("./product-source-runtime.js", () => ({ prepareProductSourceRuntime: control.prepare, assertProductSourceRuntimeConfiguration: control.current,
   closeProductSourceRuntime: control.close, readProductSourceRuntimeCapabilities: control.roles }));
 vi.mock("./product-source-semantic-client.js", () => ({ createProductSourceSemanticClient: control.client }));
+vi.mock("./windows-source-recovery.js", () => ({ prepareWindowsSourceRecoveryConfiguration: control.recovery,
+  readWindowsRecoverySourceRuntime: control.recoveredSource,
+  withWindowsSourceRecoveryOperation: (_runtime: unknown, _descriptor: unknown, work: () => unknown) => work() }));
 import { prepareProductSourceNode } from "./product-source-node.js";
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-beforeEach(() => { vi.clearAllMocks(); vi.mocked(readFileSync).mockImplementation(io.read); vi.mocked(lstatSync).mockImplementation(io.stat);
+beforeEach(() => { vi.clearAllMocks(); control.release.mockReset(); vi.mocked(readFileSync).mockImplementation(io.read); vi.mocked(lstatSync).mockImplementation(io.stat);
   Object.defineProperty(process, "platform", { ...platform, value: "win32" }); });
 afterEach(() => { Object.defineProperty(process, "platform", platform); });
 const token = "sk_device_fixture_" + "a".repeat(64);
-function fixture(config: Record<string, unknown> = {}) {
+function fixture(config: Record<string, unknown> = {}, capabilities?: PreparedVerificationProfile["capabilities"]) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-source-node-config-"))), workspace = join(root, "workspace"); mkdirSync(workspace);
   const file = join(root, "source.json"), research = { receiptDirectory: join(root, "research") };
-  const profile = Object.freeze({ id: "local", project_id: "project", workspace_root: workspace }) as PreparedVerificationProfile;
+  const profile = Object.freeze({ id: "local", project_id: "project", workspace_root: workspace, ...(capabilities ? { capabilities } : {}) }) as PreparedVerificationProfile;
   const release = Object.freeze({ id: "publish", verifier: profile }) as PreparedReleaseProfile;
   const value = { version: 1, storeRoot: join(root, "store"), gitExecutable: join(root, "git.exe"), ...config };
   writeFileSync(file, JSON.stringify(value));
@@ -37,6 +45,19 @@ function fixture(config: Record<string, unknown> = {}) {
   return { options, profile, release, research, file, value };
 }
 describe("standard source-node protected configuration", () => {
+  it("describes only protected source exports and freezes a fresh reader-derived snapshot", () => {
+    const request = ProductSourceTransferRequestV2Schema.parse(JSON.parse(readFileSync(new URL("../../../packages/domain/test-fixtures/product-source-operation.json", import.meta.url), "utf8")).admission.request);
+    const f = fixture({ sourceResearch: true, measurementV2: { version: 1, releaseProfileIds: ["publish"] }, operations: { version: 1 } }, request.source_export.source_capabilities);
+    const release = structuredClone(request.source_export.measurement_v2!.source_release);
+    Object.assign(release.binding, { release_profile_id: "publish", verification_profile_id: "local", workspace_root: f.profile.workspace_root });
+    control.release.mockImplementation(profile => profile === f.release ? release : undefined);
+    const prepared = prepareProductSourceNode(f.options), routes = prepared.routing;
+    expect(routes).toEqual({ version: 1, source_exports: [release], destination_mappings: [] });
+    expect(control.release).toHaveBeenCalledWith(f.release); expect(Object.isFrozen(routes.source_exports[0]!.binding)).toBe(true);
+    expect(() => routes.source_exports.push(release)).toThrow();
+    writeFileSync(f.file, JSON.stringify({ ...f.value, sourceResearch: false }));
+    expect(() => prepared.routing).toThrow("changed after preparation");
+  });
   it("reuses the original node identity, profiles, release reader selections and author research configuration", () => {
     const f = fixture({ sourceResearch: true, measurementV2: { version: 1, releaseProfileIds: ["publish"] }, operations: { version: 1 } });
     const prepared = prepareProductSourceNode(f.options), call = control.prepare.mock.calls[0] as unknown as [Record<string, unknown>];
@@ -110,7 +131,8 @@ describe("standard source-node protected configuration", () => {
     expect(JSON.stringify(control.prepare.mock.calls)).not.toContain(token);
   });
   it.each([
-    { version: 2 }, { operations: { version: 1, importedDesign: true } }, { operations: { version: 1 } },
+    { version: 2 }, { operations: { version: 1, importedDesign: true } }, { operations: { version: 1, importedDesignReview: true } },
+    { operations: { version: 1, importedExecution: true } }, { operations: { version: 1, importedExecutionReview: true } }, { operations: { version: 1 } },
     { operations: { version: 1, importedReview: true } }, { sourceResearch: true, measurementV2: { version: 1, releaseProfileIds: ["missing"] } },
     { sourceResearch: true, measurementV2: { version: 1, releaseProfileIds: ["publish", "publish"] } },
     { serverOrigin: "https://task-supplied.example" }, { gitExecutable: "relative" },
@@ -120,5 +142,139 @@ describe("standard source-node protected configuration", () => {
   it("requires the author research receipt store and does not synthesize one", () => {
     const f = fixture({ sourceResearch: true }); expect(() => prepareProductSourceNode({ ...f.options, research: undefined })).toThrow(/reuse/);
     expect(control.prepare).not.toHaveBeenCalled();
+  });
+  it("enables H4 only with explicit local opt-in and the exact protected all-case destination profile", () => {
+    const data = JSON.parse(readFileSync(new URL("../../../packages/domain/test-fixtures/product-source-operation.json", import.meta.url), "utf8"));
+    const request = data.admission.request, destinationResearchMappings = [{ sourceProfileDigest: request.source_export.byte_export.profile_digest,
+      destinationProfileId: "local", commandPairs: request.command_pairs, sourceRelease: request.source_export.measurement_v2.source_release }];
+    const f = fixture({ measurementV2: { version: 1, releaseProfileIds: ["publish"], destinationResearchMappings },
+      operations: { version: 1, importedReview: true, importedDesign: true, importedDesignReview: true } });
+    const prepared = prepareProductSourceNode(f.options);
+    expect(prepared.importedDesignReview).toBe(true); expect(control.designReview).toHaveBeenCalledWith(f.profile);
+    control.designReview.mockImplementationOnce(() => { throw Error("protected prototype-only profile"); });
+    expect(() => prepareProductSourceNode(f.options)).toThrow("prototype-only");
+    expect(control.prepare).toHaveBeenCalledTimes(1);
+  });
+  it("enables H5 only with H4 and its original protected implementation verifier", () => {
+    const data = JSON.parse(readFileSync(new URL("../../../packages/domain/test-fixtures/product-source-operation.json", import.meta.url), "utf8"));
+    const request = data.admission.request, destinationResearchMappings = [{ sourceProfileDigest: request.source_export.byte_export.profile_digest,
+      destinationProfileId: "local", commandPairs: request.command_pairs, sourceRelease: request.source_export.measurement_v2.source_release }];
+    const f = fixture({ measurementV2: { version: 1, releaseProfileIds: ["publish"], destinationResearchMappings },
+      operations: { version: 1, importedReview: true, importedDesign: true, importedDesignReview: true, importedExecution: true } });
+    const prepared = prepareProductSourceNode(f.options);
+    expect(prepared.importedExecution).toBe(true); expect(control.execution).toHaveBeenCalledWith(f.profile);
+    control.execution.mockImplementationOnce(() => { throw Error("protected implementation profile unavailable"); });
+    expect(() => prepareProductSourceNode(f.options)).toThrow("implementation profile unavailable"); expect(control.prepare).toHaveBeenCalledTimes(1);
+  });
+  it("requires explicit H6 opt-in, the original H5 profile and committed event receipts", () => {
+    const data = JSON.parse(readFileSync(new URL("../../../packages/domain/test-fixtures/product-source-operation.json", import.meta.url), "utf8"));
+    const request = data.admission.request;
+    const f = fixture({ measurementV2: { version: 1, releaseProfileIds: ["publish"], destinationResearchMappings: [{
+      sourceProfileDigest: request.source_export.byte_export.profile_digest, destinationProfileId: "local",
+      commandPairs: request.command_pairs, sourceRelease: request.source_export.measurement_v2.source_release }] },
+      operations: { version: 1, importedReview: true, importedDesign: true, importedDesignReview: true, importedExecution: true, importedExecutionReview: true } });
+    expect(prepareProductSourceNode(f.options).importedExecutionReview).toBe(true);
+    expect(control.execution).toHaveBeenCalledWith(f.profile);
+    expect(() => prepareProductSourceNode({ ...f.options, acknowledgeRunEvents: false })).toThrow("committed run-event receipts");
+    control.execution.mockImplementationOnce(() => { throw Error("H6 protected implementation profile unavailable"); });
+    expect(() => prepareProductSourceNode(f.options)).toThrow("implementation profile unavailable");
+    expect(control.prepare).toHaveBeenCalledTimes(1);
+  });
+});
+function recoveryConfigurationFixture(capabilities?: PreparedVerificationProfile["capabilities"]) {
+  const data = JSON.parse(readFileSync(new URL("../../../packages/domain/test-fixtures/product-source-operation.json", import.meta.url), "utf8"));
+  const request = data.admission.request;
+  const f = fixture({ measurementV2: { version: 1, releaseProfileIds: ["publish"], destinationResearchMappings: [{
+    sourceProfileDigest: request.source_export.byte_export.profile_digest, destinationProfileId: "local",
+    commandPairs: request.command_pairs, sourceRelease: request.source_export.measurement_v2.source_release }] },
+    operations: { version: 1, importedReview: true, importedDesign: true, importedDesignReview: true,
+      importedExecution: true, importedExecutionReview: true, importedValidation: true } }, capabilities);
+  writeFileSync(f.file, JSON.stringify({ ...f.value, recovery: { version: 1, deviceId: "device",
+    workspaceRoot: f.profile.workspace_root, controlDirectory: join(f.file, "..", "guardian-control") } }));
+  return f;
+}
+describe("protected recovery startup selection (controlled authority factory)", () => {
+  it("discovers a complete destination mapping after supervisor qualification without opening its runtime", () => {
+    const request = ProductSourceTransferRequestV2Schema.parse(JSON.parse(readFileSync(new URL("../../../packages/domain/test-fixtures/product-source-operation.json", import.meta.url), "utf8")).admission.request);
+    const f = recoveryConfigurationFixture(request.byte_request.destination.capabilities), release = structuredClone(request.measurement_v2!.destination_release);
+    Object.assign(release.binding, { release_profile_id: "publish", verification_profile_id: "local", workspace_root: f.profile.workspace_root });
+    control.release.mockImplementation(profile => profile === f.release ? release : undefined);
+    const source = prepareProductSourceNode(f.options);
+    expect(() => source.routing).toThrow("qualified native supervisor"); source.qualifyRecovery({} as never);
+    expect(source.routing).toEqual({ version: 1, source_exports: [], destination_mappings: [{ source_release: request.source_export.measurement_v2!.source_release,
+      destination_release: release, command_pairs: request.command_pairs }] });
+    expect(control.prepare).not.toHaveBeenCalled(); expect(control.recoveredSource).not.toHaveBeenCalled();
+    expect(() => source.runtime).toThrow("registration");
+  });
+  it("prepares configuration without acquiring an ordinary source owner or advertising before supervisor qualification", () => {
+    const f = recoveryConfigurationFixture(), source = prepareProductSourceNode(f.options);
+    expect(source.recoveryRequired).toBe(true); expect(source.recoveryConfiguration).toBeUndefined();
+    expect(control.prepare).not.toHaveBeenCalled(); expect(control.recovery).not.toHaveBeenCalled();
+    expect(() => source.runtime).toThrow("registration"); expect(() => source.features).toThrow("qualified native supervisor");
+    const supervisor = Object.freeze({}); source.qualifyRecovery(supervisor as never);
+    expect(control.recovery).toHaveBeenCalledWith(expect.objectContaining({ supervisor, source: expect.objectContaining({
+      profiles: f.options.profiles, windowsBackend: f.options.windowsBackend }) }));
+    expect(source.features).toContain("product.source.recovery.v1"); expect(control.prepare).not.toHaveBeenCalled();
+  });
+  it("does not publish recovery features after rejected supervisor qualification", () => {
+    const f = recoveryConfigurationFixture(), source = prepareProductSourceNode(f.options);
+    control.recovery.mockImplementationOnce(() => { throw Error("Original supervisor authority missing"); });
+    expect(() => source.qualifyRecovery({} as never)).toThrow("Original supervisor");
+    expect(() => source.features).toThrow("qualified native supervisor"); expect(control.prepare).not.toHaveBeenCalled();
+  });
+  it("activates only once and keeps the guardian store fence when the source node closes", () => {
+    const f = recoveryConfigurationFixture(), source = prepareProductSourceNode(f.options);
+    source.qualifyRecovery({} as never); const recoveredRuntime = Object.freeze({});
+    const actual = source.activateRecovery(recoveredRuntime as never);
+    expect(control.recoveredSource).toHaveBeenCalledWith(recoveredRuntime); expect(source.runtime).toBe(actual);
+    expect(() => source.activateRecovery(recoveredRuntime as never)).toThrow("already consumed");
+    source.close(); expect(control.close).not.toHaveBeenCalled();
+  });
+});
+
+describe("one strongest enabled source-verifier tier per synchronous preparation", () => {
+  const tiers = ["importedDesign", "importedDesignReview", "importedExecution", "importedExecutionReview", "importedValidation"] as const;
+  const checker = () => ({ design: control.design, designReview: control.designReview, execution: control.execution, validation: control.validation });
+  function selected(level: number) {
+    const f = recoveryConfigurationFixture();
+    const operations = { version: 1, importedReview: true, ...Object.fromEntries(tiers.map((name, index) => [name, index < level])) };
+    // Use the ordinary configuration here so preparation can reach the controlled
+    // runtime factory. Native source and recovery authority remain test doubles.
+    writeFileSync(f.file, JSON.stringify({ ...f.value, operations })); return f;
+  }
+  it.each([
+    { level: 0, expected: null }, { level: 1, expected: "design" }, { level: 2, expected: "designReview" },
+    { level: 3, expected: "execution" }, { level: 4, expected: "execution" }, { level: 5, expected: "validation" },
+  ] as const)("selects $expected for enabled prefix $level without repeated direct lower-tier checks", ({ level, expected }) => {
+    const f = selected(level); prepareProductSourceNode(f.options);
+    for (const [name, check] of Object.entries(checker())) {
+      expect(check).toHaveBeenCalledTimes(name === expected ? 1 : 0);
+      if (name === expected) expect(check).toHaveBeenCalledWith(f.profile);
+    }
+    expect(control.prepare).toHaveBeenCalledOnce();
+  });
+  it.each([1, 2, 3, 4, 5])("still stops before source ownership when enabled tier %s rejects", level => {
+    const f = selected(level), name = level === 1 ? "design" : level === 2 ? "designReview" : level < 5 ? "execution" : "validation";
+    const failure = Error("Controlled original tier rejected its protected profile");
+    checker()[name].mockImplementationOnce(() => { throw failure; });
+    expect(() => prepareProductSourceNode(f.options)).toThrow(failure); expect(control.prepare).not.toHaveBeenCalled();
+    expect(control.client).not.toHaveBeenCalled(); expect(control.recovery).not.toHaveBeenCalled();
+  });
+  it.each(["unbound-backend", "changed-protected-script"] as const)
+  ("the actual highest-tier checker retains its lower-level %s failure", async variant => {
+    const actual = await vi.importActual<typeof import("./verification.js")>("./verification.js"), f = selected(5);
+    const script = join(f.file, "..", "controlled-check.mjs"); writeFileSync(script, "// controlled protected script\n");
+    // Real local profile preparation and highest-tier call chain; neither this
+    // profile nor its command can execute a native process in this test.
+    const profile = actual.prepareVerificationProfiles([{ id: f.profile.id, project_id: f.profile.project_id,
+      workspace_root: f.profile.workspace_root, subject_paths: ["product"], required_files: [],
+      commands: [{ id: "check", argv: [process.execPath, script], timeout_ms: 1000 }] }])[0]!;
+    if (variant === "changed-protected-script") writeFileSync(script, "// changed verifier bytes\n");
+    control.validation.mockImplementationOnce(actual.assertImportedValidationVerificationProfile);
+    expect(() => prepareProductSourceNode({ ...f.options, profiles: [profile] })).toThrow(variant === "unbound-backend"
+      ? /Imported design requires an original native Windows Job verifier/ : /administrator verifier changed/);
+    expect(control.validation).toHaveBeenCalledWith(profile); expect(control.design).not.toHaveBeenCalled();
+    expect(control.designReview).not.toHaveBeenCalled(); expect(control.execution).not.toHaveBeenCalled();
+    expect(control.prepare).not.toHaveBeenCalled(); expect(control.client).not.toHaveBeenCalled();
   });
 });

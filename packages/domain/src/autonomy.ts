@@ -139,6 +139,8 @@ export const IndependentReviewVerdictSchema = z.object({
   }
 });
 
+/** New goals opt in explicitly; absence preserves the fixed-computer execution path. */
+export const AutonomousSourceHandoffV1Schema = z.object({ version: z.literal(1), mode: z.literal("automatic") }).strict();
 export const GoalAutomationSchema = z.object({
   goal_id: z.string().min(1),
   organization_id: z.string().min(1),
@@ -155,6 +157,7 @@ export const GoalAutomationSchema = z.object({
   execution_mode: z.enum(["single_agent", "agent_team"]).default("single_agent"),
   planning_capability_snapshot: GoalPlanningCapabilitySnapshotSchema.nullable().default(null),
   team: AutonomousTeamSchema.nullable().default(null),
+  source_handoff: AutonomousSourceHandoffV1Schema.nullable().optional(),
   release_profile_id: identifier.nullable().default(null),
   delivery: z.enum(["verified_workspace", "published_product"]).default("verified_workspace"),
   last_error: z.string().nullable(),
@@ -170,5 +173,11 @@ export const CreateAutonomousGoalRequestSchema = z.object({
   execution_mode: z.enum(["single_agent", "agent_team"]).optional(),
   release_profile_id: identifier.optional(),
   max_retries: z.number().int().min(0).max(10).default(3),
+  source_handoff: AutonomousSourceHandoffV1Schema.optional(),
+}).superRefine((value, ctx) => {
+  if (value.source_handoff && (value.execution_mode !== "agent_team" || !value.release_profile_id)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["source_handoff"],
+      message: "Automatic source handoff requires Agent Team and a configured publication profile" });
+  }
 });
 export type CreateAutonomousGoalRequest = z.infer<typeof CreateAutonomousGoalRequestSchema>;

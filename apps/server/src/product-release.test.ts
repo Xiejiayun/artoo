@@ -18,7 +18,7 @@ describe("durable target-product publication", () => {
   let server: TestServer;
   beforeEach(async () => { server = await buildTestServer({ workspaceRoot: workspace }); });
   afterEach(async () => { await server.close(); });
-  async function prepared() {
+  async function prepared(subjectDigest = digest) {
     const goal = await createGoal(server.ctx, { project_id: "proj_artoo", title: "Publish tested product" });
     const plan = await proposePlan(server.ctx, goal.id, { task_specs: [{ title: "Final verification", acceptance_criteria: ["Product works"] }] });
     const materialized = await acceptPlan(server.ctx, plan.id), taskId = materialized.task_ids[0]!;
@@ -28,7 +28,7 @@ describe("durable target-product publication", () => {
     const requirement = { version: 1 as const, request_id: "verify-final", profile_id: "default" };
     await server.db.db.update(runs).set({ verificationRequirement: requirement }).where(eq(runs.id, runId));
     const [run] = await server.db.db.select().from(runs).where(eq(runs.id, runId));
-    const evidence: RunVerificationPayload = { ...requirement, profile_digest: digest, subject_digest: digest, outcome: "passed",
+    const evidence: RunVerificationPayload = { ...requirement, profile_digest: digest, subject_digest: subjectDigest, outcome: "passed",
       checks: [{ id: "acceptance", exit_code: 0, duration_ms: 10, output_digest: digest }], required_files: [] };
     for (const [sequence, event] of [
       { type: "run.lifecycle", payload: { phase: "started" } },
@@ -183,16 +183,16 @@ describe("durable target-product publication", () => {
   });
   it("validates the restored version and never changes the original publication receipt", async () => {
     const f = await prepared(); await queue(f.automation);
-    const previousGoal = await createGoal(server.ctx, { project_id: "proj_artoo", title: "Previously published product" });
-    const [current] = await server.db.db.select().from(productReleases).where(eq(productReleases.goalId, f.goal.id));
-    const previousDigest = `sha256:${"b".repeat(64)}`, previousId = "previous_release";
+    const previousDigest = `sha256:${"b".repeat(64)}`, prior = await prepared(previousDigest);
+    await queue(prior.automation);
+    const previousId = (await getGoalProductRelease(server.ctx, prior.goal.id))!.id;
     const original = await published(f.goal.id);
-    // Fixture begins at a recorded prior publication; its initial validation is covered by the tests above.
-    const priorReceipt: ProductReleaseReceipt = { ...original, request: { ...original.request, release_id: previousId,
-      goal_id: previousGoal.id, subject_digest: previousDigest }, artifact_digest: previousDigest,
+    // H8 preserves pre-upgrade history but requires every new attempt to start queued.
+    // Build the previous version's own goal/run/evidence and commit its exact receipt;
+    // borrowing the current goal's run or inserting a terminal fact would evade that lifecycle.
+    const priorReceipt: ProductReleaseReceipt = { ...await published(prior.goal.id),
       health_checks: original.health_checks.map((check) => ({ ...check, body_digest: previousDigest })) };
-    await server.db.db.insert(productReleases).values({ ...current!, id: previousId, goalId: previousGoal.id,
-      status: "published", request: priorReceipt.request, receipt: priorReceipt });
+    await ingestProductReleaseReceipt(server.ctx, prior.run.computerId, priorReceipt);
     const receipt = { ...original, previous_release_id: previousId };
     await ingestProductReleaseReceipt(server.ctx, f.run.computerId, receipt);
     const report = health(receipt, 1, { state: "rolled_back", consecutive_failures: 2, active_release_id: previousId,

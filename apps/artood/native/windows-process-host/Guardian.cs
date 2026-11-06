@@ -1,0 +1,596 @@
+// H9 candidate. A surviving guardian is live authority; its files are audit/discovery only.
+// No Job HANDLE is duplicated here: KILL_ON_JOB_CLOSE keeps its existing meaning.
+using Microsoft.Win32.SafeHandles;
+using System.Globalization;
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Security.Principal;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+internal static class GuardianWire
+{
+    internal const string Capability = "artoo.windows-runtime-guardian.v1";
+    internal static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
+    internal static string Encode(object value) => JsonSerializer.Serialize(value, Json);
+    internal static string Digest(object value) => "sha256:" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(Encode(value))));
+    internal static T Decode<T>(string text) => JsonSerializer.Deserialize<T>(text, Json) ?? throw new IOException("empty_guardian_frame");
+    internal static void Require(bool value, string reason) { if (!value) throw new IOException(reason); }
+    internal static bool Id(string? value) => value is { Length: > 0 and <= 128 } && !value.Contains('\0');
+    internal static bool Uuid(string? value) => Guid.TryParseExact(value, "D", out _);
+    internal static bool Hash(string? value) => value is { Length: 71 } && value.StartsWith("sha256:", StringComparison.Ordinal)
+        && value.AsSpan(7).ToArray().All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
+    internal static async Task<string> ReadLine(TextReader reader, CancellationToken cancellation)
+    {
+        var output = new StringBuilder(); var one = new char[1];
+        for (;;) {
+            int count = await reader.ReadAsync(one.AsMemory(), cancellation);
+            if (count == 0) throw new IOException("guardian_peer_eof");
+            if (one[0] == '\n') return output.ToString();
+            Require(one[0] != '\0' && output.Length < 65536, "guardian_frame_limit"); output.Append(one[0]);
+        }
+    }
+    internal static string Input() { using var timeout = new CancellationTokenSource(5000); return ReadLine(Console.In, timeout.Token).GetAwaiter().GetResult(); }
+}
+
+internal sealed record GuardianEndpoint(int Version, string Capability, string PipeName, string GuardianInstanceId,
+    uint GuardianPid, string GuardianCreationTime, string ExecutableDigest);
+internal sealed record GuardianBootstrap(int Version, string Kind, string NodeId, string DeviceId, string SessionId,
+    string ConfigurationDigest, string StoreDirectory, string WorkspaceRoot, string Topology, string ControlDirectory, string SupervisorLaunchIdentityDigest);
+internal sealed record GuardianEnrollment(int Version, GuardianEndpoint Endpoint, string EpochId, string SlotId, string Ticket);
+internal sealed record GuardianRelay(int Version, GuardianEndpoint Endpoint, JsonElement Request);
+
+internal sealed class GuardianRequest
+{
+    public int Version { get; init; }
+    public string Kind { get; init; } = "";
+    public string Nonce { get; init; } = "";
+    public string? EpochId { get; init; }
+    public string? SessionId { get; init; }
+    public string? RegistrationId { get; init; }
+    public string? RegistrationDigest { get; init; }
+    public string? SlotId { get; init; }
+    public string? Ticket { get; init; }
+    public string? OperationKind { get; init; }
+    public string? OperationId { get; init; }
+    public string? BindingDigest { get; init; }
+    public uint? RootPid { get; init; }
+    public string? RootCreationTime { get; init; }
+    public GuardianTerminal? Terminal { get; init; }
+    public string? TerminalAck { get; init; }
+    public string? ChallengeId { get; init; }
+    public string? RequestDigest { get; init; }
+    public string? ExpectedRosterDigest { get; init; }
+    public int? ExpectedRosterRevision { get; init; }
+    public string? ExpectedNewDaemonIdentityDigest { get; init; }
+    public GuardianServerOperation? ServerOperation { get; init; }
+}
+internal sealed record GuardianServerOperation(string Kind, string OperationId, string RequestDigest, string? RunId);
+internal sealed record GuardianTerminal(bool RootCreated, bool RootStarted, uint? RootPid, string? RootCreationTime,
+    bool AtomicJobMember, bool RootWaitObserved, uint? RootExitCode, bool JobCreated, bool JobEmptyObserved,
+    bool StdoutCreated, bool StderrCreated, bool StdoutEof, bool StderrEof, bool NoTargetCreated, bool CleanupConfirmed);
+
+internal sealed class GuardianProcess : IDisposable
+{
+    internal readonly SafeProcessHandle Handle;
+    internal readonly uint Pid;
+    internal readonly long CreationTime;
+    internal readonly uint ParentPid;
+    internal readonly string Image;
+    internal readonly string Sid;
+    internal GuardianProcess(uint pid) {
+        Handle = GuardianNative.OpenProcess(0x00100000 | 0x1000 | 0x0400, false, pid);
+        try {
+            GuardianWire.Require(!Handle.IsInvalid, "guardian_process_open"); Pid = pid;
+            GuardianWire.Require(Native.GetProcessTimes(Handle.DangerousGetHandle(), out CreationTime, out _, out _, out _), "guardian_process_times");
+            GuardianWire.Require(GuardianNative.NtQueryInformationProcess(Handle, 0, out var basic,
+                (uint)Marshal.SizeOf<GuardianNative.PROCESS_BASIC_INFORMATION>(), out _) == 0, "guardian_parent_query");
+            ParentPid = checked((uint)basic.InheritedFromUniqueProcessId.ToInt64());
+            var image = new StringBuilder(32768); uint size = (uint)image.Capacity;
+            GuardianWire.Require(GuardianNative.QueryFullProcessImageNameW(Handle, 0, image, ref size), "guardian_image_query"); Image = image.ToString();
+            GuardianWire.Require(GuardianNative.OpenProcessToken(Handle, 8, out IntPtr token), "guardian_process_token");
+            try { using var identity = new WindowsIdentity(token); Sid = identity.User?.Value ?? throw new IOException("guardian_process_sid"); }
+            finally { Native.CloseHandle(token); }
+        } catch { Handle.Dispose(); throw; }
+    }
+    internal bool Exited => Native.WaitForSingleObject(Handle.DangerousGetHandle(), 0) switch {
+        0 => true, 258 => false, _ => throw new IOException("guardian_exact_process_wait") };
+    internal bool Same(GuardianProcess other) => Pid == other.Pid && CreationTime == other.CreationTime;
+    internal bool HasNativeMode(string mode) {
+        // All modes share one signed/hashed bundle. Pin the actual kernel-reported argv
+        // too, so a general guardian relay cannot submit host-owned terminal facts.
+        GuardianNative.NtQueryInformationProcessBuffer(Handle, 60, IntPtr.Zero, 0, out uint needed);
+        GuardianWire.Require(needed is > 0 and <= 65536, "guardian_command_line_bound");
+        IntPtr buffer = Marshal.AllocHGlobal(checked((int)needed));
+        try {
+            GuardianWire.Require(GuardianNative.NtQueryInformationProcessBuffer(Handle, 60, buffer, needed, out _) == 0, "guardian_command_line_query");
+            var text = Marshal.PtrToStructure<GuardianNative.UNICODE_STRING>(buffer);
+            long offset = text.Buffer.ToInt64() - buffer.ToInt64();
+            GuardianWire.Require(text.Length % 2 == 0 && offset >= 0 && offset + text.Length <= needed, "guardian_command_line_buffer");
+            string commandLine = Marshal.PtrToStringUni(text.Buffer, text.Length / 2) ?? throw new IOException("guardian_command_line_missing");
+            IntPtr argv = GuardianNative.CommandLineToArgvW(commandLine, out int argc);
+            GuardianWire.Require(argv != IntPtr.Zero, "guardian_command_line_parse");
+            try { return argc == 2 && string.Equals(Marshal.PtrToStringUni(Marshal.ReadIntPtr(argv)), Image, StringComparison.OrdinalIgnoreCase)
+                && Marshal.PtrToStringUni(Marshal.ReadIntPtr(argv, IntPtr.Size)) == mode; }
+            finally { GuardianNative.LocalFree(argv); }
+        } finally { Marshal.FreeHGlobal(buffer); }
+    }
+    internal object Identity => new { pid = Pid, creationTime = CreationTime.ToString(CultureInfo.InvariantCulture), image = Image, sid = Sid };
+    public void Dispose() => Handle.Dispose();
+}
+
+internal sealed class GuardianDirectory : IDisposable
+{
+    internal readonly SafeFileHandle Handle;
+    internal readonly string Path;
+    internal readonly string IdentityDigest;
+    internal GuardianDirectory(string path) {
+        GuardianWire.Require(System.IO.Path.IsPathFullyQualified(path) && !path.StartsWith("\\\\", StringComparison.Ordinal), "guardian_local_directory_required");
+        // No share-delete: the same physical root is retained throughout the transfer.
+        var security = new Native.SECURITY_ATTRIBUTES { nLength = (uint)Marshal.SizeOf<Native.SECURITY_ATTRIBUTES>() };
+        Handle = new SafeFileHandle(Native.CreateFileW(path, 0x80, 3, ref security, 3, 0x02000000 | 0x00200000, IntPtr.Zero), true);
+        try {
+            GuardianWire.Require(!Handle.IsInvalid, "guardian_directory_handle");
+            GuardianWire.Require(GuardianNative.GetFileInformationByHandle(Handle, out var facts), "guardian_directory_handle");
+            GuardianWire.Require((facts.FileAttributes & 0x10) != 0 && (facts.FileAttributes & 0x400) == 0, "guardian_directory_reparse");
+            var final = new StringBuilder(32768);
+            uint length = GuardianNative.GetFinalPathNameByHandleW(Handle, final, (uint)final.Capacity, 0);
+            GuardianWire.Require(length > 0 && length < final.Capacity, "guardian_directory_final_path");
+            Path = final.ToString();
+            GuardianWire.Require(Path.StartsWith("\\\\?\\", StringComparison.Ordinal)
+                && string.Equals(Path[4..].TrimEnd('\\'), path.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase), "guardian_directory_alias");
+            IdentityDigest = GuardianWire.Digest(new { path = Path.ToUpperInvariant(), volume = facts.VolumeSerialNumber,
+                indexHigh = facts.FileIndexHigh, indexLow = facts.FileIndexLow });
+        } catch { Handle.Dispose(); throw; }
+    }
+    public void Dispose() => Handle.Dispose();
+}
+
+internal sealed class GuardianConnection : IDisposable
+{
+    private readonly NamedPipeClientStream pipe;
+    private readonly StreamReader reader;
+    private readonly StreamWriter writer;
+    private readonly GuardianProcess? guardian;
+    private readonly object gate = new();
+    private bool disposed;
+    internal GuardianConnection(GuardianEndpoint endpoint) {
+        GuardianWire.Require(endpoint.Version == 1 && endpoint.Capability == GuardianWire.Capability && GuardianWire.Uuid(endpoint.GuardianInstanceId)
+            && endpoint.PipeName == "artoo-guardian-" + endpoint.GuardianInstanceId && GuardianWire.Hash(endpoint.ExecutableDigest), "guardian_endpoint");
+        pipe = new NamedPipeClientStream(".", endpoint.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        string phase = "guardian_connect";
+        try {
+            pipe.Connect(3000);
+            phase = "guardian_server_identity";
+            GuardianWire.Require(GuardianNative.GetNamedPipeServerProcessId(pipe.SafePipeHandle, out uint pid), "guardian_server_pid");
+            guardian = new GuardianProcess(pid);
+            GuardianWire.Require(!guardian.Exited && guardian.Pid == endpoint.GuardianPid
+                && guardian.CreationTime.ToString(CultureInfo.InvariantCulture) == endpoint.GuardianCreationTime
+                && string.Equals(guardian.Image, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase)
+                && guardian.HasNativeMode("--guardian-v1")
+                && "sha256:" + Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(guardian.Image))) == endpoint.ExecutableDigest,
+                "guardian_exact_server_identity");
+            reader = new StreamReader(pipe, new UTF8Encoding(false, true), false, 4096, true);
+            writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true };
+        } catch (Exception error) { NativeFailureDiagnostic.Emit(phase, error); guardian?.Dispose(); pipe.Dispose(); throw; }
+    }
+    internal JsonElement Send(object request) {
+        lock (gate) {
+            string phase = "guardian_request_write";
+            try {
+            GuardianWire.Require(!disposed && guardian is not null && !guardian.Exited, "guardian_lost");
+            string encoded = GuardianWire.Encode(request); GuardianWire.Require(encoded.Length < 65536, "guardian_frame_limit");
+            using var timeout = new CancellationTokenSource(3000);
+            writer.WriteLineAsync(encoded.AsMemory(), timeout.Token).GetAwaiter().GetResult();
+            phase = "guardian_response_read";
+            var result = GuardianWire.Decode<JsonElement>(GuardianWire.ReadLine(reader, timeout.Token).GetAwaiter().GetResult());
+            phase = "guardian_response_binding";
+            var sent = GuardianWire.Decode<GuardianRequest>(encoded);
+            GuardianWire.Require(result.GetProperty("version").GetInt32() == 1 && result.GetProperty("nonce").GetString() == sent.Nonce
+                && result.GetProperty("kind").GetString() == "ok", "guardian_request_rejected");
+            return result.GetProperty("payload").Clone();
+            } catch (Exception error) { NativeFailureDiagnostic.Emit(phase, error); throw; }
+        }
+    }
+    public void Dispose() { lock (gate) { if (disposed) return; disposed = true;
+        reader.Dispose(); writer.Dispose(); pipe.Dispose(); guardian?.Dispose(); } }
+}
+
+internal sealed class GuardianHost : IDisposable
+{
+    private readonly GuardianEnrollment enrollment;
+    private readonly GuardianConnection connection;
+    private volatile bool finished;
+    internal GuardianHost(GuardianEnrollment input, Action<string> stop) {
+        GuardianWire.Require(input.Version == 1 && GuardianWire.Uuid(input.EpochId) && GuardianWire.Uuid(input.SlotId)
+            && GuardianWire.Uuid(input.Ticket), "guardian_enrollment");
+        enrollment = input; connection = new GuardianConnection(input.Endpoint);
+        try { Send("attach"); }
+        catch { connection.Dispose(); throw; }
+        new Thread(() => {
+            while (!finished) {
+                try { bool shouldStop = Send("pulse").GetProperty("stop").GetBoolean(); if (!finished && shouldStop) stop("guardian_epoch_frozen"); }
+                catch { if (!finished) stop("guardian_lost"); return; }
+                Thread.Sleep(100);
+            }
+        }) { IsBackground = true, Name = "artoo-guardian-watch" }.Start();
+    }
+    private JsonElement Send(string kind, uint? pid = null, string? creation = null, GuardianTerminal? terminal = null, string? ack = null) => connection.Send(new GuardianRequest {
+        Version = 1, Kind = kind, Nonce = Guid.NewGuid().ToString("D"), EpochId = enrollment.EpochId,
+        SlotId = enrollment.SlotId, Ticket = enrollment.Ticket, RootPid = pid, RootCreationTime = creation, Terminal = terminal, TerminalAck = ack });
+    internal void EnrollRoot(uint pid, long creation) => Send("root", pid, creation.ToString(CultureInfo.InvariantCulture));
+    internal bool Terminal(GuardianTerminal facts) {
+        // Closure is already observed. A pulse queued behind this final exchange must not
+        // turn a successful operation into cancellation after its ACK was accepted.
+        finished = true;
+        try {
+            var response = Send("terminal", terminal: facts);
+            string ack = response.GetProperty("terminalAck").GetString() ?? throw new IOException("guardian_terminal_ack");
+            GuardianWire.Require(GuardianWire.Uuid(ack), "guardian_terminal_ack");
+            // This round trip establishes that the host actually received the terminal ACK.
+            Send("terminal_ack_received", ack: ack); finished = true; return true;
+        } catch { finished = true; return false; }
+    }
+    public void Dispose() { finished = true; connection.Dispose(); }
+}
+
+internal sealed class GuardianState : IDisposable
+{
+    private sealed class Slot(string id, string ticket, string kind, string operation, string binding, GuardianServerOperation? serverOperation) {
+        internal readonly string Id = id, Ticket = ticket, Kind = kind, Operation = operation, Binding = binding;
+        internal readonly GuardianServerOperation? ServerOperation = serverOperation;
+        internal GuardianProcess? Host, Root;
+        internal GuardianTerminal? Terminal;
+        internal string? TerminalDigest, Ack;
+        internal bool AckReceived;
+        internal object Head => new { slotId = Id, operationKind = Kind, operationId = Operation, bindingDigest = Binding, serverOperation = ServerOperation };
+    }
+    private readonly object gate = new();
+    private GuardianProcess daemon;
+    private readonly GuardianProcess supervisor;
+    private readonly GuardianDirectory store, workspace, controlDirectory;
+    private readonly FileStream owner, sourceOwner, audit;
+    private readonly GuardianDirectory sourceOperations;
+    private readonly GuardianBootstrap configuration;
+    private readonly Dictionary<string, Slot> slots = new(StringComparer.Ordinal);
+    private readonly HashSet<string> challenges = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (string Binding, string EpochId, object Result)> transfers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> diagnosticCounts = new(StringComparer.Ordinal);
+    private FileStream? diagnosticAudit;
+    private bool diagnosticUnavailable;
+    private bool frozen, poisoned, activated;
+    private int revision, generation;
+    private string epochId = Guid.NewGuid().ToString("D"), sessionId;
+    private string? registrationId, registrationDigest;
+    internal readonly GuardianEndpoint Endpoint;
+    internal GuardianState(GuardianBootstrap input) {
+        GuardianWire.Require(input.Version == 1 && input.Kind == "bootstrap" && GuardianWire.Id(input.NodeId) && GuardianWire.Id(input.DeviceId)
+            && GuardianWire.Id(input.SessionId) && GuardianWire.Hash(input.ConfigurationDigest)
+            && input.Topology == "supervisor-plain-daemon.v1" && GuardianWire.Hash(input.SupervisorLaunchIdentityDigest), "guardian_bootstrap");
+        configuration = input; sessionId = input.SessionId;
+        using var self = new GuardianProcess((uint)Environment.ProcessId);
+        GuardianWire.Require(Native.IsProcessInJob(self.Handle.DangerousGetHandle(), IntPtr.Zero, out bool inJob), "guardian_job_query");
+        daemon = new GuardianProcess(self.ParentPid);
+        GuardianWire.Require(!daemon.Exited && daemon.CreationTime < self.CreationTime && daemon.Sid == self.Sid, "guardian_bootstrap_parent");
+        // The trusted local supervisor is captured from the kernel parent relationship, not a
+        // requested PID. Its original HANDLE survives every permitted daemon incarnation.
+        supervisor = new GuardianProcess(daemon.ParentPid);
+        GuardianWire.Require(!supervisor.Exited && supervisor.CreationTime < daemon.CreationTime && supervisor.Sid == daemon.Sid
+            && string.Equals(supervisor.Image, self.Image, StringComparison.OrdinalIgnoreCase)
+            && supervisor.HasNativeMode("--daemon-supervisor-v1"),
+            "guardian_bootstrap_supervisor");
+        DaemonSupervisorAuthority.Require(daemon, input.SupervisorLaunchIdentityDigest);
+        store = new GuardianDirectory(input.StoreDirectory); workspace = new GuardianDirectory(input.WorkspaceRoot);
+        controlDirectory = new GuardianDirectory(input.ControlDirectory);
+        GuardianWire.Require(!string.Equals(controlDirectory.Path, store.Path, StringComparison.OrdinalIgnoreCase)
+            && !controlDirectory.Path.StartsWith(store.Path.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase)
+            && !store.Path.StartsWith(controlDirectory.Path.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(controlDirectory.Path, workspace.Path, StringComparison.OrdinalIgnoreCase)
+            && !controlDirectory.Path.StartsWith(workspace.Path.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase)
+            && !workspace.Path.StartsWith(controlDirectory.Path.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase), "guardian_control_store_overlap");
+        string instance = Guid.NewGuid().ToString("D");
+        Endpoint = new GuardianEndpoint(1, GuardianWire.Capability, "artoo-guardian-" + instance, instance, self.Pid,
+            self.CreationTime.ToString(CultureInfo.InvariantCulture), "sha256:" + Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(self.Image))));
+        // CreateNew deliberately rejects every old fence, including old H8 owner.lock files.
+        owner = new FileStream(System.IO.Path.Combine(input.StoreDirectory, "owner.lock"), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read);
+        try {
+            string operationsPath = System.IO.Path.Combine(input.StoreDirectory, "operations");
+            Directory.CreateDirectory(operationsPath); sourceOperations = new GuardianDirectory(operationsPath);
+            // This is the actual historical source-runtime fence, not the root discovery
+            // marker. CreateNew rejects an old H8 owner even when no guardian marker exists.
+            sourceOwner = new FileStream(System.IO.Path.Combine(operationsPath, "owner.lock"), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read);
+            byte[] bytes = Encoding.UTF8.GetBytes(GuardianWire.Encode(new { version = 1, capability = GuardianWire.Capability, endpoint = Endpoint, binding = Binding }));
+            owner.Write(bytes); owner.Flush(true);
+            sourceOwner.Write(bytes); sourceOwner.Flush(true);
+            // ACL collectors themselves create roster facts. Their audit must not mutate
+            // the source store whose before/after inventory they are currently inspecting.
+            audit = new FileStream(System.IO.Path.Combine(input.ControlDirectory, "guardian-audit-v1.ndjson"), FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+            // An outer supervisor/fixture Job is allowed. The admitted local topology uses
+            // plain daemon spawn; a per-daemon Job requires supervisor-owned guardian launch.
+            Record("bootstrap", new { epochId, sessionId, supervisor = supervisor.Identity, topology = input.Topology, guardianInJob = inJob });
+        } catch { owner.Dispose(); throw; }
+    }
+    private object Binding => new { version = 1, node_id = configuration.NodeId, device_id = configuration.DeviceId,
+        guardian_instance_id = Endpoint.GuardianInstanceId, store_identity_digest = store.IdentityDigest,
+        configuration_digest = configuration.ConfigurationDigest, workspace_root = configuration.WorkspaceRoot,
+        workspace_identity_digest = workspace.IdentityDigest };
+    private object[] Roster => slots.Values.OrderBy(slot => slot.Id, StringComparer.Ordinal).Select(slot => slot.Head).ToArray();
+    private string RosterDigest => GuardianWire.Digest(Roster);
+    private object[] Operations => slots.Values.Select(slot => slot.ServerOperation).Where(operation => operation is not null).Cast<GuardianServerOperation>().Distinct()
+        .OrderBy(operation => operation.Kind + ":" + operation.OperationId, StringComparer.Ordinal)
+        .Select(operation => (object)(operation.RunId is null
+            ? new Dictionary<string, object> { ["kind"] = operation.Kind, ["operation_id"] = operation.OperationId, ["request_digest"] = operation.RequestDigest }
+            : new Dictionary<string, object> { ["kind"] = operation.Kind, ["operation_id"] = operation.OperationId, ["request_digest"] = operation.RequestDigest, ["run_id"] = operation.RunId })).ToArray();
+    private object Epoch => new { version = 1, epoch_id = epochId, generation, session_id = sessionId, roster_revision = revision, roster_digest = RosterDigest };
+    internal object Initial => new { endpoint = Endpoint, binding = Binding, epoch = Epoch };
+    private void Record(string kind, object facts) {
+        try {
+            byte[] line = Encoding.UTF8.GetBytes(GuardianWire.Encode(new { version = 1, kind, epochId, generation, revision, facts }) + "\n");
+            GuardianWire.Require(audit.Length + line.Length <= 8 * 1024 * 1024, "guardian_audit_bound");
+            audit.Write(line); audit.Flush(true);
+        } catch { poisoned = true; throw; }
+    }
+    internal void RecordDiagnostic(string phase, Exception error) {
+        lock (gate) {
+            // A separate fixed file cannot consume the authoritative audit budget.
+            // Failure or a pre-existing diagnostic file disables only diagnostics;
+            // it cannot poison/unfreeze state, settle a slot or manufacture an ACK.
+            try {
+                if (diagnosticUnavailable) return;
+                var facts = NativeFailureDiagnostic.Capture(phase, error);
+                int count = diagnosticCounts.GetValueOrDefault(facts.Phase);
+                if (count >= 4) return;
+                diagnosticCounts[facts.Phase] = count + 1;
+                byte[] line = Encoding.UTF8.GetBytes(GuardianWire.Encode(new { version = 1, kind = "native_failure_diagnostic", epochId, generation, revision, facts }) + "\n");
+                diagnosticAudit ??= new FileStream(System.IO.Path.Combine(configuration.ControlDirectory, "guardian-diagnostic-v1.ndjson"),
+                    FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+                if (diagnosticAudit.Length + line.Length > 65536) return;
+                diagnosticAudit.Write(line); diagnosticAudit.Flush(true);
+            } catch {
+                diagnosticUnavailable = true;
+                try { diagnosticAudit?.Dispose(); } catch { /* Preserve the original failure. */ }
+                diagnosticAudit = null;
+            }
+        }
+    }
+    private void FreezeIfDead() { if (!frozen && daemon.Exited) { frozen = true; Record("epoch_frozen", new { daemon = daemon.Identity }); } }
+    private GuardianProcess RelayDaemon(GuardianProcess peer) {
+        GuardianWire.Require(string.Equals(peer.Image, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase) && peer.Sid == daemon.Sid
+            && peer.HasNativeMode("--guardian-client-v1"),
+            "guardian_relay_image");
+        var parent = new GuardianProcess(peer.ParentPid);
+        try {
+            GuardianWire.Require(!parent.Exited && parent.CreationTime < peer.CreationTime && parent.Sid == daemon.Sid
+                && string.Equals(parent.Image, daemon.Image, StringComparison.OrdinalIgnoreCase), "guardian_relay_parent");
+            GuardianWire.Require(!supervisor.Exited && parent.ParentPid == supervisor.Pid && parent.CreationTime > supervisor.CreationTime,
+                "guardian_exact_supervisor_required");
+            DaemonSupervisorAuthority.Require(parent, configuration.SupervisorLaunchIdentityDigest);
+            return parent;
+        } catch { parent.Dispose(); throw; }
+    }
+    private Slot HostSlot(GuardianProcess peer, GuardianRequest request) {
+        GuardianWire.Require(request.EpochId == epochId && request.SlotId is not null && slots.ContainsKey(request.SlotId), "guardian_slot_epoch");
+        Slot slot = slots[request.SlotId!];
+        GuardianWire.Require(request.Ticket == slot.Ticket && slot.Host is not null && slot.Host.Same(peer), "guardian_exact_host"); return slot;
+    }
+    private bool Closed() => frozen && !poisoned && !supervisor.Exited && slots.Values.All(slot => slot.Terminal is not null && slot.AckReceived
+        && slot.Host is not null && slot.Host.Exited && (slot.Root is null || slot.Root.Exited));
+    private static string TransferBinding(GuardianRequest request) => GuardianWire.Digest(new { request.EpochId, request.SessionId,
+        request.ChallengeId, request.RequestDigest, request.ExpectedRosterDigest, request.ExpectedRosterRevision,
+        request.ExpectedNewDaemonIdentityDigest });
+    internal object Handle(GuardianProcess peer, GuardianRequest request) {
+        lock (gate) {
+            GuardianWire.Require(request.Version == 1 && GuardianWire.Uuid(request.Nonce) && !poisoned, "guardian_request");
+            FreezeIfDead();
+            if (request.Kind == "attach") {
+                GuardianWire.Require(!frozen && activated && request.EpochId == epochId && request.SlotId is not null && slots.ContainsKey(request.SlotId), "guardian_attach_epoch");
+                Slot slot = slots[request.SlotId!];
+                GuardianWire.Require(slot.Host is null && request.Ticket == slot.Ticket && peer.ParentPid == daemon.Pid
+                    && peer.CreationTime > daemon.CreationTime && !daemon.Exited && !peer.Exited
+                    && peer.Sid == daemon.Sid && string.Equals(peer.Image, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase)
+                    && (peer.HasNativeMode("--stdio-v1") || peer.HasNativeMode("--stdio-sync-v1")), "guardian_attach_identity");
+                slot.Host = new GuardianProcess(peer.Pid); GuardianWire.Require(slot.Host.Same(peer), "guardian_attach_identity_changed");
+                Record("host_attached", new { slotId = slot.Id, host = slot.Host.Identity }); return new { attached = true };
+            }
+            if (request.Kind is "root" or "pulse" or "terminal" or "terminal_ack_received") {
+                Slot slot = HostSlot(peer, request);
+                if (request.Kind == "pulse") return new { stop = frozen };
+                if (request.Kind == "root") {
+                    GuardianWire.Require(!frozen && !daemon.Exited && slot.Root is null && slot.Terminal is null && request.RootPid.HasValue, "guardian_root_epoch");
+                    var root = new GuardianProcess(request.RootPid!.Value);
+                    try {
+                        GuardianWire.Require(root.ParentPid == peer.Pid && root.CreationTime > peer.CreationTime && !root.Exited
+                            && root.CreationTime.ToString(CultureInfo.InvariantCulture) == request.RootCreationTime, "guardian_root_identity");
+                        slot.Root = root; Record("root_enrolled", new { slotId = slot.Id, root = root.Identity });
+                    } catch { if (slot.Root is null) root.Dispose(); throw; }
+                    return new { enrolled = true };
+                }
+                if (request.Kind == "terminal") {
+                    var facts = request.Terminal ?? throw new IOException("guardian_terminal_missing");
+                    GuardianWire.Require(facts.CleanupConfirmed && facts.RootCreated != facts.NoTargetCreated
+                        && (!facts.StdoutCreated || facts.StdoutEof) && (!facts.StderrCreated || facts.StderrEof)
+                        && (!facts.JobCreated || facts.JobEmptyObserved)
+                        && (!facts.RootStarted || facts.RootCreated && facts.AtomicJobMember), "guardian_terminal_incomplete");
+                    if (slot.Root is not null) GuardianWire.Require(facts.RootCreated && facts.JobCreated && facts.StdoutCreated && facts.StderrCreated
+                        && facts.RootWaitObserved && facts.RootExitCode.HasValue && facts.RootPid == slot.Root.Pid
+                        && facts.RootCreationTime == slot.Root.CreationTime.ToString(CultureInfo.InvariantCulture) && slot.Root.Exited
+                        && Native.GetExitCodeProcess(slot.Root.Handle.DangerousGetHandle(), out uint exitCode) && exitCode == facts.RootExitCode,
+                        "guardian_terminal_root");
+                    else GuardianWire.Require(facts.NoTargetCreated && !facts.RootCreated && !facts.RootStarted && !facts.RootWaitObserved
+                        && facts.RootPid is null && facts.RootCreationTime is null && facts.RootExitCode is null && !facts.AtomicJobMember,
+                        "guardian_terminal_unenrolled_root");
+                    string digest = GuardianWire.Digest(facts);
+                    GuardianWire.Require(slot.TerminalDigest is null || slot.TerminalDigest == digest, "guardian_terminal_changed");
+                    if (slot.Terminal is null) { slot.Terminal = facts; slot.TerminalDigest = digest; slot.Ack = Guid.NewGuid().ToString("D");
+                        Record("terminal_observed", new { slotId = slot.Id, terminalDigest = digest }); }
+                    return new { terminalAck = slot.Ack, terminalDigest = slot.TerminalDigest };
+                }
+                GuardianWire.Require(slot.Terminal is not null && slot.Ack is not null && request.TerminalAck == slot.Ack, "guardian_terminal_ack_binding");
+                if (!slot.AckReceived) { Record("terminal_ack_received", new { slotId = slot.Id, terminalDigest = slot.TerminalDigest }); slot.AckReceived = true; }
+                return new { acknowledged = true };
+            }
+            using var caller = RelayDaemon(peer);
+            if (request.Kind == "status") return new { binding = Binding, epoch = Epoch, registrationId, registrationDigest, operations = Operations, frozen, closed = Closed(),
+                newDaemonIdentityDigest = GuardianWire.Digest(caller.Identity), callerIsCurrentDaemon = caller.Same(daemon) };
+            if (request.Kind == "activate") {
+                GuardianWire.Require(!frozen && caller.Same(daemon) && request.EpochId == epochId && request.SessionId == sessionId
+                    && GuardianWire.Uuid(request.RegistrationId) && GuardianWire.Hash(request.RegistrationDigest)
+                    && (!activated || registrationId == request.RegistrationId && registrationDigest == request.RegistrationDigest), "guardian_activation_binding");
+                if (!activated) { registrationId = request.RegistrationId; registrationDigest = request.RegistrationDigest;
+                    Record("registration_accepted", new { registrationId, registrationDigest }); activated = true; }
+                return new { activated = true };
+            }
+            if (request.Kind == "reserve") {
+                GuardianWire.Require(!frozen && activated && caller.Same(daemon) && request.EpochId == epochId && request.SessionId == sessionId
+                    && slots.Count < 4096 && request.OperationKind is "author" or "verifier" or "browser" or "observer" or "git" or "tool"
+                    && GuardianWire.Id(request.OperationId) && GuardianWire.Hash(request.BindingDigest), "guardian_reservation_binding");
+                // Pre-H6 slots remain in the complete native roster but cannot settle any
+                // Server operation. H7/H9/release controllers bind their real namespace.
+                var serverOperation = request.ServerOperation;
+                GuardianWire.Require(serverOperation is null || serverOperation.Kind is "validation" or "validation_review" or "release" && GuardianWire.Id(serverOperation.OperationId)
+                    && GuardianWire.Hash(serverOperation.RequestDigest) && (serverOperation.Kind == "validation" ? GuardianWire.Id(serverOperation.RunId) : serverOperation.RunId is null)
+                    && slots.Values.Select(slot => slot.ServerOperation).Append(serverOperation).Where(operation => operation is not null).Distinct().Count() <= 128
+                    && slots.Values.All(slot => slot.ServerOperation is null || slot.ServerOperation.Kind != serverOperation.Kind || slot.ServerOperation.OperationId != serverOperation.OperationId
+                        || slot.ServerOperation == serverOperation), "guardian_server_operation_binding");
+                string id = Guid.NewGuid().ToString("D"), ticket = Guid.NewGuid().ToString("D");
+                var slot = new Slot(id, ticket, request.OperationKind!, request.OperationId!, request.BindingDigest!, serverOperation); slots.Add(id, slot); revision++;
+                Record("launch_reserved", new { slot = slot.Head, serverOperation });
+                return new GuardianEnrollment(1, Endpoint, epochId, id, ticket);
+            }
+            if (request.Kind == "transfer" && request.ChallengeId is not null && transfers.TryGetValue(request.ChallengeId, out var replay)) {
+                GuardianWire.Require(!frozen && caller.Same(daemon) && replay.EpochId == epochId && replay.Binding == TransferBinding(request), "guardian_transfer_replay");
+                return replay.Result;
+            }
+            GuardianWire.Require(request.Kind == "transfer" && Closed() && !caller.Same(daemon) && request.EpochId == epochId
+                && GuardianWire.Id(request.SessionId) && request.SessionId != sessionId && GuardianWire.Uuid(request.ChallengeId)
+                && GuardianWire.Hash(request.RequestDigest) && request.ExpectedRosterRevision == revision && request.ExpectedRosterDigest == RosterDigest
+                && request.ExpectedNewDaemonIdentityDigest == GuardianWire.Digest(caller.Identity)
+                && challenges.Count < 256 && !challenges.Contains(request.ChallengeId!), "guardian_transfer_binding");
+            var closedSlots = slots.Values.OrderBy(slot => slot.Id, StringComparer.Ordinal).Select(slot => new { slot_id = slot.Id,
+                operation_kind = slot.Kind, operation_id = slot.Operation, binding_digest = slot.Binding, terminal_digest = slot.TerminalDigest! }).ToArray();
+            string previousEpoch = epochId, nextEpoch = Guid.NewGuid().ToString("D"), previousRoster = RosterDigest;
+            int previousRevision = revision; string closure = GuardianWire.Digest(closedSlots); var operations = Operations;
+            // Keep the complete roster; never truncate it to satisfy the transport bound.
+            // Reserve headroom for the bounded epoch/challenge/session fields and envelope.
+            GuardianWire.Require(Encoding.UTF8.GetByteCount(GuardianWire.Encode(new { binding = Binding, slots = closedSlots, operations })) < 48000,
+                "guardian_complete_transfer_frame_bound");
+            var newDaemon = new GuardianProcess(caller.Pid);
+            GuardianWire.Require(newDaemon.Same(caller) && !newDaemon.Exited, "guardian_transfer_daemon_changed");
+            Record("epoch_transfer", new { oldEpochId = epochId, newEpochId = nextEpoch, challengeId = request.ChallengeId,
+                requestDigest = request.RequestDigest, closureSetDigest = closure, newDaemon = caller.Identity });
+            challenges.Add(request.ChallengeId!); daemon.Dispose(); daemon = newDaemon;
+            foreach (var slot in slots.Values) { slot.Host?.Dispose(); slot.Root?.Dispose(); } slots.Clear();
+            epochId = nextEpoch; generation++; sessionId = request.SessionId!; revision = 0; frozen = false; activated = false; registrationId = null; registrationDigest = null;
+            var result = new { binding = Binding, oldEpochId = previousEpoch, newEpochId = epochId, generation, currentSessionId = sessionId,
+                newDaemonIdentityDigest = GuardianWire.Digest(daemon.Identity), challengeId = request.ChallengeId, requestDigest = request.RequestDigest,
+                rosterRevision = previousRevision, rosterDigest = previousRoster, closureSetDigest = closure, slots = closedSlots, operations, epoch = Epoch };
+            // Retain the sealed old roster/facts in this guardian's memory. A lost reply may be
+            // replayed only to the same exact new daemon, never reconstructed from audit JSON.
+            transfers.Add(request.ChallengeId!, (TransferBinding(request), epochId, result)); return result;
+        }
+    }
+    internal void ObserveDaemon() { lock (gate) { if (!poisoned) FreezeIfDead(); } }
+    public void Dispose() {
+        try { diagnosticAudit?.Dispose(); } catch { /* Diagnostic cleanup cannot prevent original resource cleanup. */ }
+        foreach (var slot in slots.Values) { slot.Host?.Dispose(); slot.Root?.Dispose(); }
+        audit.Dispose(); sourceOwner.Dispose(); sourceOperations.Dispose(); owner.Dispose(); workspace.Dispose(); store.Dispose(); controlDirectory.Dispose(); daemon.Dispose(); supervisor.Dispose(); }
+}
+
+internal static class GuardianProgram
+{
+    internal static int MainGuardian() {
+        try {
+            Console.InputEncoding = new UTF8Encoding(false, true);
+            using var state = new GuardianState(GuardianWire.Decode<GuardianBootstrap>(GuardianWire.Input()));
+            try {
+            using var self = new GuardianProcess((uint)Environment.ProcessId);
+            // Creating the ACL-protected, remote-rejecting pipe precedes every target admission.
+            var first = CreatePipe(state.Endpoint.PipeName, self.Sid);
+            Console.Out.WriteLine(GuardianWire.Encode(new { version = 1, kind = "guardian_ready", payload = state.Initial })); Console.Out.Flush();
+            // stdio is only bootstrap delivery; daemon EOF must not kill the surviving guardian.
+            Serve(state, self.Sid, first).GetAwaiter().GetResult(); return 0;
+            } catch (Exception error) { state.RecordDiagnostic("guardian_lifetime", error); throw; }
+        } catch (Exception error) { NativeFailureDiagnostic.Emit("guardian_bootstrap", error); return 2; }
+    }
+    internal static int MainRelay() {
+        string phase = "guardian_relay_input";
+        try {
+            Console.InputEncoding = new UTF8Encoding(false, true);
+            var input = GuardianWire.Decode<GuardianRelay>(GuardianWire.Input()); GuardianWire.Require(input.Version == 1, "guardian_relay_version");
+            phase = "guardian_relay_send";
+            using var connection = new GuardianConnection(input.Endpoint);
+            var output = connection.Send(input.Request);
+            phase = "guardian_relay_output";
+            Console.Out.WriteLine(GuardianWire.Encode(new { version = 1, kind = "guardian_result", payload = output })); Console.Out.Flush(); return 0;
+        } catch (Exception error) { NativeFailureDiagnostic.Emit(phase, error); return 2; }
+    }
+    private static NamedPipeServerStream CreatePipe(string name, string sid) {
+        GuardianWire.Require(GuardianNative.ConvertStringSecurityDescriptorToSecurityDescriptorW("D:P(A;;GA;;;SY)(A;;GA;;;" + sid + ")", 1, out IntPtr descriptor, out _), "guardian_pipe_acl");
+        try {
+            var security = new Native.SECURITY_ATTRIBUTES { nLength = (uint)Marshal.SizeOf<Native.SECURITY_ATTRIBUTES>(), lpSecurityDescriptor = descriptor };
+            // FILE_FLAG_OVERLAPPED + duplex; byte mode + PIPE_REJECT_REMOTE_CLIENTS.
+            SafePipeHandle handle = GuardianNative.CreateNamedPipeW("\\\\.\\pipe\\" + name, 3 | 0x40000000, 8, 32, 65536, 65536, 0, ref security);
+            GuardianWire.Require(!handle.IsInvalid, "guardian_pipe_create");
+            return new NamedPipeServerStream(PipeDirection.InOut, true, false, handle);
+        } finally { GuardianNative.LocalFree(descriptor); }
+    }
+    private static async Task Serve(GuardianState state, string sid, NamedPipeServerStream first) {
+        using var capacity = new SemaphoreSlim(31);
+        _ = Task.Run(async () => { for (;;) { try { state.ObserveDaemon(); } catch (Exception error) { state.RecordDiagnostic("guardian_observe", error); } await Task.Delay(50); } });
+        var pending = first;
+        for (;;) {
+            await pending.WaitForConnectionAsync(); var connected = pending;
+            await capacity.WaitAsync(); pending = CreatePipe(state.Endpoint.PipeName, sid);
+            _ = Task.Run(async () => { try { await Client(state, connected); } finally { connected.Dispose(); capacity.Release(); } });
+        }
+    }
+    private static async Task Client(GuardianState state, NamedPipeServerStream pipe) {
+        string phase = "guardian_peer_open";
+        try {
+            GuardianWire.Require(GuardianNative.GetNamedPipeClientProcessId(pipe.SafePipeHandle, out uint pid), "guardian_client_pid");
+            using var peer = new GuardianProcess(pid);
+            using var reader = new StreamReader(pipe, new UTF8Encoding(false, true), false, 4096, true);
+            using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true };
+            for (;;) {
+                using var timeout = new CancellationTokenSource(5000);
+                phase = "guardian_client_read";
+                string line = await GuardianWire.ReadLine(reader, timeout.Token);
+                var request = GuardianWire.Decode<GuardianRequest>(line);
+                object response;
+                try { response = new { version = 1, kind = "ok", nonce = request.Nonce, payload = state.Handle(peer, request) }; }
+                catch (Exception error) { state.RecordDiagnostic("guardian_request_handle", error); response = new { version = 1, kind = "error", nonce = request.Nonce, payload = new { reason = "guardian_request_rejected" } }; }
+                phase = "guardian_client_reply";
+                await writer.WriteLineAsync(GuardianWire.Encode(response).AsMemory(), timeout.Token);
+            }
+        } catch (Exception error) { state.RecordDiagnostic(phase, error); /* Peer loss never settles a slot or releases ownership. */ }
+    }
+}
+
+internal static class GuardianNative
+{
+    [StructLayout(LayoutKind.Sequential)] internal struct PROCESS_BASIC_INFORMATION {
+        internal IntPtr ExitStatus, PebBaseAddress, AffinityMask, BasePriority, UniqueProcessId, InheritedFromUniqueProcessId;
+    }
+    [StructLayout(LayoutKind.Sequential)] internal struct UNICODE_STRING { internal ushort Length, MaximumLength; internal IntPtr Buffer; }
+    [StructLayout(LayoutKind.Sequential)] internal struct FILE_TIME { internal uint Low, High; }
+    [StructLayout(LayoutKind.Sequential)] internal struct BY_HANDLE_FILE_INFORMATION {
+        internal uint FileAttributes; internal FILE_TIME CreationTime, LastAccessTime, LastWriteTime;
+        internal uint VolumeSerialNumber, FileSizeHigh, FileSizeLow, NumberOfLinks, FileIndexHigh, FileIndexLow;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)] internal static extern SafeProcessHandle OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("ntdll.dll")] internal static extern int NtQueryInformationProcess(SafeProcessHandle process, int informationClass, out PROCESS_BASIC_INFORMATION info, uint length, out uint returned);
+    [DllImport("ntdll.dll", EntryPoint = "NtQueryInformationProcess")] internal static extern int NtQueryInformationProcessBuffer(SafeProcessHandle process, int informationClass, IntPtr buffer, uint length, out uint returned);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern IntPtr CommandLineToArgvW(string command, out int argc);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] internal static extern bool QueryFullProcessImageNameW(SafeProcessHandle process, uint flags, StringBuilder image, ref uint size);
+    [DllImport("advapi32.dll", SetLastError = true)] internal static extern bool OpenProcessToken(SafeProcessHandle process, uint access, out IntPtr token);
+    [DllImport("kernel32.dll", SetLastError = true)] internal static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint pid);
+    [DllImport("kernel32.dll", SetLastError = true)] internal static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out uint pid);
+    [DllImport("kernel32.dll", SetLastError = true)] internal static extern bool GetFileInformationByHandle(SafeFileHandle file, out BY_HANDLE_FILE_INFORMATION info);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] internal static extern uint GetFinalPathNameByHandleW(SafeFileHandle file, StringBuilder path, uint size, uint flags);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] internal static extern SafePipeHandle CreateNamedPipeW(string name, uint openMode, uint pipeMode, uint maxInstances, uint outSize, uint inSize, uint timeout, ref Native.SECURITY_ATTRIBUTES security);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] internal static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(string text, uint revision, out IntPtr descriptor, out uint size);
+    [DllImport("kernel32.dll")] internal static extern IntPtr LocalFree(IntPtr memory);
+}

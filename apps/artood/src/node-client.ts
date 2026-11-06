@@ -3,7 +3,9 @@ import { ManagedDelivery, boundedOperation, abortableOperation, DeliveryCancelle
   type ManagedJournalOptions, type ManagedSession } from "./managed/managed-delivery.js";
 import type { FreshLaunchPermit, JournalRun, TerminalSettlement } from "./managed/journal-types.js";
 import { PRODUCT_SOURCE_TRANSFER_FEATURE_V1, PRODUCT_SOURCE_TRANSFER_FEATURE_V2, PRODUCT_SOURCE_TRANSFER_MEASUREMENT_V2_FEATURE_V1,
-  PRODUCT_SOURCE_OPERATIONS_FEATURE_V1, IMPORTED_PRODUCT_REVIEW_FEATURE_V1, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1 } from "@artoo/domain";
+  PRODUCT_SOURCE_OPERATIONS_FEATURE_V1, IMPORTED_PRODUCT_REVIEW_FEATURE_V1, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1,
+  IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
+  SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1 } from "@artoo/domain";
 import { readProductSourceRuntimeCapabilities } from "./product-source-runtime.js";
 import type {
   AgentInstanceHandle,
@@ -44,6 +46,22 @@ import { bindWorkspaceReadOnlyTools } from "./workspace-readonly.js";
 import { createProductSourceOperationClient } from "./product-source-operations.js";
 import { createImportedProductReviewClient } from "./imported-product-review.js";
 import { createImportedDesignContinuationClient } from "./imported-design-continuation.js";
+import { createImportedDesignReviewClient } from "./imported-design-review.js";
+import { createImportedExecutionClient } from "./imported-execution.js";
+import { createImportedExecutionReviewClient } from "./imported-execution-review.js";
+import { createImportedValidationClient } from "./imported-validation.js";
+import { createProductSourceRecoveryClient } from "./source-recovery-client.js";
+import { assertCleanDaemonControllerConfiguration, type PreparedCleanDaemonConfiguration } from "./windows-clean-local-configuration.js";
+import { createImportedRecoveryValidationClient } from "./imported-recovery-validation.js";
+import { createImportedCleanValidationClient } from "./imported-clean-validation.js";
+import { prepareWindowsCleanValidationRuntime, readPreparedCleanValidationRelease, claimCleanValidationRelease,
+  releaseCleanValidationClaim, withWindowsCleanReleaseOperation, type PreparedWindowsCleanValidationRuntime,
+  type PreparedCleanValidationRelease } from "./windows-clean-validation-runtime.js";
+import { readWindowsRecoverySourceRuntime, withWindowsSourceRecoveryOperation, readPreparedRecoveryValidationRelease,
+  claimRecoveryValidationRelease, type PreparedWindowsSourceRecoveryConfiguration,
+  type PreparedWindowsSourceRecoveryRuntime, type PreparedRecoveryValidationRelease } from "./windows-source-recovery.js";
+import { canonicalProductSourceTransferValueV1, importedValidationRequestDigestV1, importedValidationReviewRequestDigestV1,
+  type RecoveryOperationRefV1 } from "@artoo/domain";
 import type { createProductSourceSemanticClient } from "./product-source-semantic-client.js";
 import type { ReleaseCapabilityReader } from "./release-capability-authority.js";
 import { readBrowserEvidence, type BrowserEvidenceGrant } from "./browser-evidence.js";
@@ -52,6 +70,7 @@ import { prepareOwnedWorktree, reserveOwnedWorktree, materializeOwnedWorktree,
   type MaterializedWorktree, type OwnedReservation } from "./owned/worktree-reservation.js";
 import type { ArtifactUploader } from "./artifact-upload.js";
 import { assertProductSourceRuntimeConfiguration, assertProductSourceWorkspaceBoundary, claimProductSourceRun,
+  claimImportedValidationRelease, readPreparedImportedValidationRelease,
   releaseProductSourceRun, captureProductSourceExport, captureProductSourceExportV2, productSourceSemanticExportEnabled, productSourceMeasurementV2ExportEnabled,
   type PreparedProductSourceRuntime } from "./product-source-runtime.js";
 import {
@@ -104,8 +123,15 @@ export interface NodeClientOptions {
   ownedResultProfiles?: PreparedOwnedResultProfiles;
   /** Explicit local Windows source transport slice; no wire/config object can mint this authority. */
   productSourceRuntime?: PreparedProductSourceRuntime;
+  /** Original protected configuration, activated only after the dedicated guardian handshake. */
+  productSourceRecovery?: { configuration: PreparedWindowsSourceRecoveryConfiguration; features: readonly string[];
+    cleanLifecycle?: PreparedCleanDaemonConfiguration;
+    isCurrent(): boolean; activate(runtime: PreparedWindowsSourceRecoveryRuntime): PreparedProductSourceRuntime;
+    onFailure?(error: Error): void; onReady?(): void };
+  /** Node-runner-owned authenticated connection identity; reconnect cannot revive publication retry authority. */
+  releaseRetrySession?: () => object | undefined;
   /** Explicit local transport preparation. Absence preserves ordinary/manual behavior and import fencing. */
-  productSourceOperations?: {client:ReturnType<typeof createProductSourceSemanticClient>;isCurrent:()=>boolean;importedReview?:boolean;importedDesign?:boolean};
+  productSourceOperations?: {client:ReturnType<typeof createProductSourceSemanticClient>;isCurrent:()=>boolean;importedReview?:boolean;importedDesign?:boolean;importedDesignReview?:boolean;importedExecution?:boolean;importedExecutionReview?:boolean;importedValidation?:boolean};
 }
 
 export interface NodeClient {
@@ -180,6 +206,9 @@ interface RunDelivery {
 
 export function createNodeClient(options: NodeClientOptions): NodeClient {
   const { nodeId, transport } = options;
+  if (options.productSourceRecovery && (options.productSourceRuntime || options.managedJournal || options.ownedResultProfiles)) {
+    throw Error("Recovery startup requires its separate ordinary guardian lifecycle");
+  }
   if (!options.adapter && !options.registry) {
     throw new Error("createNodeClient requires either an adapter or a registry");
   }
@@ -198,21 +227,52 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
   const git: GitExecutor = options.git ?? createGitCliExecutor();
   const verificationProfiles = prepareVerificationProfiles(options.verificationProfiles, workspaceConfig.allowedRoots);
-  if (options.productSourceRuntime) {
+  let sourceRuntime = options.productSourceRuntime;
+  let recoveryRuntime: PreparedWindowsSourceRecoveryRuntime | undefined;
+  let recoveredValidations: ReturnType<typeof createImportedRecoveryValidationClient> | undefined;
+  let cleanValidations: ReturnType<typeof createImportedCleanValidationClient> | undefined;
+  let cleanRuntime: PreparedWindowsCleanValidationRuntime | undefined;
+  let sourceOperations: ReturnType<typeof createProductSourceOperationClient> | undefined;
+  let importedReviews: ReturnType<typeof createImportedProductReviewClient> | undefined;
+  let importedDesigns: ReturnType<typeof createImportedDesignContinuationClient> | undefined;
+  let importedDesignReviews: ReturnType<typeof createImportedDesignReviewClient> | undefined;
+  let importedExecutions: ReturnType<typeof createImportedExecutionClient> | undefined;
+  let importedExecutionReviews: ReturnType<typeof createImportedExecutionReviewClient> | undefined;
+  let importedValidations: ReturnType<typeof createImportedValidationClient> | undefined;
+  function initializeSource() {
+  if (sourceRuntime) {
     if (process.platform !== "win32" || options.managedJournal || options.ownedResultProfiles) {
       throw new Error("Product source runtime supports only ordinary Windows verified execution");
     }
-    assertProductSourceRuntimeConfiguration(options.productSourceRuntime, nodeId, workspaceConfig.allowedRoots, verificationProfiles);
+    assertProductSourceRuntimeConfiguration(sourceRuntime, nodeId, workspaceConfig.allowedRoots, verificationProfiles);
   }
-  if(options.productSourceOperations&&(!options.productSourceRuntime||typeof options.productSourceOperations.isCurrent!=="function"))throw new Error("Source operations require an original local runtime and current authenticated session");
-  const sourceOperations=options.productSourceOperations?createProductSourceOperationClient({nodeId,transport,runtime:options.productSourceRuntime!,
+  if(options.productSourceOperations&&(!sourceRuntime||typeof options.productSourceOperations.isCurrent!=="function"))throw new Error("Source operations require an original local runtime and current authenticated session");
+  sourceOperations=options.productSourceOperations?createProductSourceOperationClient({nodeId,transport,runtime:sourceRuntime!,
     client:options.productSourceOperations.client,isCurrent:options.productSourceOperations.isCurrent}):undefined;
-  const importedReviews=sourceOperations&&options.productSourceOperations?.importedReview?createImportedProductReviewClient({nodeId,transport,
-    runtime:options.productSourceRuntime!,sourceOperations,resolveAdapter,isCurrent:options.productSourceOperations.isCurrent}):undefined;
+  importedReviews=sourceOperations&&options.productSourceOperations?.importedReview?createImportedProductReviewClient({nodeId,transport,
+    runtime:sourceRuntime!,sourceOperations,resolveAdapter,isCurrent:options.productSourceOperations.isCurrent}):undefined;
   if (options.productSourceOperations?.importedDesign && !importedReviews) throw new Error("Imported design requires the original local imported-review controller");
-  const importedDesigns = importedReviews && options.productSourceOperations?.importedDesign ? createImportedDesignContinuationClient({ nodeId, transport,
-    runtime: options.productSourceRuntime!, reviews: importedReviews, resolveAdapter, isCurrent: options.productSourceOperations.isCurrent,
+  importedDesigns = importedReviews && options.productSourceOperations?.importedDesign ? createImportedDesignContinuationClient({ nodeId, transport,
+    runtime: sourceRuntime!, reviews: importedReviews, resolveAdapter, isCurrent: options.productSourceOperations.isCurrent,
     uploadArtifact: options.uploadArtifact }) : undefined;
+  if (options.productSourceOperations?.importedDesignReview && !importedDesigns) throw new Error("H4 requires the original local H3 design controller");
+  importedDesignReviews = importedDesigns && options.productSourceOperations?.importedDesignReview ? createImportedDesignReviewClient({ nodeId, transport,
+    runtime: sourceRuntime!, designs: importedDesigns, resolveAdapter, isCurrent: options.productSourceOperations.isCurrent }) : undefined;
+  if (options.productSourceOperations?.importedExecution && !importedDesignReviews) throw new Error("H5 requires the original local H4 controller");
+  importedExecutions = importedDesignReviews && options.productSourceOperations?.importedExecution ? createImportedExecutionClient({ nodeId, transport,
+    runtime: sourceRuntime!, reviews: importedDesignReviews, resolveAdapter, isCurrent: options.productSourceOperations.isCurrent,
+    uploadArtifact: options.uploadArtifact }) : undefined;
+  if (options.productSourceOperations?.importedExecutionReview && !importedExecutions) throw new Error("H6 requires the original local H5 controller");
+  importedExecutionReviews = importedExecutions && options.productSourceOperations?.importedExecutionReview ? createImportedExecutionReviewClient({
+    nodeId, transport, runtime: sourceRuntime!, executions: importedExecutions, resolveAdapter,
+    isCurrent: options.productSourceOperations.isCurrent, uploadArtifact: options.uploadArtifact }) : undefined;
+  if (options.productSourceOperations?.importedValidation && !importedExecutionReviews) throw Error("H7 requires the original local H6 controller");
+  importedValidations = importedExecutionReviews && options.productSourceOperations?.importedValidation ? createImportedValidationClient({ nodeId, transport,
+    runtime: sourceRuntime!, implementations: importedExecutionReviews, resolveAdapter,
+    isCurrent: options.productSourceOperations.isCurrent, uploadArtifact: options.uploadArtifact }) : undefined;
+  }
+  if (sourceRuntime) initializeSource();
+  else if (options.productSourceOperations && !options.productSourceRecovery) throw Error("Source operations require an original prepared runtime");
   const releaseProfiles = prepareReleaseProfiles(options.releaseProfiles, verificationProfiles);
   if (releaseProfiles.length && options.managedJournal) throw new Error("Product publication does not support managed journal nodes");
   const pendingHealth = new Map<string, ProductReleaseHealthReport>();
@@ -268,9 +328,54 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     // not block health checks or grow a queue for every periodic observation.
     void flushHealth().catch(() => {});
   }
-  const releaseExecutor = createProductReleaseExecutor(releaseProfiles, { onHealthReport: enqueueHealth,
+  const releaseExecutor = createProductReleaseExecutor(releaseProfiles, { onHealthReport: enqueueHealth, retrySession: options.releaseRetrySession,
     onError: (error) => { process.stderr.write(`Product publication monitoring failed: ${errorMessage(error).slice(0, 2000)}\n`); } });
   let releaseReady: Promise<void> | undefined;
+  const sourceRecovery: ReturnType<typeof createProductSourceRecoveryClient> | undefined = options.productSourceRecovery ? createProductSourceRecoveryClient({
+    nodeId, transport, configuration: options.productSourceRecovery.configuration, isCurrent: options.productSourceRecovery.isCurrent,
+    cleanLifecycle: options.productSourceRecovery.cleanLifecycle,
+    suspend() {
+      sourceOperations?.invalidate(); importedReviews?.invalidate(); importedDesigns?.invalidate(); importedDesignReviews?.invalidate();
+      importedExecutions?.invalidate(); importedExecutionReviews?.invalidate(); importedValidations?.invalidate();
+      recoveredValidations?.invalidate(); cleanValidations?.invalidate(); releaseExecutor.requestStop();
+    },
+    onFailure(error) { options.productSourceRecovery!.onFailure?.(error); },
+    activate(runtime, workspace, cleanCheckpoint) {
+      withWindowsSourceRecoveryOperation(runtime, { operationId: "source-activation",
+        bindingDigest: "sha256:" + createHash("sha256").update(nodeId).digest("hex"), serverOperation: null }, () => {
+      if (workspace) releaseExecutor.fenceRecoveredWorkspace(runtime);
+      sourceRuntime = options.productSourceRecovery!.activate(runtime); recoveryRuntime = runtime;
+      if (sourceRuntime !== readWindowsRecoverySourceRuntime(runtime)) throw Error("Recovery activation changed its original source runtime");
+      if (!workspace && !cleanCheckpoint) initializeSource();
+      else if (cleanCheckpoint) {
+        cleanRuntime = prepareWindowsCleanValidationRuntime(runtime, cleanCheckpoint);
+        releaseExecutor.fenceCleanWorkspace(cleanRuntime);
+        cleanValidations = createImportedCleanValidationClient({ nodeId, transport, runtime: cleanRuntime,
+          clean: { readAccepted: request => sourceRecovery!.readCleanAccepted(request.restart),
+            assertAccepted(request, original) {
+              if (sourceRecovery!.readCleanAccepted(request.restart) !== original) throw Error("Clean validation checkpoint owner changed");
+            } }, resolveAdapter, isCurrent: options.productSourceRecovery!.isCurrent, uploadArtifact: options.uploadArtifact });
+      }
+      else if (workspace) recoveredValidations = createImportedRecoveryValidationClient({ nodeId, transport, runtime, recovery: sourceRecovery!,
+        resolveAdapter, isCurrent: options.productSourceRecovery!.isCurrent, uploadArtifact: options.uploadArtifact });
+      // A recovered checkpoint is unverified. It cannot restart persisted publication
+      // listeners or monitor journals before the fresh author and review authorize release.
+      if (!workspace && !cleanCheckpoint) {
+        releaseReady ??= withWindowsSourceRecoveryOperation(runtime, { operationId: "publisher-start",
+          bindingDigest: "sha256:" + createHash("sha256").update(nodeId).digest("hex"), serverOperation: null }, () => releaseExecutor.start());
+        track(releaseReady);
+      }
+      });
+      // Registration alone is not execution readiness: source controllers and
+      // any fresh publication listeners must finish initialization in this session.
+      if (options.productSourceRecovery!.onReady) void Promise.resolve(releaseReady).then(() => {
+        if (recoveryRuntime !== runtime || !sourceRecovery?.isActive() || !options.productSourceRecovery!.isCurrent()) {
+          throw Error("Source activation lost its current registered session before readiness");
+        }
+        options.productSourceRecovery!.onReady?.();
+      }).catch(error => options.productSourceRecovery!.onFailure?.(error instanceof Error ? error : Error("Source activation failed")));
+    },
+  }) : undefined;
   const releasingWorkspaces = new Map<string, number>();
   const verificationRuns = new Map<string, { profile: PreparedVerificationProfile; requestId: string;
     runStart: RunStartPayload;
@@ -656,9 +761,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     try {
       // Detach the entire versioned admission before any await or duplicate ACK.
       const snapshot = snapshotOwnedResultRunAdmission(command.payload), payload = snapshot.request.run_start, runId = payload.run_id;
-      if(payload.context_pack.payload?.imported_review_subject || payload.context_pack.payload?.transferred_product_input)throw new Error("Imported research does not support ordinary owned-result execution");
-      if (options.productSourceRuntime) {
-        assertProductSourceWorkspaceBoundary(options.productSourceRuntime, payload.workspace.root);
+      if(payload.context_pack.payload?.imported_recovery_validation || payload.context_pack.payload?.imported_recovery_validation_review_subject || payload.context_pack.payload?.imported_validation || payload.context_pack.payload?.imported_validation_review_subject || payload.context_pack.payload?.imported_review_subject || payload.context_pack.payload?.transferred_product_input || payload.context_pack.payload?.imported_design_review_subject || payload.context_pack.payload?.imported_execution || payload.context_pack.payload?.imported_execution_review_subject || payload.context_pack.payload?.imported_execution_repair)throw new Error("Imported research does not support ordinary owned-result execution");
+      if (sourceRuntime) {
+        assertProductSourceWorkspaceBoundary(sourceRuntime, payload.workspace.root);
         throw new Error("Product source runtime does not admit owned-result execution");
       }
       const managed = options.managedJournal, registry = options.ownedResultProfiles;
@@ -693,8 +798,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     let readReleaseCapabilities: ReleaseCapabilityReader | undefined;
     try {
       runStartCommandSchema.parse(command); // Also guard typed/in-memory transports before duplicate ACKs.
-      if(command.payload.context_pack.payload?.imported_review_subject || command.payload.context_pack.payload?.transferred_product_input)throw new Error("Imported research requires its dedicated local operation controller");
-      if (options.productSourceRuntime) assertProductSourceWorkspaceBoundary(options.productSourceRuntime, command.payload.workspace.root);
+      if(command.payload.context_pack.payload?.imported_recovery_validation || command.payload.context_pack.payload?.imported_recovery_validation_review_subject || command.payload.context_pack.payload?.imported_validation || command.payload.context_pack.payload?.imported_validation_review_subject || command.payload.context_pack.payload?.imported_review_subject || command.payload.context_pack.payload?.transferred_product_input || command.payload.context_pack.payload?.imported_design_review_subject || command.payload.context_pack.payload?.imported_execution || command.payload.context_pack.payload?.imported_execution_review_subject || command.payload.context_pack.payload?.imported_execution_repair)throw new Error("Imported research requires its dedicated local operation controller");
+      if (sourceRuntime) assertProductSourceWorkspaceBoundary(sourceRuntime, command.payload.workspace.root);
       const configuredAdapter = resolveAdapter(command.payload.runtime);
       releaseExecutor.assertWorkspaceBoundary(command.payload);
       if (releasingWorkspaces.has(command.payload.workspace.root)) throw new Error("Workspace has a product publication in progress");
@@ -711,7 +816,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         readReleaseCapabilities = releaseExecutor.getCapabilityReader(admitted.verification.release_capability_binding.release_profile_id);
       }
       verificationProfile = selectVerificationProfile(admitted, verificationProfiles, options.managedJournal !== undefined, readReleaseCapabilities, nodeId);
-      if (options.productSourceRuntime && !verificationProfile) throw new Error("Product source runtime requires original Windows verified execution");
+      if (sourceRuntime && !verificationProfile) throw new Error("Product source runtime requires original Windows verified execution");
       binding = allocationStartBinding(command.payload, process.platform, transport.acknowledgesRunEvents);
       if (options.managedJournal) {
         options.managedJournal.channel.assertCurrentSession();
@@ -781,8 +886,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       if ([...verificationRuns.values()].some((run) => run.profile.workspace_root === verificationProfile.workspace_root)) {
         await ackRejected(command.id, "process_start_failed", "Verification workspace already has an active execution"); return;
       }
-      if (options.productSourceRuntime) {
-        try { claimProductSourceRun(options.productSourceRuntime, runId, launchCommand.payload.workspace.root); }
+      if (sourceRuntime) {
+        try { claimProductSourceRun(sourceRuntime, runId, launchCommand.payload.workspace.root); }
         catch (error) { await ackRejected(command.id, "process_start_failed", errorMessage(error)); return; }
       }
       verificationRuns.set(runId, { profile: verificationProfile, runStart: launchCommand.payload, requestId: launchCommand.payload.verification!.request_id,
@@ -803,10 +908,10 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       planningToolRuns.delete(runId);
       starting.delete(runId);
       if (!runs.has(runId) && !finished.has(runId)) launchBindings.delete(runId);
-      if (options.productSourceRuntime && !runs.has(runId) && !finished.has(runId)) {
+      if (sourceRuntime && !runs.has(runId) && !finished.has(runId)) {
         const verification = verificationRuns.get(runId);
         if (verification && !verification.adapterInvoked && !verification.workspaceProcessInvoked && !verification.unsafe) {
-          releaseProductSourceRun(options.productSourceRuntime, runId);
+          releaseProductSourceRun(sourceRuntime, runId);
         } else if (verification) verification.unsafe = true; // An invoked producer without a closed handle retains its source claim.
       }
       if (!runs.has(runId) && !verificationRuns.get(runId)?.unsafe) verificationRuns.delete(runId);
@@ -1146,7 +1251,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
               verification.readReleaseCapabilities ? { context: verification.context!, readCapabilities: verification.readReleaseCapabilities } : undefined);
             await transport.send({ kind: "run.event", node_id: nodeId, run_id: delivery.runId, sequence: sequence++,
               event: { type: "run.verification", payload: evidence } });
-            if (options.productSourceRuntime && evidence.outcome === "passed" && verification.context?.product_development
+            if (sourceRuntime && evidence.outcome === "passed" && verification.context?.product_development
               && verification.context.policy.execution_mode !== "discussion" && !verification.controller.signal.aborted) {
               try {
                 if (!verification.windowsAdmission) throw new Error("Source export requires original native Windows author closure");
@@ -1155,12 +1260,12 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
                 // association. Other stages/policies retain the ordinary byte route.
                 const semanticResearch = verification.context.product_development.stage === "research"
                   && (verification.profile.capabilities?.measurement_plan_policy?.version === 1
-                    && productSourceSemanticExportEnabled(options.productSourceRuntime)
+                    && productSourceSemanticExportEnabled(sourceRuntime)
                     || verification.profile.capabilities?.measurement_plan_policy?.version === 2
-                    && productSourceMeasurementV2ExportEnabled(options.productSourceRuntime, verification.profile));
+                    && productSourceMeasurementV2ExportEnabled(sourceRuntime, verification.profile));
                 const event = semanticResearch
-                  ? { type: "run.product-source.export.v2" as const, payload: captureProductSourceExportV2(options.productSourceRuntime, input) }
-                  : { type: "run.product-source.export.v1" as const, payload: captureProductSourceExport(options.productSourceRuntime, input) };
+                  ? { type: "run.product-source.export.v2" as const, payload: captureProductSourceExportV2(sourceRuntime, input) }
+                  : { type: "run.product-source.export.v1" as const, payload: captureProductSourceExport(sourceRuntime, input) };
                 await transport.send({ kind: "run.event", node_id: nodeId, run_id: delivery.runId, sequence: sequence++, event });
               } catch (error) {
                 // Storage or delivery uncertainty retains this workspace even after process closure.
@@ -1213,11 +1318,11 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       }).catch(() => {});
     } finally {
       if (!physical && !verificationRuns.get(delivery.runId)?.unsafe) {
-        if (options.productSourceRuntime) {
+        if (sourceRuntime) {
           const verification = verificationRuns.get(delivery.runId);
           if (!verification?.windowsAdmission) throw new VerificationCleanupError("Product source run lost native closure authority");
           assertWindowsVerifiedExecutionClosed(verification.windowsAdmission, handle);
-          releaseProductSourceRun(options.productSourceRuntime, delivery.runId);
+          releaseProductSourceRun(sourceRuntime, delivery.runId);
         }
         finished.add(delivery.runId);
         const ordinary = mixedLegacyStarts.get(delivery.runId);
@@ -1458,9 +1563,53 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   async function dispatch(message: ServerToNodeMessage): Promise<void> {
+    if (!sourceRecovery) return dispatchActive(message);
+    try { if (await sourceRecovery.handle(message)) return; }
+    catch (error) {
+      options.productSourceRecovery!.onFailure?.(error instanceof Error ? error : new Error("Recovery control failed"));
+      return ackRejected(message.id, "process_start_failed", errorMessage(error));
+    }
+    if (message.type === "run.event.ack" || message.type === "product.release.health.ack"
+      || message.type === "node.session.ready" || message.type === "node.session.pong") return;
+    const recovered = message.type.startsWith("product.source.recovery-validation.") || message.type.startsWith("product.source.recovery-validation-review.");
+    const clean = message.type.startsWith("product.source.clean-validation.") || message.type.startsWith("product.source.clean-validation-review.");
+    if (recovered && !sourceRecovery.isActive()) {
+      try { await sourceRecovery.awaitRecoveredActivation(); }
+      catch (error) { return ackRejected(message.id, "process_start_failed", errorMessage(error)); }
+    }
+    if (clean && !sourceRecovery.isActive()) {
+      try { await sourceRecovery.awaitCleanActivation(); }
+      catch (error) { return ackRejected(message.id, "process_start_failed", errorMessage(error)); }
+    }
+    if (!sourceRecovery.isActive()) return ackRejected(message.id, "process_start_failed", "Guardian registration and accepted recovery checkpoint are not ready");
+    if (recovered && !recoveredValidations) return ackRejected(message.id, "process_start_failed", "Original recovered validation controller is unavailable");
+    if (clean && !cleanValidations) return ackRejected(message.id, "process_start_failed", "Original clean validation controller is unavailable");
+    if (!sourceRecovery.allowsOrdinary() && !recovered && !clean && !((message.type === "product.release" || message.type === "product.release.cancel")
+      && (message.payload.imported_recovery && recoveredValidations || message.payload.imported_clean && cleanValidations)))
+      return ackRejected(message.id, "process_start_failed", "Recovered epoch requires fresh dedicated validation, independent review and publication");
+    const sha = (value: string | Uint8Array) => "sha256:" + createHash("sha256").update(value).digest("hex");
+    let operation: RecoveryOperationRefV1 | null = null;
+    if (message.type === "product.source.validation.v1") operation = { kind: "validation", operation_id: message.payload.validation_id,
+      request_digest: importedValidationRequestDigestV1(message.payload, sha), run_id: message.payload.run_start.run_id };
+    else if (message.type === "product.source.validation-review.v1") operation = { kind: "validation_review",
+      operation_id: message.payload.review_id, request_digest: importedValidationReviewRequestDigestV1(message.payload, sha) };
+    else if (message.type === "product.release" || message.type === "product.release.cancel") operation = { kind: "release",
+      operation_id: message.payload.release_id, request_digest: sha(canonicalProductSourceTransferValueV1(message.payload)) };
+    const runtime = sourceRecovery.readRuntime();
+    return withWindowsSourceRecoveryOperation(runtime, { operationId: operation?.operation_id ?? message.id,
+      bindingDigest: operation?.request_digest ?? sha(canonicalProductSourceTransferValueV1(message)), serverOperation: operation }, () => dispatchActive(message));
+  }
+
+  async function dispatchActive(message: ServerToNodeMessage): Promise<void> {
+    if (cleanValidations && await cleanValidations.handle(message)) return;
+    if (recoveredValidations && await recoveredValidations.handle(message)) return;
     if(sourceOperations&&await sourceOperations.handle(message))return;
     if(importedReviews&&await importedReviews.handle(message))return;
     if(importedDesigns&&await importedDesigns.handle(message))return;
+    if(importedDesignReviews&&await importedDesignReviews.handle(message))return;
+    if(importedExecutions&&await importedExecutions.handle(message))return;
+    if(importedExecutionReviews&&await importedExecutionReviews.handle(message))return;
+    if(importedValidations&&await importedValidations.handle(message))return;
     switch (message.type) {
       case "product.release.cancel": {
         try {
@@ -1471,28 +1620,75 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         return;
       }
       case "product.release": {
+        try {
+          const historical = releaseExecutor.replayReceipt(message.payload);
+          if (historical) {
+            await transport.send({ kind: "product.release.receipt", node_id: nodeId, payload: historical }); await ackAccepted(message.id); return;
+          }
+        } catch (error) { return ackRejected(message.id, "process_start_failed", errorMessage(error)); }
         const profile = releaseProfiles.find((item) => item.id === message.payload.release_profile_id);
         if (!profile || [...verificationRuns.values()].some((run) => run.profile.workspace_root === profile.verifier.workspace_root)) {
           return ackRejected(message.id, "process_start_failed", "Release profile unavailable or its workspace is still executing");
         }
         const root = profile.verifier.workspace_root;
         const sourceClaim = `product-release:${message.payload.release_id}`;
-        if (options.productSourceRuntime) {
-          try { claimProductSourceRun(options.productSourceRuntime, sourceClaim, root); }
+        let retry: ReturnType<typeof releaseExecutor.prepareRetry> | undefined;
+        try { if (message.payload.retry) retry = releaseExecutor.prepareRetry(message.payload); }
+        catch (error) { return ackRejected(message.id, "process_start_failed", errorMessage(error)); }
+        let recoveryRelease: PreparedRecoveryValidationRelease | undefined;
+        let cleanRelease: PreparedCleanValidationRelease | undefined;
+        if (sourceRuntime) {
+          try {
+            if (message.payload.imported_clean) {
+              if (!cleanValidations || !cleanRuntime) throw Error("Clean validation publisher is not active");
+              cleanRelease = cleanValidations.prepareRelease(message.payload, retry);
+              const original = readPreparedCleanValidationRelease(cleanRelease, message.payload);
+              if (!original.readReleaseCapabilities) throw Error("Clean publication lacks original release capabilities");
+              releaseExecutor.recordVerification(original.start.run_id, original.profile.project_id, root, original.verification,
+                { context: original.start.context_pack.payload, readCapabilities: original.readReleaseCapabilities, importedClean: cleanRelease });
+              claimCleanValidationRelease(cleanRuntime, cleanRelease, sourceClaim);
+            } else if (message.payload.imported_recovery) {
+              if (!recoveredValidations || !recoveryRuntime) throw Error("Recovered validation publisher is not active");
+              recoveryRelease = recoveredValidations.prepareRelease(message.payload, retry);
+              const original = readPreparedRecoveryValidationRelease(recoveryRelease, message.payload);
+              if (!original.readReleaseCapabilities) throw Error("Recovered publication lacks original release capabilities");
+              releaseExecutor.recordVerification(original.start.run_id, original.profile.project_id, root, original.verification,
+                { context: original.start.context_pack.payload, readCapabilities: original.readReleaseCapabilities, importedRecovery: recoveryRelease });
+              claimRecoveryValidationRelease(recoveryRuntime, recoveryRelease, sourceClaim);
+            } else if (message.payload.imported_validation) {
+              if (!importedValidations) throw Error("Imported validation publisher is not enabled on this node");
+              const permit = importedValidations.prepareRelease(message.payload, retry), original = readPreparedImportedValidationRelease(permit, message.payload);
+              if (!original.readReleaseCapabilities) throw Error("Validation publication lacks its original local release configuration");
+              releaseExecutor.recordVerification(original.start.run_id, original.profile.project_id, root, original.verification,
+                { context: original.start.context_pack.payload, readCapabilities: original.readReleaseCapabilities, importedValidation: permit });
+              claimImportedValidationRelease(sourceRuntime, permit, sourceClaim);
+            } else claimProductSourceRun(sourceRuntime, sourceClaim, root);
+          }
           catch (error) { return ackRejected(message.id, "process_start_failed", errorMessage(error)); }
-        }
-        let releaseClosed = false;
+        } else if (message.payload.imported_validation || message.payload.imported_recovery || message.payload.imported_clean) return ackRejected(message.id, "process_start_failed", "Imported publication requires its original source runtime");
+        let releaseClosed = false, cleanClaimReleased = false;
         releasingWorkspaces.set(root, (releasingWorkspaces.get(root) ?? 0) + 1);
         try {
-          const receipt = await releaseExecutor.release(message.payload);
-          releaseClosed = true;
+          const release = () => releaseExecutor.release(message.payload, retry ? { retry } : undefined);
+          const receipt = await (cleanRelease && cleanRuntime ? withWindowsCleanReleaseOperation(cleanRuntime, cleanRelease, release) : release());
+          releaseClosed = cleanRelease || options.releaseRetrySession ? releaseExecutor.isAttemptSettled(message.payload) : true;
+          if (releaseClosed && cleanRelease && cleanRuntime) {
+            // Receipt delivery can synchronously admit a fresh retry. Relinquish
+            // only the actually settled publisher's original claim before send.
+            releaseCleanValidationClaim(cleanRuntime, cleanRelease, sourceClaim); cleanClaimReleased = true;
+          }
           await transport.send({ kind: "product.release.receipt", node_id: nodeId, payload: receipt });
           await ackAccepted(message.id);
         } catch (error) { await ackRejected(message.id, "process_start_failed", errorMessage(error)); }
         finally {
-          if (options.productSourceRuntime && releaseClosed) releaseProductSourceRun(options.productSourceRuntime, sourceClaim);
-          const pending = (releasingWorkspaces.get(root) ?? 1) - 1;
-          if (pending) releasingWorkspaces.set(root, pending); else releasingWorkspaces.delete(root);
+          if (sourceRuntime && releaseClosed) {
+            if (cleanRuntime && cleanRelease) { if (!cleanClaimReleased) releaseCleanValidationClaim(cleanRuntime, cleanRelease, sourceClaim); }
+            else releaseProductSourceRun(sourceRuntime, sourceClaim);
+          }
+          if (releaseClosed) {
+            const pending = (releasingWorkspaces.get(root) ?? 1) - 1;
+            if (pending) releasingWorkspaces.set(root, pending); else releasingWorkspaces.delete(root);
+          }
         }
         return;
       }
@@ -1517,14 +1713,37 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
 
   const client: NodeClient = {
     productSourceFeatures() {
-      if (!options.productSourceRuntime) return Object.freeze([]);
-      const roles = readProductSourceRuntimeCapabilities(options.productSourceRuntime);
+      if (options.productSourceRecovery) {
+        const recovery = options.productSourceRecovery;
+        const cleanFeatures: readonly string[] = [SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1,
+          IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1];
+        const features = recovery.features.filter(feature => !cleanFeatures.includes(feature));
+        if (!recovery.cleanLifecycle) return Object.freeze(features);
+        const operations = options.productSourceOperations;
+        if (!sourceRecovery || !features.includes(IMPORTED_VALIDATION_FEATURE_V1) || transport.acknowledgesRunEvents !== true
+          || !operations?.importedReview || !operations.importedDesign || !operations.importedDesignReview
+          || !operations.importedExecution || !operations.importedExecutionReview || !operations.importedValidation
+          || typeof releaseExecutor.fenceCleanWorkspace !== "function" || typeof options.releaseRetrySession !== "function")
+          throw Error("Clean discovery requires its installed validation, review and publisher controllers with committed receipts");
+        assertCleanDaemonControllerConfiguration(recovery.cleanLifecycle, { nodeId, profiles: verificationProfiles, releases: releaseProfiles });
+        // Hello precedes the real registration/checkpoint handshake. Advertise the
+        // protected installed path here; the original checkpoint and controllers
+        // created at activation remain mandatory for execution below.
+        return Object.freeze([...features.filter(feature => !["imported-recovery-validation.v1", "imported-recovery-validation-review.v1"].includes(feature)),
+          ...cleanFeatures]);
+      }
+      if (!sourceRuntime) return Object.freeze([]);
+      const roles = readProductSourceRuntimeCapabilities(sourceRuntime);
       return Object.freeze([PRODUCT_SOURCE_TRANSFER_FEATURE_V1,
         ...(roles.semantic ? [PRODUCT_SOURCE_TRANSFER_FEATURE_V2] : []),
         ...(roles.measurementV2 ? [PRODUCT_SOURCE_TRANSFER_MEASUREMENT_V2_FEATURE_V1] : []),
         ...(sourceOperations && roles.semantic ? [PRODUCT_SOURCE_OPERATIONS_FEATURE_V1] : []),
         ...(importedReviews && roles.importedReview ? [IMPORTED_PRODUCT_REVIEW_FEATURE_V1] : []),
-        ...(importedDesigns && roles.importedDesign ? [IMPORTED_DESIGN_CONTINUATION_FEATURE_V1] : [])]);
+        ...(importedDesigns && roles.importedDesign ? [IMPORTED_DESIGN_CONTINUATION_FEATURE_V1] : []),
+        ...(importedDesignReviews && roles.importedDesignReview ? [IMPORTED_DESIGN_REVIEW_FEATURE_V1] : []),
+        ...(importedExecutions && roles.importedExecution ? [IMPORTED_EXECUTION_FEATURE_V1] : []),
+        ...(importedExecutionReviews && roles.importedExecution ? [IMPORTED_EXECUTION_REVIEW_FEATURE_V1] : []),
+        ...(importedValidations && roles.importedValidation ? [IMPORTED_VALIDATION_FEATURE_V1] : [])]);
     },
     requestManagedRunStop,
     invalidateManagedStartupSession(session, cause): void {
@@ -1550,16 +1769,20 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       await client.stop(true);
     },
     start(): void {
-      releaseReady ??= releaseExecutor.start();
-      track(releaseReady);
-      void releaseReady.then(() => client.replayReleaseHealth()).catch(() => {});
+      if (!sourceRecovery) {
+        releaseReady ??= releaseExecutor.start();
+        track(releaseReady);
+        void releaseReady.then(() => client.replayReleaseHealth()).catch(() => {});
+      }
       unsubscribe = transport.subscribe((message) => {
         track(dispatch(message));
       });
     },
-    ready(): Promise<void> { return releaseReady ?? Promise.reject(new Error("Node client has not started")); },
+    ready(): Promise<void> { if (sourceRecovery && unsubscribe) return Promise.resolve(); return releaseReady ?? Promise.reject(new Error("Node client has not started")); },
     async replayReleaseHealth(): Promise<void> {
+      if (sourceRecovery && !sourceRecovery.isActive()) return;
       await client.ready();
+      await releaseReady;
       if (healthStopped) return;
       for (const report of releaseExecutor.getHealthReports()) {
         const current = pendingHealth.get(report.request.release_id);
@@ -1568,13 +1791,15 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       await flushHealth();
     },
     async stop(cancelRunning = false): Promise<void> {
+      const close = async () => {
       healthStopped = true;
       if (healthRetry) clearTimeout(healthRetry);
       healthRetry = undefined;
       pendingHealth.clear();
       unsubscribe?.();
       unsubscribe = undefined;
-      sourceOperations?.invalidate();importedReviews?.invalidate();importedDesigns?.invalidate();
+      sourceRecovery?.invalidate(); recoveredValidations?.invalidate(); cleanValidations?.invalidate();
+      sourceOperations?.invalidate();importedReviews?.invalidate();importedDesigns?.invalidate();importedDesignReviews?.invalidate();importedExecutions?.invalidate();importedExecutionReviews?.invalidate();importedValidations?.invalidate();
       releaseExecutor.requestStop();
       if (cancelRunning) {
         for (const planning of planningToolRuns.values()) planning.abort();
@@ -1606,8 +1831,23 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         if (failure?.status === "rejected") throw failure.reason;
       }
       await Promise.allSettled([...inflight]);
-      await sourceOperations?.settled();await importedReviews?.settled();await importedDesigns?.settled();
+      await sourceOperations?.settled();await importedReviews?.settled();await importedDesigns?.settled();await importedDesignReviews?.settled();await importedExecutions?.settled();await importedExecutionReviews?.settled();await importedValidations?.settled();
+      await recoveredValidations?.settled(); await cleanValidations?.settled(); await sourceRecovery?.settled();
       await releaseExecutor.stop();
+      };
+      if (recoveryRuntime) {
+        let entered = false;
+        try {
+          return withWindowsSourceRecoveryOperation(recoveryRuntime, { operationId: "node-stop",
+            bindingDigest: "sha256:" + createHash("sha256").update(nodeId).digest("hex"), serverOperation: null }, () => { entered = true; return close(); });
+        } catch (error) {
+          // A changed configuration cannot suppress cancellation of existing handles.
+          // Cleanup may still fail closed; neither path releases the guardian fence.
+          if (entered) throw error;
+          await close(); throw error;
+        }
+      }
+      return close();
     }
   };
   return client;

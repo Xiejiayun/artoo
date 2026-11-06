@@ -1,5 +1,5 @@
 import type { NodeHeartbeat, NodeHello, RuntimeAdapter } from "@artoo/protocol";
-import { PRODUCT_DESIGN_REVISION_FEATURE_V1 } from "@artoo/domain";
+import { PRODUCT_DESIGN_REVISION_FEATURE_V1, SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1 } from "@artoo/domain";
 
 import type { AdapterRegistry } from "./adapter-registry.js";
 import type { ArtifactUploader } from "./artifact-upload.js";
@@ -11,9 +11,13 @@ import { VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE, VERIFICATION_
   verificationSupported, prepareVerificationProfiles, attachWindowsVerificationBackend, readWindowsVerificationBackend,
   productDesignRevisionVerificationSupported, type VerificationProfile } from "./verification.js";
 import { PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE, prepareReleaseProfiles, readReleaseCapabilities, releaseProfileExecutionSupported, type ReleaseProfile } from "./product-release.js";
+import { PRODUCT_RELEASE_RETRY_FEATURE_V1 } from "@artoo/domain";
 import { assertWindowsProcessBackend, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import type { PreparedWindowsReleaseStorage } from "./windows-release-storage.js";
 import { prepareProductSourceNode } from "./product-source-node.js";
+import { prepareProductSourceConfiguration } from "./product-source-config.js";
+import { prepareWindowsDaemonSupervisorAuthority, type PreparedWindowsDaemonSupervisorAuthority } from "./windows-supervisor-authority.js";
+import type { PreparedCleanDaemonConfiguration } from "./windows-clean-local-configuration.js";
 import type { ResearchOptions } from "./research.js";
 
 /**
@@ -48,6 +52,9 @@ export interface ArtoodNodeOptions {
   windowsReleaseStorage?: ReadonlyMap<string, PreparedWindowsReleaseStorage>;
   /** Protected administrator file; enabled only for ordinary native Windows nodes. */
   productSourceConfigFile?: string;
+  /** Selected only by the local supervised CLI; native qualification remains authoritative. */
+  requireSupervisorLifetime?: boolean;
+  prepareCleanLifecycle?: (supervisor: PreparedWindowsDaemonSupervisorAuthority) => PreparedCleanDaemonConfiguration;
   /** Same research settings passed to the author runtime; source configuration cannot substitute them. */
   research?: ResearchOptions;
 }
@@ -58,11 +65,15 @@ export interface ArtoodNode {
   stop(): Promise<void>;
   /** Managed lifecycle failure notification; plain nodes keep their existing surface. */
   readonly failed?: Promise<Error>;
+  /** Source readiness includes the current guardian registration and accepted recovery receipt. */
+  readonly executionReady?: Promise<void>;
 }
 
 export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
   const windowsBackend = options.windowsProcessBackend;
   const sourceFile = options.productSourceConfigFile;
+  if (options.prepareCleanLifecycle && (!options.requireSupervisorLifetime || !sourceFile))
+    throw Error("Clean lifecycle preparation requires the dedicated native supervised startup");
   if (sourceFile !== undefined && (!sourceFile || !windowsBackend || !options.workspace?.allowedRoots?.length || options.hello.managed_receipts)) {
     throw new Error("Product source configuration requires ordinary native Windows execution and complete write roots");
   }
@@ -86,11 +97,14 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
   delete hello.verification_profiles;
   delete hello.release_profiles;
   delete hello.owned_result_profiles;
+  delete hello.product_source_routing;
   const configuredFeatures = (hello.execution_features ?? []).filter((feature) => ![VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE, VERIFICATION_CAPABILITIES_FEATURE,
-    MEASUREMENT_PLAN_FEATURE, MEASUREMENT_PLAN_V2_FEATURE, PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE,
+    MEASUREMENT_PLAN_FEATURE, MEASUREMENT_PLAN_V2_FEATURE, PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE, PRODUCT_RELEASE_RETRY_FEATURE_V1,
       PRODUCT_DESIGN_REVISION_FEATURE_V1,
       "owned-result-run.v1", "product-source-transfer.v1", "product-source-transfer.v2", "product-source-transfer.measurement-v2.v1",
-      "product-source-operations.v1", "imported-product-review.v1", "imported-design-continuation.v1"].includes(feature));
+      "product-source-operations.v1", "imported-product-review.v1", "imported-design-continuation.v1", "imported-design-review.v1", "imported-execution.v1", "imported-execution-review.v1", "imported-validation.v1",
+      "product.source.recovery.v1", SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1,
+      "imported-recovery-validation.v1", "imported-recovery-validation-review.v1"].includes(feature));
   if (advertisedVerificationProfiles.length) {
     configuredFeatures.push(VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE);
     if (advertisedVerificationProfiles.some((profile) => profile.capabilities)) configuredFeatures.push(VERIFICATION_CAPABILITIES_FEATURE);
@@ -104,7 +118,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
     Object.freeze(hello.verification_profiles);
   }
   if (advertisedReleaseProfiles.length) {
-    configuredFeatures.push(PRODUCT_RELEASE_FEATURE);
+    configuredFeatures.push(PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_RETRY_FEATURE_V1);
     if (advertisedReleaseProfiles.some((profile) => profile.monitoring)) configuredFeatures.push(PRODUCT_RELEASE_HEALTH_FEATURE);
     if (advertisedReleaseProfiles.some((profile) => profile.criterion_acceptance)) configuredFeatures.push(PRODUCT_RELEASE_ACCEPTANCE_FEATURE);
     hello.release_profiles = advertisedReleaseProfiles.map((profile) => {
@@ -122,14 +136,24 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
   let transport: ReturnType<typeof createWebSocketTransport> | null = null;
   let client: ReturnType<typeof createNodeClient> | null = null;
   let source: ReturnType<typeof prepareProductSourceNode> | undefined;
+  let cleanLifecycle: PreparedCleanDaemonConfiguration | undefined;
   let sourceAttempted = false, sessionInvalidated = false;
   let shutdown: Promise<void> | undefined;
+  let resolveExecution: (() => void) | undefined, rejectExecution: ((error: Error) => void) | undefined;
+  const executionReady = sourceFile === undefined || !options.requireSupervisorLifetime ? undefined : new Promise<void>((resolve, reject) => {
+    resolveExecution = resolve; rejectExecution = reject;
+  });
+  // Ordinary callers need not wait for this optional lifecycle signal.
+  void executionReady?.catch(() => {});
   let reportFailure!: (error: Error) => void;
-  const failed = sourceFile === undefined ? undefined : new Promise<Error>(resolve => { reportFailure = resolve; });
+  const failed = sourceFile === undefined ? undefined : new Promise<Error>(resolve => {
+    reportFailure = error => { rejectExecution?.(error); resolve(error); };
+  });
 
   function stop(): Promise<void> {
     if (shutdown) return shutdown;
     sessionInvalidated = true;
+    rejectExecution?.(new Error("Source execution stopped before current-session registration completed"));
     shutdown = (async () => {
       const activeTransport = transport;
       if (!activeTransport?.connected) await activeTransport?.close();
@@ -150,6 +174,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
 
   return {
     ...(failed ? { failed } : {}),
+    ...(executionReady ? { executionReady } : {}),
     async start(): Promise<void> {
       if (sourceFile !== undefined && sessionInvalidated) throw new Error("Product source session ended; construct a new node after recovery");
       if (transport !== null && client !== null) {
@@ -158,6 +183,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
       }
       if (sourceFile !== undefined && sourceAttempted) throw new Error("Product source session ended; construct a new node after recovery");
       shutdown = undefined;
+      sessionInvalidated = false;
       // A local installation changed between construction and start must not
       // publish a previously qualified hello or open an execution connection.
       if (windowsBackend !== undefined) {
@@ -168,9 +194,25 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
       }
       if (sourceFile !== undefined) {
         sourceAttempted = true;
-        source = prepareProductSourceNode({ file: sourceFile, url: options.url, nodeId: hello.node_id,
-          allowedRoots: options.workspace!.allowedRoots!, windowsBackend: windowsBackend!, profiles: verificationProfiles,
-          releaseProfiles, research: options.research, acknowledgeRunEvents: options.acknowledgeRunEvents === true });
+        try {
+          // An internal selector is not authority. Reject an ordinary source
+          // configuration before its preparation could acquire owner.lock.
+          if (options.requireSupervisorLifetime && !prepareProductSourceConfiguration({ file: sourceFile,
+            allowedRoots: options.workspace!.allowedRoots! }).config.recovery) throw Error("Supervised execution requires recovery configuration");
+          source = prepareProductSourceNode({ file: sourceFile, url: options.url, nodeId: hello.node_id,
+            allowedRoots: options.workspace!.allowedRoots!, windowsBackend: windowsBackend!, profiles: verificationProfiles,
+            releaseProfiles, research: options.research, acknowledgeRunEvents: options.acknowledgeRunEvents === true });
+          const prepared = source;
+          if (prepared.recoveryRequired) {
+            const supervisor = await prepareWindowsDaemonSupervisorAuthority(windowsBackend!, { requireLifetime: options.requireSupervisorLifetime === true });
+            if (sessionInvalidated || source !== prepared) throw Error("Source startup stopped during native qualification");
+            prepared.qualifyRecovery(supervisor);
+            cleanLifecycle = options.prepareCleanLifecycle?.(supervisor);
+          } else if (options.requireSupervisorLifetime) throw Error("Supervised execution requires recovery configuration");
+        } catch (error) {
+          rejectExecution?.(error instanceof Error ? error : Error("Source startup failed"));
+          throw error;
+        }
       }
       // In registry mode, default to a heartbeat that advertises the registered
       // runtimes' capability tags (so the server learns runtime capabilities for
@@ -210,18 +252,41 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
           git: options.git,
           uploadArtifact: options.uploadArtifact,
           verificationProfiles, releaseProfiles,
-          ...(source ? { productSourceRuntime: source.runtime,
+          releaseRetrySession: () => {
+            if (sessionInvalidated || !transport?.connected) return undefined;
+            source?.assertCurrent(); return transport.currentSessionIdentity();
+          },
+          ...(source ? {
+            ...(source.recoveryConfiguration ? { productSourceRecovery: { configuration: source.recoveryConfiguration, features: source.features,
+              ...(cleanLifecycle ? { cleanLifecycle } : {}),
+              isCurrent: () => {
+                if (sessionInvalidated || !transport?.connected || !source) return false;
+                source.assertCurrent(); return true;
+              },
+              onFailure: (error: Error) => {
+                sessionInvalidated = true; reportFailure(error);
+                void stop().catch(cause => { reportFailure(cause instanceof Error ? cause : new Error("Recovery shutdown failed")); });
+              },
+              ...(executionReady ? { onReady: () => {
+                if (sessionInvalidated || !transport?.connected || !source) throw Error("Source readiness lost its original session");
+                resolveExecution?.();
+              } } : {}),
+              activate: (runtime: Parameters<ReturnType<typeof prepareProductSourceNode>["activateRecovery"]>[0]) => {
+                if (sessionInvalidated || !transport?.connected || !source) throw Error("Recovery activation lost the current source session");
+                return source.activateRecovery(runtime);
+              } } } : { productSourceRuntime: source.runtime }),
             ...(source.semanticClient ? { productSourceOperations: { client: source.semanticClient,
               isCurrent: () => {
                 if (sessionInvalidated || !transport?.connected || !source) return false;
                 source.assertCurrent(); return true;
-              }, importedReview: source.importedReview, importedDesign: source.importedDesign } } : {}) } : {})
+              }, importedReview: source.importedReview, importedDesign: source.importedDesign, importedDesignReview: source.importedDesignReview, importedExecution: source.importedExecution, importedExecutionReview: source.importedExecutionReview, importedValidation: source.importedValidation } } : {}) } : {})
         });
         if (source) {
           source.assertDiscovery();
           const features = client.productSourceFeatures?.();
           if (!features) throw new Error("Product source controller discovery is unavailable");
           connectionHello.execution_features = Object.freeze([...(hello.execution_features ?? []), ...features]) as string[];
+          connectionHello.product_source_routing = source.routing;
           Object.freeze(connectionHello);
         }
         // Subscribe before the connection is registered for dispatch (server only
@@ -230,6 +295,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
         await client.ready();
         const connection = await connectionReady;
         if (!connection.ok) throw connection.error;
+        if (source && !source.recoveryRequired) resolveExecution?.();
       } catch (err) {
         try { await stop(); }
         catch (cleanup) { throw new AggregateError([err, cleanup], "Node startup failed and closure is uncertain"); }

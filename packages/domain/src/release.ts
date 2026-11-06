@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { ImportedValidationReleaseOriginV1Schema } from "./imported-validation-context.js";
+import { ImportedRecoveryReleaseOriginV1Schema } from "./source-recovery-context.js";
+import { ImportedCleanReleaseOriginV1Schema } from "./clean-validation-context.js";
 import { ReleaseCapabilitiesV1Schema, ReleaseAcceptanceBindingV1Schema, ReleaseAcceptanceReceiptV1Schema,
   canonicalReleaseJson } from "./release-capabilities.js";
 
@@ -9,13 +12,64 @@ const endpoint = z.string().url().max(4096).refine((value) => {
   return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
 }, "Expected an HTTP endpoint without credentials");
 
+export const PRODUCT_RELEASE_RETRY_FEATURE_V1 = "product-release.retry.v1" as const;
+export const PRODUCT_RELEASE_CLEAN_FEATURE_V1 = "product-release.clean-restart.v1" as const;
+export const ProductReleaseRetryV1Schema = z.object({
+  version: z.literal(1), root_release_id: id, previous_release_id: id,
+  generation: z.number().int().min(1).max(2147483647), source_id: id,
+  previous_request_digest: digest, previous_receipt_digest: digest,
+  authorization: z.object({ event_id: id, goal_id: id, actor_user_id: id,
+    attempt_index: z.number().int().min(1).max(2147483647) }).strict(),
+}).strict().superRefine((value, ctx) => {
+  if (value.generation === 1 && value.root_release_id !== value.previous_release_id)
+    ctx.addIssue({ code: "custom", path: ["root_release_id"], message: "First retry must name its original release as predecessor" });
+});
+export type ProductReleaseRetryV1 = z.infer<typeof ProductReleaseRetryV1Schema>;
+
+/** A projection of a live executor's private settled failure; JSON alone is not retry authority. */
+export const ProductReleaseRetrySourceV1Schema = z.object({
+  version: z.literal(1), source_id: id, closure: z.literal("local-release-settled.v1"),
+  recovery: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("listener-closed"), active_release_id: z.null(), active_artifact_digest: z.null() }).strict(),
+    z.object({ kind: z.literal("previous-restored"), active_release_id: id, active_artifact_digest: digest }).strict(),
+  ]),
+}).strict();
+export type ProductReleaseRetrySourceV1 = z.infer<typeof ProductReleaseRetrySourceV1Schema>;
+
 /** Local administrator configuration is selected by ID; never accept remote argv or paths. */
 export const ProductReleaseRequestSchema = z.object({
   version: z.literal(1), release_id: id, goal_id: id, project_id: id, run_id: id,
   release_profile_id: id, verification_request_id: id, verification_profile_id: id,
   verification_profile_digest: digest, subject_digest: digest,
   acceptance_binding: ReleaseAcceptanceBindingV1Schema.optional(),
+  imported_validation: ImportedValidationReleaseOriginV1Schema.optional(),
+  imported_recovery: ImportedRecoveryReleaseOriginV1Schema.optional(),
+  imported_clean: ImportedCleanReleaseOriginV1Schema.optional(),
+  retry: ProductReleaseRetryV1Schema.optional(),
 }).strict().superRefine((request, ctx) => {
+  if (request.imported_clean && (request.imported_validation || request.imported_recovery
+    || request.imported_clean.authorization.goal_id !== request.goal_id || request.imported_clean.interrupted_release_id === request.release_id
+    || request.imported_clean.subject_digest !== request.subject_digest || !request.acceptance_binding))
+    ctx.addIssue({ code: "custom", path: ["imported_clean"], message: "Clean publication requires its exclusive newly accepted source and configured release contract" });
+  if (request.imported_clean && request.retry && (request.retry.root_release_id === request.imported_clean.interrupted_release_id
+    || request.retry.previous_release_id === request.imported_clean.interrupted_release_id
+    || request.retry.authorization.actor_user_id !== request.imported_clean.authorization.actor_user_id
+    || request.retry.authorization.event_id === request.imported_clean.authorization.event_id
+    || request.retry.authorization.attempt_index <= request.imported_clean.authorization.attempt_index))
+    ctx.addIssue({ code: "custom", path: ["retry"], message: "Clean publication retry requires a separate bounded decision after its own actual closed failure" });
+  if (request.imported_recovery && (request.imported_validation || request.imported_recovery.authorization.goal_id !== request.goal_id || request.imported_recovery.recovery_of_release_id === request.release_id || request.imported_recovery.subject_digest !== request.subject_digest || !request.acceptance_binding))
+    ctx.addIssue({ code: "custom", path: ["imported_recovery"], message: "Recovery publication requires its exclusive newly reviewed source and configured acceptance binding" });
+  if (request.imported_recovery && request.retry && (request.retry.root_release_id === request.imported_recovery.recovery_of_release_id
+    || request.retry.previous_release_id === request.imported_recovery.recovery_of_release_id
+    || request.retry.authorization.actor_user_id !== request.imported_recovery.authorization.actor_user_id
+    || request.retry.authorization.event_id === request.imported_recovery.authorization.event_id
+    || request.retry.authorization.attempt_index <= request.imported_recovery.authorization.attempt_index))
+    ctx.addIssue({ code: "custom", path: ["retry"], message: "Recovery source retry must follow its fresh publication with a separate bounded decision" });
+  if (request.retry && (request.retry.authorization.goal_id !== request.goal_id
+    || request.retry.previous_release_id === request.release_id || request.retry.root_release_id === request.release_id))
+    ctx.addIssue({ code: "custom", path: ["retry"], message: "A retry must preserve its goal and create a distinct successor release" });
+  if (request.imported_validation && (request.imported_validation.subject_digest !== request.subject_digest || !request.acceptance_binding))
+    ctx.addIssue({ code: "custom", path: ["imported_validation"], message: "Imported validation release requires its exact final subject and configured acceptance binding" });
   const binding = request.acceptance_binding?.release_binding;
   if (binding && (binding.release_profile_id !== request.release_profile_id || binding.project_id !== request.project_id
     || binding.verification_profile_id !== request.verification_profile_id || binding.verification_profile_digest !== request.verification_profile_digest)) {
@@ -64,7 +118,16 @@ export const ProductReleaseReceiptSchema = z.object({
   recovery_checks: z.array(ReleaseHealthCheckSchema).max(32).optional(),
   reason: z.string().max(2000).optional(),
   acceptance: ReleaseAcceptanceReceiptV1Schema.optional(),
+  retry_source: ProductReleaseRetrySourceV1Schema.optional(),
 }).strict().superRefine((value, ctx) => {
+  if (value.retry_source) {
+    const recovery = value.retry_source.recovery;
+    if (value.outcome === "published")
+      ctx.addIssue({ code: "custom", path: ["retry_source"], message: "A successful publication cannot authorize a failed-attempt retry" });
+    if (recovery.kind === "previous-restored" && (recovery.active_release_id !== value.previous_release_id
+      || recovery.active_release_id === value.request.release_id || !value.recovery_checks?.length || value.recovery_checks.some(check => !check.passed)))
+      ctx.addIssue({ code: "custom", path: ["retry_source", "recovery"], message: "Restored retry source requires the exact previous version and successful recovery measurements" });
+  }
   const binding = value.request.acceptance_binding;
   if (binding && value.release_profile_digest !== binding.release_binding.release_profile_digest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["release_profile_digest"], message: "Publication profile differs from its fixed acceptance binding" });
@@ -132,11 +195,18 @@ export type ProductReleaseHealthReport = z.infer<typeof ProductReleaseHealthRepo
 
 export const ProductReleaseSchema = z.object({
   id, goal_id: id, project_id: id, computer_id: id, run_id: id, evidence_id: id,
-  status: z.enum(["queued", "published", "rolled_back", "failed"]),
+  status: z.enum(["queued", "published", "rolled_back", "failed", "interrupted"]),
   request: ProductReleaseRequestSchema, receipt: ProductReleaseReceiptSchema.nullable(),
   health: ProductReleaseHealthReportSchema.nullish(),
+  interruption: z.object({ version: z.literal(1), recovery_id: id, settlement_event_id: id,
+    checkpoint_digest: digest }).strict().nullish(),
+  clean_interruption: z.object({ version: z.literal(1), clean_generation_id: id, settlement_event_id: id,
+    checkpoint_digest: digest }).strict().nullish(),
   created_at: z.string(), updated_at: z.string(),
 }).superRefine((value, ctx) => {
+  if ((value.status === "interrupted") !== !!(value.interruption || value.clean_interruption)
+    || value.interruption && value.clean_interruption || value.status === "interrupted" && value.receipt !== null)
+    ctx.addIssue({ code: "custom", path: ["interruption"], message: "Interrupted publication requires exact recovery settlement and retains its absent receipt" });
   if (value.request.acceptance_binding && value.receipt && !productReleaseRequestsEqual(value.request, value.receipt.request)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["receipt"], message: "Receipt must bind the complete product release request" });
   }

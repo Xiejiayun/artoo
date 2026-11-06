@@ -1,18 +1,20 @@
 // Controlled policy regressions. Real NTFS/PowerShell/process qualification is a separate fixture.
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
-  spawnSync: vi.fn(), sequence: 0n,
-  nodes: new Map<string, { directory: boolean; ino: bigint; ctimeNs: bigint; link?: boolean; nlink?: bigint }>(),
+  spawnSync: vi.fn(), readFileSync: vi.fn(), sequence: 0n,
+  nodes: new Map<string, { directory: boolean; ino: bigint; ctimeNs: bigint; mtimeNs?: bigint; size?: bigint; link?: boolean; nlink?: bigint }>(),
   aliases: new Map<string, string>(),
 }));
 vi.mock("node:child_process", () => ({ spawnSync: state.spawnSync }));
 vi.mock("node:os", () => ({ release: () => "10.0.26300" }));
 vi.mock("node:fs", () => ({
+  readFileSync: state.readFileSync,
   lstatSync: (path: string, options?: { bigint?: boolean }) => {
     const node = state.nodes.get(path); if (!node) throw Object.assign(new Error("Missing controlled file"), { code: "ENOENT" });
     return { isDirectory: () => node.directory, isFile: () => !node.directory, isSymbolicLink: () => !!node.link,
       nlink: options?.bigint ? node.nlink ?? 1n : Number(node.nlink ?? 1n), dev: 1n, ino: node.ino,
-      ctimeNs: node.ctimeNs, mtimeNs: 1n, size: 0n };
+      ctimeNs: node.ctimeNs, mtimeNs: node.mtimeNs ?? 1n, size: node.size ?? 0n };
   },
   readdirSync: (path: string) => [...state.nodes.keys()].filter(value => value.startsWith(`${path}\\`)
     && !value.slice(path.length + 1).includes("\\")).map(value => value.slice(path.length + 1)),
@@ -35,11 +37,22 @@ function defaultReport(targets: readonly WindowsAclTarget[]): WindowsAclReport {
 }
 function node(report: WindowsAclReport, path = directory): WindowsAclFact { return report.nodes.find(item => item.path === path)!; }
 function prepare(): PreparedWindowsReleaseStorage { return prepareWindowsReleaseStorage(input); }
+const changedPrefix = "Windows release storage: storage changed during ACL audit ";
+function auditRejection(): Error {
+  let caught: unknown;
+  try { prepare(); } catch (error) { caught = error; }
+  expect(caught).toBeInstanceOf(Error);
+  const error = caught as Error;
+  expect(error.message.startsWith(changedPrefix)).toBe(true);
+  return error;
+}
+const pathHash = (value: string): string => createHash("sha256").update(value).digest("hex");
 beforeEach(() => {
   Object.defineProperty(process, "platform", { ...platform, value: "win32" });
   Object.defineProperty(process, "arch", { ...architecture, value: "x64" });
   vi.stubEnv("SystemRoot", "C:\\Windows");
   state.nodes.clear(); state.aliases.clear(); state.sequence = 9007199254740991n;
+  state.readFileSync.mockReset().mockImplementation(() => { throw new Error("Diagnostic must not read file contents"); });
   for (const path of ["C:\\", "C:\\Windows", "C:\\Users", "C:\\Users\\node", "C:\\Users\\node\\.artoo", directory,
     "C:\\products", workspace]) add(path);
   input = { directory, writableWorkspaceRoots: [workspace] }; change = () => undefined;
@@ -53,6 +66,10 @@ afterEach(() => {
 });
 
 describe("Windows mutable release-storage authority", () => {
+  it("still rejects Program Files-style CREATOR OWNER future-child write rights for mutable storage", () => {
+    change = report => node(report).aces.push({ sid: "S-1-3-0", qualifier: "AccessAllowed", mask: 0x10000000, flags: 11 });
+    expect(prepare).toThrow(/future children/);
+  });
   it("prepares per-user storage, uses fixed local script and keeps serving checks out of PowerShell", () => {
     const prepared = prepare(); expect(Object.isFrozen(prepared)).toBe(true);
     const [executable, argv, options] = state.spawnSync.mock.calls[0]!;
@@ -111,6 +128,76 @@ describe("Windows mutable release-storage authority", () => {
   it("rejects inventory and metadata mutations while ACL collection runs", () => {
     const file = `${directory}\\a.json`; add(file, false);
     change = () => { state.nodes.get(file)!.ctimeNs++; }; expect(prepare).toThrow(/changed during ACL audit/);
+  });
+  it.each(["added", "removed", "identity", "ctime", "mtime", "size"])("keeps rejecting %s and identifies the captured change in the CLI message", field => {
+    const file = `${directory}\\a.json`;
+    if (field !== "added") add(file, false);
+    change = () => {
+      if (field === "added") add(file, false);
+      else if (field === "removed") state.nodes.delete(file);
+      else {
+        const selected = state.nodes.get(file)!;
+        if (field === "identity") selected.ino++;
+        if (field === "ctime") selected.ctimeNs++;
+        if (field === "mtime") selected.mtimeNs = 2n;
+        if (field === "size") selected.size = 1n;
+      }
+    };
+    const error = auditRejection();
+    expect(JSON.parse(error.message.slice(changedPrefix.length))).toEqual({
+      root: { value: directory, truncated: false, sha256: pathHash(directory) },
+      first_change: { relative: { value: "a.json", truncated: false, sha256: pathHash("a.json") }, fields: [field] },
+    });
+    expect(state.spawnSync).toHaveBeenCalledOnce(); expect(state.readFileSync).not.toHaveBeenCalled();
+  });
+  it("reports only the first changed relative item and all of its changed fields", () => {
+    const first = `${directory}\\a.json`, later = `${directory}\\z.json`; add(later, false); add(first, false);
+    change = () => {
+      state.nodes.get(later)!.ctimeNs++;
+      const selected = state.nodes.get(first)!; selected.ino++; selected.ctimeNs++; selected.mtimeNs = 2n; selected.size = 1n;
+    };
+    const error = auditRejection(), details = JSON.parse(error.message.slice(changedPrefix.length));
+    expect(details.first_change.relative.value).toBe("a.json");
+    expect(details.first_change.fields).toEqual(["identity", "ctime", "mtime", "size"]);
+    expect(error.message).not.toContain("z.json"); expect(state.spawnSync).toHaveBeenCalledOnce();
+  });
+  it.each(["added", "removed"])("still rejects equal-count inventory replacement and reports the first %s item", field => {
+    const oldName = field === "added" ? "z.json" : "a.json", newName = field === "added" ? "a.json" : "z.json";
+    add(`${directory}\\${oldName}`, false);
+    change = () => { state.nodes.delete(`${directory}\\${oldName}`); add(`${directory}\\${newName}`, false); };
+    const error = auditRejection(), details = JSON.parse(error.message.slice(changedPrefix.length));
+    expect(details.first_change.relative.value).toBe("a.json"); expect(details.first_change.fields).toEqual([field]);
+    expect(state.spawnSync).toHaveBeenCalledOnce();
+  });
+  it("identifies a storage-root metadata change with the relative dot entry", () => {
+    change = () => { state.nodes.get(directory)!.ctimeNs++; };
+    const error = auditRejection(), details = JSON.parse(error.message.slice(changedPrefix.length));
+    expect(details.root.value).toBe(directory); expect(details.first_change.relative.value).toBe(".");
+    expect(details.first_change.fields).toEqual(["ctime"]); expect(state.spawnSync).toHaveBeenCalledOnce();
+  });
+  it("bounds and escapes path diagnostics without contents, ACLs, environment or metadata values", () => {
+    const rootParts = ["root" + "根".repeat(90), "中".repeat(90), "末".repeat(90)];
+    let root = "C:";
+    for (const part of rootParts) { root += `\\${part}`; add(root); }
+    input = { ...input, directory: root };
+    const relativeParts = ["a" + "文".repeat(90), "件".repeat(90), "診".repeat(90) + "\u202e\u0085.json"];
+    let file = root;
+    for (const [index, part] of relativeParts.entries()) { file += `\\${part}`; add(file, index < relativeParts.length - 1); }
+    const relative = relativeParts.join("\\"), contents = "synthetic_file_content_do_not_emit", environment = "synthetic_env_value_do_not_emit";
+    state.readFileSync.mockReturnValue(Buffer.from(contents)); vi.stubEnv("ARTOO_DIAGNOSTIC_TEST_SECRET", environment);
+    const later = Array.from({ length: 32 }, (_, index) => `${root}\\z-later-${index}.json`);
+    for (const path of later) add(path, false);
+    change = () => { for (const path of [file, ...later]) state.nodes.get(path)!.ctimeNs = 98765432109876543210987654321n; };
+    const error = auditRejection(), details = JSON.parse(error.message.slice(changedPrefix.length));
+    expect(error.message.length).toBeLessThanOrEqual(4096); expect(error.message).toMatch(/^[\x20-\x7e]+$/u);
+    expect(Object.keys(details)).toEqual(["root", "first_change"]);
+    expect(details.root).toMatchObject({ truncated: true, sha256: pathHash(root) });
+    expect(details.first_change.relative).toMatchObject({ truncated: true, sha256: pathHash(relative) });
+    expect(details.root.value.length).toBeLessThanOrEqual(240); expect(details.first_change.relative.value.length).toBeLessThanOrEqual(240);
+    expect(details.first_change.fields).toEqual(["ctime"]);
+    for (const forbidden of [contents, environment, "AccessAllowed", "ownerSid", currentSid, "98765432109876543210987654321", "z-later-"])
+      expect(error.message).not.toContain(forbidden);
+    expect(state.readFileSync).not.toHaveBeenCalled(); expect(state.spawnSync).toHaveBeenCalledOnce();
   });
   it("rejects hardlinks and aliases before collecting authority", () => {
     const file = `${directory}\\a.json`; add(file, false); state.nodes.get(file)!.nlink = 2n; expect(prepare).toThrow(/linked/);

@@ -3,11 +3,13 @@ import { canonicalProductSourceTransferValueV1 as canonical, importedDesignConti
   importedProductReviewRequestDigestV1, type ImportedDesignContinuationControlV1, type ImportedDesignContinuationResultV1 } from "@artoo/domain";
 import { importedDesignContinuationCommandSchema, importedDesignContinuationStopSchema, importedDesignContinuationStatusSchema,
   importedDesignContinuationReceiptSchema, type ImportedDesignContinuationCommand, type NodeSideTransport,
-  type RuntimeAdapter, type ServerToNodeMessage, type RunEventMessage } from "@artoo/protocol";
+  type RuntimeAdapter, type ServerToNodeMessage } from "@artoo/protocol";
 import { reserveImportedDesignContinuation, runImportedDesignContinuation, persistImportedDesignContinuationResult, failUnstartedImportedDesignContinuation,
+  readCompletedVerifiedImportedDesign,
   type PreparedImportedDesignContinuation, type PreparedProductSourceRuntime } from "./product-source-runtime.js";
 import type { createImportedProductReviewClient } from "./imported-product-review.js";
 import type { ArtifactUploader } from "./artifact-upload.js";
+import { createImportedAuthorEmitter } from "./imported-author-execution.js";
 
 const sha = (value: string | Uint8Array) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 
@@ -41,12 +43,8 @@ export function createImportedDesignContinuationClient(options: {
     const permit = reserveImportedDesignContinuation(options.runtime, control, "start");
     const slot: Slot = { control, permit, action: "start", controller: new AbortController() }; slots.set(control.continuation_id, slot);
     slot.work = (async () => {
-      let enteredRuntime = false, sequence = 0;
-      const emitRun = async (raw: RunEventMessage["event"]) => {
-        current();
-        const event = raw.type === "artifact.created" && options.uploadArtifact ? await options.uploadArtifact(start.run_id, start.workspace.root, raw) : raw;
-        current(); await options.transport.send({ kind: "run.event", node_id: options.nodeId, run_id: start.run_id, sequence: sequence++, event });
-      };
+      let enteredRuntime = false;
+      const emitRun = createImportedAuthorEmitter({ nodeId: options.nodeId, transport: options.transport, start, current, uploadArtifact: options.uploadArtifact });
       try {
         await ack(command.id, slot); current();
         const original = options.reviews.readCompletedAccepted(request.review_request.review_id, importedProductReviewRequestDigestV1(request.review_request, sha));
@@ -71,7 +69,7 @@ export function createImportedDesignContinuationClient(options: {
         const receipt = importedDesignContinuationReceiptSchema.parse(input), slot = slots.get(receipt.payload.continuation_id);
         if (!slot) throw Error("Original imported-design result is unavailable"); same(slot, receipt.payload);
         if (!slot.persisted || !slot.result || sha(canonical(slot.result)) !== receipt.result_digest) throw Error("Imported-design receipt differs from its persisted result");
-        if (receipt.status === "accepted") slot.acknowledged = receipt.result_digest; return true;
+        slot.acknowledged = receipt.status === "accepted" ? receipt.result_digest : undefined; return true;
       }
       const command = input.type === "product.source.design.stop.v1" ? importedDesignContinuationStopSchema.parse(input) : importedDesignContinuationStatusSchema.parse(input);
       let slot = slots.get(command.payload.continuation_id); if (slot) same(slot, command.payload);
@@ -88,6 +86,12 @@ export function createImportedDesignContinuationClient(options: {
       slot.controller.abort(); await slot.work; await ack(command.id, slot); await emit(command.id, slot); return true;
     },
     invalidate() { invalidated = true; for (const slot of slots.values()) slot.controller.abort(); },
+    readCompletedVerifiedDesign(continuationId: string, requestDigest: string): ImportedDesignContinuationResultV1 {
+      current(); const slot = slots.get(continuationId);
+      if (!slot?.persisted || !slot.result || slot.control.request_digest !== requestDigest
+        || slot.acknowledged !== sha(canonical(slot.result))) throw Error("Original H3 design and current-session accepted result receipt are required");
+      readCompletedVerifiedImportedDesign(options.runtime, slot.result); return slot.result;
+    },
     async settled() { await Promise.all([...slots.values()].map(slot => slot.work)); },
   };
 }

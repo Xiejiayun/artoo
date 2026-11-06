@@ -1,7 +1,8 @@
+import { bindWindowsGuardianCallback } from "./owned/windows-guardian-scope.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync,
   readdirSync, readSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -132,6 +133,13 @@ export async function createWorkspaceToolSession(options: WorkspaceToolSessionOp
   assertReleaseCapabilityContext(context, options.readReleaseCapabilities);
   const evidenceOnly = options.evidenceOnly === true;
   const readOnly = options.readOnlyGrant === undefined ? undefined : claimWorkspaceReadOnlyTools(options.readOnlyGrant, root, context);
+  if ((context.imported_execution_review_subject || context.imported_validation_review_subject) && !readOnly) throw new Error("Imported product review requires its original read-only grant");
+  if (context.imported_validation && (readOnly || evidenceOnly || context.imported_execution || context.imported_execution_repair || context.imported_execution_review_subject
+    || context.imported_validation_review_subject || context.imported_design_review_subject || context.imported_review_subject || context.review_subject
+    || !context.transferred_product_input || context.product_development?.stage !== "validation")) throw Error("Validation requires its exclusive author tools");
+  if (context.imported_execution_repair && (readOnly || evidenceOnly || context.imported_execution || context.imported_execution_review_subject
+    || context.imported_design_review_subject || context.imported_review_subject || context.review_subject || !context.transferred_product_input
+    || context.product_development?.stage !== "implementation")) throw new Error("Repair requires its exclusive author tools");
   if (context.workspace.root !== root
     || typeof contextText !== "string" || Buffer.byteLength(contextText) > MAX_REQUEST_BYTES) throw new Error("Workspace tools require an author context and a node-owned verifier");
   // Pages describe this immutable session text, not a mutable workspace context file
@@ -248,7 +256,7 @@ export async function createWorkspaceToolSession(options: WorkspaceToolSessionOp
   const requests = new Set<Promise<void>>();
   let verification: { controller: AbortController; pending: ReturnType<WorkspaceToolVerifier> } | undefined;
   let unsafe: VerificationCleanupError | undefined;
-  const server = createServer(async (req, res) => {
+  const server = createServer(bindWindowsGuardianCallback(async (req: IncomingMessage, res: ServerResponse) => {
     const supplied = Buffer.from(req.headers.authorization ?? ""), expected = Buffer.from(`Bearer ${token}`);
     if (req.method !== "POST" || req.url !== "/" || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) { res.writeHead(403).end(); return; }
     if (closed || unsafe || activeRequests >= MAX_ACTIVE_REQUESTS) { res.writeHead(429).end(); return; }
@@ -298,10 +306,12 @@ export async function createWorkspaceToolSession(options: WorkspaceToolSessionOp
           const eof = end === contextBytes.length;
           result = { version: 1, format: "artoo-context-text-page.v1",
             content: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(contextBytes.subarray(offset, end)),
-            checksum: contextChecksum, size: contextBytes.length, offset, next_offset: eof ? null : end, eof };
+            checksum: contextChecksum, size: contextBytes.length, offset, next_offset: eof ? null : end, eof,
+            ...(options.readEvidence && readOnly?.readEvidenceIndex ? { evidence_index: readOnly.readEvidenceIndex() } : {}) };
         } else {
           result = { context: contextText, ...(allowedTools.includes("read") ? { read_guidance: READ_PAGINATION_GUIDANCE } : {}),
-            ...(options.readEvidence ? { evidence_read_guidance: EVIDENCE_PAGINATION_GUIDANCE } : {}),
+            ...(options.readEvidence ? { evidence_read_guidance: EVIDENCE_PAGINATION_GUIDANCE,
+              ...(readOnly?.readEvidenceIndex ? { evidence_index: readOnly.readEvidenceIndex() } : {}) } : {}),
             ...(capabilities ? { verification_capabilities: capabilities } : {}),
             ...(releaseCapabilities ? { release_capabilities: releaseCapabilities } : {}) };
         }
@@ -368,7 +378,7 @@ export async function createWorkspaceToolSession(options: WorkspaceToolSessionOp
       const message = (error instanceof Error ? error.message : "Workspace tool request failed").replaceAll(token, "[redacted]").slice(0, 1000);
       res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: message }));
     } finally { activeRequests -= 1; requests.delete(requestClosed); requestFinished(); }
-  });
+  }));
   server.requestTimeout = 15_000; server.headersTimeout = 10_000; server.keepAliveTimeout = 1000; server.maxHeadersCount = 20;
   try {
     const mcpServers: Record<string, unknown> = {};

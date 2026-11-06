@@ -8,6 +8,7 @@ import { closeObservedWindowsProcesses } from "./owned/windows-browser-exit.js";
 import { WindowsBrowserObserverSession } from "./owned/windows-browser-session.js";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import { assertWindowsBrowserSessionClosure, startWindowsJobBrowserProcess, type WindowsJobBrowserProcess } from "./owned/windows-job-browser.js";
+import { markBrowserFailure, type BrowserFailurePhase } from "./browser-failure-diagnostic.js";
 
 export interface OwnedBrowserOptions {
   workspace: string; executablePath?: string; launchTimeoutMs?: number; signal?: AbortSignal;
@@ -31,7 +32,9 @@ export async function launchOwnedBrowser(options: OwnedBrowserOptions): Promise<
   const launchDeadline = performance.now() + timeout;
   const temporary = realpathSync.native(tmpdir());
   if (inside(temporary, root)) throw new Error("Browser profile must be outside the coding workspace");
-  const profile = mkdtempSync(join(temporary, "artoo-owned-browser-"));
+  let profile: string;
+  try { profile = mkdtempSync(join(temporary, "artoo-owned-browser-")); }
+  catch (error) { throw markBrowserFailure(error, "profile-create", { profile_path: null, process_close_observed: false, close_checks_completed: false }); }
   const environment: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, LANG: "C.UTF-8", TMPDIR: profile, TMP: profile, TEMP: profile,
     XDG_CACHE_HOME: join(profile, "cache"), XDG_CONFIG_HOME: join(profile, "config"),
@@ -127,6 +130,7 @@ export async function launchOwnedBrowser(options: OwnedBrowserOptions): Promise<
     // Set the owner closing marker before any async body can request Browser.close
     // or kill. Expected Chrome exit must not poison the observer's final audit.
     return closePromise ??= Promise.resolve().then(async () => {
+      let phase: BrowserFailurePhase = "browser-close", closeChecksCompleted = false;
       try {
       if (windowsJob) {
         await closeWindowsJob();
@@ -197,15 +201,20 @@ export async function launchOwnedBrowser(options: OwnedBrowserOptions): Promise<
       // An empty final response is withheld until this observer's exit, actual
       // close and both output EOFs fit inside the original final-audit budget.
       observer?.assertCompleted();
+      closeChecksCompleted = true;
       // The outer verifier owns/reaps the inherited group; never detach browser helpers.
       // Antivirus and recently closed Windows browser handles can briefly hold
       // the profile. Retries are bounded and only start after observed exit.
+      phase = "profile-remove";
       rmSync(profile, { recursive: true, force: true, maxRetries: process.platform === "win32" ? 5 : 0, retryDelay: 200 });
       } catch (error) {
+        markBrowserFailure(error, phase, { profile_path: profile, process_close_observed: closed, close_checks_completed: closeChecksCompleted });
         windowsJob?.cancel();
         observer?.abort();
         try { await observer?.cleanup(); }
-        catch (cleanup) { throw new AggregateError([error, cleanup], "Browser and observer cleanup is unconfirmed; its profile is retained"); }
+        catch (cleanup) { throw new AggregateError([error, markBrowserFailure(cleanup, "browser-close", {
+          profile_path: profile, process_close_observed: closed, close_checks_completed: false,
+        })], "Browser and observer cleanup is unconfirmed; its profile is retained"); }
         throw error;
       } finally { options.signal?.removeEventListener("abort", cancelled); }
     });
@@ -292,6 +301,7 @@ export async function launchOwnedBrowser(options: OwnedBrowserOptions): Promise<
     launchCompleted = true;
     return { browser, processId: browserPid, close };
   } catch (error) {
+    markBrowserFailure(error, "browser-launch", { profile_path: profile, process_close_observed: closed, close_checks_completed: false });
     failLaunch(error instanceof Error ? error : new Error("Browser launch failed"));
     observer?.abort();
     try { await close(); } catch (cleanup) { throw new AggregateError([error, cleanup], "Browser startup failed and cleanup is unconfirmed"); }

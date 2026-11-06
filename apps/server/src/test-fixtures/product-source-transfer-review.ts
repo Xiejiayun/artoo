@@ -5,10 +5,11 @@ import { inspectIndependentReview } from "../services/independent-review-service
 import { persistRunVerificationEvidence } from "../services/verification-service.js";
 import { measurementPlanEvidenceFixture } from "./measurement-plan.js";
 import type { TestServer } from "../test-support.js";
+import type { AiSharingAuthorization } from "../services/ai-data-sharing-service.js";
 const nativeCriterion = "A native screen reader announces every saved entry";
 // Adapted from measurement-plan-review.test.ts. Controlled persisted node receipts only:
 // this deliberately exercises the real qualifier, not a provider or process execution.
-export async function prepareTransferReviewFixture(server: TestServer, f = measurementPlanEvidenceFixture()) {
+export async function prepareTransferReviewFixture(server: TestServer, f = measurementPlanEvidenceFixture(), authorization?: AiSharingAuthorization) {
     const db = server.db.db, organizationId = server.ctx.organizationId, now = server.ctx.clock.nowIso();
     const [writer] = await db.select().from(agentInstances), [agent] = await db.select().from(agents);
     await db.insert(agents).values({ ...agent!, id: "review_agent", kind: "reviewer" });
@@ -27,6 +28,8 @@ export async function prepareTransferReviewFixture(server: TestServer, f = measu
       await db.insert(contextPacks).values({ id: contextPackId, organizationId, taskId, runId: id, payload: ContextPackSchema.parse(context), createdAt: now });
       const requirement = { ...f.requirement, request_id: payload.request_id, ...(peer ? { expected_subject_digest: payload.subject_digest! } : {}) };
       const [run] = await db.insert(runs).values({ id, organizationId, taskId, computerId: writer!.computerId, agentInstanceId: instanceId,
+        ...(authorization ? { requestedByUserId: server.ctx.actorUserId, aiDataSharingConsentId: authorization.consentId,
+          aiDataSharingPolicyVersion: authorization.policyVersion } : {}),
         runtimeId: "controlled_fixture", status: "running", contextPackId, verificationRequirement: requirement, workspaceRoot: "/workspace/product", createdAt: now }).returning();
       const eventId = `${id}_event`;
       await db.insert(eventLog).values({ id: eventId, organizationId, projectId: "proj_artoo", taskId, runId: id,

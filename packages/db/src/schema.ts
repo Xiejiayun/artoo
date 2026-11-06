@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { sourceCleanGenerations } from "./source-clean-restart-schema.js";
 import {
   type AnyPgColumn,
   bigint,
@@ -1102,6 +1103,8 @@ export const goalAutomations = pgTable("goal_automations", {
   verificationProfileId: text("verification_profile_id").notNull(),
   executionMode: text("execution_mode").notNull().default("single_agent"),
   team: jsonb("team"),
+  // An explicit grant on new goals only; historical fixed-computer goals retain SQL NULL.
+  sourceHandoff: jsonb("source_handoff"),
   // SQL NULL preserves unsampled historical planning; captured unknown scope is a versioned object.
   planningCapabilitySnapshot: jsonb("planning_capability_snapshot"),
   releaseProfileId: text("release_profile_id"),
@@ -1112,6 +1115,9 @@ export const goalAutomations = pgTable("goal_automations", {
   check("goal_automations_status_chk", sql`${t.status} in ('planning','executing','waiting','completed','failed','cancelled')`),
   index("goal_automations_status_idx").on(t.organizationId, t.status, t.createdAt),
   check("goal_automations_mode_chk", sql`${t.executionMode} in ('single_agent','agent_team')`),
+  check("goal_automations_source_handoff_chk", sql`${t.sourceHandoff} IS NULL OR
+    (${t.executionMode} = 'agent_team' AND ${t.releaseProfileId} IS NOT NULL
+      AND ${t.sourceHandoff} = '{"version":1,"mode":"automatic"}'::jsonb) IS TRUE`),
   check("goal_automations_planning_capability_snapshot_chk", sql`${t.planningCapabilitySnapshot} IS NULL OR
     (jsonb_typeof(${t.planningCapabilitySnapshot}) = 'object' AND ${t.planningCapabilitySnapshot} -> 'version' = '1'::jsonb) IS TRUE`),
 ]);
@@ -1163,13 +1169,61 @@ export const productReleases = pgTable("product_releases", {
   status: text("status").notNull(),
   request: jsonb("request").notNull(),
   receipt: jsonb("receipt"),
+  publicationGeneration: integer("publication_generation").notNull().default(0),
+  rootReleaseId: text("root_release_id").references((): AnyPgColumn => productReleases.id),
+  retryOfReleaseId: text("retry_of_release_id").references((): AnyPgColumn => productReleases.id),
+  retryAuthorizationEventId: text("retry_authorization_event_id").references(() => eventLog.id),
+  recoveryId: text("recovery_id").references((): AnyPgColumn => goalSourceRecoveryCheckpoints.recoveryId),
+  recoveryOfReleaseId: text("recovery_of_release_id").references((): AnyPgColumn => productReleases.id),
+  recoveryAuthorizationEventId: text("recovery_authorization_event_id").references(() => eventLog.id),
+  interruptedRecoveryId: text("interrupted_recovery_id").references((): AnyPgColumn => goalSourceRecoveryCheckpoints.recoveryId),
+  cleanGenerationId: text("clean_generation_id").references((): AnyPgColumn => sourceCleanGenerations.id),
+  cleanOfReleaseId: text("clean_of_release_id").references((): AnyPgColumn => productReleases.id),
+  cleanAuthorizationEventId: text("clean_authorization_event_id").references(() => eventLog.id),
+  interruptedCleanGenerationId: text("interrupted_clean_generation_id").references((): AnyPgColumn => sourceCleanGenerations.id),
+  interruptionEventId: text("interruption_event_id").references(() => eventLog.id),
+  interruptionCheckpointDigest: text("interruption_checkpoint_digest"),
   createdAt: ts("created_at").notNull(),
   updatedAt: ts("updated_at").notNull(),
 }, (t) => [
-  unique("product_releases_goal_uniq").on(t.organizationId, t.goalId),
-  check("product_releases_status_chk", sql`${t.status} in ('queued','published','rolled_back','failed')`),
+  unique("product_releases_goal_generation_uniq").on(t.organizationId, t.goalId, t.publicationGeneration),
+  unique("product_releases_retry_predecessor_uniq").on(t.retryOfReleaseId),
+  unique("product_releases_recovery_predecessor_uniq").on(t.recoveryOfReleaseId),
+  unique("product_releases_clean_predecessor_uniq").on(t.cleanOfReleaseId),
+  uniqueIndex("product_releases_goal_queued_uniq").on(t.organizationId, t.goalId).where(sql`${t.status} = 'queued'`),
+  check("product_releases_lineage_chk", sql`(((${t.publicationGeneration} = 0 AND ${t.rootReleaseId} IS NULL AND ${t.retryOfReleaseId} IS NULL AND ${t.retryAuthorizationEventId} IS NULL)
+    OR (${t.publicationGeneration} > 0 AND ${t.rootReleaseId} IS NOT NULL AND ${t.retryOfReleaseId} IS NOT NULL AND ${t.retryAuthorizationEventId} IS NOT NULL))
+    AND ${t.recoveryId} IS NULL AND ${t.recoveryOfReleaseId} IS NULL AND ${t.recoveryAuthorizationEventId} IS NULL
+    OR (${t.recoveryId} IS NOT NULL AND ${t.recoveryAuthorizationEventId} IS NOT NULL AND ${t.rootReleaseId} IS NULL AND ${t.retryOfReleaseId} IS NULL AND ${t.retryAuthorizationEventId} IS NULL
+      AND ((${t.publicationGeneration} = 0 AND ${t.recoveryOfReleaseId} IS NULL) OR (${t.publicationGeneration} > 0 AND ${t.recoveryOfReleaseId} IS NOT NULL)))
+    OR (${t.publicationGeneration} > 0 AND ${t.recoveryId} IS NOT NULL AND ${t.rootReleaseId} IS NOT NULL
+      AND ${t.retryOfReleaseId} IS NOT NULL AND ${t.retryAuthorizationEventId} IS NOT NULL
+      AND ${t.recoveryOfReleaseId} IS NULL AND ${t.recoveryAuthorizationEventId} IS NULL))
+      AND ${t.cleanGenerationId} IS NULL AND ${t.cleanOfReleaseId} IS NULL AND ${t.cleanAuthorizationEventId} IS NULL
+    OR (${t.cleanGenerationId} IS NOT NULL AND ${t.recoveryId} IS NULL AND ${t.recoveryOfReleaseId} IS NULL AND ${t.recoveryAuthorizationEventId} IS NULL AND (
+      (${t.cleanAuthorizationEventId} IS NOT NULL AND ${t.rootReleaseId} IS NULL AND ${t.retryOfReleaseId} IS NULL AND ${t.retryAuthorizationEventId} IS NULL
+        AND ((${t.publicationGeneration}=0 AND ${t.cleanOfReleaseId} IS NULL) OR (${t.publicationGeneration}>0 AND ${t.cleanOfReleaseId} IS NOT NULL)))
+      OR (${t.publicationGeneration}>0 AND ${t.rootReleaseId} IS NOT NULL AND ${t.retryOfReleaseId} IS NOT NULL AND ${t.retryAuthorizationEventId} IS NOT NULL
+        AND ${t.cleanOfReleaseId} IS NULL AND ${t.cleanAuthorizationEventId} IS NULL)))`),
+  check("product_releases_status_chk", sql`${t.status} in ('queued','published','rolled_back','failed','interrupted')`),
+  check("product_releases_interruption_chk", sql`(${t.status}='interrupted' AND ${t.receipt} IS NULL
+    AND ((${t.interruptedRecoveryId} IS NOT NULL AND ${t.interruptedCleanGenerationId} IS NULL) OR (${t.interruptedRecoveryId} IS NULL AND ${t.interruptedCleanGenerationId} IS NOT NULL))
+    AND ${t.interruptionEventId} IS NOT NULL AND ${t.interruptionCheckpointDigest} IS NOT NULL AND ${t.interruptionCheckpointDigest} ~ '^sha256:[a-f0-9]{64}$')
+    OR (${t.status}<>'interrupted' AND ${t.interruptedRecoveryId} IS NULL AND ${t.interruptedCleanGenerationId} IS NULL AND ${t.interruptionEventId} IS NULL AND ${t.interruptionCheckpointDigest} IS NULL)`),
   index("product_releases_dispatch_idx").on(t.organizationId, t.status, t.createdAt),
 ]);
+
+/** Authenticated receipt provenance; executor-private retry authority cannot be reconstructed from this row. */
+export const productReleaseRetrySources = pgTable("product_release_retry_sources", {
+  releaseId: text("release_id").primaryKey().references(() => productReleases.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  computerId: text("computer_id").notNull().references(() => computers.id),
+  deviceId: text("device_id").notNull().references(() => devices.id),
+  tokenLookup: text("token_lookup").notNull(), sessionId: text("session_id").notNull(), sourceId: text("source_id").notNull(),
+  requestDigest: text("request_digest").notNull(), receiptDigest: text("receipt_digest").notNull(), projection: jsonb("projection").notNull(),
+  receiptEventId: text("receipt_event_id").notNull().references(() => eventLog.id), receivedAt: ts("received_at").notNull(),
+}, t => [unique("product_release_retry_source_uniq").on(t.computerId, t.sessionId, t.sourceId),
+  check("product_release_retry_source_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.receiptDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
 
 /** Append-only observations; publication receipts remain immutable. */
 export const productReleaseHealthReports = pgTable("product_release_health_reports", {
@@ -1319,6 +1373,93 @@ export const goalImportedDesignDeliveries = pgTable("goal_imported_design_delive
 }, t => [unique("goal_imported_design_delivery_session_uniq").on(t.continuationId, t.sessionId, t.control),
   check("goal_imported_design_delivery_control_chk", sql`${t.control} IN ('start','stop','status')`)]);
 
+/** H3 completion provenance is created only with the original committed node result. */
+export const goalImportedDesignCompletions = pgTable("goal_imported_design_completions", {
+  continuationId: text("continuation_id").primaryKey().references(() => goalImportedDesignContinuations.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  runId: text("run_id").notNull().references(() => runs.id), evidenceId: text("evidence_id").notNull().references(() => runEvidence.id),
+  contextPackId: text("context_pack_id").notNull().references(() => contextPacks.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalImportedDesignDeliveries.id), sessionId: text("session_id").notNull(),
+  resultDigest: text("result_digest").notNull(), completedDesignDigest: text("completed_design_digest").notNull(), verifiedDesign: jsonb("verified_design").notNull(),
+  createdAt: ts("created_at").notNull(), receiptSentAt: ts("receipt_sent_at"),
+}, t => [check("goal_imported_design_completion_digest_chk", sql`${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.completedDesignDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+
+/** H4 reserves both participants at creation. A closed result is distinct from trusted acceptance. */
+export const goalImportedDesignReviews = pgTable("goal_imported_design_reviews", {
+  id: text("id").primaryKey(), continuationId: text("continuation_id").notNull().references(() => goalImportedDesignCompletions.continuationId),
+  organizationId: text("organization_id").notNull().references(() => organizations.id), goalId: text("goal_id").notNull().references(() => goals.id),
+  planId: text("plan_id").notNull().references(() => plans.id), taskId: text("task_id").notNull().references(() => tasks.id),
+  authorInstanceId: text("author_instance_id").notNull().references(() => agentInstances.id), authorAgentId: text("author_agent_id").notNull().references(() => agents.id),
+  reviewerInstanceId: text("reviewer_instance_id").notNull().references(() => agentInstances.id), reviewerAgentId: text("reviewer_agent_id").notNull().references(() => agents.id),
+  computerId: text("computer_id").notNull().references(() => computers.id), workspaceRoot: text("workspace_root").notNull(),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id), policyVersion: text("policy_version").notNull(),
+  sessionBindings: jsonb("session_bindings").notNull(), requestDigest: text("request_digest").notNull(), request: jsonb("request").notNull(),
+  result: jsonb("result"), resultDigest: text("result_digest"), resultDeliveryId: text("result_delivery_id").references((): AnyPgColumn => goalImportedDesignReviewDeliveries.id), resultSessionId: text("result_session_id"),
+  stopRequested: boolean("stop_requested").notNull().default(false), createdAt: ts("created_at").notNull(),
+  acceptedAt: ts("accepted_at"), acceptanceEventId: text("acceptance_event_id").references(() => eventLog.id),
+}, t => [unique("goal_imported_design_reviews_continuation_uniq").on(t.continuationId), unique("goal_imported_design_reviews_task_uniq").on(t.taskId),
+  check("goal_imported_design_reviews_independent_chk", sql`${t.authorInstanceId} <> ${t.reviewerInstanceId} AND ${t.authorAgentId} <> ${t.reviewerAgentId}`),
+  check("goal_imported_design_reviews_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND (${t.resultDigest} IS NULL OR ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$')`),
+  check("goal_imported_design_reviews_result_chk", sql`(${t.result} IS NULL AND ${t.resultDigest} IS NULL AND ${t.resultDeliveryId} IS NULL AND ${t.resultSessionId} IS NULL)
+    OR (${t.result} IS NOT NULL AND ${t.resultDigest} IS NOT NULL AND ${t.resultDeliveryId} IS NOT NULL AND ${t.resultSessionId} IS NOT NULL
+      AND ${t.result}->'version'='1'::jsonb AND ${t.result}->>'review_id'=${t.id} AND ${t.result}->>'request_digest'=${t.requestDigest}
+      AND ${t.result}->'execution_authorized'='false'::jsonb AND ${t.result}->>'outcome' IN ('reviewed','failed','uncertain','cancelled_before_start')
+      AND ${t.result}->'closed'=to_jsonb(${t.result}->>'outcome'<>'uncertain')) IS TRUE`),
+  check("goal_imported_design_reviews_acceptance_chk", sql`(${t.acceptedAt} IS NULL AND ${t.acceptanceEventId} IS NULL) OR (${t.acceptedAt} IS NOT NULL AND ${t.acceptanceEventId} IS NOT NULL
+    AND ${t.result}->>'outcome'='reviewed' AND ${t.result}->'verdict'->>'outcome'='accepted') IS TRUE`),
+]);
+export const goalImportedDesignReviewDeliveries = pgTable("goal_imported_design_review_deliveries", {
+  id: text("id").primaryKey(), reviewId: text("review_id").notNull().references(() => goalImportedDesignReviews.id), sessionId: text("session_id").notNull(),
+  control: text("control").notNull(), ack: jsonb("ack"), createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_imported_design_review_delivery_session_uniq").on(t.reviewId, t.sessionId, t.control),
+  check("goal_imported_design_review_delivery_control_chk", sql`${t.control} IN ('start','stop','status')`)]);
+
+/** Server send completion only. The node separately requires the actual accepted receipt. */
+export const goalImportedDesignReviewReceipts = pgTable("goal_imported_design_review_receipts", {
+  reviewId: text("review_id").primaryKey().references(() => goalImportedDesignReviews.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalImportedDesignReviewDeliveries.id), sessionId: text("session_id").notNull(),
+  sessionBindings: jsonb("session_bindings").notNull(), requestDigest: text("request_digest").notNull(), resultDigest: text("result_digest").notNull(), sentAt: ts("sent_at").notNull(),
+}, t => [check("goal_imported_design_review_receipts_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+
+/** H5 consumes accepted H4 once; its real run remains distinct from stage acceptance. */
+export const goalImportedExecutions = pgTable("goal_imported_executions", {
+  id: text("id").primaryKey(), reviewId: text("review_id").notNull().references(() => goalImportedDesignReviewReceipts.reviewId),
+  organizationId: text("organization_id").notNull().references(() => organizations.id), goalId: text("goal_id").notNull().references(() => goals.id),
+  planId: text("plan_id").notNull().references(() => plans.id), taskId: text("task_id").notNull().references(() => tasks.id),
+  runId: text("run_id").notNull().references(() => runs.id), contextPackId: text("context_pack_id").notNull().references(() => contextPacks.id),
+  writerInstanceId: text("writer_instance_id").notNull().references(() => agentInstances.id), writerAgentId: text("writer_agent_id").notNull().references(() => agents.id),
+  computerId: text("computer_id").notNull().references(() => computers.id), workspaceRoot: text("workspace_root").notNull(),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id), policyVersion: text("policy_version").notNull(),
+  acceptanceEventId: text("acceptance_event_id").notNull().references(() => eventLog.id), designEvidenceId: text("design_evidence_id").notNull().references(() => runEvidence.id),
+  sessionBindings: jsonb("session_bindings").notNull(), requestDigest: text("request_digest").notNull(), request: jsonb("request").notNull(),
+  result: jsonb("result"), resultDigest: text("result_digest"), resultDeliveryId: text("result_delivery_id").references((): AnyPgColumn => goalImportedExecutionDeliveries.id), resultSessionId: text("result_session_id"),
+  stopRequested: boolean("stop_requested").notNull().default(false), createdAt: ts("created_at").notNull(),
+  reviewReadyAt: ts("review_ready_at"), reviewReadyEventId: text("review_ready_event_id").references(() => eventLog.id),
+}, t => [unique("goal_imported_executions_review_uniq").on(t.reviewId), unique("goal_imported_executions_task_uniq").on(t.taskId), unique("goal_imported_executions_run_uniq").on(t.runId),
+  check("goal_imported_executions_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND (${t.resultDigest} IS NULL OR ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$')`),
+  check("goal_imported_executions_request_chk", sql`(${t.request}->'version'='1'::jsonb AND ${t.request}->>'stage'='implementation' AND ${t.request}->>'execution_id'=${t.id}
+    AND ${t.request}->'run_start'->>'run_id'=${t.runId} AND ${t.request}->'run_start'->>'task_id'=${t.taskId} AND ${t.request}->>'acceptance_event_id'=${t.acceptanceEventId}
+    AND ${t.request}->>'design_evidence_id'=${t.designEvidenceId} AND ${t.request}->'run_start'->'context_pack'->>'id'=${t.contextPackId}
+    AND ${t.request}->'run_start'->>'agent_instance_id'=${t.writerInstanceId} AND ${t.request}->'run_start'->'workspace'->>'root'=${t.workspaceRoot}) IS TRUE`),
+  check("goal_imported_executions_result_chk", sql`(${t.result} IS NULL AND ${t.resultDigest} IS NULL AND ${t.resultDeliveryId} IS NULL AND ${t.resultSessionId} IS NULL)
+    OR (${t.result} IS NOT NULL AND ${t.resultDigest} IS NOT NULL AND ${t.resultDeliveryId} IS NOT NULL AND ${t.resultSessionId} IS NOT NULL
+      AND ${t.result}->'version'='1'::jsonb AND ${t.result}->>'execution_id'=${t.id} AND ${t.result}->>'request_digest'=${t.requestDigest} AND ${t.result}->>'run_id'=${t.runId}
+      AND ${t.result}->>'outcome' IN ('finished','failed','uncertain','cancelled_before_start') AND ${t.result}->'closed'=to_jsonb(${t.result}->>'outcome'<>'uncertain')) IS TRUE`),
+  check("goal_imported_executions_ready_chk", sql`(${t.reviewReadyAt} IS NULL AND ${t.reviewReadyEventId} IS NULL) OR (${t.reviewReadyAt} IS NOT NULL AND ${t.reviewReadyEventId} IS NOT NULL
+    AND ${t.result}->>'outcome'='finished' AND ${t.result}->'verified_execution'->'verification'->>'outcome'='passed') IS TRUE`),
+]);
+export const goalImportedExecutionDeliveries = pgTable("goal_imported_execution_deliveries", {
+  id: text("id").primaryKey(), executionId: text("execution_id").notNull().references(() => goalImportedExecutions.id), sessionId: text("session_id").notNull(),
+  control: text("control").notNull(), ack: jsonb("ack"), createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_imported_execution_delivery_session_uniq").on(t.executionId, t.sessionId, t.control), check("goal_imported_execution_delivery_control_chk", sql`${t.control} IN ('start','stop','status')`)]);
+export const goalImportedExecutionCompletions = pgTable("goal_imported_execution_completions", {
+  executionId: text("execution_id").primaryKey().references(() => goalImportedExecutions.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  runId: text("run_id").notNull().references(() => runs.id), evidenceId: text("evidence_id").notNull().references(() => runEvidence.id), contextPackId: text("context_pack_id").notNull().references(() => contextPacks.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalImportedExecutionDeliveries.id), sessionId: text("session_id").notNull(),
+  resultDigest: text("result_digest").notNull(), completedExecutionDigest: text("completed_execution_digest").notNull(), verifiedExecution: jsonb("verified_execution").notNull(),
+  createdAt: ts("created_at").notNull(),
+}, t => [check("goal_imported_execution_completion_digest_chk", sql`${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.completedExecutionDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+
 /** Immutable qualified revision intent; only a one-way accepted settlement can be added. */
 export const productDesignRevisions = pgTable("product_design_revisions", {
   id: text("id").primaryKey(), organizationId: text("organization_id").notNull().references(() => organizations.id),
@@ -1357,3 +1498,370 @@ export const productDesignRevisionRuns = pgTable("product_design_revision_runs",
 }, t => [unique("product_design_revision_attempt_uniq").on(t.revisionId, t.attempt), unique("product_design_revision_context_uniq").on(t.contextPackId),
   check("product_design_revision_runs_attempt_check", sql`${t.attempt} > 0`),
   check("product_design_revision_runs_descriptor_digest_check", sql`${t.descriptorDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+
+/** H6 review and one-use repair. All retries consume the original goal counter. */
+export const goalImportedExecutionReviews = pgTable("goal_imported_execution_reviews", {
+  id: text("id").primaryKey(), baseExecutionId: text("base_execution_id").notNull().references(() => goalImportedExecutionCompletions.executionId),
+  sourceKind: text("source_kind").notNull(), sourceOperationId: text("source_operation_id").notNull(), sourceDigest: text("source_digest").notNull(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id), goalId: text("goal_id").notNull().references(() => goals.id),
+  planId: text("plan_id").notNull().references(() => plans.id), taskId: text("task_id").notNull().references(() => tasks.id),
+  authorInstanceId: text("author_instance_id").notNull().references(() => agentInstances.id), authorAgentId: text("author_agent_id").notNull().references(() => agents.id),
+  reviewerInstanceId: text("reviewer_instance_id").notNull().references(() => agentInstances.id), reviewerAgentId: text("reviewer_agent_id").notNull().references(() => agents.id),
+  computerId: text("computer_id").notNull().references(() => computers.id), workspaceRoot: text("workspace_root").notNull(),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id), policyVersion: text("policy_version").notNull(),
+  sessionBindings: jsonb("session_bindings").notNull(), requestDigest: text("request_digest").notNull(), request: jsonb("request").notNull(),
+  result: jsonb("result"), resultDigest: text("result_digest"), resultDeliveryId: text("result_delivery_id").references((): AnyPgColumn => goalImportedExecutionReviewDeliveries.id), resultSessionId: text("result_session_id"),
+  stopRequested: boolean("stop_requested").notNull().default(false), createdAt: ts("created_at").notNull(),
+  acceptedAt: ts("accepted_at"), acceptanceEventId: text("acceptance_event_id").references(() => eventLog.id),
+}, t => [unique("goal_imported_execution_reviews_source_uniq").on(t.baseExecutionId, t.sourceKind, t.sourceOperationId),
+  check("goal_imported_execution_reviews_source_chk", sql`${t.sourceKind} IN ('execution','repair') AND ${t.sourceDigest} ~ '^sha256:[a-f0-9]{64}$'`),
+  check("goal_imported_execution_reviews_independent_chk", sql`${t.authorInstanceId} <> ${t.reviewerInstanceId} AND ${t.authorAgentId} <> ${t.reviewerAgentId}`),
+  check("goal_imported_execution_reviews_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND (${t.resultDigest} IS NULL OR ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$')`),
+  check("goal_imported_execution_reviews_result_chk", sql`(${t.result} IS NULL AND ${t.resultDigest} IS NULL AND ${t.resultDeliveryId} IS NULL AND ${t.resultSessionId} IS NULL)
+    OR (${t.result} IS NOT NULL AND ${t.resultDigest} IS NOT NULL AND ${t.resultDeliveryId} IS NOT NULL AND ${t.resultSessionId} IS NOT NULL
+      AND ${t.result}->'version'='1'::jsonb AND ${t.result}->>'review_id'=${t.id} AND ${t.result}->>'request_digest'=${t.requestDigest}
+      AND ${t.result}->'execution_authorized'='false'::jsonb AND ${t.result}->>'outcome' IN ('reviewed','failed','uncertain','cancelled_before_start')
+      AND ${t.result}->'closed'=to_jsonb(${t.result}->>'outcome'<>'uncertain')) IS TRUE`),
+  check("goal_imported_execution_reviews_acceptance_chk", sql`(${t.acceptedAt} IS NULL AND ${t.acceptanceEventId} IS NULL) OR (${t.acceptedAt} IS NOT NULL AND ${t.acceptanceEventId} IS NOT NULL
+    AND ${t.result}->>'outcome'='reviewed' AND ${t.result}->'verdict'->>'outcome'='accepted') IS TRUE`),
+]);
+export const goalImportedExecutionReviewDeliveries = pgTable("goal_imported_execution_review_deliveries", {
+  id: text("id").primaryKey(), reviewId: text("review_id").notNull().references(() => goalImportedExecutionReviews.id), sessionId: text("session_id").notNull(),
+  control: text("control").notNull(), ack: jsonb("ack"), createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_imported_execution_review_delivery_session_uniq").on(t.reviewId, t.sessionId, t.control),
+  check("goal_imported_execution_review_delivery_control_chk", sql`${t.control} IN ('start','stop','status')`)]);
+
+/** Server send completion only. The node separately requires the actual accepted receipt. */
+export const goalImportedExecutionReviewReceipts = pgTable("goal_imported_execution_review_receipts", {
+  reviewId: text("review_id").primaryKey().references(() => goalImportedExecutionReviews.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalImportedExecutionReviewDeliveries.id), sessionId: text("session_id").notNull(),
+  sessionBindings: jsonb("session_bindings").notNull(), requestDigest: text("request_digest").notNull(), resultDigest: text("result_digest").notNull(), sentAt: ts("sent_at").notNull(),
+}, t => [check("goal_imported_execution_review_receipts_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+
+export const goalImportedExecutionRepairs = pgTable("goal_imported_execution_repairs", {
+  id: text("id").primaryKey(), reviewId: text("review_id").notNull().references(() => goalImportedExecutionReviewReceipts.reviewId),
+  organizationId: text("organization_id").notNull().references(() => organizations.id), goalId: text("goal_id").notNull().references(() => goals.id),
+  planId: text("plan_id").notNull().references(() => plans.id), taskId: text("task_id").notNull().references(() => tasks.id),
+  runId: text("run_id").notNull().references(() => runs.id), contextPackId: text("context_pack_id").notNull().references(() => contextPacks.id),
+  writerInstanceId: text("writer_instance_id").notNull().references(() => agentInstances.id), writerAgentId: text("writer_agent_id").notNull().references(() => agents.id),
+  computerId: text("computer_id").notNull().references(() => computers.id), workspaceRoot: text("workspace_root").notNull(),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id), policyVersion: text("policy_version").notNull(),
+  authorizationEventId: text("authorization_event_id").notNull().references(() => eventLog.id), baseExecutionId: text("base_execution_id").notNull().references(() => goalImportedExecutions.id), attemptIndex: integer("attempt_index").notNull(),
+  sessionBindings: jsonb("session_bindings").notNull(), requestDigest: text("request_digest").notNull(), request: jsonb("request").notNull(),
+  result: jsonb("result"), resultDigest: text("result_digest"), resultDeliveryId: text("result_delivery_id").references((): AnyPgColumn => goalImportedExecutionRepairDeliveries.id), resultSessionId: text("result_session_id"),
+  stopRequested: boolean("stop_requested").notNull().default(false), createdAt: ts("created_at").notNull(),
+  reviewReadyAt: ts("review_ready_at"), reviewReadyEventId: text("review_ready_event_id").references(() => eventLog.id),
+}, t => [unique("goal_imported_execution_repairs_review_uniq").on(t.reviewId), unique("goal_imported_execution_repairs_attempt_uniq").on(t.goalId, t.attemptIndex), unique("goal_imported_execution_repairs_run_uniq").on(t.runId),
+  check("goal_imported_execution_repairs_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND (${t.resultDigest} IS NULL OR ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$')`),
+  check("goal_imported_execution_repairs_request_chk", sql`(${t.request}->'version'='1'::jsonb AND ${t.request}->>'repair_id'=${t.id}
+    AND ${t.request}->'run_start'->>'run_id'=${t.runId} AND ${t.request}->'run_start'->>'task_id'=${t.taskId} AND ${t.request}->'authorization'->>'event_id'=${t.authorizationEventId}
+    AND ${t.request}->'execution_request'->>'execution_id'=${t.baseExecutionId} AND ${t.attemptIndex}>0 AND (${t.request}->'authorization'->>'attempt_index')::integer=${t.attemptIndex} AND ${t.request}->'authorization'->>'goal_id'=${t.goalId} AND ${t.request}->'run_start'->'context_pack'->>'id'=${t.contextPackId}
+    AND ${t.request}->'run_start'->>'agent_instance_id'=${t.writerInstanceId} AND ${t.request}->'run_start'->'workspace'->>'root'=${t.workspaceRoot}) IS TRUE`),
+  check("goal_imported_execution_repairs_result_chk", sql`(${t.result} IS NULL AND ${t.resultDigest} IS NULL AND ${t.resultDeliveryId} IS NULL AND ${t.resultSessionId} IS NULL)
+    OR (${t.result} IS NOT NULL AND ${t.resultDigest} IS NOT NULL AND ${t.resultDeliveryId} IS NOT NULL AND ${t.resultSessionId} IS NOT NULL
+      AND ${t.result}->'version'='1'::jsonb AND ${t.result}->>'repair_id'=${t.id} AND ${t.result}->>'request_digest'=${t.requestDigest} AND ${t.result}->>'run_id'=${t.runId}
+      AND ${t.result}->>'outcome' IN ('finished','failed','uncertain','cancelled_before_start') AND ${t.result}->'closed'=to_jsonb(${t.result}->>'outcome'<>'uncertain')) IS TRUE`),
+  check("goal_imported_execution_repairs_ready_chk", sql`(${t.reviewReadyAt} IS NULL AND ${t.reviewReadyEventId} IS NULL) OR (${t.reviewReadyAt} IS NOT NULL AND ${t.reviewReadyEventId} IS NOT NULL
+    AND ${t.result}->>'outcome'='finished' AND ${t.result}->'verified_repair'->'verification'->>'outcome'='passed') IS TRUE`),
+]);
+export const goalImportedExecutionRepairDeliveries = pgTable("goal_imported_execution_repair_deliveries", {
+  id: text("id").primaryKey(), repairId: text("repair_id").notNull().references(() => goalImportedExecutionRepairs.id), sessionId: text("session_id").notNull(),
+  control: text("control").notNull(), ack: jsonb("ack"), createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_imported_execution_repair_delivery_session_uniq").on(t.repairId, t.sessionId, t.control), check("goal_imported_execution_repair_delivery_control_chk", sql`${t.control} IN ('start','stop','status')`)]);
+export const goalImportedExecutionRepairCompletions = pgTable("goal_imported_execution_repair_completions", {
+  repairId: text("repair_id").primaryKey().references(() => goalImportedExecutionRepairs.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  runId: text("run_id").notNull().references(() => runs.id), evidenceId: text("evidence_id").notNull().references(() => runEvidence.id), contextPackId: text("context_pack_id").notNull().references(() => contextPacks.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalImportedExecutionRepairDeliveries.id), sessionId: text("session_id").notNull(),
+  resultDigest: text("result_digest").notNull(), completedRepairDigest: text("completed_repair_digest").notNull(), verifiedRepair: jsonb("verified_repair").notNull(),
+  createdAt: ts("created_at").notNull(),
+}, t => [check("goal_imported_execution_repair_completion_digest_chk", sql`${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.completedRepairDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+
+/** Send-completion markers; receipt possession remains a separate node-local boundary. */
+export const goalImportedExecutionReceipts = pgTable("goal_imported_execution_receipts", {
+  executionId: text("execution_id").primaryKey().references(() => goalImportedExecutions.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalImportedExecutionDeliveries.id), sessionId: text("session_id").notNull(),
+  sessionBindings: jsonb("session_bindings").notNull(), requestDigest: text("request_digest").notNull(), resultDigest: text("result_digest").notNull(), sentAt: ts("sent_at").notNull(),
+}, t => [check("goal_imported_execution_receipts_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+
+export const goalImportedExecutionRepairReceipts = pgTable("goal_imported_execution_repair_receipts", {
+  repairId: text("repair_id").primaryKey().references(() => goalImportedExecutionRepairs.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalImportedExecutionRepairDeliveries.id), sessionId: text("session_id").notNull(),
+  sessionBindings: jsonb("session_bindings").notNull(), requestDigest: text("request_digest").notNull(), resultDigest: text("result_digest").notNull(), sentAt: ts("sent_at").notNull(),
+}, t => [check("goal_imported_execution_repair_receipts_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+
+/** H7 author attempts retain H6 as immutable ancestry, with a new current product source. */
+export const goalImportedValidations = pgTable("goal_imported_validations", {
+  id: text("id").primaryKey(), rootValidationId: text("root_validation_id").notNull().references((): AnyPgColumn => goalImportedValidations.id),
+  originReviewId: text("origin_review_id").notNull().references(() => goalImportedExecutionReviews.id),
+  parentValidationId: text("parent_validation_id").references((): AnyPgColumn => goalImportedValidations.id),
+  kind: text("kind").notNull(), generation: integer("generation").notNull(), predecessorKind: text("predecessor_kind").notNull(), predecessorId: text("predecessor_id").notNull(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id), goalId: text("goal_id").notNull().references(() => goals.id),
+  planId: text("plan_id").notNull().references(() => plans.id), taskId: text("task_id").notNull().references(() => tasks.id),
+  runId: text("run_id").notNull().references(() => runs.id), contextPackId: text("context_pack_id").notNull().references(() => contextPacks.id),
+  writerInstanceId: text("writer_instance_id").notNull().references(() => agentInstances.id), writerAgentId: text("writer_agent_id").notNull().references(() => agents.id),
+  computerId: text("computer_id").notNull().references(() => computers.id), workspaceRoot: text("workspace_root").notNull(),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id), policyVersion: text("policy_version").notNull(),
+  authorizationEventId: text("authorization_event_id").notNull().references(() => eventLog.id), attemptIndex: integer("attempt_index").notNull(),
+  sessionBindings: jsonb("session_bindings").notNull(), initialSourceDigest: text("initial_source_digest").notNull(), requestDigest: text("request_digest").notNull(), request: jsonb("request").notNull(),
+  result: jsonb("result"), resultDigest: text("result_digest"), resultDeliveryId: text("result_delivery_id").references((): AnyPgColumn => goalImportedValidationDeliveries.id), resultSessionId: text("result_session_id"),
+  stopRequested: boolean("stop_requested").notNull().default(false), createdAt: ts("created_at").notNull(),
+  readyAt: ts("ready_at"), readyEventId: text("ready_event_id").references(() => eventLog.id), readyKind: text("ready_kind"),
+}, t => [unique("goal_imported_validations_generation_uniq").on(t.rootValidationId, t.generation),
+  unique("goal_imported_validations_predecessor_uniq").on(t.organizationId, t.predecessorKind, t.predecessorId),
+  unique("goal_imported_validations_parent_uniq").on(t.parentValidationId), unique("goal_imported_validations_run_uniq").on(t.runId),
+  unique("goal_imported_validations_task_generation_uniq").on(t.taskId, t.generation),
+  check("goal_imported_validations_lineage_chk", sql`(${t.kind}='initial' AND ${t.generation}=0 AND ${t.rootValidationId}=${t.id} AND ${t.parentValidationId} IS NULL AND ${t.predecessorKind}='initial' AND ${t.predecessorId}=${t.originReviewId})
+    OR (${t.kind}='repair' AND ${t.generation}>0 AND ${t.rootValidationId}<>${t.id} AND ${t.parentValidationId} IS NOT NULL AND ${t.predecessorKind} IN ('review','failure'))`),
+  check("goal_imported_validations_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.initialSourceDigest} ~ '^sha256:[a-f0-9]{64}$' AND (${t.resultDigest} IS NULL OR ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$')`),
+  check("goal_imported_validations_request_chk", sql`(${t.request}->'version'='1'::jsonb AND ${t.request}->>'validation_id'=${t.id} AND ${t.request}->>'root_validation_id'=${t.rootValidationId}
+    AND (${t.request}->>'generation')::integer=${t.generation} AND ${t.request}->>'kind'=${t.kind} AND ${t.request}->'origin'->>'review_id'=${t.originReviewId}
+    AND ${t.request}->'run_start'->>'run_id'=${t.runId} AND ${t.request}->'run_start'->>'task_id'=${t.taskId} AND ${t.request}->'run_start'->'context_pack'->>'id'=${t.contextPackId}
+    AND ${t.request}->'run_start'->>'agent_instance_id'=${t.writerInstanceId} AND ${t.request}->'run_start'->'workspace'->>'root'=${t.workspaceRoot}
+    AND ${t.request}->'authorization'->>'event_id'=${t.authorizationEventId} AND ${t.request}->'authorization'->>'goal_id'=${t.goalId}
+    AND (${t.request}->'authorization'->>'attempt_index')::integer=${t.attemptIndex} AND ${t.attemptIndex}>=0) IS TRUE`),
+  check("goal_imported_validations_result_chk", sql`(${t.result} IS NULL AND ${t.resultDigest} IS NULL AND ${t.resultDeliveryId} IS NULL AND ${t.resultSessionId} IS NULL)
+    OR (${t.result} IS NOT NULL AND ${t.resultDigest} IS NOT NULL AND ${t.resultDeliveryId} IS NOT NULL AND ${t.resultSessionId} IS NOT NULL
+      AND ${t.result}->'version'='1'::jsonb AND ${t.result}->>'validation_id'=${t.id} AND ${t.result}->>'request_digest'=${t.requestDigest} AND ${t.result}->>'run_id'=${t.runId}
+      AND ${t.result}->>'outcome' IN ('finished','failed','uncertain','cancelled_before_start') AND ${t.result}->'closed'=to_jsonb(${t.result}->>'outcome'<>'uncertain')) IS TRUE`),
+  check("goal_imported_validations_ready_chk", sql`(${t.readyAt} IS NULL AND ${t.readyEventId} IS NULL AND ${t.readyKind} IS NULL)
+    OR (${t.readyAt} IS NOT NULL AND ${t.readyEventId} IS NOT NULL AND (${t.readyKind}='review' AND ${t.result}->>'outcome'='finished' AND ${t.result}->'verified_validation'->'verification'->>'outcome'='passed'
+      OR ${t.readyKind}='repair' AND ${t.result}->>'outcome'='failed' AND ${t.result}->'closed_failure' IS NOT NULL)) IS TRUE`),
+]);
+export const goalImportedValidationDeliveries = pgTable("goal_imported_validation_deliveries", {
+  id: text("id").primaryKey(), validationId: text("validation_id").notNull().references(() => goalImportedValidations.id), sessionId: text("session_id").notNull(),
+  control: text("control").notNull(), ack: jsonb("ack"), createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_imported_validation_delivery_session_uniq").on(t.validationId, t.sessionId, t.control), check("goal_imported_validation_delivery_control_chk", sql`${t.control} IN ('start','stop','status')`)]);
+export const goalImportedValidationCompletions = pgTable("goal_imported_validation_completions", {
+  validationId: text("validation_id").primaryKey().references(() => goalImportedValidations.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  runId: text("run_id").notNull().references(() => runs.id), contextPackId: text("context_pack_id").notNull().references(() => contextPacks.id), evidenceId: text("evidence_id").references(() => runEvidence.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalImportedValidationDeliveries.id), sessionId: text("session_id").notNull(), outcome: text("outcome").notNull(),
+  resultDigest: text("result_digest").notNull(), completionDigest: text("completion_digest").notNull(), completion: jsonb("completion").notNull(),
+  sourceDigest: text("source_digest").notNull(), source: jsonb("source").notNull(), createdAt: ts("created_at").notNull(),
+}, t => [check("goal_imported_validation_completion_outcome_chk", sql`${t.outcome} IN ('verified','closed-failure') AND (${t.outcome}<>'verified' OR ${t.evidenceId} IS NOT NULL)`),
+  check("goal_imported_validation_completion_digest_chk", sql`${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.completionDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.sourceDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+/** Records Server send completion; actual receipt possession remains a separate Node authority. */
+export const goalImportedValidationReceipts = pgTable("goal_imported_validation_receipts", {
+  validationId: text("validation_id").primaryKey().references(() => goalImportedValidations.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalImportedValidationDeliveries.id), sessionId: text("session_id").notNull(), sessionBindings: jsonb("session_bindings").notNull(),
+  requestDigest: text("request_digest").notNull(), resultDigest: text("result_digest").notNull(), sentAt: ts("sent_at").notNull(),
+}, t => [check("goal_imported_validation_receipt_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+export const goalImportedValidationReviews = pgTable("goal_imported_validation_reviews", {
+  id: text("id").primaryKey(), validationId: text("validation_id").notNull().references(() => goalImportedValidationCompletions.validationId),
+  retryOf: text("retry_of").references((): AnyPgColumn => goalImportedValidationReviews.id), sequence: integer("sequence").notNull(),
+  sourceDigest: text("source_digest").notNull(), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  goalId: text("goal_id").notNull().references(() => goals.id), planId: text("plan_id").notNull().references(() => plans.id), taskId: text("task_id").notNull().references(() => tasks.id),
+  authorInstanceId: text("author_instance_id").notNull().references(() => agentInstances.id), authorAgentId: text("author_agent_id").notNull().references(() => agents.id),
+  reviewerInstanceId: text("reviewer_instance_id").notNull().references(() => agentInstances.id), reviewerAgentId: text("reviewer_agent_id").notNull().references(() => agents.id),
+  computerId: text("computer_id").notNull().references(() => computers.id), workspaceRoot: text("workspace_root").notNull(),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id), policyVersion: text("policy_version").notNull(),
+  authorizationEventId: text("authorization_event_id").notNull().references(() => eventLog.id), attemptIndex: integer("attempt_index").notNull(),
+  sessionBindings: jsonb("session_bindings").notNull(), requestDigest: text("request_digest").notNull(), request: jsonb("request").notNull(),
+  result: jsonb("result"), resultDigest: text("result_digest"), resultDeliveryId: text("result_delivery_id").references((): AnyPgColumn => goalImportedValidationReviewDeliveries.id), resultSessionId: text("result_session_id"),
+  stopRequested: boolean("stop_requested").notNull().default(false), createdAt: ts("created_at").notNull(), acceptedAt: ts("accepted_at"), acceptanceEventId: text("acceptance_event_id").references(() => eventLog.id),
+}, t => [unique("goal_imported_validation_review_sequence_uniq").on(t.validationId, t.sequence), unique("goal_imported_validation_review_retry_uniq").on(t.retryOf),
+  check("goal_imported_validation_review_independent_chk", sql`${t.authorInstanceId}<>${t.reviewerInstanceId} AND ${t.authorAgentId}<>${t.reviewerAgentId}`),
+  check("goal_imported_validation_review_sequence_chk", sql`${t.attemptIndex}>=0 AND ((${t.sequence}=0 AND ${t.retryOf} IS NULL) OR (${t.sequence}>0 AND ${t.retryOf} IS NOT NULL))`),
+  check("goal_imported_validation_review_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.sourceDigest} ~ '^sha256:[a-f0-9]{64}$' AND (${t.resultDigest} IS NULL OR ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$')`),
+  check("goal_imported_validation_review_result_chk", sql`(${t.result} IS NULL AND ${t.resultDigest} IS NULL AND ${t.resultDeliveryId} IS NULL AND ${t.resultSessionId} IS NULL)
+    OR (${t.result} IS NOT NULL AND ${t.resultDigest} IS NOT NULL AND ${t.resultDeliveryId} IS NOT NULL AND ${t.resultSessionId} IS NOT NULL AND ${t.result}->'version'='1'::jsonb
+      AND ${t.result}->>'review_id'=${t.id} AND ${t.result}->>'request_digest'=${t.requestDigest} AND ${t.result}->'execution_authorized'='false'::jsonb
+      AND ${t.result}->>'outcome' IN ('reviewed','failed','uncertain','cancelled_before_start') AND ${t.result}->'closed'=to_jsonb(${t.result}->>'outcome'<>'uncertain')) IS TRUE`),
+  check("goal_imported_validation_review_accepted_chk", sql`(${t.acceptedAt} IS NULL AND ${t.acceptanceEventId} IS NULL) OR (${t.acceptedAt} IS NOT NULL AND ${t.acceptanceEventId} IS NOT NULL
+    AND ${t.result}->>'outcome'='reviewed' AND ${t.result}->'verdict'->>'outcome'='accepted') IS TRUE`),
+]);
+export const goalImportedValidationReviewDeliveries = pgTable("goal_imported_validation_review_deliveries", {
+  id: text("id").primaryKey(), reviewId: text("review_id").notNull().references(() => goalImportedValidationReviews.id), sessionId: text("session_id").notNull(),
+  control: text("control").notNull(), ack: jsonb("ack"), createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_imported_validation_review_delivery_session_uniq").on(t.reviewId, t.sessionId, t.control), check("goal_imported_validation_review_delivery_control_chk", sql`${t.control} IN ('start','stop','status')`)]);
+export const goalImportedValidationReviewReceipts = pgTable("goal_imported_validation_review_receipts", {
+  reviewId: text("review_id").primaryKey().references(() => goalImportedValidationReviews.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalImportedValidationReviewDeliveries.id), sessionId: text("session_id").notNull(), sessionBindings: jsonb("session_bindings").notNull(),
+  requestDigest: text("request_digest").notNull(), resultDigest: text("result_digest").notNull(), sentAt: ts("sent_at").notNull(),
+}, t => [check("goal_imported_validation_review_receipt_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+/** An existing publisher request consumes precisely one independently accepted H7 final source. */
+export const goalImportedValidationPublications = pgTable("goal_imported_validation_publications", {
+  releaseId: text("release_id").primaryKey().references(() => productReleases.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  goalId: text("goal_id").notNull().references(() => goals.id), planId: text("plan_id").notNull().references(() => plans.id),
+  validationId: text("validation_id").notNull().references(() => goalImportedValidationCompletions.validationId), reviewId: text("review_id").notNull().references(() => goalImportedValidationReviews.id),
+  originReviewId: text("origin_review_id").notNull().references(() => goalImportedExecutionReviews.id), acceptanceEventId: text("acceptance_event_id").notNull().references(() => eventLog.id),
+  runId: text("run_id").notNull().references(() => runs.id), evidenceId: text("evidence_id").notNull().references(() => runEvidence.id), computerId: text("computer_id").notNull().references(() => computers.id),
+  sourceDigest: text("source_digest").notNull(), origin: jsonb("origin").notNull(), capabilities: jsonb("capabilities").notNull(), createdAt: ts("created_at").notNull(),
+}, t => [index("goal_imported_validation_publication_goal_idx").on(t.organizationId, t.goalId),
+  check("goal_imported_validation_publication_digest_chk", sql`${t.sourceDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+
+/** H9 registration records historical identity, never a persisted native permit. */
+export const nodeRecoveryRegistrations = pgTable("node_recovery_registrations", {
+  id: text("id").primaryKey(), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  computerId: text("computer_id").notNull().references(() => computers.id), deviceId: text("device_id").notNull().references(() => devices.id),
+  tokenLookup: text("token_lookup").notNull(), sessionId: text("session_id").notNull(), epochId: text("epoch_id").notNull(), generation: integer("generation").notNull(),
+  guardianInstanceId: text("guardian_instance_id").notNull(), storeIdentityDigest: text("store_identity_digest").notNull(),
+  configurationDigest: text("configuration_digest").notNull(), workspaceIdentityDigest: text("workspace_identity_digest").notNull(), workspaceRoot: text("workspace_root").notNull(),
+  registrationDigest: text("registration_digest").notNull(), registration: jsonb("registration").notNull(), createdAt: ts("created_at").notNull(),
+}, t => [unique("node_recovery_epoch_uniq").on(t.organizationId, t.computerId, t.epochId),
+  unique("node_recovery_generation_uniq").on(t.organizationId, t.computerId, t.guardianInstanceId, t.storeIdentityDigest, t.generation),
+  check("node_recovery_registration_generation_chk", sql`${t.generation}>=0`),
+  check("node_recovery_registration_digest_chk", sql`${t.registrationDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.storeIdentityDigest} ~ '^sha256:[a-f0-9]{64}$'
+    AND ${t.configurationDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.workspaceIdentityDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+export const nodeRecoveryAvailabilities = pgTable("node_recovery_availabilities", {
+  id: text("id").primaryKey(), registrationId: text("registration_id").notNull().references(() => nodeRecoveryRegistrations.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id), tokenLookup: text("token_lookup").notNull(), sessionId: text("session_id").notNull(),
+  availabilityDigest: text("availability_digest").notNull(), availability: jsonb("availability").notNull(), createdAt: ts("created_at").notNull(),
+}, t => [unique("node_recovery_availability_uniq").on(t.registrationId, t.sessionId, t.availabilityDigest),
+  check("node_recovery_availability_digest_chk", sql`${t.availabilityDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+export const goalSourceRecoveries = pgTable("goal_source_recoveries", {
+  id: text("id").primaryKey(), registrationId: text("registration_id").notNull().references(() => nodeRecoveryRegistrations.id),
+  availabilityId: text("availability_id").notNull().references(() => nodeRecoveryAvailabilities.id),
+  originReviewId: text("origin_review_id").notNull().references(() => goalImportedExecutionReviews.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id), goalId: text("goal_id").notNull().references(() => goals.id),
+  planId: text("plan_id").notNull().references(() => plans.id), computerId: text("computer_id").notNull().references(() => computers.id),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id),
+  policyVersion: text("policy_version").notNull(), authorizationEventId: text("authorization_event_id").notNull().references(() => eventLog.id),
+  currentSessionId: text("current_session_id").notNull(), requestDigest: text("request_digest").notNull(), request: jsonb("request").notNull(),
+  result: jsonb("result"), resultDigest: text("result_digest"),
+  resultDeliveryId: text("result_delivery_id").references((): AnyPgColumn => goalSourceRecoveryDeliveries.id), resultSessionId: text("result_session_id"),
+  stopRequested: boolean("stop_requested").notNull().default(false), createdAt: ts("created_at").notNull(),
+  settledAt: ts("settled_at"), settlementEventId: text("settlement_event_id").references(() => eventLog.id),
+}, t => [unique("goal_source_recovery_registration_uniq").on(t.registrationId),
+  check("goal_source_recovery_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND (${t.resultDigest} IS NULL OR ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$')`),
+  check("goal_source_recovery_result_chk", sql`((${t.result} IS NULL AND ${t.resultDigest} IS NULL AND ${t.resultDeliveryId} IS NULL AND ${t.resultSessionId} IS NULL)
+    OR (${t.result} IS NOT NULL AND ${t.resultDigest} IS NOT NULL AND ${t.resultDeliveryId} IS NOT NULL AND ${t.resultSessionId}=${t.currentSessionId}
+      AND ${t.result}->'version'='1'::jsonb AND ${t.result}->>'recovery_id'=${t.id} AND ${t.result}->>'request_digest'=${t.requestDigest}
+      AND ${t.result}->>'outcome' IN ('recovered','unknown') AND ${t.result}->'closed'=to_jsonb(${t.result}->>'outcome'='recovered'))) IS TRUE`),
+  check("goal_source_recovery_settled_chk", sql`((${t.settledAt} IS NULL AND ${t.settlementEventId} IS NULL) OR
+    (${t.settledAt} IS NOT NULL AND ${t.settlementEventId} IS NOT NULL AND ${t.result}->>'outcome'='recovered')) IS TRUE`)]);
+export const goalSourceRecoveryDeliveries = pgTable("goal_source_recovery_deliveries", {
+  id: text("id").primaryKey(), recoveryId: text("recovery_id").notNull().references(() => goalSourceRecoveries.id),
+  sessionId: text("session_id").notNull(), control: text("control").notNull(), ack: jsonb("ack"), createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_source_recovery_delivery_uniq").on(t.recoveryId, t.sessionId, t.control),
+  check("goal_source_recovery_delivery_control_chk", sql`${t.control} IN ('start','stop','status')`)]);
+export const goalSourceRecoveryCheckpoints = pgTable("goal_source_recovery_checkpoints", {
+  recoveryId: text("recovery_id").primaryKey().references(() => goalSourceRecoveries.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id),
+  registrationId: text("registration_id").notNull().references(() => nodeRecoveryRegistrations.id),
+  oldEpochId: text("old_epoch_id").notNull(), newEpochId: text("new_epoch_id").notNull(), generation: integer("generation").notNull(),
+  deliveryId: text("delivery_id").notNull().references(() => goalSourceRecoveryDeliveries.id), sessionId: text("session_id").notNull(),
+  requestDigest: text("request_digest").notNull(), resultDigest: text("result_digest").notNull(),
+  checkpointDigest: text("checkpoint_digest").notNull(), checkpoint: jsonb("checkpoint").notNull(), createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_source_recovery_old_epoch_uniq").on(t.registrationId, t.oldEpochId),
+  unique("goal_source_recovery_new_epoch_uniq").on(t.newEpochId),
+  check("goal_source_recovery_checkpoint_epoch_chk", sql`${t.oldEpochId}<>${t.newEpochId} AND ${t.generation}>0`),
+  check("goal_source_recovery_checkpoint_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.checkpointDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+/** Exact old operations are settled without rewriting their original uncertain result. */
+export const goalSourceRecoverySettlements = pgTable("goal_source_recovery_settlements", {
+  id: text("id").primaryKey(), recoveryId: text("recovery_id").notNull().references(() => goalSourceRecoveryCheckpoints.recoveryId),
+  organizationId: text("organization_id").notNull().references(() => organizations.id), goalId: text("goal_id").notNull().references(() => goals.id),
+  computerId: text("computer_id").notNull().references(() => computers.id), kind: text("kind").notNull(), operationId: text("operation_id").notNull(),
+  requestDigest: text("request_digest").notNull(), runId: text("run_id").references(() => runs.id),
+  eventId: text("event_id").notNull().references(() => eventLog.id), createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_source_recovery_operation_uniq").on(t.organizationId, t.kind, t.operationId),
+  check("goal_source_recovery_operation_kind_chk", sql`(${t.kind}='validation' AND ${t.runId} IS NOT NULL) OR (${t.kind} IN ('validation_review','release') AND ${t.runId} IS NULL)`),
+  check("goal_source_recovery_operation_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+export const goalSourceRecoveryReceipts = pgTable("goal_source_recovery_receipts", {
+  recoveryId: text("recovery_id").primaryKey().references(() => goalSourceRecoveries.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalSourceRecoveryDeliveries.id), sessionId: text("session_id").notNull(),
+  requestDigest: text("request_digest").notNull(), resultDigest: text("result_digest").notNull(), sentAt: ts("sent_at").notNull(),
+}, t => [check("goal_source_recovery_receipt_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+
+
+/** H9 author attempts retain H6 as immutable ancestry, with a new current product source. */
+export const goalRecoveryValidations = pgTable("goal_recovery_validations", {
+  recoveryId: text("recovery_id").notNull().references(() => goalSourceRecoveryCheckpoints.recoveryId),
+  id: text("id").primaryKey(), rootValidationId: text("root_validation_id").notNull().references((): AnyPgColumn => goalRecoveryValidations.id),
+  originReviewId: text("origin_review_id").notNull().references(() => goalImportedExecutionReviews.id),
+  parentValidationId: text("parent_validation_id").references((): AnyPgColumn => goalRecoveryValidations.id),
+  kind: text("kind").notNull(), generation: integer("generation").notNull(), predecessorKind: text("predecessor_kind").notNull(), predecessorId: text("predecessor_id").notNull(),
+  organizationId: text("organization_id").notNull().references(() => organizations.id), goalId: text("goal_id").notNull().references(() => goals.id),
+  planId: text("plan_id").notNull().references(() => plans.id), taskId: text("task_id").notNull().references(() => tasks.id),
+  runId: text("run_id").notNull().references(() => runs.id), contextPackId: text("context_pack_id").notNull().references(() => contextPacks.id),
+  writerInstanceId: text("writer_instance_id").notNull().references(() => agentInstances.id), writerAgentId: text("writer_agent_id").notNull().references(() => agents.id),
+  computerId: text("computer_id").notNull().references(() => computers.id), workspaceRoot: text("workspace_root").notNull(),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id), policyVersion: text("policy_version").notNull(),
+  authorizationEventId: text("authorization_event_id").notNull().references(() => eventLog.id), attemptIndex: integer("attempt_index").notNull(),
+  sessionBindings: jsonb("session_bindings").notNull(), initialSourceDigest: text("initial_source_digest").notNull(), requestDigest: text("request_digest").notNull(), request: jsonb("request").notNull(),
+  result: jsonb("result"), resultDigest: text("result_digest"), resultDeliveryId: text("result_delivery_id").references((): AnyPgColumn => goalRecoveryValidationDeliveries.id), resultSessionId: text("result_session_id"),
+  stopRequested: boolean("stop_requested").notNull().default(false), createdAt: ts("created_at").notNull(),
+  readyAt: ts("ready_at"), readyEventId: text("ready_event_id").references(() => eventLog.id), readyKind: text("ready_kind"),
+}, t => [unique("goal_recovery_validations_generation_uniq").on(t.rootValidationId, t.generation),
+  unique("goal_recovery_validations_predecessor_uniq").on(t.organizationId, t.predecessorKind, t.predecessorId),
+  unique("goal_recovery_validations_parent_uniq").on(t.parentValidationId), unique("goal_recovery_validations_run_uniq").on(t.runId),
+  unique("goal_recovery_validations_task_generation_uniq").on(t.taskId, t.generation),
+  check("goal_recovery_validations_lineage_chk", sql`(${t.kind}='initial' AND ${t.generation}=0 AND ${t.rootValidationId}=${t.id} AND ${t.parentValidationId} IS NULL AND ${t.predecessorKind}='initial' AND ${t.predecessorId}=${t.recoveryId})
+    OR (${t.kind}='repair' AND ${t.generation}>0 AND ${t.rootValidationId}<>${t.id} AND ${t.parentValidationId} IS NOT NULL AND ${t.predecessorKind} IN ('review','failure'))`),
+  check("goal_recovery_validations_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.initialSourceDigest} ~ '^sha256:[a-f0-9]{64}$' AND (${t.resultDigest} IS NULL OR ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$')`),
+  check("goal_recovery_validations_request_chk", sql`(${t.request}->'version'='1'::jsonb AND ${t.request}->>'validation_id'=${t.id} AND ${t.request}->>'root_validation_id'=${t.rootValidationId}
+    AND (${t.request}->>'generation')::integer=${t.generation} AND ${t.request}->>'kind'=${t.kind} AND ${t.request}->'origin'->>'review_id'=${t.originReviewId}
+    AND ${t.request}->'run_start'->>'run_id'=${t.runId} AND ${t.request}->'run_start'->>'task_id'=${t.taskId} AND ${t.request}->'run_start'->'context_pack'->>'id'=${t.contextPackId}
+    AND ${t.request}->'run_start'->>'agent_instance_id'=${t.writerInstanceId} AND ${t.request}->'run_start'->'workspace'->>'root'=${t.workspaceRoot}
+    AND ${t.request}->'authorization'->>'event_id'=${t.authorizationEventId} AND ${t.request}->'authorization'->>'goal_id'=${t.goalId}
+    AND (${t.request}->'authorization'->>'attempt_index')::integer=${t.attemptIndex} AND ${t.attemptIndex}>=0) IS TRUE`),
+  check("goal_recovery_validations_result_chk", sql`(${t.result} IS NULL AND ${t.resultDigest} IS NULL AND ${t.resultDeliveryId} IS NULL AND ${t.resultSessionId} IS NULL)
+    OR (${t.result} IS NOT NULL AND ${t.resultDigest} IS NOT NULL AND ${t.resultDeliveryId} IS NOT NULL AND ${t.resultSessionId} IS NOT NULL
+      AND ${t.result}->'version'='1'::jsonb AND ${t.result}->>'validation_id'=${t.id} AND ${t.result}->>'request_digest'=${t.requestDigest} AND ${t.result}->>'run_id'=${t.runId}
+      AND ${t.result}->>'outcome' IN ('finished','failed','uncertain','cancelled_before_start') AND ${t.result}->'closed'=to_jsonb(${t.result}->>'outcome'<>'uncertain')) IS TRUE`),
+  check("goal_recovery_validations_ready_chk", sql`(${t.readyAt} IS NULL AND ${t.readyEventId} IS NULL AND ${t.readyKind} IS NULL)
+    OR (${t.readyAt} IS NOT NULL AND ${t.readyEventId} IS NOT NULL AND (${t.readyKind}='review' AND ${t.result}->>'outcome'='finished' AND ${t.result}->'verified_validation'->'verification'->>'outcome'='passed'
+      OR ${t.readyKind}='repair' AND ${t.result}->>'outcome'='failed' AND ${t.result}->'closed_failure' IS NOT NULL)) IS TRUE`),
+]);
+export const goalRecoveryValidationDeliveries = pgTable("goal_recovery_validation_deliveries", {
+  id: text("id").primaryKey(), validationId: text("validation_id").notNull().references(() => goalRecoveryValidations.id), sessionId: text("session_id").notNull(),
+  control: text("control").notNull(), ack: jsonb("ack"), createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_recovery_validation_delivery_session_uniq").on(t.validationId, t.sessionId, t.control), check("goal_recovery_validation_delivery_control_chk", sql`${t.control} IN ('start','stop','status')`)]);
+export const goalRecoveryValidationCompletions = pgTable("goal_recovery_validation_completions", {
+  validationId: text("validation_id").primaryKey().references(() => goalRecoveryValidations.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  runId: text("run_id").notNull().references(() => runs.id), contextPackId: text("context_pack_id").notNull().references(() => contextPacks.id), evidenceId: text("evidence_id").references(() => runEvidence.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalRecoveryValidationDeliveries.id), sessionId: text("session_id").notNull(), outcome: text("outcome").notNull(),
+  resultDigest: text("result_digest").notNull(), completionDigest: text("completion_digest").notNull(), completion: jsonb("completion").notNull(),
+  sourceDigest: text("source_digest").notNull(), source: jsonb("source").notNull(), createdAt: ts("created_at").notNull(),
+}, t => [check("goal_recovery_validation_completion_outcome_chk", sql`${t.outcome} IN ('verified','closed-failure') AND (${t.outcome}<>'verified' OR ${t.evidenceId} IS NOT NULL)`),
+  check("goal_recovery_validation_completion_digest_chk", sql`${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.completionDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.sourceDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+/** Records Server send completion; actual receipt possession remains a separate Node authority. */
+export const goalRecoveryValidationReceipts = pgTable("goal_recovery_validation_receipts", {
+  validationId: text("validation_id").primaryKey().references(() => goalRecoveryValidations.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalRecoveryValidationDeliveries.id), sessionId: text("session_id").notNull(), sessionBindings: jsonb("session_bindings").notNull(),
+  requestDigest: text("request_digest").notNull(), resultDigest: text("result_digest").notNull(), sentAt: ts("sent_at").notNull(),
+}, t => [check("goal_recovery_validation_receipt_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+export const goalRecoveryValidationReviews = pgTable("goal_recovery_validation_reviews", {
+  recoveryId: text("recovery_id").notNull().references(() => goalSourceRecoveryCheckpoints.recoveryId),
+  id: text("id").primaryKey(), validationId: text("validation_id").notNull().references(() => goalRecoveryValidationCompletions.validationId),
+  retryOf: text("retry_of").references((): AnyPgColumn => goalRecoveryValidationReviews.id), sequence: integer("sequence").notNull(),
+  sourceDigest: text("source_digest").notNull(), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  goalId: text("goal_id").notNull().references(() => goals.id), planId: text("plan_id").notNull().references(() => plans.id), taskId: text("task_id").notNull().references(() => tasks.id),
+  authorInstanceId: text("author_instance_id").notNull().references(() => agentInstances.id), authorAgentId: text("author_agent_id").notNull().references(() => agents.id),
+  reviewerInstanceId: text("reviewer_instance_id").notNull().references(() => agentInstances.id), reviewerAgentId: text("reviewer_agent_id").notNull().references(() => agents.id),
+  computerId: text("computer_id").notNull().references(() => computers.id), workspaceRoot: text("workspace_root").notNull(),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id), policyVersion: text("policy_version").notNull(),
+  authorizationEventId: text("authorization_event_id").notNull().references(() => eventLog.id), attemptIndex: integer("attempt_index").notNull(),
+  sessionBindings: jsonb("session_bindings").notNull(), requestDigest: text("request_digest").notNull(), request: jsonb("request").notNull(),
+  result: jsonb("result"), resultDigest: text("result_digest"), resultDeliveryId: text("result_delivery_id").references((): AnyPgColumn => goalRecoveryValidationReviewDeliveries.id), resultSessionId: text("result_session_id"),
+  stopRequested: boolean("stop_requested").notNull().default(false), createdAt: ts("created_at").notNull(), acceptedAt: ts("accepted_at"), acceptanceEventId: text("acceptance_event_id").references(() => eventLog.id),
+}, t => [unique("goal_recovery_validation_review_sequence_uniq").on(t.validationId, t.sequence), unique("goal_recovery_validation_review_retry_uniq").on(t.retryOf),
+  check("goal_recovery_validation_review_independent_chk", sql`${t.authorInstanceId}<>${t.reviewerInstanceId} AND ${t.authorAgentId}<>${t.reviewerAgentId}`),
+  check("goal_recovery_validation_review_sequence_chk", sql`${t.attemptIndex}>=0 AND ((${t.sequence}=0 AND ${t.retryOf} IS NULL) OR (${t.sequence}>0 AND ${t.retryOf} IS NOT NULL))`),
+  check("goal_recovery_validation_review_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.sourceDigest} ~ '^sha256:[a-f0-9]{64}$' AND (${t.resultDigest} IS NULL OR ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$')`),
+  check("goal_recovery_validation_review_result_chk", sql`(${t.result} IS NULL AND ${t.resultDigest} IS NULL AND ${t.resultDeliveryId} IS NULL AND ${t.resultSessionId} IS NULL)
+    OR (${t.result} IS NOT NULL AND ${t.resultDigest} IS NOT NULL AND ${t.resultDeliveryId} IS NOT NULL AND ${t.resultSessionId} IS NOT NULL AND ${t.result}->'version'='1'::jsonb
+      AND ${t.result}->>'review_id'=${t.id} AND ${t.result}->>'request_digest'=${t.requestDigest} AND ${t.result}->'execution_authorized'='false'::jsonb
+      AND ${t.result}->>'outcome' IN ('reviewed','failed','uncertain','cancelled_before_start') AND ${t.result}->'closed'=to_jsonb(${t.result}->>'outcome'<>'uncertain')) IS TRUE`),
+  check("goal_recovery_validation_review_accepted_chk", sql`(${t.acceptedAt} IS NULL AND ${t.acceptanceEventId} IS NULL) OR (${t.acceptedAt} IS NOT NULL AND ${t.acceptanceEventId} IS NOT NULL
+    AND ${t.result}->>'outcome'='reviewed' AND ${t.result}->'verdict'->>'outcome'='accepted') IS TRUE`),
+]);
+export const goalRecoveryValidationReviewDeliveries = pgTable("goal_recovery_validation_review_deliveries", {
+  id: text("id").primaryKey(), reviewId: text("review_id").notNull().references(() => goalRecoveryValidationReviews.id), sessionId: text("session_id").notNull(),
+  control: text("control").notNull(), ack: jsonb("ack"), createdAt: ts("created_at").notNull(),
+}, t => [unique("goal_recovery_validation_review_delivery_session_uniq").on(t.reviewId, t.sessionId, t.control), check("goal_recovery_validation_review_delivery_control_chk", sql`${t.control} IN ('start','stop','status')`)]);
+export const goalRecoveryValidationReviewReceipts = pgTable("goal_recovery_validation_review_receipts", {
+  reviewId: text("review_id").primaryKey().references(() => goalRecoveryValidationReviews.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  deliveryId: text("delivery_id").notNull().references(() => goalRecoveryValidationReviewDeliveries.id), sessionId: text("session_id").notNull(), sessionBindings: jsonb("session_bindings").notNull(),
+  requestDigest: text("request_digest").notNull(), resultDigest: text("result_digest").notNull(), sentAt: ts("sent_at").notNull(),
+}, t => [check("goal_recovery_validation_review_receipt_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.resultDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+/** An existing publisher request consumes precisely one independently accepted H9 final source. */
+export const goalRecoveryValidationPublications = pgTable("goal_recovery_validation_publications", {
+  recoveryId: text("recovery_id").notNull().references(() => goalSourceRecoveryCheckpoints.recoveryId),
+  releaseId: text("release_id").primaryKey().references(() => productReleases.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  goalId: text("goal_id").notNull().references(() => goals.id), planId: text("plan_id").notNull().references(() => plans.id),
+  validationId: text("validation_id").notNull().references(() => goalRecoveryValidationCompletions.validationId), reviewId: text("review_id").notNull().references(() => goalRecoveryValidationReviews.id),
+  originReviewId: text("origin_review_id").notNull().references(() => goalImportedExecutionReviews.id), acceptanceEventId: text("acceptance_event_id").notNull().references(() => eventLog.id),
+  runId: text("run_id").notNull().references(() => runs.id), evidenceId: text("evidence_id").notNull().references(() => runEvidence.id), computerId: text("computer_id").notNull().references(() => computers.id),
+  sourceDigest: text("source_digest").notNull(), origin: jsonb("origin").notNull(), capabilities: jsonb("capabilities").notNull(), createdAt: ts("created_at").notNull(),
+}, t => [index("goal_recovery_validation_publication_goal_idx").on(t.organizationId, t.goalId),
+  check("goal_recovery_validation_publication_digest_chk", sql`${t.sourceDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);

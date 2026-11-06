@@ -70,6 +70,14 @@ describe("Windows verification local routing (controlled mocks, not native quali
     bridge.invalidated = false; writeFileSync(f.script, "changed script");
     expect(() => readWindowsVerificationBackend(f.profile)).toThrow(/verifier changed/);
   });
+  it("revalidates the original backend and protected files when reusing an already prepared Windows profile", () => {
+    const f = fixture(); attachWindowsVerificationBackend(f.profile, f.backend);
+    bridge.invalidated = true;
+    expect(() => prepareVerificationProfiles([f.profile])).toThrow(/changed backend/);
+    bridge.invalidated = false; writeFileSync(f.script, "changed script");
+    expect(() => prepareVerificationProfiles([f.profile])).toThrow(/verifier changed/);
+    expect(runProtectedCommand).not.toHaveBeenCalled();
+  });
   it("retains exact workspace, subject and ordinary-workspace admission for Windows", () => {
     const f = fixture(); attachWindowsVerificationBackend(f.profile, f.backend); const start = payload(f.profile);
     expect(selectVerificationProfile(start, [f.profile], false)).toBe(f.profile);

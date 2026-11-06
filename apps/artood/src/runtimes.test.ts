@@ -16,6 +16,7 @@ import { createAdapterRegistry } from "./adapter-registry.js";
 import { createNodeClient } from "./node-client.js";
 import { claudeCodeRuntime, codexRuntime } from "./runtimes.js";
 import * as processAdapter from "./process-adapter.js";
+import type { PreparedProductBootstrapGit } from "./product-bootstrap-git.js";
 
 const mockAgent = fileURLToPath(new URL("../test-fixtures/mock-agent.mjs", import.meta.url));
 // Deterministic stand-in for the real CLI: same command both presets use in tests.
@@ -48,6 +49,16 @@ function isAck(m: NodeToServerMessage): m is CommandAck {
 }
 
 describe("runtime presets", () => {
+  it("passes the same node-local bootstrap choice to both runtime presets", () => {
+    const token = Object.freeze({}) as PreparedProductBootstrapGit, create = vi.spyOn(processAdapter, "createProcessAdapter");
+    try {
+      codexRuntime({ allowedRoots: ["/ws"], initializeRepository: true, productBootstrapGit: token });
+      claudeCodeRuntime({ allowedRoots: ["/ws"], initializeRepository: true, productBootstrapGit: token });
+      for (const [options] of create.mock.calls) {
+        expect(options.productBootstrapGit).toBe(token); expect(options.initializeRepository).toBe(true);
+      }
+    } finally { create.mockRestore(); }
+  });
   it("pages the complete author and reviewer context while preserving ordinary file-based prompts", () => {
     const create = vi.spyOn(processAdapter, "createProcessAdapter");
     try {

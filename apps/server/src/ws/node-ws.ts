@@ -1,5 +1,5 @@
 import { computers } from "@artoo/db";
-import { parseDeviceToken, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1 } from "@artoo/domain";
+import { parseDeviceToken, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1 } from "@artoo/domain";
 import { randomUUID } from "node:crypto";
 import type { NodeHello, NodeToServerMessage, NodeTransport } from "@artoo/protocol";
 import { and, eq } from "drizzle-orm";
@@ -108,6 +108,7 @@ export function registerNodeWsRoute(
       }
       registered = true; clearTimeout(initializationTimer);
       registry.register(nodeId, binding);
+      if (qualifiedReceiptsReady) void binding.announceSourceRecoverySession?.().catch(() => close(1008, "recovery session announcement failed"));
       void setComputerOnline(ctx, nodeId);
       if (auth.mode === "device") void recordDeviceActivity(ctx, auth.deviceId, "node").catch(() => {});
       const resumeSnapshot = graceWindow?.disarm(nodeId) ?? [];
@@ -132,7 +133,13 @@ export function registerNodeWsRoute(
           if (message.kind !== "run.event" && message.kind !== "command.ack" && message.kind !== "product.release.receipt" && message.kind !== "product.release.health"
             && message.kind !== "product.source.review.ack.v1" && message.kind !== "product.source.review.result.v1"
             && message.kind !== "product.source.operation.ack.v1" && message.kind !== "product.source.operation.result.v1"
-            && message.kind !== "product.source.design.ack.v1" && message.kind !== "product.source.design.result.v1") return;
+            && message.kind !== "product.source.design.ack.v1" && message.kind !== "product.source.design.result.v1"
+            && message.kind !== "product.source.design-review.ack.v1" && message.kind !== "product.source.design-review.result.v1"
+            && message.kind !== "product.source.execution.ack.v1" && message.kind !== "product.source.execution.result.v1"
+            && message.kind !== "product.source.recovery.register.v1" && message.kind !== "product.source.recovery.available.v1"
+            && message.kind !== "product.source.recovery.ack.v1" && message.kind !== "product.source.recovery.result.v1"
+            && message.kind !== "product.source.recovery-validation.ack.v1" && message.kind !== "product.source.recovery-validation.result.v1"
+            && message.kind !== "product.source.recovery-validation-review.ack.v1" && message.kind !== "product.source.recovery-validation-review.result.v1") return;
           if (!registered || !managed?.active || registry.get(nodeId!) !== binding) {
             close(1008, "managed application frame before current session activation"); return;
           }
@@ -148,7 +155,7 @@ export function registerNodeWsRoute(
           identity: { deviceId: auth.deviceId, computerId: auth.computerId, tokenLookup: auth.tokenLookup }, sessionId: managed?.id ?? connectionId, artifactDir,
           qualifiedRunEventReceiptsReady: () => qualifiedReceiptsReady && raw.readyState === 1 && !terminated && registered
             && registry.get(computerId) === binding && (!gated || managed?.active === true),
-        } : undefined);
+        } : undefined, message.product_source_routing);
     }
     async function initializeManaged(message: NodeHello): Promise<void> {
       const request = message.managed_receipts!;
@@ -179,6 +186,7 @@ export function registerNodeWsRoute(
         await requireQualifiedReceiptSchema(ctx);
         if (terminated || raw.readyState !== 1 || !registered || binding !== candidate || registry.get(nodeId!) !== candidate) return;
         qualifiedReceiptsReady = true;
+        await candidate?.announceSourceRecoverySession?.();
       } catch { close(1008, "imported design receipt schema unavailable"); }
     }
     const handleMessage = (message: NodeToServerMessage): void => {
@@ -194,7 +202,8 @@ export function registerNodeWsRoute(
         if (managedRequested) { armManagedInitialization(); void initializeManaged(message); }
         else {
           attach(message, false); activate();
-          if (currentAuth.mode === "device" && artifactDir && message.execution_features?.includes(IMPORTED_DESIGN_CONTINUATION_FEATURE_V1)) {
+          if (currentAuth.mode === "device" && artifactDir && message.execution_features?.some(feature => [IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
+            PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1].includes(feature))) {
             void initializeOrdinaryImportedDesignReceipts();
           }
         }
@@ -303,3 +312,4 @@ async function updatePresence(
     // best-effort presence; ignore (e.g. db shutting down on disconnect)
   }
 }
+import { PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1 } from "@artoo/domain";

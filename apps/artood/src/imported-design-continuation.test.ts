@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { importedDesignContinuationRequestDigestV1 } from "@artoo/domain";
+import { importedDesignContinuationRequestDigestV1, canonicalProductSourceTransferValueV1 as canonical } from "@artoo/domain";
 import type { ImportedDesignContinuationCommand, NodeToServerMessage, NodeSideTransport } from "@artoo/protocol";
 import { importedDesignRequestFixture } from "./test-fixtures/imported-design-request.js";
 
-const mocks = vi.hoisted(() => ({ reserve: vi.fn(() => ({})), run: vi.fn(), persist: vi.fn(), fail: vi.fn() }));
+const mocks = vi.hoisted(() => ({ reserve: vi.fn(() => ({})), run: vi.fn(), persist: vi.fn(), fail: vi.fn(), completed: vi.fn() }));
 vi.mock("./product-source-runtime.js", () => ({ reserveImportedDesignContinuation: mocks.reserve,
-  runImportedDesignContinuation: mocks.run, persistImportedDesignContinuationResult: mocks.persist, failUnstartedImportedDesignContinuation: mocks.fail }));
+  runImportedDesignContinuation: mocks.run, persistImportedDesignContinuationResult: mocks.persist, failUnstartedImportedDesignContinuation: mocks.fail,
+  readCompletedVerifiedImportedDesign: mocks.completed }));
 import { createImportedDesignContinuationClient } from "./imported-design-continuation.js";
 const sha = (value: string | Uint8Array) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 beforeEach(() => vi.clearAllMocks());
@@ -88,5 +89,27 @@ describe("dedicated imported-design controller (native/runtime are explicitly mo
     await vi.waitFor(() => expect(mocks.run).toHaveBeenCalled()); client.invalidate(); await pending;
     expect(mocks.persist).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ outcome: "uncertain", closed: false }));
     await expect(client.handle(f.command)).rejects.toThrow("invalidated");
+  });
+  it("exposes only the original persisted completion after an exact current-session accepted receipt", async () => {
+    const f = fixture(), client = createImportedDesignContinuationClient(f.options);
+    expect(() => client.readCompletedVerifiedDesign(f.control.continuation_id, f.control.request_digest)).toThrow("accepted result receipt");
+    await client.handle(f.command);
+    expect(() => client.readCompletedVerifiedDesign(f.control.continuation_id, f.control.request_digest)).toThrow("accepted result receipt");
+    const receipt = { kind: "command" as const, id: "receipt", idempotency_key: "receipt", type: "product.source.design.receipt.v1" as const,
+      payload: f.control, result_digest: sha(canonical(f.result)), status: "accepted" as const };
+    await expect(client.handle({ ...receipt, result_digest: sha("other result") })).rejects.toThrow("persisted result");
+    await client.handle(receipt);
+    expect(client.readCompletedVerifiedDesign(f.control.continuation_id, f.control.request_digest)).toBe(f.result);
+    expect(mocks.completed).toHaveBeenCalledWith(f.options.runtime, f.result);
+    await client.handle({ ...receipt, status: "rejected" });
+    expect(() => client.readCompletedVerifiedDesign(f.control.continuation_id, f.control.request_digest)).toThrow("accepted result receipt");
+    await client.handle(receipt); f.setLive(false);
+    expect(() => client.readCompletedVerifiedDesign(f.control.continuation_id, f.control.request_digest)).toThrow("invalidated");
+  });
+  it("does not recreate completed provenance from receipt JSON after a controller restart", async () => {
+    const f = fixture(), restarted = createImportedDesignContinuationClient(f.options);
+    await expect(restarted.handle({ kind: "command", id: "receipt", idempotency_key: "receipt", type: "product.source.design.receipt.v1",
+      payload: f.control, result_digest: sha(canonical(f.result)), status: "accepted" })).rejects.toThrow("Original imported-design result");
+    expect(mocks.completed).not.toHaveBeenCalled();
   });
 });

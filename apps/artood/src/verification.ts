@@ -11,14 +11,37 @@ import { DevelopmentStageSchema, productStageHandoffPaths, RunVerificationPayloa
   MeasurementPlanPolicySchema, MeasurementPlanSummaryV1Schema, MeasurementPlanSummaryV2Schema, ProductResearchReportV1Schema, ProductResearchReportV2Schema,
   evaluateDeclaredMeasurementPlanV1, evaluateDeclaredMeasurementPlanV2,
   canonicalProductSourceTransferValueV1, inspectImportedDesignVerificationEnvelopeV1, importedDesignVerificationEchoV1,
+  inspectImportedDesignReviewVerificationEnvelopeV1, importedDesignReviewVerificationEchoV1,
+  inspectImportedExecutionVerificationEnvelopeV1, importedExecutionVerificationEchoV1,
+  inspectImportedExecutionReviewVerificationEnvelopeV1, importedExecutionReviewVerificationEchoV1,
+  inspectImportedExecutionRepairVerificationEnvelopeV1, importedExecutionRepairVerificationEchoV1,
+  inspectImportedValidationVerificationEnvelopeV1, importedValidationVerificationEchoV1,
+  inspectImportedValidationReviewVerificationEnvelopeV1, importedValidationReviewVerificationEchoV1,
+  inspectImportedRecoveryValidationVerificationEnvelopeV1, importedRecoveryValidationVerificationEchoV1,
+  inspectImportedRecoveryValidationReviewVerificationEnvelopeV1, importedRecoveryValidationReviewVerificationEchoV1,
+  inspectImportedCleanValidationVerificationEnvelopeV1, importedCleanValidationVerificationEchoV1,
+  inspectImportedCleanValidationReviewVerificationEnvelopeV1, importedCleanValidationReviewVerificationEchoV1,
   type RunStartPayload, type RunVerificationPayload, type StaticWebAcceptanceReport, type VerificationObservation,
   type VerificationCapabilities, type VerificationCapabilitiesContext, type StaticWebCapabilityBinding,
   type MeasurementPlanPolicy, type MeasurementPlanSummary, type MeasurementPlanSummaryV2, type ProductMeasurementPlan,
   type inspectProductSourceVerificationEnvelope } from "@artoo/domain";
-import type { PreparedProductSourceVerificationAdmission, PreparedImportedDesignContinuation, readImportedDesignVerificationAdmission } from "./product-source-runtime.js";
+import type { PreparedProductSourceVerificationAdmission, PreparedImportedDesignContinuation, readImportedDesignVerificationAdmission,
+  PreparedImportedDesignReview, readImportedDesignReviewVerificationAdmission,
+  PreparedImportedExecution, readImportedExecutionVerificationAdmission,
+  PreparedImportedExecutionReview, readImportedExecutionReviewVerificationAdmission,
+  PreparedImportedExecutionRepair, readImportedExecutionRepairVerificationAdmission,
+  PreparedImportedValidation, readImportedValidationVerificationAdmission,
+  PreparedImportedValidationReview, readImportedValidationReviewVerificationAdmission } from "./product-source-runtime.js";
 import { assertReleaseCapabilityContext, type ReleaseCapabilityReader } from "./release-capability-authority.js";
+import { readPreparedImportedValidationRelease, type PreparedImportedValidationRelease } from "./product-source-runtime.js";
+import { isPreparedRecoveryValidationRelease, readPreparedRecoveryValidationRelease, type PreparedRecoveryValidationRelease,
+  type PreparedImportedRecoveryValidation, type PreparedImportedRecoveryValidationReview,
+  type readImportedRecoveryValidationVerificationAdmission, type readImportedRecoveryValidationReviewVerificationAdmission } from "./windows-source-recovery.js";
+import { isPreparedCleanValidationRelease, readPreparedCleanValidationRelease, type PreparedCleanValidationRelease,
+  type PreparedImportedCleanValidation, type PreparedImportedCleanValidationReview,
+  type readImportedCleanValidationVerificationAdmission, type readImportedCleanValidationReviewVerificationAdmission } from "./windows-clean-validation-runtime.js";
 import { OwnedGitError } from "./owned/owned-git.js";
-import { ProtectedCommandError, runProtectedCommand } from "./protected-command.js";
+import { ProtectedCommandError, runProtectedCommand, assertProtectedNativeCommandClosed } from "./protected-command.js";
 import { assertWindowsProcessBackend, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import { assertWindowsBrowserProcessInstallation, createWindowsBrowserProcessDescriptor } from "./windows-browser-process-authority.js";
 import { writeWindowsBrowserPrivateContext } from "./windows-browser-private-context.js";
@@ -58,6 +81,22 @@ const measurementPlanPolicies = new WeakMap<PreparedVerificationProfile, Measure
 const locallyPreparedProfiles = new WeakSet<PreparedVerificationProfile>();
 const windowsProfileBackends = new WeakMap<PreparedVerificationProfile, PreparedWindowsProcessBackend>();
 const exportableFinalVerifications = new WeakMap<RunVerificationPayload, { profile: PreparedVerificationProfile; requestId: string; context: string; payload: string }>();
+type ImportedVerifierPermit = PreparedImportedDesignContinuation | PreparedImportedDesignReview | PreparedImportedExecution | PreparedImportedExecutionReview
+  | PreparedImportedExecutionRepair | PreparedImportedValidation | PreparedImportedValidationReview
+  | PreparedImportedRecoveryValidation | PreparedImportedRecoveryValidationReview
+  | PreparedImportedCleanValidation | PreparedImportedCleanValidationReview;
+type ImportedVerifierPhase = "author" | "before" | "after" | "implementation" | "implementation-review-before" | "implementation-review-after" | "implementation-repair"
+  | "validation" | "validation-review-before" | "validation-review-after"
+  | "recovery-validation" | "recovery-validation-review-before" | "recovery-validation-review-after"
+  | "clean-validation" | "clean-validation-review-before" | "clean-validation-review-after";
+const importedFinalVerifications = new WeakMap<RunVerificationPayload, { profile: PreparedVerificationProfile; permit: ImportedVerifierPermit;
+  requestId: string; context: string; payload: string; phase: ImportedVerifierPhase }>();
+// Separate from passed evidence: only an actual nonzero native process exit with
+// unchanged input and completed cleanup can become a repairable product failure.
+const closedProductFailures = new WeakMap<RunVerificationPayload, { profile: PreparedVerificationProfile; requestId: string; context: string; payload: string; assertClosed: () => void }>();
+const importedValidationFailures = new WeakMap<RunVerificationPayload, { permit: PreparedImportedValidation; original: NonNullable<ReturnType<typeof closedProductFailures.get>> }>();
+const importedRecoveryValidationFailures = new WeakMap<RunVerificationPayload, { permit: PreparedImportedRecoveryValidation; original: NonNullable<ReturnType<typeof closedProductFailures.get>> }>();
+const importedCleanValidationFailures = new WeakMap<RunVerificationPayload, { permit: PreparedImportedCleanValidation; original: NonNullable<ReturnType<typeof closedProductFailures.get>> }>();
 // Loader provenance stays local: reserving the configuration file must not alter
 // existing profile serialization, digests or remote capability contracts.
 const profileConfigurationFiles = new WeakMap<VerificationProfile, string>();
@@ -110,10 +149,10 @@ export function verificationSupported(): boolean { return process.platform === "
 export function attachWindowsVerificationBackend(profile: PreparedVerificationProfile, backend: PreparedWindowsProcessBackend): void {
   if (!locallyPreparedProfiles.has(profile)) fail("Windows backend requires a locally prepared profile");
   assertTrusted(profile);
-  assertWindowsProcessBackend(backend);
   if ([...(staticWebProfiles.get(profile)?.values() ?? [])].some(prepared => prepared.options.windows_browser_process)) {
+    // Installation admission includes the full backend audit and exact write-root scope.
     assertWindowsBrowserProcessInstallation(backend, profile.workspace_root);
-  }
+  } else assertWindowsProcessBackend(backend);
   const existing = windowsProfileBackends.get(profile);
   if (existing && existing !== backend) fail("Windows backend is already bound to this profile");
   windowsProfileBackends.set(profile, backend);
@@ -236,8 +275,8 @@ export function prepareVerificationProfiles(input: readonly VerificationProfile[
     // The runner passes these exact objects to its client. Reuse the protected
     // snapshot rather than reading a second configuration after advertising it.
     if (staticWebProfiles.has(raw as PreparedVerificationProfile) || windowsProfileBackends.has(raw as PreparedVerificationProfile)) {
-      assertTrusted(raw as PreparedVerificationProfile);
       if (windowsProfileBackends.has(raw as PreparedVerificationProfile)) readWindowsVerificationBackend(raw as PreparedVerificationProfile);
+      else assertTrusted(raw as PreparedVerificationProfile);
       return raw as PreparedVerificationProfile;
     }
     if (!isAbsolute(raw.workspace_root) || !lstatSync(raw.workspace_root).isDirectory() || lstatSync(raw.workspace_root).isSymbolicLink()) fail("workspace must be an existing absolute directory");
@@ -573,13 +612,20 @@ function measureDeclaredPlan(profile: PreparedVerificationProfile, files: Readon
 
 /** Local publisher re-measures the same protected contract against workspace or copied immutable bytes. */
 export function measureReleaseAcceptancePlan(profile: PreparedVerificationProfile, root: string,
-  read: ReleaseCapabilityReader): MeasurementPlanSummaryV2 {
+  read: ReleaseCapabilityReader, importedValidation?: PreparedImportedValidationRelease | PreparedRecoveryValidationRelease | PreparedCleanValidationRelease): MeasurementPlanSummaryV2 {
   assertTrusted(profile);
   const capability = read();
   if (capability.binding.verification_profile_id !== profile.id || capability.binding.verification_profile_digest !== profile.digest
     || capability.binding.project_id !== profile.project_id || capability.binding.workspace_root !== profile.workspace_root) fail("release verifier binding changed");
   const measured = subjectManifest({ ...profile, workspace_root: root });
-  const summary = measureDeclaredPlan(profile, measured.files, "final", read, root);
+  const imported = importedValidation ? isPreparedCleanValidationRelease(importedValidation)
+    ? readPreparedCleanValidationRelease(importedValidation, undefined, root)
+    : isPreparedRecoveryValidationRelease(importedValidation)
+    ? readPreparedRecoveryValidationRelease(importedValidation, undefined, root)
+    : readPreparedImportedValidationRelease(importedValidation, undefined, root) : undefined;
+  if (imported && (imported.profile !== profile || !imported.readReleaseCapabilities
+    || !isDeepStrictEqual(imported.readReleaseCapabilities(), capability))) fail("Imported publication lost its exact original verifier and release configuration");
+  const summary = measureDeclaredPlan(profile, measured.files, "final", read, root, imported?.effectivePlan, !!imported);
   if (summary?.version !== 2) fail("release acceptance requires a measured v2 plan");
   read(); return summary;
 }
@@ -675,7 +721,7 @@ export function assertVerificationSubject(profile: PreparedVerificationProfile, 
 export async function runVerification(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
   context?: RunStartPayload["context_pack"]["payload"], expectedSubjectDigest?: string,
   readReleaseCapabilities?: ReleaseCapabilityReader): Promise<RunVerificationPayload> {
-  if (context?.transferred_product_input) fail("Imported design requires its original dedicated verifier admission");
+  if (context?.imported_clean_validation || context?.imported_clean_validation_review_subject || context?.imported_recovery_validation || context?.imported_recovery_validation_review_subject || context?.imported_validation || context?.imported_validation_review_subject || context?.transferred_product_input || context?.imported_design_review_subject || context?.imported_execution || context?.imported_execution_review_subject || context?.imported_execution_repair) fail("Imported design requires its original dedicated verifier admission");
   const originalContext = JSON.stringify(context ?? null);
   const result = await executeVerification(profile, requestId, signal, context, expectedSubjectDigest, "final", undefined, readReleaseCapabilities);
   if (result.outcome === "passed" && !signal.aborted && locallyPreparedProfiles.has(profile) && JSON.stringify(context ?? null) === originalContext) {
@@ -713,7 +759,7 @@ export function assertFinalVerificationExportBinding(profile: PreparedVerificati
 export async function runVerificationPreview(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
   context?: RunStartPayload["context_pack"]["payload"], expectedSubjectDigest?: string,
   readReleaseCapabilities?: ReleaseCapabilityReader): Promise<VerificationPreviewResult> {
-  if (context?.transferred_product_input) fail("Imported design preview requires its original dedicated verifier admission");
+  if (context?.imported_clean_validation || context?.imported_clean_validation_review_subject || context?.imported_recovery_validation || context?.imported_recovery_validation_review_subject || context?.imported_validation || context?.imported_validation_review_subject || context?.transferred_product_input || context?.imported_design_review_subject || context?.imported_execution || context?.imported_execution_review_subject || context?.imported_execution_repair) fail("Imported design preview requires its original dedicated verifier admission");
   const diagnostics: VerificationPreviewResult["diagnostics"] = { version: 1, commands: [] };
   const verification = await executeVerification(profile, requestId, signal, context, expectedSubjectDigest, "preview", diagnostics.commands, readReleaseCapabilities);
   return { verification, diagnostics };
@@ -728,6 +774,59 @@ export function assertImportedDesignVerificationProfile(profile: PreparedVerific
       return !prepared || !isV3WebAcceptanceOptions(prepared.options) || !prepared.options.windows_browser_process; })) {
     fail("Imported design requires an original native Windows Job verifier with protected policy-v2 v3 checks");
   }
+}
+
+/** Scope is read from protected local options, never a remote assertion. */
+export function importedDesignVerificationScope(profile: PreparedVerificationProfile): "prototype-only" | "all-declared-workspace-design-cases" {
+  assertImportedDesignVerificationProfile(profile);
+  return profile.commands.every(command => staticWebProfiles.get(profile)?.get(command.id)?.options.design_capture_cases === true)
+    ? "all-declared-workspace-design-cases" : "prototype-only";
+}
+export function assertImportedDesignReviewVerificationProfile(profile: PreparedVerificationProfile): void {
+  if (importedDesignVerificationScope(profile) !== "all-declared-workspace-design-cases") fail("H4 requires all declared workspace design cases");
+  if (profile.commands.some(command => command.observation?.format !== "static-web-acceptance.v3")) fail("H4 requires protected v3 observations for every command");
+}
+export function assertImportedFinalVerificationBinding(profile: PreparedVerificationProfile, evidence: RunVerificationPayload,
+  permit: ImportedVerifierPermit, requestId: string,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, phase: ImportedVerifierPhase): void {
+  const saved = importedFinalVerifications.get(evidence); assertImportedDesignVerificationProfile(profile);
+  if (!saved || saved.profile !== profile || saved.permit !== permit || saved.requestId !== requestId || saved.phase !== phase
+    || saved.context !== JSON.stringify(context) || saved.payload !== JSON.stringify(evidence) || evidence.outcome !== "passed") {
+    fail("Original completed imported verifier and exact phase binding are required");
+  }
+}
+
+export function assertImportedValidationFailedVerificationBinding(profile: PreparedVerificationProfile, evidence: RunVerificationPayload,
+  permit: PreparedImportedValidation, requestId: string, context: NonNullable<RunStartPayload["context_pack"]["payload"]>): void {
+  const saved = importedValidationFailures.get(evidence), original = saved?.original;
+  assertImportedValidationVerificationProfile(profile);
+  if (!original || saved?.permit !== permit || closedProductFailures.get(evidence) !== original || original.profile !== profile
+    || original.requestId !== requestId || original.context !== JSON.stringify(context) || original.payload !== JSON.stringify(evidence)
+    || evidence.outcome !== "failed" || !evidence.subject_digest || evidence.profile_id !== profile.id || evidence.profile_digest !== profile.digest)
+    fail("Original closed failed validation verifier and exact invocation are required");
+  original.assertClosed();
+}
+
+export function assertImportedRecoveryValidationFailedVerificationBinding(profile: PreparedVerificationProfile, evidence: RunVerificationPayload,
+  permit: PreparedImportedRecoveryValidation, requestId: string, context: NonNullable<RunStartPayload["context_pack"]["payload"]>): void {
+  const saved = importedRecoveryValidationFailures.get(evidence), original = saved?.original;
+  assertImportedValidationVerificationProfile(profile);
+  if (!original || saved?.permit !== permit || closedProductFailures.get(evidence) !== original || original.profile !== profile
+    || original.requestId !== requestId || original.context !== JSON.stringify(context) || original.payload !== JSON.stringify(evidence)
+    || evidence.outcome !== "failed" || !evidence.subject_digest || evidence.profile_id !== profile.id || evidence.profile_digest !== profile.digest)
+    fail("Original closed failed validation verifier and exact invocation are required");
+  original.assertClosed();
+}
+
+export function assertImportedCleanValidationFailedVerificationBinding(profile: PreparedVerificationProfile, evidence: RunVerificationPayload,
+  permit: PreparedImportedCleanValidation, requestId: string, context: NonNullable<RunStartPayload["context_pack"]["payload"]>): void {
+  const saved = importedCleanValidationFailures.get(evidence), original = saved?.original;
+  assertImportedValidationVerificationProfile(profile);
+  if (!original || saved?.permit !== permit || closedProductFailures.get(evidence) !== original || original.profile !== profile
+    || original.requestId !== requestId || original.context !== JSON.stringify(context) || original.payload !== JSON.stringify(evidence)
+    || evidence.outcome !== "failed" || !evidence.subject_digest || evidence.profile_id !== profile.id || evidence.profile_digest !== profile.digest)
+    fail("Original closed failed validation verifier and exact invocation are required");
+  original.assertClosed();
 }
 
 /** Public capability metadata alone cannot select the native executor or all-case design policy. */
@@ -752,10 +851,14 @@ export async function runTransferredDesignVerification(profile: PreparedVerifica
   const { readImportedDesignVerificationAdmission: readAdmission } = await import("./product-source-runtime.js");
   assertImportedDesignVerificationProfile(profile);
   const read = () => readAdmission(permit, profile, requestId, context, "final"), admitted = read();
-  if (context.product_development?.stage !== "design" || context.review_subject || context.imported_review_subject
+  if (context.product_development?.stage !== "design" || context.review_subject || context.imported_review_subject || context.imported_design_review_subject || context.imported_execution
+    || context.imported_execution_review_subject || context.imported_execution_repair
     || profile.commands.some(command => !staticWebProfiles.get(profile)?.has(command.id))) fail("Imported design requires installed capability-bound checks");
   const result = await executeVerification(profile, requestId, signal, context, undefined, "final", undefined, admitted.readReleaseCapabilities, undefined, read);
-  read(); return result;
+  read();
+  if (result.outcome === "passed" && !signal.aborted) importedFinalVerifications.set(result, { profile, permit, requestId,
+    context: JSON.stringify(context), payload: JSON.stringify(result), phase: "author" });
+  return result;
 }
 
 /** Preview remains diagnostic and never registers exportable final verification. */
@@ -764,11 +867,229 @@ export async function runTransferredDesignVerificationPreview(profile: PreparedV
   const { readImportedDesignVerificationAdmission: readAdmission } = await import("./product-source-runtime.js");
   assertImportedDesignVerificationProfile(profile);
   const read = () => readAdmission(permit, profile, requestId, context, "preview"), admitted = read();
-  if (context.product_development?.stage !== "design" || context.review_subject || context.imported_review_subject
+  if (context.product_development?.stage !== "design" || context.review_subject || context.imported_review_subject || context.imported_design_review_subject || context.imported_execution
+    || context.imported_execution_review_subject || context.imported_execution_repair
     || profile.commands.some(command => !staticWebProfiles.get(profile)?.has(command.id))) fail("Imported design preview requires installed capability-bound checks");
   const diagnostics: VerificationPreviewResult["diagnostics"] = { version: 1, commands: [] };
   const verification = await executeVerification(profile, requestId, signal, context, undefined, "preview", diagnostics.commands, admitted.readReleaseCapabilities, undefined, read);
   read(); return { verification, diagnostics };
+}
+
+export async function runImportedDesignReviewVerification(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedDesignReview, phase: "before" | "after"): Promise<RunVerificationPayload> {
+  const { readImportedDesignReviewVerificationAdmission: readAdmission } = await import("./product-source-runtime.js");
+  assertImportedDesignReviewVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, phase), admitted = read();
+  if (context.product_development?.stage !== "design" || !context.imported_design_review_subject || context.product_design_revision
+    || context.review_subject || context.imported_review_subject || context.imported_execution || context.imported_execution_review_subject || context.imported_execution_repair || context.policy.filesystem_write_scope.length) fail("H4 requires its dedicated read-only design verifier");
+  const result = await executeVerification(profile, requestId, signal, context, context.imported_design_review_subject.subject_digest,
+    "final", undefined, admitted.readReleaseCapabilities, undefined, undefined, read);
+  read();
+  if (result.outcome === "passed" && !signal.aborted) importedFinalVerifications.set(result, { profile, permit, requestId,
+    context: JSON.stringify(context), payload: JSON.stringify(result), phase });
+  return result;
+}
+
+export function assertImportedExecutionVerificationProfile(profile: PreparedVerificationProfile): void {
+  assertImportedDesignReviewVerificationProfile(profile);
+  if (profile.capabilities?.checks.some(check => check.contract.version !== 3 || check.contract.stage_policy.implementation !== "declared-cases")) {
+    fail("H5 requires protected native v3 implementation cases");
+  }
+}
+export async function runImportedExecutionVerification(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedExecution): Promise<RunVerificationPayload> {
+  const { readImportedExecutionVerificationAdmission: readAdmission } = await import("./product-source-runtime.js");
+  assertImportedExecutionVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, "final"), admitted = read();
+  if (context.product_development?.stage !== "implementation" || !context.imported_execution || !context.transferred_product_input
+    || context.review_subject || context.imported_review_subject || context.imported_design_review_subject || context.product_design_revision || context.imported_execution_review_subject || context.imported_execution_repair) fail("H5 requires its dedicated implementation verifier");
+  const result = await executeVerification(profile, requestId, signal, context, undefined, "final", undefined,
+    admitted.readReleaseCapabilities, undefined, undefined, undefined, read);
+  read();
+  if (result.outcome === "passed" && !signal.aborted) importedFinalVerifications.set(result, { profile, permit, requestId,
+    context: JSON.stringify(context), payload: JSON.stringify(result), phase: "implementation" });
+  return result;
+}
+export async function runImportedExecutionVerificationPreview(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedExecution): Promise<VerificationPreviewResult> {
+  const { readImportedExecutionVerificationAdmission: readAdmission } = await import("./product-source-runtime.js");
+  assertImportedExecutionVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, "preview"), admitted = read();
+  if (context.product_development?.stage !== "implementation" || !context.imported_execution || !context.transferred_product_input
+    || context.review_subject || context.imported_review_subject || context.imported_design_review_subject || context.product_design_revision || context.imported_execution_review_subject || context.imported_execution_repair) fail("H5 requires its dedicated implementation preview");
+  const diagnostics: VerificationPreviewResult["diagnostics"] = { version: 1, commands: [] };
+  const verification = await executeVerification(profile, requestId, signal, context, undefined, "preview", diagnostics.commands,
+    admitted.readReleaseCapabilities, undefined, undefined, undefined, read);
+  read(); return { verification, diagnostics };
+}
+
+export async function runImportedExecutionReviewVerification(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedExecutionReview, phase: "before" | "after"): Promise<RunVerificationPayload> {
+  const { readImportedExecutionReviewVerificationAdmission: readAdmission } = await import("./product-source-runtime.js");
+  assertImportedExecutionVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, phase), admitted = read();
+  if (context.product_development?.stage !== "implementation" || !context.imported_execution_review_subject || !context.transferred_product_input
+    || context.review_subject || context.imported_review_subject || context.imported_design_review_subject || context.imported_execution
+    || context.imported_execution_repair || context.product_design_revision || context.policy.filesystem_write_scope.length)
+    fail("H6 requires its dedicated read-only implementation verifier");
+  const result = await executeVerification(profile, requestId, signal, context, context.imported_execution_review_subject.subject_digest,
+    "final", undefined, admitted.readReleaseCapabilities, undefined, undefined, undefined, undefined, read);
+  read();
+  if (result.outcome === "passed" && !signal.aborted) importedFinalVerifications.set(result, { profile, permit, requestId,
+    context: JSON.stringify(context), payload: JSON.stringify(result), phase: phase === "before" ? "implementation-review-before" : "implementation-review-after" });
+  return result;
+}
+export async function runImportedExecutionRepairVerification(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedExecutionRepair): Promise<RunVerificationPayload> {
+  const { readImportedExecutionRepairVerificationAdmission: readAdmission } = await import("./product-source-runtime.js");
+  assertImportedExecutionVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, "final"), admitted = read();
+  assertImplementationRepairContext(context);
+  const result = await executeVerification(profile, requestId, signal, context, undefined, "final", undefined,
+    admitted.readReleaseCapabilities, undefined, undefined, undefined, undefined, undefined, read);
+  read();
+  if (result.outcome === "passed" && !signal.aborted) importedFinalVerifications.set(result, { profile, permit, requestId,
+    context: JSON.stringify(context), payload: JSON.stringify(result), phase: "implementation-repair" });
+  return result;
+}
+function assertImplementationRepairContext(context: NonNullable<RunStartPayload["context_pack"]["payload"]>) {
+  if (context.product_development?.stage !== "implementation" || !context.imported_execution_repair || !context.transferred_product_input
+    || context.review_subject || context.imported_review_subject || context.imported_design_review_subject || context.imported_execution
+    || context.imported_execution_review_subject || context.product_design_revision || context.policy.execution_mode === "discussion")
+    fail("Repair requires its dedicated implementation author context");
+}
+export async function runImportedExecutionRepairVerificationPreview(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedExecutionRepair): Promise<VerificationPreviewResult> {
+  const { readImportedExecutionRepairVerificationAdmission: readAdmission } = await import("./product-source-runtime.js");
+  assertImportedExecutionVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, "preview"), admitted = read();
+  assertImplementationRepairContext(context);
+  const diagnostics: VerificationPreviewResult["diagnostics"] = { version: 1, commands: [] };
+  const verification = await executeVerification(profile, requestId, signal, context, undefined, "preview", diagnostics.commands,
+    admitted.readReleaseCapabilities, undefined, undefined, undefined, undefined, undefined, read);
+  read(); return { verification, diagnostics };
+}
+
+export function assertImportedValidationVerificationProfile(profile: PreparedVerificationProfile): void {
+  assertImportedExecutionVerificationProfile(profile);
+  if (profile.capabilities?.checks.some(check => check.contract.version !== 3 || check.contract.stage_policy.validation !== "declared-cases"))
+    fail("H7 requires protected native v3 validation for every declared case");
+}
+export async function runImportedValidationVerification(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedValidation): Promise<RunVerificationPayload> {
+  const { readImportedValidationVerificationAdmission: readAdmission } = await import("./product-source-runtime.js");
+  assertImportedValidationVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, "final"), admitted = read();
+  const result = await executeVerification(profile, requestId, signal, context, undefined, "final", undefined,
+    admitted.readReleaseCapabilities, undefined, undefined, undefined, undefined, undefined, undefined, read);
+  read();
+  if (!signal.aborted) {
+    if (result.outcome === "passed") importedFinalVerifications.set(result, { profile, permit, requestId,
+      context: JSON.stringify(context), payload: JSON.stringify(result), phase: "validation" });
+    const original = closedProductFailures.get(result);
+    if (result.outcome === "failed" && original) importedValidationFailures.set(result, { permit, original });
+  }
+  return result;
+}
+export async function runImportedValidationVerificationPreview(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedValidation): Promise<VerificationPreviewResult> {
+  const { readImportedValidationVerificationAdmission: readAdmission } = await import("./product-source-runtime.js");
+  assertImportedValidationVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, "preview"), admitted = read();
+  const diagnostics: VerificationPreviewResult["diagnostics"] = { version: 1, commands: [] };
+  const verification = await executeVerification(profile, requestId, signal, context, undefined, "preview", diagnostics.commands,
+    admitted.readReleaseCapabilities, undefined, undefined, undefined, undefined, undefined, undefined, read);
+  read(); return { verification, diagnostics };
+}
+export async function runImportedValidationReviewVerification(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedValidationReview, phase: "before" | "after"): Promise<RunVerificationPayload> {
+  const { readImportedValidationReviewVerificationAdmission: readAdmission } = await import("./product-source-runtime.js");
+  assertImportedValidationVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, phase), admitted = read();
+  const result = await executeVerification(profile, requestId, signal, context, admitted.request.source.subject_digest, "final", undefined,
+    admitted.readReleaseCapabilities, undefined, undefined, undefined, undefined, undefined, undefined, undefined, read);
+  read();
+  if (result.outcome === "passed" && !signal.aborted) importedFinalVerifications.set(result, { profile, permit, requestId,
+    context: JSON.stringify(context), payload: JSON.stringify(result), phase: phase === "before" ? "validation-review-before" : "validation-review-after" });
+  return result;
+}
+
+export async function runImportedRecoveryValidationVerification(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedRecoveryValidation): Promise<RunVerificationPayload> {
+  const { readImportedRecoveryValidationVerificationAdmission: readAdmission } = await import("./windows-source-recovery.js");
+  assertImportedValidationVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, "final"), admitted = read();
+  const result = await executeVerification(profile, requestId, signal, context, undefined, "final", undefined,
+    admitted.readReleaseCapabilities, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, read);
+  read();
+  if (!signal.aborted) {
+    if (result.outcome === "passed") importedFinalVerifications.set(result, { profile, permit, requestId,
+      context: JSON.stringify(context), payload: JSON.stringify(result), phase: "recovery-validation" });
+    const original = closedProductFailures.get(result);
+    if (result.outcome === "failed" && original) importedRecoveryValidationFailures.set(result, { permit, original });
+  }
+  return result;
+}
+export async function runImportedRecoveryValidationVerificationPreview(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedRecoveryValidation): Promise<VerificationPreviewResult> {
+  const { readImportedRecoveryValidationVerificationAdmission: readAdmission } = await import("./windows-source-recovery.js");
+  assertImportedValidationVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, "preview"), admitted = read();
+  const diagnostics: VerificationPreviewResult["diagnostics"] = { version: 1, commands: [] };
+  const verification = await executeVerification(profile, requestId, signal, context, undefined, "preview", diagnostics.commands,
+    admitted.readReleaseCapabilities, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, read);
+  read(); return { verification, diagnostics };
+}
+export async function runImportedRecoveryValidationReviewVerification(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedRecoveryValidationReview, phase: "before" | "after"): Promise<RunVerificationPayload> {
+  const { readImportedRecoveryValidationReviewVerificationAdmission: readAdmission } = await import("./windows-source-recovery.js");
+  assertImportedValidationVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, phase), admitted = read();
+  const result = await executeVerification(profile, requestId, signal, context, admitted.request.source.subject_digest, "final", undefined,
+    admitted.readReleaseCapabilities, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, read);
+  read();
+  if (result.outcome === "passed" && !signal.aborted) importedFinalVerifications.set(result, { profile, permit, requestId,
+    context: JSON.stringify(context), payload: JSON.stringify(result), phase: phase === "before" ? "recovery-validation-review-before" : "recovery-validation-review-after" });
+  return result;
+}
+
+export async function runImportedCleanValidationVerification(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedCleanValidation): Promise<RunVerificationPayload> {
+  const { readImportedCleanValidationVerificationAdmission: readAdmission } = await import("./windows-clean-validation-runtime.js");
+  assertImportedValidationVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, "final"), admitted = read();
+  const result = await executeVerification(profile, requestId, signal, context, undefined, "final", undefined,
+    admitted.readReleaseCapabilities, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, read);
+  read();
+  if (!signal.aborted) {
+    if (result.outcome === "passed") importedFinalVerifications.set(result, { profile, permit, requestId,
+      context: JSON.stringify(context), payload: JSON.stringify(result), phase: "clean-validation" });
+    const original = closedProductFailures.get(result);
+    if (result.outcome === "failed" && original) importedCleanValidationFailures.set(result, { permit, original });
+  }
+  return result;
+}
+export async function runImportedCleanValidationVerificationPreview(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedCleanValidation): Promise<VerificationPreviewResult> {
+  const { readImportedCleanValidationVerificationAdmission: readAdmission } = await import("./windows-clean-validation-runtime.js");
+  assertImportedValidationVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, "preview"), admitted = read();
+  const diagnostics: VerificationPreviewResult["diagnostics"] = { version: 1, commands: [] };
+  const verification = await executeVerification(profile, requestId, signal, context, undefined, "preview", diagnostics.commands,
+    admitted.readReleaseCapabilities, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, read);
+  read(); return { verification, diagnostics };
+}
+export async function runImportedCleanValidationReviewVerification(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
+  context: NonNullable<RunStartPayload["context_pack"]["payload"]>, permit: PreparedImportedCleanValidationReview, phase: "before" | "after"): Promise<RunVerificationPayload> {
+  const { readImportedCleanValidationReviewVerificationAdmission: readAdmission } = await import("./windows-clean-validation-runtime.js");
+  assertImportedValidationVerificationProfile(profile);
+  const read = () => readAdmission(permit, profile, requestId, context, phase), admitted = read();
+  const result = await executeVerification(profile, requestId, signal, context, admitted.request.source.subject_digest, "final", undefined,
+    admitted.readReleaseCapabilities, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, read);
+  read();
+  if (result.outcome === "passed" && !signal.aborted) importedFinalVerifications.set(result, { profile, permit, requestId,
+    context: JSON.stringify(context), payload: JSON.stringify(result), phase: phase === "before" ? "clean-validation-review-before" : "clean-validation-review-after" });
+  return result;
 }
 
 async function executeVerification(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
@@ -776,12 +1097,23 @@ async function executeVerification(profile: PreparedVerificationProfile, request
   scope: VerificationObservation["scope"], previewCommands?: VerificationPreviewResult["diagnostics"]["commands"],
   readReleaseCapabilities?: ReleaseCapabilityReader,
   readSemanticAdmission?: () => ReturnType<typeof inspectProductSourceVerificationEnvelope>,
-  readDesignAdmission?: () => ReturnType<typeof readImportedDesignVerificationAdmission>): Promise<RunVerificationPayload> {
+  readDesignAdmission?: () => ReturnType<typeof readImportedDesignVerificationAdmission>,
+  readDesignReviewAdmission?: () => ReturnType<typeof readImportedDesignReviewVerificationAdmission>,
+  readExecutionAdmission?: () => ReturnType<typeof readImportedExecutionVerificationAdmission>,
+  readExecutionReviewAdmission?: () => ReturnType<typeof readImportedExecutionReviewVerificationAdmission>,
+  readExecutionRepairAdmission?: () => ReturnType<typeof readImportedExecutionRepairVerificationAdmission>,
+  readValidationAdmission?: () => ReturnType<typeof readImportedValidationVerificationAdmission>,
+  readValidationReviewAdmission?: () => ReturnType<typeof readImportedValidationReviewVerificationAdmission>,
+  readRecoveryValidationAdmission?: () => ReturnType<typeof readImportedRecoveryValidationVerificationAdmission>,
+  readRecoveryValidationReviewAdmission?: () => ReturnType<typeof readImportedRecoveryValidationReviewVerificationAdmission>,
+  readCleanValidationAdmission?: () => ReturnType<typeof readImportedCleanValidationVerificationAdmission>,
+  readCleanValidationReviewAdmission?: () => ReturnType<typeof readImportedCleanValidationReviewVerificationAdmission>): Promise<RunVerificationPayload> {
   const result: RunVerificationPayload = { version: 1, request_id: requestId, profile_id: profile.id, profile_digest: profile.digest,
     subject_digest: null, outcome: "failed", checks: [], required_files: [] };
   const reports: { checkIndex: number; command: PreparedVerificationProfile["commands"][number]; report: StaticWebAcceptanceReport }[] = [];
   let contextDirectory: string | undefined;
   let cleanupConfirmed = true;
+  let failedCommandClosure: (() => void) | undefined, productFailureEligible = false;
   try {
     if (!profileExecutionSupported(profile)) fail("unsupported verification platform");
     assertTrusted(profile);
@@ -804,12 +1136,71 @@ async function executeVerification(profile: PreparedVerificationProfile, request
     // the unchanged subject, accepted inputs, evidence and cleanup are confirmed.
     const semantic = readSemanticAdmission?.();
     const designAdmission = readDesignAdmission?.();
-    if (semantic && designAdmission || !!context?.transferred_product_input !== !!designAdmission) fail("Imported verifier admission scope differs");
+    const designReviewAdmission = readDesignReviewAdmission?.();
+    const executionAdmission = readExecutionAdmission?.();
+    const executionReviewAdmission = readExecutionReviewAdmission?.();
+    const executionRepairAdmission = readExecutionRepairAdmission?.(); readValidationAdmission?.(); readValidationReviewAdmission?.(); readRecoveryValidationAdmission?.(); readRecoveryValidationReviewAdmission?.(); readCleanValidationAdmission?.(); readCleanValidationReviewAdmission?.();
+    const validationAdmission = readValidationAdmission?.(), validationReviewAdmission = readValidationReviewAdmission?.();
+    const recoveryValidationAdmission = readRecoveryValidationAdmission?.(), recoveryValidationReviewAdmission = readRecoveryValidationReviewAdmission?.();
+    const cleanValidationAdmission = readCleanValidationAdmission?.(), cleanValidationReviewAdmission = readCleanValidationReviewAdmission?.();
+    if ([semantic, designAdmission, designReviewAdmission, executionAdmission, executionReviewAdmission, executionRepairAdmission, validationAdmission, validationReviewAdmission,
+      recoveryValidationAdmission, recoveryValidationReviewAdmission, cleanValidationAdmission, cleanValidationReviewAdmission].filter(Boolean).length > 1
+      || !!context?.transferred_product_input !== !!(designAdmission || designReviewAdmission || executionAdmission || executionReviewAdmission || executionRepairAdmission || validationAdmission || validationReviewAdmission || recoveryValidationAdmission || recoveryValidationReviewAdmission || cleanValidationAdmission || cleanValidationReviewAdmission)
+      || !!context?.imported_validation !== !!validationAdmission || !!context?.imported_validation_review_subject !== !!validationReviewAdmission
+      || !!context?.imported_recovery_validation !== !!recoveryValidationAdmission || !!context?.imported_recovery_validation_review_subject !== !!recoveryValidationReviewAdmission
+      || !!context?.imported_clean_validation !== !!cleanValidationAdmission || !!context?.imported_clean_validation_review_subject !== !!cleanValidationReviewAdmission
+      || !!context?.imported_design_review_subject !== !!designReviewAdmission
+      || !!context?.imported_execution_review_subject !== !!executionReviewAdmission
+      || !!context?.imported_execution_repair !== !!executionRepairAdmission
+      || !!context?.imported_execution !== !!executionAdmission) fail("Imported verifier admission scope differs");
     const design = designAdmission ? inspectImportedDesignVerificationEnvelopeV1({ version: 1, request: designAdmission.request,
       request_digest: designAdmission.request_digest, run_id: designAdmission.request.run_start.run_id, verification_request_id: requestId,
       scope, subject_digest: before.digest }, readProductFile(profile.workspace_root, ".artoo/product/research.json"), sha) : undefined;
+    const designReview = designReviewAdmission ? inspectImportedDesignReviewVerificationEnvelopeV1({ version: 1,
+      request: designReviewAdmission.request, request_digest: designReviewAdmission.request_digest, phase: designReviewAdmission.phase,
+      run_id: designReviewAdmission.start.run_id, verification_request_id: requestId, scope, subject_digest: before.digest },
+      readProductFile(profile.workspace_root, ".artoo/product/research.json"), sha) : undefined;
+    const execution = executionAdmission ? inspectImportedExecutionVerificationEnvelopeV1({ version: 1, request: executionAdmission.request,
+      request_digest: executionAdmission.request_digest, run_id: executionAdmission.request.run_start.run_id,
+      verification_request_id: requestId, scope, subject_digest: before.digest }, readProductFile(profile.workspace_root, ".artoo/product/research.json"),
+      readProductFile(profile.workspace_root, ".artoo/product/design.json"), sha) : undefined;
+    const executionReview = executionReviewAdmission ? inspectImportedExecutionReviewVerificationEnvelopeV1({ version: 1,
+      request: executionReviewAdmission.request, request_digest: executionReviewAdmission.request_digest, phase: executionReviewAdmission.phase,
+      run_id: executionReviewAdmission.start.run_id, verification_request_id: requestId, subject_digest: before.digest },
+      readProductFile(profile.workspace_root, ".artoo/product/research.json"), readProductFile(profile.workspace_root, ".artoo/product/design.json"), sha) : undefined;
+    const executionRepair = executionRepairAdmission ? inspectImportedExecutionRepairVerificationEnvelopeV1({ version: 1,
+      request: executionRepairAdmission.request, request_digest: executionRepairAdmission.request_digest, scope,
+      run_id: executionRepairAdmission.request.run_start.run_id, verification_request_id: requestId, subject_digest: before.digest },
+      readProductFile(profile.workspace_root, ".artoo/product/research.json"), readProductFile(profile.workspace_root, ".artoo/product/design.json"), sha) : undefined;
+    const validation = validationAdmission ? inspectImportedValidationVerificationEnvelopeV1({ version: 1, request: validationAdmission.request,
+      request_digest: validationAdmission.request_digest, scope, run_id: validationAdmission.request.run_start.run_id,
+      verification_request_id: requestId, subject_digest: before.digest }, readProductFile(profile.workspace_root, ".artoo/product/research.json"),
+      readProductFile(profile.workspace_root, ".artoo/product/design.json"), sha) : undefined;
+    const validationReview = validationReviewAdmission ? inspectImportedValidationReviewVerificationEnvelopeV1({ version: 1, request: validationReviewAdmission.request,
+      request_digest: validationReviewAdmission.request_digest, phase: validationReviewAdmission.phase, run_id: validationReviewAdmission.start.run_id,
+      verification_request_id: requestId, subject_digest: before.digest }, readProductFile(profile.workspace_root, ".artoo/product/research.json"),
+      readProductFile(profile.workspace_root, ".artoo/product/design.json"), sha) : undefined;
+    const recoveryValidation = recoveryValidationAdmission ? inspectImportedRecoveryValidationVerificationEnvelopeV1({ version: 1,
+      request: recoveryValidationAdmission.request, request_digest: recoveryValidationAdmission.request_digest, scope,
+      run_id: recoveryValidationAdmission.request.run_start.run_id, verification_request_id: requestId, subject_digest: before.digest },
+      readProductFile(profile.workspace_root, ".artoo/product/research.json"), readProductFile(profile.workspace_root, ".artoo/product/design.json"), sha) : undefined;
+    const recoveryValidationReview = recoveryValidationReviewAdmission ? inspectImportedRecoveryValidationReviewVerificationEnvelopeV1({ version: 1,
+      request: recoveryValidationReviewAdmission.request, request_digest: recoveryValidationReviewAdmission.request_digest, phase: recoveryValidationReviewAdmission.phase,
+      run_id: recoveryValidationReviewAdmission.start.run_id, verification_request_id: requestId, subject_digest: before.digest },
+      readProductFile(profile.workspace_root, ".artoo/product/research.json"), readProductFile(profile.workspace_root, ".artoo/product/design.json"), sha) : undefined;
+    const cleanValidation = cleanValidationAdmission ? inspectImportedCleanValidationVerificationEnvelopeV1({ version: 1,
+      request: cleanValidationAdmission.request, request_digest: cleanValidationAdmission.request_digest, scope,
+      run_id: cleanValidationAdmission.request.run_start.run_id, verification_request_id: requestId, subject_digest: before.digest },
+      readProductFile(profile.workspace_root, ".artoo/product/research.json"), readProductFile(profile.workspace_root, ".artoo/product/design.json"), sha) : undefined;
+    const cleanValidationReview = cleanValidationReviewAdmission ? inspectImportedCleanValidationReviewVerificationEnvelopeV1({ version: 1,
+      request: cleanValidationReviewAdmission.request, request_digest: cleanValidationReviewAdmission.request_digest, phase: cleanValidationReviewAdmission.phase,
+      run_id: cleanValidationReviewAdmission.start.run_id, verification_request_id: requestId, subject_digest: before.digest },
+      readProductFile(profile.workspace_root, ".artoo/product/research.json"), readProductFile(profile.workspace_root, ".artoo/product/design.json"), sha) : undefined;
     const measurementPlan = measureDeclaredPlan(profile, before.files, scope, readReleaseCapabilities, profile.workspace_root,
-      semantic?.effective_plan ?? design?.research.measurement_plan, !!design);
+      semantic?.effective_plan ?? design?.research.measurement_plan ?? designReview?.research.measurement_plan ?? execution?.research.measurement_plan
+        ?? executionReview?.research.measurement_plan ?? executionRepair?.research.measurement_plan ?? validation?.research.measurement_plan ?? validationReview?.research.measurement_plan
+        ?? recoveryValidation?.research.measurement_plan ?? recoveryValidationReview?.research.measurement_plan ?? cleanValidation?.research.measurement_plan ?? cleanValidationReview?.research.measurement_plan,
+      !!(design || designReview || execution || executionReview || executionRepair || validation || validationReview || recoveryValidation || recoveryValidationReview || cleanValidation || cleanValidationReview));
     contextDirectory = mkdtempSync(join(realpathSync.native(tmpdir()), "artoo-verification-context-"));
     if (inside(contextDirectory, profile.workspace_root)) fail("no context location outside coding workspace");
     chmodSync(contextDirectory, 0o700);
@@ -822,6 +1213,10 @@ async function executeVerification(profile: PreparedVerificationProfile, request
       assertReleaseContext(profile, context, readReleaseCapabilities);
       readSemanticAdmission?.();
       readDesignAdmission?.();
+      readDesignReviewAdmission?.();
+      readExecutionAdmission?.();
+      readExecutionReviewAdmission?.();
+      readExecutionRepairAdmission?.(); readValidationAdmission?.(); readValidationReviewAdmission?.(); readRecoveryValidationAdmission?.(); readRecoveryValidationReviewAdmission?.(); readCleanValidationAdmission?.(); readCleanValidationReviewAdmission?.();
       try {
         const prepared = staticWebProfiles.get(profile)?.get(command.id), capabilityBinding = commandCapabilityBinding(profile, command.id);
         const privateDeadline = prepared?.options.windows_browser_process ? performance.now() + command.timeout_ms : undefined;
@@ -842,6 +1237,16 @@ async function executeVerification(profile: PreparedVerificationProfile, request
             profile_digest: profile.digest, subject_digest: before.digest, context: context ?? null,
             ...(semantic ? { product_source_verification: semantic.envelope } : {}),
             ...(design ? { product_source_design_verification: design.envelope } : {}),
+            ...(designReview ? { product_source_design_review_verification: designReview.envelope } : {}),
+            ...(execution ? { product_source_execution_verification: execution.envelope } : {}),
+            ...(executionReview ? { product_source_execution_review_verification: executionReview.envelope } : {}),
+            ...(executionRepair ? { product_source_execution_repair_verification: executionRepair.envelope } : {}),
+            ...(validation ? { product_source_validation_verification: validation.envelope } : {}),
+            ...(validationReview ? { product_source_validation_review_verification: validationReview.envelope } : {}),
+            ...(recoveryValidation ? { product_source_recovery_validation_verification: recoveryValidation.envelope } : {}),
+            ...(recoveryValidationReview ? { product_source_recovery_validation_review_verification: recoveryValidationReview.envelope } : {}),
+            ...(cleanValidation ? { product_source_clean_validation_verification: cleanValidation.envelope } : {}),
+            ...(cleanValidationReview ? { product_source_clean_validation_review_verification: cleanValidationReview.envelope } : {}),
             static_web_capabilities: { version: 1, binding: capabilityBinding, options: prepared.options },
             ...(browserProcess ? { windows_browser_process: browserProcess } : {}) };
           if (browserProcess) privateContextSha256 = writeWindowsBrowserPrivateContext(browserBackend!, commandContextFile, envelope, privateDeadline!);
@@ -866,10 +1271,17 @@ async function executeVerification(profile: PreparedVerificationProfile, request
         assertReleaseContext(profile, context, readReleaseCapabilities);
         readSemanticAdmission?.();
         readDesignAdmission?.();
+        readDesignReviewAdmission?.();
+        readExecutionAdmission?.();
+        readExecutionReviewAdmission?.();
+        readExecutionRepairAdmission?.(); readValidationAdmission?.(); readValidationReviewAdmission?.(); readRecoveryValidationAdmission?.(); readRecoveryValidationReviewAdmission?.(); readCleanValidationAdmission?.(); readCleanValidationReviewAdmission?.();
         result.checks.push({ id: command.id, exit_code: processResult.status, duration_ms: processResult.elapsedMs,
           output_digest: sha(Buffer.concat([processResult.stdout, Buffer.from("\0stderr\0"), processResult.stderr])) });
         previewCommands?.push(previewDiagnostic(command.id, result.checks.at(-1)!.output_digest, processResult.stdout, processResult.stderr));
-        if (processResult.status !== 0) { result.reason = failureReason(`Verification command ${command.id} exited ${processResult.status}`, processResult.stdout, processResult.stderr); break; }
+        if (processResult.status !== 0) {
+          if ((validationAdmission || recoveryValidationAdmission || cleanValidationAdmission) && scope === "final") { assertProtectedNativeCommandClosed(processResult); failedCommandClosure = () => assertProtectedNativeCommandClosed(processResult); }
+          result.reason = failureReason(`Verification command ${command.id} exited ${processResult.status}`, processResult.stdout, processResult.stderr); break;
+        }
         if (command.observation) {
           let json: unknown;
           try { json = JSON.parse(processResult.stdout.toString("utf8")); } catch { fail(`Verification command ${command.id} did not return its configured observation format`); }
@@ -895,6 +1307,56 @@ async function executeVerification(profile: PreparedVerificationProfile, request
             }
             const { product_design_revision: _revision, ...report } = json as Record<string, unknown>; json = report;
           }
+          if (designReview) {
+            if (!isDeepStrictEqual((json as { product_source_design_review_mapping?: unknown })?.product_source_design_review_mapping,
+              importedDesignReviewVerificationEchoV1(designReview.envelope, command.id, sha))) fail("Protected verifier did not confirm the exact H4 source and phase");
+            const { product_source_design_review_mapping: _mapping, ...report } = json as Record<string, unknown>; json = report;
+          }
+          if (execution) {
+            if (!isDeepStrictEqual((json as { product_source_execution_mapping?: unknown })?.product_source_execution_mapping,
+              importedExecutionVerificationEchoV1(execution.envelope, command.id, sha))) fail("Protected verifier did not confirm the exact H5 implementation invocation");
+            const { product_source_execution_mapping: _mapping, ...report } = json as Record<string, unknown>; json = report;
+          }
+          if (executionReview) {
+            if (!isDeepStrictEqual((json as { product_source_execution_review_mapping?: unknown })?.product_source_execution_review_mapping,
+              importedExecutionReviewVerificationEchoV1(executionReview.envelope, command.id, sha))) fail("Protected verifier did not confirm the exact H6 source and phase");
+            const { product_source_execution_review_mapping: _mapping, ...report } = json as Record<string, unknown>; json = report;
+          }
+          if (executionRepair) {
+            if (!isDeepStrictEqual((json as { product_source_execution_repair_mapping?: unknown })?.product_source_execution_repair_mapping,
+              importedExecutionRepairVerificationEchoV1(executionRepair.envelope, command.id, sha))) fail("Protected verifier did not confirm the exact repair authorization and invocation");
+            const { product_source_execution_repair_mapping: _mapping, ...report } = json as Record<string, unknown>; json = report;
+          }
+          if (validation) {
+            if (!isDeepStrictEqual((json as { product_source_validation_mapping?: unknown })?.product_source_validation_mapping,
+              importedValidationVerificationEchoV1(validation.envelope, command.id, sha))) fail("Protected verifier did not confirm the exact validation invocation");
+            const { product_source_validation_mapping: _mapping, ...report } = json as Record<string, unknown>; json = report;
+          }
+          if (validationReview) {
+            if (!isDeepStrictEqual((json as { product_source_validation_review_mapping?: unknown })?.product_source_validation_review_mapping,
+              importedValidationReviewVerificationEchoV1(validationReview.envelope, command.id, sha))) fail("Protected verifier did not confirm the complete validation review binding");
+            const { product_source_validation_review_mapping: _mapping, ...report } = json as Record<string, unknown>; json = report;
+          }
+          if (recoveryValidation) {
+            if (!isDeepStrictEqual((json as { product_source_recovery_validation_mapping?: unknown })?.product_source_recovery_validation_mapping,
+              importedRecoveryValidationVerificationEchoV1(recoveryValidation.envelope, command.id, sha))) fail("Protected verifier changed the fresh recovery author, checkpoint or epoch");
+            const { product_source_recovery_validation_mapping: _mapping, ...report } = json as Record<string, unknown>; json = report;
+          }
+          if (recoveryValidationReview) {
+            if (!isDeepStrictEqual((json as { product_source_recovery_validation_review_mapping?: unknown })?.product_source_recovery_validation_review_mapping,
+              importedRecoveryValidationReviewVerificationEchoV1(recoveryValidationReview.envelope, command.id, sha))) fail("Protected verifier changed the independent recovery review phase");
+            const { product_source_recovery_validation_review_mapping: _mapping, ...report } = json as Record<string, unknown>; json = report;
+          }
+          if (cleanValidation) {
+            if (!isDeepStrictEqual((json as { product_source_clean_validation_mapping?: unknown })?.product_source_clean_validation_mapping,
+              importedCleanValidationVerificationEchoV1(cleanValidation.envelope, command.id, sha))) fail("Protected verifier changed the fresh clean-restart author, checkpoint or epoch");
+            const { product_source_clean_validation_mapping: _mapping, ...report } = json as Record<string, unknown>; json = report;
+          }
+          if (cleanValidationReview) {
+            if (!isDeepStrictEqual((json as { product_source_clean_validation_review_mapping?: unknown })?.product_source_clean_validation_review_mapping,
+              importedCleanValidationReviewVerificationEchoV1(cleanValidationReview.envelope, command.id, sha))) fail("Protected verifier changed the independent clean-restart review phase");
+            const { product_source_clean_validation_review_mapping: _mapping, ...report } = json as Record<string, unknown>; json = report;
+          }
           const parsed = StaticWebAcceptanceReportSchema.safeParse(json);
           if (!parsed.success || parsed.data.stage !== stage || parsed.data.format !== command.observation.format) fail(`Verification command ${command.id} returned an invalid or mismatched observation`);
           if (semantic && parsed.data.cases.length !== 0) fail("Foreign research verification cannot execute or accept browser cases");
@@ -916,10 +1378,17 @@ async function executeVerification(profile: PreparedVerificationProfile, request
     }
     assertTrusted(profile);
     readDesignAdmission?.();
+    readDesignReviewAdmission?.();
+    readExecutionAdmission?.();
+    readExecutionReviewAdmission?.();
+    readExecutionRepairAdmission?.(); readValidationAdmission?.(); readValidationReviewAdmission?.(); readRecoveryValidationAdmission?.(); readRecoveryValidationReviewAdmission?.(); readCleanValidationAdmission?.(); readCleanValidationReviewAdmission?.();
     const after = subjectManifest(profile);
     assertAcceptedProductInputs(profile.workspace_root, context, after.files);
     if (before.digest !== after.digest) { result.outcome = "failed"; result.reason = "Verification subject changed during checks"; }
     else if (!result.reason && result.checks.length === profile.commands.length && result.checks.every((check) => check.exit_code === 0)) result.outcome = signal.aborted ? "cancelled" : "passed";
+    else if (failedCommandClosure && (validationAdmission || recoveryValidationAdmission || cleanValidationAdmission) && scope === "final" && !signal.aborted && result.outcome === "failed") {
+      assertReleaseContext(profile, context, readReleaseCapabilities); readValidationAdmission?.(); readRecoveryValidationAdmission?.(); readCleanValidationAdmission?.(); failedCommandClosure(); productFailureEligible = true;
+    }
     if (result.outcome === "passed" && reports.length) {
       // Only a closed, unchanged, completely measured run can expose reusable scope or screenshots.
       for (const { checkIndex, command, report } of reports) {
@@ -994,6 +1463,10 @@ async function executeVerification(profile: PreparedVerificationProfile, request
       assertReleaseContext(profile, context, readReleaseCapabilities);
       readSemanticAdmission?.();
       readDesignAdmission?.();
+      readDesignReviewAdmission?.();
+      readExecutionAdmission?.();
+      readExecutionReviewAdmission?.();
+      readExecutionRepairAdmission?.(); readValidationAdmission?.(); readValidationReviewAdmission?.(); readRecoveryValidationAdmission?.(); readRecoveryValidationReviewAdmission?.(); readCleanValidationAdmission?.(); readCleanValidationReviewAdmission?.();
       result.measurement_plan = measurementPlan;
       if (!RunVerificationPayloadSchema.safeParse(result).success) fail("Verification measurement plan exceeds its bounded contract");
     }
@@ -1008,6 +1481,7 @@ async function executeVerification(profile: PreparedVerificationProfile, request
       if (!RunVerificationPayloadSchema.safeParse(result).success) fail("Design revision evidence differs from its measured required files");
     }
   } catch (error) {
+    productFailureEligible = false;
     if (error instanceof VerificationCleanupError) { cleanupConfirmed = false; throw error; }
     result.outcome = signal.aborted ? "cancelled" : "failed";
     result.reason = (error instanceof Error ? error.message : "Verification failed").slice(0, 2000);
@@ -1019,6 +1493,10 @@ async function executeVerification(profile: PreparedVerificationProfile, request
     }
     // This fresh directory was created by this invocation, outside the writer's root.
     if (contextDirectory && cleanupConfirmed) rmSync(contextDirectory, { recursive: true, force: true });
+  }
+  if (productFailureEligible && failedCommandClosure && result.outcome === "failed" && context && !signal.aborted) {
+    failedCommandClosure();
+    closedProductFailures.set(result, { profile, requestId, context: JSON.stringify(context), payload: JSON.stringify(result), assertClosed: failedCommandClosure });
   }
   return result;
 }

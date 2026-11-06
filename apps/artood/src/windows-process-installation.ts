@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { release } from "node:os";
 import { win32 } from "node:path";
-import { assertWindowsProcessBackend, prepareWindowsProcessBackend, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
+import { performance } from "node:perf_hooks";
+import { assertWindowsProcessBackend, prepareWindowsProcessBackend, startWindowsGuardianObserverSync, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
+import { readWindowsGuardianOperation } from "./owned/windows-guardian-scope.js";
+import { reserveWindowsGuardianSlotSync } from "./owned/windows-runtime-guardian.js";
 
 export interface WindowsProcessInstallation {
   readonly directory: string;
@@ -229,11 +232,31 @@ export function prepareWindowsProcessInstallation(input: WindowsProcessInstallat
   const request = JSON.stringify({ version: 1, directory, workspaceRoots: roots });
   if (Buffer.byteLength(request) > MAX_INPUT_BYTES) fail("local ACL request exceeds its bound");
   let admittedSid: string | undefined;
+  let preparedBackend: PreparedWindowsProcessBackend | undefined;
   const assertLocalInstallation = (): void => {
+    const begun = performance.now();
     physicalDirectory(directory);
     for (const root of roots) { physicalDirectory(root); if (overlaps(directory, root)) fail("installation overlaps an agent writable root"); }
     const installed = installationPaths(directory);
-    const result = spawnSync(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", AUDIT_SCRIPT], {
+    // Initial qualification precedes creation of this backend. Once bound to a
+    // guardian, every repeated collector must belong to the active local scope.
+    const scope = preparedBackend ? readWindowsGuardianOperation(preparedBackend) : undefined;
+    const result = scope ? (() => {
+      const bindingDigest = sha(Buffer.from(JSON.stringify({ version: 1, operation: scope.bindingDigest,
+        collector: "windows-process-installation", executable: powershell, script: AUDIT_SCRIPT, input: request })));
+      const slot = reserveWindowsGuardianSlotSync(scope.guardian, { operationKind: "observer", operationId: scope.operationId,
+        bindingDigest, serverOperation: scope.serverOperation });
+      const remaining = Math.floor(15000 - (performance.now() - begun));
+      if (remaining < 1) fail("audit deadline elapsed before collector launch");
+      const observed = startWindowsGuardianObserverSync(scope.backend, { executable: powershell,
+        args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", AUDIT_SCRIPT], cwd: scope.workspaceRoot,
+        timeoutMs: remaining, cleanupTimeoutMs: 5000, maxOutputBytes: MAX_AUDIT_BYTES,
+        normalExitPolicy: "require-empty", normalExitGraceMs: 250, guardianSlot: slot, inputBytes: Buffer.from(request, "utf8"),
+        env: { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: win32.join(systemRoot, "System32"),
+          PSModulePath: win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules") } });
+      return { stdout: observed.stdout.toString("utf8"), status: observed.receipt.rootExitCode, signal: null,
+        error: observed.receipt.terminationReason !== null || observed.receipt.failureCode !== null ? new Error("Owned collector failed") : undefined };
+    })() : spawnSync(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", AUDIT_SCRIPT], {
       cwd: systemRoot, shell: false, windowsHide: true, input: request, encoding: "utf8", timeout: 15000,
       maxBuffer: MAX_AUDIT_BYTES, env: { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: win32.join(systemRoot, "System32"),
         PSModulePath: win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules") },
@@ -257,6 +280,7 @@ export function prepareWindowsProcessInstallation(input: WindowsProcessInstallat
       try { assertLocalInstallation(); }
       catch (error) { preparationFailure = error; throw error; }
     } });
+    preparedBackend = backend;
     preparedInstallations.set(backend, Object.freeze({ directory, manifestSha256, writableWorkspaceRoots: roots }));
     return backend;
   } catch (error) {

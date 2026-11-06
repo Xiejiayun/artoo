@@ -1,3 +1,4 @@
+import { recordWindowsStartupPhase, recordWindowsStartupFailure, completeWindowsStartupDiagnostics } from "./windows-startup-diagnostics.js";
 import { arch as osArch, hostname, platform } from "node:os";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +22,11 @@ import { prepareWindowsProcessInstallation } from "./windows-process-installatio
 import { prepareWindowsReleaseStorage, type PreparedWindowsReleaseStorage } from "./windows-release-storage.js";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import type { ResearchOptions } from "./research.js";
+import { supervisedSelection, launchWindowsSupervisedCli, runWindowsSupervisedDaemon } from "./windows-daemon-launcher.js";
+import { prepareProductSourceConfiguration } from "./product-source-config.js";
+import { prepareProductBootstrapGit, type PreparedProductBootstrapGit } from "./product-bootstrap-git.js";
+import { prepareCleanDaemonConfiguration, type PreparedCleanDaemonConfiguration } from "./windows-clean-local-configuration.js";
+import type { PreparedWindowsDaemonSupervisorAuthority } from "./windows-supervisor-authority.js";
 
 /**
  * artood node entrypoint: an env-driven bootstrap that wires the runtime presets,
@@ -84,8 +90,14 @@ export interface ArtoodConfig {
   ownedResultProfilesFile?: string;
   research?: ResearchOptions;
   initializeRepository?: boolean;
+  /** Prepared from the supervisor's exact protected local source configuration, never task metadata. */
+  productBootstrapGit?: PreparedProductBootstrapGit;
+  /** Same-process local preparation after native Supervisor qualification. */
+  prepareCleanLifecycle?: (supervisor: PreparedWindowsDaemonSupervisorAuthority) => PreparedCleanDaemonConfiguration;
   /** Versioned protected local selection of source transfer and continuation roles. */
   productSourceConfigFile?: string;
+  /** Internal supervised CLI selection; checked again against genuine native authority. */
+  requireSupervisorLifetime?: boolean;
 }
 
 const JOURNAL_ENV_KEYS = ["ARTOO_JOURNAL_VERSION", "ARTOO_JOURNAL_SERVER_ORIGIN", "ARTOO_JOURNAL_NODE_ID",
@@ -228,7 +240,7 @@ export function buildRegistry(config: ArtoodConfig): AdapterRegistry {
       );
     }
     return preset({ allowedRoots: config.allowedRoots, trustedExecution: config.trustedExecution,
-      research: config.research, initializeRepository: config.initializeRepository,
+      research: config.research, initializeRepository: config.initializeRepository, productBootstrapGit: config.productBootstrapGit,
       ...(config.reportArtifacts === "none" ? { artifacts: [] } : {}),
       ...(name === "codex" ? { codex: config.codex } : {}) });
   });
@@ -248,6 +260,7 @@ export function helloFor(config: ArtoodConfig): NodeHello {
 
 /** Construct (without connecting) an {@link ArtoodNode} from config. */
 export function createNodeFromConfig(config: ArtoodConfig): ArtoodNode {
+  if (config.requireSupervisorLifetime && !config.productSourceConfigFile) throw Error("Supervised CLI requires explicit source recovery configuration");
   if (config.productSourceConfigFile !== undefined && (!config.windowsProcessBackend || config.managedJournal !== undefined)) {
     throw new Error("Product source configuration requires ordinary native Windows execution");
   }
@@ -281,6 +294,8 @@ export function createNodeFromConfig(config: ArtoodConfig): ArtoodNode {
     releaseProfiles: config.releaseProfiles,
     windowsReleaseStorage: config.windowsReleaseStorage,
     productSourceConfigFile: config.productSourceConfigFile,
+    requireSupervisorLifetime: config.requireSupervisorLifetime,
+    prepareCleanLifecycle: config.prepareCleanLifecycle,
     research: config.research,
   };
   return binding ? createManagedBootstrap({ ...common, binding, allowNewAllocations: config.allowNewAllocations!,
@@ -289,15 +304,38 @@ export function createNodeFromConfig(config: ArtoodConfig): ArtoodNode {
 }
 
 /** Load config, connect, and start dispatching. Connects the real WebSocket. */
-export async function main(env: NodeJS.ProcessEnv = process.env, host: ShutdownHost = process): Promise<ArtoodNode> {
+export async function main(env: NodeJS.ProcessEnv = process.env, host: ShutdownHost = process,
+  supervisedReady?: () => Promise<void>): Promise<ArtoodNode> {
   let node: ArtoodNode, launchId: string | undefined;
   try {
+    recordWindowsStartupPhase("load_configuration");
     const config = loadConfigFromEnv(env);
+    if (supervisedReady) {
+      config.requireSupervisorLifetime = true;
+      if (env.ARTOO_SOURCE_CLEAN_CONFIG_FILE !== undefined) {
+        const lineageFile = env.ARTOO_SOURCE_CLEAN_CONFIG_FILE, observerId = env.ARTOO_SOURCE_LIFECYCLE_OBSERVER_ID;
+        const entry = process.argv[1];
+        if (!lineageFile || !observerId || !entry) throw Error("Clean daemon requires its original protected parent configuration");
+        config.prepareCleanLifecycle = supervisor => prepareCleanDaemonConfiguration({ config, env, entry, lineageFile, observerId, supervisor });
+      }
+      if (config.initializeRepository) {
+        recordWindowsStartupPhase("bootstrap_git");
+        if (!config.productSourceConfigFile || !env.ARTOO_SUPERVISED_BOOTSTRAP_GIT) throw Error("Supervised bootstrap requires its protected Git selection");
+        const local = prepareProductSourceConfiguration({ file: config.productSourceConfigFile, allowedRoots: config.allowedRoots });
+        let expected: unknown;
+        try { expected = JSON.parse(env.ARTOO_SUPERVISED_BOOTSTRAP_GIT); }
+        catch { throw Error("Supervised bootstrap Git descriptor is invalid"); }
+        config.productBootstrapGit = prepareProductBootstrapGit({ file: local.config.gitExecutable, allowedRoots: config.allowedRoots, expected,
+          assertConfigurationUnchanged: () => { if (local.read().identity !== local.original.identity) throw Error("Product bootstrap source configuration changed"); } });
+      }
+    }
     if (host.connected === false) throw new Error("Desktop IPC disconnected before worker startup");
     validateManagedLaunchSelection(config, { ipc: host.connected !== undefined, args: (host.argv ?? []).slice(2) });
     launchId = workerLaunchId(env, host, config.managedJournal !== undefined);
+    recordWindowsStartupPhase("create_node");
     node = createNodeFromConfig(config);
   } catch (cause) {
+    recordWindowsStartupFailure(cause);
     if (host.connected === undefined) throw cause; // Standalone CLI has no owned IPC lifetime.
     const errors = [asError(cause)];
     // No node has started and no shutdown listener exists yet. Close this IPC
@@ -308,7 +346,13 @@ export async function main(env: NodeJS.ProcessEnv = process.env, host: ShutdownH
   const shutdown = installShutdownHandlers(node, host, { launchId });
   let readyPhase = false;
   try {
+    recordWindowsStartupPhase("start_node");
     await node.start();
+    if (supervisedReady) {
+      recordWindowsStartupPhase("await_registration");
+      if (!node.executionReady) throw Error("Supervised daemon has no registered source readiness signal");
+      await node.executionReady;
+    }
     readyPhase = true;
     await Promise.resolve(); // Observe a failure already published with readiness.
     if (shutdown.stopping) { await shutdown.completion; throw new DeliveryCancelled("Worker stopped before ready"); }
@@ -316,12 +360,19 @@ export async function main(env: NodeJS.ProcessEnv = process.env, host: ShutdownH
       await sendOwnedIpc(host, { type: "worker.ready", launchId }, () => !shutdown.stopping);
       if (shutdown.stopping) { await shutdown.completion; throw new DeliveryCancelled("Worker stopped during ready notification"); }
     }
+    if (supervisedReady) {
+      recordWindowsStartupPhase("execution_ready");
+      await supervisedReady();
+      if (shutdown.stopping) { await shutdown.completion; throw new DeliveryCancelled("Supervised daemon stopped during ready notification"); }
+      completeWindowsStartupDiagnostics();
+    }
     return node;
   } catch (cause) {
+    recordWindowsStartupFailure(cause);
     let error = cause;
     // Startup cancellation after an intentional Stop is not a new fatal error.
     // An actual ready-send failure still taints a simultaneous requested Stop.
-    if (launchId && (!shutdown.stopping || (readyPhase && !(cause instanceof DeliveryCancelled)))) {
+    if ((launchId || supervisedReady) && (!shutdown.stopping || (readyPhase && !(cause instanceof DeliveryCancelled)))) {
       try { await shutdown.fail(cause); } catch (failure) { error = failure; }
     } else if (shutdown.completion) {
       try { await shutdown.completion; } catch (failure) { error = failure; }
@@ -495,6 +546,9 @@ export async function provisionManagedJournal(env: NodeJS.ProcessEnv, host: Shut
 /** Dispatch provisioning before normal config, registry, provider or WebSocket construction. */
 export async function runDaemonEntrypoint(env: NodeJS.ProcessEnv = process.env, host: ShutdownHost = process): Promise<ArtoodNode | void> {
   const args = (host.argv ?? []).slice(2);
+  const supervised = supervisedSelection(args, host.connected !== undefined);
+  if (supervised === "parent") return launchWindowsSupervisedCli(env, loadConfigFromEnv(env), fileURLToPath(import.meta.url));
+  if (supervised === "daemon") return runWindowsSupervisedDaemon(env, host, (controlled, ready) => main(env, controlled, ready));
   const initializeResults = args.includes("--initialize-owned-result-profiles"), upgradeResults = args.includes("--upgrade-owned-result-journal");
   if (initializeResults || upgradeResults) {
     if (host.connected !== undefined || initializeResults && upgradeResults || args.includes("--prepared-journal") || args.includes("--provision-managed-journal")) {

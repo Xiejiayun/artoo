@@ -1,3 +1,5 @@
+// Controlled code-installation boundary; native ACL qualification is tested separately.
+vi.mock("./windows-code-installation.js", () => ({ prepareWindowsCodeInstallation: vi.fn(() => ({})), assertWindowsCodeInstallation: vi.fn() }));
 // Direct runtime lifecycle over real temporary journals and original WeakMap authority.
 // Import facts, preparation, verifier and adapter closure are controlled mocks; no subprocess/model/browser runs.
 import {createHash} from "node:crypto";
@@ -18,7 +20,7 @@ vi.mock("./verification.js",()=>({assertFinalVerificationExportBinding:vi.fn(),a
 vi.mock("./windows-release-storage.js",()=>({prepareWindowsReleaseStorage:vi.fn(()=>({})),assertWindowsReleaseStorage:vi.fn(),auditWindowsReleaseStorage:vi.fn()}));
 vi.mock("./owned/windows-owned-process.js",()=>({assertWindowsProcessBackend:vi.fn()}));
 vi.mock("./protected-command.js",()=>({runProtectedCommand:control.protectedCommand}));
-vi.mock("./product-release.js",()=>({createReleaseCapabilityReader:()=>control.release}));
+vi.mock("./product-release.js",()=>({prepareReleaseCapabilityReader:()=>({capabilities:control.release(),readCapabilities:control.release})}));
 vi.mock("./research.js",()=>({prepareResearchOptions:vi.fn(value=>value),readResearchReceipt:vi.fn()}));
 vi.mock("./product-source-semantic-client.js",()=>({readAuthenticatedProductSourceTransferV2:control.authenticated}));
 vi.mock("./product-source-snapshot.js",()=>({captureProductSourceSnapshot:vi.fn(()=>({})),decodeProductSourceSnapshot:vi.fn(),describeProductSourceSnapshot:control.describe,

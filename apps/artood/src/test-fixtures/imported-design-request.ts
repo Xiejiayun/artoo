@@ -13,10 +13,11 @@ import { ImportedDesignContinuationControlV1Schema } from "@artoo/domain";
 import { inspectImportedDesignVerificationEnvelopeV1, importedDesignVerificationEchoV1 } from "@artoo/domain";
 
 const sha = (value: string | Uint8Array) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
-const recorded = JSON.parse(readFileSync(new URL("../../../../packages/domain/test-fixtures/product-source-operation.json", import.meta.url), "utf8"));
+const recordedFixture = JSON.parse(readFileSync(new URL("../../../../packages/domain/test-fixtures/product-source-operation.json", import.meta.url), "utf8"));
 
 /** Recorded H1 bytes plus controlled H2 receipts. No native/model execution is claimed by this fixture. */
-export function importedDesignRequestFixture() {
+export function importedDesignRequestFixture(recordedInput: typeof recordedFixture = recordedFixture) {
+  const recorded = recordedInput;
   const bytes = new TextEncoder().encode(recorded.research);
   const operation = ProductSourceOperationV1Schema.parse({ version: 1, operation_id: "import-operation", kind: "import_verify",
     request_digest: recorded.fresh.request_digest, intent: { version: 1, request: recorded.admission.request,

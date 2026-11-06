@@ -1,6 +1,17 @@
+import { importedCleanValidationAckSchema, importedCleanValidationResultSchema, importedCleanValidationReviewAckSchema, importedCleanValidationReviewResultSchema } from "@artoo/protocol";
 import {productSourceOperationAckSchema,productSourceOperationResultSchema} from "@artoo/protocol";
+import { sourceLifecycleRegisterSchema, sourceCleanCheckpointSchema } from "@artoo/protocol";
 import { importedProductReviewAckSchema, importedProductReviewResultSchema } from "@artoo/protocol";
 import { importedDesignContinuationAckSchema, importedDesignContinuationResultSchema } from "@artoo/protocol";
+import { importedDesignReviewAckSchema, importedDesignReviewResultSchema } from "@artoo/protocol";
+import { importedExecutionAckSchema, importedExecutionResultSchema } from "@artoo/protocol";
+import { importedExecutionReviewAckSchema, importedExecutionReviewResultSchema,
+  importedExecutionRepairAckSchema, importedExecutionRepairResultSchema } from "@artoo/protocol";
+import { importedValidationAckSchema, importedValidationResultSchema,
+  importedValidationReviewAckSchema, importedValidationReviewResultSchema } from "@artoo/protocol";
+import { productSourceRecoveryRegisterSchema, productSourceRecoveryAvailableSchema, productSourceRecoveryAckSchema, productSourceRecoveryResultSchema,
+  importedRecoveryValidationAckSchema, importedRecoveryValidationResultSchema,
+  importedRecoveryValidationReviewAckSchema, importedRecoveryValidationReviewResultSchema } from "@artoo/protocol";
 import {
   commandAckSchema,
   nodeHeartbeatSchema,
@@ -119,6 +130,32 @@ export function parseNodeToServer(data: unknown): NodeToServerMessage | null {
     case "product.source.operation.ack.v1": return ok(productSourceOperationAckSchema.safeParse(raw));
     case "product.source.review.ack.v1": return ok(importedProductReviewAckSchema.safeParse(raw));
     case "product.source.review.result.v1": return ok(importedProductReviewResultSchema.safeParse(raw));
+    case "product.source.design-review.ack.v1": return ok(importedDesignReviewAckSchema.safeParse(raw));
+    case "product.source.design-review.result.v1": return ok(importedDesignReviewResultSchema.safeParse(raw));
+    case "product.source.execution.ack.v1": return ok(importedExecutionAckSchema.safeParse(raw));
+    case "product.source.execution.result.v1": return ok(importedExecutionResultSchema.safeParse(raw));
+    case "product.source.execution-review.ack.v1": return ok(importedExecutionReviewAckSchema.safeParse(raw));
+    case "product.source.execution-review.result.v1": return ok(importedExecutionReviewResultSchema.safeParse(raw));
+    case "product.source.execution-repair.ack.v1": return ok(importedExecutionRepairAckSchema.safeParse(raw));
+    case "product.source.execution-repair.result.v1": return ok(importedExecutionRepairResultSchema.safeParse(raw));
+    case "product.source.validation.ack.v1": return ok(importedValidationAckSchema.safeParse(raw));
+    case "product.source.recovery.register.v1": return ok(productSourceRecoveryRegisterSchema.safeParse(raw));
+    case "product.source.lifecycle.register.v1": return ok(sourceLifecycleRegisterSchema.safeParse(raw));
+    case "product.source.clean-restart.checkpoint.v1": return ok(sourceCleanCheckpointSchema.safeParse(raw));
+    case "product.source.recovery.available.v1": return ok(productSourceRecoveryAvailableSchema.safeParse(raw));
+    case "product.source.recovery.ack.v1": return ok(productSourceRecoveryAckSchema.safeParse(raw));
+    case "product.source.recovery.result.v1": return ok(productSourceRecoveryResultSchema.safeParse(raw));
+    case "product.source.recovery-validation.ack.v1": return ok(importedRecoveryValidationAckSchema.safeParse(raw));
+    case "product.source.clean-validation.ack.v1": return ok(importedCleanValidationAckSchema.safeParse(raw));
+    case "product.source.recovery-validation.result.v1": return ok(importedRecoveryValidationResultSchema.safeParse(raw));
+    case "product.source.clean-validation.result.v1": return ok(importedCleanValidationResultSchema.safeParse(raw));
+    case "product.source.recovery-validation-review.ack.v1": return ok(importedRecoveryValidationReviewAckSchema.safeParse(raw));
+    case "product.source.clean-validation-review.ack.v1": return ok(importedCleanValidationReviewAckSchema.safeParse(raw));
+    case "product.source.recovery-validation-review.result.v1": return ok(importedRecoveryValidationReviewResultSchema.safeParse(raw));
+    case "product.source.clean-validation-review.result.v1": return ok(importedCleanValidationReviewResultSchema.safeParse(raw));
+    case "product.source.validation.result.v1": return ok(importedValidationResultSchema.safeParse(raw));
+    case "product.source.validation-review.ack.v1": return ok(importedValidationReviewAckSchema.safeParse(raw));
+    case "product.source.validation-review.result.v1": return ok(importedValidationReviewResultSchema.safeParse(raw));
     case "product.source.design.ack.v1": return ok(importedDesignContinuationAckSchema.safeParse(raw));
     case "product.source.design.result.v1": return ok(importedDesignContinuationResultSchema.safeParse(raw));
     case "product.source.operation.result.v1": return ok(productSourceOperationResultSchema.safeParse(raw));

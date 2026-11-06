@@ -1,7 +1,35 @@
+import { createCleanValidationBinding } from "./services/clean-validation-service.js";
+import { createCleanValidationReviewBinding } from "./services/clean-validation-review-service.js";
+import { goalCleanValidations } from "@artoo/db";
+import { IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1, ImportedCleanValidationResultV1Schema } from "@artoo/domain";
+import { assertSourceLineageDispatch } from "./services/source-lineage-fence.js";
+import { createImportedExecutionReviewBinding } from "./services/imported-execution-review-service.js";
+import { createImportedValidationBinding } from "./services/imported-validation-service.js";
+import { createImportedValidationReviewBinding } from "./services/imported-validation-review-service.js";
+import { createSourceRecoveryBinding } from "./services/source-recovery-service.js";
+import { SOURCE_CLEAN_RESTART_FEATURE_V1 } from "@artoo/domain";
+import { createRecoveryValidationBinding } from "./services/recovery-validation-service.js";
+import { createRecoveryValidationReviewBinding } from "./services/recovery-validation-review-service.js";
+import { goalRecoveryValidations } from "@artoo/db";
+import { PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1,
+  ImportedRecoveryValidationResultV1Schema } from "@artoo/domain";
+import { inspectImportedValidationPublicationDispatch } from "./services/imported-validation-release-service.js";
+import { inspectRecoveryValidationPublicationDispatch } from "./services/recovery-validation-release-service.js";
+import { inspectCleanValidationPublicationDispatch } from "./services/clean-validation-release-service.js";
+import { goalImportedValidations } from "@artoo/db";
+import { IMPORTED_VALIDATION_FEATURE_V1, ImportedValidationResultV1Schema } from "@artoo/domain";
+import { createImportedExecutionRepairBinding } from "./services/imported-execution-repair-service.js";
+import { goalImportedExecutionRepairs } from "@artoo/db";
+import { IMPORTED_EXECUTION_REVIEW_FEATURE_V1, ImportedExecutionRepairResultV1Schema } from "@artoo/domain";
 import { requireRunAiSharingAuthorization } from "./services/ai-data-sharing-service.js";
 import { createGoalImportedProductReviewBinding } from "./services/imported-product-review-service.js";
 import { createGoalProductHandoffBinding } from "./services/goal-product-handoff-service.js";
 import { createImportedDesignContinuationBinding } from "./services/imported-design-continuation-service.js";
+import { createImportedDesignReviewBinding } from "./services/imported-design-review-service.js";
+import { createImportedExecutionBinding } from "./services/imported-execution-service.js";
+import { goalImportedExecutions } from "@artoo/db";
+import { IMPORTED_EXECUTION_FEATURE_V1, ImportedExecutionResultV1Schema } from "@artoo/domain";
+import { IMPORTED_DESIGN_REVIEW_FEATURE_V1 } from "@artoo/domain";
 import { goalImportedDesignContinuations } from "@artoo/db";
 import { ImportedDesignContinuationResultV1Schema, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1 } from "@artoo/domain";
 import { goalProductHandoffs, goalProductHandoffOperations } from "@artoo/db";
@@ -9,6 +37,7 @@ import type { AuthenticatedTransferNode } from "./services/product-source-transf
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { ProductSourceRoutingV1Schema, type ProductSourceRoutingV1 } from "@artoo/domain";
 
 import { agentInstances, assistantRunDispatches, assistantTurns, computers, contextPacks, goalAutomations, goals, productReleases, runs, tasks } from "@artoo/db";
 import { assertDesignRevisionRunAdmission, assertNoActiveDesignRevision } from "./services/product-design-revision-guard.js";
@@ -32,6 +61,7 @@ import { canDispatchAssistantRun } from "./services/assistant-service.js";
 import { AppError } from "./errors.js";
 import { validatePersistedAllocationStart } from "./persisted-allocation-start.js";
 import { ingestProductReleaseReceipt, ingestProductReleaseHealthReport } from "./services/product-release-service.js";
+import { assertProductReleaseRetryDispatch } from "./services/product-release-retry-service.js";
 import { verificationCapabilityBinding } from "./services/verification-capabilities.js";
 import { canonicalAutomationWorkspace } from "./services/automation-workspace.js";
 import { OWNED_RESULT_FEATURE, parseOwnedResultAssignment, assertOwnedResultStoredContext,
@@ -46,6 +76,20 @@ import {
 const FALLBACK_WORKSPACE_ROOT = join(tmpdir(), "artoo-workspace");
 
 export interface NodeBinding {
+  getProductSourceRouting?(): ProductSourceRoutingV1 | undefined;
+  announceSourceRecoverySession?(): Promise<void>;
+  dispatchSourceRecovery?(recoveryId: string, control: "start" | "stop" | "status"): Promise<void>;
+  dispatchRecoveryValidation?(validationId: string, control: "start" | "stop" | "status"): Promise<void>;
+  dispatchCleanValidation?(validationId: string, control: "start" | "stop" | "status"): Promise<void>;
+  dispatchRecoveryValidationReview?(reviewId: string, control: "start" | "stop" | "status"): Promise<void>;
+  dispatchCleanValidationReview?(reviewId: string, control: "start" | "stop" | "status"): Promise<void>;
+  getPairedNodeSession?(): NonNullable<ReturnType<NonNullable<ServerContext["getPairedNodeSession"]>>> | undefined;
+  dispatchImportedDesignReview?(reviewId: string, control: "start" | "stop" | "status"): Promise<void>;
+  dispatchImportedExecution?(executionId: string, control: "start" | "stop" | "status"): Promise<void>;
+  dispatchImportedExecutionReview?(reviewId: string, control: "start" | "stop" | "status"): Promise<void>;
+  dispatchImportedExecutionRepair?(repairId: string, control: "start" | "stop" | "status"): Promise<void>;
+  dispatchImportedValidation?(validationId: string, control: "start" | "stop" | "status"): Promise<void>;
+  dispatchImportedValidationReview?(reviewId: string, control: "start" | "stop" | "status"): Promise<void>;
   /** Exact feature support from this current accepted hello; false once disposed. */
   supportsExecutionFeature(feature: string): boolean;
   /** Exact node-local profile routing, valid only for this active authenticated session. */
@@ -98,9 +142,12 @@ export function attachNodeBinding(
   managedResultReady: () => boolean = () => false,
   nodeOs?: string,
   importedReviewOptions?: { identity: AuthenticatedTransferNode; sessionId: string; artifactDir: string; qualifiedRunEventReceiptsReady?: () => boolean },
+  productSourceRouting?: ProductSourceRoutingV1,
 ): NodeBinding {
   // Copy the accepted hello snapshot so later caller mutation cannot change it.
   const executionFeatureSet = new Set(executionFeatures);
+  const pairedSession = importedReviewOptions ? Object.freeze({ ...importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId }) : undefined;
+  const routingSnapshot = productSourceRouting === undefined ? undefined : ProductSourceRoutingV1Schema.parse(productSourceRouting);
   const profileSnapshot = Object.freeze(VerificationProfileAdvertisementsSchema.parse(verificationProfiles)
     .map((profile) => Object.freeze(profile)));
   const releaseSnapshot = Object.freeze(ReleaseProfileAdvertisementsSchema.parse(releaseProfiles).map((profile) => Object.freeze(profile)));
@@ -112,12 +159,37 @@ export function attachNodeBinding(
   const pendingReleaseStops = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const stoppingRuns = new Map<string, Promise<void>>();
   const pendingDesignStops = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  const pendingExecutionStops = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  const pendingRepairStops = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  const pendingValidationStops = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  const pendingRecoveryValidationStops = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  const pendingCleanValidationStops = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   // Coalesces only this binding's concurrent calls, never durable node ownership.
   const startingRuns = new Map<string, Promise<void>>();
   // Only this live binding can rely on its node's in-memory start deduplication.
   // A new connection/server must treat an exposed durable intent as uncertain.
   const exposedAssistantRuns = new Set<string>();
   let closed = false;
+  const sourceRecovery = importedReviewOptions && createSourceRecoveryBinding(ctx, {
+    identity: importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId, transport,
+    isCurrent: () => !closed && isCurrentBinding() && importedReviewOptions.qualifiedRunEventReceiptsReady?.() === true,
+  });
+  const recoveryValidations = importedReviewOptions && createRecoveryValidationBinding(ctx, {
+    identity: importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId, transport,
+    isCurrent: () => !closed && isCurrentBinding() && importedReviewOptions.qualifiedRunEventReceiptsReady?.() === true,
+  });
+  const recoveryValidationReviews = importedReviewOptions && createRecoveryValidationReviewBinding(ctx, {
+    identity: importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId, transport,
+    isCurrent: () => !closed && isCurrentBinding() && importedReviewOptions.qualifiedRunEventReceiptsReady?.() === true,
+  });
+  const cleanValidations = importedReviewOptions && createCleanValidationBinding(ctx, {
+    identity: importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId, transport,
+    isCurrent: () => !closed && isCurrentBinding() && importedReviewOptions.qualifiedRunEventReceiptsReady?.() === true,
+  });
+  const cleanValidationReviews = importedReviewOptions && createCleanValidationReviewBinding(ctx, {
+    identity: importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId, transport,
+    isCurrent: () => !closed && isCurrentBinding() && importedReviewOptions.qualifiedRunEventReceiptsReady?.() === true,
+  });
   const importedReviews = importedReviewOptions && createGoalImportedProductReviewBinding(ctx, {
     ...importedReviewOptions, transport, isCurrent: () => !closed && isCurrentBinding(),
   });
@@ -127,6 +199,115 @@ export function attachNodeBinding(
     // without acquiring managed-workspace/session authority.
     isCurrent: () => !closed && isCurrentBinding() && importedReviewOptions.qualifiedRunEventReceiptsReady?.() === true,
   });
+  const importedDesignReviews = importedReviewOptions && createImportedDesignReviewBinding(ctx, {
+    identity: importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId, transport,
+    isCurrent: () => !closed && isCurrentBinding() && importedReviewOptions.qualifiedRunEventReceiptsReady?.() === true,
+  });
+  const importedExecutions = importedReviewOptions && createImportedExecutionBinding(ctx, {
+    identity: importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId, transport,
+    isCurrent: () => !closed && isCurrentBinding() && importedReviewOptions.qualifiedRunEventReceiptsReady?.() === true,
+  });
+  const implementationReviews = importedReviewOptions && createImportedExecutionReviewBinding(ctx, {
+    identity: importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId, transport,
+    isCurrent: () => !closed && isCurrentBinding() && importedReviewOptions.qualifiedRunEventReceiptsReady?.() === true,
+  });
+  const implementationRepairs = importedReviewOptions && createImportedExecutionRepairBinding(ctx, {
+    identity: importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId, transport,
+    isCurrent: () => !closed && isCurrentBinding() && importedReviewOptions.qualifiedRunEventReceiptsReady?.() === true,
+  });
+  const validations = importedReviewOptions && createImportedValidationBinding(ctx, {
+    identity: importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId, transport,
+    isCurrent: () => !closed && isCurrentBinding() && importedReviewOptions.qualifiedRunEventReceiptsReady?.() === true,
+  });
+  const validationReviews = importedReviewOptions && createImportedValidationReviewBinding(ctx, {
+    identity: importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId, transport,
+    isCurrent: () => !closed && isCurrentBinding() && importedReviewOptions.qualifiedRunEventReceiptsReady?.() === true,
+  });
+  async function recoveryValidationForRun(runId: string) {
+    const [row] = await ctx.db.db.select().from(goalRecoveryValidations).where(and(eq(goalRecoveryValidations.runId, runId), eq(goalRecoveryValidations.organizationId, ctx.organizationId)));
+    if (row && row.computerId !== computerId) throw AppError.permissionDenied("H9 validation run belongs to another node");
+    return row;
+  }
+  async function stopRecoveryValidation(row: typeof goalRecoveryValidations.$inferSelect): Promise<void> {
+    if (!recoveryValidations) throw AppError.permissionDenied("H9 stop requires its paired receipt session");
+    if (ImportedRecoveryValidationResultV1Schema.safeParse(row.result).data?.closed === true) return;
+    const prior = pendingRecoveryValidationStops.get(row.id); if (prior) return prior.promise;
+    let resolve!: () => void, reject!: (error: Error) => void;
+    const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; }); void promise.catch(() => {});
+    const timer = setTimeout(() => reject(AppError.conflict("H9 validation process closure is still unconfirmed")), 15000);
+    pendingRecoveryValidationStops.set(row.id, { promise, resolve, reject, timer });
+    try { await recoveryValidations.requestStop(row.id); await recoveryValidations.dispatch(row.id, "stop"); await promise; }
+    catch (error) { reject(error instanceof Error ? error : new Error(String(error))); throw error; }
+    finally { clearTimeout(timer); pendingRecoveryValidationStops.delete(row.id); }
+  }
+  async function cleanValidationForRun(runId: string) {
+    const [row] = await ctx.db.db.select().from(goalCleanValidations).where(and(eq(goalCleanValidations.runId, runId), eq(goalCleanValidations.organizationId, ctx.organizationId)));
+    if (row && row.computerId !== computerId) throw AppError.permissionDenied("clean-restart validation run belongs to another node");
+    return row;
+  }
+  async function stopCleanValidation(row: typeof goalCleanValidations.$inferSelect): Promise<void> {
+    if (!cleanValidations) throw AppError.permissionDenied("clean-restart stop requires its paired receipt session");
+    if (ImportedCleanValidationResultV1Schema.safeParse(row.result).data?.closed === true) return;
+    const prior = pendingCleanValidationStops.get(row.id); if (prior) return prior.promise;
+    let resolve!: () => void, reject!: (error: Error) => void;
+    const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; }); void promise.catch(() => {});
+    const timer = setTimeout(() => reject(AppError.conflict("clean-restart validation process closure is still unconfirmed")), 15000);
+    pendingCleanValidationStops.set(row.id, { promise, resolve, reject, timer });
+    try { await cleanValidations.requestStop(row.id); await cleanValidations.dispatch(row.id, "stop"); await promise; }
+    catch (error) { reject(error instanceof Error ? error : new Error(String(error))); throw error; }
+    finally { clearTimeout(timer); pendingCleanValidationStops.delete(row.id); }
+  }
+  async function importedValidationForRun(runId: string) {
+    const [row] = await ctx.db.db.select().from(goalImportedValidations).where(and(eq(goalImportedValidations.runId, runId), eq(goalImportedValidations.organizationId, ctx.organizationId)));
+    if (row && row.computerId !== computerId) throw AppError.permissionDenied("H7 validation run belongs to another node");
+    return row;
+  }
+  async function stopImportedValidation(row: typeof goalImportedValidations.$inferSelect): Promise<void> {
+    if (!validations) throw AppError.permissionDenied("H7 stop requires its paired receipt session");
+    if (ImportedValidationResultV1Schema.safeParse(row.result).data?.closed === true) return;
+    const prior = pendingValidationStops.get(row.id); if (prior) return prior.promise;
+    let resolve!: () => void, reject!: (error: Error) => void;
+    const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; }); void promise.catch(() => {});
+    const timer = setTimeout(() => reject(AppError.conflict("H7 validation process closure is still unconfirmed")), 15000);
+    pendingValidationStops.set(row.id, { promise, resolve, reject, timer });
+    try { await validations.requestStop(row.id); await validations.dispatch(row.id, "stop"); await promise; }
+    catch (error) { reject(error instanceof Error ? error : new Error(String(error))); throw error; }
+    finally { clearTimeout(timer); pendingValidationStops.delete(row.id); }
+  }
+  async function importedExecutionForRun(runId: string) {
+    const [row] = await ctx.db.db.select().from(goalImportedExecutions).where(and(eq(goalImportedExecutions.runId, runId), eq(goalImportedExecutions.organizationId, ctx.organizationId)));
+    if (row && row.computerId !== computerId) throw AppError.permissionDenied("H5 run belongs to another node");
+    return row;
+  }
+  async function stopImportedExecution(row: typeof goalImportedExecutions.$inferSelect): Promise<void> {
+    if (!importedExecutions) throw AppError.permissionDenied("H5 stop requires its paired receipt session");
+    if (ImportedExecutionResultV1Schema.safeParse(row.result).data?.closed === true) return;
+    const prior = pendingExecutionStops.get(row.id); if (prior) return prior.promise;
+    let resolve!: () => void, reject!: (error: Error) => void;
+    const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; }); void promise.catch(() => {});
+    const timer = setTimeout(() => reject(AppError.conflict("H5 process closure is still unconfirmed")), 15000);
+    pendingExecutionStops.set(row.id, { promise, resolve, reject, timer });
+    try { await importedExecutions.requestStop(row.id); await importedExecutions.dispatch(row.id, "stop"); await promise; }
+    catch (error) { reject(error instanceof Error ? error : new Error(String(error))); throw error; }
+    finally { clearTimeout(timer); pendingExecutionStops.delete(row.id); }
+  }
+  async function importedExecutionRepairForRun(runId: string) {
+    const [row] = await ctx.db.db.select().from(goalImportedExecutionRepairs).where(and(eq(goalImportedExecutionRepairs.runId, runId), eq(goalImportedExecutionRepairs.organizationId, ctx.organizationId)));
+    if (row && row.computerId !== computerId) throw AppError.permissionDenied("H6 repair run belongs to another node");
+    return row;
+  }
+  async function stopImportedExecutionRepair(row: typeof goalImportedExecutionRepairs.$inferSelect): Promise<void> {
+    if (!implementationRepairs) throw AppError.permissionDenied("H6 repair stop requires its paired receipt session");
+    if (ImportedExecutionRepairResultV1Schema.safeParse(row.result).data?.closed === true) return;
+    const prior = pendingRepairStops.get(row.id); if (prior) return prior.promise;
+    let resolve!: () => void, reject!: (error: Error) => void;
+    const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; }); void promise.catch(() => {});
+    const timer = setTimeout(() => reject(AppError.conflict("H6 repair process closure is still unconfirmed")), 15000);
+    pendingRepairStops.set(row.id, { promise, resolve, reject, timer });
+    try { await implementationRepairs.requestStop(row.id); await implementationRepairs.dispatch(row.id, "stop"); await promise; }
+    catch (error) { reject(error instanceof Error ? error : new Error(String(error))); throw error; }
+    finally { clearTimeout(timer); pendingRepairStops.delete(row.id); }
+  }
   async function importedDesignForRun(runId: string) {
     const [row] = await ctx.db.db.select().from(goalImportedDesignContinuations).where(and(eq(goalImportedDesignContinuations.runId, runId), eq(goalImportedDesignContinuations.organizationId, ctx.organizationId)));
     if (row && row.computerId !== computerId) throw AppError.permissionDenied("Imported design run belongs to another node");
@@ -171,6 +352,142 @@ export function attachNodeBinding(
   const receive = (message: NodeToServerMessage): void => {
     // The credential-bound identity is authoritative for every inbound frame.
     if (closed || message.node_id !== computerId) return;
+    if (message.kind === "product.source.lifecycle.register.v1" || message.kind === "product.source.clean-restart.checkpoint.v1") {
+      if (!ctx.sourceLifecycle || !importedReviewOptions || !executionFeatureSet.has(SOURCE_CLEAN_RESTART_FEATURE_V1)
+        || !isCurrentBinding() || importedReviewOptions.qualifiedRunEventReceiptsReady?.() !== true) return;
+      const frame = structuredClone(message), lifecycle = ctx.sourceLifecycle, original = importedReviewOptions;
+      enqueue(async () => {
+        const current = () => !closed && isCurrentBinding() && original.qualifiedRunEventReceiptsReady?.() === true;
+        if (!current()) return;
+        const register = frame.kind === "product.source.lifecycle.register.v1";
+        const correlation = register ? frame.payload.registration.registration_id : frame.payload.generation_id;
+        try {
+          if (frame.kind === "product.source.lifecycle.register.v1") {
+            const payload = await lifecycle.registerDaemon(original.identity, original.sessionId, frame.payload);
+            if (!current()) throw AppError.conflict("Original clean lifecycle daemon changed before its registration reply");
+            await transport.send({ kind: "command", id: correlation, idempotency_key: `clean-registered:${correlation}:${payload.registration_digest}`,
+              type: "product.source.lifecycle.registered.v1", payload });
+          } else {
+            const payload = await lifecycle.checkpoint(original.identity, original.sessionId, frame.payload);
+            if (!current()) throw AppError.conflict("Original clean lifecycle daemon changed before its checkpoint reply");
+            await transport.send({ kind: "command", id: correlation, idempotency_key: `clean-checkpoint:${correlation}:${payload.checkpoint_digest}`,
+              type: "product.source.clean-restart.checkpointed.v1", payload });
+          }
+        } catch (error) {
+          if (current()) await transport.send({ kind: "command", id: correlation, idempotency_key: `clean-rejected:${correlation}`,
+            type: "product.source.lifecycle.rejected.v1", payload: { version: 1, control: register ? "register" : "checkpoint", correlation_id: correlation,
+              reason: error instanceof AppError ? error.message.slice(0, 500) : "Clean lifecycle admission could not be confirmed" } });
+        }
+      }); return;
+    }
+    if (message.kind === "product.source.recovery.register.v1" || message.kind === "product.source.recovery.available.v1"
+      || message.kind === "product.source.recovery.ack.v1" || message.kind === "product.source.recovery.result.v1") {
+      if (!sourceRecovery || !executionFeatureSet.has(PRODUCT_SOURCE_RECOVERY_FEATURE_V1) || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+      const frame = structuredClone(message);
+      enqueue(async () => {
+        if (closed || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+        if (frame.kind === "product.source.recovery.register.v1") await sourceRecovery.register(frame);
+        else if (frame.kind === "product.source.recovery.available.v1") await sourceRecovery.available(frame);
+        else if (frame.kind === "product.source.recovery.ack.v1") await sourceRecovery.acknowledge(frame);
+        else await sourceRecovery.receive(frame);
+      }); return;
+    }
+    if (message.kind === "product.source.recovery-validation.ack.v1" || message.kind === "product.source.recovery-validation.result.v1") {
+      if (!recoveryValidations || !executionFeatureSet.has(IMPORTED_RECOVERY_VALIDATION_FEATURE_V1) || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+      const frame = structuredClone(message);
+      enqueue(async () => {
+        if (closed || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+        if (frame.kind === "product.source.recovery-validation.ack.v1") await recoveryValidations.acknowledge(frame);
+        else { await recoveryValidations.receive(frame); const pending = pendingRecoveryValidationStops.get(frame.payload.validation_id);
+          if (pending) frame.payload.closed ? pending.resolve() : pending.reject(AppError.conflict("Recovery validation closure remains uncertain")); }
+      }); return;
+    }
+    if (message.kind === "product.source.recovery-validation-review.ack.v1" || message.kind === "product.source.recovery-validation-review.result.v1") {
+      if (!recoveryValidationReviews || !executionFeatureSet.has(IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1) || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+      const frame = structuredClone(message);
+      enqueue(async () => {
+        if (closed || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+        if (frame.kind === "product.source.recovery-validation-review.ack.v1") await recoveryValidationReviews.acknowledge(frame); else await recoveryValidationReviews.receive(frame);
+      }); return;
+    }
+    if (message.kind === "product.source.clean-validation.ack.v1" || message.kind === "product.source.clean-validation.result.v1") {
+      if (!cleanValidations || !executionFeatureSet.has(IMPORTED_CLEAN_VALIDATION_FEATURE_V1) || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+      const frame = structuredClone(message);
+      enqueue(async () => {
+        if (closed || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+        if (frame.kind === "product.source.clean-validation.ack.v1") await cleanValidations.acknowledge(frame);
+        else { await cleanValidations.receive(frame); const pending = pendingCleanValidationStops.get(frame.payload.validation_id);
+          if (pending) frame.payload.closed ? pending.resolve() : pending.reject(AppError.conflict("Recovery validation closure remains uncertain")); }
+      }); return;
+    }
+    if (message.kind === "product.source.clean-validation-review.ack.v1" || message.kind === "product.source.clean-validation-review.result.v1") {
+      if (!cleanValidationReviews || !executionFeatureSet.has(IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1) || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+      const frame = structuredClone(message);
+      enqueue(async () => {
+        if (closed || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+        if (frame.kind === "product.source.clean-validation-review.ack.v1") await cleanValidationReviews.acknowledge(frame); else await cleanValidationReviews.receive(frame);
+      }); return;
+    }
+    if (message.kind === "product.source.validation.ack.v1" || message.kind === "product.source.validation.result.v1") {
+      if (!validations || !executionFeatureSet.has(IMPORTED_VALIDATION_FEATURE_V1) || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+      const frame = structuredClone(message);
+      enqueue(async () => {
+        if (closed || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+        if (frame.kind === "product.source.validation.ack.v1") await validations.acknowledge(frame);
+        else { await validations.receive(frame); const pending = pendingValidationStops.get(frame.payload.validation_id);
+          if (pending) frame.payload.closed ? pending.resolve() : pending.reject(AppError.conflict("H7 validation closure remains uncertain")); }
+      });
+      return;
+    }
+    if (message.kind === "product.source.validation-review.ack.v1" || message.kind === "product.source.validation-review.result.v1") {
+      if (!validationReviews || !executionFeatureSet.has(IMPORTED_VALIDATION_FEATURE_V1) || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+      const frame = structuredClone(message);
+      enqueue(async () => {
+        if (closed || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+        if (frame.kind === "product.source.validation-review.ack.v1") await validationReviews.acknowledge(frame); else await validationReviews.receive(frame);
+      });
+      return;
+    }
+    if (message.kind === "product.source.execution-repair.ack.v1" || message.kind === "product.source.execution-repair.result.v1") {
+      if (!implementationRepairs || !executionFeatureSet.has(IMPORTED_EXECUTION_REVIEW_FEATURE_V1) || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+      const frame = structuredClone(message);
+      enqueue(async () => {
+        if (closed || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+        if (frame.kind === "product.source.execution-repair.ack.v1") await implementationRepairs.acknowledge(frame);
+        else { await implementationRepairs.receive(frame); const pending = pendingRepairStops.get(frame.payload.repair_id);
+          if (pending) frame.payload.closed ? pending.resolve() : pending.reject(AppError.conflict("H6 repair closure remains uncertain")); }
+      });
+      return;
+    }
+    if (message.kind === "product.source.execution.ack.v1" || message.kind === "product.source.execution.result.v1") {
+      if (!importedExecutions || !executionFeatureSet.has(IMPORTED_EXECUTION_FEATURE_V1) || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+      const frame = structuredClone(message);
+      enqueue(async () => {
+        if (closed || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+        if (frame.kind === "product.source.execution.ack.v1") await importedExecutions.acknowledge(frame);
+        else { await importedExecutions.receive(frame); const pending = pendingExecutionStops.get(frame.payload.execution_id);
+          if (pending) frame.payload.closed ? pending.resolve() : pending.reject(AppError.conflict("H5 closure remains uncertain")); }
+      });
+      return;
+    }
+    if (message.kind === "product.source.execution-review.ack.v1" || message.kind === "product.source.execution-review.result.v1") {
+      if (!implementationReviews || !executionFeatureSet.has(IMPORTED_EXECUTION_REVIEW_FEATURE_V1) || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+      const frame = structuredClone(message);
+      enqueue(async () => {
+        if (closed || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+        if (frame.kind === "product.source.execution-review.ack.v1") await implementationReviews.acknowledge(frame); else await implementationReviews.receive(frame);
+      });
+      return;
+    }
+    if (message.kind === "product.source.design-review.ack.v1" || message.kind === "product.source.design-review.result.v1") {
+      if (!importedDesignReviews || !executionFeatureSet.has(IMPORTED_DESIGN_REVIEW_FEATURE_V1) || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+      const frame = structuredClone(message);
+      enqueue(async () => {
+        if (closed || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+        if (frame.kind === "product.source.design-review.ack.v1") await importedDesignReviews.acknowledge(frame); else await importedDesignReviews.receive(frame);
+      });
+      return;
+    }
     if (message.kind === "product.source.design.ack.v1" || message.kind === "product.source.design.result.v1") {
       if (!importedDesigns || !isCurrentBinding() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
       const frame = structuredClone(message);
@@ -208,7 +525,7 @@ export function attachNodeBinding(
     if (message.kind === "product.release.receipt") {
       if (!isCurrentBinding()) return;
       const payload = structuredClone(message.payload);
-      enqueue(async () => { if (!closed && isCurrentBinding()) await ingestProductReleaseReceipt(ctx, computerId, payload, () => !closed && isCurrentBinding()); });
+      enqueue(async () => { if (!closed && isCurrentBinding()) await ingestProductReleaseReceipt(ctx, computerId, payload, () => !closed && isCurrentBinding(), pairedSession); });
     } else if (message.kind === "product.release.health") {
       const payload = structuredClone(message.payload);
       enqueue(async () => {
@@ -350,6 +667,11 @@ export function attachNodeBinding(
 
   async function sendRunStart(runId: string): Promise<void> {
     assertCurrentStartBinding(runId);
+    if (await importedExecutionForRun(runId)) throw AppError.permissionDenied("H5 requires its dedicated single-use execution command");
+    if (await importedExecutionRepairForRun(runId)) throw AppError.permissionDenied("Repair requires its dedicated single-use authorization command");
+    if (await recoveryValidationForRun(runId)) throw AppError.permissionDenied("Recovery validation requires its dedicated current-epoch command");
+    if (await cleanValidationForRun(runId)) throw AppError.permissionDenied("Recovery validation requires its dedicated current-epoch command");
+    if (await importedValidationForRun(runId)) throw AppError.permissionDenied("H7 requires its dedicated single-use validation command");
     if (await importedDesignForRun(runId)) throw AppError.permissionDenied("Imported design requires its dedicated single-use start command");
     const [run] = await ctx.db.db.select().from(runs).where(and(
       eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId),
@@ -482,51 +804,56 @@ export function attachNodeBinding(
       let recheckPlanning: (() => void) | undefined;
       if (!await canDispatchAssistantRun(ctx, run, { context: context.payload, recheckPlanningCapabilities: false,
         onPlanningRecheckReady: recheck => { recheckPlanning = recheck; } })) { knownBlocked = true; return; }
-      await assertDesignRevisionRunAdmission(ctx, ctx.db.db, run, { live: true });
-      assertCurrentStartBinding(runId);
-      recheckPlanning?.();
-      // The last awaited authorization/database fence is above. Use one current
-      // snapshot immediately before the send, never one sampled before those reads.
-      if (verification && !binding.supportsVerificationProfile(verification.profile_id, context.payload!.project.id, workspaceRoot)) {
-        throw AppError.conflict("Verification profile is no longer available on the current node session",
-          { run_id: runId, dispatch: "blocked", reason: "verification_profile_mismatch" });
-      }
-      if (verification) {
-        const current = binding.getVerificationCapabilities!(verification.profile_id, context.payload!.project.id, workspaceRoot);
-        if (current?.measurement_plan_policy && !binding.supportsExecutionFeature(`measurement-plan.v${current.measurement_plan_policy.version}`)) {
-          throw AppError.conflict("The current node cannot enforce the configured measurement plan",
-            { run_id: runId, dispatch: "blocked", reason: "unsupported_measurement_plan_verification" });
+      await ctx.db.transaction(async tx => {
+        await assertDesignRevisionRunAdmission(ctx, tx, run, { live: true });
+        // Keep the computer fence through the real send. prepareStop takes this
+        // same lock before freezing the complete native executor operation set.
+        await assertSourceLineageDispatch(ctx, tx, computerId, workspaceRoot);
+        assertCurrentStartBinding(runId);
+        recheckPlanning?.();
+        // The last awaited authorization/database fence is above. Use one current
+        // snapshot immediately before the send, never one sampled before those reads.
+        if (verification && !binding.supportsVerificationProfile(verification.profile_id, context.payload!.project.id, workspaceRoot)) {
+          throw AppError.conflict("Verification profile is no longer available on the current node session",
+            { run_id: runId, dispatch: "blocked", reason: "verification_profile_mismatch" });
         }
-        const expected = verification.capability_binding, supplied = context.payload!.verification_capabilities;
-        if ((current || expected || supplied) && (!current || !expected || !supplied
-          || !isDeepStrictEqual(expected, verificationCapabilityBinding(current))
-          || !isDeepStrictEqual(supplied, { ...current, profile_id: verification.profile_id }))) {
-          throw AppError.conflict("The current verification capabilities do not match this run's bound context",
-            { run_id: runId, dispatch: "blocked", reason: "verification_capability_mismatch" });
-        }
-        const releaseExpected = verification.release_capability_binding, releaseSupplied = context.payload!.release_capabilities;
-        if (releaseExpected || releaseSupplied) {
-          const releaseCurrent = binding.getReleaseCapabilities?.((releaseExpected ?? releaseSupplied!.binding).release_profile_id,
-            context.payload!.project.id, workspaceRoot, verification.profile_id);
-          if (!releaseExpected || !releaseSupplied || !releaseCurrent
-            || !isDeepStrictEqual(releaseCurrent.binding, releaseExpected) || !isDeepStrictEqual(releaseCurrent, releaseSupplied)) {
-            throw AppError.conflict("The current release capabilities do not match this run's fixed publication scope",
-              { run_id: runId, dispatch: "blocked", reason: "release_capability_mismatch" });
+        if (verification) {
+          const current = binding.getVerificationCapabilities!(verification.profile_id, context.payload!.project.id, workspaceRoot);
+          if (current?.measurement_plan_policy && !binding.supportsExecutionFeature(`measurement-plan.v${current.measurement_plan_policy.version}`)) {
+            throw AppError.conflict("The current node cannot enforce the configured measurement plan",
+              { run_id: runId, dispatch: "blocked", reason: "unsupported_measurement_plan_verification" });
+          }
+          const expected = verification.capability_binding, supplied = context.payload!.verification_capabilities;
+          if ((current || expected || supplied) && (!current || !expected || !supplied
+            || !isDeepStrictEqual(expected, verificationCapabilityBinding(current))
+            || !isDeepStrictEqual(supplied, { ...current, profile_id: verification.profile_id }))) {
+            throw AppError.conflict("The current verification capabilities do not match this run's bound context",
+              { run_id: runId, dispatch: "blocked", reason: "verification_capability_mismatch" });
+          }
+          const releaseExpected = verification.release_capability_binding, releaseSupplied = context.payload!.release_capabilities;
+          if (releaseExpected || releaseSupplied) {
+            const releaseCurrent = binding.getReleaseCapabilities?.((releaseExpected ?? releaseSupplied!.binding).release_profile_id,
+              context.payload!.project.id, workspaceRoot, verification.profile_id);
+            if (!releaseExpected || !releaseSupplied || !releaseCurrent
+              || !isDeepStrictEqual(releaseCurrent.binding, releaseExpected) || !isDeepStrictEqual(releaseCurrent, releaseSupplied)) {
+              throw AppError.conflict("The current release capabilities do not match this run's fixed publication scope",
+                { run_id: runId, dispatch: "blocked", reason: "release_capability_mismatch" });
+            }
           }
         }
-      }
-      if ((context.payload?.product_development?.stage || context.payload?.review_subject?.development_stage)
-        && !binding.supportsExecutionFeature("product-stage-verification.v1")) {
-        throw AppError.conflict("The current node cannot enforce accepted product stage inputs",
-          { run_id: runId, dispatch: "blocked", reason: "unsupported_product_stage_verification" });
-      }
-      if (assistantTurn) exposedAssistantRuns.add(run.id);
-      assertOwnedProfile();
-      pendingCommandRun.set(commandId, runId);
-      // After send is invoked, disconnect/error may still mean delivery occurred.
-      // Do not fail the run or release leases from this dispatch path.
-      sendInvoked = true;
-      await transport.send(command);
+        if ((context.payload?.product_development?.stage || context.payload?.review_subject?.development_stage)
+          && !binding.supportsExecutionFeature("product-stage-verification.v1")) {
+          throw AppError.conflict("The current node cannot enforce accepted product stage inputs",
+            { run_id: runId, dispatch: "blocked", reason: "unsupported_product_stage_verification" });
+        }
+        if (assistantTurn) exposedAssistantRuns.add(run.id);
+        assertOwnedProfile();
+        pendingCommandRun.set(commandId, runId);
+        // After send is invoked, disconnect/error may still mean delivery occurred.
+        // Do not fail the run or release leases from this dispatch path.
+        sendInvoked = true;
+        await transport.send(command);
+      });
     } catch (error) {
       // Only a known admission rejection before send proves this invocation did
       // not expose a process. Unknown errors retain the conservative fence.
@@ -545,7 +872,13 @@ export function attachNodeBinding(
   const binding: NodeBinding = {
     receive,
     supportsExecutionFeature(feature): boolean {
-      if (feature === IMPORTED_DESIGN_CONTINUATION_FEATURE_V1 && (!importedDesigns || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true)) return false;
+      if ([IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1].includes(feature)
+        && (!ctx.sourceLifecycle || !cleanValidations || !cleanValidationReviews || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true)) return false;
+      if (feature === SOURCE_CLEAN_RESTART_FEATURE_V1 && (!ctx.sourceLifecycle || !sourceRecovery
+        || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true)) return false;
+      if ([PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1].includes(feature)
+        && (!sourceRecovery || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true)) return false;
+      if ((feature === IMPORTED_DESIGN_CONTINUATION_FEATURE_V1 || feature === IMPORTED_DESIGN_REVIEW_FEATURE_V1 || feature === IMPORTED_EXECUTION_FEATURE_V1 || feature === IMPORTED_EXECUTION_REVIEW_FEATURE_V1 || feature === IMPORTED_VALIDATION_FEATURE_V1) && (!importedDesigns || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true)) return false;
       return !closed && isCurrentBinding() && executionFeatureSet.has(feature);
     },
     getOwnedResultProfile(resultProfileId, verifierTemplateId, projectId) {
@@ -609,35 +942,120 @@ export function attachNodeBinding(
       const source = await sourceOperationBinding(operationId);
       if (control === "qualify") await source.qualify(operationId); else await source.dispatch(operationId, control);
     },
+    getPairedNodeSession() {
+      if (closed || !isCurrentBinding() || !pairedSession) return undefined;
+      return { ...pairedSession };
+    },
+    getProductSourceRouting() {
+      if (!routingSnapshot || !binding.getPairedNodeSession?.() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true
+        || !["product-source-transfer.v2", "product-source-transfer.measurement-v2.v1", "product-source-operations.v1"]
+          .every(feature => binding.supportsExecutionFeature(feature))) return undefined;
+      const currentRelease = (release: ReleaseCapabilitiesV1) => {
+        const scope = release.binding;
+        return isDeepStrictEqual(binding.getReleaseCapabilities?.(scope.release_profile_id, scope.project_id, scope.workspace_root,
+          scope.verification_profile_id), release);
+      };
+      if (routingSnapshot.source_exports.some(release => !currentRelease(release))
+        || routingSnapshot.destination_mappings.some(mapping => !currentRelease(mapping.destination_release))) return undefined;
+      // A caller can inspect a defensive snapshot; it cannot change the accepted hello.
+      return structuredClone(routingSnapshot);
+    },
+    async dispatchImportedExecution(executionId, control): Promise<void> {
+      if (!importedExecutions || !binding.supportsExecutionFeature(IMPORTED_EXECUTION_FEATURE_V1)) throw AppError.permissionDenied("H5 requires its current paired receipt session and execution feature");
+      await importedExecutions.dispatch(executionId, control);
+    },
+    async dispatchImportedValidation(validationId, control): Promise<void> {
+      if (!validations || !binding.supportsExecutionFeature(IMPORTED_VALIDATION_FEATURE_V1)) throw AppError.permissionDenied("H7 validation requires its current paired receipt session and feature");
+      await validations.dispatch(validationId, control);
+    },
+    async announceSourceRecoverySession(): Promise<void> {
+      if (!pairedSession || !sourceRecovery || !binding.supportsExecutionFeature(PRODUCT_SOURCE_RECOVERY_FEATURE_V1)
+        || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true) return;
+      await transport.send({ kind: "command", id: `recovery-session:${pairedSession.sessionId}`, idempotency_key: `recovery-session:${pairedSession.sessionId}`,
+        type: "product.source.recovery.session.v1", payload: { version: 1, node_id: computerId, session_id: pairedSession.sessionId } });
+      if (closed || !isCurrentBinding()) throw AppError.conflict("Recovery session announcement lost its current node binding");
+    },
+    async dispatchSourceRecovery(recoveryId, control): Promise<void> {
+      if (!sourceRecovery || !binding.supportsExecutionFeature(PRODUCT_SOURCE_RECOVERY_FEATURE_V1)) throw AppError.permissionDenied("Recovery requires the current native recovery feature");
+      await sourceRecovery.dispatch(recoveryId, control);
+    },
+    async dispatchRecoveryValidation(validationId, control): Promise<void> {
+      if (!recoveryValidations || !binding.supportsExecutionFeature(IMPORTED_RECOVERY_VALIDATION_FEATURE_V1)) throw AppError.permissionDenied("Recovery validation requires its current native author feature");
+      await recoveryValidations.dispatch(validationId, control);
+    },
+    async dispatchRecoveryValidationReview(reviewId, control): Promise<void> {
+      if (!recoveryValidationReviews || !binding.supportsExecutionFeature(IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1)) throw AppError.permissionDenied("Recovery review requires its current native reviewer feature");
+      await recoveryValidationReviews.dispatch(reviewId, control);
+    },
+    async dispatchCleanValidation(validationId, control): Promise<void> {
+      if (!cleanValidations || !binding.supportsExecutionFeature(IMPORTED_CLEAN_VALIDATION_FEATURE_V1)) throw AppError.permissionDenied("Recovery validation requires its current native author feature");
+      await cleanValidations.dispatch(validationId, control);
+    },
+    async dispatchCleanValidationReview(reviewId, control): Promise<void> {
+      if (!cleanValidationReviews || !binding.supportsExecutionFeature(IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1)) throw AppError.permissionDenied("Recovery review requires its current native reviewer feature");
+      await cleanValidationReviews.dispatch(reviewId, control);
+    },
+    async dispatchImportedValidationReview(reviewId, control): Promise<void> {
+      if (!validationReviews || !binding.supportsExecutionFeature(IMPORTED_VALIDATION_FEATURE_V1)) throw AppError.permissionDenied("H7 final-product review requires its current paired receipt session and feature");
+      await validationReviews.dispatch(reviewId, control);
+    },
+    async dispatchImportedExecutionReview(reviewId, control): Promise<void> {
+      if (!implementationReviews || !binding.supportsExecutionFeature(IMPORTED_EXECUTION_REVIEW_FEATURE_V1)) throw AppError.permissionDenied("H6 review requires its current paired receipt session and execution feature");
+      await implementationReviews.dispatch(reviewId, control);
+    },
+    async dispatchImportedExecutionRepair(repairId, control): Promise<void> {
+      if (!implementationRepairs || !binding.supportsExecutionFeature(IMPORTED_EXECUTION_REVIEW_FEATURE_V1)) throw AppError.permissionDenied("H6 repair requires its current paired receipt session and execution feature");
+      await implementationRepairs.dispatch(repairId, control);
+    },
+    async dispatchImportedDesignReview(reviewId, control): Promise<void> {
+      if (!importedDesignReviews || !binding.supportsExecutionFeature(IMPORTED_DESIGN_REVIEW_FEATURE_V1)) throw AppError.permissionDenied("H4 requires its current paired receipt session and execution feature");
+      await importedDesignReviews.dispatch(reviewId, control);
+    },
     async dispatchImportedDesignContinuation(continuationId, control): Promise<void> {
       if (!importedDesigns) throw AppError.permissionDenied("Imported design requires its paired receipt session");
       await importedDesigns.dispatch(continuationId, control);
     },
     async dispatchProductRelease(releaseId): Promise<void> {
       assertCurrentStartBinding(releaseId);
-      const [row] = await ctx.db.db.select({ release: productReleases, goal: goals, automation: goalAutomations })
+      await ctx.db.transaction(async tx => {
+      const [header] = await tx.select({ goalId: productReleases.goalId }).from(productReleases).where(and(eq(productReleases.id, releaseId), eq(productReleases.organizationId, ctx.organizationId)));
+      if (header) await tx.select().from(goals).where(and(eq(goals.id, header.goalId), eq(goals.organizationId, ctx.organizationId))).for("update");
+      const [row] = await tx.select({ release: productReleases, goal: goals, automation: goalAutomations })
         .from(productReleases).innerJoin(goals, eq(goals.id, productReleases.goalId)).innerJoin(goalAutomations, eq(goalAutomations.goalId, goals.id))
-        .where(and(eq(productReleases.id, releaseId), eq(productReleases.organizationId, ctx.organizationId)));
+        .where(and(eq(productReleases.id, releaseId), eq(productReleases.organizationId, ctx.organizationId))).for("update");
       if (!row || row.release.computerId !== computerId) throw AppError.permissionDenied("release is not owned by this node");
       if (row.release.status !== "queued" || row.goal.status !== "running" || !["executing", "waiting"].includes(row.automation.status)) return;
       const request = ProductReleaseRequestSchema.parse(row.release.request);
-      if (!binding.supportsReleaseProfile?.(request.release_profile_id, row.release.projectId, row.automation.workspaceRoot!, request.verification_profile_id)) {
+      await assertProductReleaseRetryDispatch(ctx, tx, row.release, pairedSession);
+      if (request.imported_clean && !binding.supportsExecutionFeature(PRODUCT_RELEASE_CLEAN_FEATURE_V1))
+        throw AppError.conflict("Current native executor does not advertise clean publication authority");
+      const clean = await inspectCleanValidationPublicationDispatch(ctx, tx, row.release);
+      const imported = clean ?? await inspectRecoveryValidationPublicationDispatch(ctx, tx, row.release)
+        ?? await inspectImportedValidationPublicationDispatch(ctx, tx, row.release);
+      const workspaceRoot = imported?.run.workspaceRoot ?? row.automation.workspaceRoot;
+      if (!workspaceRoot || !binding.supportsReleaseProfile?.(request.release_profile_id, row.release.projectId, workspaceRoot, request.verification_profile_id)) {
         throw AppError.conflict("Current node does not advertise the bound release profile");
       }
       if (request.acceptance_binding) {
         const current = binding.getReleaseCapabilities?.(request.release_profile_id, row.release.projectId,
-          row.automation.workspaceRoot!, request.verification_profile_id);
-        if (!current || !isDeepStrictEqual(current.binding, request.acceptance_binding.release_binding)) {
+          workspaceRoot, request.verification_profile_id);
+        if (!current || !isDeepStrictEqual(current.binding, request.acceptance_binding.release_binding)
+          || imported && !isDeepStrictEqual(current, imported.capabilities)) {
           throw AppError.conflict("Current node publication acceptance contract differs from the immutable request");
         }
       }
-      await assertNoActiveDesignRevision(ctx, ctx.db.db, row.goal.id);
-      const [sourceRun] = await ctx.db.db.select().from(runs).where(and(eq(runs.id, row.release.runId), eq(runs.organizationId, ctx.organizationId)));
+      await assertNoActiveDesignRevision(ctx, tx, row.goal.id);
+      const [sourceRun] = await tx.select().from(runs).where(and(eq(runs.id, row.release.runId), eq(runs.organizationId, ctx.organizationId)));
       if (!sourceRun) throw AppError.conflict("Publication source execution is missing");
-      await assertDesignRevisionRunAdmission(ctx, ctx.db.db, sourceRun, { acceptance: true });
+      if (!imported) await assertDesignRevisionRunAdmission(ctx, tx, sourceRun, { acceptance: true });
+      // The clean resolver holds its exact generation gate through this send;
+      // every other release retains the ordinary lineage fence.
+      if (!clean) await assertSourceLineageDispatch(ctx, tx, computerId, workspaceRoot);
       assertCurrentStartBinding(releaseId);
       await transport.send({ kind: "command", id: `release:${releaseId}`, idempotency_key: `release:${releaseId}`,
         type: "product.release", payload: request });
+      assertCurrentStartBinding(releaseId);
+      });
     },
     async dispatchProductReleaseCancel(releaseId): Promise<void> {
       assertCurrentStartBinding(releaseId);
@@ -675,6 +1093,16 @@ export function attachNodeBinding(
     // fails the run through the daemon_disconnect path.
     async dispatchRunResume(runId: string): Promise<void> {
       if (closed) return;
+      const importedExecution = await importedExecutionForRun(runId);
+      if (importedExecution) { await binding.dispatchImportedExecution!(importedExecution.id, "status"); return; }
+      const importedRepair = await importedExecutionRepairForRun(runId);
+      if (importedRepair) { await binding.dispatchImportedExecutionRepair!(importedRepair.id, "status"); return; }
+      const recoveredValidation = await recoveryValidationForRun(runId);
+      if (recoveredValidation) { await binding.dispatchRecoveryValidation!(recoveredValidation.id, "status"); return; }
+      const cleanedValidation = await cleanValidationForRun(runId);
+      if (cleanedValidation) { await binding.dispatchCleanValidation!(cleanedValidation.id, "status"); return; }
+      const importedValidation = await importedValidationForRun(runId);
+      if (importedValidation) { await binding.dispatchImportedValidation!(importedValidation.id, "status"); return; }
       const importedDesign = await importedDesignForRun(runId);
       if (importedDesign) { await binding.dispatchImportedDesignContinuation!(importedDesign.id, "status"); return; }
       const [run] = await ctx.db.db.select().from(runs).where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)));
@@ -721,6 +1149,16 @@ export function attachNodeBinding(
     async dispatchRunStop(runId: string): Promise<void> {
       if (closed) throw AppError.conflict("node disconnected before process stop was confirmed");
       if (!(await ownsRun(runId))) throw AppError.permissionDenied("run is not owned by this node");
+      const importedExecution = await importedExecutionForRun(runId);
+      if (importedExecution) return stopImportedExecution(importedExecution);
+      const importedRepair = await importedExecutionRepairForRun(runId);
+      if (importedRepair) return stopImportedExecutionRepair(importedRepair);
+      const recoveredValidation = await recoveryValidationForRun(runId);
+      if (recoveredValidation) return stopRecoveryValidation(recoveredValidation);
+      const cleanedValidation = await cleanValidationForRun(runId);
+      if (cleanedValidation) return stopCleanValidation(cleanedValidation);
+      const importedValidation = await importedValidationForRun(runId);
+      if (importedValidation) return stopImportedValidation(importedValidation);
       const importedDesign = await importedDesignForRun(runId);
       if (importedDesign) return stopImportedDesign(importedDesign);
       const existing = stoppingRuns.get(runId);
@@ -772,6 +1210,16 @@ export function attachNodeBinding(
       pendingStops.clear();
       for (const pending of pendingDesignStops.values()) { clearTimeout(pending.timer); pending.reject(AppError.conflict("Node disconnected before imported design closure")); }
       pendingDesignStops.clear();
+      for (const pending of pendingExecutionStops.values()) { clearTimeout(pending.timer); pending.reject(AppError.conflict("Node disconnected before H5 closure")); }
+      pendingExecutionStops.clear();
+      for (const pending of pendingRepairStops.values()) { clearTimeout(pending.timer); pending.reject(AppError.conflict("Node disconnected before repair closure")); }
+      pendingRepairStops.clear();
+      for (const pending of pendingValidationStops.values()) { clearTimeout(pending.timer); pending.reject(AppError.conflict("Node disconnected before validation closure")); }
+      pendingValidationStops.clear();
+      for (const pending of pendingRecoveryValidationStops.values()) { clearTimeout(pending.timer); pending.reject(AppError.conflict("Node disconnected before recovery validation closure")); }
+      for (const pending of pendingCleanValidationStops.values()) { clearTimeout(pending.timer); pending.reject(AppError.conflict("Node disconnected before recovery validation closure")); }
+      pendingRecoveryValidationStops.clear();
+      pendingCleanValidationStops.clear();
       for (const pending of pendingReleaseStops.values()) { clearTimeout(pending.timer); pending.reject(AppError.conflict("Node disconnected before publication stop was confirmed")); }
       pendingReleaseStops.clear();
     },

@@ -481,6 +481,8 @@ async function executeVerification(template: PreparedOwnedWorktreeVerificationTe
   // Dynamic capability/measurement/release bindings need their own versioned
   // protocol. This local first slice must not reinterpret ordinary bindings.
   if (context?.verification_capabilities || context?.release_capabilities || context?.review_subject
+    || context?.transferred_product_input || context?.imported_review_subject || context?.imported_design_review_subject || context?.imported_execution
+    || context?.imported_validation || context?.imported_validation_review_subject || context?.imported_execution_review_subject || context?.imported_execution_repair
     || context?.policy.execution_mode === "discussion") fail("capability-bound verification, independent review and release are not enabled for result templates");
   const materialize = input.store.materializeForVerification.bind(input.store);
   const lookup = durable ? (input.store as DurableResultStore).lookupVerification.bind(input.store) : undefined;

@@ -14,7 +14,8 @@ export function readProductDesignRevision(context: ContextPack | undefined): Pro
   const parsed = ProductDesignRevisionContextV1Schema.safeParse(context.product_design_revision);
   if (!parsed.success) fail("invalid versioned context");
   const revision = parsed.data, goal = context.goal_context;
-  if (context.transferred_product_input || context.imported_review_subject) {
+  if (context.transferred_product_input || context.imported_review_subject || context.imported_design_review_subject || context.imported_execution
+    || context.imported_validation || context.imported_validation_review_subject || context.imported_execution_review_subject || context.imported_execution_repair) {
     fail("imported source histories require their own continuation");
   }
   if (context.project.id !== revision.project_id || context.workspace.root !== revision.workspace_root

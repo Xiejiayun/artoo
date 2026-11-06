@@ -7,6 +7,16 @@ const passed = { version: 1, request_id: "verify_1", profile_id: "default", prof
   required_files: [{ path: "src/main.ts", checksum: hash, size: 12 }] };
 
 describe("autonomous verification contracts", () => {
+  it("keeps automatic cross-computer routing an explicit versioned Agent Team publication grant", () => {
+    const request = { project_id: "project", objective: "Build a product", execution_mode: "agent_team", release_profile_id: "site" };
+    expect(CreateAutonomousGoalRequestSchema.parse(request)).not.toHaveProperty("source_handoff");
+    expect(CreateAutonomousGoalRequestSchema.parse({ ...request, source_handoff: { version: 1, mode: "automatic" } }).source_handoff)
+      .toEqual({ version: 1, mode: "automatic" });
+    for (const change of [{ execution_mode: "single_agent" }, { release_profile_id: undefined },
+      { source_handoff: { version: 2, mode: "automatic" } }, { source_handoff: { version: 1, mode: "automatic", argv: ["remote"] } }]) {
+      expect(CreateAutonomousGoalRequestSchema.safeParse({ ...request, source_handoff: { version: 1, mode: "automatic" }, ...change }).success).toBe(false);
+    }
+  });
   it("requires distinct contributors and a verdict bound to a measured source without blocking findings", () => {
     const team = { version: 1, members: ["research", "design", "implementation", "validation"].map((stage, index) => ({ stage, agent_instance_id: index === 2 ? "writer" : "specialist" })), reviewer_instance_ids: ["writer", "specialist"] };
     expect(AutonomousTeamSchema.safeParse(team).success).toBe(true);

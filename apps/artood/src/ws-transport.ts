@@ -48,6 +48,8 @@ export interface WebSocketTransportOptions {
 
 export interface WebSocketNodeTransport extends NodeSideTransport {
   readonly connected: boolean;
+  /** Original connection object for in-process authority; never serialized and changes on reconnect. */
+  currentSessionIdentity(): object | undefined;
   /** Resolves once the socket is open and node.hello has been sent. */
   readonly ready: Promise<void>;
   /** Always present here (overrides the optional base close). */
@@ -168,6 +170,7 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
     ready,
     acknowledgesRunEvents,
     get connected(): boolean { return !closed && socket.readyState === WS.OPEN; },
+    currentSessionIdentity(): object | undefined { return !closed && socket.readyState === WS.OPEN ? socket : undefined; },
     async send(message, delivery): Promise<void> {
       const bestEffort = delivery?.delivery === 'best-effort';
       if (bestEffort && (message.kind !== 'run.event' || message.event.type !== 'run.output')) {

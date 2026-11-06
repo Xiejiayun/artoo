@@ -92,7 +92,10 @@ async function build(outputArgument) {
       || new Set(files.map(file => file.path.toLowerCase())).size !== files.length) {
       throw new Error('Unexpected published Windows process host layout.');
     }
-    const manifest = { version: 1, protocol: 'artoo.windows-job-process.v1', runtime: 'win-x64', executable, files };
+    // These are fixed modes in this source build, not verification or recovery verdicts.
+    // Old bundles without the modes remain usable for ordinary process execution only.
+    const manifest = { version: 1, protocol: 'artoo.windows-job-process.v1', runtime: 'win-x64', executable, files,
+      capabilities: ['artoo.windows-runtime-guardian.v1', 'artoo.windows-daemon-supervisor.v1', 'artoo.windows-job-member-observation.v1', 'artoo.windows-daemon-supervisor-lifetime.v1'] };
     const bytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
     // Publish the only admission manifest last, after actual SDK exit/close and complete inventory.
     // A failed/interrupted build before this atomic rename has no usable manifest.json.

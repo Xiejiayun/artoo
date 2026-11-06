@@ -8,10 +8,12 @@ import { performance } from "node:perf_hooks";
 import { z } from "zod";
 import { ProductReleaseRequestSchema, ProductReleaseReceiptSchema, ProductReleaseHealthReportSchema,
   ReleaseCapabilitiesV1Schema, ReleaseAcceptanceBindingV1Schema, RunVerificationPayloadSchema, AcceptedProductInputsSchema,
+  ImportedValidationReleaseOriginV1Schema, ImportedRecoveryReleaseOriginV1Schema, ImportedCleanReleaseOriginV1Schema,
   CONFIGURED_STATIC_PUBLICATION_CLAIM, CONFIGURED_STATIC_PUBLICATION_STATEMENT, CONFIGURED_STATIC_PUBLICATION_STATEMENT_DIGEST,
-  canonicalReleaseCapabilityContract, canonicalReleaseAcceptanceBinding,
+  canonicalReleaseCapabilityContract, canonicalReleaseAcceptanceBinding, canonicalReleaseJson, canonicalProductReleaseRequest,
+  productSourceRecoveryCheckpointDigestV1,
   type ReleaseCapabilitiesV1, type ReleaseAcceptanceBindingV1, type ContextPack, type ProductReleaseRequest,
-  type ProductReleaseReceipt, type ProductReleaseHealthReport, type RunVerificationPayload, type RunStartPayload } from "@artoo/domain";
+  type ProductReleaseReceipt, type ProductReleaseHealthReport, type ProductReleaseRetrySourceV1, type RunVerificationPayload, type RunStartPayload } from "@artoo/domain";
 import { subjectManifest, verificationSupported, readVerificationCapabilities, readWindowsVerificationBackend, measureReleaseAcceptancePlan,
   type PreparedVerificationProfile, type VerificationProfile } from "./verification.js";
 import { assertAcceptedProductInputs, readProductFile } from "./product-stage.js";
@@ -19,10 +21,20 @@ import { assertReleaseCapabilityContext, type ReleaseCapabilityReader } from "./
 import { assertWindowsReleaseStorage, auditWindowsReleaseStorage, type PreparedWindowsReleaseStorage } from "./windows-release-storage.js";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import { fetchReleaseHealthGet } from "./release-health-transport.js";
+import { readPreparedImportedValidationRelease, type PreparedImportedValidationRelease } from "./product-source-runtime.js";
+
+import { readPreparedRecoveryValidationRelease, readWindowsSourceRecoveryPublicationFence,
+  type PreparedRecoveryValidationRelease, type PreparedWindowsSourceRecoveryRuntime } from "./windows-source-recovery.js";
+import { readPreparedCleanValidationRelease, readWindowsCleanValidationPublicationFence,
+  type PreparedCleanValidationRelease, type PreparedWindowsCleanValidationRuntime } from "./windows-clean-validation-runtime.js";
 
 export const PRODUCT_RELEASE_FEATURE = "product-release.static.v1";
 export const PRODUCT_RELEASE_HEALTH_FEATURE = "product-release.health.v1";
 export const PRODUCT_RELEASE_ACCEPTANCE_FEATURE = "product-release.acceptance.v1";
+function parseLocallySupportedReleaseRequest(input: unknown): ProductReleaseRequest {
+  const request = ProductReleaseRequestSchema.parse(input);
+  return request;
+}
 /** Administrator-owned target. No shell, credentials, command text or remote paths are accepted. */
 export interface ReleaseProfile {
   id: string;
@@ -58,13 +70,17 @@ export interface ReleasePreparationOptions {
 const preparedReleaseProfiles = new WeakMap<PreparedReleaseProfile, PreparedReleaseAuthority>();
 // Node-local loader provenance must not change serialized profiles, digests or remote contracts.
 const releaseConfigurationFiles = new WeakMap<ReleaseProfile, string>();
-const sha = (bytes: string | Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+const sha = (bytes: string | Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const inside = (path: string, root: string): boolean => {
   const suffix = relative(root, path);
   return suffix === "" || (suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix));
 };
 const key = (value: string) => sha(value).slice(7);
 function fail(message: string): never { throw new Error(`Product release: ${message}`); }
+function immutableReleaseValue<T>(value: T): T {
+  if (value && typeof value === "object") { for (const child of Object.values(value)) immutableReleaseValue(child); Object.freeze(value); }
+  return value;
+}
 function canonicalRelative(value: string): boolean {
   return !!value && value.length <= 1024 && !/[\\:\u0000-\u001f\u007f]/u.test(value)
     && value.split("/").every((part) => part && part !== "." && part !== "..");
@@ -120,9 +136,17 @@ export function readReleaseCapabilities(profile: PreparedReleaseProfile): Releas
     || verifier.measurement_plan_policy?.version !== 2) fail("release capability verifier binding changed");
   return authority.capabilities;
 }
+/** Return the current checked value with its reader in one synchronous preparation.
+ * Every later read performs the complete audit; the initial value is never cached for a future read. */
+export function prepareReleaseCapabilityReader(profile: PreparedReleaseProfile): Readonly<{
+  capabilities: ReleaseCapabilitiesV1; readCapabilities: ReleaseCapabilityReader;
+}> {
+  const capabilities = readReleaseCapabilities(profile);
+  if (!capabilities) fail("release profile does not opt in to criterion acceptance");
+  return Object.freeze({ capabilities, readCapabilities: () => readReleaseCapabilities(profile)! });
+}
 export function createReleaseCapabilityReader(profile: PreparedReleaseProfile): ReleaseCapabilityReader {
-  if (!readReleaseCapabilities(profile)) fail("release profile does not opt in to criterion acceptance");
-  return () => readReleaseCapabilities(profile)!;
+  return prepareReleaseCapabilityReader(profile).readCapabilities;
 }
 function checkedPath(root: string, path: string): string {
   if (!canonicalRelative(path)) fail("invalid artifact path");
@@ -304,10 +328,13 @@ const AcceptanceContextSchema = z.object({ version: z.literal(1), goal_id: z.str
 }).strict();
 const AttestationSchema = z.object({ run_id: z.string().min(1), project_id: z.string().min(1), workspace_root: z.string().min(1),
   evidence: RunVerificationPayloadSchema, acceptance: AcceptanceContextSchema.optional(),
+  imported_validation: ImportedValidationReleaseOriginV1Schema.optional(),
+  imported_recovery: ImportedRecoveryReleaseOriginV1Schema.optional(),
+  imported_clean: ImportedCleanReleaseOriginV1Schema.optional(),
 }).strict();
 type Attestation = z.infer<typeof AttestationSchema>;
 /** This argument is created by the node after the producer exits; it is never adapter output. */
-export interface LocalReleaseVerificationContext { context: ContextPack; readCapabilities: ReleaseCapabilityReader }
+export interface LocalReleaseVerificationContext { context: ContextPack; readCapabilities: ReleaseCapabilityReader; importedValidation?: PreparedImportedValidationRelease; importedRecovery?: PreparedRecoveryValidationRelease; importedClean?: PreparedCleanValidationRelease }
 interface Pointer { release_id: string; artifact_digest: string; release_profile_digest: string }
 interface Operation {
   request: ProductReleaseRequest;
@@ -328,8 +355,20 @@ export interface ProductReleaseExecutorOptions {
   /** A failed delivery leaves the latest report on disk for reconnect replay. */
   onHealthReport?: (report: ProductReleaseHealthReport) => void | Promise<void>;
   onError?: (error: unknown) => void;
+  /** Original authenticated connection identity. A reconnect supplies another object; absence disables retry minting. */
+  retrySession?: () => object | undefined;
 }
 export interface ProductReleaseHealthFault { profile_id: string; failed_at: string; reason: string }
+declare const releaseRetryBrand: unique symbol;
+export interface PreparedProductReleaseRetry { readonly [releaseRetryBrand]: true }
+const preparedReleaseRetries = new WeakMap<PreparedProductReleaseRetry, Readonly<{ request: ProductReleaseRequest;
+  previousRequest: ProductReleaseRequest; previousReceipt: ProductReleaseReceipt; assertCurrent: () => void }>>();
+/** Reading wire projections or protected history can never manufacture an original retry permit. */
+export function readPreparedProductReleaseRetry(permit: PreparedProductReleaseRetry, request?: ProductReleaseRequest) {
+  const saved = preparedReleaseRetries.get(permit);
+  if (!saved || request && canonicalProductReleaseRequest(request) !== canonicalProductReleaseRequest(saved.request)) fail("original exact publication retry permit is required");
+  saved.assertCurrent(); return saved;
+}
 
 /** Owns release side effects separately from coding runtimes and keeps durable request identities. */
 export function createProductReleaseExecutor(profiles: readonly PreparedReleaseProfile[], options: ProductReleaseExecutorOptions = {}) {
@@ -343,8 +382,91 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
   const monitorPending = new Map<string, Promise<void>>();
   const monitorFaults = new Map<string, ProductReleaseHealthFault>();
   const initializedProfiles = new Set<PreparedReleaseProfile>();
+  type RecoveryFence = { runtime: PreparedWindowsSourceRecoveryRuntime;
+    original: ReturnType<typeof readWindowsSourceRecoveryPublicationFence>;
+    files: ReadonlyMap<string, string>; operationIds: ReadonlySet<string>; healthPaths: ReadonlySet<string>;
+    marker: Readonly<{ version: 1; recovery_id: string; checkpoint_digest: string; inventory_digest: string; previous_pointer: Pointer | null }>;
+    opened: boolean };
+  const recoveryFences = new Map<PreparedReleaseProfile, RecoveryFence>();
+  const recoveryValidationPublications = new Map<string, PreparedRecoveryValidationRelease>();
+  const recoveryValidationRuns = new Map<string, { start: RunStartPayload; evidence: RunVerificationPayload; origin: NonNullable<ProductReleaseRequest["imported_recovery"]> }>();
+  type CleanFence = { runtime: PreparedWindowsCleanValidationRuntime;
+    original: ReturnType<typeof readWindowsCleanValidationPublicationFence>;
+    files: ReadonlyMap<string, string>; operationIds: ReadonlySet<string>; healthPaths: ReadonlySet<string>;
+    missingOperationIds: ReadonlySet<string>;
+    marker: Readonly<{ version: 1; clean_generation_id: string; lineage_id: string; inventory_digest: string; previous_pointer: Pointer | null }>;
+    opened: boolean };
+  const cleanFences = new Map<PreparedReleaseProfile, CleanFence>();
+  const cleanValidationPublications = new Map<string, PreparedCleanValidationRelease>();
+  const cleanValidationRuns = new Map<string, { start: RunStartPayload; evidence: RunVerificationPayload; origin: NonNullable<ProductReleaseRequest["imported_clean"]> }>();
+  const importedValidationPublications = new Map<string, PreparedImportedValidationRelease>();
+  const importedValidationRuns = new Map<string, { start: RunStartPayload; evidence: RunVerificationPayload; origin: NonNullable<ProductReleaseRequest["imported_validation"]> }>();
+  const closedListeners = new WeakSet<Server>();
+  type Attempt = { request: ProductReleaseRequest; session?: object; original: boolean; settled: boolean;
+    receipt?: ProductReleaseReceipt; retry?: PreparedProductReleaseRetry; running: boolean; healthSettled: boolean; recoverySettled: boolean; previous?: Pointer | null };
+  type RetrySource = { attempt: Attempt; profile: PreparedReleaseProfile; receipt: ProductReleaseReceipt;
+    recovery: ProductReleaseRetrySourceV1["recovery"]; listener: Server; attestationDigest: string; successor?: PreparedProductReleaseRetry };
+  const attempts = new Map<string, Attempt>(), retrySources = new Map<string, RetrySource>(), retryHeads = new Map<string, string>();
+  const issuedRetryPermits = new WeakSet<PreparedProductReleaseRetry>();
+  const settledHealth = new WeakSet<ProductReleaseReceipt["health_checks"]>();
+  const retryDisabledProfiles = new Set<string>();
+  const releaseRoot = (request: ProductReleaseRequest) => request.retry?.root_release_id ?? request.release_id;
+  const generation = (request: ProductReleaseRequest) => request.retry?.generation ?? 0;
+  const requestDigest = (request: ProductReleaseRequest) => sha(canonicalProductReleaseRequest(request));
+  const receiptDigest = (receipt: ProductReleaseReceipt) => sha(canonicalReleaseJson(receipt));
   let stopping = false;
   let stopped = false;
+  function assertRetrySession(attempt: Attempt): void {
+    if (stopping || stopped || !attempt.session || options.retrySession?.() !== attempt.session) fail("publication retry requires the original live authenticated session");
+  }
+  function assertRetrySource(source: RetrySource, requireRecovery: boolean): void {
+    const { attempt, profile, receipt } = source; assertRetrySession(attempt); auditStorage(profile); assertRequestProfile(profile, attempt.request);
+    if (!attempt.original || !attempt.settled || attempt.running || attempt.receipt !== receipt || !receipt.retry_source
+      || receipt.outcome === "published" || monitorFaults.has(profile.id)) fail("original settled failed publication is required");
+    const operation = readOperation(profile, statePath(profile, attempt.request.release_id));
+    if (operation?.phase !== "terminal" || canonicalReleaseJson(operation.receipt) !== canonicalReleaseJson(receipt)) fail("original publication failure history changed");
+    if (subjectManifest(profile.verifier).digest !== attempt.request.subject_digest) fail("publication retry source changed");
+    const attestation = jsonFile<Attestation>(join(profile.storage_root, "attestations", `${key(attempt.request.run_id)}.json`));
+    if (!attestation || sha(canonicalReleaseJson(attestation)) !== source.attestationDigest
+      || attestation.evidence.subject_digest !== attempt.request.subject_digest) fail("publication retry attestation is unavailable or changed");
+    if (attestation.acceptance) assertPinnedAcceptance(profile.verifier.workspace_root, attestation.acceptance);
+    if (requireRecovery) {
+      const pointer = jsonFile<Pointer | null>(pointerPath(profile)) ?? null;
+      if (source.recovery.kind === "listener-closed") {
+        if (pointer !== null || !closedListeners.has(source.listener) || source.listener.listening || servers.has(profile.id) || starts.has(profile.id)) fail("failed publication listener closure is no longer current");
+      } else {
+        const expected = { release_id: source.recovery.active_release_id, artifact_digest: source.recovery.active_artifact_digest, release_profile_digest: profile.digest };
+        if (!isDeepStrictEqual(pointer, expected) || servers.get(profile.id) !== source.listener || !source.listener.listening || closedListeners.has(source.listener)) fail("original healthy rollback listener or pointer changed");
+        requirePublishedPointer(profile, pointer);
+      }
+    }
+  }
+  function prepareRetry(input: ProductReleaseRequest): PreparedProductReleaseRetry {
+    const request = parseLocallySupportedReleaseRequest(input), retry = request.retry;
+    if (!retry) fail("publication retry lineage is required");
+    const source = retrySources.get(retry.source_id); if (!source) fail("original live publication retry source is unavailable");
+    assertRetrySource(source, source.successor === undefined);
+    const previous = source.attempt.request, { release_id: _oldId, retry: _oldRetry, ...oldFields } = previous;
+    const { release_id: _newId, retry: _newRetry, ...newFields } = request;
+    if (!isDeepStrictEqual(oldFields, newFields) || request.release_id === previous.release_id || retry.previous_release_id !== previous.release_id
+      || retry.root_release_id !== releaseRoot(previous) || retry.generation !== generation(previous) + 1
+      || retry.previous_request_digest !== requestDigest(previous) || retry.previous_receipt_digest !== receiptDigest(source.receipt)
+      || retry.authorization.goal_id !== previous.goal_id || retry.authorization.attempt_index <= (previous.retry?.authorization.attempt_index ?? -1)
+      || previous.retry && (retry.authorization.event_id === previous.retry.authorization.event_id
+        || retry.authorization.actor_user_id !== previous.retry.authorization.actor_user_id)) fail("publication retry differs from its exact immutable predecessor");
+    if (source.successor) { readPreparedProductReleaseRetry(source.successor, request); return source.successor; }
+    if (retryHeads.get(retry.root_release_id) !== previous.release_id || attempts.has(request.release_id)) fail("publication retry predecessor is no longer the latest attempt");
+    const attestation = AttestationSchema.parse(jsonFile<Attestation>(join(source.profile.storage_root, "attestations", `${key(previous.run_id)}.json`)));
+    assertAcceptance(source.profile, previous, attestation);
+    const permit = Object.freeze({}) as PreparedProductReleaseRetry;
+    const exactRequest = immutableReleaseValue(structuredClone(request));
+    // Readers receive this record, so its request and current-owner check must not be replaceable.
+    preparedReleaseRetries.set(permit, Object.freeze({ request: exactRequest, previousRequest: previous, previousReceipt: source.receipt, assertCurrent: () => {
+      assertRetrySource(source, !attempts.get(request.release_id)?.running && !attempts.get(request.release_id)?.settled);
+      if (source.successor !== permit || retryHeads.get(retry.root_release_id) !== request.release_id) fail("publication retry permit is no longer the current successor");
+    } }));
+    issuedRetryPermits.add(permit); source.successor = permit; retryHeads.set(retry.root_release_id, request.release_id); return permit;
+  }
   function writeState(profile: PreparedReleaseProfile, path: string, value: unknown): void {
     // A concurrent cancellation/history/attestation audit can fail while health awaits I/O.
     // Aborting that health request must not let its catch path write rollback state through a failed boundary.
@@ -376,6 +498,214 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
   const artifactRoot = (profile: PreparedReleaseProfile, digest: string) => join(profile.storage_root, "artifacts", digest.slice(7));
   const pointerPath = (profile: PreparedReleaseProfile) => join(profile.storage_root, "current.json");
   const monitorPath = (profile: PreparedReleaseProfile, releaseId: string) => join(profile.storage_root, "health", `${key(releaseId)}.json`);
+  const recoveryFencePath = (profile: PreparedReleaseProfile) => join(profile.storage_root, "source-recovery.json");
+  const cleanFencePath = (profile: PreparedReleaseProfile) => join(profile.storage_root, "source-clean-restart.json");
+  function assertRecoveryFence(profile: PreparedReleaseProfile, inspectHistory = true): RecoveryFence | undefined {
+    const fence = recoveryFences.get(profile), marker = jsonFile<RecoveryFence["marker"]>(recoveryFencePath(profile));
+    // This durable record is only a fence. It never restores a guardian, verifier, review or receipt owner.
+    if (!fence) { if (marker !== undefined) fail("source recovery requires its original live checkpoint owner"); return undefined; }
+    fence.original.assertCurrent();
+    if (!isDeepStrictEqual(marker, fence.marker)) fail("source recovery isolation record changed");
+    for (const [path, digest] of inspectHistory ? fence.files : []) {
+      if (jsonFile<unknown>(path) === undefined || sha(readFileSync(path)) !== digest) fail("isolated publication history changed");
+    }
+    return fence;
+  }
+  function assertRecoveryRequest(profile: PreparedReleaseProfile, request: ProductReleaseRequest): RecoveryFence | undefined {
+    const fence = assertRecoveryFence(profile);
+    if (fence && (fence.operationIds.has(request.release_id) || !request.imported_recovery || request.imported_clean
+      || request.imported_recovery.recovery_id !== fence.marker.recovery_id
+      || request.imported_recovery.checkpoint_digest !== fence.marker.checkpoint_digest))
+      fail("isolated old publication cannot execute or replay in a recovered epoch");
+    if (request.imported_recovery && !fence) fail("recovery publication requires an installed original checkpoint fence");
+    return fence;
+  }
+  function fenceRecoveredWorkspace(runtime: PreparedWindowsSourceRecoveryRuntime): void {
+    const original = readWindowsSourceRecoveryPublicationFence(runtime);
+    const selected = profiles.filter(profile => profile.project_id === original.projectId && profile.verifier.workspace_root === original.workspaceRoot);
+    for (const profile of selected) {
+      const existing = recoveryFences.get(profile);
+      if (existing) { if (existing.runtime !== runtime) fail("recovery publication fence owner is immutable"); assertRecoveryFence(profile); continue; }
+      if (servers.has(profile.id) || starts.has(profile.id) || queues.has(profile.id) || monitorPending.has(profile.id)
+        || [...attempts.values()].some(attempt => attempt.request.release_profile_id === profile.id))
+        fail("recovery publication fence must precede all publisher execution");
+      auditStorage(profile); initialize(profile); original.assertCurrent();
+      if (existsSync(recoveryFencePath(profile))) fail("another recovery epoch already fenced this publisher; original owner is required");
+      if (cleanFences.has(profile) || existsSync(cleanFencePath(profile))) fail("a clean generation already owns this publisher");
+      const files = new Map<string, string>(), operationIds = new Set<string>(), healthPaths = new Set<string>();
+      const expected = original.checkpoint.operations.filter(operation => operation.kind === "release");
+      for (const child of ["operations", "health"] as const) {
+        const entries = readdirSync(join(profile.storage_root, child)).filter(name => /^[a-f0-9]{64}\.json$/.test(name)).sort();
+        if (entries.length > 10000) fail("publication history exceeds recovery isolation limit");
+        for (const name of entries) {
+          const path = join(profile.storage_root, child, name);
+          if (child === "operations") {
+            const operation = readOperation(profile, path)!;
+            const ref = expected.find(item => item.operation_id === operation.request.release_id);
+            if (ref && ref.request_digest !== requestDigest(operation.request)) fail("checkpoint publication request differs from local history");
+            if (operation.phase !== "terminal" && !ref) fail("unfinished publication is outside the original closed epoch");
+            operationIds.add(operation.request.release_id);
+          } else { readMonitor(profile, path); healthPaths.add(path); }
+          files.set(path, sha(readFileSync(path)));
+        }
+      }
+      const pointer = jsonFile<Pointer | null>(pointerPath(profile)) ?? null;
+      if (pointer !== null) {
+        const operation = readOperation(profile, statePath(profile, pointer.release_id));
+        if (!operation || pointer.release_profile_digest !== profile.digest || operation.request.subject_digest !== pointer.artifact_digest)
+          fail("old publication pointer has no exact retained operation");
+      }
+      const marker = immutableReleaseValue({ version: 1 as const, recovery_id: original.checkpoint.recovery_id,
+        checkpoint_digest: productSourceRecoveryCheckpointDigestV1(original.checkpoint, sha),
+        inventory_digest: sha(canonicalReleaseJson([...files].map(([path, digest]) => [relative(profile.storage_root, path).replaceAll("\\", "/"), digest]))),
+        previous_pointer: pointer });
+      original.assertCurrent(); writeState(profile, recoveryFencePath(profile), marker); auditStorage(profile);
+      recoveryFences.set(profile, { runtime, original, files, operationIds, healthPaths, marker, opened: false });
+      assertRecoveryFence(profile);
+    }
+  }
+  function prepareRecoveredStart(profile: PreparedReleaseProfile, request: ProductReleaseRequest): void {
+    const fence = assertRecoveryRequest(profile, request);
+    if (!fence) return;
+    const permit = assertRecoveryPublication(request);
+    if (!permit) fail("recovered publisher needs its fresh author and independent review");
+    const prepared = readPreparedRecoveryValidationRelease(permit, request);
+    if (prepared.checkpoint !== fence.original.checkpoint) fail("publication and fence have different original checkpoint owners");
+    if (!fence.opened) {
+      if (!isDeepStrictEqual(jsonFile<Pointer | null>(pointerPath(profile)) ?? null, fence.marker.previous_pointer))
+        fail("old publication pointer changed before fresh recovery acceptance");
+      // The old records remain byte-for-byte history. Only the newly reviewed source may become active.
+      writeState(profile, pointerPath(profile), null); auditStorage(profile); fence.opened = true;
+    }
+  }
+  function assertCleanFence(profile: PreparedReleaseProfile, inspectHistory = true): CleanFence | undefined {
+    const fence = cleanFences.get(profile), marker = jsonFile<CleanFence["marker"]>(cleanFencePath(profile));
+    // A persisted fence isolates history. Only the original new checkpoint object
+    // can retain execution authority; reading this JSON cannot restore that object.
+    if (!fence) { if (marker !== undefined) fail("clean restart requires its original live checkpoint owner"); return undefined; }
+    fence.original.assertCurrent();
+    if (!isDeepStrictEqual(marker, fence.marker)) fail("clean publication isolation record changed");
+    for (const [path, digest] of inspectHistory ? fence.files : []) {
+      if (jsonFile<unknown>(path) === undefined || sha(readFileSync(path)) !== digest) fail("isolated publication history changed");
+    }
+    for (const id of inspectHistory ? fence.missingOperationIds : []) {
+      if (existsSync(statePath(profile, id)) || existsSync(`${statePath(profile, id)}.cancelled`))
+        fail("an absent original publication journal appeared after clean closure");
+    }
+    return fence;
+  }
+  function assertPublicationFence(profile: PreparedReleaseProfile, inspectHistory = true): RecoveryFence | CleanFence | undefined {
+    const recovered = assertRecoveryFence(profile, inspectHistory), clean = assertCleanFence(profile, inspectHistory);
+    if (recovered && clean) fail("publisher cannot have two source generation owners");
+    return recovered ?? clean;
+  }
+  function assertCleanRequest(profile: PreparedReleaseProfile, request: ProductReleaseRequest): CleanFence | undefined {
+    const fence = assertCleanFence(profile), origin = request.imported_clean;
+    if (fence && (fence.operationIds.has(request.release_id)
+      || fence.original.predecessorOperations.some(operation => operation.kind === "release" && operation.operation_id === request.release_id)
+      || !origin || request.imported_validation || request.imported_recovery
+      || origin.clean_generation_id !== fence.marker.clean_generation_id)) fail("isolated old publication cannot execute or replay in a clean generation");
+    if (origin && !fence) fail("clean publication requires its original installed checkpoint fence");
+    if (fence && origin) {
+      const expected = fence.original.predecessorOperations.filter(operation => operation.kind === "release");
+      if (origin.interrupted_release_id === null) {
+        if (expected.length) fail("first clean publication cannot omit an original release operation");
+        for (const oldId of fence.operationIds) {
+          if (readOperation(profile, statePath(profile, oldId))?.request.goal_id === request.goal_id)
+            fail("first clean publication cannot replace this goal's retained release history");
+        }
+      } else {
+        const reference = expected.find(operation => operation.operation_id === origin.interrupted_release_id);
+        const path = statePath(profile, origin.interrupted_release_id), operation = readOperation(profile, path);
+        const previous = operation?.request ?? jsonFile<ProductReleaseRequest>(`${path}.cancelled`);
+        if (!reference || previous && (reference.request_digest !== requestDigest(previous) || previous.goal_id !== request.goal_id
+          || previous.project_id !== request.project_id || previous.run_id === request.run_id))
+          fail("clean publication requires its exact retained interrupted predecessor and a fresh author");
+        // A terminal local receipt may have been lost before server delivery. Keep
+        // that fact intact. A queued request may also never have reached this node:
+        // whole-parent closure and the exact original set authorize fresh work,
+        // without manufacturing a missing old operation or a failed receipt.
+      }
+    }
+    return fence;
+  }
+  function assertPublicationRequest(profile: PreparedReleaseProfile, request: ProductReleaseRequest): RecoveryFence | CleanFence | undefined {
+    const recovered = assertRecoveryRequest(profile, request), clean = assertCleanRequest(profile, request);
+    if (recovered && clean) fail("publisher cannot have two source generation owners");
+    return recovered ?? clean;
+  }
+  function fenceCleanWorkspace(runtime: PreparedWindowsCleanValidationRuntime): void {
+    const original = readWindowsCleanValidationPublicationFence(runtime);
+    const selected = profiles.filter(profile => profile.project_id === original.projectId && profile.verifier.workspace_root === original.workspaceRoot);
+    for (const profile of selected) {
+      const existing = cleanFences.get(profile);
+      if (existing) { if (existing.runtime !== runtime) fail("clean publication fence owner is immutable"); assertCleanFence(profile); continue; }
+      if (servers.has(profile.id) || starts.has(profile.id) || queues.has(profile.id) || monitorPending.has(profile.id)
+        || [...attempts.values()].some(attempt => attempt.request.release_profile_id === profile.id))
+        fail("clean publication fence must precede all publisher execution");
+      auditStorage(profile); initialize(profile); original.assertCurrent();
+      if (existsSync(cleanFencePath(profile)) || recoveryFences.has(profile) || existsSync(recoveryFencePath(profile)))
+        fail("another source generation already fenced this publisher; original owner is required");
+      const files = new Map<string, string>(), operationIds = new Set<string>(), healthPaths = new Set<string>();
+      const expected = original.predecessorOperations.filter(operation => operation.kind === "release");
+      for (const child of ["operations", "health", "attestations"] as const) {
+        const entries = readdirSync(join(profile.storage_root, child)).filter(name => child === "operations"
+          ? /^[a-f0-9]{64}\.json(?:\.cancelled)?$/.test(name) : /^[a-f0-9]{64}\.json$/.test(name)).sort();
+        if (entries.length > 10000) fail("publication history exceeds clean isolation limit");
+        for (const name of entries) {
+          const path = join(profile.storage_root, child, name);
+          if (child === "operations") {
+            if (name.endsWith(".cancelled")) {
+              const cancelled = parseLocallySupportedReleaseRequest(jsonFile<unknown>(path));
+              if (path !== `${statePath(profile, cancelled.release_id)}.cancelled` || cancelled.release_profile_id !== profile.id)
+                fail("invalid retained publication cancellation identity");
+              const reference = expected.find(item => item.operation_id === cancelled.release_id);
+              if (reference && reference.request_digest !== requestDigest(cancelled)) fail("clean predecessor cancellation differs from local history");
+              operationIds.add(cancelled.release_id);
+            } else {
+              const operation = readOperation(profile, path)!;
+              const reference = expected.find(item => item.operation_id === operation.request.release_id);
+              if (reference && reference.request_digest !== requestDigest(operation.request)) fail("clean predecessor request differs from local history");
+              if (operation.phase !== "terminal" && !reference) fail("unfinished publication is outside the original closed epoch");
+              operationIds.add(operation.request.release_id);
+            }
+          } else if (child === "health") { readMonitor(profile, path); healthPaths.add(path); }
+          else {
+            const attestation = AttestationSchema.parse(jsonFile<unknown>(path));
+            if (name !== `${key(attestation.run_id)}.json`) fail("invalid retained publication attestation identity");
+          }
+          files.set(path, sha(readFileSync(path)));
+        }
+      }
+      const pointer = jsonFile<Pointer | null>(pointerPath(profile)) ?? null;
+      if (pointer !== null) {
+        const operation = readOperation(profile, statePath(profile, pointer.release_id));
+        if (!operation || pointer.release_profile_digest !== profile.digest || operation.request.subject_digest !== pointer.artifact_digest)
+          fail("old publication pointer has no exact retained operation");
+      }
+      const marker = immutableReleaseValue({ version: 1 as const, clean_generation_id: original.generationId, lineage_id: original.lineageId,
+        inventory_digest: sha(canonicalReleaseJson([...files].map(([path, digest]) => [relative(profile.storage_root, path).replaceAll("\\", "/"), digest]))),
+        previous_pointer: pointer });
+      original.assertCurrent(); writeState(profile, cleanFencePath(profile), marker); auditStorage(profile);
+      const missingOperationIds = new Set(expected.filter(operation => !operationIds.has(operation.operation_id)).map(operation => operation.operation_id));
+      cleanFences.set(profile, { runtime, original, files, operationIds, missingOperationIds, healthPaths, marker, opened: false });
+      assertCleanFence(profile);
+    }
+  }
+  function prepareCleanStart(profile: PreparedReleaseProfile, request: ProductReleaseRequest): void {
+    const fence = assertCleanRequest(profile, request);
+    if (!fence) return;
+    const permit = assertCleanPublication(request);
+    if (!permit) fail("clean publisher needs its fresh author and independent review");
+    const prepared = readPreparedCleanValidationRelease(permit, request);
+    if (prepared.checkpoint !== fence.original.checkpoint || prepared.restart.generation_id !== fence.original.generationId
+      || prepared.restart.lineage_id !== fence.original.lineageId) fail("clean publication and fence have different original checkpoint owners");
+    if (!fence.opened) {
+      if (!isDeepStrictEqual(jsonFile<Pointer | null>(pointerPath(profile)) ?? null, fence.marker.previous_pointer))
+        fail("old publication pointer changed before fresh clean acceptance");
+      writeState(profile, pointerPath(profile), null); auditStorage(profile); fence.opened = true;
+    }
+  }
   function assertRequestProfile(profile: PreparedReleaseProfile, request: ProductReleaseRequest): void {
     if (request.project_id !== profile.project_id || request.verification_profile_id !== profile.verifier.id
       || request.verification_profile_digest !== profile.verifier.digest) fail("release request does not match local profile");
@@ -404,6 +734,7 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
   }
   function assertAcceptance(profile: PreparedReleaseProfile, request: ProductReleaseRequest, attestation: Attestation,
     root = profile.verifier.workspace_root): void {
+    const imported = assertValidationPublication(request, attestation, root);
     const obligations = attestation.evidence.measurement_plan?.version === 2 && attestation.evidence.measurement_plan.pending_release.length > 0;
     if (!profile.criterion_acceptance && !request.acceptance_binding && !attestation.acceptance && !obligations) return;
     const acceptance = attestation.acceptance, read = capabilityReader(profile);
@@ -412,10 +743,52 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
       fail("release requires the exact final validation author acceptance binding; downgrade is forbidden");
     }
     assertPinnedAcceptance(root, acceptance);
-    const summary = measureReleaseAcceptancePlan(profile.verifier, root, read);
+    const summary = measureReleaseAcceptancePlan(profile.verifier, root, read, imported);
     if (!isDeepStrictEqual(summary, attestation.evidence.measurement_plan)
       || !isDeepStrictEqual(bindingFromSummary(acceptance.plan, summary, read), acceptance.binding)) fail("release research or measurement plan changed");
     read();
+  }
+  function assertRecoveryPublication(request: ProductReleaseRequest, attestation?: Attestation, root?: string): PreparedRecoveryValidationRelease | undefined {
+    const permit = recoveryValidationPublications.get(request.release_id);
+    if (!request.imported_recovery && !attestation?.imported_recovery && !permit && !recoveryValidationRuns.has(request.run_id)) return undefined;
+    if (!permit || !request.imported_recovery || request.imported_validation || request.imported_clean || attestation?.imported_validation || attestation?.imported_clean
+      || attestation && !isDeepStrictEqual(attestation.imported_recovery, request.imported_recovery))
+      fail("Recovery publication requires its exact fresh local author and independent review owner");
+    const original = readPreparedRecoveryValidationRelease(permit, request, root);
+    if (attestation && (attestation.run_id !== original.start.run_id || !isDeepStrictEqual(attestation.evidence, original.verification)))
+      fail("Recovery publication attestation differs from its original fresh final verifier");
+    return permit;
+  }
+  function assertCleanPublication(request: ProductReleaseRequest, attestation?: Attestation, root?: string): PreparedCleanValidationRelease | undefined {
+    const permit = cleanValidationPublications.get(request.release_id);
+    if (!request.imported_clean && !attestation?.imported_clean && !permit && !cleanValidationRuns.has(request.run_id)) return undefined;
+    if (!permit || !request.imported_clean || request.imported_validation || request.imported_recovery
+      || attestation?.imported_validation || attestation?.imported_recovery
+      || attestation && !isDeepStrictEqual(attestation.imported_clean, request.imported_clean))
+      fail("Clean publication requires its exact fresh local author and independent review owner");
+    const original = readPreparedCleanValidationRelease(permit, request, root);
+    const profile = profiles.find(candidate => candidate.id === request.release_profile_id);
+    if (!profile) fail("clean publication profile is unavailable");
+    const fence = assertCleanRequest(profile, request);
+    if (!fence || original.checkpoint !== fence.original.checkpoint || original.restart.generation_id !== fence.original.generationId
+      || original.restart.lineage_id !== fence.original.lineageId) fail("clean publication and fence have different original checkpoint owners");
+    if (attestation && (attestation.run_id !== original.start.run_id || !isDeepStrictEqual(attestation.evidence, original.verification)))
+      fail("Clean publication attestation differs from its original fresh final verifier");
+    return permit;
+  }
+  function assertValidationPublication(request: ProductReleaseRequest, attestation?: Attestation, root?: string): PreparedImportedValidationRelease | PreparedRecoveryValidationRelease | PreparedCleanValidationRelease | undefined {
+    const clean = assertCleanPublication(request, attestation, root);
+    if (clean) return clean;
+    const recovered = assertRecoveryPublication(request, attestation, root);
+    if (recovered) return recovered;
+    const permit = importedValidationPublications.get(request.release_id);
+    if (!request.imported_validation && !attestation?.imported_validation && !permit && !importedValidationRuns.has(request.run_id)) return undefined;
+    if (!permit || !request.imported_validation || attestation && !isDeepStrictEqual(attestation.imported_validation, request.imported_validation))
+      fail("Imported validation publication requires its original current local owner; origin downgrade and recovery by JSON are forbidden");
+    const original = readPreparedImportedValidationRelease(permit, request, root);
+    if (attestation && (attestation.run_id !== original.start.run_id || !isDeepStrictEqual(attestation.evidence, original.verification)))
+      fail("Imported validation attestation differs from the original independently verified author");
+    return permit;
   }
   function initialize(profile: PreparedReleaseProfile) {
     assertStorage(profile);
@@ -445,7 +818,7 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
   function readOperation(profile: PreparedReleaseProfile, path: string): Operation | undefined {
     const operation = jsonFile<Operation>(path);
     if (!operation) return undefined;
-    const request = ProductReleaseRequestSchema.parse(operation.request);
+    const request = parseLocallySupportedReleaseRequest(operation.request);
     if (path !== statePath(profile, request.release_id) || request.release_profile_id !== profile.id
       || !["prepared", "activated", "rolling_back", "disabling", "terminal"].includes(operation.phase)) fail("invalid operation identity or phase");
     if (operation.phase === "terminal") {
@@ -486,9 +859,11 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
     return { ...record, report };
   }
   function monitorRecords(profile: PreparedReleaseProfile): MonitorRecord[] {
+    const fence = assertPublicationFence(profile);
     const entries = readdirSync(join(profile.storage_root, "health")).filter((name) => /^[a-f0-9]{64}\.json$/.test(name));
     if (entries.length > 10000) fail("monitoring journal exceeds recovery limit");
-    return entries.map((name) => readMonitor(profile, join(profile.storage_root, "health", name))!);
+    return entries.filter(name => !fence?.healthPaths.has(join(profile.storage_root, "health", name)))
+      .map((name) => readMonitor(profile, join(profile.storage_root, "health", name))!);
   }
   function requirePublishedPointer(profile: PreparedReleaseProfile, pointer: Pointer | null): void {
     if (pointer === null) return;
@@ -526,6 +901,8 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
     if (operation.phase !== "disabling") receipt.recovery_checks = operation.previous ? await health(profile, operation.previous) : [];
     else if (!receipt.recovery_checks?.length || receipt.recovery_checks.every((check) => check.passed)) fail("disabling publication requires failed recovery measurements");
     const recovered = receipt.recovery_checks.every((check) => check.passed);
+    const attempt = attempts.get(operation.request.release_id);
+    if (attempt) attempt.recoverySettled = !operation.previous || settledHealth.has(receipt.recovery_checks);
     receipt.outcome = recovered ? "rolled_back" : "failed";
     if (!recovered && operation.phase !== "disabling") {
       receipt.reason = `${receipt.reason ?? "Publication failed"}; previous release health failed; publication disabled`.slice(0, 2000);
@@ -534,16 +911,14 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
       writeState(profile, statePath(profile, operation.request.release_id), operation);
       beginRollback(profile, operation);
     }
-    const final = ProductReleaseReceiptSchema.parse(receipt);
-    writeState(profile, statePath(profile, operation.request.release_id), { request: operation.request, previous: operation.previous,
-      phase: "terminal", receipt: final } satisfies Operation);
-    return final;
+    return finishTerminal(profile, operation.request, operation.previous, receipt);
   }
   function prepareRecovery(profile: PreparedReleaseProfile): Operation | undefined {
+    const fence = assertPublicationFence(profile);
     const entries = readdirSync(join(profile.storage_root, "operations")).filter((name) => /^[a-f0-9]{64}\.json$/.test(name));
     if (entries.length > 10000) fail("operation journal exceeds recovery limit");
     const pending = entries.map((name) => readOperation(profile, join(profile.storage_root, "operations", name))!)
-      .filter((operation) => operation.phase !== "terminal");
+      .filter((operation) => operation.phase !== "terminal" && !fence?.operationIds.has(operation.request.release_id));
     if (pending.length > 1) fail("multiple unfinished publications require recovery before serving");
     const operation = pending[0];
     if (!operation) {
@@ -632,14 +1007,59 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
     if (record.phase !== "monitoring") await finishMonitorRecovery(profile, record);
     else await notifyHealth(report);
   }
-  async function closeListener(profileId: string): Promise<void> {
+  async function closeListener(profileId: string, timeoutMs?: number): Promise<void> {
     const server = servers.get(profileId);
     if (!server) return;
-    await new Promise<void>((resolveClose) => { server.close(() => resolveClose()); server.closeAllConnections(); });
+    await new Promise<void>((resolveClose, rejectClose) => {
+      const timer = timeoutMs === undefined ? undefined : setTimeout(() => rejectClose(new Error("Publication listener closure is uncertain after its local deadline")), timeoutMs);
+      server.close(error => { clearTimeout(timer); error ? rejectClose(error) : resolveClose(); }); server.closeAllConnections();
+    });
     servers.delete(profileId);
   }
+  async function finishTerminal(profile: PreparedReleaseProfile, request: ProductReleaseRequest, previous: Pointer | null,
+    receipt: ProductReleaseReceipt): Promise<ProductReleaseReceipt> {
+    const attempt = attempts.get(request.release_id); let source: Omit<RetrySource, "receipt"> | undefined;
+    if (receipt.outcome !== "published" && attempt?.original && attempt.session && attempt.healthSettled && attempt.recoverySettled
+      && !controllers.get(request.release_id)?.signal.aborted && !stopping && !stopped && !monitorFaults.has(profile.id)
+      && !existsSync(`${statePath(profile, request.release_id)}.cancelled`) && options.retrySession?.() === attempt.session) {
+      const pointer = jsonFile<Pointer | null>(pointerPath(profile)) ?? null, listener = servers.get(profile.id);
+      if (!listener || !listener.listening || closedListeners.has(listener)) fail("original publication listener is unavailable for failure settlement");
+      let recovery: ProductReleaseRetrySourceV1["recovery"];
+      if (previous && isDeepStrictEqual(pointer, previous)) {
+        if (!receipt.recovery_checks?.length) {
+          receipt.recovery_checks = await health(profile, previous); attempt.recoverySettled = settledHealth.has(receipt.recovery_checks);
+        }
+        if (!attempt.recoverySettled || receipt.recovery_checks.some(check => !check.passed)) fail("publication rollback is not settled at its exact healthy predecessor");
+        requirePublishedPointer(profile, previous);
+        recovery = { kind: "previous-restored", active_release_id: previous.release_id, active_artifact_digest: previous.artifact_digest };
+      } else {
+        if (pointer !== null) fail("failed publication still has an active candidate");
+        const timer = monitorTimers.get(profile.id); if (timer) clearTimeout(timer); monitorTimers.delete(profile.id);
+        retryDisabledProfiles.add(profile.id);
+        await closeListener(profile.id, profile.health_timeout_ms);
+        if (!closedListeners.has(listener) || listener.listening || servers.has(profile.id)) fail("original publication listener closure is uncertain");
+        recovery = { kind: "listener-closed", active_release_id: null, active_artifact_digest: null };
+      }
+      // Only unchanged final author inputs can be retried. A terminal rejection remains visible without a retry source.
+      try {
+        assertRetrySession(attempt); auditStorage(profile); assertRequestProfile(profile, request);
+        const attestation = AttestationSchema.parse(jsonFile<Attestation>(join(profile.storage_root, "attestations", `${key(request.run_id)}.json`)));
+        if (attestation.run_id !== request.run_id || attestation.evidence.subject_digest !== request.subject_digest
+          || attestation.evidence.request_id !== request.verification_request_id || subjectManifest(profile.verifier).digest !== request.subject_digest) fail("publication retry inputs changed");
+        assertAcceptance(profile, request, attestation);
+        receipt = { ...receipt, retry_source: { version: 1, source_id: randomUUID(), closure: "local-release-settled.v1", recovery } };
+        source = { attempt, profile, recovery, listener, attestationDigest: sha(canonicalReleaseJson(attestation)) };
+      } catch (error) { receipt = { ...receipt, reason: `${receipt.reason ?? "Publication failed"}; automatic retry unavailable: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2000) }; }
+    }
+    const final = immutableReleaseValue(ProductReleaseReceiptSchema.parse(receipt));
+    writeState(profile, statePath(profile, request.release_id), { request, previous, phase: "terminal", receipt: final } satisfies Operation);
+    auditStorage(profile);
+    if (attempt?.original) attempt.receipt = final;
+    if (source && final.retry_source) retrySources.set(final.retry_source.source_id, { ...source, receipt: final });
+    return final;
+  }
   function scheduleMonitor(profile: PreparedReleaseProfile): void {
-    if (!profile.monitoring || stopped || stopping || monitorFaults.has(profile.id) || monitorTimers.has(profile.id)) return;
+    if (!profile.monitoring || stopped || stopping || retryDisabledProfiles.has(profile.id) || monitorFaults.has(profile.id) || monitorTimers.has(profile.id)) return;
     const timer = setTimeout(() => {
       monitorTimers.delete(profile.id);
       void checkHealth(profile).catch((error: unknown) => { options.onError?.(error); });
@@ -647,7 +1067,8 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
     timer.unref(); monitorTimers.set(profile.id, timer);
   }
   async function checkHealth(profile: PreparedReleaseProfile): Promise<void> {
-    if (!profile.monitoring || stopped || stopping) return;
+    if (!profile.monitoring || stopped || stopping || retryDisabledProfiles.has(profile.id)) return;
+    const fence = assertPublicationFence(profile); if (fence && !fence.opened) return;
     if (monitorFaults.has(profile.id)) fail("monitoring stopped after a journal or executor failure");
     const existing = monitorPending.get(profile.id); if (existing) return existing;
     const pending = (queues.get(profile.id) ?? Promise.resolve()).catch(() => undefined).then(async () => {
@@ -671,6 +1092,8 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
     if (!releaseProfileExecutionSupported(profile)) fail("product release requires a Linux or macOS worker or a locally qualified Windows verification and storage profile");
     if (stopped || stopping) fail("executor stopped");
     if (monitorFaults.has(profile.id)) fail("monitoring stopped after a journal or executor failure");
+    const fence = assertPublicationFence(profile);
+    if (fence && !fence.opened) fail("recovered publisher is awaiting fresh verification and independent review");
     if (starts.has(profile.id)) return starts.get(profile.id)!;
     if (servers.has(profile.id)) return;
     auditStorage(profile); initialize(profile); auditStorage(profile);
@@ -686,8 +1109,12 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
         if (request.method !== "GET" && request.method !== "HEAD") { response.writeHead(405).end(); return; }
         try {
           assertStorage(profile);
+          // Full old-history rehash belongs to serialized control operations, not each public asset request.
+          const currentFence = assertPublicationFence(profile, false);
           const pointer = jsonFile<Pointer | null>(pointerPath(profile));
           if (!pointer) { response.writeHead(503).end("No healthy release"); return; }
+          if (currentFence && (!currentFence.opened || currentFence.operationIds.has(pointer.release_id)
+            || !attempts.get(pointer.release_id)?.original)) fail("active publication has no current recovery executor owner");
           const path = new URL(request.url ?? "/", "http://local.invalid").pathname;
           const bytes = artifactBytes(profile, pointer, path);
           response.setHeader("x-artoo-release-id", pointer.release_id);
@@ -698,6 +1125,7 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
           response.writeHead(200).end(request.method === "HEAD" ? undefined : bytes);
         } catch { response.writeHead(404).end("Unavailable artifact"); }
       });
+      server.once("close", () => { closedListeners.add(server); });
       try {
         await new Promise<void>((resolveStart, reject) => {
           server.once("error", reject);
@@ -754,6 +1182,7 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
   }
   async function health(profile: PreparedReleaseProfile, pointer: Pointer, signal?: AbortSignal): Promise<ProductReleaseReceipt["health_checks"]> {
     const checks: ProductReleaseReceipt["health_checks"] = [];
+    let allSettled = true;
     for (const check of profile.health_checks) {
       let status: number | null = null, bodyDigest: string | null = null, passed = false;
       try {
@@ -780,21 +1209,28 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
           && response.headers.get("x-artoo-artifact-digest") === pointer.artifact_digest
           && (check.expect_text === undefined || bytes.toString("utf8").includes(check.expect_text))
           && !healthSignal.aborted && performance.now() < deadline;
-      } catch { /* The failed measurement is recorded below and triggers rollback. */ }
+        if (healthSignal.aborted || performance.now() >= deadline) allSettled = false;
+      } catch { allSettled = false; /* A failed or unfinished HTTP exchange cannot mint retry authority. */ }
       checks.push({ path: check.path, status_code: status, body_digest: bodyDigest, passed, checked_at: new Date().toISOString() });
     }
+    if (allSettled && !signal?.aborted) settledHealth.add(checks);
     return checks;
   }
   async function execute(profile: PreparedReleaseProfile, request: ProductReleaseRequest): Promise<ProductReleaseReceipt> {
+    assertValidationPublication(request);
+    prepareRecoveredStart(profile, request);
+    prepareCleanStart(profile, request);
     await start(profile);
     auditStorage(profile);
     const path = statePath(profile, request.release_id);
     let operation = readOperation(profile, path);
     if (operation && !isDeepStrictEqual(operation.request, request)) fail("release ID reused with a different immutable request");
     if (operation?.phase === "terminal") return ProductReleaseReceiptSchema.parse(operation.receipt);
+    const attempt = attempts.get(request.release_id);
+    if (attempt && !operation) { attempt.original = true; attempt.previous = jsonFile<Pointer | null>(pointerPath(profile)) ?? null; }
     const receipt: ProductReleaseReceipt = { request,
       release_profile_digest: request.acceptance_binding?.release_binding.release_profile_digest ?? profile.digest, artifact_digest: null,
-      outcome: "failed", endpoint: null, previous_release_id: operation?.previous?.release_id ?? null, health_checks: [] };
+      outcome: "failed", endpoint: null, previous_release_id: operation?.previous?.release_id ?? attempt?.previous?.release_id ?? null, health_checks: [] };
     const controller = new AbortController(); controllers.set(request.release_id, controller);
     try {
       // An earlier attempt may have left a durable recovery intent after an I/O failure in this process.
@@ -820,10 +1256,14 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
         const pointer: Pointer = { release_id: request.release_id, artifact_digest: request.subject_digest, release_profile_digest: profile.digest };
         const active = jsonFile<Pointer | null>(pointerPath(profile)) ?? null;
         if (active?.release_id !== request.release_id && !isDeepStrictEqual(active, operation.previous)) fail("another release superseded this operation");
+        assertValidationPublication(request, attestation);
         writeState(profile, pointerPath(profile), pointer);
         operation.phase = "activated"; writeState(profile, path, operation);
+        if (attempt) attempt.healthSettled = false;
         receipt.health_checks = await health(profile, pointer, controller.signal);
+        if (attempt) attempt.healthSettled = settledHealth.has(receipt.health_checks);
         controller.signal.throwIfAborted();
+        assertValidationPublication(request, attestation);
         if (receipt.health_checks.some((check) => !check.passed)) throw new Error("Published endpoint failed configured health checks");
         if (request.acceptance_binding) {
           capabilityReader(profile)();
@@ -835,34 +1275,66 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
         receipt.reason = (error instanceof Error ? error.message : "Release failed").slice(0, 2000);
         if (operation) return await finishRollback(profile, beginRollback(profile, operation, receipt));
       }
-      const final = ProductReleaseReceiptSchema.parse(receipt);
-      writeState(profile, path, { request, previous: operation?.previous ?? null, phase: "terminal", receipt: final } satisfies Operation);
-      return final;
+      return await finishTerminal(profile, request, operation?.previous ?? attempt?.previous ?? null, receipt);
     } finally {
       controllers.delete(request.release_id);
       auditStorage(profile);
     }
   }
-  async function release(input: ProductReleaseRequest): Promise<ProductReleaseReceipt> {
+  async function release(input: ProductReleaseRequest, local?: { retry?: PreparedProductReleaseRetry }): Promise<ProductReleaseReceipt> {
     if (!verificationSupported() && !profiles.some(releaseProfileExecutionSupported)) fail("product release requires a Linux or macOS worker or a locally qualified Windows verification and storage profile");
-    const request = ProductReleaseRequestSchema.parse(input);
+    const request = immutableReleaseValue(parseLocallySupportedReleaseRequest(input));
     const profile = profiles.find((item) => item.id === request.release_profile_id);
     if (!profile) fail("release profile unavailable");
     if (!releaseProfileExecutionSupported(profile)) fail("selected release profile has no qualified execution and storage backend");
     assertRequestProfile(profile, request);
+    const historical = replayReceipt(request); if (historical) return historical;
+    if (!!request.retry !== !!local?.retry) fail("publication retry requires its original local permit");
+    if (local?.retry && !issuedRetryPermits.has(local.retry)) fail("publication retry permit must belong to this original executor");
+    if (local?.retry) readPreparedProductReleaseRetry(local.retry, request);
+    assertValidationPublication(request);
     const active = activeReleases.get(request.release_id);
     if (active) {
       if (!isDeepStrictEqual(active.request, request)) fail("release ID reused with a different immutable request");
       return active.pending;
     }
-    const pending = (queues.get(profile.id) ?? Promise.resolve()).catch(() => undefined).then(() => execute(profile, request));
+    const oldAttempt = attempts.get(request.release_id);
+    if (oldAttempt && !isDeepStrictEqual(oldAttempt.request, request)) fail("publication attempt request changed");
+    const attempt: Attempt = oldAttempt ?? { request, session: options.retrySession?.(), original: false, settled: false, running: false,
+      healthSettled: true, recoverySettled: true, ...(local?.retry ? { retry: local.retry } : {}) };
+    attempts.set(request.release_id, attempt);
+    if (!request.retry) retryHeads.set(request.release_id, request.release_id);
+    const pending = (queues.get(profile.id) ?? Promise.resolve()).catch(() => undefined).then(() => {
+      if (local?.retry) readPreparedProductReleaseRetry(local.retry, request);
+      retryDisabledProfiles.delete(profile.id);
+      attempt.running = true; return execute(profile, request);
+    });
     queues.set(profile.id, pending); activeReleases.set(request.release_id, { request, pending });
-    try { return await pending; } finally {
+    let returned = false;
+    try { const receipt = await pending; returned = true; return receipt; } finally {
       if (queues.get(profile.id) === pending) queues.delete(profile.id);
       if (activeReleases.get(request.release_id)?.pending === pending) activeReleases.delete(request.release_id);
+      attempt.running = false; attempt.settled = returned && attempt.original && attempt.healthSettled && attempt.recoverySettled;
     }
   }
+  function replayReceipt(input: ProductReleaseRequest): ProductReleaseReceipt | undefined {
+    const request = parseLocallySupportedReleaseRequest(input), profile = profiles.find(item => item.id === request.release_profile_id);
+    if (!profile) fail("release profile unavailable"); assertRequestProfile(profile, request);
+    const fence = assertPublicationRequest(profile, request); initializeHistory(profile);
+    if (fence && !attempts.has(request.release_id)) return undefined;
+    const operation = readOperation(profile, statePath(profile, request.release_id));
+    if (operation && !isDeepStrictEqual(operation.request, request)) fail("release ID reused with a different immutable request");
+    return operation?.phase === "terminal" ? ProductReleaseReceiptSchema.parse(operation.receipt) : undefined;
+  }
   return {
+    fenceRecoveredWorkspace,
+    fenceCleanWorkspace,
+    prepareRetry,
+    replayReceipt,
+    isAttemptSettled(request: ProductReleaseRequest): boolean {
+      const attempt = attempts.get(request.release_id);
+      return !!attempt?.settled && isDeepStrictEqual(attempt.request, request);
+    },
     getCapabilityReader(profileId: string): ReleaseCapabilityReader {
       const profile = profiles.find(item => item.id === profileId);
       if (!profile) fail("release profile unavailable");
@@ -880,11 +1352,13 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
     /** Replay facts before later health observations; this never runs a publication again. */
     getPublicationReceipts(): ProductReleaseReceipt[] {
       return profiles.flatMap((profile) => {
+        const fence = assertPublicationFence(profile);
         initializeHistory(profile);
         const entries = readdirSync(join(profile.storage_root, "operations")).filter((name) => /^[a-f0-9]{64}\.json$/.test(name));
         if (entries.length > 10000) fail("operation journal exceeds recovery limit");
         return entries.flatMap((name) => {
           const operation = readOperation(profile, join(profile.storage_root, "operations", name))!;
+          if (fence && (fence.operationIds.has(operation.request.release_id) || !attempts.has(operation.request.release_id))) return [];
           // Legacy routing failures are inert local history, not facts about this configured project.
           return operation.phase === "terminal" && operation.request.project_id === profile.project_id
             && operation.request.verification_profile_id === profile.verifier.id
@@ -902,6 +1376,42 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
     recordVerification(runId: string, projectId: string, workspaceRoot: string, evidence: RunVerificationPayload,
       local?: LocalReleaseVerificationContext): void {
       if (evidence.outcome !== "passed") return;
+      const clean = local?.importedClean ? readPreparedCleanValidationRelease(local.importedClean) : undefined;
+      if (local?.context.imported_clean_validation_review_subject || !!local?.context.imported_clean_validation !== !!clean
+        || clean && (local?.importedValidation || local?.importedRecovery)
+        || clean && (clean.verification !== evidence || clean.start.context_pack.payload !== local!.context
+          || clean.start.run_id !== runId || clean.profile.project_id !== projectId || clean.profile.workspace_root !== workspaceRoot))
+        fail("Only the original clean author verifier can create its publication attestation");
+      if (clean && cleanValidationPublications.has(clean.request.release_id)
+        && cleanValidationPublications.get(clean.request.release_id) !== local!.importedClean)
+        fail("Clean publication owner is immutable");
+      const priorCleanRun = cleanValidationRuns.get(runId);
+      if (clean && priorCleanRun && (priorCleanRun.start !== clean.start || priorCleanRun.evidence !== evidence
+        || !isDeepStrictEqual(priorCleanRun.origin, clean.request.imported_clean)))
+        fail("Clean author cannot be rebound to another publication decision");
+      const recovered = local?.importedRecovery ? readPreparedRecoveryValidationRelease(local.importedRecovery) : undefined;
+      if (local?.context.imported_recovery_validation_review_subject || !!local?.context.imported_recovery_validation !== !!recovered
+        || local?.importedValidation && recovered
+        || recovered && (recovered.verification !== evidence || recovered.start.context_pack.payload !== local!.context
+          || recovered.start.run_id !== runId || recovered.profile.project_id !== projectId || recovered.profile.workspace_root !== workspaceRoot))
+        fail("Only the original H9 author verifier can create its recovery publication attestation");
+      if (recovered && recoveryValidationPublications.has(recovered.request.release_id)
+        && recoveryValidationPublications.get(recovered.request.release_id) !== local!.importedRecovery)
+        fail("Recovery publication owner is immutable");
+      const priorRecoveryRun = recoveryValidationRuns.get(runId);
+      if (recovered && priorRecoveryRun && (priorRecoveryRun.start !== recovered.start || priorRecoveryRun.evidence !== evidence
+        || !isDeepStrictEqual(priorRecoveryRun.origin, recovered.request.imported_recovery)))
+        fail("Recovery author cannot be rebound to another publication decision");
+      const imported = local?.importedValidation ? readPreparedImportedValidationRelease(local.importedValidation) : undefined;
+      if (local?.context.imported_validation_review_subject || !!local?.context.imported_validation !== !!imported
+        || imported && (imported.verification !== evidence || imported.start.context_pack.payload !== local!.context
+          || imported.start.run_id !== runId || imported.profile.project_id !== projectId || imported.profile.workspace_root !== workspaceRoot))
+        fail("Only the original H7 author verifier can create its publication attestation");
+      if (imported && importedValidationPublications.has(imported.request.release_id) && importedValidationPublications.get(imported.request.release_id) !== local!.importedValidation)
+        fail("Validation publication owner is immutable");
+      const previousRun = importedValidationRuns.get(runId);
+      if (imported && previousRun && (previousRun.start !== imported.start || previousRun.evidence !== evidence
+        || !isDeepStrictEqual(previousRun.origin, imported.request.imported_validation))) fail("Validation author ownership is immutable across publication attempts");
       const pending = evidence.measurement_plan?.version === 2 && evidence.measurement_plan.pending_release.length > 0;
       if (pending && !local) fail("publication obligations require the node's local acceptance context");
       const capability = local ? assertReleaseCapabilityContext(local.context, local.readCapabilities) : undefined;
@@ -921,15 +1431,27 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
         if (profile.verifier.id !== evidence.profile_id || profile.project_id !== projectId || profile.verifier.workspace_root !== workspaceRoot) continue;
         if (profile.verifier.digest !== evidence.profile_digest) continue;
         if (pending ? profile.id !== capability!.binding.release_profile_id : profile.criterion_acceptance !== undefined) continue;
+        const fence = assertRecoveryFence(profile);
+        if (fence && (!recovered || recovered.checkpoint !== fence.original.checkpoint))
+          fail("recovered publisher cannot attest an old or unrelated author");
+        const cleanFence = assertCleanFence(profile);
+        if (cleanFence && (!clean || clean.checkpoint !== cleanFence.original.checkpoint
+          || clean.restart.generation_id !== cleanFence.original.generationId || clean.restart.lineage_id !== cleanFence.original.lineageId))
+          fail("clean publisher cannot attest an old or unrelated author");
+        if (clean && !cleanFence) fail("clean publication requires its original installed checkpoint fence");
+        if (clean) assertCleanRequest(profile, clean.request);
         if (acceptance) {
           const read = capabilityReader(profile);
           if (!isDeepStrictEqual(read(), capability)) fail("final acceptance selected a different release capability");
           assertPinnedAcceptance(workspaceRoot, acceptance);
-          if (!isDeepStrictEqual(measureReleaseAcceptancePlan(profile.verifier, workspaceRoot, read), evidence.measurement_plan)) fail("final acceptance measurement changed");
+          if (!isDeepStrictEqual(measureReleaseAcceptancePlan(profile.verifier, workspaceRoot, read, local?.importedClean ?? local?.importedRecovery ?? local?.importedValidation), evidence.measurement_plan)) fail("final acceptance measurement changed");
           if (subjectManifest(profile.verifier).digest !== evidence.subject_digest) fail("final acceptance source changed");
         }
         auditStorage(profile); initialize(profile);
         const attestation = AttestationSchema.parse({ run_id: runId, project_id: projectId, workspace_root: workspaceRoot, evidence,
+          ...(imported ? { imported_validation: imported.request.imported_validation } : {}),
+          ...(recovered ? { imported_recovery: recovered.request.imported_recovery } : {}),
+          ...(clean ? { imported_clean: clean.request.imported_clean } : {}),
           ...(acceptance ? { acceptance } : {}) });
         const path = join(profile.storage_root, "attestations", `${key(runId)}.json`);
         const previous = jsonFile<Attestation>(path);
@@ -939,13 +1461,26 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
         recorded = true;
       }
       if (pending && !recorded) fail("final acceptance release profile is unavailable");
+      if (clean && recorded) {
+        cleanValidationPublications.set(clean.request.release_id, local!.importedClean!);
+        cleanValidationRuns.set(runId, { start: clean.start, evidence, origin: clean.request.imported_clean! });
+      }
+      if (recovered && recorded) {
+        recoveryValidationPublications.set(recovered.request.release_id, local!.importedRecovery!);
+        recoveryValidationRuns.set(runId, { start: recovered.start, evidence, origin: recovered.request.imported_recovery! });
+      }
+      if (imported && recorded) {
+        importedValidationPublications.set(imported.request.release_id, local!.importedValidation!);
+        importedValidationRuns.set(runId, { start: imported.start, evidence, origin: imported.request.imported_validation! });
+      }
     },
     release,
     async cancel(input: ProductReleaseRequest): Promise<ProductReleaseReceipt> {
-      const request = ProductReleaseRequestSchema.parse(input);
+      const request = parseLocallySupportedReleaseRequest(input);
       const profile = profiles.find((item) => item.id === request.release_profile_id);
       if (!profile) fail("release profile unavailable");
       assertRequestProfile(profile, request);
+      assertPublicationRequest(profile, request);
       const active = activeReleases.get(request.release_id);
       if (active && !isDeepStrictEqual(active.request, request)) fail("release ID reused with a different immutable request");
       auditStorage(profile); initialize(profile);

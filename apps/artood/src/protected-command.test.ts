@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OwnedGitError, runOwnedGit, type OwnedGitReceipt, type OwnedGitOptions } from "./owned/owned-git.js";
-import { ProtectedCommandError, runProtectedCommand } from "./protected-command.js";
+import { ProtectedCommandError, runProtectedCommand, assertProtectedNativeCommandClosed } from "./protected-command.js";
 import { VerificationCleanupError } from "./verification-cleanup-error.js";
 import type { PreparedWindowsProcessBackend, WindowsOwnedClosureReceipt, WindowsOwnedProcess } from "./owned/windows-owned-process.js";
 
@@ -46,6 +46,19 @@ const options: OwnedGitOptions = { gitExecutable: "C:\\Node\\node.exe", readTime
   maxOutputBytes: 1024, guardParent: true, environment: { PATH: "controlled-path", LANG: "C.UTF-8" } };
 
 describe("ordinary protected command routing (controlled bridge fixtures, not native qualification)", () => {
+  it("retains original native closed nonzero exits and refuses clones, output drift or backend revocation", async () => {
+    onWindows(); const f = processFixture(), native = backend(), pending = runProtectedCommand(request, options, native);
+    f.child.stderr.write("actual failure output"); f.finish(receipt({ rootExitCode: 7 })); const result = await pending;
+    expect(() => assertProtectedNativeCommandClosed(result)).not.toThrow();
+    expect(() => assertProtectedNativeCommandClosed({ ...result })).toThrow("Original protected");
+    result.stderr[0] = result.stderr[0]! ^ 1; expect(() => assertProtectedNativeCommandClosed(result)).toThrow("changed"); result.stderr[0] = result.stderr[0]! ^ 1;
+    bridge.backends.delete(native); expect(() => assertProtectedNativeCommandClosed(result)).toThrow("Unprepared backend");
+  });
+  it("does not promote ordinary POSIX returns into native failure authority", async () => {
+    Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+    vi.mocked(runOwnedGit).mockResolvedValue({ status: 7, stdout: Buffer.from("out"), stderr: Buffer.from("err"), receipt: { elapsedMs: 9, cleanupConfirmed: true } as OwnedGitReceipt });
+    const result = await runProtectedCommand(request, options); expect(() => assertProtectedNativeCommandClosed(result)).toThrow("Original protected");
+  });
   it("delegates POSIX options unchanged and does not manufacture group receipts", async () => {
     Object.defineProperty(process, "platform", { ...platform, value: "linux" });
     vi.mocked(runOwnedGit).mockResolvedValue({ status: 7, stdout: Buffer.from("out"), stderr: Buffer.from("err"),

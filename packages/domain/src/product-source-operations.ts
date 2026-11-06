@@ -22,7 +22,7 @@ export const ProductSourceHandoffIntentV1Schema: z.ZodType<ProductSourceHandoffI
     || start.verification?.profile_id !== base.destination.profile_id || start.verification.expected_subject_digest !== base.source.subject_digest
     || context?.task.id !== start.task_id || context.project.id !== base.project_id || context.workspace.root !== base.destination.workspace_root
     || context.goal_context?.goal_id !== base.goal_id || context.goal_context.plan?.id !== base.plan_id
-    || context.product_development?.stage !== "research" || context.review_subject || context.imported_review_subject || value.next_task_id === base.source.task_id
+    || context.imported_clean_validation || context.imported_clean_validation_review_subject || context.imported_recovery_validation || context.imported_recovery_validation_review_subject || context.product_development?.stage !== "research" || context.review_subject || context.imported_review_subject || value.next_task_id === base.source.task_id
     || value.next_task_id === start.task_id || start.run_id === base.source.run_id) {
     ctx.addIssue({code:"custom",message:"Handoff must pin a distinct research verification and intended next task in the exact destination scope"});
   }

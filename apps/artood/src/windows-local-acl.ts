@@ -1,9 +1,14 @@
 // Candidate shared facts collector, derived from the reviewed installation collector.
 // Facts alone confer no authority. Callers must check inventory, policy and stable identity.
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { release } from "node:os";
 import { win32 } from "node:path";
+import { performance } from "node:perf_hooks";
+import { readWindowsGuardianOperation } from "./owned/windows-guardian-scope.js";
+import { reserveWindowsGuardianSlotSync } from "./owned/windows-runtime-guardian.js";
+import { startWindowsGuardianObserverSync } from "./owned/windows-owned-process.js";
 
 export const MAX_WINDOWS_AUDIT_PATHS = 65536;
 const MAX_INPUT_BYTES = 16 * 1024 * 1024, MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
@@ -123,6 +128,7 @@ function isSid(value: unknown): value is string { return typeof value === "strin
 
 /** Fixed system collector; no scripts, SIDs, booleans or executor callbacks supplied by a remote request. */
 export function collectWindowsAclFacts(targets: readonly WindowsAclTarget[], timeoutMs = 60000): WindowsAclReport {
+  const begun = performance.now();
   assertNativeWindows();
   // Local callers may spend only their remaining operation budget; serialized targets cannot override it.
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) fail("invalid local audit timeout");
@@ -138,7 +144,24 @@ export function collectWindowsAclFacts(targets: readonly WindowsAclTarget[], tim
   const systemRoot = physicalWindowsDirectory(realpathSync.native(configured));
   const input = JSON.stringify({ version: 1, paths: targets });
   if (Buffer.byteLength(input) > MAX_INPUT_BYTES) fail("audit input limit");
-  const result = spawnSync(win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+  const executable = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const scope = readWindowsGuardianOperation();
+  const result = scope ? (() => {
+    const bindingDigest = `sha256:${createHash("sha256").update(JSON.stringify({ version: 1, operation: scope.bindingDigest,
+      collector: "windows-local-acl", executable, script: SCRIPT, input })).digest("hex")}`;
+    const slot = reserveWindowsGuardianSlotSync(scope.guardian, { operationKind: "observer", operationId: scope.operationId,
+      bindingDigest, serverOperation: scope.serverOperation });
+    const remaining = Math.floor(timeoutMs - (performance.now() - begun));
+    if (remaining < 1) fail("audit deadline elapsed before collector launch");
+    const observed = startWindowsGuardianObserverSync(scope.backend, { executable,
+      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT], cwd: scope.workspaceRoot,
+      timeoutMs: remaining, cleanupTimeoutMs: 5000, maxOutputBytes: MAX_OUTPUT_BYTES,
+      normalExitPolicy: "require-empty", normalExitGraceMs: 250, guardianSlot: slot, inputBytes: Buffer.from(input, "utf8"),
+      env: { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: win32.join(systemRoot, "System32"),
+        PSModulePath: win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules") } });
+    return { stdout: observed.stdout.toString("utf8"), status: observed.receipt.rootExitCode, signal: null,
+      error: observed.receipt.terminationReason !== null || observed.receipt.failureCode !== null ? new Error("Owned collector failed") : undefined };
+  })() : spawnSync(executable,
     ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT], {
       cwd: systemRoot, shell: false, windowsHide: true, input, encoding: "utf8", timeout: timeoutMs,
       maxBuffer: MAX_OUTPUT_BYTES, env: { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: win32.join(systemRoot, "System32"),

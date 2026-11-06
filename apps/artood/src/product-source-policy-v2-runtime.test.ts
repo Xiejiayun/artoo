@@ -1,3 +1,5 @@
+// Controlled code-installation boundary; native ACL qualification is tested separately.
+vi.mock("./windows-code-installation.js", () => ({ prepareWindowsCodeInstallation: vi.fn(() => ({})), assertWindowsCodeInstallation: vi.fn() }));
 // Controlled preparation/authority mocks only. No native process, authenticated
 // transfer, browser, review or publisher is exercised by this suite.
 import { createHash } from "node:crypto";
@@ -10,14 +12,16 @@ import { canonicalReleaseCapabilityContract, CONFIGURED_STATIC_PUBLICATION_CLAIM
 import type { PreparedVerificationProfile } from "./verification.js";
 import type { PreparedReleaseProfile } from "./product-release.js";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
+import * as codeInstallation from "./windows-code-installation.js";
+import * as mutableStorage from "./windows-release-storage.js";
 
 const control = vi.hoisted(() => ({ releases: new Map<object, () => unknown>(), readerFactory: vi.fn(), verify: vi.fn() }));
 vi.mock("./verification.js", () => ({ assertFinalVerificationExportBinding: vi.fn(), assertLocallyPreparedVerificationProfile: vi.fn(),
   prepareVerificationProfiles: vi.fn(value => value), subjectManifest: vi.fn(), selectVerificationProfile: vi.fn(), runTransferredResearchVerification: control.verify }));
-vi.mock("./product-release.js", () => ({ createReleaseCapabilityReader: (profile: object) => {
+vi.mock("./product-release.js", () => ({ prepareReleaseCapabilityReader: (profile: object) => {
   control.readerFactory(profile);
   const read = control.releases.get(profile); if (!read) throw new Error("Controlled factory requires original prepared release identity");
-  return read;
+  return Object.freeze({ capabilities: read(), readCapabilities: read });
 } }));
 vi.mock("./windows-release-storage.js", () => ({ prepareWindowsReleaseStorage: vi.fn(() => ({})),
   assertWindowsReleaseStorage: vi.fn(), auditWindowsReleaseStorage: vi.fn() }));
@@ -78,6 +82,14 @@ function fixture(version: 1 | 2 = 2) {
 }
 
 describe("first-hop measurement v2 explicit local preparation", () => {
+  it("prepares Git with read-only code policy while retaining mutable policy for source and research stores", () => {
+    const f = fixture(), runtime = prepareProductSourceRuntime(f.options);
+    const directory = f.options.gitExecutable.slice(0, f.options.gitExecutable.lastIndexOf(sep));
+    expect(codeInstallation.prepareWindowsCodeInstallation).toHaveBeenCalledWith({ directory, writableWorkspaceRoots: f.options.allowedRoots });
+    expect(mutableStorage.prepareWindowsReleaseStorage).not.toHaveBeenCalledWith(expect.objectContaining({ directory }));
+    expect(mutableStorage.prepareWindowsReleaseStorage).toHaveBeenCalledWith({ directory: f.options.storeRoot, writableWorkspaceRoots: f.options.allowedRoots });
+    closeProductSourceRuntime(runtime);
+  });
   it("keeps the extension-absent v1 setup and does not opt it in to v2", () => {
     const f = fixture(1), runtime = prepareProductSourceRuntime(f.options);
     expect(productSourceSemanticExportEnabled(runtime)).toBe(true);
