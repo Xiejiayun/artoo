@@ -741,7 +741,12 @@ ${isMac ? "}" : ""}
         ? "Targeted real provider discussion, plan review and acceptance verified through the installed worker; chat turns excluded from this run"
         : "Opt-in real provider chat, discussion, plan review and acceptance verified through the installed worker");
     }
-    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    // Logout reloads this same URL. The connection screen can render in the old
+    // document first, so observe the new document before reading the IPC bridge.
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "domcontentloaded" }),
+      page.getByRole("button", { name: "Sign out", exact: true }).click(),
+    ]);
     await expect(page.getByRole("heading", { name: "Connect this computer" })).toBeVisible();
     assert.equal(await page.evaluate(() => window.artooDesktop.getToken()), null);
     assert.equal((await page.evaluate(() => window.artooDesktop.daemonStatus())).config.codex.hasKey, false);
