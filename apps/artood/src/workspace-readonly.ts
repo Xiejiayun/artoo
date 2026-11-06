@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, realpathSync, type Stats } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { ImportedValidationBaselineV1Schema, type ImportedValidationBaselineV1, type ContextPack } from "@artoo/domain";
+import { AutonomousPlanningRequestV1Schema, ImportedValidationBaselineV1Schema, type ImportedValidationBaselineV1, type ContextPack, type RunStartPayload } from "@artoo/domain";
 import type { AgentInstanceConfig } from "@artoo/protocol";
 import { assertLocallyPreparedVerificationProfile, subjectManifest, type PreparedVerificationProfile } from "./verification.js";
 
@@ -54,6 +54,35 @@ const evidenceIndexSchema = z.object({ version: z.literal(1), bundles: z.array(z
   check_id: z.string().min(1).max(128), scope: z.literal("final"),
 }).strict()).min(1).max(64), baseline: ImportedValidationBaselineV1Schema.optional() }).strict();
 const readIndex = (read: () => WorkspaceReadOnlyEvidenceIndexV1) => evidenceIndexSchema.parse(read());
+
+/** A future worker snapshot grants this discussion only its own context, never source or execution authority. */
+export function isAutonomousPlanningContext(payload: RunStartPayload): boolean {
+  const context = payload.context_pack.payload;
+  if (!context?.conversation || context.policy.execution_mode !== "discussion" || context.policy.filesystem_write_scope.length
+    || context.product_development || context.review_subject || payload.verification || context.verification_capabilities
+    || context.release_capabilities || context.product_design_revision || context.transferred_product_input
+    || context.imported_review_subject || context.imported_design_review_subject || context.imported_execution
+    || context.imported_execution_review_subject || context.imported_execution_repair || context.imported_validation
+    || context.imported_validation_review_subject || context.imported_recovery_validation || context.imported_recovery_validation_review_subject
+    || context.imported_clean_validation || context.imported_clean_validation_review_subject
+    || payload.workspace.branch != null || payload.workspace_allocation !== undefined) return false;
+  try {
+    const request = AutonomousPlanningRequestV1Schema.safeParse(JSON.parse(context.conversation.current_request));
+    return request.success && request.data.planning_capability_snapshot !== null
+      && request.data.planning_capability_snapshot.project_id === context.project.id;
+  } catch { return false; }
+}
+
+/** The original context-only broker grant, not a wire flag, binds native planning to this exact config. */
+export function assertWorkspacePlanningBinding(config: AgentInstanceConfig, original?: WorkspaceReadOnlyGrant): WorkspaceReadOnlyGrant {
+  const grant = original ?? configs.get(config), state = grant && grants.get(grant);
+  if (!grant || !state || state.config !== config || state.source || !isAutonomousPlanningContext(config.runStart)) {
+    throw new Error("Native planning requires its original context-only broker binding");
+  }
+  assertState(state);
+  return grant;
+}
+
 function assertState(state: BindingState): void {
   const result: unknown = state.assertCurrent();
   if (result !== undefined) {

@@ -22,7 +22,7 @@ import type {
   Unsubscribe
 } from "@artoo/protocol";
 import { adapterRunEventBodySchema, assertWorkspaceScope, runStartCommandSchema } from "@artoo/protocol";
-import { RunStartPayloadSchema, RunWorkspaceRetainedPayloadSchema, AutonomousPlanningRequestV1Schema,
+import { RunStartPayloadSchema, RunWorkspaceRetainedPayloadSchema,
   type OwnedResultRunAdmissionV1, type RunStartPayload, type WorkspaceRetentionOutcome, type ProductReleaseHealthReport } from "@artoo/domain";
 import { snapshotOwnedResultRunAdmission } from "./owned-result-admission.js";
 import { prepareOwnedResultRun, materializeOwnedResultRun, finalizeOwnedResultRun, readOwnedResultProfileDescriptors, selectOwnedResultProfile,
@@ -34,15 +34,16 @@ import { allocationStartBinding, assertMatchingAllocationReplay, type Allocation
 import {
   assertRealWorkspaceScope, createOwnedRunAdmission, getOwnedStartupReceipt, getOwnedStopReceipt,
   getOwnedRunStatusReceipt, isOwnedRunAdapter, bindWindowsVerifiedExecution, assertWindowsVerifiedExecutionClosed, supportsWorkspaceReadOnlyTools,
-  type OwnedRunAdmission, type OwnedRunRuntimeAdapter, type WindowsVerifiedExecutionAdmission,
+  bindWindowsPlanningExecution, assertWindowsPlanningExecutionClosed, assertWindowsPlanningStartupClosed,
+  type OwnedRunAdmission, type OwnedRunRuntimeAdapter, type WindowsVerifiedExecutionAdmission, type WindowsPlanningExecutionAdmission,
 } from "./process-adapter.js";
 import { snapshotGitOptions, type GitReadOptions } from "./owned/git-operations.js";
 import { OwnedGitError } from "./owned/owned-git.js";
-import { prepareVerificationProfiles, selectVerificationProfile, readVerificationCapabilities, assertVerificationWorkspaceBoundary, runVerification, runVerificationPreview, VerificationCleanupError,
+import { prepareVerificationProfiles, selectVerificationProfile, readVerificationCapabilities, readWindowsVerificationBackend, assertVerificationWorkspaceBoundary, runVerification, runVerificationPreview, VerificationCleanupError,
   type VerificationProfile, type PreparedVerificationProfile } from "./verification.js";
 import { createProductReleaseExecutor, prepareReleaseProfiles, type ReleaseProfile } from "./product-release.js";
 import { bindWorkspaceToolVerifier, bindWorkspaceToolEvidenceReader, bindWorkspaceToolCapabilities, bindWorkspaceToolReleaseCapabilities } from "./workspace-tools.js";
-import { bindWorkspaceReadOnlyTools } from "./workspace-readonly.js";
+import { bindWorkspaceReadOnlyTools, isAutonomousPlanningContext } from "./workspace-readonly.js";
 import { createProductSourceOperationClient } from "./product-source-operations.js";
 import { createImportedProductReviewClient } from "./imported-product-review.js";
 import { createImportedDesignContinuationClient } from "./imported-design-continuation.js";
@@ -385,7 +386,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     windowsAdmission?: WindowsVerifiedExecutionAdmission;
     controller: AbortController; pending?: Promise<unknown>; unsafe?: boolean }>();
   const runs = new Map<string, { handle: AgentInstanceHandle; adapter: RuntimeAdapter }>();
-  const planningToolRuns = new Map<string, AbortController>();
+  const planningToolRuns = new Map<string, { controller: AbortController; profile?: PreparedVerificationProfile;
+    windowsAdmission?: WindowsPlanningExecutionAdmission; adapterInvoked?: boolean; adapterStarted?: boolean; unsafe?: boolean }>();
   const starting = new Map<string, Promise<void>>();
   const finished = new Set<string>();
   // Includes legacy (undefined) bindings, distinguishing an actual launch from
@@ -468,6 +470,19 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       }
       await verification.pending;
       if (verification.unsafe) throw new VerificationCleanupError("Verifier closure remains unconfirmed");
+      return;
+    }
+    const planning = planningToolRuns.get(runId);
+    if (planning?.windowsAdmission) {
+      planning.controller.abort();
+      try {
+        await run.adapter.stop(run.handle, "user_cancelled");
+        assertWindowsPlanningExecutionClosed(planning.windowsAdmission, run.handle);
+      } catch (error) {
+        planning.unsafe = true;
+        throw new VerificationCleanupError("Windows planning stop remains unconfirmed", { cause: error });
+      }
+      if (planning.unsafe) throw new VerificationCleanupError("Windows planning closure remains unconfirmed");
       return;
     }
     const record = mixedLegacyStarts.get(runId);
@@ -795,6 +810,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     let legacy: { key: string; payload: RunStartPayload } | undefined;
     let verifiedSnapshot: { key: string; payload: RunStartPayload } | undefined;
     let verificationProfile: PreparedVerificationProfile | undefined;
+    let planningProfile: PreparedVerificationProfile | undefined;
+    let readOnlyPlanning = false;
     let readReleaseCapabilities: ReleaseCapabilityReader | undefined;
     try {
       runStartCommandSchema.parse(command); // Also guard typed/in-memory transports before duplicate ACKs.
@@ -816,7 +833,20 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         readReleaseCapabilities = releaseExecutor.getCapabilityReader(admitted.verification.release_capability_binding.release_profile_id);
       }
       verificationProfile = selectVerificationProfile(admitted, verificationProfiles, options.managedJournal !== undefined, readReleaseCapabilities, nodeId);
-      if (sourceRuntime && !verificationProfile) throw new Error("Product source runtime requires original Windows verified execution");
+      readOnlyPlanning = !options.managedJournal && configuredAdapter !== undefined
+        && supportsWorkspaceReadOnlyTools(configuredAdapter) && isAutonomousPlanningContext(admitted);
+      if (sourceRuntime && !verificationProfile) {
+        if (!readOnlyPlanning) throw new Error("Product source runtime requires original Windows verified execution");
+        // The future-worker snapshot describes capability only. Native ownership
+        // comes from exactly one protected profile for this node's actual workspace.
+        const candidates = verificationProfiles.filter(profile => profile.workspace_root === admitted.workspace.root
+          && profile.project_id === admitted.context_pack.payload?.project.id);
+        if (candidates.length !== 1) throw new Error("Native planning requires exactly one local workspace profile");
+        planningProfile = candidates[0]!;
+        if (process.platform !== "win32" || !readWindowsVerificationBackend(planningProfile)) {
+          throw new Error("Native planning requires an original local Windows backend");
+        }
+      }
       binding = allocationStartBinding(command.payload, process.platform, transport.acknowledgesRunEvents);
       if (options.managedJournal) {
         options.managedJournal.channel.assertCurrentSession();
@@ -836,6 +866,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     const launchCommand = binding || legacy || verifiedSnapshot ? { ...command, payload: (binding ?? legacy ?? verifiedSnapshot)!.payload } : command;
     const replayIdentity = binding || verifiedSnapshot ? Object.freeze({ key: (binding ?? verifiedSnapshot)!.key }) : undefined;
     const runId = launchCommand.payload.run_id;
+    if (planningToolRuns.get(runId)?.unsafe) {
+      await ackRejected(command.id, "process_start_failed", "Windows planning closure remains unconfirmed"); return;
+    }
     const ordinary = mixedLegacyStarts.get(runId);
     if (ordinary) {
       if (!legacy || legacy.key !== ordinary.key) {
@@ -864,6 +897,17 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       } catch (error) {
         await ackRejected(command.id, "process_start_failed", errorMessage(error));
         return;
+      }
+      const planning = planningToolRuns.get(runId);
+      if (planning?.profile && starting.has(runId)) {
+        // An identical replay joins the original native startup. Its pending
+        // broker/admission is not evidence that an execution handle was returned.
+        await starting.get(runId);
+        if (planning.unsafe || !planning.adapterStarted) {
+          await ackRejected(command.id, "process_start_failed", planning.unsafe
+            ? "Windows planning closure remains unconfirmed" : "Original native planning startup did not acquire a run handle");
+          return;
+        }
       }
       if (binding && starting.has(runId)) {
         await starting.get(runId);
@@ -894,20 +938,17 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         expectedSubjectDigest: launchCommand.payload.verification!.expected_subject_digest,
         context: launchCommand.payload.context_pack.payload, readReleaseCapabilities, controller: new AbortController() });
     }
-    if (!options.managedJournal && isAutonomousPlanningContext(launchCommand.payload)) {
-      const adapter = resolveAdapter(launchCommand.payload.runtime);
-      if (adapter && supportsWorkspaceReadOnlyTools(adapter)) planningToolRuns.set(runId, new AbortController());
-    }
+    if (readOnlyPlanning) planningToolRuns.set(runId, { controller: new AbortController(), ...(planningProfile ? { profile: planningProfile } : {}) });
     let ready!: () => void;
     launchBindings.set(runId, replayIdentity);
     starting.set(runId, new Promise<void>((resolve) => { ready = resolve; }));
     try {
       await executeStart(launchCommand, () => { starting.delete(runId); ready(); });
     } finally {
-      planningToolRuns.get(runId)?.abort();
-      planningToolRuns.delete(runId);
+      planningToolRuns.get(runId)?.controller.abort();
+      if (!planningToolRuns.get(runId)?.unsafe) planningToolRuns.delete(runId);
       starting.delete(runId);
-      if (!runs.has(runId) && !finished.has(runId)) launchBindings.delete(runId);
+      if (!runs.has(runId) && !finished.has(runId) && !planningToolRuns.get(runId)?.unsafe) launchBindings.delete(runId);
       if (sourceRuntime && !runs.has(runId) && !finished.has(runId)) {
         const verification = verificationRuns.get(runId);
         if (verification && !verification.adapterInvoked && !verification.workspaceProcessInvoked && !verification.unsafe) {
@@ -1064,8 +1105,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
             } });
         } else if (planning) {
           bindWorkspaceReadOnlyTools(config, { projectId: context.project.id, workspaceRoot: plan.root, assertCurrent: () => {
-            planning.signal.throwIfAborted();
-            if (planningToolRuns.get(payload.run_id) !== planning || finished.has(payload.run_id)) {
+            planning.controller.signal.throwIfAborted();
+            if (planningToolRuns.get(payload.run_id) !== planning || planning.unsafe || finished.has(payload.run_id)) {
               throw new Error("Read-only planning is no longer current");
             }
           } });
@@ -1077,9 +1118,22 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
           if (verificationRuns.get(payload.run_id) !== verification || verification.unsafe) throw new Error("Windows verified run is no longer current");
         });
       }
+      const planning = planningToolRuns.get(payload.run_id);
+      if (planning?.profile) {
+        Object.freeze(config);
+        planning.windowsAdmission = bindWindowsPlanningExecution(adapter, config, planning.profile, planning.controller.signal, () => {
+          if (planningToolRuns.get(payload.run_id) !== planning || planning.unsafe) throw new Error("Windows planning run is no longer current");
+        });
+        planning.adapterInvoked = true;
+      }
       if (verification) verification.adapterInvoked = true;
       handle = await adapter.start(config);
     } catch (err) {
+      const planning = planningToolRuns.get(payload.run_id);
+      if (planning?.adapterInvoked && planning.windowsAdmission) {
+        try { assertWindowsPlanningStartupClosed(planning.windowsAdmission); }
+        catch { planning.unsafe = true; }
+      }
       if (err instanceof VerificationCleanupError) {
         const verification = verificationRuns.get(payload.run_id);
         if (verification) verification.unsafe = true;
@@ -1095,6 +1149,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       return;
     }
     runs.set(payload.run_id, { handle, adapter });
+    const planning = planningToolRuns.get(payload.run_id);
+    if (planning?.profile) planning.adapterStarted = true;
     if (mixed) settleMixedLegacy(mixed, { kind: "started" });
     ready();
     await streamStartedRun({ commandId: command.id, runId: payload.run_id, taskId: payload.task_id,
@@ -1233,6 +1289,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         if (rawEvent.type === "run.lifecycle" && (rawEvent.payload.phase === "completed" || rawEvent.payload.phase === "failed" || rawEvent.payload.phase === "cancelled")) {
           const verification = verificationRuns.get(delivery.runId);
           if (verification?.windowsAdmission) assertWindowsVerifiedExecutionClosed(verification.windowsAdmission, handle);
+          const planning = planningToolRuns.get(delivery.runId);
+          if (planning?.windowsAdmission) assertWindowsPlanningExecutionClosed(planning.windowsAdmission, handle);
           if (verification && rawEvent.payload.phase === "completed") {
             // The coding producer no longer owns completion. Close it before
             // hashing or starting the independent administrator verifier.
@@ -1317,12 +1375,19 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         event: { type: "run.lifecycle", payload: { phase: "failed", reason: errorMessage(error) } },
       }).catch(() => {});
     } finally {
-      if (!physical && !verificationRuns.get(delivery.runId)?.unsafe) {
+      if (!physical && !verificationRuns.get(delivery.runId)?.unsafe && !planningToolRuns.get(delivery.runId)?.unsafe) {
         if (sourceRuntime) {
           const verification = verificationRuns.get(delivery.runId);
-          if (!verification?.windowsAdmission) throw new VerificationCleanupError("Product source run lost native closure authority");
-          assertWindowsVerifiedExecutionClosed(verification.windowsAdmission, handle);
-          releaseProductSourceRun(sourceRuntime, delivery.runId);
+          if (verification) {
+            if (!verification.windowsAdmission) throw new VerificationCleanupError("Product source run lost native closure authority");
+            assertWindowsVerifiedExecutionClosed(verification.windowsAdmission, handle);
+            releaseProductSourceRun(sourceRuntime, delivery.runId);
+          } else {
+            const planning = planningToolRuns.get(delivery.runId);
+            if (!planning?.windowsAdmission) throw new VerificationCleanupError("Product source run lost native closure authority");
+            try { assertWindowsPlanningExecutionClosed(planning.windowsAdmission, handle); }
+            catch (error) { planning.unsafe = true; throw error; }
+          }
         }
         finished.add(delivery.runId);
         const ordinary = mixedLegacyStarts.get(delivery.runId);
@@ -1370,7 +1435,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   async function onRunStop(command: RunStopCommand): Promise<void> {
     const runId = command.payload.run_id;
     verificationRuns.get(runId)?.controller.abort();
-    planningToolRuns.get(runId)?.abort();
+    planningToolRuns.get(runId)?.controller.abort();
     if (options.managedJournal?.mixed) mixedStopIntents.add(runId);
     const ordinary = mixedLegacyStarts.get(runId);
     if (ordinary) {
@@ -1441,6 +1506,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     if (!run && verificationRuns.get(runId)?.unsafe) {
       await ackRejected(command.id, "process_start_failed", "Verifier closure remains unconfirmed after startup failure"); return;
     }
+    if (!run && planningToolRuns.get(runId)?.unsafe) {
+      await ackRejected(command.id, "process_start_failed", "Windows planning closure remains unconfirmed after startup failure"); return;
+    }
     if (!run && !finished.has(command.payload.run_id)) {
       // A cancellation can race ahead of run.start. Record the tombstone before
       // acknowledging absence, so a later start for this run cannot spawn.
@@ -1463,6 +1531,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   // (the existing streamEvents loop keeps flowing). Lost → ack rejected
   // (process_exited), and the server maps that to the daemon_disconnect path.
   async function onRunResume(command: RunResumeCommand): Promise<void> {
+    if (planningToolRuns.get(command.payload.run_id)?.unsafe) {
+      await ackRejected(command.id, "process_start_failed", "Windows planning closure remains unconfirmed"); return;
+    }
     if (verificationRuns.get(command.payload.run_id)?.unsafe && !runs.has(command.payload.run_id)) {
       await ackRejected(command.id, "process_start_failed", "Verifier closure remains unconfirmed after startup failure"); return;
     }
@@ -1552,6 +1623,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     // reconnect. Absence from the live map is not proof of exit until that
     // start has either installed its process handle or definitively failed.
     await starting.get(command.payload.run_id);
+    if (planningToolRuns.get(command.payload.run_id)?.unsafe) {
+      await ackRejected(command.id, "process_start_failed", "Windows planning closure remains unconfirmed"); return;
+    }
     if (verificationRuns.get(command.payload.run_id)?.unsafe) {
       await ackRejected(command.id, "process_start_failed", "Verifier process-group closure remains unconfirmed"); return;
     }
@@ -1802,7 +1876,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       sourceOperations?.invalidate();importedReviews?.invalidate();importedDesigns?.invalidate();importedDesignReviews?.invalidate();importedExecutions?.invalidate();importedExecutionReviews?.invalidate();importedValidations?.invalidate();
       releaseExecutor.requestStop();
       if (cancelRunning) {
-        for (const planning of planningToolRuns.values()) planning.abort();
+        for (const planning of planningToolRuns.values()) planning.controller.abort();
         for (const verification of verificationRuns.values()) verification.controller.abort();
         for (const [runId, ordinary] of mixedLegacyStarts) {
           mixedStopIntents.add(runId);
@@ -1819,6 +1893,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
           ...[...runs.entries()].map(([runId, run]) => stopLegacyRun(runId, run)),
           ...[...verificationRuns.entries()].filter(([runId, verification]) => verification.unsafe && !runs.has(runId))
             .map(() => Promise.reject(new VerificationCleanupError("Verifier closure remains unconfirmed after startup failure"))),
+          ...[...planningToolRuns.entries()].filter(([runId, planning]) => planning.unsafe && !runs.has(runId))
+            .map(() => Promise.reject(new VerificationCleanupError("Windows planning closure remains unconfirmed after startup failure"))),
           ...[...mixedLegacyStarts.entries()]
             .filter(([runId, ordinary]) => !runs.has(runId) && (ordinary.stopFailure
               || (ordinary.adapterInvoked && ordinary.outcome?.kind !== "started" && !ordinary.stopCompleted)))
@@ -1851,19 +1927,6 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     }
   };
   return client;
-}
-
-/** A planning snapshot describes a future worker; it grants no access to that worker's files. */
-function isAutonomousPlanningContext(payload: RunStartPayload): boolean {
-  const context = payload.context_pack.payload;
-  if (!context?.conversation || context.policy.execution_mode !== "discussion" || context.policy.filesystem_write_scope.length
-    || context.product_development || context.review_subject || payload.verification || context.verification_capabilities
-    || context.release_capabilities || payload.workspace.branch != null || payload.workspace_allocation !== undefined) return false;
-  try {
-    const request = AutonomousPlanningRequestV1Schema.safeParse(JSON.parse(context.conversation.current_request));
-    return request.success && request.data.planning_capability_snapshot !== null
-      && request.data.planning_capability_snapshot.project_id === context.project.id;
-  } catch { return false; }
 }
 
 function errorMessage(err: unknown): string {

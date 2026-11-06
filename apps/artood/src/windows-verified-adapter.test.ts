@@ -6,11 +6,15 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentInstanceConfig, RunEvent } from "@artoo/protocol";
 import { productDevelopmentContext } from "@artoo/domain";
-import { createProcessAdapter, bindWindowsVerifiedExecution, assertWindowsVerifiedExecutionClosed } from "./process-adapter.js";
+import { createProcessAdapter, bindWindowsVerifiedExecution, assertWindowsVerifiedExecutionClosed,
+  bindWindowsPlanningExecution, assertWindowsPlanningExecutionClosed, assertWindowsPlanningStartupClosed,
+  type WindowsVerifiedExecutionAdmission } from "./process-adapter.js";
 import { bindWorkspaceToolVerifier } from "./workspace-tools.js";
+import { bindWorkspaceReadOnlyTools } from "./workspace-readonly.js";
 import { VerificationCleanupError, type PreparedVerificationProfile } from "./verification.js";
 import type { PreparedWindowsProcessBackend, WindowsOwnedClosureReceipt, WindowsOwnedProcess } from "./owned/windows-owned-process.js";
 import { windowsProcessDiagnostic, withWindowsProcessDiagnostic } from "./owned/windows-process-diagnostic.js";
+import * as guardianScope from "./owned/windows-guardian-scope.js";
 
 const controlled = vi.hoisted(() => ({ start: vi.fn(), backends: new WeakMap<object, object>(), receipts: new WeakSet<object>(),
   workspace: vi.fn(), research: vi.fn(), spawn: vi.fn() }));
@@ -32,7 +36,7 @@ afterEach(() => {
 function freeze<T>(value: T): T {
   if (value && typeof value === "object") { for (const child of Object.values(value)) freeze(child); Object.freeze(value); } return value;
 }
-function fixture(discussion = false, product = false) {
+function fixture(discussion = false, product = false, planning = false) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-windows-adapter-"))); roots.push(root);
   const workspace = join(root, "workspace"); mkdirSync(workspace);
   const config: AgentInstanceConfig = { runId: "run", taskId: "task", agentInstanceId: "agent", runtime: "fixture", workspaceRoot: workspace,
@@ -45,6 +49,13 @@ function fixture(discussion = false, product = false) {
         ...(discussion ? { review_subject: { version: 1 as const, task_id: "author-task", run_id: "author", evidence_id: "evidence", subject_digest: `sha256:${"a".repeat(64)}`, development_stage: "research" as const } } : {}) } },
       policy_snapshot: { filesystem_write_scope: discussion ? [] : [workspace], requires_approval: [] }, artifact_rules: { paths: [] },
       verification: { version: 1, profile_id: "profile", request_id: "verification", ...(discussion ? { expected_subject_digest: `sha256:${"a".repeat(64)}` } : {}) } } };
+  if (planning) {
+    delete config.runStart.verification; delete config.runStart.context_pack.payload!.review_subject;
+    config.runStart.policy_snapshot.filesystem_write_scope = [workspace];
+    config.runStart.context_pack.payload!.conversation = { room_id: "room", turn_id: "turn", messages: [], history_truncated: false,
+      current_request: JSON.stringify({ version: 1, kind: "autonomous-planning", request: "Build a notes product", planning_capability_snapshot: {
+        version: 1, computer_id: "other-computer", project_id: "project", workspace_root: "/future/worker", verification_profile_id: "future-profile", capabilities: null } }) };
+  }
   const profile = { id: "profile", project_id: "project", workspace_root: workspace } as PreparedVerificationProfile;
   const backend = Object.freeze({}) as PreparedWindowsProcessBackend; controlled.backends.set(profile, backend);
   const workspaceClose = vi.fn(async (_options?: { retainFiles?: boolean }) => {}), researchClose = vi.fn(async (_options?: { retainFiles?: boolean }) => {});
@@ -53,6 +64,7 @@ function fixture(discussion = false, product = false) {
   controlled.spawn.mockImplementation(() => { throw new Error("Ordinary process spawning is forbidden in this controlled native-route test"); });
   const command = [process.execPath, "--context", "{{context_pack_path}}", "--tools", "{{workspace_tools_config_path}}"];
   const adapter = createProcessAdapter({ runtimeId: "fixture", allowedRoots: [workspace], artifacts: [], command, discussionCommand: command,
+    ...(planning ? { readOnlyCommand: command } : {}),
     ...(product ? { productCommand: command, research: { receiptDirectory: join(root, "receipts") } } : {}) });
   if (product) bindWorkspaceToolVerifier(config, async () => { throw new Error("Unused controlled verifier"); });
   const controller = new AbortController(); Object.defineProperty(process, "platform", { ...platform, value: "win32" });
@@ -200,5 +212,81 @@ describe("Windows verified adapter (controlled bridge/session fixtures, not nati
     native.finish({ rootCreated: false, rootStarted: false, rootPid: null, rootWaitObserved: false, rootExitCode: null,
       atomicJobMember: false, noTargetCreated: true, rootCreationTime: null, terminationReason: "cancelled" });
     await expected; expect(existsSync(path)).toBe(false);
+  });
+});
+
+describe("Windows planning admission (controlled native bridge, no provider qualification)", () => {
+  function planningFixture() {
+    const f = fixture(true, false, true);
+    bindWorkspaceReadOnlyTools(f.config, { projectId: "project", workspaceRoot: f.workspace, assertCurrent: () => { f.controller.signal.throwIfAborted(); } });
+    return { ...f, bindPlanning: () => bindWindowsPlanningExecution(f.adapter, freeze(f.config), f.profile, f.controller.signal, () => {}) };
+  }
+
+  it("uses native ownership for context-only planning without a verification request or author authority", async () => {
+    const f = planningFixture(), native = nativeFixture(), admission = f.bindPlanning();
+    expect(f.config.runStart.verification).toBeUndefined();
+    const starting = f.adapter.start(f.config); await waitLaunch(); contextPath(); native.start(); const handle = await starting;
+    expect(controlled.workspace.mock.calls[0]![0]).toMatchObject({ readOnlyGrant: expect.any(Object) });
+    expect(controlled.workspace.mock.calls[0]![0].verify).toBeUndefined();
+    expect(() => assertWindowsPlanningExecutionClosed(admission, handle)).toThrow(VerificationCleanupError);
+    native.finish(); expect((await drain(f.adapter.streamEvents(handle))).at(-1)).toMatchObject({ payload: { phase: "completed" } });
+    expect(() => assertWindowsPlanningExecutionClosed(admission, handle)).not.toThrow();
+    expect(() => assertWindowsPlanningExecutionClosed(admission, { ...handle })).toThrow(VerificationCleanupError);
+    expect(() => assertWindowsVerifiedExecutionClosed(admission as unknown as WindowsVerifiedExecutionAdmission, handle)).toThrow(VerificationCleanupError);
+    expect(controlled.spawn).not.toHaveBeenCalled(); expect(controlled.research).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing broker, a copied config, and a replayed planning permit", async () => {
+    const missing = fixture(true, false, true);
+    expect(() => bindWindowsPlanningExecution(missing.adapter, freeze(missing.config), missing.profile, missing.controller.signal, () => {})).toThrow(/context-only broker/);
+    const f = planningFixture(), native = nativeFixture(); f.bindPlanning();
+    expect(() => bindWindowsPlanningExecution(f.adapter, freeze(structuredClone(f.config)), f.profile, f.controller.signal, () => {})).toThrow(/context-only broker/);
+    const starting = f.adapter.start(f.config); await waitLaunch(); contextPath();
+    await expect(f.adapter.start(f.config)).rejects.toThrow(/already consumed/);
+    native.start(); const handle = await starting; native.finish(); await drain(f.adapter.streamEvents(handle));
+    expect(controlled.spawn).not.toHaveBeenCalled();
+  });
+
+  it("waits for the original native closure and broker closure on active stop", async () => {
+    const f = planningFixture(), native = nativeFixture(), admission = f.bindPlanning();
+    const starting = f.adapter.start(f.config); await waitLaunch(); contextPath(); native.start(); const handle = await starting;
+    let stopped = false;
+    const stopping = f.adapter.stop(handle, "user_cancelled").then(() => { stopped = true; }); await Promise.resolve();
+    expect(native.child.cancel).toHaveBeenCalled(); expect(stopped).toBe(false);
+    native.finish({ terminationReason: "cancelled" }); await stopping;
+    expect((await drain(f.adapter.streamEvents(handle))).at(-1)).toMatchObject({ payload: { phase: "cancelled" } });
+    expect(f.workspaceClose).toHaveBeenCalled(); expect(() => assertWindowsPlanningExecutionClosed(admission, handle)).not.toThrow();
+  });
+
+  it("settles a rejected startup only after actual no-target closure", async () => {
+    const f = planningFixture(), native = nativeFixture(), admission = f.bindPlanning();
+    const starting = f.adapter.start(f.config), failure = starting.catch(error => error); await waitLaunch(); const path = contextPath();
+    expect(() => assertWindowsPlanningStartupClosed(admission)).toThrow(VerificationCleanupError);
+    native.finish({ rootCreated: false, rootStarted: false, rootPid: null, rootWaitObserved: false, rootExitCode: null,
+      atomicJobMember: false, noTargetCreated: true, rootCreationTime: null, terminationReason: "create_process", failureCode: "create_process" });
+    expect(await failure).toBeInstanceOf(Error);
+    expect(() => assertWindowsPlanningStartupClosed(admission)).not.toThrow(); expect(existsSync(path)).toBe(false);
+  });
+
+  it("retains unknown startup closure and the external planning context without inventing a handle", async () => {
+    const f = planningFixture(), native = nativeFixture(), admission = f.bindPlanning();
+    const starting = f.adapter.start(f.config), failure = starting.catch(error => error); await waitLaunch(); const path = contextPath();
+    native.fail(); expect(await failure).toBeInstanceOf(VerificationCleanupError);
+    expect(() => assertWindowsPlanningStartupClosed(admission)).toThrow(VerificationCleanupError);
+    expect(existsSync(path)).toBe(true); expect(controlled.spawn).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a rejected asynchronous guardian reservation as a closed no-target startup", async () => {
+    const f = planningFixture();
+    const scope = vi.spyOn(guardianScope, "readWindowsGuardianOperation").mockReturnValue({ backend: f.backend } as guardianScope.WindowsGuardianOperation);
+    const launch = vi.spyOn(guardianScope, "startWindowsScopedProcess").mockRejectedValue(new Error("Controlled reservation helper closure unknown"));
+    try {
+      const admission = f.bindPlanning();
+      await expect(f.adapter.start(f.config)).rejects.toThrow(/guardian startup closure remains unconfirmed/);
+      const path = launch.mock.calls[0]![1].args[1]!; externalRoots.push(dirname(path));
+      expect(existsSync(path)).toBe(true); expect(f.workspaceClose).toHaveBeenCalled();
+      expect(() => assertWindowsPlanningStartupClosed(admission)).toThrow(VerificationCleanupError);
+      expect(controlled.start).not.toHaveBeenCalled(); expect(controlled.spawn).not.toHaveBeenCalled();
+    } finally { launch.mockRestore(); scope.mockRestore(); }
   });
 });

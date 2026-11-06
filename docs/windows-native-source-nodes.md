@@ -6,6 +6,8 @@ Select a dedicated protected JSON file with `ARTOO_PRODUCT_SOURCE_CONFIG_FILE`. 
 
 Startup and source capability publication re-audit this protected directory's ACLs. During a live session the node rechecks the fixed file identity and complete bytes. NTFS first-read access metadata may change, but a second complete read must keep its metadata and bytes stable; content or path changes reject admission.
 
+Autonomous planning on a source-enabled node requires exactly one prepared local verifier profile matching the planning agent's current project and workspace, plus a runtime preset supporting the context-only read-only broker. That profile supplies native process ownership; its verifier commands are not run for planning. Missing or ambiguous local profiles reject planning. The future worker's capability snapshot grants no access to its workspace. Planning uses its own native execution admission and cannot produce verification or source-export authority; completion and cancellation still require the original process and broker closure.
+
 The file has these fields:
 
 | Field | Meaning |
