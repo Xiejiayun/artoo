@@ -3,11 +3,12 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { goalAutomations, goals, productReleases, runs } from "@artoo/db";
+import { goalAutomations, goals, runs } from "@artoo/db";
 import type { ProductReleaseHealthReport, ProductReleaseReceipt, RunVerificationPayload } from "@artoo/domain";
 import { buildTestServer } from "../../server/src/test-support.js";
 import { createSession } from "../../server/src/auth/auth-service.js";
-import { createGoal } from "../../server/src/services/goal-service.js";
+import { cancelGoal, createGoal } from "../../server/src/services/goal-service.js";
+import { createGoalAutomationDispatcher } from "../../server/src/services/goal-automation-service.js";
 import { acceptPlan, proposePlan } from "../../server/src/services/plan-service.js";
 import { assignTask, markReady, reviewTask } from "../../server/src/services/lifecycle-service.js";
 import { ingestWireRunEvent } from "../../server/src/services/run-service.js";
@@ -26,60 +27,81 @@ async function fixture(withPrevious = false) {
   try {
     const origin = await server.app.listen({ host: "127.0.0.1", port: 0 });
     const session = await createSession(server.ctx, { ttlMs: server.ctx.authConfig.sessionTtlMs }, { userId: "user_owner" });
-    const goal = await createGoal(server.ctx, { project_id: "proj_artoo", title: "Controlled publication health", objective: "Display measured product health and recovery accurately" });
-    const plan = await proposePlan(server.ctx, goal.id, { task_specs: [{ title: "Controlled acceptance boundary", acceptance_criteria: ["Controlled verifier evidence for UI coverage"] }] });
-    const materialized = await acceptPlan(server.ctx, plan.id), taskId = materialized.task_ids[0]!;
-    await markReady(server.ctx, taskId);
-    const assigned = await assignTask(server.ctx, taskId, { mode: "auto" });
-    const requirement = { version: 1 as const, request_id: "verify-controlled-ui", profile_id: "default" };
-    await server.db.db.update(runs).set({ verificationRequirement: requirement }).where(eq(runs.id, assigned.run.id));
-    const [run] = await server.db.db.select().from(runs).where(eq(runs.id, assigned.run.id));
-    const verification: RunVerificationPayload = { ...requirement, profile_digest: digest, subject_digest: digest, outcome: "passed",
-      checks: [{ id: "controlled-ui-fixture", exit_code: 0, duration_ms: 1, output_digest: digest }], required_files: [] };
-    for (const [sequence, event] of [
-      { type: "run.lifecycle", payload: { phase: "started" } },
-      { type: "run.verification", payload: verification },
-      { type: "run.lifecycle", payload: { phase: "completed" } },
-    ].entries()) await ingestWireRunEvent(server.ctx, { kind: "run.event", node_id: run!.computerId, run_id: run!.id, sequence, event });
-    await reviewTask(server.ctx, taskId, { outcome: "accepted", comment: "Controlled fixture boundary, not live model acceptance" });
-    await server.db.db.update(goals).set({ status: "running" }).where(eq(goals.id, goal.id));
-    await server.db.db.insert(goalAutomations).values({ goalId: goal.id, organizationId: server.ctx.organizationId,
-      actorUserId: server.ctx.actorUserId, policyVersion: "controlled-ui-fixture", status: "executing", planId: plan.id,
-      agentInstanceId: run!.agentInstanceId, computerId: run!.computerId, workspaceRoot: workspace,
-      verificationProfileId: "default", releaseProfileId: "site", createdAt: server.ctx.clock.nowIso(), updatedAt: server.ctx.clock.nowIso() });
+    async function prepared(subjectDigest: string, title = "Controlled publication health") {
+      const goal = await createGoal(server.ctx, { project_id: "proj_artoo", title, objective: "Display measured product health and recovery accurately" });
+      const plan = await proposePlan(server.ctx, goal.id, { task_specs: [{ title: "Controlled acceptance boundary", acceptance_criteria: ["Controlled verifier evidence for UI coverage"] }] });
+      const materialized = await acceptPlan(server.ctx, plan.id), taskId = materialized.task_ids[0]!;
+      await markReady(server.ctx, taskId);
+      const assigned = await assignTask(server.ctx, taskId, { mode: "auto" });
+      const requirement = { version: 1 as const, request_id: `verify-controlled-ui-${assigned.run.id}`, profile_id: "default" };
+      await server.db.db.update(runs).set({ verificationRequirement: requirement }).where(eq(runs.id, assigned.run.id));
+      const [run] = await server.db.db.select().from(runs).where(eq(runs.id, assigned.run.id));
+      const verification: RunVerificationPayload = { ...requirement, profile_digest: digest, subject_digest: subjectDigest, outcome: "passed",
+        checks: [{ id: "controlled-ui-fixture", exit_code: 0, duration_ms: 1, output_digest: digest }], required_files: [] };
+      for (const [sequence, event] of [
+        { type: "run.lifecycle", payload: { phase: "started" } },
+        { type: "run.verification", payload: verification },
+        { type: "run.lifecycle", payload: { phase: "completed" } },
+      ].entries()) await ingestWireRunEvent(server.ctx, { kind: "run.event", node_id: run!.computerId, run_id: run!.id, sequence, event });
+      await reviewTask(server.ctx, taskId, { outcome: "accepted", comment: "Controlled fixture boundary, not live model acceptance" });
+      await server.db.db.update(goals).set({ status: "running" }).where(eq(goals.id, goal.id));
+      await server.db.db.insert(goalAutomations).values({ goalId: goal.id, organizationId: server.ctx.organizationId,
+        actorUserId: server.ctx.actorUserId, policyVersion: "controlled-ui-fixture", status: "executing", planId: plan.id,
+        agentInstanceId: run!.agentInstanceId, computerId: run!.computerId, workspaceRoot: workspace,
+        verificationProfileId: "default", releaseProfileId: "site", createdAt: server.ctx.clock.nowIso(), updatedAt: server.ctx.clock.nowIso() });
+      const [automation] = await server.db.db.select().from(goalAutomations).where(eq(goalAutomations.goalId, goal.id));
+      return { goal, taskId, run: run!, automation: automation! };
+    }
+    const initial = withPrevious ? await prepared(previousDigest, "Earlier controlled publication") : await prepared(digest);
 
     node = new WebSocket(`${origin.replace("http:", "ws:")}/api/v1/node?token=dev`);
     await new Promise<void>((resolve, reject) => {
       node!.addEventListener("open", () => resolve(), { once: true });
       node!.addEventListener("error", () => reject(new Error("Controlled health node could not connect")), { once: true });
     });
-    node.send(JSON.stringify({ kind: "node.hello", node_id: run!.computerId, protocol_version: "2026-06-11", artood_version: "controlled-health-ui-fixture",
+    node.send(JSON.stringify({ kind: "node.hello", node_id: initial.run.computerId, protocol_version: "2026-06-11", artood_version: "controlled-health-ui-fixture",
       machine: { hostname: "playwright-controlled-health", os: process.platform, arch: process.arch },
       execution_features: ["run-verification.v1", "product-release.static.v1", "product-release.health.v1"],
       verification_profiles: [{ profile_id: "default", project_id: "proj_artoo", workspace_root: workspace }],
       release_profiles: [{ profile_id: "site", project_id: "proj_artoo", workspace_root: workspace, verification_profile_id: "default", target_kind: "static_site" }] }));
-    await expect.poll(() => server.nodeRegistry.get(run!.computerId)?.supportsReleaseProfile?.("site", "proj_artoo", workspace, "default")).toBe(true);
-    const [automation] = await server.db.db.select().from(goalAutomations).where(eq(goalAutomations.goalId, goal.id));
-    await server.db.transaction((tx) => ensureGoalProductRelease(server.ctx, tx, automation!));
-    const release = (await getGoalProductRelease(server.ctx, goal.id))!;
-    const published: ProductReleaseReceipt = { request: release.request, release_profile_digest: digest, artifact_digest: digest,
-      outcome: "published", endpoint: "https://controlled-product.example", previous_release_id: withPrevious ? "release_controlled_previous" : null,
-      health_checks: [{ path: "/", status_code: 200, body_digest: digest, passed: true, checked_at: "2026-11-04T00:00:00Z" }] };
-    if (withPrevious) {
-      const previousGoal = await createGoal(server.ctx, { project_id: "proj_artoo", title: "Earlier controlled publication" });
-      const [row] = await server.db.db.select().from(productReleases).where(eq(productReleases.id, release.id));
-      const previous: ProductReleaseReceipt = { ...published, request: { ...published.request, release_id: published.previous_release_id!,
-        goal_id: previousGoal.id, subject_digest: previousDigest }, artifact_digest: previousDigest, previous_release_id: null,
-        health_checks: published.health_checks.map((check) => ({ ...check, body_digest: previousDigest })) };
-      // Controlled persisted predecessor, needed for the real server's rollback binding gate.
-      await server.db.db.insert(productReleases).values({ ...row!, id: previous.request.release_id, goalId: previousGoal.id,
-        status: "published", request: previous.request, receipt: previous });
+    await expect.poll(() => server.nodeRegistry.get(initial.run.computerId)?.supportsReleaseProfile?.("site", "proj_artoo", workspace, "default")).toBe(true);
+    const socket = node;
+    const queue = (item: Awaited<ReturnType<typeof prepared>>) => server.db.transaction((tx) => ensureGoalProductRelease(server.ctx, tx, item.automation));
+    async function publish(item: Awaited<ReturnType<typeof prepared>>, previousReleaseId: string | null = null) {
+      await expect(queue(item)).resolves.toMatchObject({ status: "pending" });
+      const release = (await getGoalProductRelease(server.ctx, item.goal.id))!;
+      expect(release).toMatchObject({ status: "queued", receipt: null });
+      const published: ProductReleaseReceipt = { request: release.request, release_profile_digest: digest, artifact_digest: release.request.subject_digest,
+        outcome: "published", endpoint: "https://controlled-product.example", previous_release_id: previousReleaseId,
+        health_checks: [{ path: "/", status_code: 200, body_digest: release.request.subject_digest, passed: true, checked_at: "2026-11-04T00:00:00Z" }] };
+      socket.send(JSON.stringify({ kind: "product.release.receipt", node_id: item.run.computerId, payload: published }));
+      await expect.poll(async () => (await getGoalProductRelease(server.ctx, item.goal.id))?.status).toBe("published");
+      return { release, published };
     }
-    node.send(JSON.stringify({ kind: "product.release.receipt", node_id: run!.computerId, payload: published }));
-    await expect.poll(async () => (await getGoalProductRelease(server.ctx, goal.id))?.status).toBe("published");
+    let current = initial, previousReleaseId: string | null = null;
+    if (withPrevious) {
+      const prior = await publish(initial);
+      await expect(queue(initial)).resolves.toMatchObject({ status: "succeeded" });
+      // Publication preserves the reservation. Settle the prior goal before assigning
+      // this same workspace to the next version, retaining its exact published receipt.
+      await expect(cancelGoal(server.ctx, initial.goal.id)).resolves.toMatchObject({ status: "cancelled" });
+      const errors: unknown[] = [], dispatcher = createGoalAutomationDispatcher(server.ctx,
+        async () => { throw Error("The settled prior publication must not need a process stop"); }, error => errors.push(error));
+      try { await dispatcher.pump(); } finally { await dispatcher.stop(); }
+      expect(errors).toEqual([]);
+      expect((await server.db.db.select().from(goalAutomations).where(eq(goalAutomations.goalId, initial.goal.id)))[0]!.status).toBe("cancelled");
+      expect(await getGoalProductRelease(server.ctx, initial.goal.id)).toMatchObject({ status: "published", receipt: prior.published });
+      previousReleaseId = prior.release.id;
+      current = await prepared(digest);
+      expect(current.run.computerId).toBe(initial.run.computerId);
+      expect(current.goal.id).not.toBe(initial.goal.id);
+      expect(current.taskId).not.toBe(initial.taskId);
+      expect(current.run.id).not.toBe(initial.run.id);
+    }
+    const { goal, run } = current;
+    const { release, published } = await publish(current, previousReleaseId);
     await server.db.db.update(goals).set({ status: "completed" }).where(eq(goals.id, goal.id));
     await server.db.db.update(goalAutomations).set({ status: "completed" }).where(eq(goalAutomations.goalId, goal.id));
-    const socket = node;
     return { origin, goal, published, async authenticate(page: Page) {
       // The preview build enables AuthGate; retain it and resolve a real test session.
       await page.context().addCookies([{ name: server.ctx.authConfig.sessionCookieName, value: session.raw, url: origin,
