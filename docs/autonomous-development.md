@@ -16,6 +16,12 @@ This milestone delivers a **verified workspace**, not a published product. It do
 - Configure a node-local acceptance program **outside all agent-writable workspaces**. The server and model select only a profile ID; they cannot supply command arguments or credentials.
 - A configured verification workspace is dedicated to autonomous work. Use one profile per physical workspace with no overlap between configured roots; conflicting configuration is rejected at startup. The node rejects overlapping ordinary writes, including physical directory aliases; same-project read-only planning remains allowed. Use another directory for manual coding.
 
+### Native Windows startup status and troubleshooting
+
+Fresh, non-clean source clients with an authenticated session capability now register ordinary `run.start` before synchronous source audits. The first request retains all source, Guardian and native checks; identical retries wait for that request's actual startup result and successful ACK send. Changed requests or sessions, Stop and uncertain closure reject replay. Clean lifecycle clients and clients without the session capability retain their original path. This scoped repair does not change the original milestone's supported setup or grant execution authority from a cached ACK.
+
+Retention is limited to 1,024 total run identities and Stop-before-start records, 4,096 command ID aliases, and 64 active waiters per run, per client. Limits fail closed without evicting existing ownership; inability to retain a new Stop closes all admission. Use the documented node shutdown/recovery procedure before creating a new client to restore admission capacity. The normal supervised r4 run still failed at its discussion time limit (source CLI exit 1), with runner close and test-server shutdown confirmed. No successful live rerun after this repair is claimed; see [the current Agent Team status](agent-team-development.md) for the separate validation record and remaining shutdown investigation.
+
 ## Configure a verifier
 
 Place a JSON profile file outside the product workspace, for example `/opt/artoo/verification-profiles.json`:

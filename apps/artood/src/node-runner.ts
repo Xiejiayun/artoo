@@ -259,6 +259,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
           ...(source ? {
             ...(source.recoveryConfiguration ? { productSourceRecovery: { configuration: source.recoveryConfiguration, features: source.features,
               ...(cleanLifecycle ? { cleanLifecycle } : {}),
+              replaySession: () => sessionInvalidated || !transport?.connected ? undefined : transport.currentSessionIdentity(),
               isCurrent: () => {
                 if (sessionInvalidated || !transport?.connected || !source) return false;
                 source.assertCurrent(); return true;

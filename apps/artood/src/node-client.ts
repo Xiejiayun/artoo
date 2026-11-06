@@ -44,6 +44,7 @@ import { prepareVerificationProfiles, selectVerificationProfile, readVerificatio
 import { createProductReleaseExecutor, prepareReleaseProfiles, type ReleaseProfile } from "./product-release.js";
 import { bindWorkspaceToolVerifier, bindWorkspaceToolEvidenceReader, bindWorkspaceToolCapabilities, bindWorkspaceToolReleaseCapabilities } from "./workspace-tools.js";
 import { bindWorkspaceReadOnlyTools, isAutonomousPlanningContext } from "./workspace-readonly.js";
+import { createSourceStartReplay, type SourceStartOutcome, type SourceStartScope } from "./source-start-replay.js";
 import { createProductSourceOperationClient } from "./product-source-operations.js";
 import { createImportedProductReviewClient } from "./imported-product-review.js";
 import { createImportedDesignContinuationClient } from "./imported-design-continuation.js";
@@ -128,6 +129,8 @@ export interface NodeClientOptions {
   productSourceRecovery?: { configuration: PreparedWindowsSourceRecoveryConfiguration; features: readonly string[];
     cleanLifecycle?: PreparedCleanDaemonConfiguration;
     isCurrent(): boolean; activate(runtime: PreparedWindowsSourceRecoveryRuntime): PreparedProductSourceRuntime;
+    /** Authenticated connection identity only; no source audit or execution authority. */
+    replaySession?(): object | undefined;
     onFailure?(error: Error): void; onReady?(): void };
   /** Node-runner-owned authenticated connection identity; reconnect cannot revive publication retry authority. */
   releaseRetrySession?: () => object | undefined;
@@ -399,6 +402,15 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   const closedDeliveries = new Map<string, ManagedDelivery>();
   const inflight = new Set<Promise<void>>();
   let unsubscribe: Unsubscribe | undefined;
+  const sourceStartReplay = createSourceStartReplay();
+  // Clean lifecycle's ordinary-state reader performs its own audit. Keep that
+  // existing path until it has a separate local-fact replay capability.
+  const sourceReplayEnabled = !!options.productSourceRecovery?.replaySession && !options.productSourceRecovery.cleanLifecycle;
+  function sourceReplayScope(): SourceStartScope | undefined {
+    const session = options.productSourceRecovery?.replaySession?.();
+    return session && recoveryRuntime && !healthStopped && sourceRecovery?.isActive() && sourceRecovery.allowsOrdinary()
+      ? { runtime: recoveryRuntime, session } : undefined;
+  }
 
   async function sendControl(message: NodeToServerMessage): Promise<void> {
     const operation = transport.send(message);
@@ -406,24 +418,29 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     else await operation;
   }
   async function ackAccepted(commandId: string): Promise<void> {
-    await sendControl({
+    const observed = sourceStartReplay.observeAck(commandId, { status: "accepted" });
+    try { await sendControl({
       kind: "command.ack",
       node_id: nodeId,
       command_id: commandId,
       status: "accepted",
       message: null
-    });
+    }); sourceStartReplay.finishAck(observed, true); }
+    catch (error) { sourceStartReplay.finishAck(observed, false); throw error; }
   }
 
   async function ackRejected(commandId: string, errorCode: NodeErrorCode, message: string): Promise<void> {
-    await sendControl({
+    const observed = sourceStartReplay.observeAck(commandId, { status: "rejected", error_code: errorCode, message });
+    const retained = observed?.outcome;
+    try { await sendControl({
       kind: "command.ack",
       node_id: nodeId,
       command_id: commandId,
       status: "rejected",
       error_code: errorCode,
-      message
-    });
+      message: retained?.status === "rejected" ? retained.message : message
+    }); sourceStartReplay.finishAck(observed, true); }
+    catch (error) { sourceStartReplay.finishAck(observed, false); throw error; }
   }
 
   function track(task: Promise<void>): void {
@@ -1637,6 +1654,28 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   async function dispatch(message: ServerToNodeMessage): Promise<void> {
+    if (sourceRecovery && sourceReplayEnabled && message.type === "run.stop") sourceStartReplay.stopRun(message.payload.run_id);
+    if (!sourceRecovery || !sourceReplayEnabled || message.type !== "run.start") return dispatchFresh(message);
+    const sendOutcome = (outcome: SourceStartOutcome) => sendControl({ kind: "command.ack", node_id: nodeId, command_id: message.id,
+      ...(outcome.status === "accepted" ? { status: "accepted" as const, message: null } : outcome) });
+    let admission: ReturnType<typeof sourceStartReplay.enter>;
+    try {
+      const scope = sourceReplayScope();
+      if (!scope) throw Error("Source startup requires its current authenticated epoch/session");
+      // Register before the first await/full audit. Retries cannot queue more
+      // synchronous observers ahead of this original startup's native callback.
+      admission = sourceStartReplay.enter(message, scope);
+    } catch (error) { await sendOutcome({ status: "rejected", error_code: "process_start_failed", message: errorMessage(error) }); return; }
+    if (!admission.fresh) {
+      const runId = admission.command.payload.run_id;
+      await sendOutcome(await sourceStartReplay.replay(admission.ticket, sourceReplayScope, () => !planningToolRuns.get(runId)?.unsafe
+        && !verificationRuns.get(runId)?.unsafe && !mixedStopIntents.has(runId)));
+      return;
+    }
+    return sourceStartReplay.run(admission.ticket, () => dispatchFresh(admission.command));
+  }
+
+  async function dispatchFresh(message: ServerToNodeMessage): Promise<void> {
     if (!sourceRecovery) return dispatchActive(message);
     try { if (await sourceRecovery.handle(message)) return; }
     catch (error) {
@@ -1767,6 +1806,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         return;
       }
       case "run.start":
+        if (sourceRecovery && sourceReplayEnabled && sourceStartReplay.isStopped(message.payload.run_id)) {
+          return ackRejected(message.id, "process_start_failed", "Source startup is fenced by Stop");
+        }
         return onRunStart(message);
       case "run.start.owned-result.v1":
         return onRunStartOwnedResult(message);
@@ -1865,6 +1907,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       await flushHealth();
     },
     async stop(cancelRunning = false): Promise<void> {
+      sourceStartReplay.invalidate(); // Wake duplicate waiters before any synchronous shutdown audit.
       const close = async () => {
       healthStopped = true;
       if (healthRetry) clearTimeout(healthRetry);
