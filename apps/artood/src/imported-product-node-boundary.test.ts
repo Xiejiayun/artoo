@@ -8,7 +8,8 @@ import {createInProcessChannel} from "@artoo/testkit";
 import {createNodeClient} from "./node-client.js";
 describe("ordinary node admission with imported-review context (controlled adapter only)",()=>{
   it("rejects a public run.start before adapter invocation even without a source runtime",async()=>{
-    const root=realpathSync.native(mkdtempSync(join(tmpdir(),"artoo-import-review-boundary-"))),hash=`sha256:${"a".repeat(64)}`;
+    const temporary=realpathSync.native(tmpdir());
+    const root=realpathSync.native(mkdtempSync(join(temporary,"artoo-import-review-boundary-"))),hash=`sha256:${"a".repeat(64)}`;
     const context:ContextPack={task:{id:"task",title:"Imported review",description:"Controlled remote context",acceptance_criteria:[]},
       project:{id:"project",name:"Project",default_workspace:root},workspace:{root,file_scope:[]},
       policy:{execution_mode:"discussion",filesystem_write_scope:[],requires_approval:[]},memory:{task_summary:null,project_notes:[]},artifacts:{expected:[]},
@@ -27,7 +28,7 @@ describe("ordinary node admission with imported-review context (controlled adapt
         message:expect.stringContaining("dedicated local operation controller")})));
       expect(adapter.start).not.toHaveBeenCalled();
     }finally{
-      await client.stop(true);const prefix=resolve(tmpdir())+sep;
+      await client.stop(true);const prefix=resolve(temporary)+sep;
       if(!root.startsWith(prefix)||!root.slice(prefix.length).startsWith("artoo-import-review-boundary-"))throw Error("Unexpected controlled fixture cleanup root");
       rmSync(root,{recursive:true,force:true});
     }

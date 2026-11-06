@@ -8,13 +8,14 @@ import type {AgentInstanceConfig} from "@artoo/protocol";
 import {prepareVerificationProfiles,subjectManifest} from "./verification.js";
 import {bindWorkspaceReadOnlyTools,takeWorkspaceReadOnlyTools,claimWorkspaceReadOnlyTools} from "./workspace-readonly.js";
 const sha=(value:string)=>`sha256:${createHash("sha256").update(value).digest("hex")}`;
+const temporary=realpathSync.native(tmpdir());
 const roots:string[]=[];
 afterEach(()=>{for(const root of roots.splice(0)){
-  const prefix=resolve(tmpdir())+sep;if(!root.startsWith(prefix)||!root.slice(prefix.length).startsWith("artoo-import-review-readonly-"))throw Error("Unexpected fixture cleanup root");
+  const prefix=resolve(temporary)+sep;if(!root.startsWith(prefix)||!root.slice(prefix.length).startsWith("artoo-import-review-readonly-"))throw Error("Unexpected fixture cleanup root");
   rmSync(root,{recursive:true,force:true});
 }});
 function fixture(){
-  const root=realpathSync.native(mkdtempSync(join(tmpdir(),"artoo-import-review-readonly-")));roots.push(root);
+  const root=realpathSync.native(mkdtempSync(join(temporary,"artoo-import-review-readonly-")));roots.push(root);
   const workspace=join(root,"workspace");mkdirSync(workspace);mkdirSync(join(workspace,"product"));writeFileSync(join(workspace,"product/index.html"),"unchanged source");
   const verifier=join(root,"controlled.fixture");writeFileSync(verifier,"controlled profile trust file; never executed");
   const profile=prepareVerificationProfiles([{id:"profile",project_id:"project",workspace_root:workspace,commands:[{id:"controlled",argv:[verifier],timeout_ms:1000}],

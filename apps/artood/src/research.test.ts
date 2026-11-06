@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +22,7 @@ vi.mock("node:https", async () => {
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); transport.addresses = [{ address: "93.184.216.34", family: 4 }]; transport.lookups = []; });
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "artoo-research-test-")); roots.push(root);
+  const root = realpathSync.native(mkdtempSync(join(realpathSync.native(tmpdir()), "artoo-research-test-"))); roots.push(root);
   const workspace = join(root, "workspace"), receipts = join(root, "receipts"); mkdirSync(workspace);
   const options = prepareResearchOptions({ receiptDirectory: receipts }, [workspace]);
   const binding = { projectId: "project_1", goalId: "goal_1", runId: "run_1", taskId: "task_1", workspaceRoot: workspace };

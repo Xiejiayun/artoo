@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +12,7 @@ import { assertAcceptedProductInputs } from "./product-stage.js";
 import { prepareVerificationProfiles, loadVerificationProfilesFile, verificationSupported, assertVerificationSubject, subjectManifest, type VerificationProfile } from "./verification.js";
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "artoo-verification-"));
+  const root = realpathSync.native(mkdtempSync(join(realpathSync.native(tmpdir()), "artoo-verification-")));
   const workspace = join(root, "product"); mkdirSync(workspace);
   const script = join(root, "verify.mjs"); writeFileSync(script, "process.exit(0)");
   const profile: VerificationProfile = { id: "acceptance", project_id: "project_1", workspace_root: workspace,

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { linkSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,7 +12,7 @@ import { resolveCliCommand } from "./cli-resolver.js";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "artoo-product-stage-")); roots.push(root);
+  const root = realpathSync.native(mkdtempSync(join(realpathSync.native(tmpdir()), "artoo-product-stage-"))); roots.push(root);
   const workspace = join(root, "workspace"); mkdirSync(workspace);
   const options = prepareResearchOptions({ receiptDirectory: join(root, "receipts") }, [workspace]);
   const write = (path: string, value: unknown) => writeFileSync(join(workspace, path), typeof value === "string" ? value : JSON.stringify(value));
@@ -59,7 +59,7 @@ describe("product handoff observations", () => {
     await expect(initializeEmptyProductRepository(f.workspace, resolveCliCommand("git")?.[0] ?? "/usr/bin/git")).rejects.toThrow(/nonempty/);
   });
   it.runIf(process.platform !== "win32")("initializes a real empty repository once, keeping future source unchanged", async () => {
-    const root = mkdtempSync(join(tmpdir(), "artoo-product-init-")); roots.push(root);
+    const root = realpathSync.native(mkdtempSync(join(realpathSync.native(tmpdir()), "artoo-product-init-"))); roots.push(root);
     const git = resolveCliCommand("git")?.[0]; expect(git).toBeDefined();
     expect(await initializeEmptyProductRepository(root, git!)).toBe("created");
     writeFileSync(join(root, "product", "index.html"), "hello");
