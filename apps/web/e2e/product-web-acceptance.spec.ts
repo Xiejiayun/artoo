@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContextPackSchema, ProductDesignSchema, productDevelopmentContext } from "@artoo/domain";
@@ -9,7 +9,7 @@ import { launchOwnedBrowser } from "../../artood/src/owned-browser.js";
 import { readBrowserEvidence, sealBrowserEvidence } from "../../artood/src/browser-evidence.js";
 
 function fixture(variant: "working" | "broken" | "unlabeled" | "external" = "working") {
-  const directory = mkdtempSync(join(tmpdir(), "artoo-browser-acceptance-")), workspace = join(directory, "workspace"), evidence = join(directory, "evidence");
+  const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-browser-acceptance-"))), workspace = join(directory, "workspace"), evidence = join(directory, "evidence");
   mkdirSync(join(workspace, ".artoo", "product"), { recursive: true }); mkdirSync(join(workspace, "product")); mkdirSync(evidence);
   const research = { version: 1, objective: "Journal entries survive reload", assumptions: [],
     requirements: [{ id: "save", description: "Persist entries", priority: "must", acceptance_criteria: ["Save an entry and reload"] }],

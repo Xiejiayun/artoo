@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { goalAutomations, goals, productReleases, runs } from "@artoo/db";
 import type { ProductReleaseHealthReport, ProductReleaseReceipt, RunVerificationPayload } from "@artoo/domain";
 import { buildTestServer } from "../../server/src/test-support.js";
+import { createSession } from "../../server/src/auth/auth-service.js";
 import { createGoal } from "../../server/src/services/goal-service.js";
 import { acceptPlan, proposePlan } from "../../server/src/services/plan-service.js";
 import { assignTask, markReady, reviewTask } from "../../server/src/services/lifecycle-service.js";
@@ -19,10 +20,12 @@ const digest = `sha256:${"a".repeat(64)}`, previousDigest = `sha256:${"b".repeat
  * health monitor, coding model or external deployment. Their gates are separate. */
 async function fixture(withPrevious = false) {
   const workspace = join(tmpdir(), "artoo-controlled-health-ui-workspace");
-  const server = await buildTestServer({ workspaceRoot: workspace, webDistDir: fileURLToPath(new URL("../dist", import.meta.url)) });
+  const server = await buildTestServer({ workspaceRoot: workspace, webDistDir: fileURLToPath(new URL("../dist", import.meta.url)),
+    authConfig: { enforceApiAuth: true } });
   let node: WebSocket | undefined;
   try {
     const origin = await server.app.listen({ host: "127.0.0.1", port: 0 });
+    const session = await createSession(server.ctx, { ttlMs: server.ctx.authConfig.sessionTtlMs }, { userId: "user_owner" });
     const goal = await createGoal(server.ctx, { project_id: "proj_artoo", title: "Controlled publication health", objective: "Display measured product health and recovery accurately" });
     const plan = await proposePlan(server.ctx, goal.id, { task_specs: [{ title: "Controlled acceptance boundary", acceptance_criteria: ["Controlled verifier evidence for UI coverage"] }] });
     const materialized = await acceptPlan(server.ctx, plan.id), taskId = materialized.task_ids[0]!;
@@ -77,7 +80,14 @@ async function fixture(withPrevious = false) {
     await server.db.db.update(goals).set({ status: "completed" }).where(eq(goals.id, goal.id));
     await server.db.db.update(goalAutomations).set({ status: "completed" }).where(eq(goalAutomations.goalId, goal.id));
     const socket = node;
-    return { origin, goal, published, async sendHealth(sequence: number, state: ProductReleaseHealthReport["state"]) {
+    return { origin, goal, published, async authenticate(page: Page) {
+      // The preview build enables AuthGate; retain it and resolve a real test session.
+      await page.context().addCookies([{ name: server.ctx.authConfig.sessionCookieName, value: session.raw, url: origin,
+        httpOnly: true, sameSite: "Lax", secure: server.ctx.authConfig.secureCookies }]);
+      const response = await page.request.get(`${origin}/auth/session`);
+      expect(response.status()).toBe(200);
+      expect((await response.json()).user.id).toBe("user_owner");
+    }, async sendHealth(sequence: number, state: ProductReleaseHealthReport["state"]) {
       const report: ProductReleaseHealthReport = { version: 1, event_id: `controlled_health_${sequence}`, sequence,
         request: published.request, release_profile_digest: digest, artifact_digest: digest, state,
         active_release_id: state === "unavailable" ? null : state === "rolled_back" ? published.previous_release_id : release.id,
@@ -104,6 +114,7 @@ async function fixture(withPrevious = false) {
 }
 
 async function openPublication(page: Page, item: Awaited<ReturnType<typeof fixture>>) {
+  await item.authenticate(page);
   await page.goto(`${item.origin}/goals`);
   await page.getByRole("combobox", { name: "Project", exact: true }).selectOption("proj_artoo");
   await page.getByRole("navigation", { name: "Goal list" }).getByRole("button", { name: /Controlled publication health/ }).click();
