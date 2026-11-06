@@ -329,24 +329,31 @@ export async function runPackagedSmoke(platform, { macDistribution, macViewport 
     } else writeFileSync(fixtureProgram, '@ECHO off\r\n"%_prog%" "%dp0%\\fixture-codex.mjs" %*\r\n');
     writeFileSync(fixtureEntry, `import {existsSync,readFileSync,writeFileSync} from 'node:fs';
 if (process.env.ARTOO_CODEX_PROVIDER_KEY !== ${JSON.stringify(fixtureKey)}) throw new Error('Configured fixture key did not reach CLI');
-${isMac ? `const source = readFileSync('context_pack.md', 'utf8'), marker = '## Raw Payload\\n';
+${isMac ? `const {isAbsolute} = await import('node:path');
+// Discussion contexts live outside cwd. Follow the actual production prompt for every route.
+const prompt = process.argv.at(-1), prefix = 'Read the file ';
+const boundary = prompt?.indexOf('. If its payload contains conversation, ');
+if (!prompt?.startsWith(prefix) || boundary < prefix.length) throw new Error('Installed fixture requires the production context prompt');
+const contextPath = prompt.slice(prefix.length, boundary);
+if (!isAbsolute(contextPath)) throw new Error('Installed fixture requires an absolute context path');
+const source = readFileSync(contextPath, 'utf8'), marker = '## Raw Payload\\n';
 if (!source.includes(marker)) throw new Error('Installed fixture is missing its actual context pack');
 const pack = JSON.parse(source.slice(source.indexOf(marker) + marker.length));
 if (pack.conversation) {
   if (pack.policy.execution_mode === 'discussion') {
     const {runMacPlanningFixture} = await import(${JSON.stringify(pathToFileURL(join(desktopDir, "scripts/mac-planning-fixture.mjs")).href)});
-    runMacPlanningFixture({contextPath:'context_pack.md',configurationPath:${JSON.stringify(planningConfigurationPath)}});
+    runMacPlanningFixture({contextPath,configurationPath:${JSON.stringify(planningConfigurationPath)}});
   } else {
     const {runAssistantConversationFixture} = await import(${JSON.stringify(pathToFileURL(join(desktopDir, "../../scripts/fixtures/assistant-conversation.mjs")).href)});
-    await runAssistantConversationFixture({contextPath:'context_pack.md',configurationPath:${JSON.stringify(assistantConfigurationPath)}});
+    await runAssistantConversationFixture({contextPath,configurationPath:${JSON.stringify(assistantConfigurationPath)}});
   }
 } else if (existsSync(${JSON.stringify(correctionConfigurationPath)}) && pack.task.title === JSON.parse(readFileSync(${JSON.stringify(correctionConfigurationPath)}, 'utf8')).task_title) {
   const {runExecutionCorrectionFixture} = await import(${JSON.stringify(pathToFileURL(join(repoRoot, "scripts/fixtures/execution-correction.mjs")).href)});
-  await runExecutionCorrectionFixture({contextPath:'context_pack.md',configurationPath:${JSON.stringify(correctionConfigurationPath)}});
+  await runExecutionCorrectionFixture({contextPath,configurationPath:${JSON.stringify(correctionConfigurationPath)}});
 } else if (existsSync(${JSON.stringify(zeroArtifactConfigurationPath)}) && pack.task.title === JSON.parse(readFileSync(${JSON.stringify(zeroArtifactConfigurationPath)}, 'utf8')).task_title) {
   if (process.env.ARTOO_REPORT_ARTIFACTS !== 'none') throw new Error('The installed zero-artifact worker must disable report collection explicitly');
   const {runZeroArtifactWorkspace} = await import(${JSON.stringify(pathToFileURL(join(repoRoot, "scripts/fixtures/zero-artifact-workspace.mjs")).href)});
-  runZeroArtifactWorkspace({contextPath:'context_pack.md',configurationPath:${JSON.stringify(zeroArtifactConfigurationPath)}});
+  runZeroArtifactWorkspace({contextPath,configurationPath:${JSON.stringify(zeroArtifactConfigurationPath)}});
 } else {` : ""}
 writeFileSync('changes.patch', ${JSON.stringify(fixturePatch)});
 writeFileSync('fixture-execution.json', JSON.stringify({argv:process.argv.slice(2), executable:process.execPath, cwd:process.cwd(), apiKeyConfigured:true}));

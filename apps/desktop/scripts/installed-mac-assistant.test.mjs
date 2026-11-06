@@ -201,14 +201,16 @@ function inlineFixture(t) {
     writeFileSync(join(workspace, "context_pack.md"), `# Context Pack unit\ntask: unit-task\nrun: ${runId}\n\n## Raw Payload\n${JSON.stringify(pack)}`);
   };
   const parse = (text) => text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  const run = (mode, runId) => { prepare(mode, runId); return spawnSync(process.execPath, [program], { cwd: workspace, env: { ARTOO_CODEX_PROVIDER_KEY: "unit-key" }, encoding: "utf8", timeout: 10_000 }); };
+  const argv = [program, "exec", "--json", "-s", "workspace-write", "-C", workspace,
+    `Read the file ${join(workspace, "context_pack.md")}. If its payload contains conversation, respond to conversation.current_request.`];
+  const run = (mode, runId) => { prepare(mode, runId); return spawnSync(process.execPath, argv, { cwd: workspace, env: { ARTOO_CODEX_PROVIDER_KEY: "unit-key" }, encoding: "utf8", timeout: 10_000 }); };
   const remember = (mode, output) => {
     const answer = parse(output).find((frame) => frame.type === "item.completed").item.text;
     history.push({ id: `request-${mode}`, role: "user", actor_id: fixture.user_id, body: fixture.requests[mode] },
       { id: `answer-${mode}`, role: "assistant", actor_id: fixture.agent_instance_id, body: answer });
     return answer;
   };
-  return { fixture, workspace, program, prepare, parse, run, remember };
+  return { fixture, workspace, program, argv, prepare, parse, run, remember };
 }
 
 test("generated Mac CLI routes all direct modes to the shared fixture without falling into artifact or planning", async (t) => {
@@ -219,7 +221,7 @@ test("generated Mac CLI routes all direct modes to the shared fixture without fa
   const retried = state.run("second", "run-retried"); assert.equal(retried.status, 0, retried.stderr);
   assert.equal(state.remember("second", retried.stdout), `Follow-up used the actual earlier answer: ${firstAnswer}`);
   state.prepare("hold", "run-held");
-  const child = spawn(process.execPath, [state.program], { cwd: state.workspace, env: { ARTOO_CODEX_PROVIDER_KEY: "unit-key" }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, state.argv, { cwd: state.workspace, env: { ARTOO_CODEX_PROVIDER_KEY: "unit-key" }, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "", stderr = ""; child.stdout.on("data", (data) => { stdout += data; }); child.stderr.on("data", (data) => { stderr += data; });
   const closed = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal })); });
   t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await closed; });

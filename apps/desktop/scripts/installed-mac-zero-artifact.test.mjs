@@ -76,12 +76,14 @@ function prepareEmbeddedFixture(t) {
     "planningConfigurationPath", "assistantConfigurationPath", "correctionConfigurationPath", "zeroArtifactConfigurationPath", "fixturePatch", source.slice(start, end))(
     writeFileSync, fixtureEntry, "unit-key", true, pathToFileURL, join, desktopDir, repoRoot,
     join(root, "unused-planning.json"), join(root, "unused-assistant.json"), join(root, "unused-correction.json"), setup.configurationPath, "must-not-fabricate-a-report");
-  return { setup, fixtureEntry };
+  const argv = [fixtureEntry, "exec", "--json", "-s", "workspace-write", "-C", setup.fields.workspace_root,
+    `Read the file ${join(setup.fields.workspace_root, "context_pack.md")}. If its payload contains conversation, respond to conversation.current_request.`];
+  return { setup, fixtureEntry, argv };
 }
 
 test("the installed CLI routing executes the separate real child without fabricating changes.patch", (t) => {
-  const { setup, fixtureEntry } = prepareEmbeddedFixture(t);
-  const child = spawnSync(process.execPath, [fixtureEntry], { cwd: setup.fields.workspace_root,
+  const { setup, argv } = prepareEmbeddedFixture(t);
+  const child = spawnSync(process.execPath, argv, { cwd: setup.fields.workspace_root,
     env: { ARTOO_CODEX_PROVIDER_KEY: "unit-key", ARTOO_REPORT_ARTIFACTS: "none" }, encoding: "utf8", timeout: 10_000 });
   assert.equal(child.status, 0, child.stderr); assert.equal(child.signal, null);
   assert.deepEqual(child.stdout.trim().split("\n").map((line) => JSON.parse(line).type), ["thread.started", "item.completed", "turn.completed"]);
@@ -95,9 +97,9 @@ test("the installed CLI routing executes the separate real child without fabrica
 });
 
 test("the installed zero-artifact route refuses the default report-collecting worker before modifying work", (t) => {
-  const { setup, fixtureEntry } = prepareEmbeddedFixture(t);
+  const { setup, argv } = prepareEmbeddedFixture(t);
   const before = readFileSync(join(setup.fields.workspace_root, "implementation.txt"));
-  const child = spawnSync(process.execPath, [fixtureEntry], { cwd: setup.fields.workspace_root,
+  const child = spawnSync(process.execPath, argv, { cwd: setup.fields.workspace_root,
     env: { ARTOO_CODEX_PROVIDER_KEY: "unit-key" }, encoding: "utf8", timeout: 10_000 });
   assert.notEqual(child.status, 0); assert.match(child.stderr, /disable report collection explicitly/);
   assert.equal(child.stdout, ""); assert.deepEqual(readdirSync(setup.receipts), []);
