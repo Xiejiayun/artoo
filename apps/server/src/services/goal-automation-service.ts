@@ -376,9 +376,8 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
     if (!reviewer) throw AppError.conflict("Connect a second available planning instance advertising the requested verification profile, project and ordinary workspace.");
     const planningCapabilitySnapshot = capturePlanningSnapshot(ctx, { ...row, computerId: writer.computer_id,
       workspaceRoot: writerRoot! }, goal.projectId);
-    const routingInstructions = row.sourceHandoff == null ? "" : " Automatic source handoff is authorized. Plan exactly four ordered research, design, implementation and validation tasks, each after research with one hard dependency on the immediately preceding stage. The system selects the destination from administrator-prepared mappings; do not select machines or commands in task text.";
     const discussion = await startDiscussion(ctx, goal.id, { participants: [
-      { agent_instance_id: writer.agent_instance_id, role: (team ? "Coordinate staged research, design, implementation and validation. Assign concrete deliverables and dependencies for the Agent Team." : "Plan research, design and implementation as concrete workspace tasks with observable criteria.") + routingInstructions },
+      { agent_instance_id: writer.agent_instance_id, role: team ? "Coordinate staged research, design, implementation and validation. Assign concrete deliverables and dependencies for the Agent Team." : "Plan research, design and implementation as concrete workspace tasks with observable criteria." },
       { agent_instance_id: reviewer.agent_instance_id, role: team ? "Challenge feasibility and evidence. Require cited research, a working prototype and measured validation. Peer review and release are handled by trusted executors." : "Review feasibility and verification. Keep delivery in the configured workspace; do not plan deployment." },
     ], rounds: 1, max_minutes: 15 });
     await update(ctx, tx, row, { discussionId: discussion.id, agentInstanceId: writer.agent_instance_id, computerId: writer.computer_id,
