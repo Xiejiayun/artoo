@@ -38,7 +38,7 @@ it("appends nullable planning snapshots without backfilling history and preserve
     expect(await client.db.select().from(goals)).toEqual(originalGoals);
     expect((await client.db.execute(sql`SELECT planning_capability_snapshot IS NULL AS unsampled FROM goal_automations`)).rows)
       .toEqual([{ unsampled: true }]);
-    expect((await client.db.select().from(goalAutomations))[0]!.planningCapabilitySnapshot).toBeNull();
+    expect((await client.db.select({ planningCapabilitySnapshot: goalAutomations.planningCapabilitySnapshot }).from(goalAutomations))[0]!.planningCapabilitySnapshot).toBeNull();
     expect((await client.db.execute(sql`SELECT conname, contype FROM pg_constraint
       WHERE conrelid = 'goal_automations'::regclass AND conname = 'goal_automations_planning_capability_snapshot_chk'`)).rows)
       .toEqual([{ conname: "goal_automations_planning_capability_snapshot_chk", contype: "c" }]);
@@ -58,11 +58,13 @@ it("distinguishes SQL NULL from JSON null and enforces a numeric version-1 objec
     await seed(client, now);
     await client.db.insert(goals).values({ id: "goal_new", organizationId: "org_default", projectId: "proj_artoo",
       ownerUserId: "user_owner", title: "New planning", createdAt: now, updatedAt: now });
-    await client.db.insert(goalAutomations).values({ goalId: "goal_new", organizationId: "org_default", actorUserId: "user_owner",
-      policyVersion: "policy_v1", status: "planning", verificationProfileId: "web", createdAt: now, updatedAt: now });
-    expect((await client.db.select().from(goalAutomations))[0]!.planningCapabilitySnapshot).toBeNull();
+    // Keep this historical fixture independent of columns introduced after migration 0031.
+    await client.db.execute(sql`INSERT INTO goal_automations
+      (goal_id, organization_id, actor_user_id, policy_version, status, verification_profile_id, created_at, updated_at)
+      VALUES ('goal_new','org_default','user_owner','policy_v1','planning','web',${now},${now})`);
+    expect((await client.db.select({ planningCapabilitySnapshot: goalAutomations.planningCapabilitySnapshot }).from(goalAutomations))[0]!.planningCapabilitySnapshot).toBeNull();
     await client.db.update(goalAutomations).set({ planningCapabilitySnapshot: unknownScope }).where(eq(goalAutomations.goalId, "goal_new"));
-    expect((await client.db.select().from(goalAutomations))[0]!.planningCapabilitySnapshot).toEqual(unknownScope);
+    expect((await client.db.select({ planningCapabilitySnapshot: goalAutomations.planningCapabilitySnapshot }).from(goalAutomations))[0]!.planningCapabilitySnapshot).toEqual(unknownScope);
     expect((await client.db.execute(sql`SELECT planning_capability_snapshot IS NULL AS unsampled,
       planning_capability_snapshot -> 'capabilities' = 'null'::jsonb AS captured_unknown FROM goal_automations`)).rows)
       .toEqual([{ unsampled: false, captured_unknown: true }]);
@@ -79,11 +81,11 @@ it("distinguishes SQL NULL from JSON null and enforces a numeric version-1 objec
       const cause = (failure as { cause?: unknown }).cause ?? failure;
       expect(cause).toMatchObject({ code: "23514" });
       expect((cause as Error).message).toContain("goal_automations_planning_capability_snapshot_chk");
-      expect((await client.db.select().from(goalAutomations))[0]!.planningCapabilitySnapshot).toEqual(unknownScope);
+      expect((await client.db.select({ planningCapabilitySnapshot: goalAutomations.planningCapabilitySnapshot }).from(goalAutomations))[0]!.planningCapabilitySnapshot).toEqual(unknownScope);
     }
     // The database enforces the versioned envelope; complete capability/identity parsing belongs to domain admission.
     await client.db.execute(sql`UPDATE goal_automations SET planning_capability_snapshot = '{"version":1.0}'::jsonb WHERE goal_id = 'goal_new'`);
-    expect((await client.db.select().from(goalAutomations))[0]!.planningCapabilitySnapshot).toEqual({ version: 1 });
+    expect((await client.db.select({ planningCapabilitySnapshot: goalAutomations.planningCapabilitySnapshot }).from(goalAutomations))[0]!.planningCapabilitySnapshot).toEqual({ version: 1 });
     await client.db.update(goalAutomations).set({ planningCapabilitySnapshot: null }).where(eq(goalAutomations.goalId, "goal_new"));
     expect((await client.db.execute(sql`SELECT planning_capability_snapshot IS NULL AS unsampled FROM goal_automations`)).rows)
       .toEqual([{ unsampled: true }]);

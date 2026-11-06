@@ -518,14 +518,28 @@ describe("Agent Team execution and independent source-bound review", () => {
   it("retains exposed uncertainty when transport throws before its delivery outcome is known", async () => {
     const { run } = await lostAuxiliaryStart("planning");
     let observedExposure: string | undefined;
+    let dispatchDb: typeof server.db.db | undefined;
     const transport: NodeTransport = { async send() {
-      observedExposure = (await server.db.db.select().from(assistantRunDispatches).where(eq(assistantRunDispatches.runId, run.id)))[0]?.state;
+      expect(dispatchDb).toBeDefined();
+      observedExposure = (await dispatchDb!.select().from(assistantRunDispatches).where(eq(assistantRunDispatches.runId, run.id)))[0]?.state;
       throw new Error("Socket write outcome is unknown");
     }, subscribe() { return () => {}; }, async close() {} };
     const binding = attachNodeBinding(server.ctx, transport, run.computerId);
     bindings.push(binding);
-    await expect(binding.dispatchRunStart(run.id)).rejects.toThrow("Socket write outcome is unknown");
+    const transaction = server.db.transaction.bind(server.db);
+    // The real send holds the computer fence in a transaction. An outer PGlite
+    // query from this test transport would wait on the transaction awaiting send.
+    const captureTransaction = vi.spyOn(server.db, "transaction").mockImplementation(fn => transaction(async tx => {
+      const previous = dispatchDb;
+      dispatchDb = tx;
+      try { return await fn(tx); } finally { dispatchDb = previous; }
+    }));
+    try { await expect(binding.dispatchRunStart(run.id)).rejects.toThrow("Socket write outcome is unknown"); }
+    finally { captureTransaction.mockRestore(); }
     expect(observedExposure).toBe("exposed");
+    // Exposure must survive the real dispatch transaction's rollback on send failure.
+    expect((await server.db.db.select().from(assistantRunDispatches).where(eq(assistantRunDispatches.runId, run.id)))[0])
+      .toMatchObject({ state: "exposed" });
     const connected = reconnect();
     await connected.binding.dispatchRunResume(run.id);
     expect(connected.sent).toHaveLength(1);
