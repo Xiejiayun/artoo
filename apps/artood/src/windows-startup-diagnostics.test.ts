@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { withWindowsStartupDiagnostics, recordWindowsStartupPhase, recordWindowsStartupFailure, completeWindowsStartupDiagnostics,
   WindowsStartupDiagnosticSchema, type WindowsStartupDiagnostic } from "./windows-startup-diagnostics.js";
 import { markWindowsNativeFailure, readWindowsNativeFailureCode, windowsNativeFailureDetail } from "./owned/windows-process-diagnostic.js";
+import { markWindowsStorageFailure, readWindowsStorageFailure } from "./windows-storage-diagnostic.js";
 describe("bounded safe startup diagnostics", () => {
   it("reports the failing phase and elapsed time without copying any exception or environment data", async () => {
     const events: WindowsStartupDiagnostic[] = [], secret = "provider-key-and-sensitive-path";
@@ -115,6 +116,64 @@ describe("bounded safe startup diagnostics", () => {
     expect(first.map(value => value.phase)).not.toContain("source_storage");
     expect(second.map(value => value.phase)).not.toContain("git_installation");
     expect(first.at(-1)).toMatchObject({ phase: "git_installation", status: "completed" });
+  });
+  it("retains the first local storage failure on the same frozen error without modifying it", async () => {
+    const events: WindowsStartupDiagnostic[] = [], original = Object.freeze(new Error("private-storage-path"));
+    expect(markWindowsStorageFailure(original, "storage_inventory_changed", ["ctime", "size"])).toBe(original);
+    expect(markWindowsStorageFailure(original, "filesystem_observation_failed")).toBe(original);
+    const pending = withWindowsStartupDiagnostics(value => events.push(value), async () => {
+      recordWindowsStartupPhase("source_store_audit"); recordWindowsStartupFailure(original);
+      recordWindowsStartupPhase("source_retained_destinations");
+      recordWindowsStartupFailure(markWindowsStorageFailure(new Error("private-later-error"), "acl_collector_failed"));
+      throw original;
+    });
+    await expect(pending).rejects.toBe(original);
+    expect(events.filter(value => value.status === "failed")).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ phase: "source_store_audit",
+      storage_failure: { code: "storage_inventory_changed", first_change_fields: ["ctime", "size"] } });
+    expect(JSON.stringify(events)).not.toContain("private-");
+    expect(Object.isFrozen(readWindowsStorageFailure(original))).toBe(true);
+    expect(Object.isFrozen(readWindowsStorageFailure(original)?.first_change_fields)).toBe(true);
+  });
+  it("never obtains storage labels from copied fields, prototypes or a branded cause and preserves unknown throws", async () => {
+    const tagged = markWindowsStorageFailure(new Error("private-leaf"), "storage_acl_rejected");
+    const copied = Object.assign(new Error("private-copied"), { storage_failure: { code: "storage_acl_rejected" }, code: "storage_acl_rejected" });
+    let propertyReads = 0;
+    const accessor = Object.defineProperty(new Error("private-accessor"), "storage_failure", { get() { propertyReads++; throw Error("private-getter"); } });
+    const inherited = Object.create({ get storage_failure() { propertyReads++; throw Error("private-prototype"); } });
+    const cyclic = Object.assign(new Error("private-cycle"), { cause: tagged }); Object.defineProperty(cyclic, "cause", { value: cyclic });
+    const revoked = Proxy.revocable({}, {}); revoked.revoke();
+    let deep: Error = tagged;
+    for (let i = 0; i < 10; i++) deep = new Error("private-wrapper", { cause: deep });
+    for (const failure of [copied, accessor, inherited, new Error("private-wrapper", { cause: tagged }), cyclic, deep, revoked.proxy, null, undefined, "private-primitive", 17]) {
+      const events: WindowsStartupDiagnostic[] = []; let same = false;
+      try { await withWindowsStartupDiagnostics(value => events.push(value), async () => { throw failure; }); }
+      catch (caught) { same = Object.is(caught, failure); }
+      expect(same).toBe(true); expect(events.at(-1)?.status).toBe("failed");
+      expect(events.at(-1)).not.toHaveProperty("storage_failure"); expect(readWindowsStorageFailure(failure)).toBeUndefined();
+    }
+    expect(propertyReads).toBe(0);
+  });
+  it("accepts old events and rejects non-failure storage labels and arbitrary or inconsistent detail", () => {
+    const failed = { version: 1, phase: "source_store_audit", status: "failed", elapsed_ms: 10, phase_elapsed_ms: 5,
+      error_code: "startup_stage_failed" };
+    expect(WindowsStartupDiagnosticSchema.safeParse(failed).success).toBe(true);
+    expect(WindowsStartupDiagnosticSchema.safeParse({ ...failed, storage_failure: { code: "storage_inventory_changed", first_change_fields: ["ctime"] } }).success).toBe(true);
+    for (const storage_failure of [{ code: "private-code" }, { code: "storage_acl_rejected", path: "private-path" },
+      { code: "storage_acl_rejected", first_change_fields: ["ctime"] }, { code: "storage_inventory_changed", first_change_fields: [] },
+      { code: "storage_inventory_changed", first_change_fields: ["ctime", "ctime"] }, { code: "storage_inventory_changed", first_change_fields: ["private-field"] }])
+      expect(WindowsStartupDiagnosticSchema.safeParse({ ...failed, storage_failure }).success).toBe(false);
+    for (const status of ["entered", "completed"])
+      expect(WindowsStartupDiagnosticSchema.safeParse({ ...failed, status, error_code: undefined, storage_failure: { code: "storage_acl_rejected" } }).success).toBe(false);
+  });
+  it("distinguishes retained-destination failures from the completed store audit without inventing a storage label", async () => {
+    const events: WindowsStartupDiagnostic[] = [], original = new Error("private-journal-error");
+    await expect(withWindowsStartupDiagnostics(value => events.push(value), async () => {
+      recordWindowsStartupPhase("source_store_audit"); recordWindowsStartupPhase("source_retained_destinations"); throw original;
+    })).rejects.toBe(original);
+    expect(events).toContainEqual(expect.objectContaining({ phase: "source_store_audit", status: "completed" }));
+    expect(events.at(-1)).toMatchObject({ phase: "source_retained_destinations", status: "failed" });
+    expect(events.at(-1)).not.toHaveProperty("storage_failure");
   });
   it("bounds event volume and rejects arbitrary phase, code and metadata fields", async () => {
     const events: WindowsStartupDiagnostic[] = [];

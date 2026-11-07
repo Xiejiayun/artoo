@@ -9,6 +9,7 @@ import { performance } from "node:perf_hooks";
 import { readWindowsGuardianOperation } from "./owned/windows-guardian-scope.js";
 import { reserveWindowsGuardianSlotSync } from "./owned/windows-runtime-guardian.js";
 import { startWindowsGuardianObserverSync } from "./owned/windows-owned-process.js";
+import { markWindowsStorageFailure, type WindowsStorageFailureCode } from "./windows-storage-diagnostic.js";
 
 export const MAX_WINDOWS_AUDIT_PATHS = 65536;
 const MAX_INPUT_BYTES = 16 * 1024 * 1024, MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
@@ -25,7 +26,9 @@ export const TRUSTED_WINDOWS_SYSTEM_SIDS = Object.freeze([
 export const WINDOWS_MUTATION_MASK = 0x500d0156;
 export const WINDOWS_ANCESTOR_REPLACEMENT_MASK = WINDOWS_MUTATION_MASK & ~0x4;
 export const windowsPathKey = (path: string): string => path.toLowerCase();
-function fail(reason: string): never { throw new Error(`Windows local ACL: ${reason}`); }
+function fail(reason: string, code: WindowsStorageFailureCode = "acl_input_rejected"): never {
+  throw markWindowsStorageFailure(new Error(`Windows local ACL: ${reason}`), code);
+}
 
 const SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -110,12 +113,14 @@ export function assertCanonicalWindowsPath(value: unknown): asserts value is str
 }
 export function physicalWindowsDirectory(value: unknown): string {
   assertCanonicalWindowsPath(value);
-  for (const component of windowsPathComponents(value)) {
-    const stat = lstatSync(component);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) fail(`directory link or non-directory component: ${component}`);
-  }
-  if (realpathSync.native(value) !== value) fail(`directory is not its physical path: ${value}`);
-  return value;
+  try {
+    for (const component of windowsPathComponents(value)) {
+      const stat = lstatSync(component);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) fail(`directory link or non-directory component: ${component}`);
+    }
+    if (realpathSync.native(value) !== value) fail(`directory is not its physical path: ${value}`);
+    return value;
+  } catch (error) { throw markWindowsStorageFailure(error, "filesystem_observation_failed"); }
 }
 export function windowsPathsOverlap(left: string, right: string): boolean {
   const inside = (parent: string, child: string): boolean => {
@@ -141,7 +146,9 @@ export function collectWindowsAclFacts(targets: readonly WindowsAclTarget[], tim
   }
   const configured = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!configured || !win32.isAbsolute(configured)) fail("the node lacks its local Windows system root");
-  const systemRoot = physicalWindowsDirectory(realpathSync.native(configured));
+  let systemRoot: string;
+  try { systemRoot = physicalWindowsDirectory(realpathSync.native(configured)); }
+  catch (error) { throw markWindowsStorageFailure(error, "filesystem_observation_failed"); }
   const input = JSON.stringify({ version: 1, paths: targets });
   if (Buffer.byteLength(input) > MAX_INPUT_BYTES) fail("audit input limit");
   const executable = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
@@ -152,7 +159,7 @@ export function collectWindowsAclFacts(targets: readonly WindowsAclTarget[], tim
     const slot = reserveWindowsGuardianSlotSync(scope.guardian, { operationKind: "observer", operationId: scope.operationId,
       bindingDigest, serverOperation: scope.serverOperation });
     const remaining = Math.floor(timeoutMs - (performance.now() - begun));
-    if (remaining < 1) fail("audit deadline elapsed before collector launch");
+    if (remaining < 1) fail("audit deadline elapsed before collector launch", "acl_collector_failed");
     const observed = startWindowsGuardianObserverSync(scope.backend, { executable,
       args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT], cwd: scope.workspaceRoot,
       timeoutMs: remaining, cleanupTimeoutMs: 5000, maxOutputBytes: MAX_OUTPUT_BYTES,
@@ -168,31 +175,31 @@ export function collectWindowsAclFacts(targets: readonly WindowsAclTarget[], tim
         PSModulePath: win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules") },
     });
   let value: unknown;
-  try { value = JSON.parse(result.stdout ?? ""); } catch { fail("the fixed local collector did not return valid facts"); }
+  try { value = JSON.parse(result.stdout ?? ""); } catch { fail("the fixed local collector did not return valid facts", "acl_facts_rejected"); }
   if (result.error || result.status !== 0 || result.signal !== null) {
     const failed = value as { errorCode?: unknown; path?: unknown } | null;
     const code = typeof failed?.errorCode === "string" && /^[a-z_]{1,64}$/.test(failed.errorCode) ? failed.errorCode : "collector_failed";
-    fail(`${code}${typeof failed?.path === "string" ? `: ${failed.path}` : ""}`);
+    fail(`${code}${typeof failed?.path === "string" ? `: ${failed.path}` : ""}`, "acl_collector_failed");
   }
-  if (!value || typeof value !== "object") fail("invalid audit response");
+  if (!value || typeof value !== "object") fail("invalid audit response", "acl_facts_rejected");
   const report = value as WindowsAclReport;
-  if (report.version !== 1 || !isSid(report.currentSid) || !Array.isArray(report.nodes) || report.nodes.length !== expected.size) fail("audit identity or inventory mismatch");
+  if (report.version !== 1 || !isSid(report.currentSid) || !Array.isArray(report.nodes) || report.nodes.length !== expected.size) fail("audit identity or inventory mismatch", "acl_facts_rejected");
   const seen = new Set<string>();
   for (const node of report.nodes) {
-    if (!node || typeof node !== "object" || typeof node.path !== "string") fail("invalid path fact");
+    if (!node || typeof node !== "object" || typeof node.path !== "string") fail("invalid path fact", "acl_facts_rejected");
     assertCanonicalWindowsPath(node.path);
     const identity = windowsPathKey(node.path), target = expected.get(identity);
     if (!target || target.path !== node.path || seen.has(identity) || node.directory !== target.directory
       || !Number.isSafeInteger(node.attributes) || node.attributes < 0 || (node.attributes & 0x400) !== 0
       || ((node.attributes & 0x10) !== 0) !== node.directory || node.driveType !== "Fixed" || node.fileSystem !== "NTFS"
-      || typeof node.volumeRoot !== "string" || windowsPathKey(node.volumeRoot) !== windowsPathKey(win32.parse(node.path).root)) fail("physical NTFS facts are invalid");
+      || typeof node.volumeRoot !== "string" || windowsPathKey(node.volumeRoot) !== windowsPathKey(win32.parse(node.path).root)) fail("physical NTFS facts are invalid", "acl_facts_rejected");
     seen.add(identity);
     if (!target.readAcl) continue;
-    if (!isSid(node.ownerSid) || node.daclPresent !== true || node.canonical !== true || !Array.isArray(node.aces) || node.aces.length > 256) fail(`unsupported owner or DACL: ${node.path}`);
+    if (!isSid(node.ownerSid) || node.daclPresent !== true || node.canonical !== true || !Array.isArray(node.aces) || node.aces.length > 256) fail(`unsupported owner or DACL: ${node.path}`, "acl_facts_rejected");
     for (const ace of node.aces) {
       if (!ace || !isSid(ace.sid) || !["AccessAllowed", "AccessDenied"].includes(ace.qualifier)
         || !Number.isSafeInteger(ace.mask) || ace.mask < 0 || ace.mask > 0xffffffff
-        || !Number.isInteger(ace.flags) || ace.flags < 0 || ace.flags > 31) fail("unsupported DACL entry");
+        || !Number.isInteger(ace.flags) || ace.flags < 0 || ace.flags > 31) fail("unsupported DACL entry", "acl_facts_rejected");
     }
   }
   return report;

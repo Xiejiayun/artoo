@@ -293,7 +293,11 @@ function prepareSourceRuntime(input: ProductSourceRuntimeOptions, guardian?: Pre
       clean: readCleanDaemonGuardian(guardian) } : {}) };
   runtimes.set(token, current);
   recordWindowsStartupPhase("source_store_audit");
-  try { auditWindowsReleaseStorage(store, options.storeRoot); retainedDestinations(current); }
+  try {
+    auditWindowsReleaseStorage(store, options.storeRoot);
+    recordWindowsStartupPhase("source_retained_destinations");
+    retainedDestinations(current);
+  }
   catch (error) { current.closed = true; throw error; } // A failed setup retains the ownership fence.
   return token;
 }

@@ -1,5 +1,6 @@
 // Controlled policy regressions. Real NTFS/PowerShell/process qualification is a separate fixture.
 import { createHash } from "node:crypto";
+import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
   spawnSync: vi.fn(), readFileSync: vi.fn(), sequence: 0n,
@@ -10,19 +11,21 @@ vi.mock("node:child_process", () => ({ spawnSync: state.spawnSync }));
 vi.mock("node:os", () => ({ release: () => "10.0.26300" }));
 vi.mock("node:fs", () => ({
   readFileSync: state.readFileSync,
-  lstatSync: (path: string, options?: { bigint?: boolean }) => {
+  lstatSync: vi.fn((path: string, options?: { bigint?: boolean }) => {
     const node = state.nodes.get(path); if (!node) throw Object.assign(new Error("Missing controlled file"), { code: "ENOENT" });
     return { isDirectory: () => node.directory, isFile: () => !node.directory, isSymbolicLink: () => !!node.link,
       nlink: options?.bigint ? node.nlink ?? 1n : Number(node.nlink ?? 1n), dev: 1n, ino: node.ino,
       ctimeNs: node.ctimeNs, mtimeNs: node.mtimeNs ?? 1n, size: node.size ?? 0n };
-  },
-  readdirSync: (path: string) => [...state.nodes.keys()].filter(value => value.startsWith(`${path}\\`)
-    && !value.slice(path.length + 1).includes("\\")).map(value => value.slice(path.length + 1)),
-  realpathSync: { native: (path: string) => state.aliases.get(path) ?? path },
+  }),
+  readdirSync: vi.fn((path: string) => [...state.nodes.keys()].filter(value => value.startsWith(`${path}\\`)
+    && !value.slice(path.length + 1).includes("\\")).map(value => value.slice(path.length + 1))),
+  realpathSync: { native: vi.fn((path: string) => state.aliases.get(path) ?? path) },
 }));
 import { assertWindowsReleaseStorage, auditWindowsReleaseStorage, prepareWindowsReleaseStorage,
   type PreparedWindowsReleaseStorage, type WindowsReleaseStorageInput } from "./windows-release-storage.js";
 import { collectWindowsAclFacts, type WindowsAclFact, type WindowsAclReport, type WindowsAclTarget } from "./windows-local-acl.js";
+import { recordWindowsStartupPhase, withWindowsStartupDiagnostics, WindowsStartupDiagnosticSchema,
+  type WindowsStartupDiagnostic } from "./windows-startup-diagnostics.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!, architecture = Object.getOwnPropertyDescriptor(process, "arch")!;
 const currentSid = "S-1-5-21-100-200-300-1001", otherSid = "S-1-5-21-100-200-300-1002";
@@ -47,11 +50,26 @@ function auditRejection(): Error {
   return error;
 }
 const pathHash = (value: string): string => createHash("sha256").update(value).digest("hex");
+async function startupRejection(work: () => unknown) {
+  const events: WindowsStartupDiagnostic[] = []; let original: unknown;
+  const pending = withWindowsStartupDiagnostics(value => events.push(value), async () => {
+    recordWindowsStartupPhase("source_store_audit");
+    try { work(); } catch (error) { original = error; throw error; }
+  });
+  await expect(pending).rejects.toBe(original);
+  expect(events.at(-1)).toMatchObject({ phase: "source_store_audit", status: "failed", error_code: "startup_stage_failed" });
+  expect(events.every(value => WindowsStartupDiagnosticSchema.safeParse(value).success)).toBe(true);
+  expect(events.slice(0, -1).every(value => value.storage_failure === undefined)).toBe(true);
+  for (const secret of [directory, currentSid, otherSid, pathHash(directory)])
+    expect(JSON.stringify(events)).not.toContain(JSON.stringify(secret).slice(1, -1));
+  return { error: original as Error, failure: events.at(-1)!, events };
+}
 beforeEach(() => {
   Object.defineProperty(process, "platform", { ...platform, value: "win32" });
   Object.defineProperty(process, "arch", { ...architecture, value: "x64" });
   vi.stubEnv("SystemRoot", "C:\\Windows");
   state.nodes.clear(); state.aliases.clear(); state.sequence = 9007199254740991n;
+  vi.mocked(lstatSync).mockClear(); vi.mocked(readdirSync).mockClear(); vi.mocked(realpathSync.native).mockClear();
   state.readFileSync.mockReset().mockImplementation(() => { throw new Error("Diagnostic must not read file contents"); });
   for (const path of ["C:\\", "C:\\Windows", "C:\\Users", "C:\\Users\\node", "C:\\Users\\node\\.artoo", directory,
     "C:\\products", workspace]) add(path);
@@ -129,7 +147,7 @@ describe("Windows mutable release-storage authority", () => {
     const file = `${directory}\\a.json`; add(file, false);
     change = () => { state.nodes.get(file)!.ctimeNs++; }; expect(prepare).toThrow(/changed during ACL audit/);
   });
-  it.each(["added", "removed", "identity", "ctime", "mtime", "size"])("keeps rejecting %s and identifies the captured change in the CLI message", field => {
+  it.each(["added", "removed", "identity", "ctime", "mtime", "size"])("keeps rejecting %s and safely projects the captured change without re-reading it", async field => {
     const file = `${directory}\\a.json`;
     if (field !== "added") add(file, false);
     change = () => {
@@ -143,11 +161,19 @@ describe("Windows mutable release-storage authority", () => {
         if (field === "size") selected.size = 1n;
       }
     };
-    const error = auditRejection();
+    const { error, failure, events } = await startupRejection(prepare);
+    expect(error.message.startsWith(changedPrefix)).toBe(true);
     expect(JSON.parse(error.message.slice(changedPrefix.length))).toEqual({
       root: { value: directory, truncated: false, sha256: pathHash(directory) },
       first_change: { relative: { value: "a.json", truncated: false, sha256: pathHash("a.json") }, fields: [field] },
     });
+    expect(failure.storage_failure).toEqual({ code: "storage_inventory_changed", first_change_fields: [field] });
+    expect(JSON.stringify(events)).not.toContain("a.json"); expect(JSON.stringify(events)).not.toContain(pathHash("a.json"));
+    // Files occur once per captured inventory; neither diagnostic projection performs another observation.
+    const observations = field === "added" || field === "removed" ? 1 : 2;
+    expect(vi.mocked(lstatSync).mock.calls.filter(([path]) => path === file)).toHaveLength(observations);
+    expect(vi.mocked(realpathSync.native).mock.calls.filter(([path]) => path === file)).toHaveLength(observations);
+    expect(vi.mocked(readdirSync).mock.calls.filter(([path]) => path === directory)).toHaveLength(2);
     expect(state.spawnSync).toHaveBeenCalledOnce(); expect(state.readFileSync).not.toHaveBeenCalled();
   });
   it("reports only the first changed relative item and all of its changed fields", () => {
@@ -230,11 +256,39 @@ describe("Windows mutable release-storage authority", () => {
       if (variant === "flags") selected.aces[0]!.flags = 128;
     }; expect(prepare).toThrow(/facts|inventory|DACL/);
   });
-  it.each(["error", "nonzero", "signal", "invalid-json", "null-json"])("fails closed on collector failure: %s", variant => {
+  it.each(["error", "nonzero", "signal", "invalid-json", "null-json"])("fails closed and safely classifies collector failure: %s", async variant => {
     state.spawnSync.mockReturnValue({ status: variant === "nonzero" ? 1 : 0, signal: variant === "signal" ? "SIGTERM" : null,
       error: variant === "error" ? new Error("timeout") : undefined,
-      stdout: variant === "invalid-json" ? "bad json" : variant === "null-json" ? "null" : JSON.stringify({ errorCode: "audit_failure" }) });
-    expect(prepare).toThrow(/audit_failure|facts|response/);
+      stdout: variant === "invalid-json" ? "bad json" : variant === "null-json" ? "null" : JSON.stringify({ errorCode: "audit_failure", path: directory }) });
+    const { error, failure, events } = await startupRejection(prepare);
+    expect(error.message).toMatch(/audit_failure|facts|response/);
+    expect(failure.storage_failure).toEqual({ code: ["error", "nonzero", "signal"].includes(variant) ? "acl_collector_failed" : "acl_facts_rejected" });
+    expect(JSON.stringify(events)).not.toContain("audit_failure"); expect(state.spawnSync).toHaveBeenCalledOnce();
+  });
+  it.each(["binding", "boundary", "owner", "write-rights", "input", "facts"])("projects a real %s rejection without weakening it", async variant => {
+    let work: () => unknown = prepare;
+    if (variant === "binding") work = () => assertWindowsReleaseStorage(Object.freeze({}) as PreparedWindowsReleaseStorage, directory);
+    if (variant === "boundary") { add(`${directory}\\linked.json`, false); state.nodes.get(`${directory}\\linked.json`)!.nlink = 2n; }
+    if (variant === "owner") change = report => { node(report).ownerSid = otherSid; };
+    if (variant === "write-rights") change = report => { node(report).aces.push({ sid: otherSid, qualifier: "AccessAllowed", mask: 2, flags: 0 }); };
+    if (variant === "input") input = { ...input, directory: "C:\\private-input." };
+    if (variant === "facts") change = report => { node(report).daclPresent = false; };
+    const { error, failure } = await startupRejection(work);
+    const expected = {
+      binding: ["storage_binding_rejected", /locally prepared/], boundary: ["storage_boundary_rejected", /linked/],
+      owner: ["storage_acl_rejected", /untrusted owner/], "write-rights": ["storage_acl_rejected", /another principal/],
+      input: ["acl_input_rejected", /unsupported Windows path/], facts: ["acl_facts_rejected", /DACL/],
+    } as const;
+    expect(error.message).toMatch(expected[variant as keyof typeof expected][1]);
+    expect(failure.storage_failure).toEqual({ code: expected[variant as keyof typeof expected][0] });
+  });
+  it("retains an unknown filesystem error object and projects only its local observation category", async () => {
+    const original = Object.freeze(Object.assign(new Error("private-filesystem-error-and-path"), { code: "private-filesystem-code" }));
+    vi.mocked(lstatSync).mockImplementationOnce(() => { throw original; });
+    const { error, failure, events } = await startupRejection(prepare);
+    expect(error).toBe(original); expect(error.message).toBe("private-filesystem-error-and-path");
+    expect(failure.storage_failure).toEqual({ code: "filesystem_observation_failed" });
+    expect(JSON.stringify(events)).not.toContain("private-"); expect(state.spawnSync).not.toHaveBeenCalled();
   });
   it("does not authorize non-Windows execution", () => {
     Object.defineProperty(process, "platform", { ...platform, value: "linux" }); expect(prepare).toThrow(/native win-x64/);

@@ -4,6 +4,7 @@ import { win32 } from "node:path";
 import { assertCanonicalWindowsPath, assertNativeWindows, collectWindowsAclFacts, MAX_WINDOWS_AUDIT_PATHS,
   physicalWindowsDirectory, TRUSTED_WINDOWS_SYSTEM_SIDS, WINDOWS_ANCESTOR_REPLACEMENT_MASK, WINDOWS_MUTATION_MASK,
   windowsPathComponents, windowsPathKey, windowsPathsOverlap, type WindowsAclTarget } from "./windows-local-acl.js";
+import { markWindowsStorageFailure, type WindowsStorageChangeField, type WindowsStorageFailureCode } from "./windows-storage-diagnostic.js";
 
 declare const storageBrand: unique symbol;
 export interface PreparedWindowsReleaseStorage { readonly [storageBrand]: true }
@@ -20,13 +21,17 @@ interface StorageState {
 }
 const authorities = new WeakMap<object, StorageState>();
 const LAYOUT = ["operations", "attestations", "artifacts", "health"] as const;
-function fail(reason: string): never { throw new Error(`Windows release storage: ${reason}`); }
+function fail(reason: string, code: WindowsStorageFailureCode = "storage_boundary_rejected", fields?: readonly WindowsStorageChangeField[]): never {
+  throw markWindowsStorageFailure(new Error(`Windows release storage: ${reason}`), code, fields);
+}
 function fact(path: string): Identity {
   assertCanonicalWindowsPath(path);
-  const stat = lstatSync(path, { bigint: true });
-  if (stat.isSymbolicLink() || !stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1n)
-    || realpathSync.native(path) !== path) fail(`linked, aliased or unsupported path: ${path}`);
-  return { path, dev: stat.dev, ino: stat.ino, directory: stat.isDirectory(), ctimeNs: stat.ctimeNs, mtimeNs: stat.mtimeNs, size: stat.size };
+  try {
+    const stat = lstatSync(path, { bigint: true });
+    if (stat.isSymbolicLink() || !stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1n)
+      || realpathSync.native(path) !== path) fail(`linked, aliased or unsupported path: ${path}`);
+    return { path, dev: stat.dev, ino: stat.ino, directory: stat.isDirectory(), ctimeNs: stat.ctimeNs, mtimeNs: stat.mtimeNs, size: stat.size };
+  } catch (error) { throw markWindowsStorageFailure(error, "filesystem_observation_failed"); }
 }
 function identityEqual(left: Identity, right: Identity): boolean {
   return left.path === right.path && left.dev === right.dev && left.ino === right.ino && left.directory === right.directory;
@@ -35,12 +40,11 @@ function diagnosticPath(value: string): { value: string; truncated: boolean; sha
   return { value: value.length <= 240 ? value : `${value.slice(0, 117)}...${value.slice(-120)}`, truncated: value.length > 240,
     sha256: createHash("sha256").update(value).digest("hex") };
 }
-/** Use only the captured inventories. One entry, fixed field names and bounded ASCII
- * path displays keep CLI messages useful without reading contents or dumping ACLs.
- * Hashes identify the complete paths even when their displays are truncated. */
-function inventoryChangeDiagnostic(root: string, before: ReadonlyMap<string, Identity>, after: ReadonlyMap<string, Identity>): string {
+interface InventoryChange { path: string; fields: WindowsStorageChangeField[] }
+/** Both projections use the same captured change; diagnostics never re-read filesystem facts. */
+function firstInventoryChange(before: ReadonlyMap<string, Identity>, after: ReadonlyMap<string, Identity>): InventoryChange | undefined {
   for (const key of [...new Set([...before.keys(), ...after.keys()])].sort()) {
-    const previous = before.get(key), current = after.get(key), fields: string[] = [];
+    const previous = before.get(key), current = after.get(key), fields: WindowsStorageChangeField[] = [];
     if (!previous) fields.push("added");
     else if (!current) fields.push("removed");
     else {
@@ -49,19 +53,21 @@ function inventoryChangeDiagnostic(root: string, before: ReadonlyMap<string, Ide
       if (previous.mtimeNs !== current.mtimeNs) fields.push("mtime");
       if (previous.size !== current.size) fields.push("size");
     }
-    if (fields.length > 0) {
-      const item = current ?? previous!;
-      return " " + JSON.stringify({ root: diagnosticPath(root), first_change: {
-        relative: diagnosticPath(win32.relative(root, item.path) || "."), fields,
-      } }).replace(/[\u007f-\uffff]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
-    }
+    if (fields.length > 0) return { path: (current ?? previous!).path, fields };
   }
+  return undefined;
+}
+/** Preserve the existing bounded CLI message. Startup diagnostics receive only the fixed fields. */
+function inventoryChangeDiagnostic(root: string, change: InventoryChange | undefined): string {
   // Preserve the original rejection even if future inventory fields are added.
-  return "";
+  if (!change) return "";
+  return " " + JSON.stringify({ root: diagnosticPath(root), first_change: {
+    relative: diagnosticPath(win32.relative(root, change.path) || "."), fields: change.fields,
+  } }).replace(/[\u007f-\uffff]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 function state(authority: PreparedWindowsReleaseStorage): StorageState {
   const saved = authorities.get(authority);
-  if (!saved) fail("a locally prepared storage authority is required");
+  if (!saved) fail("a locally prepared storage authority is required", "storage_binding_rejected");
   return saved;
 }
 function inventory(saved: StorageState): Map<string, Identity> {
@@ -73,7 +79,8 @@ function inventory(saved: StorageState): Map<string, Identity> {
     result.set(key, item);
     if (item.directory) for (const name of readdirSync(path).sort()) visit(win32.join(path, name), depth + 1);
   };
-  visit(saved.directory, 0); return result;
+  try { visit(saved.directory, 0); return result; }
+  catch (error) { throw markWindowsStorageFailure(error, "filesystem_observation_failed"); }
 }
 function assertFixed(saved: StorageState): void {
   assertNativeWindows();
@@ -85,7 +92,7 @@ function assertFixed(saved: StorageState): void {
 /** Cheap serving check. This does not claim to re-audit ACLs; the current node user is trusted. */
 export function assertWindowsReleaseStorage(authority: PreparedWindowsReleaseStorage, expectedDirectory: string): void {
   const saved = state(authority);
-  if (saved.directory !== expectedDirectory) fail("storage authority is bound to another directory");
+  if (saved.directory !== expectedDirectory) fail("storage authority is bound to another directory", "storage_binding_rejected");
   assertFixed(saved);
 }
 
@@ -94,7 +101,7 @@ export function assertWindowsReleaseStorage(authority: PreparedWindowsReleaseSto
 export function assertWindowsReleaseStorageWorkspace(authority: PreparedWindowsReleaseStorage, expectedDirectory: string, workspaceRoot: string): void {
   assertWindowsReleaseStorage(authority, expectedDirectory);
   const saved = state(authority);
-  if (!saved.roots.includes(workspaceRoot)) fail("guardian workspace is absent from the complete fixed write scope");
+  if (!saved.roots.includes(workspaceRoot)) fail("guardian workspace is absent from the complete fixed write scope", "storage_binding_rejected");
 }
 
 /** Execute at preparation and serialized startup/publication/monitor write boundaries, never per HTTP file. */
@@ -109,12 +116,12 @@ export function auditWindowsReleaseStorage(authority: PreparedWindowsReleaseStor
   for (const item of before.values()) targets.set(windowsPathKey(item.path), { path: item.path, directory: item.directory, readAcl: true });
   if (targets.size > MAX_WINDOWS_AUDIT_PATHS) fail("storage and boundary inventory exceeds the Windows bound");
   const report = collectWindowsAclFacts([...targets.values()]);
-  if (saved.sid !== undefined && saved.sid !== report.currentSid) fail("node Windows identity changed");
+  if (saved.sid !== undefined && saved.sid !== report.currentSid) fail("node Windows identity changed", "storage_acl_rejected");
   const trusted = new Set([...TRUSTED_WINDOWS_SYSTEM_SIDS, report.currentSid]);
   for (const node of report.nodes) {
     const target = targets.get(windowsPathKey(node.path))!;
     if (!target.readAcl) continue;
-    if (!node.ownerSid || !trusted.has(node.ownerSid)) fail(`untrusted owner: ${node.path}`);
+    if (!node.ownerSid || !trusted.has(node.ownerSid)) fail(`untrusted owner: ${node.path}`, "storage_acl_rejected");
     const ancestor = ancestors.has(windowsPathKey(node.path));
     for (const ace of node.aces) {
       if (ace.qualifier !== "AccessAllowed" || trusted.has(ace.sid)) continue;
@@ -122,7 +129,7 @@ export function auditWindowsReleaseStorage(authority: PreparedWindowsReleaseStor
       const effective = (ace.flags & 8) === 0, inheritedByFutureChild = node.directory && (ace.flags & 3) !== 0;
       if (effective && (ace.mask & (ancestor ? WINDOWS_ANCESTOR_REPLACEMENT_MASK : WINDOWS_MUTATION_MASK)) !== 0
         || !ancestor && inheritedByFutureChild && (ace.mask & WINDOWS_MUTATION_MASK) !== 0) {
-        fail(`another principal can modify storage or its future children: ${node.path}`);
+        fail(`another principal can modify storage or its future children: ${node.path}`, "storage_acl_rejected");
       }
     }
   }
@@ -131,7 +138,10 @@ export function auditWindowsReleaseStorage(authority: PreparedWindowsReleaseStor
   if (before.size !== after.size || [...before].some(([key, item]) => {
     const now = after.get(key);
     return !now || !identityEqual(item, now) || item.ctimeNs !== now.ctimeNs || item.mtimeNs !== now.mtimeNs || item.size !== now.size;
-  })) fail("storage changed during ACL audit" + inventoryChangeDiagnostic(saved.directory, before, after));
+  })) {
+    const change = firstInventoryChange(before, after);
+    fail("storage changed during ACL audit" + inventoryChangeDiagnostic(saved.directory, change), "storage_inventory_changed", change?.fields);
+  }
   for (const name of LAYOUT) {
     const path = win32.join(saved.directory, name), entry = after.get(windowsPathKey(path));
     if (entry) {
