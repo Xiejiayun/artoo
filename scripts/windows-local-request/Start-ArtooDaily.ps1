@@ -1,14 +1,14 @@
 #requires -Version 7.5
 # Local installation metadata is trusted configuration, not a signature.
 [CmdletBinding(PositionalBinding = $false)]
-param([string]$Objective, [string]$ObjectiveFile, [string]$Config, [switch]$BrowserInput)
+param([string]$Objective, [string]$ObjectiveFile, [string]$Config, [switch]$BrowserInput, [string]$OpenProduct)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 $PSNativeCommandArgumentPassing = 'Standard'
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'This entry requires native Windows.' }
-if ($args.Count -ne 0) { throw 'Use only -Objective, -ObjectiveFile, -Config and -BrowserInput.' }
+if ($args.Count -ne 0) { throw 'Use only -Objective, -ObjectiveFile, -Config, -BrowserInput and -OpenProduct.' }
 
 function Assert-ArtooShape($Value, [string[]]$Required, [string[]]$Optional = @()) {
     if ($Value -isnot [Collections.IDictionary]) { throw 'Invalid local installation object.' }
@@ -19,19 +19,24 @@ function Assert-ArtooShape($Value, [string[]]$Required, [string[]]$Optional = @(
         if ($artooField -cnotin @($Required + $Optional)) { throw 'Unexpected local installation field.' }
     }
 }
-function Get-ArtooPhysicalFile([object]$Value, [long]$MaximumBytes) {
+function Get-ArtooPhysicalItem([object]$Value) {
     if ($Value -isnot [string] -or $Value -notmatch '^[A-Za-z]:\\' -or $Value -match '[\x00-\x1f\x7f]' -or
         $Value.Substring(2).Contains(':') -or -not [IO.Path]::GetFullPath($Value).Equals($Value, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Installation paths must be normalized absolute Windows file paths.'
+        throw 'Installation paths must be normalized absolute Windows paths.'
     }
     $artooItem = Get-Item -LiteralPath $Value -Force
-    if ($artooItem -isnot [IO.FileInfo] -or $artooItem.Length -gt $MaximumBytes) { throw 'Invalid installation file or size.' }
+    if ($artooItem -isnot [IO.FileInfo] -and $artooItem -isnot [IO.DirectoryInfo]) { throw 'Invalid installation path.' }
     $artooCurrent = $artooItem
     while ($null -ne $artooCurrent) {
         if (($artooCurrent.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Linked installation paths are not supported.' }
         if ($artooCurrent.PSObject.Properties['LinkType'] -and $artooCurrent.LinkType) { throw 'Linked installation files are not supported.' }
         $artooCurrent = if ($artooCurrent -is [IO.FileInfo]) { $artooCurrent.Directory } else { $artooCurrent.Parent }
     }
+    return $artooItem
+}
+function Get-ArtooPhysicalFile([object]$Value, [long]$MaximumBytes) {
+    $artooItem = Get-ArtooPhysicalItem $Value
+    if ($artooItem -isnot [IO.FileInfo] -or $artooItem.Length -gt $MaximumBytes) { throw 'Invalid installation file or size.' }
     return $artooItem
 }
 function Read-ArtooJson([string]$File, [long]$MaximumBytes) {
@@ -71,15 +76,39 @@ function Assert-ArtooCredential([object]$Value) {
 
 $artooHasObjective = $PSBoundParameters.ContainsKey('Objective')
 $artooHasFile = $PSBoundParameters.ContainsKey('ObjectiveFile')
+$artooHasProduct = $PSBoundParameters.ContainsKey('OpenProduct')
+if ($artooHasProduct -and ($artooHasObjective -or $artooHasFile -or $PSBoundParameters.ContainsKey('BrowserInput'))) {
+    throw '-OpenProduct cannot be combined with -Objective, -ObjectiveFile or -BrowserInput.'
+}
 if (($artooHasObjective -and $artooHasFile) -or ($BrowserInput -and ($artooHasObjective -or $artooHasFile))) {
     throw 'Select only one of -Objective, -ObjectiveFile and -BrowserInput.'
 }
-if (-not $PSBoundParameters.ContainsKey('Config')) {
+if ($artooHasProduct) {
+    $artooSelectedProduct = Get-ArtooPhysicalItem $OpenProduct
+    if ($artooSelectedProduct -is [IO.DirectoryInfo]) {
+        $artooResultFile = Join-Path $artooSelectedProduct.FullName 'RESULT.json'
+    }
+    else {
+        if ($artooSelectedProduct.Name -cnotin @('RESULT.json', 'PUBLISHED.json')) { throw 'Select the original session directory, RESULT.json or PUBLISHED.json.' }
+        $artooResultFile = Join-Path $artooSelectedProduct.DirectoryName 'RESULT.json'
+    }
+    # This record only selects the original configuration. The Node entry must
+    # validate the complete stopped publication and its immutable bindings.
+    $artooOriginalResult = Read-ArtooJson $artooResultFile (64MB)
+    if (@($artooOriginalResult.Keys) -cnotcontains 'configuration') { throw 'The original result must identify its configuration.' }
+    $artooOriginalConfig = $artooOriginalResult.configuration
+    $artooOriginalConfigFile = Assert-ArtooPin $artooOriginalConfig (64KB)
+    if ($PSBoundParameters.ContainsKey('Config') -and -not $Config.Equals($artooOriginalConfigFile, [StringComparison]::OrdinalIgnoreCase)) {
+        throw '-Config must match the original result configuration path.'
+    }
+    $Config = $artooOriginalConfigFile
+}
+elseif (-not $PSBoundParameters.ContainsKey('Config')) {
     $artooLocalData = [Environment]::GetEnvironmentVariable('LOCALAPPDATA', 'Process')
     if ([string]::IsNullOrWhiteSpace($artooLocalData)) { throw 'Use -Config or configure the local installation directory.' }
     $Config = Join-Path $artooLocalData 'Artoo\windows-local-request\LOCAL-INSTALLATION.json'
 }
-$artooEntry = Join-Path $PSScriptRoot 'start.mjs'
+$artooEntry = Join-Path $PSScriptRoot $(if ($artooHasProduct) { 'reopen.mjs' } else { 'start.mjs' })
 $null = Get-ArtooPhysicalFile $artooEntry (4MB)
 $artooLocal = Read-ArtooJson $Config (64KB)
 Assert-ArtooShape $artooLocal @('version', 'installation', 'runtime', 'authorization')
@@ -107,7 +136,8 @@ if ([IO.Path]::GetExtension($artooNode) -ine '.exe') { throw 'The installation m
 # Recheck the named manifest after parsing it; the real entry then verifies all
 # runtime files, other executables, private roots and authorization before work.
 $null = Assert-ArtooPin $artooLocal.installation (64MB)
-if (-not $BrowserInput -and -not $artooHasObjective -and -not $artooHasFile) {
+if ($artooHasProduct) { $null = Assert-ArtooPin $artooOriginalConfig (64KB) }
+if (-not $artooHasProduct -and -not $BrowserInput -and -not $artooHasObjective -and -not $artooHasFile) {
     # Host UI prompts need not reach redirected standard streams. Use the same
     # standard input/output that the directly invoked Node entry will inherit.
     $artooConsoleInputEncoding = [Console]::InputEncoding
@@ -125,12 +155,17 @@ if (-not $BrowserInput -and -not $artooHasObjective -and -not $artooHasFile) {
     }
 }
 $artooRequest = if ($artooHasFile) { $ObjectiveFile } else { $Objective }
-if (-not $BrowserInput -and [string]::IsNullOrWhiteSpace($artooRequest)) { throw 'Provide a nonempty requirement or objective file path.' }
-$artooArguments = @($artooEntry, '--config', $Config, '--stdin-control')
-$artooArguments += if ($BrowserInput) { @('--browser-input') } elseif ($artooHasFile) { @('--objective-file', $ObjectiveFile) } else { @('--objective', $Objective) }
+if (-not $artooHasProduct -and -not $BrowserInput -and [string]::IsNullOrWhiteSpace($artooRequest)) { throw 'Provide a nonempty requirement or objective file path.' }
+if ($artooHasProduct) { $artooArguments = @($artooEntry, '--product', $OpenProduct, '--config', $Config, '--stdin-control') }
+else {
+    $artooArguments = @($artooEntry, '--config', $Config, '--stdin-control')
+    $artooArguments += if ($BrowserInput) { @('--browser-input') } elseif ($artooHasFile) { @('--objective-file', $ObjectiveFile) } else { @('--objective', $Objective) }
+}
 
 $artooSavedEnvironment = @{}
-foreach ($artooName in @('ARTOO_CODEX_PROVIDER_KEY', 'NODE_OPTIONS', 'NODE_PATH')) {
+$artooEnvironmentNames = @('NODE_OPTIONS', 'NODE_PATH')
+if (-not $artooHasProduct) { $artooEnvironmentNames = @('ARTOO_CODEX_PROVIDER_KEY') + $artooEnvironmentNames }
+foreach ($artooName in $artooEnvironmentNames) {
     $artooValue = [Environment]::GetEnvironmentVariable($artooName, 'Process')
     $artooSavedEnvironment[$artooName] = @{ present = $null -ne $artooValue; value = $artooValue }
 }
@@ -138,27 +173,29 @@ $artooValue = $null
 $artooKey = $null
 $artooExitCode = 1
 try {
-    # Prevent root Node preloads before start.mjs can validate the installation.
+    # Prevent root Node preloads before either entry validates the installation.
     # PowerShell converts ordinary $null to an empty string for this .NET call.
     # NullString preserves the difference between deleting and setting empty.
     [Environment]::SetEnvironmentVariable('NODE_OPTIONS', [System.Management.Automation.Language.NullString]::Value, 'Process')
     [Environment]::SetEnvironmentVariable('NODE_PATH', [System.Management.Automation.Language.NullString]::Value, 'Process')
-    if ($artooSavedEnvironment.ARTOO_CODEX_PROVIDER_KEY.present) {
-        $artooKey = $artooSavedEnvironment.ARTOO_CODEX_PROVIDER_KEY.value
-        Assert-ArtooCredential $artooKey
-    }
-    else {
-        $artooRoaming = [Environment]::GetEnvironmentVariable('APPDATA', 'Process')
-        if (-not [string]::IsNullOrWhiteSpace($artooRoaming)) {
-            $artooKeyFile = Join-Path $artooRoaming 'aerial\api_key'
-            if (Test-Path -LiteralPath $artooKeyFile) {
-                $null = Get-ArtooPhysicalFile $artooKeyFile (8194)
-                $artooKey = [IO.File]::ReadAllText($artooKeyFile).TrimEnd([char[]]"`r`n")
-                Assert-ArtooCredential $artooKey
+    if (-not $artooHasProduct) {
+        if ($artooSavedEnvironment.ARTOO_CODEX_PROVIDER_KEY.present) {
+            $artooKey = $artooSavedEnvironment.ARTOO_CODEX_PROVIDER_KEY.value
+            Assert-ArtooCredential $artooKey
+        }
+        else {
+            $artooRoaming = [Environment]::GetEnvironmentVariable('APPDATA', 'Process')
+            if (-not [string]::IsNullOrWhiteSpace($artooRoaming)) {
+                $artooKeyFile = Join-Path $artooRoaming 'aerial\api_key'
+                if (Test-Path -LiteralPath $artooKeyFile) {
+                    $null = Get-ArtooPhysicalFile $artooKeyFile (8194)
+                    $artooKey = [IO.File]::ReadAllText($artooKeyFile).TrimEnd([char[]]"`r`n")
+                    Assert-ArtooCredential $artooKey
+                }
             }
         }
+        if ($null -ne $artooKey) { [Environment]::SetEnvironmentVariable('ARTOO_CODEX_PROVIDER_KEY', $artooKey, 'Process') }
     }
-    if ($null -ne $artooKey) { [Environment]::SetEnvironmentVariable('ARTOO_CODEX_PROVIDER_KEY', $artooKey, 'Process') }
     # Direct invocation preserves the original stdin/stdout/stderr. No pipeline,
     # background controller, second goal submission or replacement cleanup.
     & $artooNode @artooArguments
@@ -166,7 +203,7 @@ try {
     if ($artooExitCode -isnot [int]) { throw 'The original Node process did not return an exit code.' }
 }
 finally {
-    foreach ($artooName in @('ARTOO_CODEX_PROVIDER_KEY', 'NODE_OPTIONS', 'NODE_PATH')) {
+    foreach ($artooName in $artooEnvironmentNames) {
         $artooSaved = $artooSavedEnvironment[$artooName]
         if ($artooSaved.present) { [Environment]::SetEnvironmentVariable($artooName, $artooSaved.value, 'Process') }
         else { [Environment]::SetEnvironmentVariable($artooName, [System.Management.Automation.Language.NullString]::Value, 'Process') }

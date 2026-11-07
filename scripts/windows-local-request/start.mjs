@@ -93,7 +93,7 @@ if (options['--stdin-control']) {
 }
 const checkpoint = () => { if (stopping) throw userStop; };
 const knownConfig = [];
-let server, schema, request, projectId, baselineGoals, diagnostics = 0;
+let server, schema, request, projectId, baselineGoals, publisherOwnership, diagnostics = 0;
 async function waitFor(predicate, label, timeout = 30000, observeStop = true, pollIntervalMs = 100) {
   const end = Date.now() + timeout;
   while (Date.now() < end) { if (observeStop) checkpoint(); if (await predicate()) return; await new Promise(resolve => setTimeout(resolve, pollIntervalMs)); }
@@ -175,6 +175,9 @@ async function confirmPublication(automation, original) {
   return { release_id: release.id, run_id: release.run_id, evidence_id: release.evidence_id,
     artifact_digest: release.request.subject_digest, url: destination.endpoint, observed_at: new Date().toISOString(),
     request_sha256: sha(JSON.stringify(release.request)), receipt_sha256: sha(JSON.stringify(release.receipt)),
+    // Keep the accepted values as well as their wire-order digests. A later
+    // publisher-only open compares their meaning with the protected journal.
+    request: release.request, receipt: release.receipt,
     health_event_id: release.health?.event_id ?? null,
     scope: 'accepted final source, published API receipt, and point-in-time local HTTP identity; product verification remains node-owned' };
 }
@@ -336,6 +339,11 @@ try {
     consent_id: consent.consent.id, authorization_basis: 'explicit existing Aerial authorization in local configuration', api_grant: true };
   baselineGoals = (await server.ctx.db.db.select().from(schema.goals)).length;
   const daemon = await import(pathToFileURL(path.join(privateBundle, 'artood.mjs')).href);
+  // Share the same branded ownership boundary with publisher-only reopening.
+  // Even discovery/config preparation can touch a release journal, so acquire
+  // this before any node/profile/storage initialization and retain it on error.
+  publisherOwnership = daemon.acquirePublishedProductOwnership({ sessionRoot: output, mode: 'daily' });
+  result.publisher_ownership = publisherOwnership.descriptor;
   const nativeManifest = reference(path.join(privateBundle, 'native/windows-process/manifest.json'));
   // Discover both real profile descriptors without creating a source/recovery owner.
   for (const state of states) {
@@ -499,8 +507,14 @@ try {
     await recheck(inputs); assert.deepEqual(tree(privateBundle), inputs.bundle_tree);
     for (const pin of knownConfig) check(pin); result.inputs_unchanged = true;
   } catch (error) { note(error); }
+  if (publisherOwnership && !result.errors.length && result.server_closed && result.inputs_unchanged === true) {
+    try { result.publisher_ownership = publisherOwnership.release(); }
+    catch (error) { note(error); }
+  }
   result.finished_at = new Date().toISOString();
   result.stop_requested_at = stopRequestedAt ?? null;
+  result.shutdown_control = { version: 1, mode: options['--stdin-control'] ? 'stdin' : 'signal',
+    commands: controlCommands, complete: controlCommands === 1 && controlPending.length === 0 };
   result.shutdown_confirmed = !result.errors.length && result.server_closed && result.inputs_unchanged === true;
   result.status = !result.shutdown_confirmed ? 'failed' : result.product_published ? 'stopped-after-publication' : 'stopped-before-completion';
   process.off('SIGINT', requestUserStop); process.off('SIGTERM', requestUserStop);
@@ -510,6 +524,8 @@ try {
   save(path.join(output, 'RESULT.json'), result);
   console.log(JSON.stringify({ kind: 'local-request.stopped', status: result.status, output, goal_id: result.goal_id,
     product_published: result.product_published, shutdown_confirmed: result.shutdown_confirmed, errors: result.errors,
-    message: 'History retained. A future request creates a fresh environment; this store is not reopened.' }));
+    open_product: result.status === 'stopped-after-publication' && result.publisher_ownership?.lock_removed === true
+      && result.shutdown_control.complete ? output : null,
+    message: 'History retained. Use -OpenProduct with this session path to serve a qualified stopped product. New requests create fresh environments.' }));
   process.exitCode = result.shutdown_confirmed ? 0 : 1;
 }

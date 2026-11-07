@@ -1,4 +1,4 @@
-// Controlled launcher regression: real PowerShell/Node, deliberately fake entry.
+// Controlled launcher regression: real PowerShell/Node, deliberately fake entries.
 // No Aerial, product runtime, native process host or product acceptance is used.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -26,7 +26,9 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 const configuration = JSON.parse(fs.readFileSync(process.env.ARTOO_LAUNCHER_FIXTURE, 'utf8'));
 const digest = value => value === undefined ? null : createHash('sha256').update(value).digest('hex');
-const receipt = { argv: process.argv.slice(2), node: process.execPath, key_matches: digest(process.env.ARTOO_CODEX_PROVIDER_KEY) === configuration.key_sha256,
+// The fake reopen entry observes the inherited fixture key to prove that the
+// launcher left it untouched. The production reopen entry deletes its own copy.
+const receipt = { entry: process.argv[1], argv: process.argv.slice(2), node: process.execPath, key_matches: digest(process.env.ARTOO_CODEX_PROVIDER_KEY) === configuration.key_sha256,
   node_options_absent: process.env.NODE_OPTIONS === undefined, node_path_absent: process.env.NODE_PATH === undefined };
 fs.writeFileSync(configuration.started, JSON.stringify(receipt));
 process.stdout.write('fixture-entry-ready\n');
@@ -42,7 +44,7 @@ process.stdin.on('data', chunk => {
 process.stdin.on('end', () => { if (!input.includes('\n')) process.exitCode = 91; });
 `;
 const driverSource = String.raw`
-param([string]$Launcher, [string]$Configuration, [string]$Request, [string]$Mode, [string]$Receipt, [switch]$DefaultConfig)
+param([string]$Launcher, [string]$Configuration, [string]$Request, [string]$Product, [string]$Mode, [string]$Receipt, [switch]$DefaultConfig)
 $ErrorActionPreference = 'Stop'
 $consoleInputEncoding = [Console]::InputEncoding; $consoleOutputEncoding = [Console]::OutputEncoding
 $names = @('ARTOO_CODEX_PROVIDER_KEY', 'NODE_OPTIONS', 'NODE_PATH')
@@ -55,7 +57,13 @@ $code = 1; $failure = $null
 try {
     $arguments = @{}
     if (-not $DefaultConfig) { $arguments.Config = $Configuration }
-    if ($Mode -like 'browser*') {
+    if ($Mode -like 'product*') {
+        $arguments.OpenProduct = $Product
+        if ($Mode -eq 'product-objective') { $arguments.Objective = $Request }
+        if ($Mode -eq 'product-file') { $arguments.ObjectiveFile = $Request }
+        if ($Mode -eq 'product-browser') { $arguments.BrowserInput = $true }
+    }
+    elseif ($Mode -like 'browser*') {
         $arguments.BrowserInput = $true
         if ($Mode -eq 'browser-objective') { $arguments.Objective = $Request }
         if ($Mode -eq 'browser-file') { $arguments.ObjectiveFile = $Request }
@@ -81,8 +89,8 @@ function fixture() {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(parent, 'artoo-daily-launcher-')));
   const local = path.join(root, 'local'), roaming = path.join(root, 'roaming'), installation = path.join(local, 'Artoo', 'windows-local-request');
   fs.mkdirSync(installation, { recursive: true }); fs.mkdirSync(path.join(roaming, 'aerial'), { recursive: true });
-  const launcher = path.join(root, 'Start-ArtooDaily.ps1'), entry = path.join(root, 'start.mjs');
-  fs.copyFileSync(path.join(directory, 'Start-ArtooDaily.ps1'), launcher); fs.writeFileSync(entry, entrySource);
+  const launcher = path.join(root, 'Start-ArtooDaily.ps1'), entry = path.join(root, 'start.mjs'), reopen = path.join(root, 'reopen.mjs');
+  fs.copyFileSync(path.join(directory, 'Start-ArtooDaily.ps1'), launcher); fs.writeFileSync(entry, entrySource); fs.writeFileSync(reopen, entrySource);
   const driver = path.join(root, 'driver.ps1'); fs.writeFileSync(driver, driverSource);
   const manifestFile = path.join(installation, 'INSTALLATION.json'), configFile = path.join(installation, 'LOCAL-INSTALLATION.json');
   const nodePin = pin(fs.realpathSync.native(process.execPath));
@@ -94,26 +102,37 @@ function fixture() {
     provider_key_env: 'ARTOO_CODEX_PROVIDER_KEY', timeout_minutes: 90 },
     authorization: { scope: 'github-copilot-via-aerial', policy_version: 'sha256:' + 'a'.repeat(64) } };
   save(configFile, configuration);
+  const originalSession = path.join(root, 'original session'); fs.mkdirSync(originalSession);
+  const resultFile = path.join(originalSession, 'RESULT.json'), publishedFile = path.join(originalSession, 'PUBLISHED.json');
+  // Only configuration selection is under test here. These deliberately minimal
+  // records cannot qualify as a real product, release or reopen acceptance.
+  const originalResult = { fixture_only: true, configuration: pin(configFile) };
+  save(resultFile, originalResult); save(publishedFile, { fixture_only: true });
   const started = path.join(root, 'STARTED.json'), stdin = path.join(root, 'STDIN.json'), receipt = path.join(root, 'DRIVER.json');
   const fixtureConfig = path.join(root, 'FIXTURE.json'), preload = path.join(root, 'preload.cjs'), injected = path.join(root, 'INJECTED');
   fs.writeFileSync(preload, `require('node:fs').writeFileSync(${JSON.stringify(injected)}, 'unexpected preload');`);
   let closed = false;
-  return { root, roaming, manifest, configuration, nodePin,
+  return { root, roaming, manifest, configuration, nodePin, configFile, originalSession, resultFile, publishedFile, originalResult,
     refreshManifest() { save(manifestFile, manifest); configuration.installation = pin(manifestFile); save(configFile, configuration); },
     refreshConfig() { save(configFile, configuration); },
     wrapConfig() { save(configFile, [configuration]); },
     wrapManifest() { save(manifestFile, [manifest]); configuration.installation = pin(manifestFile); save(configFile, configuration); },
     corruptConfig() { fs.writeFileSync(configFile, '{bad-json fixture-secret-must-not-leak'); },
+    refreshOriginalResult() { originalResult.configuration = pin(configFile); save(resultFile, originalResult); },
+    saveOriginalResult() { save(resultFile, originalResult); },
     keyFile(value) { fs.writeFileSync(path.join(roaming, 'aerial', 'api_key'), value); },
     run({ key = 'fixture-process-key', expectedKey = key, keyName = 'ARTOO_CODEX_PROVIDER_KEY', emptyNodeEnvironment = false,
-      objective = '建立 "便笺"；保留 `literal` 与 $characters', file = false, browserInput = false, browserConflict = null, defaultConfig = false, exitCode = 0 } = {}) {
+      objective = '建立 "便笺"；保留 `literal` 与 $characters', file = false, browserInput = false, browserConflict = null,
+      openProduct, productConflict = null, configurationFile = configFile, localData = local, defaultConfig = false, exitCode = 0 } = {}) {
       save(fixtureConfig, { started, stdin, key_sha256: expectedKey === null ? null : hash(expectedKey), exit_code: exitCode });
-      const env = fixtureEnvironment({ APPDATA: roaming, LOCALAPPDATA: local, ARTOO_LAUNCHER_FIXTURE: fixtureConfig,
+      const env = fixtureEnvironment({ APPDATA: roaming, LOCALAPPDATA: localData, ARTOO_LAUNCHER_FIXTURE: fixtureConfig,
         NODE_OPTIONS: '--require ' + JSON.stringify(preload), NODE_PATH: path.join(root, 'untrusted-modules') });
       if (key !== null) env[keyName] = key;
       if (emptyNodeEnvironment) { env.NODE_OPTIONS = ''; env.NODE_PATH = ''; }
-      const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', driver, '-Launcher', launcher, '-Configuration', configFile,
-        '-Request', objective, '-Mode', browserInput ? (browserConflict ? 'browser-' + browserConflict : 'browser') : (file ? 'file' : 'objective'),
+      const mode = openProduct !== undefined ? (productConflict ? 'product-' + productConflict : 'product')
+        : browserInput ? (browserConflict ? 'browser-' + browserConflict : 'browser') : (file ? 'file' : 'objective');
+      const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', driver, '-Launcher', launcher, '-Configuration', configurationFile,
+        '-Request', objective, ...(openProduct !== undefined ? ['-Product', openProduct] : []), '-Mode', mode,
         '-Receipt', receipt, ...(defaultConfig ? ['-DefaultConfig'] : [])];
       const result = spawnSync('pwsh.exe', args, { env, input: shutdown, encoding: 'utf8', windowsHide: true, timeout: 15000 });
       closed = !result.error && result.status !== null && result.signal === null;
@@ -240,6 +259,69 @@ runTest('browser input delegates the only requirement to the browser without a C
 for (const browserConflict of ['objective', 'file']) runTest(`rejects browser input with ${browserConflict} before entry execution`, () => {
   const f = fixture(); try {
     const r = f.run({ browserInput: true, browserConflict }); assert.equal(r.result.status, 1); assert.equal(r.started, null);
+  } finally { f.cleanup(); }
+});
+for (const selection of ['originalSession', 'resultFile', 'publishedFile']) runTest(`opens a product selected by ${selection} through the original config and stdin without a credential`, () => {
+  const f = fixture(); try {
+    // Either credential-file validation or a default-config lookup would fail.
+    // Reopen must instead select the original record's configuration and avoid Aerial.
+    f.keyFile('fixture-file-key\ninvalid');
+    const r = f.run({ openProduct: f[selection], defaultConfig: true, localData: path.join(f.root, 'unused-default'), key: null });
+    assert.equal(r.result.status, 0); assert.equal(r.report.exit_code, 0);
+    assert.equal(r.started.entry, path.join(f.root, 'reopen.mjs'));
+    assert.equal(r.started.node.toLowerCase(), f.nodePin.path.toLowerCase());
+    assert.deepEqual(r.started.argv, ['--product', f[selection], '--config', f.configFile, '--stdin-control']);
+    assert.equal(r.result.stdout.includes('请输入产品需求'), false);
+    assert.equal(r.result.stderr.includes('请输入产品需求'), false);
+    assert.equal(r.started.key_matches, true);
+    assert.equal(r.started.node_options_absent, true); assert.equal(r.started.node_path_absent, true);
+    assert.deepEqual(r.stdin, { exact_shutdown: true });
+  } finally { f.cleanup(); }
+});
+runTest('reopen leaves an invalid inherited credential untouched and propagates the original nonzero Node exit', () => {
+  const f = fixture(); try {
+    f.keyFile('fixture-file-key\ninvalid');
+    const r = f.run({ openProduct: f.resultFile, key: 'fixture-process-key\ninvalid', exitCode: 17 });
+    assert.equal(r.result.status, 17); assert.equal(r.report.exit_code, 17);
+    assert.equal(r.started.key_matches, true); assert.equal(r.started.entry, path.join(f.root, 'reopen.mjs'));
+    assert.deepEqual(r.stdin, { exact_shutdown: true });
+  } finally { f.cleanup(); }
+});
+runTest('reopen preserves empty caller credential and Node variables while preventing root preloads', () => {
+  const f = fixture(); try {
+    const r = f.run({ openProduct: f.originalSession, key: '', emptyNodeEnvironment: true });
+    assert.equal(r.result.status, 0); assert.equal(r.started.key_matches, true);
+    for (const name of ['ARTOO_CODEX_PROVIDER_KEY', 'NODE_OPTIONS', 'NODE_PATH'])
+      assert.deepEqual(r.report.environment_before[name], { present: true, empty: true });
+    assert.equal(r.started.node_options_absent, true); assert.equal(r.started.node_path_absent, true);
+  } finally { f.cleanup(); }
+});
+for (const productConflict of ['objective', 'file', 'browser']) runTest(`rejects reopen with ${productConflict} before entry execution`, () => {
+  const f = fixture(); try {
+    const r = f.run({ openProduct: f.resultFile, productConflict });
+    assert.equal(r.result.status, 1); assert.equal(r.started, null);
+    assert.match(r.report.failure, /-OpenProduct cannot be combined/u);
+  } finally { f.cleanup(); }
+});
+for (const variant of ['missing-configuration', 'configuration-hash', 'configuration-size', 'configuration-relative', 'configuration-changed',
+  'configuration-override', 'result-array', 'record-name', 'node-hash']) runTest(`reopen rejects ${variant} before entry execution`, () => {
+  const f = fixture(); try {
+    let openProduct = f.resultFile, configurationFile = f.configFile;
+    if (variant === 'missing-configuration') { delete f.originalResult.configuration; f.saveOriginalResult(); }
+    if (variant === 'configuration-hash') { f.originalResult.configuration.sha256 = '0'.repeat(64); f.saveOriginalResult(); }
+    if (variant === 'configuration-size') { f.originalResult.configuration.bytes++; f.saveOriginalResult(); }
+    if (variant === 'configuration-relative') { f.originalResult.configuration.path = 'LOCAL-INSTALLATION.json'; f.saveOriginalResult(); }
+    if (variant === 'configuration-changed') fs.appendFileSync(f.configFile, ' ');
+    if (variant === 'configuration-override') {
+      configurationFile = path.join(f.root, 'same-bytes-other-config.json'); fs.copyFileSync(f.configFile, configurationFile);
+    }
+    if (variant === 'result-array') save(f.resultFile, [f.originalResult]);
+    if (variant === 'record-name') { openProduct = path.join(f.originalSession, 'GOAL.json'); save(openProduct, f.originalResult); }
+    if (variant === 'node-hash') {
+      f.manifest.programs.node.sha256 = '0'.repeat(64); f.refreshManifest(); f.refreshOriginalResult();
+    }
+    const r = f.run({ openProduct, configurationFile }); assert.equal(r.result.status, 1); assert.equal(r.started, null);
+    assert.equal(r.result.stdout.includes('请输入产品需求'), false);
   } finally { f.cleanup(); }
 });
 runTest('uses the documented local config convention without inventing a missing credential', () => {

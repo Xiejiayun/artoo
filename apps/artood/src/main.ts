@@ -1,4 +1,5 @@
 import { recordWindowsStartupPhase, recordWindowsStartupFailure, completeWindowsStartupDiagnostics } from "./windows-startup-diagnostics.js";
+export { acquirePublishedProductOwnership, createPublishedProduct } from "./published-product.js";
 import { arch as osArch, hostname, platform } from "node:os";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
