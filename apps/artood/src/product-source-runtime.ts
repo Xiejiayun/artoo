@@ -549,7 +549,9 @@ export async function importProductSourceTransfer(token: PreparedProductSourceRu
     else writeExclusive(capsulePath, bytes);
     appendJournal(operation, requestDigest, "bytes_verified", { capsule_digest: request.source.capsule_digest });
     const staging = join(operation, "git-staging"); mkdirSync(staging, { mode: 0o700 });
-    await fixedGit(current, staging, ["-c", "init.templateDir=", "init", "--initial-branch=main", "."], "materialize", signal);
+    // Guardian admits launches from the registered workspace; an explicit target keeps
+    // Git metadata in protected staging and the destination empty until materialization.
+    await fixedGit(current, profile.workspace_root, ["-c", "init.templateDir=", "init", "--initial-branch=main", staging], "materialize", signal);
     state(token); signal?.throwIfAborted();
     const metadataDigest = gitMetadataDigest(join(staging, ".git"));
     appendJournal(operation, requestDigest, "git_initialized", { git_metadata_digest: metadataDigest, processes_closed: true });
