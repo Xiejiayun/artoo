@@ -31,16 +31,30 @@ function fileFact(path) {
   if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > 512 * 1024 * 1024) fail(`invalid regular file: ${path}`);
   const windows = process.platform === "win32", fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
-    const identity = ctime => {
-      for (const stat of [fstatSync(fd), lstatSync(path)]) {
+    const identity = (ctime, readStage) => {
+      for (const [index, stat] of [fstatSync(fd), lstatSync(path)].entries()) {
         if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.dev !== before.dev || stat.ino !== before.ino
           || stat.size !== before.size || stat.mtimeMs !== before.mtimeMs || (!windows && stat.ctimeMs !== before.ctimeMs)
-          || (ctime !== undefined && stat.ctimeMs !== ctime)) fail(`file changed while reading: ${path}`);
+          || (ctime !== undefined && stat.ctimeMs !== ctime)) {
+          // Explain only the captured rejection. No extra reads or raw metadata enter this suffix.
+          const fields = [];
+          if (!stat.isFile()) fields.push("regular_file");
+          if (stat.isSymbolicLink()) fields.push("symlink");
+          if (stat.nlink !== 1) fields.push("nlink");
+          if (stat.dev !== before.dev) fields.push("dev");
+          if (stat.ino !== before.ino) fields.push("ino");
+          if (stat.size !== before.size) fields.push("size");
+          if (stat.mtimeMs !== before.mtimeMs) fields.push("mtime");
+          if (!windows && stat.ctimeMs !== before.ctimeMs || ctime !== undefined && stat.ctimeMs !== ctime) fields.push("ctime");
+          fail(`file changed while reading: ${path} [file_read_diagnostic.v1 ${JSON.stringify({
+            read_stage: readStage, fact: index === 0 ? "handle" : "path", changed_fields: fields,
+          })}]`);
+        }
       }
     };
-    identity();
+    identity(undefined, "before_read");
     const buffer = Buffer.alloc(Math.min(64 * 1024, before.size + 1));
-    const hash = ctime => {
+    const hash = (ctime, readStage) => {
       const digest = createHash("sha256"); let length = 0;
       while (length <= before.size) {
         const count = readSync(fd, buffer, 0, Math.min(buffer.length, before.size + 1 - length), length);
@@ -48,13 +62,13 @@ function fileFact(path) {
         digest.update(buffer.subarray(0, count)); length += count;
       }
       if (length !== before.size) fail(`file length changed: ${path}`);
-      identity(ctime); return `sha256:${digest.digest("hex")}`;
+      identity(ctime, readStage); return `sha256:${digest.digest("hex")}`;
     };
-    const checksum = hash();
+    const checksum = hash(undefined, "after_first_hash");
     if (windows) {
       // Absorb only NTFS's first-read access metadata update, then pin ctime.
-      const ctime = fstatSync(fd).ctimeMs; identity(ctime);
-      if (hash(ctime) !== checksum) fail(`file content changed: ${path}`);
+      const ctime = fstatSync(fd).ctimeMs; identity(ctime, "before_second_hash");
+      if (hash(ctime, "after_second_hash") !== checksum) fail(`file content changed: ${path}`);
     }
     return { size: before.size, sha256: checksum };
   } finally { closeSync(fd); }
