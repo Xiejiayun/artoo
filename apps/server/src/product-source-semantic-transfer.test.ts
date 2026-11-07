@@ -11,7 +11,7 @@ import { canonicalProductSourceTransferValueV1, ProductSourceExportV1Schema, Pro
   productSourceTransferRequestDigestV1, productSourceTransferRequestDigestV2, ProductResearchReportV2Schema,
   MeasurementPlanPolicyV2Schema, evaluateDeclaredMeasurementPlanV2, VerificationObservationV3Schema,
   CONFIGURED_STATIC_PUBLICATION_STATEMENT, PRODUCT_SOURCE_TRANSFER_MEASUREMENT_V2_FEATURE_V1 } from "@artoo/domain";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -63,7 +63,7 @@ describe("paired-node semantic source transport (controlled protocol receipts on
     return { ...device, nodeId };
   }
   async function prepare(options: { malformed?: "metadata" | "omitted" | "duplicate"; skipExport?: boolean; originalReceiptRun?: boolean;
-    measurementV2?: boolean; legacyResearch?: boolean } = {}) {
+    measurementV2?: boolean; legacyResearch?: boolean; completionReason?: string | null } = {}) {
     const source = await paired("source"), destination = await paired("destination"), other = await paired("other");
     await server.db.db.update(agentInstances).set({ computerId: source.nodeId }).where(eq(agentInstances.id, "instance_mock_coder"));
     const releaseFixture = options.measurementV2 ? releaseAcceptanceFixture("research") : undefined;
@@ -196,7 +196,7 @@ describe("paired-node semantic source transport (controlled protocol receipts on
     const exportFrame = { kind: "run.event", node_id: source.nodeId, run_id: review.source.run.id, sequence: 2,
       event: { type: "run.product-source.export.v2", payload: proof } };
     const terminalFrame = { kind: "run.event", node_id: source.nodeId, run_id: review.source.run.id, sequence: 3,
-      event: { type: "run.lifecycle", payload: { phase: "completed" } } };
+      event: { type: "run.lifecycle", payload: { phase: "completed", ...(options.completionReason === undefined ? {} : { reason: options.completionReason }) } } };
     if (!options.skipExport) {
       await ingestWireRunEvent(server.ctx, exportFrame); await ingestWireRunEvent(server.ctx, terminalFrame);
       await server.db.db.update(tasks).set({ status: "done" }).where(eq(tasks.id, review.source.run.taskId));
@@ -232,6 +232,51 @@ describe("paired-node semantic source transport (controlled protocol receipts on
     await expect(server.db.db.delete(productSourceSemanticTransfers)).rejects.toThrow();
     await expect(server.db.db.update(productSourceTransfers).set({ request: f.request })).rejects.toThrow();
   });
+
+  it.each([undefined, null])("admits the original completed wire frame with reason %s without normalizing replay", async reason => {
+    const f = await prepare({ measurementV2: true, completionReason: reason });
+    const receipt = and(eq(runEventIngest.runId, f.review.source.run.id), eq(runEventIngest.sequence, f.terminalFrame.sequence));
+    const [before] = await server.db.db.select({ bodyIdentity: runEventIngest.bodyIdentity }).from(runEventIngest).where(receipt);
+    expect(before?.bodyIdentity).toBe(qualifyRunEventMessage(f.terminalFrame).bodyIdentity);
+    await expect(ingestWireRunEvent(server.ctx, f.terminalFrame)).resolves.toMatchObject({ deduped: true });
+    const changed = { ...f.terminalFrame, event: { type: "run.lifecycle",
+      payload: reason === null ? { phase: "completed" } : { phase: "completed", reason: null } } };
+    expect(qualifyRunEventMessage(changed).bodyIdentity).not.toBe(qualifyRunEventMessage(f.terminalFrame).bodyIdentity);
+    await expect(ingestWireRunEvent(server.ctx, changed)).rejects.toThrow("body mismatch");
+    await expect(admitProductSourceSemanticTransfer(f.actor, f.request)).resolves.toMatchObject({ status: "awaiting_upload" });
+    const [after] = await server.db.db.select({ bodyIdentity: runEventIngest.bodyIdentity }).from(runEventIngest).where(receipt);
+    expect(after).toEqual(before);
+  });
+
+  it("admits null-reason completion with the legacy measurement policy", async () => {
+    const f = await prepare({ completionReason: null });
+    expect(f.request.source_export.measurement_v2).toBeUndefined();
+    await expect(admitProductSourceSemanticTransfer(f.actor, f.request)).resolves.toMatchObject({ status: "awaiting_upload" });
+  });
+
+  it.each(["", "unexpected success detail"])("does not qualify a completed wire frame with reason %j", async reason => {
+    const f = await prepare({ measurementV2: true, completionReason: reason });
+    await expect(admitProductSourceSemanticTransfer(f.actor, f.request)).rejects.toThrow("export");
+    expect(await server.db.db.select().from(productSourceSemanticTransfers)).toHaveLength(0);
+  });
+
+  it.each(["failed", "cancelled", "sequence", "node", "missing-receipt"])(
+    "rejects a completed domain event with a mismatched %s receipt", async kind => {
+      const reason = null, f = await prepare({ measurementV2: true, completionReason: reason });
+      const receipt = and(eq(runEventIngest.runId, f.review.source.run.id), eq(runEventIngest.sequence, f.terminalFrame.sequence));
+      if (kind === "failed" || kind === "cancelled") {
+        const changed = { ...f.terminalFrame, event: { type: "run.lifecycle", payload: { phase: kind, reason: null } } };
+        await server.db.db.update(runEventIngest).set({ bodyIdentity: qualifyRunEventMessage(changed).bodyIdentity }).where(receipt);
+      } else if (kind === "sequence") {
+        await server.db.db.update(runEventIngest).set({ sequence: f.terminalFrame.sequence + 1 }).where(receipt);
+      } else if (kind === "node") {
+        await server.db.db.update(runEventIngest).set({ nodeId: f.other.nodeId }).where(receipt);
+      } else {
+        await server.db.db.delete(runEventIngest).where(receipt);
+      }
+      await expect(admitProductSourceSemanticTransfer(f.actor, f.request)).rejects.toThrow("export");
+      expect(await server.db.db.select().from(productSourceSemanticTransfers)).toHaveLength(0);
+    });
 
   it("requires owning-node qualified v2 ingest, exact predecessor and unchanged original replay", async () => {
     const f = await prepare();

@@ -1,7 +1,7 @@
 import { agentInstances, autonomousReviews, computers, contextPacks, runEventIngest, eventLog, goalAutomations, goals, memberSuspensions,
   messages, plans, productSourceTransfers, runs, tasks, users } from "@artoo/db";
 import { canonicalProductSourceTransferValueV1, ProductSourceExportV1Schema, ProductSourceTransferRequestV1Schema, productSourceTransferRequestDigestV1 } from "@artoo/domain";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -43,7 +43,7 @@ describe("paired-node product source byte transport (controlled receipts, no exe
     await server.db.db.update(computers).set({ status: "online" }).where(eq(computers.id, nodeId));
     return { ...device, nodeId };
   }
-  async function prepare(pairingUserId = server.ctx.actorUserId, largeCapsule = false) {
+  async function prepare(pairingUserId = server.ctx.actorUserId, largeCapsule = false, completionReason?: string | null) {
     const source = await paired("source", pairingUserId), destination = await paired("destination", pairingUserId), other = await paired("other", pairingUserId);
     await server.db.db.update(agentInstances).set({ computerId: source.nodeId }).where(eq(agentInstances.id, "instance_mock_coder"));
     const f = measurementPlanEvidenceFixture(), review = await prepareTransferReviewFixture(server, f);
@@ -103,8 +103,9 @@ describe("paired-node product source byte transport (controlled receipts, no exe
     const exportFrame = { kind: "run.event", node_id: source.nodeId, run_id: review.source.run.id, sequence: 2,
       event: { type: "run.product-source.export.v1", payload: proof } };
     await ingestWireRunEvent(server.ctx, exportFrame);
-    await ingestWireRunEvent(server.ctx, { kind: "run.event", node_id: source.nodeId, run_id: review.source.run.id, sequence: 3,
-      event: { type: "run.lifecycle", payload: { phase: "completed" } } });
+    const terminalFrame = { kind: "run.event", node_id: source.nodeId, run_id: review.source.run.id, sequence: 3,
+      event: { type: "run.lifecycle", payload: { phase: "completed", ...(completionReason === undefined ? {} : { reason: completionReason }) } } };
+    await ingestWireRunEvent(server.ctx, terminalFrame);
     await server.db.db.update(tasks).set({ status: "done" }).where(eq(tasks.id, review.source.run.taskId));
     const actor = { ...server.ctx, automationActor: { type: "system" as const, id: "goal_runner" as const } };
     const digest = productSourceTransferRequestDigestV1(request, sha);
@@ -114,7 +115,7 @@ describe("paired-node product source byte transport (controlled receipts, no exe
     const upload = (token = source.node_token, payload = bytes, extra: Record<string, string> = {}) => server.app.inject({ method: "PUT", url,
       headers: headers(token, { "content-type": "application/octet-stream", ...extra }), payload });
     const download = (token = destination.node_token) => server.app.inject({ method: "GET", url, headers: headers(token) });
-    return { source, destination, other, review, request, actor, digest, bytes, upload, download, headers, url, proof, exportFrame };
+    return { source, destination, other, review, request, actor, digest, bytes, upload, download, headers, url, proof, exportFrame, terminalFrame };
   }
 
   it("persists full admission, replays identical requests and transports exact bytes only to the selected node", async () => {
@@ -135,6 +136,45 @@ describe("paired-node product source byte transport (controlled receipts, no exe
     await expect(server.db.db.update(productSourceTransfers).set({ status: "awaiting_upload", availableAt: null, uploadedByDeviceId: null })).rejects.toThrow();
     await expect(server.db.db.delete(productSourceTransfers)).rejects.toThrow();
   });
+
+  it.each([undefined, null])("admits the original completed wire frame with reason %s without normalizing replay", async reason => {
+    const f = await prepare(undefined, false, reason);
+    const receipt = and(eq(runEventIngest.runId, f.review.source.run.id), eq(runEventIngest.sequence, f.terminalFrame.sequence));
+    const [before] = await server.db.db.select({ bodyIdentity: runEventIngest.bodyIdentity }).from(runEventIngest).where(receipt);
+    expect(before?.bodyIdentity).toBe(qualifyRunEventMessage(f.terminalFrame).bodyIdentity);
+    await expect(ingestWireRunEvent(server.ctx, f.terminalFrame)).resolves.toMatchObject({ deduped: true });
+    const changed = { ...f.terminalFrame, event: { type: "run.lifecycle",
+      payload: reason === null ? { phase: "completed" } : { phase: "completed", reason: null } } };
+    expect(qualifyRunEventMessage(changed).bodyIdentity).not.toBe(qualifyRunEventMessage(f.terminalFrame).bodyIdentity);
+    await expect(ingestWireRunEvent(server.ctx, changed)).rejects.toThrow("body mismatch");
+    await expect(admitProductSourceTransfer(f.actor, f.request)).resolves.toMatchObject({ status: "awaiting_upload" });
+    const [after] = await server.db.db.select({ bodyIdentity: runEventIngest.bodyIdentity }).from(runEventIngest).where(receipt);
+    expect(after).toEqual(before);
+  });
+
+  it.each(["", "unexpected success detail"])("does not qualify a completed wire frame with reason %j", async reason => {
+    const f = await prepare(undefined, false, reason);
+    await expect(admitProductSourceTransfer(f.actor, f.request)).rejects.toThrow("export");
+    expect(await server.db.db.select().from(productSourceTransfers)).toHaveLength(0);
+  });
+
+  it.each(["failed", "cancelled", "sequence", "node", "missing-receipt"])(
+    "rejects a completed domain event with a mismatched %s receipt", async kind => {
+      const reason = null, f = await prepare(undefined, false, reason);
+      const receipt = and(eq(runEventIngest.runId, f.review.source.run.id), eq(runEventIngest.sequence, f.terminalFrame.sequence));
+      if (kind === "failed" || kind === "cancelled") {
+        const changed = { ...f.terminalFrame, event: { type: "run.lifecycle", payload: { phase: kind, reason: null } } };
+        await server.db.db.update(runEventIngest).set({ bodyIdentity: qualifyRunEventMessage(changed).bodyIdentity }).where(receipt);
+      } else if (kind === "sequence") {
+        await server.db.db.update(runEventIngest).set({ sequence: f.terminalFrame.sequence + 1 }).where(receipt);
+      } else if (kind === "node") {
+        await server.db.db.update(runEventIngest).set({ nodeId: f.other.nodeId }).where(receipt);
+      } else {
+        await server.db.db.delete(runEventIngest).where(receipt);
+      }
+      await expect(admitProductSourceTransfer(f.actor, f.request)).rejects.toThrow("export");
+      expect(await server.db.db.select().from(productSourceTransfers)).toHaveLength(0);
+    });
 
   it("requires the qualified owning-node export and original frame replay", async () => {
     const f = await prepare();

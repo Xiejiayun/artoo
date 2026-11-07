@@ -12,6 +12,8 @@ Root exit alone does not complete an execution. The native bridge requires the o
 
 The retained normal r9 attempt has now ended with failure: original session `88452` closed naturally with exit 1 (final chunk `7030fb`). It submitted one goal but did not complete the pipeline; the server closed and measured inputs were unchanged. Both original CLI processes exited/closed and both output streams reached EOF without wrapper forced root kill. The source CLI exited 1 without a stopped ACK, while the destination exited 0 with its stopped ACK. Root recorded confirmed native lifetime cleanup from both original supervisors. This does not establish that the interrupted logical runs or write leases were released, and is not successful normal or product acceptance.
 
+See [the current Agent Team status](agent-team-development.md) for later supervised runs and the separate startup, source-transfer and product acceptance results.
+
 The file has these fields:
 
 | Field | Meaning |

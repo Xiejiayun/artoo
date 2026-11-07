@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
-import { assertProductSourceExport } from "./product-source-export-service.js";
+import { assertProductSourceExport, requireProductSourceCompletionFrame } from "./product-source-export-service.js";
 import { qualifyRunEventMessage } from "./run-event-receipt.js";
 import { inspectRunVerification } from "./verification-service.js";
 
@@ -81,7 +81,7 @@ export async function requireProductSourceSemanticExportForTransfer(ctx: ServerC
     || !isDeepStrictEqual(request.source_export, proof) || productSourceExportDigestV2(proof, sha) !== request.source_export_digest) conflict();
   const original = await qualifiedFrame(ctx, db, run, event.sequence, PRODUCT_SOURCE_EXPORT_EVENT_V2, proof);
   if (original.id !== event.id || !isDeepStrictEqual(original.payload, proof)) conflict();
-  const terminal = await qualifiedFrame(ctx, db, run, event.sequence + 1, "run.lifecycle", { phase: "completed" });
+  const terminal = await requireProductSourceCompletionFrame(ctx, db, run, event.sequence + 1);
   // Ordinary lifecycle events retain their agent attribution even though the wire frame is node-qualified.
   if (terminal.type !== "run.completed" || terminal.projectId !== proof.byte_export.project_id
     || terminal.actorType !== "agent" || terminal.actorId !== run.agentInstanceId) conflict();

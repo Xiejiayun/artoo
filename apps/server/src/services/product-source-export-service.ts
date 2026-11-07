@@ -25,6 +25,22 @@ async function qualifiedFrame(ctx: ServerContext, db: DrizzleDb, run: StoredRun,
   return stored.event;
 }
 
+/** Source transfer accepts the two successful terminal shapes without rewriting either receipt. */
+export async function requireProductSourceCompletionFrame(ctx: ServerContext, db: DrizzleDb, run: StoredRun, sequence: number) {
+  const [stored] = await db.select({ event: eventLog, receipt: runEventIngest }).from(runEventIngest)
+    .innerJoin(eventLog, and(eq(eventLog.id, runEventIngest.eventId), eq(eventLog.organizationId, ctx.organizationId)))
+    .where(and(eq(runEventIngest.runId, run.id), eq(runEventIngest.nodeId, run.computerId), eq(runEventIngest.sequence, sequence)));
+  if (!stored || stored.event.runId !== run.id || stored.event.taskId !== run.taskId || stored.event.sequence !== sequence
+    || stored.event.type !== "run.completed" || stored.event.actorType !== "agent" || stored.event.actorId !== run.agentInstanceId) conflict();
+  // The protocol preserves null. Match each complete original wire body; ingest/replay
+  // must still reject replacing an omitted reason with null at the same sequence.
+  const matches = [{ phase: "completed" }, { phase: "completed", reason: null }].some(payload =>
+    stored.receipt.bodyIdentity === qualifyRunEventMessage({ kind: "run.event", node_id: run.computerId, run_id: run.id,
+      sequence, event: { type: "run.lifecycle", payload } }).bodyIdentity);
+  if (!matches) conflict();
+  return stored.event;
+}
+
 /** Local object provenance never reaches this boundary: only a qualified owning-node frame does. */
 export async function assertProductSourceExport(ctx: ServerContext, db: DrizzleDb, run: StoredRun, task: StoredTask,
   input: unknown, sequence: number): Promise<ProductSourceExportV1> {
@@ -70,7 +86,7 @@ export async function requireProductSourceExportForTransfer(ctx: ServerContext, 
   if (original.id !== event.id || !isDeepStrictEqual(original.payload, proof)) conflict();
   // Ordinary verified runs have no worktree retention frame. Completion must be the
   // next exact qualified node frame, preventing a failed/export-only run from qualifying.
-  const terminal = await qualifiedFrame(ctx, db, run, event.sequence + 1, "run.lifecycle", { phase: "completed" });
+  const terminal = await requireProductSourceCompletionFrame(ctx, db, run, event.sequence + 1);
   if (terminal.type !== "run.completed" || terminal.projectId !== proof.project_id) conflict();
   const source = request.source;
   if (proof.node_id !== source.node_id || proof.run_id !== source.run_id || proof.task_id !== source.task_id
