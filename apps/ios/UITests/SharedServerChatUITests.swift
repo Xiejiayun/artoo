@@ -1408,7 +1408,8 @@ final class SharedServerChatUITests: XCTestCase {
         let (data, response) = try await session.data(for: request)
         let http = try XCTUnwrap(response as? HTTPURLResponse)
         guard (200..<300).contains(http.statusCode) else {
-            throw NSError(domain: "ArtooUITestPeer", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Authenticated peer request failed with HTTP \(http.statusCode)"])
+            throw NSError(domain: "ArtooUITestPeer", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey:
+                PeerHTTPFailure.description(request: request, status: http.statusCode, data: data)])
         }
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(Response.self, from: data)

@@ -25,7 +25,7 @@ vi.mock("node:fs", () => ({
 import { invokeWindowsGuardianNativeSync, isWindowsOwnedClosureReceipt, prepareWindowsProcessBackend,
   startWindowsGuardianObserverSync, WindowsOwnedCleanupError, type PreparedWindowsProcessBackend } from "./windows-owned-process.js";
 import type { PreparedWindowsGuardianSlot } from "./windows-runtime-guardian.js";
-import { readWindowsNativeFailureCode } from "./windows-process-diagnostic.js";
+import { readWindowsNativeFailureCode, readWindowsNativeFailure } from "./windows-process-diagnostic.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const sha = (bytes: Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -107,6 +107,11 @@ describe("registered synchronous collectors (controlled OS boundary)", () => {
     expect(error).toBeInstanceOf(WindowsOwnedCleanupError);
     expect((error as WindowsOwnedCleanupError).receipt.cleanupConfirmed).toBe(false);
     expect(readWindowsNativeFailureCode(error)).toBe(fault === "helper" ? "native_nonzero_exit" : "native_protocol_failed");
+    const detail = readWindowsNativeFailure(error)?.detail;
+    expect(detail).toMatchObject({ helper_mode: "guardian_observer_sync", helper_exit_code: fault === "helper" ? 2 : 0,
+      stderr_status: "empty", observer: { cleanupConfirmed: false } });
+    expect(isWindowsOwnedClosureReceipt(detail?.observer)).toBe(false);
+    expect(detail?.observer).not.toHaveProperty("token"); expect(detail?.observer).not.toHaveProperty("rootPid");
   });
   it("preserves a real target failure after confirmed closure for the fixed collector to reject", () => {
     mock.spawnSync.mockImplementation((_file, _args, options) => success(options, frames => {
@@ -150,7 +155,32 @@ describe("registered synchronous collectors (controlled OS boundary)", () => {
       protocol: "native_protocol_failed", output_limit: "native_protocol_failed", null_status: "native_closure_unconfirmed",
       signal: "native_closure_unconfirmed", unknown_error: "native_closure_unconfirmed" };
     expect(error).toBeInstanceOf(Error); expect(readWindowsNativeFailureCode(error)).toBe(codes[fault]);
+    expect(readWindowsNativeFailure(error)?.detail).toMatchObject({ helper_mode: "guardian_client_sync",
+      helper_exit_code: fault === "throw" || fault === "timeout" || fault === "null_status" || fault === "signal" ? null : fault === "nonzero" ? 2 : 0,
+      stderr_status: fault === "throw" ? "unavailable" : "rejected", native_diagnostics: [] });
+    expect(JSON.stringify(readWindowsNativeFailure(error))).not.toContain("private-");
     expect(mock.spawnSync.mock.calls[0]![2]).toMatchObject({ timeout: 10000, maxBuffer: 131072, shell: false });
+  });
+  it("keeps fixed relay diagnostics on a nonzero helper without accepting success-looking stdout", () => {
+    const backend = prepare(), native = { version: 1, phase: "guardian_response_read", code: "operation_cancelled", nativeError: null };
+    mock.spawnSync.mockReturnValue({ pid: 41, status: 2, signal: null,
+      stdout: Buffer.from(JSON.stringify({ version: 1, kind: "guardian_result", payload: { accepted: true } }) + "\n"),
+      stderr: Buffer.from(JSON.stringify({ version: 1, kind: "native_failure_diagnostic", payload: native }) + "\n") });
+    let error: unknown; try { invokeWindowsGuardianNativeSync(backend, "command", {}); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(Error); expect(readWindowsNativeFailure(error)).toEqual({ code: "native_nonzero_exit", detail: {
+      version: 1, helper_mode: "guardian_client_sync", helper_exit_code: 2, stderr_status: "accepted", native_diagnostics: [native] } });
+  });
+  it("retains observer identity and allowed closure facts when its native helper fails", () => {
+    const native = { version: 1, phase: "guardian_response_binding", code: "guardian_request_rejected", nativeError: null };
+    mock.spawnSync.mockImplementation((_file, _args, options) => ({ ...success(options), status: 2,
+      stderr: Buffer.from(JSON.stringify({ version: 1, kind: "native_failure_diagnostic", payload: native }) + "\n") }));
+    let error: unknown; try { startWindowsGuardianObserverSync(prepare(), input()); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(WindowsOwnedCleanupError);
+    const detail = readWindowsNativeFailure(error)?.detail;
+    expect(detail).toMatchObject({ helper_mode: "guardian_observer_sync", helper_exit_code: 2, stderr_status: "accepted",
+      native_diagnostics: [native], observer: { helperExitCode: 2, cleanupConfirmed: false } });
+    expect(JSON.stringify(detail)).not.toContain((error as WindowsOwnedCleanupError).receipt.token);
+    expect((error as WindowsOwnedCleanupError).receipt.cleanupConfirmed).toBe(false);
   });
   it("retains a timed-out nested control cause across the installation qualification wrapper", () => {
     let backend: PreparedWindowsProcessBackend | undefined;
@@ -163,6 +193,8 @@ describe("registered synchronous collectors (controlled OS boundary)", () => {
     expect((error as Error).cause).toBeInstanceOf(Error);
     expect(readWindowsNativeFailureCode((error as Error).cause)).toBe("native_timeout");
     expect(readWindowsNativeFailureCode(error)).toBe("native_timeout");
+    expect(readWindowsNativeFailure(error)?.detail).toMatchObject({ helper_mode: "guardian_client_sync", helper_exit_code: null,
+      stderr_status: "empty", native_diagnostics: [] });
     expect(mock.consume).not.toHaveBeenCalled(); expect(mock.spawnSync).toHaveBeenCalledTimes(1);
     expect(mock.spawnSync.mock.calls[0]![1]).toEqual(["--guardian-client-v1"]);
   });

@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
 import { z } from "zod";
-import { WINDOWS_NATIVE_FAILURE_CODES, readWindowsNativeFailureCode } from "./owned/windows-process-diagnostic.js";
+import { WINDOWS_NATIVE_FAILURE_CODES, readWindowsNativeFailure, WindowsNativeFailureDetailV1Schema } from "./owned/windows-process-diagnostic.js";
 
 const phase = z.enum(["daemon_start", "load_configuration", "bootstrap_git", "create_node", "start_node", "await_registration",
   "guardian_session", "guardian_registration", "source_profiles", "source_backend", "source_releases", "source_storage",
@@ -11,9 +11,12 @@ export const WindowsStartupDiagnosticSchema = z.object({ version: z.literal(1), 
   status: z.enum(["entered", "completed", "failed"]), elapsed_ms: z.number().int().min(0).max(86_400_000),
   phase_elapsed_ms: z.number().int().min(0).max(86_400_000),
   error_code: z.literal("startup_stage_failed").optional(),
-  native_failure_code: z.enum(WINDOWS_NATIVE_FAILURE_CODES).optional() }).strict().superRefine((value, context) => {
+  native_failure_code: z.enum(WINDOWS_NATIVE_FAILURE_CODES).optional(),
+  native_failure_detail: WindowsNativeFailureDetailV1Schema.optional() }).strict().superRefine((value, context) => {
     if ((value.status === "failed") !== (value.error_code !== undefined)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Invalid diagnostic classification" });
     if (value.native_failure_code !== undefined && value.status !== "failed") context.addIssue({ code: z.ZodIssueCode.custom, message: "Native failure category requires a failed stage" });
+    if (value.native_failure_detail !== undefined && (value.status !== "failed" || value.native_failure_code === undefined))
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "Native failure detail requires a failed stage and category" });
   });
 export type WindowsStartupDiagnostic = z.infer<typeof WindowsStartupDiagnosticSchema>;
 interface DiagnosticState { emit(value: WindowsStartupDiagnostic): void; begun: number; phaseAt: number;
@@ -23,13 +26,14 @@ const elapsed = (now: number, before: number) => Math.min(86_400_000, Math.max(0
 function emit(state: DiagnosticState, status: WindowsStartupDiagnostic["status"], cause?: unknown): void {
   if (state.count++ >= 64) return;
   const now = performance.now();
-  const nativeCode = status === "failed" ? readWindowsNativeFailureCode(cause) : undefined;
+  const nativeFailure = status === "failed" ? readWindowsNativeFailure(cause) : undefined;
   // Only compile-time stage/category names and locally measured numbers enter this projection.
   // Exception messages, paths, environment, argv and provider output never enter it.
   state.emit(WindowsStartupDiagnosticSchema.parse({ version: 1, phase: state.phase, status,
     elapsed_ms: elapsed(now, state.begun), phase_elapsed_ms: elapsed(now, state.phaseAt),
     ...(status === "failed" ? { error_code: "startup_stage_failed" } : {}),
-    ...(nativeCode ? { native_failure_code: nativeCode } : {}) }));
+    ...(nativeFailure ? { native_failure_code: nativeFailure.code,
+      ...(nativeFailure.detail ? { native_failure_detail: nativeFailure.detail } : {}) } : {}) }));
 }
 export function recordWindowsStartupPhase(next: WindowsStartupPhase): void {
   const state = current.getStore(); if (!state || state.ended) return;

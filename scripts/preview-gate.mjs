@@ -22,6 +22,7 @@ const checks = {
     runNode("E2E report integrity", "scripts/e2e-report.test.mjs"),
     runNode("Native PNG evidence integrity", "scripts/png-evidence.test.mjs"),
     runNode("Exact native UI suite contract", "apps/ios/scripts/ui-suite-contract.test.mjs"),
+    runNode("Native node transition failure diagnostics", "scripts/ios-ui-workflows-fixture.test.mjs"),
     runNode("Native suite evidence isolation", "scripts/ios-ui-suite-evidence.test.mjs"),
     runNode("E2E owned browser cleanup", "scripts/owned-browser.test.mjs"),
     runNode("native execution fixture integrity", "scripts/fixtures/ios-ui-execution.test.mjs"),
@@ -51,6 +52,7 @@ const checks = {
   ios: [
     runNode("Native PNG evidence integrity", "scripts/png-evidence.test.mjs"),
     runNode("Exact native UI suite contract", "apps/ios/scripts/ui-suite-contract.test.mjs"),
+    runNode("Native node transition failure diagnostics", "scripts/ios-ui-workflows-fixture.test.mjs"),
     runNode("Native suite evidence isolation", "scripts/ios-ui-suite-evidence.test.mjs"),
     runNode("Direct-agent subprocess integrity", "scripts/fixtures/assistant-conversation.test.mjs"),
     runNode("Direct-agent outcome evidence", "scripts/fixtures/assistant-conversation-results.test.mjs"),

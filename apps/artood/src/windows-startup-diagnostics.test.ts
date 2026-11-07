@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { withWindowsStartupDiagnostics, recordWindowsStartupPhase, recordWindowsStartupFailure, completeWindowsStartupDiagnostics,
   WindowsStartupDiagnosticSchema, type WindowsStartupDiagnostic } from "./windows-startup-diagnostics.js";
-import { markWindowsNativeFailure, readWindowsNativeFailureCode } from "./owned/windows-process-diagnostic.js";
+import { markWindowsNativeFailure, readWindowsNativeFailureCode, windowsNativeFailureDetail } from "./owned/windows-process-diagnostic.js";
 describe("bounded safe startup diagnostics", () => {
   it("reports the failing phase and elapsed time without copying any exception or environment data", async () => {
     const events: WindowsStartupDiagnostic[] = [], secret = "provider-key-and-sensitive-path";
@@ -49,6 +49,38 @@ describe("bounded safe startup diagnostics", () => {
     let outer: Error = deep;
     for (let i = 0; i < 8; i++) outer = new Error("private wrapper", { cause: outer });
     expect(readWindowsNativeFailureCode(outer)).toBeUndefined();
+  });
+  it("projects optional native helper details from the same local failure without exposing exception content", async () => {
+    const native = { version: 1, phase: "guardian_response_read", code: "operation_cancelled", nativeError: null };
+    const detail = windowsNativeFailureDetail("guardian_client_sync", 2,
+      Buffer.from(JSON.stringify({ version: 1, kind: "native_failure_diagnostic", payload: native }) + "\n"))!;
+    const leaf = markWindowsNativeFailure(new Error("private-key-path-argv-and-environment"), "native_nonzero_exit", detail);
+    const wrapper = markWindowsNativeFailure(new Error("private-wrapper", { cause: leaf }), "native_qualification_failed");
+    const events: WindowsStartupDiagnostic[] = [];
+    await expect(withWindowsStartupDiagnostics(value => events.push(value), async () => {
+      recordWindowsStartupPhase("source_activation"); throw wrapper;
+    })).rejects.toBe(wrapper);
+    expect(events.at(-1)).toMatchObject({ status: "failed", native_failure_code: "native_nonzero_exit", native_failure_detail: detail });
+    expect(events.slice(0, -1).every(value => value.native_failure_detail === undefined)).toBe(true);
+    expect(JSON.stringify(events)).not.toContain("private-");
+    const copied = Object.assign(new Error("private-copied"), { native_failure_code: "native_nonzero_exit", native_failure_detail: detail });
+    const copiedEvents: WindowsStartupDiagnostic[] = [];
+    await expect(withWindowsStartupDiagnostics(value => copiedEvents.push(value), async () => { throw copied; })).rejects.toBe(copied);
+    expect(copiedEvents.at(-1)).not.toHaveProperty("native_failure_code");
+    expect(copiedEvents.at(-1)).not.toHaveProperty("native_failure_detail");
+  });
+  it("keeps old startup payloads valid and rejects detail outside a failed native stage", () => {
+    const failed = { version: 1, phase: "source_activation", status: "failed", elapsed_ms: 10, phase_elapsed_ms: 5,
+      error_code: "startup_stage_failed", native_failure_code: "native_nonzero_exit" };
+    const detail = windowsNativeFailureDetail("guardian_client_sync", 2, Buffer.alloc(0))!;
+    expect(WindowsStartupDiagnosticSchema.safeParse(failed).success).toBe(true);
+    expect(WindowsStartupDiagnosticSchema.safeParse({ ...failed, native_failure_detail: detail }).success).toBe(true);
+    for (const change of [{ native_failure_code: undefined }, { status: "entered", error_code: undefined },
+      { native_failure_detail: { ...detail, argv: "private-secret" } },
+      { native_failure_detail: { ...detail, helper_mode: "private-secret" } },
+      { native_failure_detail: { ...detail, stderr_status: "accepted", native_diagnostics: [{ version: 1,
+        phase: "guardian_response_read", code: "private-secret", nativeError: null }] } }])
+      expect(WindowsStartupDiagnosticSchema.safeParse({ ...failed, native_failure_detail: detail, ...change }).success).toBe(false);
   });
   it("does not evaluate cause accessors or let hostile unknown failures replace the original rejection", async () => {
     const project = async (failure: unknown) => {

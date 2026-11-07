@@ -8,7 +8,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { PassThrough, type Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
-import { markWindowsNativeFailure, windowsProcessDiagnostic, withWindowsProcessDiagnostic, type WindowsNativeFailureCode,
+import { markWindowsNativeFailure, windowsNativeFailureDetail, windowsProcessDiagnostic, withWindowsProcessDiagnostic, type WindowsNativeFailureCode,
   type WindowsProcessDiagnosticV1 } from "./windows-process-diagnostic.js";
 import { consumeWindowsGuardianSlot, type PreparedWindowsGuardianSlot } from "./windows-runtime-guardian.js";
 
@@ -543,13 +543,14 @@ export function invokeWindowsGuardianNativeSync(backend: PreparedWindowsProcessB
       timeout: 10000, maxBuffer: 131072,
       env: { SystemRoot: root, WINDIR: root, PATH: join(root, "System32") },
     }); } catch (cause) {
-      throw markWindowsNativeFailure(new Error("Windows guardian control helper could not be spawned", { cause }), "native_spawn_failed");
+      throw markWindowsNativeFailure(new Error("Windows guardian control helper could not be spawned", { cause }), "native_spawn_failed",
+        windowsNativeFailureDetail("guardian_client_sync", null, undefined));
     }
   })();
   if (child.error || !Number.isSafeInteger(child.pid) || child.pid < 1 || child.status !== 0 || child.signal !== null
     || !Buffer.isBuffer(child.stdout) || !Buffer.isBuffer(child.stderr) || child.stdout.length > 65536 || child.stderr.length > 65536) {
     throw markWindowsNativeFailure(new Error("Windows guardian command lacks successful synchronous process and pipe closure"),
-      synchronousNativeFailure(child, true));
+      synchronousNativeFailure(child, true), windowsNativeFailureDetail("guardian_client_sync", child.status, child.stderr));
   }
   try {
     const output = child.stdout.toString("utf8");
@@ -559,7 +560,7 @@ export function invokeWindowsGuardianNativeSync(backend: PreparedWindowsProcessB
     return frame.payload;
   } catch (cause) {
     throw markWindowsNativeFailure(cause instanceof Error ? cause : new Error("Windows guardian response framing or protocol changed", { cause }),
-      "native_protocol_failed");
+      "native_protocol_failed", windowsNativeFailureDetail("guardian_client_sync", child.status, child.stderr));
   }
 }
 
@@ -605,7 +606,8 @@ export function startWindowsGuardianObserverSync(backend: PreparedWindowsProcess
   };
   const child = (() => {
     try { return spawnSync(state.executable, ["--stdio-sync-v1"], options); }
-    catch (cause) { throw markWindowsNativeFailure(new Error("Windows observer helper could not be spawned", { cause }), "native_spawn_failed"); }
+    catch (cause) { throw markWindowsNativeFailure(new Error("Windows observer helper could not be spawned", { cause }), "native_spawn_failed",
+      windowsNativeFailureDetail("guardian_observer_sync", null, undefined)); }
   })();
   let final: NativeClosure | undefined, protocolFailure = false;
   const output: { stdout: Buffer[]; stderr: Buffer[] } = { stdout: [], stderr: [] };
@@ -673,6 +675,7 @@ export function startWindowsGuardianObserverSync(backend: PreparedWindowsProcess
     helperSpawnObserved: Number.isSafeInteger(child.pid) && child.pid > 0, helperExitObserved: helperClosed, helperCloseObserved: helperClosed,
     helperExitCode: child.status, helperSignal: child.signal, cleanupConfirmed: confirmed });
   receipts.add(receipt);
-  if (!confirmed) throw markWindowsNativeFailure(new WindowsOwnedCleanupError(receipt), synchronousNativeFailure(child, protocolFailure));
+  if (!confirmed) throw markWindowsNativeFailure(new WindowsOwnedCleanupError(receipt), synchronousNativeFailure(child, protocolFailure),
+    windowsNativeFailureDetail("guardian_observer_sync", child.status, child.stderr, receipt));
   return Object.freeze({ stdout: Buffer.concat(output.stdout), stderr: Buffer.concat(output.stderr), receipt });
 }
