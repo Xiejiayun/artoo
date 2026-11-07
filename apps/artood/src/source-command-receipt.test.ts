@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { canonicalProductSourceTransferValueV1 as canonical, ProductSourceOperationV1Schema, productSourceOperationDigestV1,
   type ProductSourceTransferReceiptV1 } from "@artoo/domain";
 import type { NodeToServerMessage, ProductSourceOperationCommand, ProductSourceOperationReceipt,
@@ -42,6 +42,121 @@ function fixture() {
   return { command, control, status, receipt, dispatch, guard, work, current, readScope, originalScope, transport, sent, upload, client };
 }
 beforeEach(() => { vi.clearAllMocks(); });
+afterEach(() => { vi.useRealTimers(); });
+
+describe("completed H2 replay yields to queued transport receipts", () => {
+  it.each(["start", "status"] as const)("coalesces a completed %s backlog during one bounded replay delay without losing an unacknowledged result", async control => {
+    vi.useFakeTimers();
+    const f = fixture(); await f.dispatch(f.command);
+    const command = control === "start" ? f.command : f.status();
+    if (control === "status") await f.dispatch(command);
+    const results = f.sent.filter(message => message.kind === "product.source.operation.result.v1").length;
+    const checks = f.current.mock.calls.length, replay = f.dispatch(command);
+    for (let index = 0; index < 256; index++) await f.dispatch(structuredClone(command));
+    expect(f.current).toHaveBeenCalledTimes(checks);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(9); expect(f.current).toHaveBeenCalledTimes(checks);
+    await vi.advanceTimersByTimeAsync(1); await replay;
+    expect(f.sent.filter(message => message.kind === "product.source.operation.result.v1")).toHaveLength(results + 1);
+    expect(f.upload).toHaveBeenCalledTimes(1); expect(native.reserve).toHaveBeenCalledTimes(1); expect(native.persist).toHaveBeenCalledTimes(1);
+  });
+
+  it("processes an authentic committed receipt during the delay and skips only the now-redundant replay", async () => {
+    vi.useFakeTimers();
+    const f = fixture(); await f.dispatch(f.command); const receipt = f.receipt();
+    const replay = f.dispatch(f.command);
+    await f.dispatch(receipt);
+    const checks = f.current.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(10); await replay;
+    await f.dispatch(f.command); await f.dispatch(receipt);
+    expect(f.current).toHaveBeenCalledTimes(checks);
+    expect(f.sent.filter(message => message.kind === "product.source.operation.result.v1")).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["invalidated", "missing-session", "changed-session", "changed-runtime"] as const)("rechecks %s before delayed replay can call the controller", async change => {
+    vi.useFakeTimers();
+    const f = fixture(); await f.dispatch(f.command); const checks = f.current.mock.calls.length;
+    const replay = f.dispatch(f.command).then(() => undefined, error => error);
+    if (change === "invalidated") f.guard.invalidate();
+    else if (change === "missing-session") f.readScope.mockReturnValue(undefined as never);
+    else f.readScope.mockReturnValue({ ...f.originalScope, [change === "changed-session" ? "session" : "runtime"]: {} });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await replay).toBeInstanceOf(Error);
+    expect(f.current).toHaveBeenCalledTimes(checks);
+    expect(f.sent.filter(message => message.kind === "product.source.operation.result.v1")).toHaveLength(1);
+  });
+
+  it("preserves the original command deadline while yielding a completed replay", async () => {
+    vi.useFakeTimers();
+    const f = fixture(); f.command.deadline_at = new Date(Date.now() + 5).toISOString();
+    await f.dispatch(f.command);
+    const replay = f.dispatch(f.command).then(() => undefined, error => error);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await replay).toMatchObject({ message: "Operation command deadline expired before admission" });
+    expect(f.upload).toHaveBeenCalledTimes(1);
+    expect(f.sent.filter(message => message.kind === "product.source.operation.result.v1")).toHaveLength(1);
+  });
+
+  it("does not wait for a receipt handler that is still pending when the replay delay ends", async () => {
+    vi.useFakeTimers();
+    const f = fixture(); await f.dispatch(f.command); const gate = deferred(), receipt = f.receipt();
+    f.work.mockImplementation(async message => {
+      if (message.type === "product.source.operation.receipt.v1") await gate.promise;
+      await f.client.handle(message);
+    });
+    const replay = f.dispatch(f.command), pendingReceipt = f.dispatch(receipt);
+    let replayed = false; void replay.then(() => { replayed = true; });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(replayed).toBe(true);
+    expect(f.sent.filter(message => message.kind === "product.source.operation.result.v1")).toHaveLength(2);
+    gate.resolve(); await pendingReceipt; await replay;
+    const checks = f.current.mock.calls.length; await f.dispatch(f.command);
+    expect(f.current).toHaveBeenCalledTimes(checks);
+  });
+
+  it.each(["stop", "rejected-receipt"] as const)("keeps %s on its original handler and cannot restore old receipt suppression during a delayed replay", async control => {
+    vi.useFakeTimers();
+    const f = fixture(); await f.dispatch(f.command); const receipt = f.receipt();
+    const replay = f.dispatch(f.command); await f.dispatch(receipt);
+    if (control === "stop") await f.dispatch({ ...f.status("stop"), type: "product.source.operation.stop.v1" });
+    else await f.dispatch({ ...receipt, status: "rejected" });
+    const checks = f.current.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(10); await replay;
+    expect(f.current.mock.calls.length).toBeGreaterThan(checks);
+    const replayedChecks = f.current.mock.calls.length;
+    await f.dispatch(f.command); // Old epoch must not repopulate the completed map.
+    expect(f.current.mock.calls.length).toBeGreaterThan(replayedChecks);
+    expect(f.upload).toHaveBeenCalledTimes(1); expect(native.reserve).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps replay available after invalid receipt validation and rejects a changed envelope without replacing its pending timer", async () => {
+    vi.useFakeTimers();
+    const f = fixture(); await f.dispatch(f.command); const replay = f.dispatch(f.command);
+    expect(() => f.dispatch({ ...f.command, idempotency_key: "changed" })).toThrow("complete envelope");
+    await expect(f.dispatch({ ...f.receipt(), result_digest: otherDigest })).rejects.toThrow("differs from original result");
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(10); await replay;
+    expect(f.sent.filter(message => message.kind === "product.source.operation.result.v1")).toHaveLength(2);
+  });
+
+  it("leaves first attempts, failed sends and unrelated H3 work immediate", async () => {
+    vi.useFakeTimers();
+    const f = fixture(), failure = Error("Controlled original result send failure");
+    f.transport.send.mockImplementationOnce(async () => { throw failure; });
+    // ACK failure is retained as uncertain by the real controller; reject the
+    // result write as well so the complete initial dispatch actually fails.
+    f.transport.send.mockRejectedValueOnce(failure);
+    await expect(f.dispatch(f.command)).rejects.toBe(failure);
+    expect(vi.getTimerCount()).toBe(0);
+    await f.dispatch(f.command); expect(vi.getTimerCount()).toBe(0);
+    const review: ServerToNodeMessage = { kind: "command", id: "review-status", type: "product.source.review.status.v1",
+      idempotency_key: "review:status", payload: { version: 1, review_id: "review", request_digest: otherDigest } };
+    const work = vi.fn(async () => {});
+    await f.guard.run(review, f.readScope, work); await f.guard.run(review, f.readScope, work);
+    expect(work).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe("completed H2 delivery suppression with the real operation controller and mocked native ownership", () => {
   it("discards sequential old starts/status and exact receipts only after controller-validated server receipts", async () => {

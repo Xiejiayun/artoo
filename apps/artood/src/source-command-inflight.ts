@@ -42,6 +42,7 @@ const freeze = (value: object): void => {
 };
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const completedReplayDelayMs = 10;
 interface OperationDelivery {
   operationId: string; payloadDigest: string; requestDigest?: string; epoch: object;
   completed: boolean; receiptDigest?: string;
@@ -131,11 +132,29 @@ export function createSourceCommandInflight() {
           epoch: receiptEpoch, completed: false } }
           : command.type === "product.source.operation.status.v1" ? { operation: { operationId: command.payload.operation_id,
             payloadDigest: command.payload.payload_digest, requestDigest: command.payload.request_digest, epoch: receiptEpoch, completed: false } } : {}) };
+      const completedReplay = entry.operation?.completed === true;
       completed.delete(command.id);
-      if (entry.operation) entry.operation.completed = false;
+      if (entry.operation && !completedReplay) entry.operation.completed = false;
       freeze(command); pending.set(command.id, entry);
       return (async () => {
         try {
+          if (completedReplay) {
+            // Buffered WebSocket frames can each finish a persisted-result replay
+            // before the next frame is dispatched. Give socket I/O a bounded turn
+            // to deliver the committed receipt instead of repeating native audits
+            // for every old frame. Register pending first; duplicates never reset
+            // this timer. Missing receipts still reach the original controller.
+            await new Promise<void>(resolve => setTimeout(resolve, completedReplayDelayMs));
+            const current = readScope();
+            if (invalidated || !current || current.runtime !== entry.runtime || current.session !== entry.session)
+              throw Error("Delayed source replay lost its original authenticated runtime/session");
+            if (entry.operation!.epoch === receiptEpoch && entry.operation!.receiptDigest) {
+              remember(command.id, entry); return;
+            }
+            // Stop/rejected receipts invalidate the optimization, not the original
+            // controller's responsibility for processing retained results/closure.
+            entry.operation!.completed = false;
+          }
           await work(command);
           if (entry.operation) { entry.operation.completed = true; remember(command.id, entry); }
         }
