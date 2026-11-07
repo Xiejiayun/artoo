@@ -47,6 +47,7 @@ import { createProductReleaseExecutor, prepareReleaseProfiles, type ReleaseProfi
 import { bindWorkspaceToolVerifier, bindWorkspaceToolEvidenceReader, bindWorkspaceToolCapabilities, bindWorkspaceToolReleaseCapabilities } from "./workspace-tools.js";
 import { bindWorkspaceReadOnlyTools, isAutonomousPlanningContext } from "./workspace-readonly.js";
 import { createSourceStartReplay, type SourceStartOutcome, type SourceStartScope } from "./source-start-replay.js";
+import { createSourceCommandInflight } from "./source-command-inflight.js";
 import { createProductSourceOperationClient } from "./product-source-operations.js";
 import { createImportedProductReviewClient } from "./imported-product-review.js";
 import { createImportedDesignContinuationClient } from "./imported-design-continuation.js";
@@ -405,6 +406,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   const inflight = new Set<Promise<void>>();
   let unsubscribe: Unsubscribe | undefined;
   const sourceStartReplay = createSourceStartReplay();
+  const sourceCommandInflight = createSourceCommandInflight();
   const pendingSourceReplaySends = new Map<string, symbol>();
   // Clean lifecycle's ordinary-state reader performs its own audit. Keep that
   // existing path until it has a separate local-fact replay capability.
@@ -1658,6 +1660,10 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
 
   async function dispatch(message: ServerToNodeMessage): Promise<void> {
     if (sourceRecovery && sourceReplayEnabled && message.type === "run.stop") sourceStartReplay.stopRun(message.payload.run_id);
+    if (sourceRecovery && sourceReplayEnabled) {
+      const ordinary = sourceCommandInflight.run(message, sourceReplayScope, dispatchFresh);
+      if (ordinary) return ordinary;
+    }
     if (!sourceRecovery || !sourceReplayEnabled || message.type !== "run.start") return dispatchFresh(message);
     const sendOutcome = (outcome: SourceStartOutcome) => sendControl({ kind: "command.ack", node_id: nodeId, command_id: message.id,
       ...(outcome.status === "accepted" ? { status: "accepted" as const, message: null } : outcome) });
@@ -1930,6 +1936,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       await flushHealth();
     },
     async stop(cancelRunning = false): Promise<void> {
+      sourceCommandInflight.invalidate();
       sourceStartReplay.invalidate(); // Wake duplicate waiters before any synchronous shutdown audit.
       const close = () => observeWindowsStopStage("client_close", async () => {
       healthStopped = true;
