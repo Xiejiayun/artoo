@@ -60,8 +60,13 @@ describe("protected workspace tool sessions", () => {
         health_checks: [{ path: "/", expected_status: 200, body: "immutable-artifact-equality", identity: "release-id-and-artifact-digest-headers" }],
         criterion: { id: CONFIGURED_STATIC_PUBLICATION_CLAIM, statement: CONFIGURED_STATIC_PUBLICATION_STATEMENT, statement_digest: CONFIGURED_STATIC_PUBLICATION_STATEMENT_DIGEST } } };
     f.context.release_capabilities = structuredClone(release);
-    let active = true;
-    const readReleaseCapabilities = () => { if (!active) throw new Error("Release capability closed"); return release; };
+    let active = true, revokeDuringCapabilityRead = false;
+    const readReleaseCapabilities = vi.fn(() => { if (!active) throw new Error("Release capability closed"); return release; });
+    const prepared = prepareStaticWebCapabilities({ viewports: [768, 320] });
+    const capabilities = { version: 1 as const, profile_id: "profile", profile_digest: sha("profile"), checks: [{ command_id: "browser",
+      config_digest: prepared.config_digest, contract_digest: prepared.contract_digest, contract: prepared.contract }] };
+    f.context.verification_capabilities = structuredClone(capabilities);
+    const readCapabilities = () => { if (revokeDuringCapabilityRead) active = false; return capabilities; };
     const local = { runId: "run" } as AgentInstanceConfig;
     bindWorkspaceToolReleaseCapabilities(local, readReleaseCapabilities);
     expect(takeWorkspaceToolReleaseCapabilities(structuredClone(local))).toBeUndefined();
@@ -72,20 +77,30 @@ describe("protected workspace tool sessions", () => {
       f.context.policy = { execution_mode: "discussion", filesystem_write_scope: [], requires_approval: [] };
       f.context.review_subject = { version: 1, task_id: "author", run_id: "author", evidence_id: "evidence", subject_digest: sha("subject") };
     }
-    const options = { workspaceRoot: f.workspace, context: f.context, contextText: "Bound release context",
+    const options = { workspaceRoot: f.workspace, context: f.context, contextText: "Bound release context", readCapabilities,
       ...(peer ? { evidenceOnly: true, readEvidence: async () => { throw new Error("No controlled evidence grant"); } } : { verify: async () => evidence() }) };
     await expect(createWorkspaceToolSession(options)).rejects.toThrow(/local binding/);
     const changed = structuredClone(f.context); changed.release_capabilities!.binding.release_profile_digest = sha("other");
     await expect(createWorkspaceToolSession({ ...options, context: changed, readReleaseCapabilities })).rejects.toThrow(/differ/);
     const session = await createWorkspaceToolSession({ ...options, readReleaseCapabilities }); sessions.push(session);
+    readReleaseCapabilities.mockClear();
     const config = JSON.parse(readFileSync(session.configPath, "utf8")); expect(config.tools).not.toContain("deploy");
     const send = async (args = {}) => fetch(config.url, { method: "POST", headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" },
       body: JSON.stringify({ tool: "context", ...args }) });
     expect(await (await send()).json()).toMatchObject({ release_capabilities: release });
+    expect(readReleaseCapabilities).toHaveBeenCalledTimes(1);
     const page = await (await send({ offset: 0, limit: 4 })).json(); expect(page.content).toBe("Boun");
+    expect(readReleaseCapabilities).toHaveBeenCalledTimes(2);
     active = false;
     expect((await send({ offset: page.next_offset, expected_checksum: page.checksum })).status).toBe(400);
     expect((await send()).status).toBe(400);
+    // A prior successful request must not hide revocation during another local
+    // capability callback, even when a context page returns no release object.
+    active = true; revokeDuringCapabilityRead = true;
+    const revoked = await send({ offset: 0, limit: 4 });
+    expect(revoked.status).toBe(400);
+    expect(await revoked.json()).toMatchObject({ error: "Release capability closed" });
+    expect(readReleaseCapabilities).toHaveBeenCalledTimes(5);
   });
   it("exposes configured capabilities only through the exact local config object and rechecks them on context reads", async () => {
     const f = fixture(), prepared = prepareStaticWebCapabilities({ viewports: [768, 320] });
@@ -497,6 +512,44 @@ describe("protected workspace tool sessions", () => {
     await expect(session.close()).rejects.toBe(failure); await expect(session.close()).rejects.toBe(failure);
     expect(existsSync(session.configPath)).toBe(true);
   });
+
+  it("fails close within five seconds for an abort-ignoring verifier and retains files after late settlement", async () => {
+    const f = fixture(), entered = deferred<void>(), cleanup = deferred<RunVerificationPayload>();
+    let signal: AbortSignal | undefined;
+    const { send, session } = await f.start(async value => { signal = value; entered.resolve(); return cleanup.promise; });
+    const request = send({ tool: "verify" }).catch(() => undefined); await entered.promise;
+    uncertainSessions.add(session);
+    try {
+      const closing = session.close(); expect(session.close()).toBe(closing);
+      const error = await closing.catch(cause => cause as unknown);
+      expect(signal?.aborted).toBe(true); expect(error).toBeInstanceOf(VerificationCleanupError);
+      expect((error as Error).message).toContain("5000ms"); expect(existsSync(session.configPath)).toBe(true);
+      cleanup.resolve(evidence()); await request; await new Promise<void>(done => setImmediate(done));
+      await expect(session.close()).rejects.toBe(error); expect(existsSync(session.configPath)).toBe(true);
+    } finally { cleanup.resolve(evidence()); await request; await new Promise<void>(done => setImmediate(done)); }
+  }, 10_000);
+
+  it("bounds a pending evidence reader and keeps its files after a late rejection", async () => {
+    const f = fixture(), entered = deferred<void>(), finish = deferred<void>();
+    const context = structuredClone(f.context); delete context.product_development;
+    context.policy = { execution_mode: "discussion", filesystem_write_scope: [], requires_approval: [] };
+    context.review_subject = { version: 1, task_id: "author", run_id: "run", evidence_id: "evidence", subject_digest: sha("source") };
+    const session = await createWorkspaceToolSession({ workspaceRoot: f.workspace, context, contextText: "Controlled evidence wait",
+      evidenceOnly: true, readEvidence: async () => { entered.resolve(); await finish.promise; throw new Error("Controlled late evidence rejection"); } });
+    sessions.push(session); uncertainSessions.add(session);
+    const config = JSON.parse(readFileSync(session.configPath, "utf8")) as { url: string; token: string };
+    const request = fetch(config.url, { method: "POST", headers: { authorization: `Bearer ${config.token}` },
+      body: JSON.stringify({ tool: "read_evidence", reference: "browser_granted" }) }).catch(() => undefined);
+    await entered.promise;
+    try {
+      const error = await session.close().catch(cause => cause as unknown);
+      expect(error).toBeInstanceOf(VerificationCleanupError); expect((error as Error).message).toContain("5000ms");
+      expect(existsSync(session.configPath)).toBe(true);
+      finish.resolve(); await request; await new Promise<void>(done => setImmediate(done));
+      await expect(session.close({ retainFiles: false })).rejects.toBe(error);
+      expect(existsSync(session.configPath)).toBe(true);
+    } finally { finish.resolve(); await request; await new Promise<void>(done => setImmediate(done)); }
+  }, 10_000);
 
   it("bounds UTF-8 bytes per file and total writes without modifying the last valid file", async () => {
     const f = fixture(), { send } = await f.start(); await send({ tool: "mkdir", path: "product" });

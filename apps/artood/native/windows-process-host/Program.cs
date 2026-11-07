@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -228,16 +229,31 @@ internal static class Program
         catch (Exception) { failureCode ??= "closure_observation_failed"; cleanupConfirmed = false; }
         finally
         {
+            ExceptionDispatchInfo? first = null;
+            void Failed(Exception error) {
+                first ??= ExceptionDispatchInfo.Capture(error);
+            }
             // Independent guardian delivery happens while this host still owns every original
             // HANDLE. Broken daemon stdout cannot erase locally observed pipe EOF.
+            try {
             if (guardian is not null && cleanupConfirmed) guardianAcknowledged = guardian.Terminal(new GuardianTerminal(
                 created, started, created ? process.dwProcessId : null, rootCreationTime?.ToString(CultureInfo.InvariantCulture),
                 member, rootWait, rootExit, jobWasCreated, jobEmpty, stdout is not null, stderr is not null,
                 stdout?.ObservedEof ?? false, stderr?.ObservedEof ?? false, !created && (!attemptedCreate || createReturned), cleanupConfirmed));
-            guardian?.Dispose();
+            } catch (Exception error) { Failed(error); }
+            try { guardian?.Dispose(); } catch (Exception error) { Failed(error); }
             finished = true;
             // Job close is a safety fallback, not an observed successful receipt.
-            Close(ref job); Close(ref process.hProcess); Close(ref stdoutRead); Close(ref stderrRead);
+            void ReleaseHandle(ref IntPtr handle) {
+                try { Close(ref handle); } catch (Exception error) { Failed(error); }
+            }
+            ReleaseHandle(ref job); ReleaseHandle(ref process.hProcess); ReleaseHandle(ref stdoutRead); ReleaseHandle(ref stderrRead);
+            // Preserve observed ACK/Job/EOF facts, but never let the existing
+            // ACK-based success return turn a terminal/cleanup exception into zero.
+            if (first is not null) {
+                NativeFailureDiagnostic.Emit("guardian_lifetime", first.SourceException);
+                first.Throw();
+            }
         }
         bool sent = wire.Send("complete", new
         {

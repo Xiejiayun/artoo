@@ -253,6 +253,7 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
   let sequence = 0, bytes = 0, helperDiagnosticBytes = 0, frameBuffer = "", final: NativeClosure | undefined;
   let stdoutEof = false, stderrEof = false, fatal: string | null = null, requestedStop: string | null = null, settled = false;
   let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+  let terminalTimer: ReturnType<typeof setTimeout> | undefined, terminalDeadline: number | undefined;
   let memberCapability = false, observationCount = 0;
   let hostIdentity: WindowsJobMemberIdentity | undefined;
   const pendingObservations = new Map<string, { members: readonly WindowsJobMemberIdentity[]; timer: ReturnType<typeof setTimeout>;
@@ -282,13 +283,26 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
   }
   function settle(): void {
     if (settled) return; settled = true;
+    if (terminalDeadline !== undefined && performance.now() >= terminalDeadline) fatal ??= "terminal_closure_deadline";
     rejectObservations();
-    clearTimeout(operationTimer); clearTimeout(startupTimer); clearTimeout(cleanupTimer); signal?.removeEventListener("abort", onAbort);
+    clearTimeout(operationTimer); clearTimeout(startupTimer); clearTimeout(cleanupTimer); clearTimeout(terminalTimer); signal?.removeEventListener("abort", onAbort);
     stdout.end(); stderr.end();
     const value = receipt(); receipts.add(value);
     if (!rootStarted) rejectStarted(new WindowsOwnedStartupError(value));
     if (value.cleanupConfirmed) { resolveClosed(value); emitter.emit("close", value.rootExitCode, null); }
     else rejectClosed(new WindowsOwnedCleanupError(value));
+  }
+  function beginTerminalWait(timeout: number): void {
+    if (settled || terminalDeadline !== undefined) return;
+    terminalDeadline = performance.now() + timeout;
+    // First terminal observation wins. Subsequent output/complete/exit/cancel
+    // cannot renew it; neither kill nor elapsed time supplies closure evidence.
+    terminalTimer = setTimeout(() => {
+      fatal ??= "terminal_closure_deadline";
+      try { child.kill(); }
+      catch { settle(); return; } // A failed kill still reports the original closure uncertainty.
+      settle();
+    }, timeout);
   }
   function stop(reason: string, protocolFailure = false): void {
     if (settled) return;
@@ -338,6 +352,9 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
       rootStarted = true; clearTimeout(startupTimer); resolveStarted(Object.freeze({ pid: seenPid, ...(payload.creationTime !== undefined ? { creationTime: seenCreationTime! } : {}) })); emitter.emit("spawn");
     } else if (value.kind === "root_exit") {
       if (seenRootExit !== null || !Number.isSafeInteger(payload.code) || (payload.code as number) < 0 || (payload.code as number) > 0xffffffff) throw new Error("Invalid exit");
+      // The native owner may still need cleanup, an in-flight 3s guardian pulse,
+      // two 3s terminal/ACK exchanges, and its 2s frame drain (+500ms margin).
+      beginTerminalWait(cleanupTimeoutMs + (guardian ? 9000 : 0) + 2500);
       seenRootExit = payload.code as number; emitter.emit("exit", seenRootExit, null);
     } else if (value.kind === "output") {
       if (!["stdout", "stderr"].includes(payload.stream as string) || typeof payload.data !== "string" || payload.data.length > 24000
@@ -388,12 +405,12 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
         || (result.cleanupConfirmed && (!(result.noTargetCreated || result.rootWaitObserved)
           || (result.stdoutCreated && !result.stdoutEof) || (result.stderrCreated && !result.stderrEof)
           || (result.jobCreated && !result.jobEmptyObserved)))) throw new Error("Inconsistent closure");
-      final = result; clearTimeout(startupTimer); child.stdin.end();
+      final = result; clearTimeout(startupTimer); beginTerminalWait(2500); child.stdin.end();
     } else throw new Error("Unknown frame");
   }
   child.once("spawn", () => { helperSpawn = true; });
   child.once("error", () => stop("helper_error", true));
-  child.once("exit", (code, osSignal) => { helperExit = true; helperStatus = code; helperSignal = osSignal; });
+  child.once("exit", (code, osSignal) => { helperExit = true; helperStatus = code; helperSignal = osSignal; beginTerminalWait(2500); });
   child.once("close", (code, osSignal) => {
     helperClose = true; helperStatus ??= code; helperSignal ??= osSignal;
     if (frameBuffer.length || !final) fatal ??= "missing_complete";

@@ -8,6 +8,10 @@ Startup and source capability publication re-audit this protected directory's AC
 
 Autonomous planning on a source-enabled node requires exactly one prepared local verifier profile matching the planning agent's current project and workspace, plus a runtime preset supporting the context-only read-only broker. That profile supplies native process ownership; its verifier commands are not run for planning. Missing or ambiguous local profiles reject planning. The future worker's capability snapshot grants no access to its workspace. Planning uses its own native execution admission and cannot produce verification or source-export authority; completion and cancellation still require the original process and broker closure.
 
+Root exit alone does not complete an execution. The native bridge requires the original host's terminal facts, exit and pipe closure within a fixed closing window. Workspace and research brokers stop admitting requests and allow five seconds to join their existing handlers. A closing deadline rejects with cleanup uncertainty and retains session files and workspace ownership; a late handler cannot turn that rejection into success or delete the retained files. Cancellation may therefore report that process stop remains unconfirmed. This error is not permission to remove reservations, release write leases or launch another writer.
+
+The retained normal r9 attempt has now ended with failure: original session `88452` closed naturally with exit 1 (final chunk `7030fb`). It submitted one goal but did not complete the pipeline; the server closed and measured inputs were unchanged. Both original CLI processes exited/closed and both output streams reached EOF without wrapper forced root kill. The source CLI exited 1 without a stopped ACK, while the destination exited 0 with its stopped ACK. Root recorded confirmed native lifetime cleanup from both original supervisors. This does not establish that the interrupted logical runs or write leases were released, and is not successful normal or product acceptance.
+
 The file has these fields:
 
 | Field | Meaning |

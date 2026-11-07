@@ -7,6 +7,7 @@ import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { awaitSessionClosure } from "./session-closure.js";
 
 /** Local administrator configuration. Task text cannot configure endpoints, keys or receipt storage. */
 export interface ResearchOptions { receiptDirectory: string; braveApiKeyEnv?: string }
@@ -159,6 +160,7 @@ export async function createResearchSession(options: ResearchOptions, binding: R
       let result: unknown;
       if (input.tool === "fetch" && typeof input.url === "string") {
         const content = await download(input.url, controller.signal), html = content.mediaType.includes("html");
+        controller.signal.throwIfAborted();
         const title = html ? /<title[^>]*>([\s\S]*?)<\/title>/i.exec(content.bytes.toString("utf8"))?.[1] : undefined;
         const normalizedTitle = title ? plainText(Buffer.from(title), true) : "";
         const receipt: ResearchReceipt = { version: 1, id: `source_${randomUUID().replaceAll("-", "")}`, url: content.url,
@@ -194,12 +196,20 @@ export async function createResearchSession(options: ResearchOptions, binding: R
       args: [fileURLToPath(new URL("./research-mcp.js", import.meta.url)), configPath], env: { ELECTRON_RUN_AS_NODE: "1" } } } }), { flag: "wx", mode: 0o400 });
     return { configPath, mcpPath, receipts: () => [...receipts], close(options) {
       retainFiles ||= options?.retainFiles === true;
-      return closePromise ??= (async () => { closed = true; for (const controller of controllers) controller.abort(); server.closeAllConnections();
-        const stopped = new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
-        // A closed HTTP socket does not prove DNS/download/receipt continuations
-        // have finished. Join the admitted handlers before disposing their files.
-        await Promise.all([stopped, ...requests]);
-        if (!retainFiles) rmSync(directory, { recursive: true, force: true });
+      return closePromise ??= (async () => {
+        closed = true;
+        try {
+          await awaitSessionClosure(async () => {
+            for (const controller of controllers) controller.abort(); server.closeAllConnections();
+            const stopped = new Promise<void>((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
+            // Keep observing admitted DNS/download/receipt continuations even
+            // after timeout. A closed HTTP socket is not handler completion.
+            const closures = await Promise.allSettled([stopped, ...requests]);
+            const failure = closures.find(result => result.status === "rejected");
+            if (failure?.status === "rejected") throw failure.reason;
+          }, "Research session closure remains unconfirmed");
+          if (!retainFiles) rmSync(directory, { recursive: true, force: true });
+        } catch (error) { retainFiles = true; throw error; }
       })();
     } };
   } catch (error) { closed = true; server.closeAllConnections(); server.close(); rmSync(directory, { recursive: true, force: true }); throw error; }

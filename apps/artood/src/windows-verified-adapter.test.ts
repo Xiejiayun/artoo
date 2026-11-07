@@ -15,6 +15,7 @@ import { VerificationCleanupError, type PreparedVerificationProfile } from "./ve
 import type { PreparedWindowsProcessBackend, WindowsOwnedClosureReceipt, WindowsOwnedProcess } from "./owned/windows-owned-process.js";
 import { windowsProcessDiagnostic, withWindowsProcessDiagnostic } from "./owned/windows-process-diagnostic.js";
 import * as guardianScope from "./owned/windows-guardian-scope.js";
+import { awaitSessionClosure } from "./session-closure.js";
 
 const controlled = vi.hoisted(() => ({ start: vi.fn(), backends: new WeakMap<object, object>(), receipts: new WeakSet<object>(),
   workspace: vi.fn(), research: vi.fn(), spawn: vi.fn() }));
@@ -156,6 +157,46 @@ describe("Windows verified adapter (controlled bridge/session fixtures, not nati
     f.workspaceClose.mockRejectedValue(new VerificationCleanupError("Controlled independent verifier uncertainty")); native.fail(); await expected;
     expect(f.workspaceClose).toHaveBeenCalledWith({ retainFiles: true }); expect(f.researchClose).toHaveBeenCalledWith({ retainFiles: true });
     expect(() => assertWindowsVerifiedExecutionClosed(admission, handle)).toThrow(VerificationCleanupError);
+  });
+  it.each(["native-failure", "normal-close"])("settles %s as uncertainty when the session close deadline rejects", async mode => {
+    const f = fixture(false, true), native = nativeFixture(), admission = f.bind();
+    const starting = f.adapter.start(f.config); await waitLaunch(); native.start(); const handle = await starting;
+    let release!: () => void, closing: Promise<void> | undefined;
+    const pending = new Promise<void>(done => { release = done; });
+    const events: RunEvent[] = [];
+    // Controlled broker implementation obeying the production bounded-close
+    // contract; actual HTTP/evidence/verifier joins are tested in their suites.
+    f.workspaceClose.mockImplementation(() => closing ??= awaitSessionClosure(() => pending, "Controlled broker closure remains unconfirmed"));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      const streaming = (async () => { for await (const event of f.adapter.streamEvents(handle)) events.push(event); })().catch(error => error as unknown);
+      if (mode === "native-failure") native.fail(); else native.finish();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(await streaming).toBeInstanceOf(VerificationCleanupError);
+      expect(f.researchClose).toHaveBeenCalledWith({ retainFiles: true });
+      expect(() => assertWindowsVerifiedExecutionClosed(admission, handle)).toThrow(VerificationCleanupError);
+      expect(events.some(event => event.type === "run.lifecycle" && ["completed", "failed", "cancelled"].includes(event.payload.phase))).toBe(false);
+      release(); await vi.advanceTimersByTimeAsync(0);
+      await expect(f.adapter.stop(handle, "user_cancelled")).rejects.toBeInstanceOf(VerificationCleanupError);
+      expect(() => assertWindowsVerifiedExecutionClosed(admission, handle)).toThrow(VerificationCleanupError);
+    } finally { release(); await Promise.resolve(); vi.useRealTimers(); }
+  });
+
+  it("rejects startup after the bounded broker failure while still attempting both closures", async () => {
+    const f = fixture(false, true); f.bind();
+    controlled.start.mockImplementation(() => { throw new Error("Controlled no-target launch failure"); });
+    let release!: () => void, closing: Promise<void> | undefined;
+    const pending = new Promise<void>(done => { release = done; });
+    f.workspaceClose.mockImplementation(() => closing ??= awaitSessionClosure(() => pending, "Controlled startup broker remains unconfirmed"));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      const starting = f.adapter.start(f.config).catch(error => error as unknown);
+      await vi.waitFor(() => expect(f.workspaceClose).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(await starting).toBeInstanceOf(VerificationCleanupError); expect(f.researchClose).toHaveBeenCalledOnce();
+      release(); await vi.advanceTimersByTimeAsync(0);
+      await expect(closing).rejects.toBeInstanceOf(VerificationCleanupError);
+    } finally { release(); await Promise.resolve(); vi.useRealTimers(); }
   });
   it("retains external reviewer context after unknown native closure", async () => {
     const f = fixture(true), native = nativeFixture(); f.bind(); const starting = f.adapter.start(f.config); await waitLaunch(); const path = contextPath();

@@ -11,6 +11,7 @@ import { VerificationCapabilitiesContextSchema, type ContextPack, type RunVerifi
 import type { AgentInstanceConfig } from "@artoo/protocol";
 import { assertAcceptedProductInputs } from "./product-stage.js";
 import { VerificationCleanupError, type VerificationPreviewResult } from "./verification.js";
+import { awaitSessionClosure } from "./session-closure.js";
 import { MAX_BROWSER_EVIDENCE_PAGE_BYTES, type BrowserEvidenceContent, type BrowserEvidenceReadOptions } from "./browser-evidence.js";
 import { assertReleaseCapabilityContext, type ReleaseCapabilityReader } from "./release-capability-authority.js";
 import { claimWorkspaceReadOnlyTools, type WorkspaceReadOnlyGrant } from "./workspace-readonly.js";
@@ -160,10 +161,10 @@ export async function createWorkspaceToolSession(options: WorkspaceToolSessionOp
     const now = lstatSync(root);
     if (!now.isDirectory() || now.isSymbolicLink() || !identity(rootStat, now) || realpathSync.native(root) !== root) throw new Error("Workspace identity changed");
   }
-  function assertInputs(): void {
+  function assertInputs() {
     assertRoot(); assertAcceptedProductInputs(root, context);
     readOnly?.assertCurrent();
-    assertReleaseCapabilityContext(context, options.readReleaseCapabilities);
+    return assertReleaseCapabilityContext(context, options.readReleaseCapabilities);
   }
   assertInputs();
   function pathFor(path: string, missingFinal = false): string {
@@ -290,11 +291,12 @@ export async function createWorkspaceToolSession(options: WorkspaceToolSessionOp
       const input = parsed.data;
       if (!allowedTools.includes(input.tool)) throw new Error("Tool is not granted to this session");
       if (verification && mutations.has(input.tool)) throw new Error("Workspace mutations are disabled while verification is running");
-      assertInputs();
+      // Recheck local callbacks before capturing the release binding. Reuse it
+      // only within this synchronous request; the next request validates again.
+      const capabilities = input.tool === "context" ? assertWorkspaceToolCapabilities(context, options.readCapabilities) : undefined;
+      const releaseCapabilities = assertInputs();
       let result: unknown;
       if (input.tool === "context") {
-        const capabilities = assertWorkspaceToolCapabilities(context, options.readCapabilities);
-        const releaseCapabilities = assertReleaseCapabilityContext(context, options.readReleaseCapabilities);
         if (contextPage) {
           const offset = input.offset ?? 0;
           if (offset > 0 && input.expected_checksum === undefined) throw new Error("A nonzero context offset requires the full-text expected_checksum");
@@ -367,7 +369,7 @@ export async function createWorkspaceToolSession(options: WorkspaceToolSessionOp
         // Install the lock before invoking the local callback, including synchronous failures.
         const pending = Promise.resolve().then(() => verify!(controller.signal)); verification = { controller, pending };
         try { const measured = await pending; result = { diagnostic_only: true, ...("verification" in measured ? measured : { verification: measured }) }; assertInputs(); }
-        catch (error) { if (error instanceof VerificationCleanupError) unsafe = error; throw error; }
+        catch (error) { if (error instanceof VerificationCleanupError) unsafe ??= error; throw error; }
         finally { clearTimeout(timer); verification = undefined; }
       }
       assertRoot(); readOnly?.assertCurrent(); res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
@@ -403,15 +405,28 @@ export async function createWorkspaceToolSession(options: WorkspaceToolSessionOp
     return { configPath, mcpPath, close(options) {
       retainFiles ||= options?.retainFiles === true;
       return closePromise ??= (async () => {
-        closed = true; const running = verification; running?.controller.abort(new Error("Workspace tool session closed"));
-        server.closeAllConnections();
-        const stopped = new Promise<void>((done, reject) => server.close((error) => error ? reject(error) : done()));
-        const verifierClosed = Promise.resolve(running?.pending).catch(error => { if (error instanceof VerificationCleanupError) unsafe = error; });
-        // Socket closure does not settle asynchronous evidence/read handlers.
-        // No handler invokes close; the session owner joins the admitted set.
-        await Promise.all([stopped, verifierClosed, ...requests]);
-        if (unsafe) throw unsafe;
-        if (!retainFiles) rmSync(directory, { recursive: true, force: true });
+        closed = true;
+        try {
+          await awaitSessionClosure(async () => {
+            const running = verification; running?.controller.abort(new Error("Workspace tool session closed"));
+            server.closeAllConnections();
+            const stopped = new Promise<void>((done, reject) => server.close((error) => error ? reject(error) : done()));
+            const verifierClosed = Promise.resolve(running?.pending).catch(error => { if (error instanceof VerificationCleanupError) unsafe ??= error; });
+            // Socket closure does not settle asynchronous evidence/read handlers.
+            // Join every admitted handler even after the bounded caller has failed.
+            const closures = await Promise.allSettled([stopped, verifierClosed, ...requests]);
+            if (unsafe) throw unsafe;
+            const failure = closures.find(result => result.status === "rejected");
+            if (failure?.status === "rejected") throw failure.reason;
+          }, "Workspace tool closure remains unconfirmed");
+          // Deletion belongs only to the successful bounded continuation. A late
+          // handler cannot resume this branch after the deadline has rejected it.
+          if (!retainFiles) rmSync(directory, { recursive: true, force: true });
+        } catch (error) {
+          retainFiles = true;
+          unsafe ??= error instanceof VerificationCleanupError ? error : new VerificationCleanupError("Workspace tool closure remains unconfirmed", { cause: error });
+          throw unsafe;
+        }
       })();
     } };
   } catch (error) { closed = true; server.closeAllConnections(); server.close(); rmSync(directory, { recursive: true, force: true }); throw error; }

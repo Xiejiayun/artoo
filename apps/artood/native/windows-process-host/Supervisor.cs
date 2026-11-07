@@ -110,7 +110,8 @@ internal sealed class SupervisorPinnedFile : IDisposable
  * comes from an opened kernel parent, never directly from a remote message. */
 internal static class DaemonSupervisorAuthority
 {
-    internal static SupervisorQualification Require(GuardianProcess daemon, string? expectedLaunchIdentityDigest = null) {
+    internal static SupervisorQualification Require(GuardianProcess daemon, string? expectedLaunchIdentityDigest = null, CancellationToken cancellation = default) {
+        cancellation.ThrowIfCancellationRequested();
         using var self = new GuardianProcess((uint)Environment.ProcessId);
         using var supervisor = new GuardianProcess(daemon.ParentPid);
         GuardianWire.Require(!daemon.Exited && !supervisor.Exited && daemon.CreationTime > supervisor.CreationTime
@@ -118,7 +119,7 @@ internal static class DaemonSupervisorAuthority
             && SupervisorProtocol.SameImage(supervisor.Image, self.Image)
             && supervisor.HasNativeMode("--daemon-supervisor-v1"), "supervisor_exact_kernel_parent");
         using var pipe = new NamedPipeClientStream(".", SupervisorProtocol.Pipe(supervisor), PipeDirection.InOut, PipeOptions.Asynchronous);
-        using var timeout = new CancellationTokenSource(5000);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation); timeout.CancelAfter(5000);
         pipe.ConnectAsync(timeout.Token).GetAwaiter().GetResult();
         GuardianWire.Require(GuardianNative.GetNamedPipeServerProcessId(pipe.SafePipeHandle, out uint serverPid)
             && serverPid == supervisor.Pid, "supervisor_pipe_server_pid");
@@ -131,6 +132,7 @@ internal static class DaemonSupervisorAuthority
             daemon.CreationTime.ToString(CultureInfo.InvariantCulture))).AsMemory(), timeout.Token).GetAwaiter().GetResult();
         var response = GuardianWire.Decode<SupervisorQueryResult>(GuardianWire.ReadLine(reader, timeout.Token).GetAwaiter().GetResult());
         var result = response.Payload;
+        timeout.Token.ThrowIfCancellationRequested();
         GuardianWire.Require(response.Version == 1 && response.Kind == "qualified" && response.Nonce == nonce
             && result is not null && result.Version == 1 && result.Capability == SupervisorProtocol.Capability
             && result.Daemon == SupervisorProtocol.Identity(daemon) && result.Supervisor == SupervisorProtocol.Identity(supervisor)

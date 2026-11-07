@@ -4,6 +4,9 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { productSourceRecoveryRegistrationDigestV1 } from "@artoo/domain";
+import type { PreparedWindowsReleaseStorage } from "../windows-release-storage.js";
+import type { PreparedWindowsDaemonSupervisorAuthority } from "../windows-supervisor-authority.js";
 
 const mocked = vi.hoisted(() => ({
   spawn: vi.fn(),
@@ -14,6 +17,12 @@ const mocked = vi.hoisted(() => ({
 }));
 
 vi.mock("node:child_process", () => ({ spawn: mocked.spawn }));
+// Only the OS/storage boundary is controlled. Guardian preparation, registration,
+// reservation and the bridge's one-use slot consumption below are real code.
+vi.mock("../windows-supervisor-authority.js", () => ({ readWindowsDaemonSupervisorAuthority: () => ({ launchIdentityDigest: "sha256:" + "1".repeat(64) }) }));
+vi.mock("../windows-release-storage.js", () => ({ auditWindowsReleaseStorage: vi.fn(), assertWindowsReleaseStorage: vi.fn(), assertWindowsReleaseStorageWorkspace: vi.fn() }));
+vi.mock("../windows-local-acl.js", () => ({ physicalWindowsDirectory: (path: string) => path,
+  windowsPathsOverlap: (left: string, right: string) => left === right }));
 vi.mock("node:path", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:path")>();
   return { ...actual, ...actual.win32, default: actual.win32 };
@@ -45,8 +54,10 @@ import {
   WindowsOwnedCleanupError, WindowsOwnedStartupError, type WindowsOwnedClosureReceipt, type WindowsOwnedProcess,
   type WindowsOwnedStart,
 } from "./windows-owned-process.js";
+import { bootstrapWindowsGuardian, createWindowsGuardianRegistration, acceptWindowsGuardianRegistration,
+  reserveWindowsGuardianSlot, windowsGuardianForBackend } from "./windows-runtime-guardian.js";
 
-const sha = (bytes: Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+const sha = (bytes: string | Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const ROOT_PID = 4242, CREATION_TIME = "133806600000000000";
 let manifestSha256: string;
@@ -54,14 +65,16 @@ let manifestSha256: string;
 interface ControlWrite { kind: string; token?: string; env?: Record<string, string>; [key: string]: unknown }
 
 class ControlledHelper extends EventEmitter {
+  readonly pid = 10_000 + helpers.length;
   readonly writes: ControlWrite[] = [];
-  readonly stdout = new EventEmitter();
-  readonly stderr = new EventEmitter();
+  readonly stdout = Object.assign(new EventEmitter(), { destroy: vi.fn() });
+  readonly stderr = Object.assign(new EventEmitter(), { destroy: vi.fn() });
   readonly stdin = new Writable({ write: (chunk, _encoding, callback) => {
     this.writes.push(JSON.parse(Buffer.from(chunk).toString("utf8")) as ControlWrite);
     callback();
   } });
   readonly kill = vi.fn(() => true);
+  readonly unref = vi.fn();
   sequence = 0;
 
   get launch(): ControlWrite | undefined { return this.writes.find(write => write.kind === "launch"); }
@@ -69,13 +82,18 @@ class ControlledHelper extends EventEmitter {
     const frame = { version: 1, token: this.launch?.token ?? null, sequence: this.sequence++, kind, payload, ...overrides };
     this.stdout.emit("data", Buffer.from(`${JSON.stringify(frame)}\n`));
   }
-  ready(): void { this.send("ready", { protocol: "artoo.windows-job-process.v1", atomicJobList: true }, { token: null }); }
+  ready(capabilities?: readonly string[]): void { this.send("ready", { protocol: "artoo.windows-job-process.v1", atomicJobList: true,
+    ...(capabilities ? { capabilities } : {}) }, { token: null }); }
   created(): void { this.send("created", { pid: ROOT_PID, creationTime: CREATION_TIME, jobMember: true }); }
   started(): void { this.send("started", { pid: ROOT_PID }); }
   rootExit(code = 0): void { this.send("root_exit", { code }); }
   eof(stream: "stdout" | "stderr"): void { this.send("pipe_eof", { stream }); }
   exit(code = 0): void { this.emit("exit", code, null); }
   close(code = 0): void { this.emit("close", code, null); }
+  guardianResult(kind: "guardian_ready" | "guardian_result", payload: Record<string, unknown>): void {
+    this.stdout.emit("data", Buffer.from(`${JSON.stringify({ version: 1, kind, payload })}\n`));
+    if (kind === "guardian_result") { this.stdout.emit("end"); this.stderr.emit("end"); this.exit(); this.close(); }
+  }
 }
 
 const helpers: ControlledHelper[] = [], runs: WindowsOwnedProcess[] = [];
@@ -116,6 +134,43 @@ function input(overrides: Partial<WindowsOwnedStart> = {}): WindowsOwnedStart {
 function begin(overrides: Partial<WindowsOwnedStart> = {}) {
   const run = startWindowsOwnedProcess(prepare(), input(overrides)); runs.push(run);
   const helper = helpers.at(-1)!; helper.emit("spawn");
+  return { run, helper };
+}
+async function beginRegisteredGuardian() {
+  const capability = "artoo.windows-runtime-guardian.v1", uuid = (index: number) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+  const manifest = JSON.parse(mocked.files.get(`${mocked.bundle}\\manifest.json`)!.toString("utf8"));
+  manifest.capabilities = [capability]; const bytes = Buffer.from(JSON.stringify(manifest));
+  mocked.files.set(`${mocked.bundle}\\manifest.json`, bytes); manifestSha256 = sha(bytes);
+  const backend = prepare(), workspaceRoot = input().cwd;
+  const booting = bootstrapWindowsGuardian(backend, { nodeId: "node", deviceId: "device", sessionId: "session", configurationDigest: sha("configuration"),
+    storeDirectory: "C:\\private-guardian-store", workspaceRoot, storage: {} as PreparedWindowsReleaseStorage,
+    controlDirectory: "C:\\private-guardian-control", controlStorage: {} as PreparedWindowsReleaseStorage,
+    supervisor: {} as PreparedWindowsDaemonSupervisorAuthority, topology: "supervisor-plain-daemon.v1" });
+  const bootstrap = helpers.at(-1)!; bootstrap.emit("spawn");
+  const endpoint = { version: 1, capability, pipeName: `artoo-guardian-${uuid(1)}`, guardianInstanceId: uuid(1),
+    guardianPid: bootstrap.pid, guardianCreationTime: CREATION_TIME, executableDigest: sha(mocked.files.get(`${mocked.bundle}\\Artoo.WindowsProcessHost.exe`)!) };
+  const binding = { version: 1, node_id: "node", device_id: "device", guardian_instance_id: uuid(1), store_identity_digest: sha("store"),
+    configuration_digest: sha("configuration"), workspace_root: workspaceRoot, workspace_identity_digest: sha("workspace") };
+  const epoch = { version: 1, epoch_id: uuid(2), generation: 0, session_id: "session", roster_revision: 0, roster_digest: sha("[]") };
+  bootstrap.guardianResult("guardian_ready", { endpoint, binding, epoch });
+  const guardian = await booting, registration = createWindowsGuardianRegistration(guardian);
+  expect(windowsGuardianForBackend(backend)).toBe(guardian);
+  const activating = acceptWindowsGuardianRegistration(guardian, { kind: "command", id: "registered", idempotency_key: "registered",
+    type: "product.source.recovery.registered.v1", payload: { version: 1, registration_id: registration.registration_id,
+      registration_digest: productSourceRecoveryRegistrationDigestV1(registration, sha), session_id: "session", status: "accepted" } });
+  const activation = helpers.at(-1)!; activation.emit("spawn"); activation.guardianResult("guardian_result", { activated: true }); await activating;
+  const reserving = reserveWindowsGuardianSlot(guardian, { operationKind: "author", operationId: "controlled-author", bindingDigest: sha("operation"), serverOperation: null });
+  const reservation = helpers.at(-1)!; reservation.emit("spawn");
+  const enrollment = { version: 1, endpoint, epochId: epoch.epoch_id, slotId: uuid(3), ticket: uuid(4) };
+  reservation.guardianResult("guardian_result", enrollment); const slot = await reserving;
+  const count = helpers.length;
+  expect(() => startWindowsOwnedProcess(backend, input())).toThrow(/unused registered launch/);
+  expect(() => startWindowsOwnedProcess(backend, input({ guardianSlot: structuredClone(slot) }))).toThrow(/unused registered launch/);
+  expect(helpers).toHaveLength(count);
+  const run = startWindowsOwnedProcess(backend, input({ guardianSlot: slot, timeoutMs: 43_200_000 })); runs.push(run);
+  const helper = helpers.at(-1)!; helper.emit("spawn"); helper.ready([capability]); helper.created(); helper.started();
+  expect(helper.launch?.guardian).toEqual(enrollment); expect(mocked.spawn.mock.calls.at(-1)![2].detached).toBe(true);
+  expect(() => startWindowsOwnedProcess(backend, input({ guardianSlot: slot }))).toThrow(/unused registered launch/);
   return { run, helper };
 }
 function establishRoot(helper: ControlledHelper): void { helper.ready(); helper.created(); helper.started(); }
@@ -365,6 +420,87 @@ describe("controlled Windows protocol, not native containment", () => {
     vi.advanceTimersByTime(1); expect(helper.kill).toHaveBeenCalledOnce();
     await expect(run.closed).rejects.toMatchObject({ receipt: { cleanupConfirmed: false,
       failureCode: "cleanup_deadline", terminationReason: "cancelled", helperExitObserved: false, helperCloseObserved: false } });
+  });
+
+  it("bounds root exit without helper close and never renews its terminal deadline", async () => {
+    const { run, helper } = begin({ timeoutMs: 43_200_000 }); establishRoot(helper);
+    const closeEvent = vi.fn(); run.on("close", closeEvent);
+    helper.rootExit(); vi.advanceTimersByTime(6000);
+    helper.eof("stdout"); helper.eof("stderr"); helper.send("complete", normalFinal()); helper.exit();
+    vi.advanceTimersByTime(1499); await expectPending(run);
+    vi.advanceTimersByTime(1);
+    const failure = await run.closed.catch(error => error as WindowsOwnedCleanupError);
+    expect(failure).toBeInstanceOf(WindowsOwnedCleanupError);
+    expect(failure).toMatchObject({ receipt: { failureCode: "terminal_closure_deadline", cleanupConfirmed: false,
+      rootWaitObserved: true, helperExitObserved: true, helperCloseObserved: false, stdoutEof: true, stderrEof: true } });
+    helper.close();
+    expect(closeEvent).not.toHaveBeenCalled(); expect(helper.kill).toHaveBeenCalledOnce();
+    await expect(run.closed).rejects.toBe(failure);
+  });
+
+  it("bounds complete without root creation while still requiring original helper close", async () => {
+    const { run, helper } = begin({ timeoutMs: 43_200_000 }); helper.ready();
+    helper.send("complete", noTargetFinal()); helper.exit();
+    vi.advanceTimersByTime(2499); await expectPending(run); vi.advanceTimersByTime(1);
+    await expect(run.closed).rejects.toMatchObject({ receipt: { failureCode: "terminal_closure_deadline",
+      noTargetCreated: true, helperExitObserved: true, helperCloseObserved: false, cleanupConfirmed: false } });
+    await expect(run.started).rejects.toBeInstanceOf(WindowsOwnedStartupError);
+  });
+
+  it("bounds original helper exit when neither complete nor close arrives", async () => {
+    const { run, helper } = begin({ timeoutMs: 43_200_000 }); establishRoot(helper); helper.exit(2);
+    vi.advanceTimersByTime(2500);
+    await expect(run.closed).rejects.toMatchObject({ receipt: { failureCode: "terminal_closure_deadline",
+      helperExitCode: 2, helperExitObserved: true, helperCloseObserved: false, cleanupConfirmed: false } });
+  });
+
+  it("rejects cleanup uncertainty even when the deadline's helper kill throws", async () => {
+    const { run, helper } = begin({ timeoutMs: 43_200_000 }); establishRoot(helper); helper.exit(2);
+    helper.kill.mockImplementation(() => { throw new Error("Controlled original helper kill failed"); });
+    expect(() => vi.advanceTimersByTime(2500)).not.toThrow();
+    await expect(run.closed).rejects.toMatchObject({ receipt: { failureCode: "terminal_closure_deadline",
+      helperExitObserved: true, helperCloseObserved: false, cleanupConfirmed: false } });
+  });
+
+  it("rejects an original close observed after the fixed deadline even before the timer callback", async () => {
+    const { run, helper } = begin({ timeoutMs: 43_200_000 }); establishRoot(helper); completeRoot(helper);
+    const elapsed = performance.now(), clock = vi.spyOn(performance, "now").mockReturnValue(elapsed + 8000);
+    try {
+      helper.exit(); helper.close();
+      await expect(run.closed).rejects.toMatchObject({ receipt: { failureCode: "terminal_closure_deadline",
+        helperExitObserved: true, helperCloseObserved: true, cleanupConfirmed: false } });
+    } finally { clock.mockRestore(); }
+  });
+
+  it("allows the extra Guardian terminal exchanges only on the genuinely prepared and registered backend", async () => {
+    const { run, helper } = await beginRegisteredGuardian(); helper.rootExit();
+    vi.advanceTimersByTime(16_000); await expectPending(run); expect(helper.kill).not.toHaveBeenCalled();
+    helper.eof("stdout"); helper.eof("stderr"); helper.send("complete", normalFinal()); helper.exit(); helper.close();
+    expect(await run.closed).toMatchObject({ cleanupConfirmed: true, helperExitObserved: true, helperCloseObserved: true });
+    expect(helper.kill).not.toHaveBeenCalled();
+  });
+
+  it("does not renew the registered Guardian's 16.5s root deadline on complete or helper exit", async () => {
+    const { run, helper } = await beginRegisteredGuardian(), closeEvent = vi.fn(); run.on("close", closeEvent);
+    helper.rootExit(); vi.advanceTimersByTime(12_000); await expectPending(run);
+    helper.eof("stdout"); helper.eof("stderr"); helper.send("complete", normalFinal());
+    vi.advanceTimersByTime(4000); helper.exit(); vi.advanceTimersByTime(499); await expectPending(run);
+    vi.advanceTimersByTime(1);
+    const failure = await run.closed.catch(error => error as WindowsOwnedCleanupError);
+    expect(failure).toMatchObject({ receipt: { failureCode: "terminal_closure_deadline", cleanupConfirmed: false,
+      helperExitObserved: true, helperCloseObserved: false } });
+    expect(helper.kill).toHaveBeenCalledOnce(); helper.close();
+    await expect(run.closed).rejects.toBe(failure); expect(closeEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects registered Guardian late close even when the terminal timer has not run yet", async () => {
+    const { run, helper } = await beginRegisteredGuardian(); completeRoot(helper);
+    const elapsed = performance.now(), clock = vi.spyOn(performance, "now").mockReturnValue(elapsed + 17_000);
+    try {
+      helper.exit(); helper.close();
+      await expect(run.closed).rejects.toMatchObject({ receipt: { failureCode: "terminal_closure_deadline", cleanupConfirmed: false,
+        helperExitObserved: true, helperCloseObserved: true } });
+    } finally { clock.mockRestore(); }
   });
 
   it("never dispatches a target after the abort observer cannot be installed", () => {

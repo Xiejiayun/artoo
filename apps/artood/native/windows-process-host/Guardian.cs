@@ -1,8 +1,10 @@
 // H9 candidate. A surviving guardian is live authority; its files are audit/discovery only.
 // No Job HANDLE is duplicated here: KILL_ON_JOB_CLOSE keeps its existing meaning.
 using Microsoft.Win32.SafeHandles;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO.Pipes;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Principal;
@@ -42,12 +44,17 @@ internal sealed record GuardianBootstrap(int Version, string Kind, string NodeId
     string ConfigurationDigest, string StoreDirectory, string WorkspaceRoot, string Topology, string ControlDirectory, string SupervisorLaunchIdentityDigest);
 internal sealed record GuardianEnrollment(int Version, GuardianEndpoint Endpoint, string EpochId, string SlotId, string Ticket);
 internal sealed record GuardianRelay(int Version, GuardianEndpoint Endpoint, JsonElement Request);
+internal sealed record GuardianRequestDeadline(int Version, long TickCount64);
 
 internal sealed class GuardianRequest
 {
     public int Version { get; init; }
     public string Kind { get; init; } = "";
     public string Nonce { get; init; } = "";
+    // Same-machine monotonic budget only. This optional extension never grants
+    // authority; old senders receive the server's own bounded processing budget.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public GuardianRequestDeadline? Deadline { get; set; }
     public string? EpochId { get; init; }
     public string? SessionId { get; init; }
     public string? RegistrationId { get; init; }
@@ -72,6 +79,58 @@ internal sealed record GuardianServerOperation(string Kind, string OperationId, 
 internal sealed record GuardianTerminal(bool RootCreated, bool RootStarted, uint? RootPid, string? RootCreationTime,
     bool AtomicJobMember, bool RootWaitObserved, uint? RootExitCode, bool JobCreated, bool JobEmptyObserved,
     bool StdoutCreated, bool StderrCreated, bool StdoutEof, bool StderrEof, bool NoTargetCreated, bool CleanupConfirmed);
+
+/** A request cannot renew its budget while waiting for either control gate or
+ * supervisor qualification. TickCount64 is shared by local peers on this boot. */
+internal sealed class GuardianRequestBudget : IDisposable
+{
+    private readonly CancellationTokenSource cancellation;
+    internal readonly long DeadlineTickCount64;
+    internal CancellationToken Token => cancellation.Token;
+    internal GuardianRequestBudget(int maximumMs, CancellationToken outer = default, GuardianRequestDeadline? requestedDeadline = null) {
+        long now = Environment.TickCount64;
+        GuardianWire.Require(maximumMs is > 0 and <= 5000 && (requestedDeadline is null || requestedDeadline.Version == 1 && requestedDeadline.TickCount64 >= 0), "guardian_request");
+        DeadlineTickCount64 = Math.Min(checked(now + maximumMs), requestedDeadline?.TickCount64 ?? long.MaxValue);
+        cancellation = CancellationTokenSource.CreateLinkedTokenSource(outer);
+        cancellation.CancelAfter((int)Math.Clamp(DeadlineTickCount64 - now, 0, maximumMs));
+    }
+    internal void AssertCurrent() {
+        Token.ThrowIfCancellationRequested();
+        if (Environment.TickCount64 >= DeadlineTickCount64) throw new TimeoutException("Guardian request deadline expired");
+    }
+    internal IDisposable Enter(object gate) {
+        for (;;) {
+            AssertCurrent();
+            if (Monitor.TryEnter(gate)) {
+                try { AssertCurrent(); return new HeldGate(gate); }
+                catch { Monitor.Exit(gate); throw; }
+            }
+            // Monitor's blocking overload cannot observe an earlier outer
+            // cancellation. Wait outside the gate on the cancellation handle;
+            // a free gate is retried at most 20 ms later without renewing time.
+            int remaining = (int)Math.Clamp(DeadlineTickCount64 - Environment.TickCount64, 0, 5000);
+            if (remaining == 0) throw new TimeoutException("Guardian control gate deadline expired");
+            if (Token.WaitHandle.WaitOne(Math.Min(remaining, 20))) Token.ThrowIfCancellationRequested();
+        }
+    }
+    private sealed class HeldGate(object gate) : IDisposable {
+        public void Dispose() => Monitor.Exit(gate);
+    }
+    public void Dispose() => cancellation.Dispose();
+}
+
+/** Safe correlation only: no tickets, process paths, argv, request body or output. */
+internal sealed class GuardianRequestTrace(GuardianRequest request)
+{
+    private readonly long begun = Environment.TickCount64;
+    internal readonly string Kind = request.Kind is "attach" or "root" or "pulse" or "terminal" or "terminal_ack_received"
+        or "status" or "activate" or "reserve" or "transfer" ? request.Kind : "unknown";
+    private readonly string? nonceDigest = GuardianWire.Uuid(request.Nonce) ? GuardianWire.Digest(request.Nonce) : null;
+    internal string Stage = "dispatch";
+    internal bool MutationStarted, MutationRecorded;
+    internal object Snapshot() => new { version = 1, kind = Kind, nonceDigest, stage = Stage,
+        elapsedMs = Math.Clamp(Environment.TickCount64 - begun, 0, 60000), MutationStarted, MutationRecorded };
+}
 
 internal sealed class GuardianProcess : IDisposable
 {
@@ -174,29 +233,55 @@ internal sealed class GuardianConnection : IDisposable
                 && "sha256:" + Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(guardian.Image))) == endpoint.ExecutableDigest,
                 "guardian_exact_server_identity");
             reader = new StreamReader(pipe, new UTF8Encoding(false, true), false, 4096, true);
-            writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true };
-        } catch (Exception error) { NativeFailureDiagnostic.Emit(phase, error); guardian?.Dispose(); pipe.Dispose(); throw; }
+            // Record ownership before AutoFlush can touch the connected pipe.
+            writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true);
+            writer.AutoFlush = true;
+        } catch (Exception error) {
+            Exception? cleanupFailure = null;
+            try { Dispose(); } catch (Exception cleanup) { cleanupFailure = cleanup; }
+            NativeFailureDiagnostic.Emit(phase, error);
+            if (cleanupFailure is not null) NativeFailureDiagnostic.Emit("guardian_lifetime", cleanupFailure);
+            throw; // Retain the constructor failure after every owned resource was attempted.
+        }
     }
     internal JsonElement Send(object request) {
-        lock (gate) {
-            string phase = "guardian_request_write";
-            try {
+        using var budget = new GuardianRequestBudget(3000);
+        string phase = "guardian_request_write";
+        try { using (budget.Enter(gate)) {
             GuardianWire.Require(!disposed && guardian is not null && !guardian.Exited, "guardian_lost");
-            string encoded = GuardianWire.Encode(request); GuardianWire.Require(encoded.Length < 65536, "guardian_frame_limit");
-            using var timeout = new CancellationTokenSource(3000);
-            writer.WriteLineAsync(encoded.AsMemory(), timeout.Token).GetAwaiter().GetResult();
+            string original = GuardianWire.Encode(request); GuardianWire.Require(original.Length < 65536, "guardian_frame_limit");
+            var sent = GuardianWire.Decode<GuardianRequest>(original);
+            // A relay cannot replace this sender's budget with a remote field.
+            GuardianWire.Require(sent.Deadline is null || sent.Deadline.Version == 1 && sent.Deadline.TickCount64 >= 0, "guardian_request");
+            sent.Deadline = new(1, Math.Min(sent.Deadline?.TickCount64 ?? budget.DeadlineTickCount64, budget.DeadlineTickCount64));
+            string encoded = GuardianWire.Encode(sent); GuardianWire.Require(encoded.Length < 65536, "guardian_frame_limit");
+            budget.AssertCurrent();
+            writer.WriteLineAsync(encoded.AsMemory(), budget.Token).GetAwaiter().GetResult();
             phase = "guardian_response_read";
-            var result = GuardianWire.Decode<JsonElement>(GuardianWire.ReadLine(reader, timeout.Token).GetAwaiter().GetResult());
+            var result = GuardianWire.Decode<JsonElement>(GuardianWire.ReadLine(reader, budget.Token).GetAwaiter().GetResult());
             phase = "guardian_response_binding";
-            var sent = GuardianWire.Decode<GuardianRequest>(encoded);
+            budget.AssertCurrent();
             GuardianWire.Require(result.GetProperty("version").GetInt32() == 1 && result.GetProperty("nonce").GetString() == sent.Nonce
                 && result.GetProperty("kind").GetString() == "ok", "guardian_request_rejected");
             return result.GetProperty("payload").Clone();
-            } catch (Exception error) { NativeFailureDiagnostic.Emit(phase, error); throw; }
-        }
+        } } catch (Exception error) { NativeFailureDiagnostic.Emit(phase, error); throw; }
     }
-    public void Dispose() { lock (gate) { if (disposed) return; disposed = true;
-        reader.Dispose(); writer.Dispose(); pipe.Dispose(); guardian?.Dispose(); } }
+    public void Dispose() { lock (gate) {
+        if (disposed) return; disposed = true;
+        ExceptionDispatchInfo? first = null;
+        void Release(IDisposable? resource) {
+            try { resource?.Dispose(); }
+            catch (Exception error) {
+                first ??= ExceptionDispatchInfo.Capture(error);
+            }
+        }
+        // Reader/writer leave the original pipe open. A failed flush must not
+        // skip its close or the original Guardian HANDLE; partial construction
+        // may leave either managed stream unassigned. Keep diagnostic I/O out
+        // of this sequence; the first failure reaches the owning caller.
+        Release(reader); Release(writer); Release(pipe); Release(guardian);
+        first?.Throw();
+    } }
 }
 
 internal sealed class GuardianHost : IDisposable
@@ -208,8 +293,8 @@ internal sealed class GuardianHost : IDisposable
         GuardianWire.Require(input.Version == 1 && GuardianWire.Uuid(input.EpochId) && GuardianWire.Uuid(input.SlotId)
             && GuardianWire.Uuid(input.Ticket), "guardian_enrollment");
         enrollment = input; connection = new GuardianConnection(input.Endpoint);
-        try { Send("attach"); }
-        catch { connection.Dispose(); throw; }
+        try {
+        Send("attach");
         new Thread(() => {
             while (!finished) {
                 try { bool shouldStop = Send("pulse").GetProperty("stop").GetBoolean(); if (!finished && shouldStop) stop("guardian_epoch_frozen"); }
@@ -217,6 +302,13 @@ internal sealed class GuardianHost : IDisposable
                 Thread.Sleep(100);
             }
         }) { IsBackground = true, Name = "artoo-guardian-watch" }.Start();
+        } catch {
+            // Ownership is not handed to the caller until construction returns,
+            // including successful startup of the existing watch thread.
+            finished = true;
+            try { connection.Dispose(); } catch (Exception cleanup) { NativeFailureDiagnostic.Emit("guardian_lifetime", cleanup); }
+            throw;
+        }
     }
     private JsonElement Send(string kind, uint? pid = null, string? creation = null, GuardianTerminal? terminal = null, string? ack = null) => connection.Send(new GuardianRequest {
         Version = 1, Kind = kind, Nonce = Guid.NewGuid().ToString("D"), EpochId = enrollment.EpochId,
@@ -239,6 +331,27 @@ internal sealed class GuardianHost : IDisposable
 
 internal sealed class GuardianState : IDisposable
 {
+    private sealed class RelaySnapshot : IDisposable {
+        internal readonly GuardianProcess Daemon, Supervisor;
+        internal readonly string EpochId, SessionId;
+        internal readonly string? RegistrationId, RegistrationDigest;
+        internal readonly int Generation;
+        private bool daemonHeld, supervisorHeld;
+        internal RelaySnapshot(GuardianState state) {
+            Daemon = state.daemon; Supervisor = state.supervisor; EpochId = state.epochId; SessionId = state.sessionId;
+            RegistrationId = state.registrationId; RegistrationDigest = state.registrationDigest; Generation = state.generation;
+            try {
+                // Retain these original kernel HANDLEs while the state gate is released.
+                // A concurrent epoch transfer may dispose its old managed owner.
+                Daemon.Handle.DangerousAddRef(ref daemonHeld); Supervisor.Handle.DangerousAddRef(ref supervisorHeld);
+            } catch { Dispose(); throw; }
+        }
+        public void Dispose() {
+            if (supervisorHeld) { supervisorHeld = false; Supervisor.Handle.DangerousRelease(); }
+            if (daemonHeld) { daemonHeld = false; Daemon.Handle.DangerousRelease(); }
+        }
+    }
+    private sealed record DiagnosticStamp(string EpochId, int Generation, int Revision);
     private sealed class Slot(string id, string ticket, string kind, string operation, string binding, GuardianServerOperation? serverOperation) {
         internal readonly string Id = id, Ticket = ticket, Kind = kind, Operation = operation, Binding = binding;
         internal readonly GuardianServerOperation? ServerOperation = serverOperation;
@@ -259,8 +372,11 @@ internal sealed class GuardianState : IDisposable
     private readonly HashSet<string> challenges = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string Binding, string EpochId, object Result)> transfers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> diagnosticCounts = new(StringComparer.Ordinal);
-    private FileStream? diagnosticAudit;
-    private bool diagnosticUnavailable;
+    private readonly object diagnosticGate = new();
+    private readonly BlockingCollection<string> diagnostics = new(32);
+    private DiagnosticStamp diagnosticStamp = new("", 0, 0);
+    private volatile bool diagnosticUnavailable;
+    private long diagnosticDropped;
     private bool frozen, poisoned, activated;
     private int revision, generation;
     private string epochId = Guid.NewGuid().ToString("D"), sessionId;
@@ -311,6 +427,7 @@ internal sealed class GuardianState : IDisposable
             // An outer supervisor/fixture Job is allowed. The admitted local topology uses
             // plain daemon spawn; a per-daemon Job requires supervisor-owned guardian launch.
             Record("bootstrap", new { epochId, sessionId, supervisor = supervisor.Identity, topology = input.Topology, guardianInJob = inJob });
+            new Thread(WriteDiagnostics) { IsBackground = true, Name = "artoo-guardian-diagnostics" }.Start();
         } catch { owner.Dispose(); throw; }
     }
     private object Binding => new { version = 1, node_id = configuration.NodeId, device_id = configuration.DeviceId,
@@ -331,45 +448,79 @@ internal sealed class GuardianState : IDisposable
             byte[] line = Encoding.UTF8.GetBytes(GuardianWire.Encode(new { version = 1, kind, epochId, generation, revision, facts }) + "\n");
             GuardianWire.Require(audit.Length + line.Length <= 8 * 1024 * 1024, "guardian_audit_bound");
             audit.Write(line); audit.Flush(true);
+            Volatile.Write(ref diagnosticStamp, new(epochId, generation, revision));
         } catch { poisoned = true; throw; }
     }
-    internal void RecordDiagnostic(string phase, Exception error) {
-        lock (gate) {
-            // A separate fixed file cannot consume the authoritative audit budget.
-            // Failure or a pre-existing diagnostic file disables only diagnostics;
-            // it cannot poison/unfreeze state, settle a slot or manufacture an ACK.
-            try {
-                if (diagnosticUnavailable) return;
-                var facts = NativeFailureDiagnostic.Capture(phase, error);
-                int count = diagnosticCounts.GetValueOrDefault(facts.Phase);
-                if (count >= 4) return;
-                diagnosticCounts[facts.Phase] = count + 1;
-                byte[] line = Encoding.UTF8.GetBytes(GuardianWire.Encode(new { version = 1, kind = "native_failure_diagnostic", epochId, generation, revision, facts }) + "\n");
+    internal void RecordDiagnostic(string phase, Exception error, GuardianRequestTrace? request = null) {
+        // Never take the authoritative gate or wait for disk/queue capacity here.
+        // A slow diagnostic sink can lose diagnostics, never reserve or settle a slot.
+        try {
+            if (diagnosticUnavailable) return;
+            var facts = NativeFailureDiagnostic.Capture(phase, error);
+            var stamp = Volatile.Read(ref diagnosticStamp);
+            string key = facts.Phase + ":" + (request?.Kind ?? "none");
+            lock (diagnosticGate) {
+                int count = diagnosticCounts.GetValueOrDefault(key);
+                if (count >= 4) { Interlocked.Increment(ref diagnosticDropped); return; }
+                diagnosticCounts[key] = count + 1;
+            }
+            string line = GuardianWire.Encode(new { version = 1,
+                kind = request is null ? "native_failure_diagnostic" : "guardian_request_failure_diagnostic",
+                epochId = stamp.EpochId, generation = stamp.Generation, revision = stamp.Revision, facts,
+                request = request?.Snapshot(), dropped = Interlocked.Read(ref diagnosticDropped) }) + "\n";
+            if (!diagnostics.TryAdd(line)) Interlocked.Increment(ref diagnosticDropped);
+        } catch { Interlocked.Increment(ref diagnosticDropped); }
+    }
+    private void WriteDiagnostics() {
+        FileStream? diagnosticAudit = null;
+        try {
+            foreach (string line in diagnostics.GetConsumingEnumerable()) {
+                byte[] bytes = Encoding.UTF8.GetBytes(line);
                 diagnosticAudit ??= new FileStream(System.IO.Path.Combine(configuration.ControlDirectory, "guardian-diagnostic-v1.ndjson"),
                     FileMode.CreateNew, FileAccess.Write, FileShare.Read);
-                if (diagnosticAudit.Length + line.Length > 65536) return;
-                diagnosticAudit.Write(line); diagnosticAudit.Flush(true);
-            } catch {
-                diagnosticUnavailable = true;
-                try { diagnosticAudit?.Dispose(); } catch { /* Preserve the original failure. */ }
-                diagnosticAudit = null;
+                if (diagnosticAudit.Length + bytes.Length > 65536) break;
+                diagnosticAudit.Write(bytes); diagnosticAudit.Flush(true);
             }
+        } catch { /* Diagnostic failure never alters authoritative state. */ }
+        finally {
+            diagnosticUnavailable = true;
+            try { diagnosticAudit?.Dispose(); } catch { /* Preserve the original failure. */ }
         }
     }
     private void FreezeIfDead() { if (!frozen && daemon.Exited) { frozen = true; Record("epoch_frozen", new { daemon = daemon.Identity }); } }
-    private GuardianProcess RelayDaemon(GuardianProcess peer) {
-        GuardianWire.Require(string.Equals(peer.Image, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase) && peer.Sid == daemon.Sid
+    private GuardianProcess RelayDaemon(GuardianProcess peer, RelaySnapshot snapshot, GuardianRequestBudget budget, GuardianRequestTrace trace) {
+        trace.Stage = "relay_identity";
+        budget.AssertCurrent();
+        GuardianWire.Require(string.Equals(peer.Image, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase) && peer.Sid == snapshot.Daemon.Sid
             && peer.HasNativeMode("--guardian-client-v1"),
             "guardian_relay_image");
         var parent = new GuardianProcess(peer.ParentPid);
         try {
-            GuardianWire.Require(!parent.Exited && parent.CreationTime < peer.CreationTime && parent.Sid == daemon.Sid
-                && string.Equals(parent.Image, daemon.Image, StringComparison.OrdinalIgnoreCase), "guardian_relay_parent");
-            GuardianWire.Require(!supervisor.Exited && parent.ParentPid == supervisor.Pid && parent.CreationTime > supervisor.CreationTime,
+            GuardianWire.Require(!peer.Exited && !parent.Exited && parent.CreationTime < peer.CreationTime && parent.Sid == snapshot.Daemon.Sid
+                && string.Equals(parent.Image, snapshot.Daemon.Image, StringComparison.OrdinalIgnoreCase), "guardian_relay_parent");
+            GuardianWire.Require(!snapshot.Supervisor.Exited && parent.ParentPid == snapshot.Supervisor.Pid && parent.CreationTime > snapshot.Supervisor.CreationTime,
                 "guardian_exact_supervisor_required");
-            DaemonSupervisorAuthority.Require(parent, configuration.SupervisorLaunchIdentityDigest);
+            trace.Stage = "supervisor_qualification";
+            // Full original qualification remains mandatory, but cannot hold up an
+            // unrelated host's pulse, terminal or ACK on the Guardian state gate.
+            var qualified = DaemonSupervisorAuthority.Require(parent, configuration.SupervisorLaunchIdentityDigest, budget.Token);
+            budget.AssertCurrent();
+            GuardianWire.Require(qualified.Supervisor == SupervisorProtocol.Identity(snapshot.Supervisor), "guardian_exact_supervisor_required");
             return parent;
         } catch { parent.Dispose(); throw; }
+    }
+    private void AssertRelaySnapshot(RelaySnapshot snapshot, GuardianProcess caller, GuardianProcess peer, GuardianRequestBudget budget) {
+        budget.AssertCurrent();
+        GuardianWire.Require(ReferenceEquals(daemon, snapshot.Daemon) && daemon.Same(snapshot.Daemon)
+            && ReferenceEquals(supervisor, snapshot.Supervisor) && supervisor.Same(snapshot.Supervisor)
+            && epochId == snapshot.EpochId && generation == snapshot.Generation && sessionId == snapshot.SessionId
+            && registrationId == snapshot.RegistrationId && registrationDigest == snapshot.RegistrationDigest
+            && !supervisor.Exited && !peer.Exited && !caller.Exited && caller.Pid == peer.ParentPid
+            && caller.ParentPid == supervisor.Pid && caller.CreationTime > supervisor.CreationTime
+            && caller.CreationTime < peer.CreationTime && caller.Sid == daemon.Sid
+            && string.Equals(caller.Image, daemon.Image, StringComparison.OrdinalIgnoreCase), "guardian_relay_parent");
+        // FreezeIfDead and each original branch below reevaluate current liveness,
+        // registration, roster and transfer requirements under this same gate.
     }
     private Slot HostSlot(GuardianProcess peer, GuardianRequest request) {
         GuardianWire.Require(request.EpochId == epochId && request.SlotId is not null && slots.ContainsKey(request.SlotId), "guardian_slot_epoch");
@@ -381,10 +532,28 @@ internal sealed class GuardianState : IDisposable
     private static string TransferBinding(GuardianRequest request) => GuardianWire.Digest(new { request.EpochId, request.SessionId,
         request.ChallengeId, request.RequestDigest, request.ExpectedRosterDigest, request.ExpectedRosterRevision,
         request.ExpectedNewDaemonIdentityDigest });
-    internal object Handle(GuardianProcess peer, GuardianRequest request) {
-        lock (gate) {
+    private static void BeginMutation(GuardianRequestBudget budget, GuardianRequestTrace trace) {
+        budget.AssertCurrent(); trace.Stage = "mutation"; trace.MutationStarted = true;
+        // The existing authoritative write/fsync is not cancellable. Once begun,
+        // uncertainty must retain ownership; expiration never erases a live slot.
+    }
+    internal object Handle(GuardianProcess peer, GuardianRequest request, GuardianRequestBudget budget, GuardianRequestTrace trace) {
+        RelaySnapshot? captured = null;
+        if (request.Kind is "status" or "activate" or "reserve" or "transfer") {
+            trace.Stage = "snapshot_gate";
+            using (budget.Enter(gate)) {
+                GuardianWire.Require(request.Version == 1 && GuardianWire.Uuid(request.Nonce) && !poisoned, "guardian_request");
+                FreezeIfDead(); budget.AssertCurrent(); captured = new RelaySnapshot(this);
+            }
+        }
+        using var snapshot = captured;
+        using var caller = snapshot is null ? null : RelayDaemon(peer, snapshot, budget, trace);
+        trace.Stage = "commit_gate";
+        using (budget.Enter(gate)) {
             GuardianWire.Require(request.Version == 1 && GuardianWire.Uuid(request.Nonce) && !poisoned, "guardian_request");
             FreezeIfDead();
+            if (snapshot is not null) AssertRelaySnapshot(snapshot, caller!, peer, budget);
+            budget.AssertCurrent(); trace.Stage = "dispatch_locked";
             if (request.Kind == "attach") {
                 GuardianWire.Require(!frozen && activated && request.EpochId == epochId && request.SlotId is not null && slots.ContainsKey(request.SlotId), "guardian_attach_epoch");
                 Slot slot = slots[request.SlotId!];
@@ -392,8 +561,9 @@ internal sealed class GuardianState : IDisposable
                     && peer.CreationTime > daemon.CreationTime && !daemon.Exited && !peer.Exited
                     && peer.Sid == daemon.Sid && string.Equals(peer.Image, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase)
                     && (peer.HasNativeMode("--stdio-v1") || peer.HasNativeMode("--stdio-sync-v1")), "guardian_attach_identity");
+                BeginMutation(budget, trace);
                 slot.Host = new GuardianProcess(peer.Pid); GuardianWire.Require(slot.Host.Same(peer), "guardian_attach_identity_changed");
-                Record("host_attached", new { slotId = slot.Id, host = slot.Host.Identity }); return new { attached = true };
+                Record("host_attached", new { slotId = slot.Id, host = slot.Host.Identity }); trace.MutationRecorded = true; return new { attached = true };
             }
             if (request.Kind is "root" or "pulse" or "terminal" or "terminal_ack_received") {
                 Slot slot = HostSlot(peer, request);
@@ -404,7 +574,8 @@ internal sealed class GuardianState : IDisposable
                     try {
                         GuardianWire.Require(root.ParentPid == peer.Pid && root.CreationTime > peer.CreationTime && !root.Exited
                             && root.CreationTime.ToString(CultureInfo.InvariantCulture) == request.RootCreationTime, "guardian_root_identity");
-                        slot.Root = root; Record("root_enrolled", new { slotId = slot.Id, root = root.Identity });
+                        BeginMutation(budget, trace);
+                        slot.Root = root; Record("root_enrolled", new { slotId = slot.Id, root = root.Identity }); trace.MutationRecorded = true;
                     } catch { if (slot.Root is null) root.Dispose(); throw; }
                     return new { enrolled = true };
                 }
@@ -424,23 +595,24 @@ internal sealed class GuardianState : IDisposable
                         "guardian_terminal_unenrolled_root");
                     string digest = GuardianWire.Digest(facts);
                     GuardianWire.Require(slot.TerminalDigest is null || slot.TerminalDigest == digest, "guardian_terminal_changed");
-                    if (slot.Terminal is null) { slot.Terminal = facts; slot.TerminalDigest = digest; slot.Ack = Guid.NewGuid().ToString("D");
-                        Record("terminal_observed", new { slotId = slot.Id, terminalDigest = digest }); }
+                    if (slot.Terminal is null) { BeginMutation(budget, trace); slot.Terminal = facts; slot.TerminalDigest = digest; slot.Ack = Guid.NewGuid().ToString("D");
+                        Record("terminal_observed", new { slotId = slot.Id, terminalDigest = digest }); trace.MutationRecorded = true; }
                     return new { terminalAck = slot.Ack, terminalDigest = slot.TerminalDigest };
                 }
                 GuardianWire.Require(slot.Terminal is not null && slot.Ack is not null && request.TerminalAck == slot.Ack, "guardian_terminal_ack_binding");
-                if (!slot.AckReceived) { Record("terminal_ack_received", new { slotId = slot.Id, terminalDigest = slot.TerminalDigest }); slot.AckReceived = true; }
+                if (!slot.AckReceived) { BeginMutation(budget, trace); Record("terminal_ack_received", new { slotId = slot.Id, terminalDigest = slot.TerminalDigest });
+                    slot.AckReceived = true; trace.MutationRecorded = true; }
                 return new { acknowledged = true };
             }
-            using var caller = RelayDaemon(peer);
+            if (snapshot is null || caller is null) throw new IOException("guardian_request");
             if (request.Kind == "status") return new { binding = Binding, epoch = Epoch, registrationId, registrationDigest, operations = Operations, frozen, closed = Closed(),
                 newDaemonIdentityDigest = GuardianWire.Digest(caller.Identity), callerIsCurrentDaemon = caller.Same(daemon) };
             if (request.Kind == "activate") {
                 GuardianWire.Require(!frozen && caller.Same(daemon) && request.EpochId == epochId && request.SessionId == sessionId
                     && GuardianWire.Uuid(request.RegistrationId) && GuardianWire.Hash(request.RegistrationDigest)
                     && (!activated || registrationId == request.RegistrationId && registrationDigest == request.RegistrationDigest), "guardian_activation_binding");
-                if (!activated) { registrationId = request.RegistrationId; registrationDigest = request.RegistrationDigest;
-                    Record("registration_accepted", new { registrationId, registrationDigest }); activated = true; }
+                if (!activated) { BeginMutation(budget, trace); registrationId = request.RegistrationId; registrationDigest = request.RegistrationDigest;
+                    Record("registration_accepted", new { registrationId, registrationDigest }); activated = true; trace.MutationRecorded = true; }
                 return new { activated = true };
             }
             if (request.Kind == "reserve") {
@@ -456,8 +628,11 @@ internal sealed class GuardianState : IDisposable
                     && slots.Values.All(slot => slot.ServerOperation is null || slot.ServerOperation.Kind != serverOperation.Kind || slot.ServerOperation.OperationId != serverOperation.OperationId
                         || slot.ServerOperation == serverOperation), "guardian_server_operation_binding");
                 string id = Guid.NewGuid().ToString("D"), ticket = Guid.NewGuid().ToString("D");
-                var slot = new Slot(id, ticket, request.OperationKind!, request.OperationId!, request.BindingDigest!, serverOperation); slots.Add(id, slot); revision++;
-                Record("launch_reserved", new { slot = slot.Head, serverOperation });
+                var slot = new Slot(id, ticket, request.OperationKind!, request.OperationId!, request.BindingDigest!, serverOperation);
+                // This is the reserve linearization point. Recheck after all slow
+                // work and gate waiting; never begin admission after the deadline.
+                BeginMutation(budget, trace); slots.Add(id, slot); revision++;
+                Record("launch_reserved", new { slot = slot.Head, serverOperation }); trace.MutationRecorded = true;
                 return new GuardianEnrollment(1, Endpoint, epochId, id, ticket);
             }
             if (request.Kind == "transfer" && request.ChallengeId is not null && transfers.TryGetValue(request.ChallengeId, out var replay)) {
@@ -478,9 +653,13 @@ internal sealed class GuardianState : IDisposable
             GuardianWire.Require(Encoding.UTF8.GetByteCount(GuardianWire.Encode(new { binding = Binding, slots = closedSlots, operations })) < 48000,
                 "guardian_complete_transfer_frame_bound");
             var newDaemon = new GuardianProcess(caller.Pid);
-            GuardianWire.Require(newDaemon.Same(caller) && !newDaemon.Exited, "guardian_transfer_daemon_changed");
-            Record("epoch_transfer", new { oldEpochId = epochId, newEpochId = nextEpoch, challengeId = request.ChallengeId,
-                requestDigest = request.RequestDigest, closureSetDigest = closure, newDaemon = caller.Identity });
+            try {
+                GuardianWire.Require(newDaemon.Same(caller) && !newDaemon.Exited, "guardian_transfer_daemon_changed");
+                BeginMutation(budget, trace);
+                Record("epoch_transfer", new { oldEpochId = epochId, newEpochId = nextEpoch, challengeId = request.ChallengeId,
+                    requestDigest = request.RequestDigest, closureSetDigest = closure, newDaemon = caller.Identity });
+            } catch { newDaemon.Dispose(); throw; }
+            trace.MutationRecorded = true;
             challenges.Add(request.ChallengeId!); daemon.Dispose(); daemon = newDaemon;
             foreach (var slot in slots.Values) { slot.Host?.Dispose(); slot.Root?.Dispose(); } slots.Clear();
             epochId = nextEpoch; generation++; sessionId = request.SessionId!; revision = 0; frozen = false; activated = false; registrationId = null; registrationDigest = null;
@@ -494,7 +673,9 @@ internal sealed class GuardianState : IDisposable
     }
     internal void ObserveDaemon() { lock (gate) { if (!poisoned) FreezeIfDead(); } }
     public void Dispose() {
-        try { diagnosticAudit?.Dispose(); } catch { /* Diagnostic cleanup cannot prevent original resource cleanup. */ }
+        // The background sink alone owns its file. Do not join a blocked fsync or
+        // dispose that file concurrently while closing authoritative resources.
+        try { diagnostics.CompleteAdding(); } catch { /* Diagnostics cannot delay ownership cleanup. */ }
         foreach (var slot in slots.Values) { slot.Host?.Dispose(); slot.Root?.Dispose(); }
         audit.Dispose(); sourceOwner.Dispose(); sourceOperations.Dispose(); owner.Dispose(); workspace.Dispose(); store.Dispose(); controlDirectory.Dispose(); daemon.Dispose(); supervisor.Dispose(); }
 }
@@ -517,15 +698,27 @@ internal static class GuardianProgram
     }
     internal static int MainRelay() {
         string phase = "guardian_relay_input";
+        GuardianConnection? connection = null;
+        Exception? operationFailure = null, cleanupFailure = null;
         try {
             Console.InputEncoding = new UTF8Encoding(false, true);
             var input = GuardianWire.Decode<GuardianRelay>(GuardianWire.Input()); GuardianWire.Require(input.Version == 1, "guardian_relay_version");
             phase = "guardian_relay_send";
-            using var connection = new GuardianConnection(input.Endpoint);
+            connection = new GuardianConnection(input.Endpoint);
             var output = connection.Send(input.Request);
             phase = "guardian_relay_output";
-            Console.Out.WriteLine(GuardianWire.Encode(new { version = 1, kind = "guardian_result", payload = output })); Console.Out.Flush(); return 0;
-        } catch (Exception error) { NativeFailureDiagnostic.Emit(phase, error); return 2; }
+            Console.Out.WriteLine(GuardianWire.Encode(new { version = 1, kind = "guardian_result", payload = output })); Console.Out.Flush();
+        } catch (Exception error) { operationFailure = error; }
+        finally {
+            // Preserve the original operation independently of cleanup. Report
+            // only after owned resources were attempted, so diagnostic I/O
+            // cannot interrupt that cleanup sequence.
+            try { connection?.Dispose(); }
+            catch (Exception cleanup) { cleanupFailure = cleanup; }
+        }
+        if (operationFailure is not null) NativeFailureDiagnostic.Emit(phase, operationFailure);
+        if (cleanupFailure is not null) NativeFailureDiagnostic.Emit("guardian_lifetime", cleanupFailure);
+        return operationFailure is not null || cleanupFailure is not null ? 2 : 0;
     }
     private static NamedPipeServerStream CreatePipe(string name, string sid) {
         GuardianWire.Require(GuardianNative.ConvertStringSecurityDescriptorToSecurityDescriptorW("D:P(A;;GA;;;SY)(A;;GA;;;" + sid + ")", 1, out IntPtr descriptor, out _), "guardian_pipe_acl");
@@ -549,23 +742,30 @@ internal static class GuardianProgram
     }
     private static async Task Client(GuardianState state, NamedPipeServerStream pipe) {
         string phase = "guardian_peer_open";
+        GuardianRequestTrace? trace = null;
         try {
             GuardianWire.Require(GuardianNative.GetNamedPipeClientProcessId(pipe.SafePipeHandle, out uint pid), "guardian_client_pid");
             using var peer = new GuardianProcess(pid);
             using var reader = new StreamReader(pipe, new UTF8Encoding(false, true), false, 4096, true);
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true };
             for (;;) {
+                trace = null;
                 using var timeout = new CancellationTokenSource(5000);
                 phase = "guardian_client_read";
                 string line = await GuardianWire.ReadLine(reader, timeout.Token);
                 var request = GuardianWire.Decode<GuardianRequest>(line);
+                trace = new GuardianRequestTrace(request);
+                // Legacy requests without the optional monotonic field still get
+                // a local bounded budget. An arbitrary future field cannot extend it.
+                using var budget = new GuardianRequestBudget(2500, timeout.Token, request.Deadline);
                 object response;
-                try { response = new { version = 1, kind = "ok", nonce = request.Nonce, payload = state.Handle(peer, request) }; }
-                catch (Exception error) { state.RecordDiagnostic("guardian_request_handle", error); response = new { version = 1, kind = "error", nonce = request.Nonce, payload = new { reason = "guardian_request_rejected" } }; }
+                try { response = new { version = 1, kind = "ok", nonce = request.Nonce, payload = state.Handle(peer, request, budget, trace) }; }
+                catch (Exception error) { state.RecordDiagnostic("guardian_request_handle", error, trace); response = new { version = 1, kind = "error", nonce = request.Nonce, payload = new { reason = "guardian_request_rejected" } }; }
                 phase = "guardian_client_reply";
-                await writer.WriteLineAsync(GuardianWire.Encode(response).AsMemory(), timeout.Token);
+                trace.Stage = "reply"; budget.AssertCurrent();
+                await writer.WriteLineAsync(GuardianWire.Encode(response).AsMemory(), budget.Token);
             }
-        } catch (Exception error) { state.RecordDiagnostic(phase, error); /* Peer loss never settles a slot or releases ownership. */ }
+        } catch (Exception error) { state.RecordDiagnostic(phase, error, trace); /* Peer loss never settles a slot or releases ownership. */ }
     }
 }
 
