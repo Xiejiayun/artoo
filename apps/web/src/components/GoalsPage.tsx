@@ -54,15 +54,20 @@ function GoalForm({ projectId, onCreated, onClose }: { projectId: string; onCrea
   const [criteria, setCriteria] = useState("");
   const [minutes, setMinutes] = useState("");
   const [mode, setMode] = useState("manual");
+  const [sourceHandoff, setSourceHandoff] = useState(false);
   const [requestKey, setRequestKey] = useState(newIdempotencyKey);
   const autonomous = mode !== "manual";
   const mutation = useMutation({ mutationFn: () => autonomous
-    ? api.createAutonomousGoal({ project_id: projectId, objective: objective.trim(), verification_profile_id: "default", execution_mode: "agent_team", ...(mode === "publish" ? { release_profile_id: "default" } : {}), max_retries: 3 }, requestKey)
+    ? api.createAutonomousGoal({ project_id: projectId, objective: objective.trim(), verification_profile_id: "default", execution_mode: "agent_team", ...(mode === "publish" ? { release_profile_id: "default" } : {}), max_retries: 3,
+      ...(mode === "publish" && sourceHandoff ? { source_handoff: { version: 1 as const, mode: "automatic" as const } } : {}) }, requestKey)
     : api.createGoal({ project_id: projectId, title: title.trim(), objective: objective.trim(), priority: "p2", acceptance_criteria: lines(criteria), budgets: { max_elapsed_ms: minutes ? Number(minutes) * 60000 : null, max_cost_usd: null, max_retries: null, max_concurrent_runs: null, allowed_runtimes: null } }, requestKey),
     onSuccess: async ({ goal }) => { await query.invalidateQueries({ queryKey: ["goals", projectId] }); onCreated(goal.id); } });
   return <Modal open onClose={() => { if (!mutation.isPending) onClose(); }} title="New goal"><form className="insights-goal-form u-stack" aria-label="Create goal" onChange={() => setRequestKey(newIdempotencyKey())} onSubmit={(event) => { event.preventDefault(); if (!mutation.isPending) mutation.mutate(); }}>
-    <Select label="Execution mode" value={mode} disabled={mutation.isPending} onChange={(event) => setMode(event.target.value)}><option value="manual">Review each step</option><option value="autonomous">Agent Team — verified workspace</option><option value="publish">Agent Team — build and publish</option></Select>
+    <Select label="Execution mode" value={mode} disabled={mutation.isPending} onChange={(event) => { setMode(event.target.value); setSourceHandoff(false); }}><option value="manual">Review each step</option><option value="autonomous">Agent Team — verified workspace</option><option value="publish">Agent Team — build and publish</option></Select>
     <p className="insights-help">{autonomous ? `Describe what you need. Your team handles research, design, implementation, tests and independent review, with up to three retries and an eight-hour scheduling budget. ${mode === "publish" ? "Publish to your team's configured destination after acceptance checks pass, then check the live product. A configured publishing destination is required." : "Deliver a verified workspace. Choose build and publish to include deployment."}` : "Describe the outcome first. You can build or discuss the plan after creating this goal."}</p>
+    {mode === "publish" && <div className="u-stack-sm"><label><input type="checkbox" checked={sourceHandoff} disabled={mutation.isPending}
+      onChange={(event) => setSourceHandoff(event.target.checked)} />Allow Artoo to divide work across configured computers</label>
+      <p className="insights-help">After research is accepted, Artoo can choose another prepared Windows computer and its agents for the remaining work.</p></div>}
     {!autonomous && <Input label="Goal title" placeholder="What do you want to achieve?" value={title} required maxLength={300} disabled={mutation.isPending} onChange={(event) => setTitle(event.target.value)} />}
     <Textarea label="Objective" placeholder="Describe the result and why it matters." value={objective} required disabled={mutation.isPending} onChange={(event) => setObjective(event.target.value)} />
     {!autonomous && <><Textarea label="Goal acceptance criteria" helperText="One criterion per line" value={criteria} required onChange={(event) => setCriteria(event.target.value)} />
@@ -145,6 +150,7 @@ function AutonomousProgress({ goal, automation }: { goal: Goal; automation: Goal
   };
   return <section className="product-card u-stack-sm" aria-label="Autonomous progress">
     <div className="action-row"><strong>{automation.execution_mode === "agent_team" ? "Agent Team" : "Autonomous development"}</strong><Badge>{goal.status === "paused" ? "paused" : automation.status}</Badge></div>
+    {automation.source_handoff?.mode === "automatic" && <p className="insights-help" aria-label="Cross-computer authorization">Cross-computer work is allowed for this goal. Artoo selects a destination after the required checks pass.</p>}
     <p>{published ? unhealthy ? "The product was published; a later health check reported a problem." : "The verified product was published and its endpoint passed the configured health checks." : automation.status === "completed" && !automation.release_profile_id ? "Configured acceptance checks passed. The verified workspace is ready; it has not been automatically published." : "Artoo manages the plan, task execution and acceptance checks. You can pause or cancel at any time."}</p>
     {automation.team && <div aria-label="Team responsibilities"><ul>{automation.team.members.map((member) => <li key={member.stage}><strong>{stageLabels[member.stage]}</strong> · {name(member.agent_instance_id)}</li>)}</ul><p className="insights-help">Each task is reviewed by another team member against the same verified source version.</p></div>}
     {automation.release_profile_id && <div aria-label="Product publication"><strong>Publication</strong><p role="status">{health?.state === "rolled_back" ? "Post-publication health checks failed; the previous release was restored and checked."

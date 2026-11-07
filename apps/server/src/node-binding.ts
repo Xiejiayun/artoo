@@ -792,11 +792,12 @@ export function attachNodeBinding(
     if (latest.status !== "queued") { forgetSourceStart(runId); return; }
     if (allocated) assertAllocationFeature(runId);
 
-    // Legacy manual starts can generate a fresh fallback ContextPack ID on each
-    // invocation. Keep them, clean mode and owned-result admissions unchanged.
-    const sourceStartScope = () => !ownedAssignment && !allocated && verification !== undefined
-      && run.contextPackId !== null && context.payload !== undefined
-      && !!(context.payload.product_development?.stage || context.payload.review_subject?.development_stage)
+    // The node's source replay gate receives every ordinary run.start before
+    // planning/verification admission, including starts it will reject. Retain
+    // their stable complete request, without granting new execution authority.
+    // Fresh fallback ContextPack IDs, clean mode and owned/allocated paths stay unchanged.
+    const sourceStartScope = () => !ownedAssignment && !allocated
+      && run.contextPackId !== null && persistedContextPack !== undefined && context.payload !== undefined
       && !executionFeatureSet.has(SOURCE_CLEAN_RESTART_FEATURE_V1)
       && binding.supportsExecutionFeature(PRODUCT_SOURCE_RECOVERY_FEATURE_V1);
     const retainSourceStart = sourceStartScope();

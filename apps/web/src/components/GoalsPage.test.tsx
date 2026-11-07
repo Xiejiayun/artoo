@@ -25,6 +25,7 @@ describe("GoalsPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
     const dialog = screen.getByRole("dialog", { name: "New goal" });
     await userEvent.selectOptions(within(dialog).getByLabelText("Execution mode"), "autonomous");
+    expect(within(dialog).queryByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeInTheDocument();
     expect(within(dialog).queryByLabelText("Goal title")).not.toBeInTheDocument();
     expect(within(dialog).queryByLabelText("Goal acceptance criteria")).not.toBeInTheDocument();
     await userEvent.type(within(dialog).getByLabelText("Objective"), " Build a journal that preserves entries ");
@@ -37,6 +38,7 @@ describe("GoalsPage", () => {
     const goalAction = vi.fn<ApiClient["goalAction"]>().mockResolvedValue({});
     renderWithProviders(<GoalsPage />, { client: api({ goalAction, getGoalAutomation: async () => ({ automation: { ...automation, status: "waiting", last_error: "Waiting for a computer with acceptance checks" } }) }) });
     const progress = await screen.findByRole("region", { name: "Autonomous progress" });
+    expect(within(progress).queryByLabelText("Cross-computer authorization")).not.toBeInTheDocument();
     expect(within(progress).getByText("Waiting for a computer with acceptance checks")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Propose plan" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Start planning discussion" })).not.toBeInTheDocument();
@@ -50,10 +52,104 @@ describe("GoalsPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
     const dialog = screen.getByRole("dialog", { name: "New goal" });
     await userEvent.selectOptions(within(dialog).getByLabelText("Execution mode"), "publish");
+    expect(within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeChecked();
     expect(within(dialog).queryByLabelText("Goal title")).not.toBeInTheDocument();
     await userEvent.type(within(dialog).getByLabelText("Objective"), "Publish an accessible journal");
     await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
     await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledWith({ project_id: "proj_artoo", objective: "Publish an accessible journal", verification_profile_id: "default", execution_mode: "agent_team", release_profile_id: "default", max_retries: 3 }, expect.any(String)));
+  });
+
+  it.each([true, false])("sends cross-computer authorization only when the explicit choice remains %s", async (enabled) => {
+    const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockResolvedValue({ goal, automation });
+    renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal }) });
+    await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
+    const dialog = screen.getByRole("dialog", { name: "New goal" });
+    await userEvent.selectOptions(within(dialog).getByLabelText("Execution mode"), "publish");
+    const choice = within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" });
+    expect(choice).not.toBeChecked();
+    await userEvent.click(choice);
+    if (!enabled) await userEvent.click(choice);
+    await userEvent.type(within(dialog).getByLabelText("Objective"), "Publish with a prepared team");
+    expect(createAutonomousGoal).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
+    await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledTimes(1));
+    expect(createAutonomousGoal).toHaveBeenCalledWith({ project_id: "proj_artoo", objective: "Publish with a prepared team",
+      verification_profile_id: "default", execution_mode: "agent_team", release_profile_id: "default", max_retries: 3,
+      ...(enabled ? { source_handoff: { version: 1, mode: "automatic" } } : {}) }, expect.any(String));
+  });
+
+  it.each(["manual", "autonomous"])("clears cross-computer authorization after switching to %s", async (mode) => {
+    const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockResolvedValue({ goal, automation });
+    renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal }) });
+    await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
+    const dialog = screen.getByRole("dialog", { name: "New goal" });
+    const executionMode = within(dialog).getByLabelText("Execution mode");
+    await userEvent.selectOptions(executionMode, "publish");
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" }));
+    await userEvent.selectOptions(executionMode, mode);
+    expect(within(dialog).queryByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeInTheDocument();
+    await userEvent.selectOptions(executionMode, "publish");
+    expect(within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeChecked();
+    expect(createAutonomousGoal).not.toHaveBeenCalled();
+    await userEvent.type(within(dialog).getByLabelText("Objective"), "Publish after changing mode");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
+    await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledWith({ project_id: "proj_artoo", objective: "Publish after changing mode",
+      verification_profile_id: "default", execution_mode: "agent_team", release_profile_id: "default", max_retries: 3 }, expect.any(String)));
+  });
+
+  it.each(["Cancel", "Close"])("clears cross-computer authorization when the dialog is dismissed with %s", async (button) => {
+    const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockResolvedValue({ goal, automation });
+    renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal }) });
+    await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
+    const first = screen.getByRole("dialog", { name: "New goal" });
+    await userEvent.selectOptions(within(first).getByLabelText("Execution mode"), "publish");
+    await userEvent.click(within(first).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" }));
+    await userEvent.click(within(first).getByRole("button", { name: button }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(createAutonomousGoal).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "New goal" }));
+    const next = screen.getByRole("dialog", { name: "New goal" });
+    await userEvent.selectOptions(within(next).getByLabelText("Execution mode"), "publish");
+    expect(within(next).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeChecked();
+    await userEvent.type(within(next).getByLabelText("Objective"), "Publish a new request");
+    await userEvent.click(within(next).getByRole("button", { name: "Start autonomous goal" }));
+    await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledWith({ project_id: "proj_artoo", objective: "Publish a new request",
+      verification_profile_id: "default", execution_mode: "agent_team", release_profile_id: "default", max_retries: 3 }, expect.any(String)));
+  });
+
+  it("keeps the submitted cross-computer choice fixed while the request is pending", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockImplementation(async () => { await pending; return { goal, automation }; });
+    renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal }) });
+    try {
+      await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
+      const dialog = screen.getByRole("dialog", { name: "New goal" });
+      await userEvent.selectOptions(within(dialog).getByLabelText("Execution mode"), "publish");
+      const choice = within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" });
+      await userEvent.click(choice);
+      await userEvent.type(within(dialog).getByLabelText("Objective"), "Keep the submitted choice");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
+      await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledTimes(1));
+      expect(choice).toBeDisabled();
+      expect(within(dialog).getByLabelText("Execution mode")).toBeDisabled();
+      await userEvent.click(choice);
+      expect(choice).toBeChecked();
+      expect(createAutonomousGoal.mock.calls[0]?.[0].source_handoff).toEqual({ version: 1, mode: "automatic" });
+      expect(createAutonomousGoal).toHaveBeenCalledTimes(1);
+    } finally { release(); }
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("shows cross-computer permission without claiming a selected destination or successful publication", async () => {
+    const state = GoalAutomationSchema.parse({ ...automation, execution_mode: "agent_team", release_profile_id: "default",
+      source_handoff: { version: 1, mode: "automatic" } });
+    renderWithProviders(<GoalsPage />, { client: api({ getGoalAutomation: async () => ({ automation: state }), getGoalRelease: async () => ({ release: null }) }) });
+    const permission = await screen.findByLabelText("Cross-computer authorization");
+    expect(permission).toHaveTextContent("Cross-computer work is allowed for this goal. Artoo selects a destination after the required checks pass.");
+    expect(screen.queryByLabelText("Team responsibilities")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open published product" })).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("Product publication")).getByText(/Waiting for implementation/)).toBeInTheDocument();
   });
 
   it("shows real stage ownership without asking the user to assign the team", async () => {

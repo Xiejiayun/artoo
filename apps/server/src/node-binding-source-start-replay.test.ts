@@ -1,11 +1,15 @@
-import { contextPacks, runs } from "@artoo/db";
-import { ContextPackSchema, PRODUCT_SOURCE_RECOVERY_FEATURE_V1, SOURCE_CLEAN_RESTART_FEATURE_V1, productDevelopmentContext } from "@artoo/domain";
+import { agentInstances, agents, assistantTurns, computers, contextPacks, discussions, goalAutomations, runs } from "@artoo/db";
+import { AutonomousPlanningRequestV1Schema, ContextPackSchema, PRODUCT_SOURCE_RECOVERY_FEATURE_V1, SOURCE_CLEAN_RESTART_FEATURE_V1, productDevelopmentContext } from "@artoo/domain";
 import type { NodeTransport, RunStartCommand, ServerToNodeMessage } from "@artoo/protocol";
 import type { DrizzleDb } from "@artoo/storage";
 import { eq } from "drizzle-orm";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { attachNodeBinding, type NodeBinding } from "./node-binding.js";
+import { createAssistantDispatcher } from "./services/assistant-service.js";
+import { createDiscussionDispatcher } from "./services/discussion-service.js";
+import { createGoalAutomationDispatcher } from "./services/goal-automation-service.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
+import { verificationCapabilitiesFixture } from "./test-fixtures/verification-capabilities.js";
 
 const computer = "computer_local_mock", root = "/work/source-replay";
 const profile = { profile_id: "default", project_id: "proj_artoo", workspace_root: root };
@@ -60,11 +64,132 @@ describe("normal source startup re-delivers one complete pending command identit
     }
     return run;
   }
+  async function queuedPlanning() {
+    // Use the real goal/discussion/assistant preparation path and its persisted
+    // request, turn and capability snapshot. Only the node advertisement is a fixture.
+    await server.db.db.update(computers).set({ os: "linux" });
+    await server.db.db.update(agentInstances).set({ runtime: "codex" });
+    const [agent] = await server.db.db.select().from(agents), [instance] = await server.db.db.select().from(agentInstances);
+    await server.db.db.insert(agents).values({ ...agent!, id: "agent_planning_peer", kind: "reviewer", capabilities: ["code.read"] });
+    await server.db.db.insert(agentInstances).values({ ...instance!, id: "instance_planning_peer", agentId: "agent_planning_peer" });
+    const advertised = verificationCapabilitiesFixture();
+    const readCapabilities = vi.fn(() => structuredClone(advertised));
+    server.ctx.supportsExecutionFeature = (node, feature) => node === computer && features.includes(feature);
+    server.ctx.supportsVerificationProfile = (node, id, project, workspace) => node === computer && id === profile.profile_id
+      && project === profile.project_id && workspace === root;
+    server.ctx.getVerificationCapabilities = readCapabilities;
+    const created = await server.app.inject({ method: "POST", url: "/api/v1/autonomous-goals", payload: {
+      project_id: profile.project_id, objective: "Plan a product from the original requirement", max_retries: 3,
+    } });
+    expect(created.statusCode, created.body).toBe(201);
+    const goalId = created.json().goal.id as string, errors: unknown[] = [];
+    const goalWorker = createGoalAutomationDispatcher(server.ctx, async () => {}, error => errors.push(error));
+    const planner = createDiscussionDispatcher(server.ctx, async () => {}, error => errors.push(error));
+    const assistant = createAssistantDispatcher(server.ctx, error => errors.push(error));
+    try { await goalWorker.pump(); await planner.pump(); await assistant.pump(); }
+    finally { await assistant.stop(); await planner.stop(); await goalWorker.stop(); }
+    expect(errors).toEqual([]);
+    const [automation] = await server.db.db.select().from(goalAutomations).where(eq(goalAutomations.goalId, goalId));
+    expect(automation?.discussionId).toBeTruthy();
+    const [discussion] = await server.db.db.select().from(discussions).where(eq(discussions.id, automation!.discussionId!));
+    const [turn] = await server.db.db.select().from(assistantTurns).where(eq(assistantTurns.id, discussion!.activeTurnId!));
+    expect(turn?.runId).toBeTruthy();
+    const run = await storedRun(turn!.runId!);
+    expect(run).toMatchObject({ status: "queued", verificationRequirement: null, workspaceAllocation: null, workspaceBranch: null });
+    expect(run.contextPackId).toBeTruthy();
+    return { id: run.id, context_pack_id: run.contextPackId!, advertised, readCapabilities };
+  }
   const storedRun = async (id: string) => (await server.db.db.select().from(runs).where(eq(runs.id, id)))[0]!;
   const starts = () => sent.filter((message): message is RunStartCommand => message.type === "run.start");
   const accept = (binding: NodeBinding, id: string) => binding.receive({ kind: "command.ack", node_id: computer, command_id: id, status: "accepted" });
   const reject = (binding: NodeBinding, id: string) => binding.receive({ kind: "command.ack", node_id: computer, command_id: id,
     status: "rejected", error_code: "process_start_failed", message: "Controlled startup rejection" });
+
+  it("retains the actual context-only planning start beyond 64 delayed ACK deliveries and after its ACK", async () => {
+    const run = await queuedPlanning(), binding = wire(), before = await storedRun(run.id);
+    run.readCapabilities.mockClear();
+    for (let attempt = 0; attempt < 130; attempt++) await binding.dispatchRunStart(run.id);
+    expect(starts()).toHaveLength(130);
+    expect(new Set(exposed).size).toBe(1);
+    const original = starts()[0]!, context = original.payload.context_pack.payload!;
+    expect(original.payload).not.toHaveProperty("verification");
+    expect(context.policy).toMatchObject({ execution_mode: "discussion", filesystem_write_scope: [] });
+    expect(context).not.toHaveProperty("product_development");
+    expect(context).not.toHaveProperty("verification_capabilities");
+    expect(context).not.toHaveProperty("release_capabilities");
+    const envelope = AutonomousPlanningRequestV1Schema.parse(JSON.parse(context.conversation!.current_request));
+    expect(envelope.planning_capability_snapshot?.capabilities).toEqual(run.advertised);
+    expect(Object.isFrozen(exposed[0]!.payload.context_pack.payload!.conversation)).toBe(true);
+    expect(run.readCapabilities).toHaveBeenCalledTimes(130);
+    accept(binding, original.id);
+    await binding.dispatchRunStart(run.id);
+    expect(starts()).toHaveLength(131);
+    for (const command of starts()) expect(command).toEqual(original);
+    expect(new Set(starts().map(command => command.id)).size).toBe(1);
+    expect(await storedRun(run.id)).toEqual(before);
+  });
+
+  it.each(["request", "context-snapshot", "live-capabilities"] as const)("rechecks planning %s drift without replacing its exposed identity", async change => {
+    const run = await queuedPlanning(), binding = wire();
+    await binding.dispatchRunStart(run.id);
+    const original = structuredClone(starts()[0]!), before = await storedRun(run.id);
+    const [pack] = await server.db.db.select().from(contextPacks).where(eq(contextPacks.id, run.context_pack_id));
+    const profileDigest = run.advertised.profile_digest;
+    if (change === "live-capabilities") run.advertised.profile_digest = `sha256:${"9".repeat(64)}`;
+    else {
+      const context = ContextPackSchema.parse(pack!.payload);
+      const envelope = AutonomousPlanningRequestV1Schema.parse(JSON.parse(context.conversation!.current_request));
+      if (change === "request") envelope.request += " changed after possible exposure";
+      else envelope.planning_capability_snapshot!.capabilities!.profile_digest = `sha256:${"9".repeat(64)}`;
+      context.conversation!.current_request = JSON.stringify(envelope);
+      await server.db.db.update(contextPacks).set({ payload: context }).where(eq(contextPacks.id, run.context_pack_id));
+    }
+    await expect(binding.dispatchRunStart(run.id)).rejects.toThrow(change === "live-capabilities" ? "fixed planning capability snapshot" : "complete request changed");
+    expect(starts()).toEqual([original]);
+    expect(await storedRun(run.id)).toEqual(before);
+    run.advertised.profile_digest = profileDigest;
+    await server.db.db.update(contextPacks).set({ payload: pack!.payload }).where(eq(contextPacks.id, run.context_pack_id));
+    await binding.dispatchRunStart(run.id);
+    expect(starts()[1]).toEqual(original);
+  });
+
+  it("does not revive a planning start after confirmed Stop while its durable run remains queued", async () => {
+    const run = await queuedPlanning();
+    const binding = wire({ onSend(message, current) { if (message.type === "run.stop") accept(current, message.id); } });
+    await binding.dispatchRunStart(run.id);
+    const original = starts()[0]!;
+    await binding.dispatchRunStop(run.id);
+    expect((await storedRun(run.id)).status).toBe("queued");
+    await binding.dispatchRunStart(run.id); await binding.dispatchRunStart(run.id);
+    expect(starts()).toEqual([original]);
+    reject(binding, original.id); await binding.drain();
+    expect((await storedRun(run.id)).status).toBe("queued");
+  });
+
+  it.each(["verified", "manual"] as const)("retains a complete ordinary %s request without a product stage and preserves rejection", async mode => {
+    const run = await queued(mode === "verified"), binding = wire();
+    const [pack] = await server.db.db.select().from(contextPacks).where(eq(contextPacks.id, run.context_pack_id));
+    const context = ContextPackSchema.parse(pack!.payload);
+    delete context.product_development;
+    await server.db.db.update(contextPacks).set({ payload: context }).where(eq(contextPacks.id, run.context_pack_id));
+    await binding.dispatchRunStart(run.id); await binding.dispatchRunStart(run.id);
+    expect(starts()).toHaveLength(2); expect(exposed[1]).toBe(exposed[0]);
+    expect(starts()[1]).toEqual(starts()[0]);
+    expect(starts()[0]!.payload.context_pack.payload).toEqual(context);
+    if (mode === "manual") expect(starts()[0]!.payload).not.toHaveProperty("verification");
+    reject(binding, starts()[0]!.id); await binding.drain();
+    expect((await storedRun(run.id)).status).toBe("failed");
+    await binding.dispatchRunStart(run.id); expect(starts()).toHaveLength(2);
+  });
+
+  it.each(["legacy", "clean"] as const)("preserves ordinary %s planning transport outside source replay", async mode => {
+    const run = await queuedPlanning();
+    const binding = wire({ features: mode === "clean" ? [...features, SOURCE_CLEAN_RESTART_FEATURE_V1] : features.filter(feature => feature !== PRODUCT_SOURCE_RECOVERY_FEATURE_V1) });
+    await binding.dispatchRunStart(run.id); await binding.dispatchRunStart(run.id);
+    expect(starts()).toHaveLength(2);
+    expect(starts()[1]!.id).not.toBe(starts()[0]!.id);
+    expect(starts()[1]!.payload).toEqual(starts()[0]!.payload);
+  });
 
   it("keeps sending the exact immutable request past the old waiter-exhaustion boundary without waiting for ACK", async () => {
     const run = await queued(), binding = wire(), before = await storedRun(run.id);
