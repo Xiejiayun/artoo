@@ -2,6 +2,7 @@ import type { WindowsStopDiagnostic } from "./windows-stop-diagnostics.js";
 // Controlled protocol/OS observations only; no native helper or model is executed.
 import { describe, expect, it, vi } from "vitest";
 import type { WindowsStartupDiagnostic } from "./windows-startup-diagnostics.js";
+import { SOURCE_COMMAND_DIAGNOSTIC_LIMITS, type SourceCommandDiagnostic } from "./source-command-diagnostics.js";
 import { join } from "node:path";
 import { SupervisedLifecycle, supervisedEnvironment, supervisedSelection, type SupervisorProcessObservation } from "./windows-daemon-launcher.js";
 const nonce = "00000000-0000-4000-8000-000000000001", armNonce = "00000000-0000-4000-8000-000000000002";
@@ -10,8 +11,9 @@ const daemon = (generation: number) => ({ pid: 100 + generation, creationTime: S
 const observed: SupervisorProcessObservation = { spawned: true, exited: true, closed: true, stdoutEof: true, stderrEof: true,
   exitCode: 0, closeCode: 0, signal: null, closeSignal: null };
 function fixture(diagnostic?: (generation: number, value: WindowsStartupDiagnostic) => void,
-  stopDiagnostic?: (generation: number, value: WindowsStopDiagnostic) => void) {
-  const lifecycle = new SupervisedLifecycle(nonce, manifest, diagnostic, stopDiagnostic); let sequence = 0;
+  stopDiagnostic?: (generation: number, value: WindowsStopDiagnostic) => void,
+  sourceDiagnostic?: (generation: number, value: SourceCommandDiagnostic) => void) {
+  const lifecycle = new SupervisedLifecycle(nonce, manifest, diagnostic, stopDiagnostic, sourceDiagnostic); let sequence = 0;
   const frame = (kind: string, payload: unknown) => lifecycle.accept({ version: 1, sequence: sequence++, kind, payload });
   frame("supervisor_ready", { capability: "artoo.windows-daemon-supervisor.v1", supervisor: daemon(9), launchIdentityDigest: digest,
     lifetimeOwnership: { version: 1, capability: "artoo.windows-daemon-supervisor-lifetime.v1", cleanupTimeoutMs: 15000,
@@ -61,6 +63,49 @@ describe("supervised CLI selection", () => {
   });
 });
 describe("current-generation readiness and actual closure", () => {
+  it("forwards a bound source-command failure without claiming command acceptance or process closure", () => {
+    const sink = vi.fn(), f = fixture(undefined, undefined, sink); f.start();
+    const diagnostic = { version: 1, command_type: "product.source.review.v1", command_id_digest: digest,
+      phase: "prior_result", status: "failed", error_code: "source_command_stage_failed", elapsed_ms: 20, phase_elapsed_ms: 10 };
+    const data = Buffer.from("ARTOO_SUPERVISED_V1 " + JSON.stringify({ version: 1, kind: "source_command", nonce, pid: daemon(0).pid, diagnostic }) + "\n");
+    // Native output may divide a line across frames; it is forwarded exactly once after parsing.
+    for (const part of [data.subarray(0, 60), data.subarray(60)]) expect(f.frame("daemon_output",
+      { generation: 0, stream: "stdout", data: part.toString("base64") })).toBeUndefined();
+    expect(sink).toHaveBeenCalledExactlyOnceWith(0, diagnostic); expect(f.lifecycle.ready).toBe(false);
+    f.arm(); f.exit(); f.terminal(); expect(() => f.lifecycle.confirm(observed)).toThrow(/closure/);
+  });
+  it.each(["nonce", "pid", "type", "phase", "secret-field", "oversized"])("rejects changed source diagnostic binding/schema: %s", variant => {
+    const sink = vi.fn(), f = fixture(undefined, undefined, sink); f.start();
+    const event = { version: 1, kind: "source_command", nonce, pid: daemon(0).pid, diagnostic: {
+      version: 1, command_type: "product.source.review.v1", command_id_digest: digest, phase: "request", status: "entered",
+      elapsed_ms: 0, phase_elapsed_ms: 0 } as Record<string, unknown> };
+    if (variant === "nonce") event.nonce = armNonce;
+    if (variant === "pid") event.pid++;
+    if (variant === "type") event.diagnostic.command_type = "untrusted secret";
+    if (variant === "phase") event.diagnostic.phase = "raw-error-text";
+    if (variant === "secret-field") event.diagnostic.stderr = "secret";
+    if (variant === "oversized") event.diagnostic.elapsed_ms = 86_400_001;
+    expect(() => f.frame("daemon_output", { generation: 0, stream: "stdout", data: Buffer.from("ARTOO_SUPERVISED_V1 " +
+      JSON.stringify(event) + "\n").toString("base64") })).toThrow(); expect(sink).not.toHaveBeenCalled();
+  });
+  it("bounds source diagnostic frames independently of startup and stop diagnostics", () => {
+    const sink = vi.fn(), f = fixture(undefined, undefined, sink); f.start();
+    const emit = () => f.frame("daemon_output", { generation: 0, stream: "stdout", data: Buffer.from("ARTOO_SUPERVISED_V1 " + JSON.stringify({
+      version: 1, kind: "source_command", nonce, pid: daemon(0).pid, diagnostic: { version: 1, command_type: "product.source.review.v1",
+        command_id_digest: digest, phase: "request", status: "entered", elapsed_ms: 0, phase_elapsed_ms: 0 } }) + "\n").toString("base64") });
+    const limit = SOURCE_COMMAND_DIAGNOSTIC_LIMITS.normalEvents + SOURCE_COMMAND_DIAGNOSTIC_LIMITS.failureEvents;
+    for (let i = 0; i < limit; i++) emit();
+    expect(() => emit()).toThrow(/source diagnostics exceeded/); expect(sink).toHaveBeenCalledTimes(limit);
+  });
+  it.each(["throw", "reject"])("keeps source diagnostic sink %s separate from actual lifecycle closure", async variant => {
+    const f = fixture(undefined, undefined, () => { if (variant === "throw") throw Error("broken local sink"); return Promise.reject(Error("broken local sink")); });
+    f.start(); f.output("ready");
+    expect(() => f.frame("daemon_output", { generation: 0, stream: "stdout", data: Buffer.from("ARTOO_SUPERVISED_V1 " + JSON.stringify({
+      version: 1, kind: "source_command", nonce, pid: daemon(0).pid, diagnostic: { version: 1, command_type: "product.source.review.v1",
+        command_id_digest: digest, phase: "request", status: "entered", elapsed_ms: 0, phase_elapsed_ms: 0 } }) + "\n").toString("base64") })).not.toThrow();
+    await Promise.resolve(); expect(f.lifecycle.ready).toBe(true);
+    f.arm(); f.output("stopped", 0, 0); f.exit(); f.terminal(); expect(() => f.lifecycle.confirm(observed)).not.toThrow();
+  });
   it("forwards bound stop stages without treating completed fallback as a successful requested stop", () => {
     const sink = vi.fn(), f = fixture(undefined, sink); f.start(); f.output("ready"); f.arm();
     const diagnostic = { version: 1, phase: "fallback_close", status: "completed", elapsed_ms: 10, phase_elapsed_ms: 5 };

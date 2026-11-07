@@ -1,5 +1,6 @@
 import { recordWindowsStartupPhase, recordWindowsStartupFailure, completeWindowsStartupDiagnostics } from "./windows-startup-diagnostics.js";
 import { observeWindowsStopStage, type WindowsStopDiagnostics, type WindowsStopPhase } from "./windows-stop-diagnostics.js";
+import type { SourceCommandDiagnostic } from "./source-command-diagnostics.js";
 export { acquirePublishedProductOwnership, createPublishedProduct } from "./published-product.js";
 import { arch as osArch, hostname, platform } from "node:os";
 import { isAbsolute } from "node:path";
@@ -261,7 +262,7 @@ export function helloFor(config: ArtoodConfig): NodeHello {
 }
 
 /** Construct (without connecting) an {@link ArtoodNode} from config. */
-export function createNodeFromConfig(config: ArtoodConfig): ArtoodNode {
+export function createNodeFromConfig(config: ArtoodConfig, sourceCommandDiagnostic?: (value: SourceCommandDiagnostic) => unknown): ArtoodNode {
   if (config.requireSupervisorLifetime && !config.productSourceConfigFile) throw Error("Supervised CLI requires explicit source recovery configuration");
   if (config.productSourceConfigFile !== undefined && (!config.windowsProcessBackend || config.managedJournal !== undefined)) {
     throw new Error("Product source configuration requires ordinary native Windows execution");
@@ -299,6 +300,7 @@ export function createNodeFromConfig(config: ArtoodConfig): ArtoodNode {
     requireSupervisorLifetime: config.requireSupervisorLifetime,
     prepareCleanLifecycle: config.prepareCleanLifecycle,
     research: config.research,
+    sourceCommandDiagnostic,
   };
   return binding ? createManagedBootstrap({ ...common, binding, allowNewAllocations: config.allowNewAllocations!,
     ...(config.ownedResultProfilesFile ? { ownedResultProfilesFile: config.ownedResultProfilesFile } : {}) })
@@ -335,7 +337,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env, host: ShutdownH
     validateManagedLaunchSelection(config, { ipc: host.connected !== undefined, args: (host.argv ?? []).slice(2) });
     launchId = workerLaunchId(env, host, config.managedJournal !== undefined);
     recordWindowsStartupPhase("create_node");
-    node = createNodeFromConfig(config);
+    node = createNodeFromConfig(config, host.sourceCommandDiagnostic);
   } catch (cause) {
     recordWindowsStartupFailure(cause);
     if (host.connected === undefined) throw cause; // Standalone CLI has no owned IPC lifetime.
@@ -385,6 +387,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env, host: ShutdownH
 
 export interface ShutdownHost {
   stopDiagnostics?: WindowsStopDiagnostics;
+  sourceCommandDiagnostic?: (value: SourceCommandDiagnostic) => unknown;
   on(event: string, listener: (message?: unknown) => void): unknown;
   off(event: string, listener: (message?: unknown) => void): unknown;
   connected?: boolean;

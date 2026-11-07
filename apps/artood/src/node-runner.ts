@@ -20,6 +20,7 @@ import { prepareProductSourceConfiguration } from "./product-source-config.js";
 import { prepareWindowsDaemonSupervisorAuthority, type PreparedWindowsDaemonSupervisorAuthority } from "./windows-supervisor-authority.js";
 import type { PreparedCleanDaemonConfiguration } from "./windows-clean-local-configuration.js";
 import type { ResearchOptions } from "./research.js";
+import type { SourceCommandDiagnostic } from "./source-command-diagnostics.js";
 
 /**
  * The artood node daemon: wires a {@link createWebSocketTransport} (real WS to
@@ -58,6 +59,8 @@ export interface ArtoodNodeOptions {
   prepareCleanLifecycle?: (supervisor: PreparedWindowsDaemonSupervisorAuthority) => PreparedCleanDaemonConfiguration;
   /** Same research settings passed to the author runtime; source configuration cannot substitute them. */
   research?: ResearchOptions;
+  /** Trusted local sink; supervised launch binds this to its original daemon output. */
+  sourceCommandDiagnostic?: (value: SourceCommandDiagnostic) => unknown;
 }
 
 export interface ArtoodNode {
@@ -255,6 +258,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
           git: options.git,
           uploadArtifact: options.uploadArtifact,
           verificationProfiles, releaseProfiles,
+          sourceCommandDiagnostic: options.sourceCommandDiagnostic,
           releaseRetrySession: () => {
             if (sessionInvalidated || !transport?.connected) return undefined;
             source?.assertCurrent(); return transport.currentSessionIdentity();

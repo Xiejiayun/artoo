@@ -15,6 +15,7 @@ import * as designs from "./imported-design-continuation.js";
 import * as reviews from "./imported-product-review.js";
 import * as publication from "./product-release.js";
 import { importedDesignRequestFixture } from "./test-fixtures/imported-design-request.js";
+import type { SourceCommandDiagnostic } from "./source-command-diagnostics.js";
 
 const data = JSON.parse(readFileSync(new URL("../../../packages/domain/test-fixtures/product-source-operation.json", import.meta.url), "utf8"));
 const sha = (value: string | Uint8Array) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -38,6 +39,7 @@ function fixture(options: { holdAudit?: boolean; holdResult?: boolean; failResul
   const designEntered = deferred(), designDone = deferred();
   if (!options.holdAudit) audit.resolve(); if (!options.holdResult) resultSend.resolve();
   const sent: NodeToServerMessage[] = [], sendAttempts: NodeToServerMessage[] = [];
+  const diagnostics: SourceCommandDiagnostic[] = [];
   let failedResult = false, injected = false, admissionsAtUpload = 0, designSignal: AbortSignal | undefined;
   const transport: NodeSideTransport = { acknowledgesRunEvents: true, async send(message) {
     sendAttempts.push(message);
@@ -118,7 +120,7 @@ function fixture(options: { holdAudit?: boolean; holdResult?: boolean; failResul
   const adapter: RuntimeAdapter = { runtimeId: "fixture", start: vi.fn(async () => { throw Error("Unexpected model execution"); }),
     async *streamEvents() {}, async stop() {}, async collectArtifacts() { return []; } };
   const client = createNodeClient({ nodeId: designRequest?.review_request.operation.intent.request.byte_request.destination.node_id
-    ?? payload.intent.request.byte_request.source.node_id, adapter, transport,
+    ?? payload.intent.request.byte_request.source.node_id, adapter, transport, sourceCommandDiagnostic: value => diagnostics.push(value),
     productSourceRecovery: { configuration: {} as never, features: [], isCurrent: () => active && session === originalSession, activate: () => sourceRuntime,
       ...(options.clean ? { cleanLifecycle: {} as never } : {}), ...(options.replay === false ? {} : { replaySession: () => session }) },
     productSourceOperations: { client: { upload, download: vi.fn() }, isCurrent: () => active && session === originalSession, importedReview: true, importedDesign: true } });
@@ -126,13 +128,25 @@ function fixture(options: { holdAudit?: boolean; holdResult?: boolean; failResul
   cleanups.push(async () => { audit.resolve(); uploadDone.resolve(); designDone.resolve(); resultSend.resolve(); await client.stop(true); });
   const control = { version: 1 as const, operation_id: payload.operation_id, payload_digest: productSourceOperationDigestV1(payload, sha), request_digest: payload.request_digest };
   return { receive, command, control, handle, readRuntime, operation, upload, reserve, persist, reserveDesign, persistDesign,
-    sourceController, designController, sent, sendAttempts, audit, uploadEntered, uploadDone, resultEntered, resultSend,
+    sourceController, designController, sent, sendAttempts, diagnostics, audit, uploadEntered, uploadDone, resultEntered, resultSend,
     designCommand, designControl, designResult, runDesign, designEntered, designDone,
     changeSession(next: object | undefined) { session = next; },
     get admissionsAtUpload() { return admissionsAtUpload; }, get designSignal() { return designSignal; } };
 }
 
 describe("ordinary source delivery coalescing before NodeClient audit", () => {
+  it("records a rejected runtime boundary previously swallowed by tracking, without sending ACK or leaking the error", async () => {
+    const f = fixture(); f.readRuntime.mockImplementation(() => { throw Error("private provider credential and local path"); });
+    f.receive(f.command); await tick();
+    expect(f.diagnostics.at(-1)).toMatchObject({ command_type: f.command.type, command_id_digest: sha(f.command.id),
+      phase: "runtime", status: "failed", error_code: "source_command_stage_failed" });
+    expect(JSON.stringify(f.diagnostics)).not.toContain("private provider");
+    expect(f.sent).toHaveLength(0); expect(f.reserve).not.toHaveBeenCalled(); expect(f.upload).not.toHaveBeenCalled();
+    const count = f.diagnostics.length;
+    f.receive(f.command); await tick(); expect(f.diagnostics).toHaveLength(count);
+    // Diagnostics do not suppress a retry or alter the real rejection path.
+    expect(f.readRuntime).toHaveBeenCalledTimes(2);
+  });
   it("does not repeat expensive admission between the original accepted ACK and its upload continuation", async () => {
     const f = fixture({ repeatDuringAck: 256 }); f.receive(f.command); await f.uploadEntered.promise;
     expect(f.admissionsAtUpload).toBe(1); expect(f.handle).toHaveBeenCalledTimes(1); expect(f.upload).toHaveBeenCalledTimes(1);
@@ -179,8 +193,34 @@ describe("ordinary source delivery coalescing before NodeClient audit", () => {
     expect(f.readRuntime).toHaveBeenCalledTimes(2);
     expect(f.sent.filter(message => message.kind === "product.source.operation.result.v1")).toHaveLength(0);
     f.resultSend.resolve(); await tick();
-    f.receive(f.command); await waitFor(() => f.sent.filter(message => message.kind === "product.source.operation.result.v1").length === 2);
-    expect(f.readRuntime).toHaveBeenCalledTimes(3); expect(f.upload).toHaveBeenCalledTimes(1);
+    f.receive(f.command); await tick();
+    // Both original work and the server's receipt have now completed. An old
+    // delivery carries no new work and needs no repeated physical audit/response.
+    expect(f.sent.filter(message => message.kind === "product.source.operation.result.v1")).toHaveLength(1);
+    expect(f.readRuntime).toHaveBeenCalledTimes(2); expect(f.upload).toHaveBeenCalledTimes(1);
+  });
+
+  it("drains completed H2 deliveries across separate event-loop turns only after the actual controller accepts the receipt", async () => {
+    const f = fixture(); f.receive(f.command); await f.uploadEntered.promise; f.uploadDone.resolve();
+    await waitFor(() => f.sent.some(message => message.kind === "product.source.operation.result.v1")); await tick();
+    // Before a committed receipt, resend still reaches the real persisted-result handler.
+    f.receive(f.command); await waitFor(() => f.sent.filter(message => message.kind === "product.source.operation.result.v1").length === 2); await tick();
+    const result = f.sent.find(message => message.kind === "product.source.operation.result.v1");
+    if (result?.kind !== "product.source.operation.result.v1") throw Error("Missing controlled result");
+    const receipt: ServerToNodeMessage = { kind: "command", id: f.command.id, idempotency_key: `receipt:${f.command.id}`,
+      type: "product.source.operation.receipt.v1", payload: f.control, status: "accepted", result_digest: sha(canonical(result.payload)) };
+    f.receive(receipt); await waitFor(() => f.readRuntime.mock.calls.length === 3); await tick();
+    for (let index = 0; index < 32; index++) {
+      await tick(); f.receive(structuredClone(f.command)); await tick(); f.receive(structuredClone(receipt));
+    }
+    await tick(); expect(f.readRuntime).toHaveBeenCalledTimes(3);
+    expect(f.sent.filter(message => message.kind === "product.source.operation.result.v1")).toHaveLength(2);
+    expect(f.reserve).toHaveBeenCalledTimes(1); expect(f.upload).toHaveBeenCalledTimes(1);
+    // Stop always reaches the original controller and invalidates the suppression.
+    f.receive({ kind: "command", id: "stop", idempotency_key: "stop", type: "product.source.operation.stop.v1", payload: f.control });
+    await waitFor(() => f.sent.some(message => message.kind === "product.source.operation.ack.v1" && message.command_id === "stop"));
+    await tick(); f.receive(f.command); await waitFor(() => f.readRuntime.mock.calls.length === 5);
+    expect(f.upload).toHaveBeenCalledTimes(1);
   });
 
   it("lets the real controller replay a persisted result after the original send rejects without uploading again", async () => {

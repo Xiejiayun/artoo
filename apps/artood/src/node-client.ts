@@ -48,6 +48,7 @@ import { bindWorkspaceToolVerifier, bindWorkspaceToolEvidenceReader, bindWorkspa
 import { bindWorkspaceReadOnlyTools, isAutonomousPlanningContext } from "./workspace-readonly.js";
 import { createSourceStartReplay, type SourceStartOutcome, type SourceStartScope } from "./source-start-replay.js";
 import { createSourceCommandInflight } from "./source-command-inflight.js";
+import { createSourceCommandDiagnostics, recordSourceCommandPhase, type SourceCommandDiagnostic } from "./source-command-diagnostics.js";
 import { createProductSourceOperationClient } from "./product-source-operations.js";
 import { createImportedProductReviewClient } from "./imported-product-review.js";
 import { createImportedDesignContinuationClient } from "./imported-design-continuation.js";
@@ -139,6 +140,8 @@ export interface NodeClientOptions {
   releaseRetrySession?: () => object | undefined;
   /** Explicit local transport preparation. Absence preserves ordinary/manual behavior and import fencing. */
   productSourceOperations?: {client:ReturnType<typeof createProductSourceSemanticClient>;isCurrent:()=>boolean;importedReview?:boolean;importedDesign?:boolean;importedDesignReview?:boolean;importedExecution?:boolean;importedExecutionReview?:boolean;importedValidation?:boolean};
+  /** Local bounded observation only; never supplied by a command or used as execution evidence. */
+  sourceCommandDiagnostic?: (value: SourceCommandDiagnostic) => unknown;
 }
 
 export interface NodeClient {
@@ -407,6 +410,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   let unsubscribe: Unsubscribe | undefined;
   const sourceStartReplay = createSourceStartReplay();
   const sourceCommandInflight = createSourceCommandInflight();
+  const sourceCommandDiagnostics = createSourceCommandDiagnostics(options.sourceCommandDiagnostic ?? (() => {}));
   const pendingSourceReplaySends = new Map<string, symbol>();
   // Clean lifecycle's ordinary-state reader performs its own audit. Keep that
   // existing path until it has a separate local-fact replay capability.
@@ -1659,6 +1663,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   async function dispatch(message: ServerToNodeMessage): Promise<void> {
+    recordSourceCommandPhase("dispatch_admission");
     if (sourceRecovery && sourceReplayEnabled && message.type === "run.stop") sourceStartReplay.stopRun(message.payload.run_id);
     if (sourceRecovery && sourceReplayEnabled) {
       const ordinary = sourceCommandInflight.run(message, sourceReplayScope, dispatchFresh);
@@ -1695,6 +1700,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
 
   async function dispatchFresh(message: ServerToNodeMessage): Promise<void> {
     if (!sourceRecovery) return dispatchActive(message);
+    recordSourceCommandPhase("recovery");
     try { if (await sourceRecovery.handle(message)) return; }
     catch (error) {
       options.productSourceRecovery!.onFailure?.(error instanceof Error ? error : new Error("Recovery control failed"));
@@ -1728,9 +1734,11 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       operation_id: message.payload.release_id, request_digest: sha(canonicalProductSourceTransferValueV1(message.payload)) };
     let dispatched = false;
     try {
+      recordSourceCommandPhase("runtime");
       const runtime = sourceRecovery.readRuntime();
       // Return the promise without awaiting it: only synchronous admission errors
       // before dispatch belong to this rejection, never a later ACK delivery failure.
+      recordSourceCommandPhase("dispatch_scope");
       return withWindowsSourceRecoveryOperation(runtime, { operationId: operation?.operation_id ?? message.id,
         bindingDigest: operation?.request_digest ?? sha(canonicalProductSourceTransferValueV1(message)), serverOperation: operation }, () => {
         dispatched = true;
@@ -1743,6 +1751,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   async function dispatchActive(message: ServerToNodeMessage): Promise<void> {
+    recordSourceCommandPhase("handler");
     if (cleanValidations && await cleanValidations.handle(message)) return;
     if (recoveredValidations && await recoveredValidations.handle(message)) return;
     if(sourceOperations&&await sourceOperations.handle(message))return;
@@ -1920,7 +1929,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         void releaseReady.then(() => client.replayReleaseHealth()).catch(() => {});
       }
       unsubscribe = transport.subscribe((message) => {
-        track(dispatch(message));
+        // Keep the original rejection/settlement while observing failures that track retains locally.
+        track(sourceCommandDiagnostics.run(message, () => dispatch(message)));
       });
     },
     ready(): Promise<void> { if (sourceRecovery && unsubscribe) return Promise.resolve(); return releaseReady ?? Promise.reject(new Error("Node client has not started")); },

@@ -20,6 +20,7 @@ beforeEach(() => {
 });
 afterEach(() => { vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform); });
 function fixture() {
+  const diagnostic = vi.fn();
   const source = { recoveryRequired: true, recoveryConfiguration: Object.freeze({}), features: [], assertCurrent: vi.fn(), assertDiscovery: vi.fn(),
     qualifyRecovery: vi.fn(), activateRecovery: vi.fn(() => Object.freeze({})), close: vi.fn() } as unknown as ReturnType<typeof sources.prepareProductSourceNode>;
   vi.spyOn(sources, "prepareProductSourceNode").mockReturnValue(source);
@@ -31,8 +32,8 @@ function fixture() {
   const node = createArtoodNode({ url: "wss://control.example/api/v1/node?token=fixture", hello: { kind: "node.hello", node_id: "node",
     protocol_version: "2026-06-11", artood_version: "0.1.0", machine: { hostname: "fixture", os: "windows", arch: "x64" } },
     workspace: { allowedRoots: [process.cwd()] }, windowsProcessBackend: Object.freeze({}) as processBackend.PreparedWindowsProcessBackend,
-    productSourceConfigFile: "C:\\fixed\\source.json", requireSupervisorLifetime: true, acknowledgeRunEvents: true });
-  return { node, source, create, connect, client, disconnect() { live = false; connect.mock.calls.at(-1)![0].onFatalDisconnect?.(); } };
+    productSourceConfigFile: "C:\\fixed\\source.json", requireSupervisorLifetime: true, acknowledgeRunEvents: true, sourceCommandDiagnostic: diagnostic });
+  return { node, source, create, connect, client, diagnostic, disconnect() { live = false; connect.mock.calls.at(-1)![0].onFatalDisconnect?.(); } };
 }
 describe("source execution readiness", () => {
   it("rejects an internal selector with ordinary configuration before acquiring a source owner", async () => {
@@ -46,6 +47,7 @@ describe("source execution readiness", () => {
     const f = fixture(); let ready = false; void f.node.executionReady!.then(() => { ready = true; });
     await f.node.start(); await Promise.resolve(); expect(ready).toBe(false);
     const recovery = f.create.mock.calls.at(-1)![0].productSourceRecovery!;
+    expect(f.create.mock.calls.at(-1)![0].sourceCommandDiagnostic).toBe(f.diagnostic);
     recovery.activate(Object.freeze({}) as Parameters<typeof recovery.activate>[0]);
     await Promise.resolve(); expect(ready).toBe(false);
     recovery.onReady!(); await f.node.executionReady; expect(ready).toBe(true);

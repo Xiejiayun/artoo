@@ -33,6 +33,7 @@ import { readCleanValidationResearch } from "./windows-clean-validation-runtime.
 import { readCleanDaemonGuardian, readCleanDaemonQuarantine, type PreparedCleanDaemonConfiguration } from "./windows-clean-local-configuration.js";
 import { prepareWindowsCodeInstallation, assertWindowsCodeInstallation } from "./windows-code-installation.js";
 import { recordWindowsStartupPhase } from "./windows-startup-diagnostics.js";
+import { recordSourceCommandPhase, recordSourceCommandFailure } from "./source-command-diagnostics.js";
 
 const sha = (bytes: string | Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const canonical = canonicalProductSourceTransferValueV1;
@@ -777,6 +778,7 @@ function readImportedProductReview(permit:PreparedImportedProductReview,runtime:
 /** Dedicated node-owned lifecycle; ordinary run.start and serialized review data cannot call this with a valid owner. */
 export async function runImportedProductReview(runtime:PreparedProductSourceRuntime,permit:PreparedImportedProductReview,
   original:ProductSourceFreshVerificationV1,input:unknown,adapter:RuntimeAdapter,signal:AbortSignal,assertSession:()=>void):Promise<ImportedProductReviewResultV1>{
+  recordSourceCommandPhase("request");
   const owner=importedReviewOwners.get(permit),current=state(runtime),completed=completedSourceOperations.get(original);
   const request=freezeJson(ImportedProductReviewRequestV1Schema.parse(input)),requestDigest=importedProductReviewRequestDigestV1(request,sha);
   if(!owner||owner.runtime!==runtime||owner.claimed||owner.settled||owner.action!=="start"||owner.reviewId!==request.review_id||owner.digest!==requestDigest
@@ -794,11 +796,12 @@ export async function runImportedProductReview(runtime:PreparedProductSourceRunt
   let handle:AgentInstanceHandle|undefined,windowsAdmission:WindowsVerifiedExecutionAdmission|undefined,stopWork:Promise<void>|undefined,stopError:unknown;
   const stop=()=>{if(handle&&!stopWork)stopWork=adapter.stop(handle,"user_cancelled").catch(error=>{stopError=error;});};
   try{
+    recordSourceCommandPhase("before_verification");
     signal.throwIfAborted();readImportedProductReview(permit,runtime);closure.begin("before-verifier");
     const before=await verifyProductSourceSemanticTransfer(runtime,completed.authenticated,request.before_start,signal,permit);closure.confirm("before-verifier");
     if(before.verification.outcome!=="passed")fail("Imported review pre-verification failed");
     const beforeMeasurement={admission:readCompletedProductSourceAdmission(runtime,before),fresh:before};
-    signal.throwIfAborted();owner.active.phase="review";readImportedProductReview(permit,runtime);
+    recordSourceCommandPhase("reviewer");signal.throwIfAborted();owner.active.phase="review";readImportedProductReview(permit,runtime);
     const start=request.review_start,config:AgentInstanceConfig={runId:start.run_id,taskId:start.task_id,agentInstanceId:start.agent_instance_id,
       runtime:start.runtime,workspaceRoot:profile.workspace_root,runStart:start};
     const assertCurrent=()=>{signal.throwIfAborted();readImportedProductReview(permit,runtime);};
@@ -820,7 +823,7 @@ export async function runImportedProductReview(runtime:PreparedProductSourceRunt
     if(terminal!=="completed"||!answer)fail("Imported reviewer did not complete with one answer");
     signal.throwIfAborted();readImportedProductReview(permit,runtime);
     const verdict=ImportedProductReviewVerdictV1Schema.parse(JSON.parse(answer));
-    owner.active.phase="after";closure.begin("after-verifier");
+    recordSourceCommandPhase("after_verification");owner.active.phase="after";closure.begin("after-verifier");
     const after=await verifyProductSourceSemanticTransfer(runtime,completed.authenticated,request.after_start,signal,permit);closure.confirm("after-verifier");
     if(after.verification.outcome!=="passed")fail("Imported review post-verification failed");
     const result:ImportedProductReviewResultV1={...base,outcome:"reviewed",closed:true,before:beforeMeasurement,
@@ -830,6 +833,7 @@ export async function runImportedProductReview(runtime:PreparedProductSourceRunt
     signal.throwIfAborted();readImportedProductReview(permit,runtime);
     const frozen=freezeJson(result);completedImportedReviews.set(frozen,{runtime,permit,request});return frozen;
   }catch(error){
+    recordSourceCommandFailure(error);
     const failure=await finishImportedReviewFailure(closure,error,handle&&windowsAdmission?async()=>{
       if(stopWork)await stopWork;else await adapter.stop(handle!,"shutdown");if(stopError)throw stopError;
       assertWindowsVerifiedExecutionClosed(windowsAdmission!,handle!);

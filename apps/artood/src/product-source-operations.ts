@@ -5,6 +5,7 @@ import {productSourceOperationCommandSchema,productSourceOperationStopSchema,pro
 import {importProductSourceSemanticTransfer,verifyProductSourceSemanticTransfer,readCompletedProductSourceAdmission,
   reserveProductSourceOperation,persistProductSourceOperationResult,type PreparedProductSourceRuntime,type PreparedProductSourceOperation} from "./product-source-runtime.js";
 import {createProductSourceSemanticClient} from "./product-source-semantic-client.js";
+import {recordSourceCommandPhase,recordSourceCommandFailure} from "./source-command-diagnostics.js";
 
 const sha=(value:string|Uint8Array)=>`sha256:${createHash("sha256").update(value).digest("hex")}`;
 /** Explicit local opt-in only. No normal runner advertises this controller before preparation. */
@@ -13,8 +14,8 @@ export function createProductSourceOperationClient(options:{nodeId:string;runtim
   type Slot={digest:string;requestDigest?:string;controller:AbortController;result?:ProductSourceOperationResultV1;work?:Promise<void>;persisted?:boolean;acknowledged?:string;stopPermit?:PreparedProductSourceOperation};
   const slots=new Map<string,Slot>();let invalidated=false;
   const current=()=>{if(invalidated||!options.isCurrent())throw Error("Operation session invalidated");};
-  async function emit(commandId:string,slot:Slot){if(!slot.result)return;current();await options.transport.send({kind:"product.source.operation.result.v1",node_id:options.nodeId,command_id:commandId,payload:slot.result});}
-  async function ack(commandId:string,operationId:string,digest:string,status:"accepted"|"rejected",message?:string){current();await options.transport.send({kind:"product.source.operation.ack.v1",node_id:options.nodeId,command_id:commandId,
+  async function emit(commandId:string,slot:Slot){if(!slot.result)return;recordSourceCommandPhase("emit_result");current();await options.transport.send({kind:"product.source.operation.result.v1",node_id:options.nodeId,command_id:commandId,payload:slot.result});}
+  async function ack(commandId:string,operationId:string,digest:string,status:"accepted"|"rejected",message?:string){recordSourceCommandPhase("acknowledgement");current();await options.transport.send({kind:"product.source.operation.ack.v1",node_id:options.nodeId,command_id:commandId,
     payload:{version:1,operation_id:operationId,payload_digest:digest},status,...(message?{message:message.slice(0,2000)}:{})});}
   function cancelledBeforeStart(slot:Slot,operationId:string,requestDigest:string){
     if(!slot.stopPermit||slot.result)return;
@@ -23,6 +24,7 @@ export function createProductSourceOperationClient(options:{nodeId:string;runtim
     persistProductSourceOperationResult(options.runtime,slot.stopPermit,result);slot.requestDigest=requestDigest;slot.result=result;slot.persisted=true;
   }
   async function start(command:ProductSourceOperationCommand){
+    recordSourceCommandPhase("request");
     if(command.deadline_at&&Date.parse(command.deadline_at)<=Date.now())throw Error("Operation command deadline expired before admission");
     const payload=command.payload,digest=productSourceOperationDigestV1(payload,sha),base=payload.intent.request.byte_request;
     if((payload.kind==="upload"?base.source.node_id:base.destination.node_id)!==options.nodeId)throw Error("Operation is assigned to another node");
@@ -32,8 +34,9 @@ export function createProductSourceOperationClient(options:{nodeId:string;runtim
       cancelledBeforeStart(prior,payload.operation_id,payload.request_digest);
       await ack(command.id,payload.operation_id,digest,"accepted");await prior.work;await emit(command.id,prior);return;
     }
-    current();
+    recordSourceCommandPhase("session");current();
     // This protected, exclusive file precedes the ACK and every side effect. A restart cannot recreate its live token.
+    recordSourceCommandPhase("reservation");
     const permit=reserveProductSourceOperation(options.runtime,payload.operation_id,digest,"start");
     const slot:Slot={digest,requestDigest:payload.request_digest,controller:new AbortController()};slots.set(payload.operation_id,slot);
     slot.work=(async()=>{
@@ -49,8 +52,8 @@ export function createProductSourceOperationClient(options:{nodeId:string;runtim
           const fresh=await verifyProductSourceSemanticTransfer(options.runtime,downloaded,payload.intent.destination_start,slot.controller.signal);
           slot.result={...binding,outcome:"verified",closed:true,fresh,admission:readCompletedProductSourceAdmission(options.runtime,fresh)};
         }
-      }catch(error){slot.result={...binding,outcome:"uncertain",closed:false,reason:(error instanceof Error?error.message:"Operation failed").slice(0,2000)||"Operation failed"};}
-      persistProductSourceOperationResult(options.runtime,permit,slot.result);
+      }catch(error){recordSourceCommandFailure(error);slot.result={...binding,outcome:"uncertain",closed:false,reason:(error instanceof Error?error.message:"Operation failed").slice(0,2000)||"Operation failed"};}
+      recordSourceCommandPhase("persist_result");persistProductSourceOperationResult(options.runtime,permit,slot.result);
       slot.persisted=true;
     })();
     await slot.work;
@@ -65,7 +68,8 @@ export function createProductSourceOperationClient(options:{nodeId:string;runtim
       readCompletedProductSourceAdmission(options.runtime,slot.result.fresh);return slot.result;
     },
     async handle(input:ServerToNodeMessage):Promise<boolean>{
-      if(!input.type.startsWith("product.source.operation."))return false;current();
+      if(!input.type.startsWith("product.source.operation."))return false;recordSourceCommandPhase("session");current();
+      recordSourceCommandPhase("request");
       if(input.type==="product.source.operation.v1"){await start(productSourceOperationCommandSchema.parse(input));return true;}
       if(input.type==="product.source.operation.receipt.v1"){
         const receipt=productSourceOperationReceiptSchema.parse(input),slot=slots.get(receipt.payload.operation_id);

@@ -43,6 +43,13 @@ describe("controlled daemon registration gate", () => {
     expect(ready).toHaveBeenCalledTimes(1); expect(f.create.mock.calls[0]![0].requireSupervisorLifetime).toBe(true);
     f.host.emit("message", { type: "shutdown" }); await Promise.resolve();
   });
+  it("keeps the original local supervisor diagnostic sink through node construction", async () => {
+    const f = fixture(), sink = vi.fn(), host = Object.assign(f.host, { sourceCommandDiagnostic: sink });
+    const starting = main(env, host as ShutdownHost, async () => {}); f.resolve(); await starting;
+    expect(f.create.mock.calls[0]![0].sourceCommandDiagnostic).toBe(sink);
+    expect(sink).not.toHaveBeenCalled();
+    f.host.emit("message", { type: "shutdown" }); await Promise.resolve();
+  });
   it("settles stop-before-ACK without publishing readiness", async () => {
     const f = fixture(), ready = vi.fn(async () => {}), starting = main(env, f.host as ShutdownHost, ready);
     const failure = expect(starting).rejects.toThrow(/stopped before ACK/);
