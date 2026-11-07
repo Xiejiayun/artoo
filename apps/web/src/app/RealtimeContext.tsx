@@ -5,6 +5,7 @@ import { createContext, useContext, useEffect, useRef, type ReactNode } from "re
 
 import { RealtimeClient, type SocketFactory } from "../ws/realtimeClient.js";
 import { invalidationsForEvent } from "./invalidation.js";
+import { refreshPreparedTaskProgress, usePreparedGoalPolling } from "./preparedGoalPolling.js";
 import { queryKeys } from "./queryKeys.js";
 import { appendRunOutput, type RunOutputChunk } from "./runOutputs.js";
 import type { MessagesResponse } from "../api/types.js";
@@ -34,6 +35,7 @@ export function RealtimeProvider({
   onMessageRemoved,
 }: RealtimeProviderProps): ReactNode {
   const queryClient = useQueryClient();
+  const preparedPolling = usePreparedGoalPolling();
   const ref = useRef<RealtimeClient | null>(null);
 
   if (ref.current === null) {
@@ -76,12 +78,18 @@ export function RealtimeProvider({
 
   useEffect(() => {
     const client = ref.current;
+    if (preparedPolling) {
+      client?.close();
+      void refreshPreparedTaskProgress(queryClient);
+      const timer = setInterval(() => { void refreshPreparedTaskProgress(queryClient); }, 5000);
+      return () => { clearInterval(timer); client?.close(); };
+    }
     const unsubscribe = client?.subscribeStatus(() => {
       if (client.getStatus() === "connected") void queryClient.invalidateQueries();
     });
     client?.connect();
     return () => { unsubscribe?.(); client?.close(); };
-  }, [queryClient]);
+  }, [queryClient, preparedPolling]);
 
   return <RealtimeContext.Provider value={ref.current}>{children}</RealtimeContext.Provider>;
 }

@@ -1,3 +1,4 @@
+import type { PreparedGoalEntryConfigV1 } from "./config/goal-entry.js";
 import type { AiDataSharingPolicy } from "./config/ai-data-sharing.js";
 import type { SourceLifecycleRegistry } from "./services/source-clean-lifecycle-service.js";
 import type { Clock, IdGen, VerificationCapabilities, ReleaseCapabilitiesV1, NodeOwnedResultProfileDescriptorV1, ProductSourceRoutingV1 } from "@artoo/domain";
@@ -16,6 +17,8 @@ export interface ServerContext {
   /** Process-local original-parent observers; never reconstructed from DB JSON. */
   sourceLifecycle?: Pick<SourceLifecycleRegistry, "registerDaemon" | "checkpoint">;
   db: DbClient;
+  /** Immutable local startup configuration; never accepted from an API request. */
+  goalEntry?: PreparedGoalEntryConfigV1;
   /** Explicit operator declaration; absent configuration cannot authorize AI. */
   aiDataSharingPolicy?: AiDataSharingPolicy | null;
   clock: Clock;

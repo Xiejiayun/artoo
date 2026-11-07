@@ -9,6 +9,7 @@ import { loadAuthConfig, type AuthConfig, type AuthConfigEnv } from "./auth/auth
 import { createFetchOidcHttp } from "./auth/oidc-client.js";
 import { loadDeviceAuthConfig } from "./config/device-auth.js";
 import { loadAiDataSharingPolicy } from "./config/ai-data-sharing.js";
+import { loadGoalEntryConfig } from "./config/goal-entry.js";
 import { loadTrustedProxies } from "./config/trusted-proxies.js";
 import type { ServerContext } from "./context.js";
 import { createEventPublisher } from "./ws/event-publisher.js";
@@ -46,6 +47,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env) {
   const cors = desktopCors(env);
   const trustedProxies = loadTrustedProxies(env);
   const aiDataSharingPolicy = loadAiDataSharingPolicy(env);
+  const goalEntry = loadGoalEntryConfig(env);
   const dataRoot = resolve(env.ARTOO_DATA_DIR?.trim() || ".artoo");
   const dbDir = env.ARTOO_DB_DIR?.trim() || (production ? join(dataRoot, "db") : undefined);
   const artifactDir = env.ARTOO_ARTIFACT_DIR?.trim() || join(dataRoot, "artifacts");
@@ -62,7 +64,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env) {
     const ctx: ServerContext = {
       db, clock: createSystemClock(), idGen: createUlidIdGen(),
       organizationId: "org_default", actorUserId: "user_owner",
-      deviceAuth, authConfig, aiDataSharingPolicy, oidcHttp: createFetchOidcHttp(),
+      deviceAuth, authConfig, aiDataSharingPolicy, goalEntry, oidcHttp: createFetchOidcHttp(),
     };
     const wsHub = createWsHub();
     const app = buildApp(ctx, {

@@ -54,6 +54,8 @@ export function registerIdempotency(
     if (exemptPaths.has(path)) {
       return;
     }
+    // Goal creation and its response commit atomically in the goal service.
+    if (req.method === "POST" && req.routeOptions.url === "/api/v1/autonomous-goals") return;
     // This endpoint commits a durable client_request_id with the turn/message in
     // one transaction. A separate response-cache reservation could survive a
     // crash and permanently block replay of an already accepted conversation.

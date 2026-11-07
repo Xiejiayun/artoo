@@ -7,6 +7,7 @@
  * business state from these — it only renders the snapshot + WS patches.
  */
 import type {
+  PreparedGoalEntryV1,
   Agent,
   AgentInstance,
   AgentRuntime,
@@ -28,6 +29,7 @@ import type {
 } from "@artoo/domain";
 
 export interface BootstrapResponse {
+  goal_entry?: PreparedGoalEntryV1;
   organization: { id: string; name: string };
   user: { id: string; email: string; display_name: string; role: string };
   projects: Array<{ id: string; name: string; default_workspace: string | null }>;

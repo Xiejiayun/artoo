@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Flag, Plus, Download, ListChecks, MessageSquare } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { canProposePlan, canTransitionGoal, type Goal, type GoalAutomation, type TaskSpec } from "@artoo/domain";
+import { PreparedGoalEntryV1Schema, canProposePlan, canTransitionGoal, type Goal, type GoalAutomation, type TaskSpec } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
 import { useProject } from "../app/useProject.js";
 import { useSelection } from "../app/SelectionContext.js";
@@ -10,6 +10,7 @@ import { newIdempotencyKey } from "../api/idempotency.js";
 import { Badge, Button, EmptyState, Input, Modal, Select, StatusBadge, Textarea } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
 import { RoomConversation } from "./RoomConversation.js";
+import { PreparedGoalRequest } from "./PreparedGoalRequest.js";
 import { GoalDiscussion } from "./GoalDiscussion.js";
 import { CAPABILITY_LABELS, taskUpdatedLabel } from "./taskPresentation.js";
 import "../ui/work-insights.css";
@@ -23,15 +24,21 @@ export function GoalsPage(): React.ReactNode {
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  const entryResult = bootstrap.data?.goal_entry === undefined ? undefined : PreparedGoalEntryV1Schema.safeParse(bootstrap.data.goal_entry);
+  const entry = entryResult?.success && entryResult.data.project_id === projectId ? entryResult.data : undefined;
+  const entryError = entryResult && !entryResult.success ? new Error("This prepared product session has an unsupported configuration.") : null;
   const goals = useQuery({ queryKey: ["goals", projectId], queryFn: () => api.listGoals(projectId!), enabled: !!projectId, refetchInterval: 10000 });
-  const goal = goals.data?.goals.find((item) => item.id === selected) ?? goals.data?.goals[0];
+  const goal = goals.data?.goals.find((item) => item.id === selected)
+    ?? (entry?.goal_id ? goals.data?.goals.find((item) => item.id === entry.goal_id) : goals.data?.goals[0]);
   const matching = goals.data?.goals.filter((item) => `${item.title} ${item.objective}`.toLowerCase().includes(search.trim().toLowerCase()) && (filter === "all" || (filter === "closed" ? ["completed", "cancelled", "archived"].includes(item.status) : !["completed", "cancelled", "archived"].includes(item.status)))) ?? [];
   return <section className="product-page insights-page insights-goals" aria-label="Goals">
-    <header className="insights-page__header"><div><span className="insights-eyebrow"><Flag size={15} aria-hidden="true" /> Plan together</span><h1 className="t-h1">Goals</h1><p>Turn an outcome into a reviewed plan and track its progress.</p></div><Button variant="primary" iconLeft={Plus} disabled={!projectId} onClick={() => setCreating(true)}>New goal</Button></header>
-    <ActionError error={bootstrap.error ?? goals.error} />
+    <header className="insights-page__header"><div><span className="insights-eyebrow"><Flag size={15} aria-hidden="true" /> Plan together</span><h1 className="t-h1">Goals</h1><p>Turn an outcome into a reviewed plan and track its progress.</p></div>{!entry && !entryError && <Button variant="primary" iconLeft={Plus} disabled={!projectId} onClick={() => setCreating(true)}>New goal</Button>}</header>
+    <ActionError error={bootstrap.error ?? goals.error ?? entryError} />
     {(bootstrap.isLoading || goals.isLoading) && <p role="status">Loading goals…</p>}
-    {creating && projectId && <GoalForm key={projectId} projectId={projectId} onClose={() => setCreating(false)} onCreated={(id) => { setSelected(id); setCreating(false); }} />}
-    {goals.data?.goals.length === 0 && <EmptyState title="No goals yet" description="Define an outcome, review a plan, and track its tasks and checkpoints." />}
+    {entry && bootstrap.data && <PreparedGoalRequest key={`${bootstrap.data.user.id}:${entry.session_id}`} entry={entry}
+      organizationId={bootstrap.data.organization.id} userId={bootstrap.data.user.id} onCreated={setSelected} />}
+    {creating && projectId && !entry && !entryError && <GoalForm key={projectId} projectId={projectId} onClose={() => setCreating(false)} onCreated={(id) => { setSelected(id); setCreating(false); }} />}
+    {goals.data?.goals.length === 0 && !entry && <EmptyState title="No goals yet" description="Define an outcome, review a plan, and track its tasks and checkpoints." />}
     <div className="insights-goal-layout">
       <nav className="product-list insights-goal-picker" aria-label="Goal list"><div className="insights-picker-tools"><Input label="Search goals" placeholder="Find an outcome…" value={search} onChange={(event) => setSearch(event.target.value)} /><Select label="Goal view" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">All goals</option><option value="open">Open goals</option><option value="closed">Closed goals</option></Select></div>{matching.map((item) => <button key={item.id} aria-pressed={item.id === goal?.id} className={item.id === goal?.id ? "is-selected" : ""} onClick={() => setSelected(item.id)}><strong>{item.title}</strong><span className="insights-row-meta"><Badge>{item.status}</Badge><time dateTime={item.updated_at}>{taskUpdatedLabel(item.updated_at)}</time></span></button>)}{goals.data && matching.length === 0 && (search || filter !== "all") && <p className="insights-help">No goals match this view.</p>}</nav>
       {goal && <GoalDetail key={goal.id} goal={goal} />}

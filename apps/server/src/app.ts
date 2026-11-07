@@ -1,3 +1,4 @@
+import { assertPreparedManualGoal } from "./config/goal-entry.js";
 import { goalCleanValidations, goalCleanValidationReviews } from "@artoo/db";
 import { registerContentModerationRoutes } from "./content-moderation-routes.js";
 import { createSourceLifecycleRegistry } from "./services/source-clean-lifecycle-service.js";
@@ -592,6 +593,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     if (!parsed.success) {
       throw AppError.validation("invalid goal payload", { issues: parsed.error.issues });
     }
+    assertPreparedManualGoal(rc(req), parsed.data.project_id);
     const goal = await goalService.createGoal(rc(req), parsed.data);
     void reply.status(201);
     return { goal };

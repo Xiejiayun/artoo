@@ -6,6 +6,8 @@ import { and, asc, desc, eq, inArray, isNotNull, notInArray, or, sql } from "dri
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
+import { assertPreparedGoalRequest } from "../config/goal-entry.js";
+import { beginGoalSubmission, finishGoalSubmission, type GoalSubmissionIdentity } from "./goal-submission.js";
 import { requireAiSharingAuthorization } from "./ai-data-sharing-service.js";
 import { requireContentAllowed } from "./content-moderation-service.js";
 import { createGoal, getGoal, pauseGoal } from "./goal-service.js";
@@ -120,9 +122,14 @@ async function update(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, pat
   return next!;
 }
 
-export async function createAutonomousGoal(ctx: ServerContext, request: CreateAutonomousGoalRequest) {
+export async function createAutonomousGoal(ctx: ServerContext, request: CreateAutonomousGoalRequest, identity?: GoalSubmissionIdentity) {
   const input = CreateAutonomousGoalRequestSchema.parse(request);
+  assertPreparedGoalRequest(ctx, input, identity);
   return ctx.db.transaction(async (tx) => {
+    if (identity) {
+      const existing = await beginGoalSubmission(ctx, tx, input, identity);
+      if (existing) return existing;
+    }
     const sharing = await requireAiSharingAuthorization(ctx, tx);
     await requireContentAllowed(ctx, input.objective, tx);
     const atomic = transactionContext(ctx, tx);
@@ -139,7 +146,9 @@ export async function createAutonomousGoal(ctx: ServerContext, request: CreateAu
     if (input.source_handoff) await appendEvent(tx, buildEvent(ctx, { type: "goal.product-handoff.authorized", actorType: "user", actorId: ctx.actorUserId,
       goalId: goal.id, projectId: goal.project_id, correlationId: goal.id,
       payload: { version: 1, source_handoff: input.source_handoff, consent_id: sharing.consentId, policy_version: sharing.policyVersion } }));
-    return { goal, automation: mapGoalAutomation(row!) };
+    const result = { goal, automation: mapGoalAutomation(row!) };
+    if (identity) await finishGoalSubmission(ctx, tx, identity, result);
+    return result;
   });
 }
 

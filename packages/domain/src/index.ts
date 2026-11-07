@@ -16,6 +16,7 @@ export * from "./context-pack.js";
 export * from "./task-review.js";
 export * from "./goal.js";
 export * from "./autonomy.js";
+export * from "./goal-entry.js";
 export * from "./verification-observation.js";
 export * from "./verification-capabilities.js";
 export * from "./planning-capabilities.js";

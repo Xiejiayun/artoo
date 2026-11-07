@@ -14,7 +14,10 @@ export function registerGoalAutomationRoutes(app: FastifyInstance, ctx: ServerCo
   app.post("/api/v1/autonomous-goals", async (req, reply) => {
     const parsed = CreateAutonomousGoalRequestSchema.safeParse(req.body);
     if (!parsed.success) throw AppError.validation("Invalid autonomous goal request", { issues: parsed.error.issues });
-    const result = await createAutonomousGoal(requestContext(ctx, req), parsed.data);
+    const header = req.headers["idempotency-key"];
+    const key = Array.isArray(header) ? header[0] : header;
+    const identity = key ? { key, url: req.url, rawBody: req.body } : undefined;
+    const result = await createAutonomousGoal(requestContext(ctx, req), parsed.data, identity);
     if (options.enabled !== false) void worker.pump().catch((error) => app.log.error(error));
     return reply.status(201).send(result);
   });

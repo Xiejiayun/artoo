@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useCommands } from "../app/ApiContext.js";
+import { usePreparedGoalPolling } from "../app/preparedGoalPolling.js";
 import { useRealtime } from "../app/RealtimeContext.js";
 import { Button } from "../ui/index.js";
 
@@ -9,6 +10,7 @@ const noStatus = (): string => "disconnected";
 export function ConnectionStatus(): React.ReactNode {
   const commands = useCommands();
   const realtime = useRealtime();
+  const preparedPolling = usePreparedGoalPolling();
   const [online, setOnline] = useState(navigator.onLine);
   const pending = useSyncExternalStore(commands.subscribe, commands.pendingCount);
   const status = useSyncExternalStore(realtime?.subscribeStatus ?? noSubscription, realtime?.getStatus ?? noStatus);
@@ -21,8 +23,15 @@ export function ConnectionStatus(): React.ReactNode {
     return () => { window.removeEventListener("online", update); window.removeEventListener("offline", update); window.removeEventListener("beforeunload", beforeUnload); };
   }, [commands]);
   useEffect(() => { if (status === "connected") void commands.flush(); }, [commands, status]);
-  return <div className="connection-status" data-offline={!online || status !== "connected"} role="status" aria-label="Connection status">
-    <span>{!online ? "Offline" : status === "connected" ? "Live updates connected" : status === "unauthenticated" ? "Sign in to reconnect" : "Reconnecting live updates…"}</span>
+  useEffect(() => {
+    if (!preparedPolling || !online || pending === 0) return;
+    // HTTP may recover without a navigator online event. The existing queue
+    // preserves command identities, serial replay and terminal error handling.
+    const timer = setInterval(() => { void commands.flush(); }, 5000);
+    return () => clearInterval(timer);
+  }, [commands, preparedPolling, online, pending]);
+  return <div className="connection-status" data-offline={!online || (!preparedPolling && status !== "connected")} role="status" aria-label="Connection status">
+    <span>{!online ? "Offline" : preparedPolling ? "Automatic progress refresh" : status === "connected" ? "Live updates connected" : status === "unauthenticated" ? "Sign in to reconnect" : "Reconnecting live updates…"}</span>
     {pending > 0 && <><span>{pending} pending command{pending === 1 ? "" : "s"}. Keep this window open until sent.</span><Button size="sm" onClick={() => void commands.flush()}>Retry pending</Button></>}
   </div>;
 }
