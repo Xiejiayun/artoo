@@ -1,6 +1,7 @@
 // Candidate source only. Qualification describes this fixed native launch; it is
 // not a passed verifier, a recovered workspace, or a publication authorization.
 using Microsoft.Win32.SafeHandles;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
@@ -27,7 +28,8 @@ internal sealed record SupervisorQualification(int Version, string Capability, S
     SupervisorIdentity Supervisor, string LaunchIdentityDigest,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SupervisorLifetimeQualification? LifetimeOwnership = null);
 internal sealed record SupervisorQualifyInput(int Version, string Kind);
-internal sealed record SupervisorQuery(int Version, string Kind, string Nonce, uint DaemonPid, string DaemonCreationTime);
+internal sealed record SupervisorQuery(int Version, string Kind, string Nonce, uint DaemonPid, string DaemonCreationTime,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] GuardianRequestDeadline? Deadline = null);
 internal sealed record SupervisorQueryResult(int Version, string Kind, string Nonce, SupervisorQualification Payload);
 internal sealed record SupervisorControl(int Version, string Kind, string Nonce, int? Generation, string? Data);
 
@@ -90,14 +92,33 @@ internal sealed class SupervisorPinnedFile : IDisposable
             stream = new FileStream(handle, FileAccess.Read); Pin = pin; AssertCurrent();
         } catch { handle.Dispose(); throw; }
     }
-    internal void AssertCurrent() {
+    internal void AssertCurrent(GuardianRequestBudget? budget = null) {
+        budget?.AssertCurrent();
         GuardianWire.Require(GuardianNative.GetFileInformationByHandle(stream.SafeFileHandle, out var current)
             && current.VolumeSerialNumber == identity.VolumeSerialNumber && current.FileIndexHigh == identity.FileIndexHigh
             && current.FileIndexLow == identity.FileIndexLow && current.NumberOfLinks == 1
             && (current.FileAttributes & (0x10 | 0x400)) == 0 && stream.Length == Pin.Bytes, "supervisor_file_identity_changed");
         stream.Position = 0;
-        string digest = "sha256:" + Convert.ToHexStringLower(SHA256.HashData(stream));
+        string digest;
+        if (budget is null) digest = "sha256:" + Convert.ToHexStringLower(SHA256.HashData(stream));
+        else {
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(65536);
+            try {
+                for (;;) {
+                    budget.AssertCurrent();
+                    // A synchronous kernel read cannot be preempted by this token.
+                    // Qualify never holds the control gate across this work.
+                    int count = stream.Read(buffer, 0, 65536);
+                    budget.AssertCurrent();
+                    if (count == 0) break;
+                    hash.AppendData(buffer, 0, count);
+                }
+                digest = "sha256:" + Convert.ToHexStringLower(hash.GetHashAndReset());
+            } finally { ArrayPool<byte>.Shared.Return(buffer, clearArray: true); }
+        }
         GuardianWire.Require(digest == Pin.Sha256, "supervisor_file_bytes_changed");
+        budget?.AssertCurrent();
     }
     internal byte[] ReadBytes(int maximum) {
         AssertCurrent(); GuardianWire.Require(stream.Length <= maximum, "supervisor_runtime_manifest_bound");
@@ -110,17 +131,19 @@ internal sealed class SupervisorPinnedFile : IDisposable
  * comes from an opened kernel parent, never directly from a remote message. */
 internal static class DaemonSupervisorAuthority
 {
-    internal static SupervisorQualification Require(GuardianProcess daemon, string? expectedLaunchIdentityDigest = null, CancellationToken cancellation = default) {
-        cancellation.ThrowIfCancellationRequested();
+    internal static SupervisorQualification Require(GuardianProcess daemon, string? expectedLaunchIdentityDigest = null,
+        CancellationToken cancellation = default, GuardianRequestDeadline? requestedDeadline = null) {
+        using var budget = new GuardianRequestBudget(5000, cancellation, requestedDeadline);
+        budget.AssertCurrent();
         using var self = new GuardianProcess((uint)Environment.ProcessId);
         using var supervisor = new GuardianProcess(daemon.ParentPid);
         GuardianWire.Require(!daemon.Exited && !supervisor.Exited && daemon.CreationTime > supervisor.CreationTime
             && daemon.Sid == self.Sid && supervisor.Sid == self.Sid
             && SupervisorProtocol.SameImage(supervisor.Image, self.Image)
             && supervisor.HasNativeMode("--daemon-supervisor-v1"), "supervisor_exact_kernel_parent");
+        budget.AssertCurrent();
         using var pipe = new NamedPipeClientStream(".", SupervisorProtocol.Pipe(supervisor), PipeDirection.InOut, PipeOptions.Asynchronous);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation); timeout.CancelAfter(5000);
-        pipe.ConnectAsync(timeout.Token).GetAwaiter().GetResult();
+        pipe.ConnectAsync(budget.Token).GetAwaiter().GetResult();
         GuardianWire.Require(GuardianNative.GetNamedPipeServerProcessId(pipe.SafePipeHandle, out uint serverPid)
             && serverPid == supervisor.Pid, "supervisor_pipe_server_pid");
         using var actualServer = new GuardianProcess(serverPid);
@@ -128,11 +151,12 @@ internal static class DaemonSupervisorAuthority
         using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true };
         using var reader = new StreamReader(pipe, new UTF8Encoding(false, true), false, 4096, true);
         string nonce = Guid.NewGuid().ToString("D");
+        budget.AssertCurrent();
         writer.WriteLineAsync(GuardianWire.Encode(new SupervisorQuery(1, "qualify", nonce, daemon.Pid,
-            daemon.CreationTime.ToString(CultureInfo.InvariantCulture))).AsMemory(), timeout.Token).GetAwaiter().GetResult();
-        var response = GuardianWire.Decode<SupervisorQueryResult>(GuardianWire.ReadLine(reader, timeout.Token).GetAwaiter().GetResult());
+            daemon.CreationTime.ToString(CultureInfo.InvariantCulture), new(1, budget.DeadlineTickCount64))).AsMemory(), budget.Token).GetAwaiter().GetResult();
+        var response = GuardianWire.Decode<SupervisorQueryResult>(GuardianWire.ReadLine(reader, budget.Token).GetAwaiter().GetResult());
         var result = response.Payload;
-        timeout.Token.ThrowIfCancellationRequested();
+        budget.AssertCurrent();
         GuardianWire.Require(response.Version == 1 && response.Kind == "qualified" && response.Nonce == nonce
             && result is not null && result.Version == 1 && result.Capability == SupervisorProtocol.Capability
             && result.Daemon == SupervisorProtocol.Identity(daemon) && result.Supervisor == SupervisorProtocol.Identity(supervisor)
@@ -277,6 +301,9 @@ internal sealed class SupervisorIncarnation : IDisposable
 internal sealed class DaemonSupervisorState : IDisposable
 {
     private readonly object gate = new();
+    // Held streams share their positions. Serialize complete inspection separately
+    // from original-process/control state; always acquire this before gate.
+    private readonly object qualificationGate = new();
     private readonly SupervisorLaunch launch;
     private readonly GuardianProcess self = new((uint)Environment.ProcessId);
     private readonly SupervisorPinnedFile node, entry, configuration;
@@ -401,13 +428,18 @@ internal sealed class DaemonSupervisorState : IDisposable
         }
         GuardianWire.Require(entryFound, "supervisor_runtime_entry_missing"); AssertRuntimeManifest();
     }
-    private void AssertRuntimeManifest() {
+    private void AssertRuntimeManifest(GuardianRequestBudget? budget = null) {
+        budget?.AssertCurrent();
         if (runtimeManifest is null) return;
-        runtimeManifest.AssertCurrent(); foreach (var file in runtimeFiles) file.AssertCurrent();
+        runtimeManifest.AssertCurrent(budget); foreach (var file in runtimeFiles) file.AssertCurrent(budget);
         foreach (var directory in runtimeDirectoryEntries) {
-            var actual = System.IO.Directory.EnumerateFileSystemEntries(directory.Key).Select(System.IO.Path.GetFileName).ToArray();
-            GuardianWire.Require(actual.Length == directory.Value.Count && actual.All(name => name is not null && directory.Value.Contains(name)),
-                "supervisor_runtime_inventory_changed");
+            budget?.AssertCurrent(); int count = 0;
+            foreach (string path in System.IO.Directory.EnumerateFileSystemEntries(directory.Key)) {
+                budget?.AssertCurrent(); count++;
+                GuardianWire.Require(directory.Value.Contains(System.IO.Path.GetFileName(path)), "supervisor_runtime_inventory_changed");
+            }
+            GuardianWire.Require(count == directory.Value.Count, "supervisor_runtime_inventory_changed");
+            budget?.AssertCurrent();
         }
     }
     private static SortedDictionary<string, string> CleanEnvironment(Dictionary<string, string> input) {
@@ -443,7 +475,7 @@ internal sealed class DaemonSupervisorState : IDisposable
             supervisor = SupervisorProtocol.Identity(self), launchIdentityDigest = LaunchIdentityDigest });
     }
     internal void Start() {
-        lock (gate) {
+        lock (qualificationGate) lock (gate) {
             GuardianWire.Require(!restartDisabled && history.Count <= launch.MaxRestarts && (history.Count == 0 || history[^1].ExitObserved), "supervisor_restart_before_original_exit");
             node.AssertCurrent(); entry.AssertCurrent(); configuration.AssertCurrent(); AssertRuntimeManifest();
             IntPtr stdinRead = IntPtr.Zero, stdinWrite = IntPtr.Zero, stdoutRead = IntPtr.Zero, stdoutWrite = IntPtr.Zero,
@@ -540,7 +572,10 @@ internal sealed class DaemonSupervisorState : IDisposable
         // An unread stdin cannot block the supervisor's original process wait/restart.
         history[^1].Enqueue(bytes);
     } }
-    internal SupervisorQualification Qualify(GuardianProcess peer, SupervisorQuery query) { lock (gate) {
+    // Called only under gate. Repeat all live lineage/original-HANDLE checks after
+    // inspection; no cached qualification can authorize another incarnation.
+    private SupervisorIncarnation QualifyCurrent(GuardianProcess peer, SupervisorQuery query, GuardianRequestBudget budget) {
+        budget.AssertCurrent();
         GuardianWire.Require(!disposed && query.Version == 1 && query.Kind == "qualify" && GuardianWire.Uuid(query.Nonce)
             && history.Count > 0 && !self.Exited && !peer.Exited && peer.Sid == self.Sid
             && SupervisorProtocol.SameImage(peer.Image, self.Image), "supervisor_qualify_peer");
@@ -550,17 +585,32 @@ internal sealed class DaemonSupervisorState : IDisposable
         GuardianWire.Require(!current.ObserveExit() && current.Identity.Pid == query.DaemonPid
             && current.Identity.CreationTime.ToString(CultureInfo.InvariantCulture) == query.DaemonCreationTime
             && (!qualifier || current.ParentOf(peer)), "supervisor_original_current_daemon_handle");
-        node.AssertCurrent(); entry.AssertCurrent(); configuration.AssertCurrent(); AssertRuntimeManifest();
-        SupervisorLifetimeQualification? lifetime = null;
-        if (OwnsLifetime) {
-            GuardianWire.Require(lifetimeJob != IntPtr.Zero && current.AtomicJobMember
-                && Native.IsProcessInJob(current.OriginalHandle.DangerousGetHandle(), lifetimeJob, out bool member) && member,
-                "supervisor_lifetime_current_membership");
-            lifetime = new(1, SupervisorProtocol.LifetimeCapability, launch.LifetimeOwnership!.CleanupTimeoutMs,
-                launch.LifetimeOwnership.GracefulStopMs, true, true, launch.RuntimeManifest);
+        budget.AssertCurrent(); return current;
+    }
+    internal SupervisorQualification Qualify(GuardianProcess peer, SupervisorQuery query, GuardianRequestBudget budget) {
+        // Expired queued calls leave without reading files. Start and Dispose use
+        // the same ordering, keeping every original pinned stream alive here.
+        using (budget.Enter(qualificationGate)) {
+            SupervisorIncarnation original;
+            using (budget.Enter(gate)) original = QualifyCurrent(peer, query, budget);
+            node.AssertCurrent(budget); entry.AssertCurrent(budget); configuration.AssertCurrent(budget); AssertRuntimeManifest(budget);
+            using (budget.Enter(gate)) {
+                var current = QualifyCurrent(peer, query, budget);
+                GuardianWire.Require(ReferenceEquals(current, original), "supervisor_original_current_daemon_handle");
+                SupervisorLifetimeQualification? lifetime = null;
+                if (OwnsLifetime) {
+                    GuardianWire.Require(lifetimeJob != IntPtr.Zero && current.AtomicJobMember
+                        && Native.IsProcessInJob(current.OriginalHandle.DangerousGetHandle(), lifetimeJob, out bool member) && member,
+                        "supervisor_lifetime_current_membership");
+                    lifetime = new(1, SupervisorProtocol.LifetimeCapability, launch.LifetimeOwnership!.CleanupTimeoutMs,
+                        launch.LifetimeOwnership.GracefulStopMs, true, true, launch.RuntimeManifest);
+                }
+                budget.AssertCurrent();
+                return new SupervisorQualification(1, SupervisorProtocol.Capability, SupervisorProtocol.Identity(current.Identity),
+                    SupervisorProtocol.Identity(self), LaunchIdentityDigest, lifetime);
+            }
         }
-        return new SupervisorQualification(1, SupervisorProtocol.Capability, SupervisorProtocol.Identity(current.Identity), SupervisorProtocol.Identity(self), LaunchIdentityDigest, lifetime);
-    } }
+    }
     internal void Stop() { lock (gate) { if (history.Count > 0) history[^1].Terminate(); } }
     /** Only final Supervisor shutdown closes the shared tree. The same original Job
      * HANDLE is queried until zero; closing it is a fallback, never closure evidence. */
@@ -638,7 +688,9 @@ internal sealed class DaemonSupervisorState : IDisposable
                     cleanupConfirmed, gracefulStopArmed, gracefulStopTimedOut, forcedJobTermination } };
         } }
     }
-    public void Dispose() { lock (gate) {
+    public void Dispose() { lock (qualificationGate) lock (gate) {
+        // Run cancels the service before disposal. Keep original file owners until
+        // any synchronous inspection has actually returned; cancellation is not closure.
         if (disposed) return; disposed = true;
         // Failure may leave closure unknown. KILL_ON_JOB_CLOSE still contains the
         // tree, but no fact is upgraded after the authoritative summary was sent.
@@ -760,10 +812,11 @@ internal static class DaemonSupervisorProgram
                     using var writer = new StreamWriter(connected, new UTF8Encoding(false), 4096, true) { AutoFlush = true };
                     phase = "supervisor_query_read";
                     var query = GuardianWire.Decode<SupervisorQuery>(await GuardianWire.ReadLine(reader, timeout.Token));
+                    using var budget = new GuardianRequestBudget(5000, timeout.Token, query.Deadline);
                     phase = "supervisor_query_qualify";
-                    var result = state.Qualify(peer, query);
-                    phase = "supervisor_query_reply";
-                    await writer.WriteLineAsync(GuardianWire.Encode(new SupervisorQueryResult(1, "qualified", query.Nonce, result)).AsMemory(), timeout.Token);
+                    var result = state.Qualify(peer, query, budget);
+                    phase = "supervisor_query_reply"; budget.AssertCurrent();
+                    await writer.WriteLineAsync(GuardianWire.Encode(new SupervisorQueryResult(1, "qualified", query.Nonce, result)).AsMemory(), budget.Token);
                 }
             } catch (Exception error) { state.ReportDiagnostic(phase, error); /* Rejected peers receive no qualification. */ } finally { capacity.Release(); } });
         } } catch { pending.Dispose(); }

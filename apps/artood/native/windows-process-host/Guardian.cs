@@ -503,7 +503,8 @@ internal sealed class GuardianState : IDisposable
             trace.Stage = "supervisor_qualification";
             // Full original qualification remains mandatory, but cannot hold up an
             // unrelated host's pulse, terminal or ACK on the Guardian state gate.
-            var qualified = DaemonSupervisorAuthority.Require(parent, configuration.SupervisorLaunchIdentityDigest, budget.Token);
+            var qualified = DaemonSupervisorAuthority.Require(parent, configuration.SupervisorLaunchIdentityDigest, budget.Token,
+                new GuardianRequestDeadline(1, budget.DeadlineTickCount64));
             budget.AssertCurrent();
             GuardianWire.Require(qualified.Supervisor == SupervisorProtocol.Identity(snapshot.Supervisor), "guardian_exact_supervisor_required");
             return parent;

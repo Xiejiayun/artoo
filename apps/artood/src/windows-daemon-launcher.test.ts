@@ -1,3 +1,4 @@
+import type { WindowsStopDiagnostic } from "./windows-stop-diagnostics.js";
 // Controlled protocol/OS observations only; no native helper or model is executed.
 import { describe, expect, it, vi } from "vitest";
 import type { WindowsStartupDiagnostic } from "./windows-startup-diagnostics.js";
@@ -8,8 +9,9 @@ const digest = `sha256:${"a".repeat(64)}`, manifest = { path: "C:\\fixed\\bundle
 const daemon = (generation: number) => ({ pid: 100 + generation, creationTime: String(200 + generation), image: "C:\\fixed\\node.exe", sid: "S-1-5-21-1" });
 const observed: SupervisorProcessObservation = { spawned: true, exited: true, closed: true, stdoutEof: true, stderrEof: true,
   exitCode: 0, closeCode: 0, signal: null, closeSignal: null };
-function fixture(diagnostic?: (generation: number, value: WindowsStartupDiagnostic) => void) {
-  const lifecycle = new SupervisedLifecycle(nonce, manifest, diagnostic); let sequence = 0;
+function fixture(diagnostic?: (generation: number, value: WindowsStartupDiagnostic) => void,
+  stopDiagnostic?: (generation: number, value: WindowsStopDiagnostic) => void) {
+  const lifecycle = new SupervisedLifecycle(nonce, manifest, diagnostic, stopDiagnostic); let sequence = 0;
   const frame = (kind: string, payload: unknown) => lifecycle.accept({ version: 1, sequence: sequence++, kind, payload });
   frame("supervisor_ready", { capability: "artoo.windows-daemon-supervisor.v1", supervisor: daemon(9), launchIdentityDigest: digest,
     lifetimeOwnership: { version: 1, capability: "artoo.windows-daemon-supervisor-lifetime.v1", cleanupTimeoutMs: 15000,
@@ -59,6 +61,36 @@ describe("supervised CLI selection", () => {
   });
 });
 describe("current-generation readiness and actual closure", () => {
+  it("forwards bound stop stages without treating completed fallback as a successful requested stop", () => {
+    const sink = vi.fn(), f = fixture(undefined, sink); f.start(); f.output("ready"); f.arm();
+    const diagnostic = { version: 1, phase: "fallback_close", status: "completed", elapsed_ms: 10, phase_elapsed_ms: 5 };
+    expect(f.frame("daemon_output", { generation: 0, stream: "stdout", data: Buffer.from("ARTOO_SUPERVISED_V1 " + JSON.stringify({
+      version: 1, kind: "stop", nonce, pid: daemon(0).pid, diagnostic }) + "\n").toString("base64") })).toBeUndefined();
+    expect(sink).toHaveBeenCalledWith(0, diagnostic);
+    expect(() => f.output("stopped", 0, 1)).toThrow(/successful requested settlement/);
+    f.exit(); f.terminal(); expect(() => f.lifecycle.confirm(observed)).toThrow(/closure/);
+  });
+  it.each(["nonce", "pid", "phase", "secret-field", "oversized"])("rejects changed stop diagnostic binding/schema: %s", variant => {
+    const sink = vi.fn(), f = fixture(undefined, sink); f.start();
+    const event = { version: 1, kind: "stop", nonce, pid: daemon(0).pid,
+      diagnostic: { version: 1, phase: "client_close", status: "entered", elapsed_ms: 0, phase_elapsed_ms: 0 } as Record<string, unknown> };
+    if (variant === "nonce") event.nonce = armNonce;
+    if (variant === "pid") event.pid++;
+    if (variant === "phase") event.diagnostic.phase = "raw-error-text";
+    if (variant === "secret-field") event.diagnostic.stderr = "secret";
+    if (variant === "oversized") event.diagnostic.elapsed_ms = 86_400_001;
+    expect(() => f.frame("daemon_output", { generation: 0, stream: "stdout",
+      data: Buffer.from("ARTOO_SUPERVISED_V1 " + JSON.stringify(event) + "\n").toString("base64") })).toThrow();
+    expect(sink).not.toHaveBeenCalled();
+  });
+  it("bounds stop diagnostic volume independently for the original generation", () => {
+    const sink = vi.fn(), f = fixture(undefined, sink); f.start();
+    const emit = () => f.frame("daemon_output", { generation: 0, stream: "stdout", data: Buffer.from("ARTOO_SUPERVISED_V1 " + JSON.stringify({
+      version: 1, kind: "stop", nonce, pid: daemon(0).pid,
+      diagnostic: { version: 1, phase: "client_close", status: "entered", elapsed_ms: 0, phase_elapsed_ms: 0 } }) + "\n").toString("base64") });
+    for (let i = 0; i < 64; i++) emit();
+    expect(() => emit()).toThrow(/stop diagnostics exceeded/); expect(sink).toHaveBeenCalledTimes(64);
+  });
   it("projects only a bounded bound startup record without authorizing readiness or clean stop", () => {
     const sink = vi.fn(), f = fixture(sink); f.start();
     const diagnostic = { version: 1, phase: "git_installation", status: "failed", elapsed_ms: 123, phase_elapsed_ms: 15, error_code: "startup_stage_failed" };

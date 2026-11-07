@@ -1,3 +1,4 @@
+import { observeWindowsStopStage, recordWindowsStopDiagnostic } from "./windows-stop-diagnostics.js";
 import { createHash, randomUUID } from "node:crypto";
 import { ManagedDelivery, boundedOperation, abortableOperation, DeliveryCancelled,
   type ManagedJournalOptions, type ManagedSession } from "./managed/managed-delivery.js";
@@ -1930,7 +1931,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     },
     async stop(cancelRunning = false): Promise<void> {
       sourceStartReplay.invalidate(); // Wake duplicate waiters before any synchronous shutdown audit.
-      const close = async () => {
+      const close = () => observeWindowsStopStage("client_close", async () => {
       healthStopped = true;
       if (healthRetry) clearTimeout(healthRetry);
       healthRetry = undefined;
@@ -1974,18 +1975,22 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       await Promise.allSettled([...inflight]);
       await sourceOperations?.settled();await importedReviews?.settled();await importedDesigns?.settled();await importedDesignReviews?.settled();await importedExecutions?.settled();await importedExecutionReviews?.settled();await importedValidations?.settled();
       await recoveredValidations?.settled(); await cleanValidations?.settled(); await sourceRecovery?.settled();
-      await releaseExecutor.stop();
-      };
+      await observeWindowsStopStage("publisher_stop", () => releaseExecutor.stop());
+      });
       if (recoveryRuntime) {
         let entered = false;
         try {
+          recordWindowsStopDiagnostic("guardian_scope_admission", "entered");
           return withWindowsSourceRecoveryOperation(recoveryRuntime, { operationId: "node-stop",
-            bindingDigest: "sha256:" + createHash("sha256").update(nodeId).digest("hex"), serverOperation: null }, () => { entered = true; return close(); });
+            bindingDigest: "sha256:" + createHash("sha256").update(nodeId).digest("hex"), serverOperation: null }, () => {
+              entered = true; recordWindowsStopDiagnostic("guardian_scope_admission", "completed"); return close();
+            });
         } catch (error) {
           // A changed configuration cannot suppress cancellation of existing handles.
           // Cleanup may still fail closed; neither path releases the guardian fence.
           if (entered) throw error;
-          await close(); throw error;
+          recordWindowsStopDiagnostic("guardian_scope_admission", "failed", error);
+          await observeWindowsStopStage("fallback_close", close); throw error;
         }
       }
       return close();

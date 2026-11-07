@@ -1,4 +1,5 @@
 import { recordWindowsStartupPhase, recordWindowsStartupFailure, completeWindowsStartupDiagnostics } from "./windows-startup-diagnostics.js";
+import { observeWindowsStopStage, type WindowsStopDiagnostics, type WindowsStopPhase } from "./windows-stop-diagnostics.js";
 export { acquirePublishedProductOwnership, createPublishedProduct } from "./published-product.js";
 import { arch as osArch, hostname, platform } from "node:os";
 import { isAbsolute } from "node:path";
@@ -383,6 +384,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env, host: ShutdownH
 }
 
 export interface ShutdownHost {
+  stopDiagnostics?: WindowsStopDiagnostics;
   on(event: string, listener: (message?: unknown) => void): unknown;
   off(event: string, listener: (message?: unknown) => void): unknown;
   connected?: boolean;
@@ -463,26 +465,30 @@ export function installShutdownHandlers(node: ArtoodNode, host: ShutdownHost = p
   const launchId = options.launchId === undefined ? undefined : uuid(options.launchId, "worker launch ID");
   let stopping = false, removed = false, exited = false, work: Promise<void> | undefined;
   const errors: Error[] = [];
-  const remember = (cause: unknown): void => { const error = asError(cause); if (!errors.includes(error)) errors.push(error); };
+  const remember = (cause: unknown, phase: WindowsStopPhase): void => {
+    const error = asError(cause); if (!errors.includes(error)) errors.push(error);
+    host.stopDiagnostics?.record(phase, "failed", cause);
+  };
   const shutdown = (cause?: unknown): Promise<void> => {
-    if (cause !== undefined) remember(cause);
+    if (cause !== undefined) remember(cause, "node_failure");
     if (work) return work;
     stopping = true;
-    work = (async () => {
+    const stopWork = async () => {
       let clean = false;
-      try { await node.stop(); clean = true; } catch (error) { remember(error); }
+      try { await observeWindowsStopStage("node_stop", () => node.stop()); clean = true; } catch (error) { remember(error, "node_stop"); }
       await Promise.resolve(); // First-failure notification wins over simultaneous clean Stop.
       if (launchId) {
         if (clean) {
-          try { await sendOwnedIpc(host, { type: "worker.stopped", launchId }); } catch (error) { remember(error); }
+          try { await observeWindowsStopStage("ipc_stopped", () => sendOwnedIpc(host, { type: "worker.stopped", launchId })); } catch (error) { remember(error, "ipc_stopped"); }
         }
-        try { await disconnectOwnedIpc(host); } catch (error) { remember(error); }
+        try { await observeWindowsStopStage("ipc_disconnect", () => disconnectOwnedIpc(host)); } catch (error) { remember(error, "ipc_disconnect"); }
       } else if (clean && host.connected) {
-        try { host.disconnect?.(); } catch (error) { remember(error); }
+        try { host.disconnect?.(); } catch (error) { remember(error, "ipc_disconnect"); }
       }
       if (!exited) { exited = true; host.exit(errors.length ? 1 : 0); }
       if (errors.length) throw combinedFailure(errors);
-    })();
+    };
+    work = host.stopDiagnostics ? host.stopDiagnostics.run(stopWork) : stopWork();
     void work.catch(() => {});
     return work;
   };

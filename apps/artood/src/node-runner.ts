@@ -1,3 +1,4 @@
+import { observeWindowsStopStage, recordWindowsStopDiagnostic } from "./windows-stop-diagnostics.js";
 import type { NodeHeartbeat, NodeHello, RuntimeAdapter } from "@artoo/protocol";
 import { PRODUCT_DESIGN_REVISION_FEATURE_V1, SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1 } from "@artoo/domain";
 
@@ -156,16 +157,18 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
     rejectExecution?.(new Error("Source execution stopped before current-session registration completed"));
     shutdown = (async () => {
       const activeTransport = transport;
-      if (!activeTransport?.connected) await activeTransport?.close();
+      if (!activeTransport?.connected) await observeWindowsStopStage("transport_close", () => activeTransport?.close());
       const deadline = setTimeout(() => { void activeTransport?.close(); }, 8000);
       try {
         await client?.stop(true);
         // Failure or uncertain closure keeps the runtime owner and workspace claims.
-        source?.close();
+        recordWindowsStopDiagnostic("source_close", "entered");
+        try { source?.close(); recordWindowsStopDiagnostic("source_close", "completed"); }
+        catch (error) { recordWindowsStopDiagnostic("source_close", "failed", error); throw error; }
         source = undefined;
       } finally {
         clearTimeout(deadline);
-        await activeTransport?.close();
+        await observeWindowsStopStage("transport_close", () => activeTransport?.close());
         client = null; transport = null;
       }
     })();

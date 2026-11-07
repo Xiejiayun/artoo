@@ -118,7 +118,7 @@ async function command(input) {
       sessionId: config.sessionId, configurationDigest: hash('fixed-native-regression'), storeDirectory: config.store,
       workspaceRoot: config.workspace, topology: 'supervisor-plain-daemon.v1', controlDirectory: config.control,
       supervisorLaunchIdentityDigest: qualification.launchIdentityDigest }) + '\n');
-    guardian = await ready; return { ready: true };
+    guardian = await ready; return { ready: true, guardianPid: child.child.pid };
   }
   if (input.kind === 'activate') return relay({ kind: 'activate', epochId: guardian.epoch.epoch_id,
     sessionId: config.sessionId, registrationId: randomUUID(), registrationDigest: hash('regression-registration') });

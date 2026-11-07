@@ -1,3 +1,4 @@
+import { createWindowsStopDiagnostics, createWindowsStopDiagnosticWriter, WindowsStopDiagnosticSchema, type WindowsStopDiagnostic } from "./windows-stop-diagnostics.js";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -187,6 +188,7 @@ export class SupervisedLifecycle {
   private readonly exited = new Set<number>();
   private readonly text = new Map<number, { decoder: StringDecoder; pending: string }>();
   private readonly diagnosticCounts = new Map<number, number>();
+  private readonly stopDiagnosticCounts = new Map<number, number>();
   private terminal: unknown;
   private armed: { nonce: string; generation: number } | undefined;
   private armAcknowledged = false;
@@ -194,7 +196,8 @@ export class SupervisedLifecycle {
   generation = -1;
   ready = false;
   constructor(private readonly nonce: string, private readonly runtimeManifest: z.infer<typeof pinSchema>,
-    private readonly startupDiagnostic?: (generation: number, diagnostic: WindowsStartupDiagnostic) => void) { uuid.parse(nonce); pinSchema.parse(runtimeManifest); }
+    private readonly startupDiagnostic?: (generation: number, diagnostic: WindowsStartupDiagnostic) => void,
+    private readonly stopDiagnostic?: (generation: number, diagnostic: WindowsStopDiagnostic) => void) { uuid.parse(nonce); pinSchema.parse(runtimeManifest); }
   arm(nonce: string) {
     uuid.parse(nonce);
     if (this.armed || this.generation < 0 || this.exited.has(this.generation)) throw Error("No current live daemon can begin graceful stop");
@@ -258,6 +261,16 @@ export class SupervisedLifecycle {
           this.diagnosticCounts.set(facts.generation, count);
           // Diagnostics never acknowledge readiness, stop, process closure or an execution capability.
           this.startupDiagnostic?.(facts.generation, event.diagnostic); continue;
+        }
+        if (value && typeof value === "object" && "kind" in value && value.kind === "stop") {
+          const event = z.object({ version: z.literal(1), kind: z.literal("stop"), nonce: uuid,
+            pid: z.number().int().positive(), diagnostic: WindowsStopDiagnosticSchema }).strict().parse(value);
+          if (event.nonce !== this.nonce || event.pid !== this.generations.get(facts.generation)!.pid) throw Error("Daemon stop diagnostic binding changed");
+          const count = (this.stopDiagnosticCounts.get(facts.generation) ?? 0) + 1;
+          if (count > 64) throw Error("Daemon stop diagnostics exceeded their bound");
+          this.stopDiagnosticCounts.set(facts.generation, count);
+          // A completed cleanup stage cannot acknowledge successful requested settlement.
+          this.stopDiagnostic?.(facts.generation, event.diagnostic); continue;
         }
         const event = z.object({ version: z.literal(1), kind: z.enum(["ready", "stopped"]), nonce: uuid,
           pid: z.number().int().positive(), exitCode: z.number().int().min(0).max(1).optional() }).strict().parse(value);
@@ -359,6 +372,8 @@ export async function launchWindowsSupervisedCli(env: NodeJS.ProcessEnv, config:
     exitCode: null, closeCode: null, signal: null, closeSignal: null };
   const lifecycle = new SupervisedLifecycle(nonce, runtimeManifest, (generation, diagnostic) => {
     process.stderr.write(JSON.stringify({ kind: "artoo.supervised.startup", generation, diagnostic }) + "\n");
+  }, (generation, diagnostic) => {
+    process.stderr.write(JSON.stringify({ kind: "artoo.supervised.stop", generation, diagnostic }) + "\n");
   }), decoder = new StringDecoder("utf8");
   let pending = "", diagnosticBytes = 0, failure: Error | undefined, stopping = false;
   let startup: ReturnType<typeof setTimeout> | undefined, cleanup: ReturnType<typeof setTimeout> | undefined, emergency: ReturnType<typeof setTimeout> | undefined;
@@ -418,6 +433,10 @@ export async function runWindowsSupervisedDaemon(env: NodeJS.ProcessEnv, outer: 
     throw Error("Clean daemon lineage and original observer selection must be paired");
   const cleanControl = env.ARTOO_SOURCE_CLEAN_CONFIG_FILE === undefined ? undefined
     : installCleanDaemonControl(nonce, env.ARTOO_SOURCE_LIFECYCLE_OBSERVER_ID!);
+  const writeStopDiagnostic = createWindowsStopDiagnosticWriter(process.stdout, error => failed("daemon_notification", error));
+  const stopDiagnostics = createWindowsStopDiagnostics(diagnostic => {
+    writeStopDiagnostic(PREFIX + JSON.stringify({ version: 1, kind: "stop", nonce, pid: process.pid, diagnostic }) + "\n");
+  });
   let broken = false, exiting = false, pending = "", cleanBindingSettled = false;
   const decoder = new StringDecoder("utf8");
   const notify = (kind: "ready" | "stopped", exitCode?: number) => new Promise<void>((resolve, reject) => {
@@ -431,10 +450,15 @@ export async function runWindowsSupervisedDaemon(env: NodeJS.ProcessEnv, outer: 
     events.emit("message", { type: "shutdown" });
     if (!cleanBindingSettled) cleanControl?.invalidate(Error("Original clean parent binding cancelled by shutdown"));
   };
-  const failed = () => { broken = true; cleanControl?.invalidate(Error("Original controlled daemon pipe failed")); request(); };
-  const host: ShutdownHost = { argv: outer.argv, on: (event, listener) => events.on(event, listener), off: (event, listener) => events.off(event, listener),
+  const failed = (phase: "daemon_input" | "daemon_signal" | "daemon_notification", cause?: unknown) => {
+    stopDiagnostics.record(phase, "failed", cause);
+    broken = true; cleanControl?.invalidate(Error("Original controlled daemon pipe failed")); request();
+  };
+  const host: ShutdownHost = { stopDiagnostics, argv: outer.argv, on: (event, listener) => events.on(event, listener), off: (event, listener) => events.off(event, listener),
     exit(code) { if (exiting) return; exiting = true; cleanControl?.invalidate(Error("Original controlled daemon stopped")); const status = broken || code !== 0 ? 1 : 0;
-      void notify("stopped", status).then(() => outer.exit(status), () => outer.exit(1)); } };
+      void notify("stopped", status).then(() => outer.exit(status), error => {
+        stopDiagnostics.record("daemon_notification", "failed", error); outer.exit(1);
+      }); } };
   const input = (bytes: Buffer) => {
     try {
       pending += decoder.write(bytes); if (Buffer.byteLength(pending) > 4096) throw Error("Invalid controlled daemon input");
@@ -447,10 +471,10 @@ export async function runWindowsSupervisedDaemon(env: NodeJS.ProcessEnv, outer: 
         const command = z.object({ version: z.literal(1), kind: z.literal("shutdown"), nonce: uuid }).strict().parse(parsed);
         if (command.nonce !== nonce) throw Error("Controlled daemon input changed its launch binding"); request();
       }
-    } catch { failed(); }
+    } catch (error) { failed("daemon_input", error); }
   };
-  process.stdin.on("data", input); process.stdin.once("end", failed); process.stdin.on("error", failed);
-  outer.on("SIGINT", failed); outer.on("SIGTERM", failed);
+  process.stdin.on("data", input); process.stdin.once("end", () => failed("daemon_input")); process.stdin.on("error", error => failed("daemon_input", error));
+  outer.on("SIGINT", () => failed("daemon_signal")); outer.on("SIGTERM", () => failed("daemon_signal"));
   try { await withWindowsStartupDiagnostics(diagnostic => {
     process.stdout.write(PREFIX + JSON.stringify({ version: 1, kind: "startup", nonce, pid: process.pid, diagnostic }) + "\n");
   }, () => start(host, () => { if (broken || exiting) throw Error("Controlled daemon stopped before readiness"); return notify("ready"); })); }

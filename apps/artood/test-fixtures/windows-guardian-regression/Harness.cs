@@ -226,7 +226,7 @@ internal static class GuardianRegressionProgram
     }
 
     private static async Task<object[]> RunCases(DaemonSupervisorState state, HarnessConfiguration config) {
-        await Fixture.Call(config.DaemonPipe, new { kind = "bootstrap" });
+        var bootstrap = await Fixture.Call(config.DaemonPipe, new { kind = "bootstrap" });
         await Fixture.Call(config.DaemonPipe, new { kind = "activate" });
         await Fixture.Call(config.DaemonPipe, new { kind = "start-host" });
         object supervisorGate = Fixture.Field(state, "gate");
@@ -282,7 +282,125 @@ internal static class GuardianRegressionProgram
         await Fixture.Call(config.DaemonPipe, new { kind = "close-held-relay" });
         cases.Add(new { name = "original-owner-invalidated-after-snapshot", identityChange, request = rejected });
         cases.AddRange(await RunWireCases(supervisorGate, config));
+        cases.AddRange(await RunQualificationQueueCases(state, bootstrap.GetProperty("guardianPid").GetUInt32()));
         return cases.ToArray();
+    }
+
+    // Failure-only retention belongs to this controlled Supervisor process. If an
+    // original worker cannot settle, outer Job/process containment ends the fixture;
+    // disposing its peer/events early is never treated as cleanup.
+    private static readonly List<object> retainedQualificationFailures = [];
+    // Test the production admission method with a real guardian peer, original
+    // daemon HANDLEs and pinned runtime, behind the actual inspection gate.
+    private static async Task<object[]> RunQualificationQueueCases(DaemonSupervisorState state, uint guardianPid) {
+        GuardianProcess? peer = null, daemon = null;
+        var earlyEntered = new ManualResetEventSlim(false); var laterEntered = new ManualResetEventSlim(false);
+        var earlyDone = new ManualResetEventSlim(false); var laterDone = new ManualResetEventSlim(false);
+        GuardianRequestBudget? earlyBudget = null, laterBudget = null;
+        Exception? earlyError = null, laterError = null, failure = null;
+        SupervisorQualification? earlyResult = null, laterResult = null;
+        Thread? early = null, later = null;
+        bool earlyStarted = false, laterStarted = false, controlsCompleted = false;
+        Task? controlTask = null; object[]? results = null;
+        long earlyMilliseconds = 0, laterMilliseconds = 0;
+        try {
+            peer = new GuardianProcess(guardianPid); daemon = new GuardianProcess(peer.ParentPid);
+            Fixture.Require(peer.HasNativeMode("--guardian-v1") && !peer.Exited && !daemon.Exited, "Original live guardian peer required");
+            object inspectionGate = Fixture.Field(state, "qualificationGate");
+            using (var barrier = new GateBarrier(inspectionGate)) {
+                var earlyQuery = new SupervisorQuery(1, "qualify", Guid.NewGuid().ToString("D"), daemon.Pid,
+                    daemon.CreationTime.ToString(System.Globalization.CultureInfo.InvariantCulture), new(1, Environment.TickCount64 + 1200));
+                var originalEarlyBudget = new GuardianRequestBudget(5000, requestedDeadline: earlyQuery.Deadline);
+                earlyBudget = originalEarlyBudget; var originalPeer = peer; var earlyClock = Stopwatch.StartNew();
+                early = new Thread(() => {
+                    earlyEntered.Set();
+                    try { earlyResult = state.Qualify(originalPeer, earlyQuery, originalEarlyBudget); }
+                    catch (Exception error) { earlyError = error; }
+                    finally { earlyMilliseconds = earlyClock.ElapsedMilliseconds; earlyDone.Set(); }
+                }) { IsBackground = true, Name = "expired-real-supervisor-qualification" };
+                early.Start(); earlyStarted = true;
+                Fixture.Require(earlyEntered.Wait(1000), "Original early qualification worker did not start");
+                Fixture.Require(SpinWait.SpinUntil(() => earlyDone.IsSet
+                    || (early.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0, 1000),
+                    "The original qualification worker did not reach its held inspection gate");
+                Fixture.Require(!earlyDone.IsSet && barrier.IsHeld, "Qualification was not pending behind the actual gate");
+
+                var laterQuery = new SupervisorQuery(1, "qualify", Guid.NewGuid().ToString("D"), daemon.Pid,
+                    daemon.CreationTime.ToString(System.Globalization.CultureInfo.InvariantCulture), new(1, Environment.TickCount64 + 5000));
+                var originalLaterBudget = new GuardianRequestBudget(5000, requestedDeadline: laterQuery.Deadline);
+                laterBudget = originalLaterBudget; var laterClock = Stopwatch.StartNew();
+                later = new Thread(() => {
+                    laterEntered.Set();
+                    try { laterResult = state.Qualify(originalPeer, laterQuery, originalLaterBudget); }
+                    catch (Exception error) { laterError = error; }
+                    finally { laterMilliseconds = laterClock.ElapsedMilliseconds; laterDone.Set(); }
+                }) { IsBackground = true, Name = "surviving-real-supervisor-qualification" };
+                later.Start(); laterStarted = true;
+                Fixture.Require(laterEntered.Wait(1000), "Original later qualification worker did not start");
+                Fixture.Require(SpinWait.SpinUntil(() => laterDone.IsSet
+                    || (later.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0, 1000)
+                    && !laterDone.IsSet, "Second qualification was not actually queued");
+
+                // Actual state controls; exact stdin command/ACK acceptance remains separate.
+                controlTask = Task.Run(() => {
+                    Fixture.Require(!state.ObserveExit(), "Original fixture daemon exited before control check");
+                    state.ArmGracefulStop(state.Generation);
+                    controlsCompleted = state.GracefulStopArmed;
+                });
+                await controlTask.WaitAsync(TimeSpan.FromSeconds(1));
+                Fixture.Require(controlsCompleted && barrier.IsHeld && !earlyDone.IsSet,
+                    "Control completed only after queued qualification settled or the barrier released");
+                Fixture.Require(earlyDone.Wait(4000) && early.Join(1000), "Expired original worker did not actually finish");
+                Fixture.Require(barrier.IsHeld && !laterDone.IsSet, "Expiry was inferred only after the inspection gate opened");
+                Fixture.Require(earlyResult is null && (earlyError is OperationCanceledException or TimeoutException),
+                    "Original server admission did not reject by its deadline");
+            }
+            Fixture.Require(laterDone.Wait(6000) && later!.Join(1000), "Surviving original worker did not actually finish");
+            Fixture.Require(laterError is null && laterResult is not null
+                && laterResult.Daemon == SupervisorProtocol.Identity(daemon)
+                && laterResult.LifetimeOwnership?.RuntimeManifest is not null,
+                "Nonexpired queued request failed real full runtime/original-HANDLE requalification");
+            Fixture.Require(earlyResult is null, "Expired admission revived after the queue was released");
+            results = [
+                new { name = "supervisor-expired-qualification-leaves-real-queue", originalWorkerJoinedBeforeRelease = true,
+                    earlyMilliseconds, errorType = earlyError!.GetType().Name },
+                new { name = "supervisor-control-responsive-during-qualification-queue", controlsCompleted,
+                    scope = "production state control methods; not stdin command_ack acceptance" },
+                new { name = "supervisor-surviving-qualification-rechecks-original-runtime", laterMilliseconds,
+                    qualification = laterResult }
+            ];
+        } catch (Exception error) { failure = error; }
+
+        // Every original work item is observed independently after the barrier has
+        // released. WaitAsync timeout never settles or abandons its original Task.
+        var cleanupErrors = new List<Exception>();
+        bool JoinOriginal(Thread? worker, bool started, string name) {
+            if (!started) return true;
+            try {
+                if (worker!.Join(6000)) return true;
+                cleanupErrors.Add(new TimeoutException("Original " + name + " qualification worker remains live"));
+            } catch (Exception error) { cleanupErrors.Add(error); }
+            return false;
+        }
+        bool earlyClosed = JoinOriginal(early, earlyStarted, "early");
+        bool laterClosed = JoinOriginal(later, laterStarted, "later");
+        if (controlTask is not null) {
+            try { await controlTask.WaitAsync(TimeSpan.FromSeconds(6)); }
+            catch (Exception error) { cleanupErrors.Add(error); }
+        }
+        bool controlClosed = controlTask is null || controlTask.IsCompleted;
+        if (earlyClosed && laterClosed && controlClosed) {
+            foreach (IDisposable? resource in new IDisposable?[] { earlyBudget, laterBudget, earlyEntered, laterEntered,
+                earlyDone, laterDone, daemon, peer }) {
+                try { resource?.Dispose(); } catch (Exception error) { cleanupErrors.Add(error); }
+            }
+        } else {
+            retainedQualificationFailures.AddRange(new object?[] { peer, daemon, earlyBudget, laterBudget,
+                earlyEntered, laterEntered, earlyDone, laterDone, early, later, controlTask }.OfType<object>());
+        }
+        if (failure is not null) cleanupErrors.Insert(0, failure);
+        if (cleanupErrors.Count > 0) throw new AggregateException("Supervisor qualification fixture failed; original evidence retained", cleanupErrors);
+        return results ?? throw new InvalidOperationException("Supervisor qualification fixture produced no result");
     }
 
     // Validate the actual raw helper's outcome, not the server rejection itself.
@@ -386,7 +504,17 @@ internal static class GuardianRegressionProgram
             "artoo-regression-guardian-" + token, "Local\\artoo-regression-target-" + token,
             Path.Combine(output, "workspace"), Path.Combine(output, "store"), Path.Combine(output, "control"), self);
         Directory.CreateDirectory(config.Workspace); Directory.CreateDirectory(config.Store); Directory.CreateDirectory(config.Control);
-        string configurationPath = Path.Combine(output, "fixture.json"), worker = Path.Combine(AppContext.BaseDirectory, "daemon.mjs");
+        string configurationPath = Path.Combine(output, "fixture.json"), runtime = Path.Combine(output, "runtime");
+        Directory.CreateDirectory(runtime);
+        string worker = Path.Combine(runtime, "daemon.mjs"), payload = Path.Combine(runtime, "fixture-runtime.txt");
+        File.Copy(Path.Combine(AppContext.BaseDirectory, "daemon.mjs"), worker);
+        File.WriteAllText(payload, new string('x', 65537), new UTF8Encoding(false));
+        var members = new[] { worker, payload }.Select(path => {
+            var pin = Fixture.Pin(path); return new { path = Path.GetFileName(path), size = pin.Bytes, sha256 = pin.Sha256 };
+        }).ToArray();
+        string runtimeManifest = Path.Combine(runtime, "bundle-manifest.json");
+        File.WriteAllText(runtimeManifest, GuardianWire.Encode(new { format = "artoo.desktop-daemon.v1",
+            tree = new { files = members, directories = Array.Empty<string>() } }), new UTF8Encoding(false));
         File.WriteAllText(configurationPath, GuardianWire.Encode(config), new UTF8Encoding(false));
         using var target = new EventWaitHandle(false, EventResetMode.ManualReset, config.TargetEvent, out bool created);
         Fixture.Require(created, "Fixture target event already exists");
@@ -395,7 +523,7 @@ internal static class GuardianRegressionProgram
         start.ArgumentList.Add("--daemon-supervisor-v1"); start.Environment.Clear();
         foreach (var pair in Fixture.EnvironmentBlock()) start.Environment[pair.Key] = pair.Value;
         var launch = new SupervisorLaunch(1, "launch", Fixture.Pin(node), Fixture.Pin(worker), Fixture.Pin(configurationPath), output,
-            [configurationPath], Fixture.EnvironmentBlock(), 0, 0, 60000, 2 * 1024 * 1024, new(1, 10000, 5000));
+            [configurationPath], Fixture.EnvironmentBlock(), 0, 0, 60000, 2 * 1024 * 1024, new(1, 10000, 5000), Fixture.Pin(runtimeManifest));
         using var child = Process.Start(start) ?? throw new InvalidOperationException("Supervisor did not start");
         try {
         // Process owns the original HANDLE; retain it before any PID can be reused.
@@ -414,7 +542,7 @@ internal static class GuardianRegressionProgram
             originalHandleWaitObserved = true, stdoutEof = true, stderrEof = true, exitCode = child.ExitCode }, result = results[0] };
         File.WriteAllText(Path.Combine(output, "result.json"), GuardianWire.Encode(report), new UTF8Encoding(false));
         Fixture.Require(child.ExitCode == 0 && results[0].GetProperty("passed").GetBoolean(), "Native regression failed; inspect result.json");
-        Fixture.Require(results[0].GetProperty("cases").GetArrayLength() == 9, "Three causal and six wire cases are required");
+        Fixture.Require(results[0].GetProperty("cases").GetArrayLength() == 12, "Three causal, six wire and three Supervisor qualification cases are required");
         Fixture.AssertClosure(results[0].GetProperty("originalSupervisorClosure"));
         Console.WriteLine(GuardianWire.Encode(new { passed = true, result = Path.Combine(output, "result.json") })); return 0;
         } catch (Exception failure) {
