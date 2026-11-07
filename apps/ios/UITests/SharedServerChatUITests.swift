@@ -1085,9 +1085,46 @@ final class SharedServerChatUITests: XCTestCase {
         try require(field.waitForExistence(timeout: 10), "Required text field must exist")
         try reveal(field)
         try require(field.isEnabled && field.isHittable, "The exact native input must be editable")
+        let target = diagnosticInputIdentifier(field.identifier)
+        let doneIdentifier: String
+        switch target {
+        case "serverURL", "pairingCode", "pairingDeviceName": doneIdentifier = "pairing.keyboard.done"
+        case "messageComposer": doneIdentifier = "conversation.keyboard.done"
+        case "task.create.title", "task.create.criteria", "task.create.capabilities": doneIdentifier = "task.create.keyboard.done"
+        default: doneIdentifier = "task.detail.keyboard.done"
+        }
+        func observe(_ phase: String) -> [String: Any] {
+            let started = ProcessInfo.processInfo.systemUptime
+            var observation: [String: Any] = ["phase": phase, "started_uptime": started]
+            do {
+                // One snapshot, projected through the existing fixed identifiers,
+                // geometry and focus flags. Never retain input values or AX errors.
+                let measured = keyboardAbsenceSnapshot(try app.snapshot(), doneIdentifier: doneIdentifier)
+                observation["snapshot"] = measured.diagnostic
+                observation["outcome"] = measured.keyboardCount == nil ? "incomplete_snapshot" : "observed"
+            } catch { observation["outcome"] = "snapshot_error" }
+            observation["ended_uptime"] = ProcessInfo.processInfo.systemUptime
+            return observation
+        }
+        let beforeTap = observe("before_tap"), tapStarted = ProcessInfo.processInfo.systemUptime
         field.tap()
+        let tapReturned = ProcessInfo.processInfo.systemUptime
         let keyboard = app.keyboards.firstMatch
-        try require(keyboard.waitForExistence(timeout: 10), "The native keyboard must appear before typing")
+        let keyboardAppeared = keyboard.waitForExistence(timeout: 10)
+        let waitEnded = ProcessInfo.processInfo.systemUptime
+        if !keyboardAppeared {
+            // Observe after the original waiter has decided. Diagnostic queries
+            // must not delay its start, extend its ten seconds or change its result.
+            let afterWait = observe("after_keyboard_wait")
+            retainKeyboardAbsenceDiagnostic([
+                "target_identifier": target, "done_identifier": doneIdentifier, "tap_calls": 1,
+                "tap_started_uptime": tapStarted, "tap_returned_uptime": tapReturned,
+                "tap_seconds": tapReturned - tapStarted, "timeout_seconds": 10,
+                "wait_ended_uptime": waitEnded, "wait_seconds": waitEnded - tapReturned,
+                "observation_count": 2, "observations": [beforeTap, afterWait],
+            ], name: "Native input tap failure observations")
+        }
+        try require(keyboardAppeared, "The native keyboard must appear before typing")
         if let current = field.value as? String, !current.isEmpty, current != field.placeholderValue {
             if field.identifier == "pairingDeviceName" {
                 try require(field.elementType == .textField && current.count <= 128
@@ -1174,10 +1211,19 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func keyboardAbsenceSnapshot(_ root: XCUIElementSnapshot, doneIdentifier: String)
-        -> (keyboardCount: Int?, diagnostic: [String: Any]) {
+    private func diagnosticInputIdentifier(_ identifier: String) -> String {
         let fixedInputIDs: Set<String> = ["serverURL", "pairingCode", "pairingDeviceName", "messageComposer",
                                           "task.create.title", "task.create.criteria", "task.create.capabilities"]
+        if fixedInputIDs.contains(identifier) { return identifier }
+        if identifier.hasPrefix("task.review.comment.") { return "task.review.comment" }
+        if identifier.hasPrefix("task.approval.summary.") { return "task.approval.summary" }
+        if identifier.hasPrefix("task.approval.risk.") { return "task.approval.risk" }
+        return "other_input"
+    }
+
+    @MainActor
+    private func keyboardAbsenceSnapshot(_ root: XCUIElementSnapshot, doneIdentifier: String)
+        -> (keyboardCount: Int?, diagnostic: [String: Any]) {
         func number(_ value: CGFloat) -> Any { value.isFinite ? Double(value) as Any : NSNull() }
         var pending: [XCUIElementSnapshot] = [root], visited = 0, keyboards = 0, doneCount = 0, elementCount = 0
         var elements: [[String: Any]] = []
@@ -1188,11 +1234,7 @@ final class SharedServerChatUITests: XCTestCase {
             if node.elementType == .keyboard { keyboards += 1; fixedID = "keyboard" }
             else if node.elementType == .button && node.identifier == doneIdentifier { doneCount += 1; fixedID = doneIdentifier }
             else if node.elementType == .textField || node.elementType == .secureTextField || node.elementType == .textView {
-                if fixedInputIDs.contains(node.identifier) { fixedID = node.identifier }
-                else if node.identifier.hasPrefix("task.review.comment.") { fixedID = "task.review.comment" }
-                else if node.identifier.hasPrefix("task.approval.summary.") { fixedID = "task.approval.summary" }
-                else if node.identifier.hasPrefix("task.approval.risk.") { fixedID = "task.approval.risk" }
-                else { fixedID = "other_input" }
+                fixedID = diagnosticInputIdentifier(node.identifier)
             }
             if let fixedID {
                 elementCount += 1
@@ -1214,7 +1256,7 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func retainKeyboardAbsenceDiagnostic(_ diagnostic: [String: Any]) {
+    private func retainKeyboardAbsenceDiagnostic(_ diagnostic: [String: Any], name: String = "Native keyboard absence observations") {
         var bounded = diagnostic
         let text: String
         do {
@@ -1228,7 +1270,7 @@ final class SharedServerChatUITests: XCTestCase {
             text = data.count <= 32_768 ? String(decoding: data, as: UTF8.self) : "{\"diagnostic_limit_exceeded\":true}"
         } catch { text = "{\"diagnostic_encoding_failed\":true}" }
         let attachment = XCTAttachment(string: text)
-        attachment.name = "Native keyboard absence observations"
+        attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
     }
