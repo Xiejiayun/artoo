@@ -163,8 +163,11 @@ export function verifyBundledModules(directory, version) {
     }).catch(error => { console.error(error); process.exitCode = 1; });
   `;
   const env = { ...process.env }; for (const key of Object.keys(env)) if (key.startsWith("ARTOO_")) delete env[key];
+  // Every probe input resolves from the absolute bundle path. Its parent avoids
+  // Windows' process current-directory length limit for long staging names.
   const result = spawnSync(process.execPath, ["--input-type=commonjs", "-e", probe, directory, version],
-    { cwd: directory, env, encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true });
+    { cwd: process.platform === "win32" ? dirname(directory) : directory,
+      env, encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true });
   if (result.error || result.signal || result.status !== 0 || result.stdout.trim() !== "packaged-runtime-ok") {
     throw new Error(`Daemon bundle runtime resolution failed: ${(result.error?.message ?? result.stderr).slice(0, 2000)}`);
   }
@@ -182,6 +185,52 @@ function priorDefaultOutput(directory, defaultDirectory) {
     fail("existing daemon directory contains unknown files; preserve it and choose a new output directory");
   }
   return tree;
+}
+
+// Windows can briefly deny a directory commit while another process has a
+// member open without delete sharing. Only the commit's EPERM is retryable.
+// This same boundary is exported for the real Windows filesystem regression.
+export async function publishStagingDirectory(staging, output, expectedTree) {
+  if (process.platform !== "win32") { renameSync(staging, output); return; }
+  const original = lstatSync(staging, { bigint: true });
+  const identity = () => {
+    const current = lstatSync(staging, { bigint: true });
+    if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== original.dev || current.ino !== original.ino) {
+      fail("staging directory identity changed before publish");
+    }
+    physicalDirectory(staging);
+  };
+  const missingOutput = () => {
+    try { lstatSync(output); }
+    catch (error) { if (error.code === "ENOENT") return; throw error; }
+    fail("output appeared before publish retry");
+  };
+  identity();
+  let attempts = 1; const failures = [];
+  try { renameSync(staging, output); return; }
+  catch (error) { if (error.code !== "EPERM") throw error; failures.push(error); }
+  // One monotonic deadline for the entire retry period, never renewed per attempt.
+  const deadline = performance.now() + 2000;
+  const rejected = () => new AggregateError(failures,
+    `Windows bundle publish rename failed after ${attempts} attempt(s); initial ${failures[0].code}: ${failures[0].message}; last: ${failures.at(-1).message}`, { cause: failures[0] });
+  for (const delay of [50, 100, 200, 400]) {
+    try {
+      if (performance.now() + delay >= deadline) fail("Windows publish retry deadline expired");
+      await new Promise(resolve => setTimeout(resolve, delay));
+      if (performance.now() >= deadline) fail("Windows publish retry deadline expired");
+      identity(); missingOutput();
+      if (!equal(snapshot(staging), expectedTree)) fail("staging contents changed before publish retry");
+      identity(); missingOutput();
+      if (performance.now() >= deadline) fail("Windows publish retry deadline expired");
+    } catch (error) { failures.push(error); throw rejected(); }
+    attempts += 1;
+    try { renameSync(staging, output); return; }
+    catch (error) {
+      failures.push(error);
+      if (error.code !== "EPERM") throw rejected();
+    }
+  }
+  throw rejected();
 }
 
 /** Construct a fresh, complete bundle before replacing the recognized default build output. */
@@ -234,9 +283,21 @@ export async function buildDaemon({ repoRoot = fileURLToPath(new URL("../../..",
     writeFileSync(join(stagingDirectory, MANIFEST), manifestBytes, { flag: "wx" });
     if (prior ? !existsSync(outputDirectory) || !equal(snapshot(outputDirectory), prior) : existsSync(outputDirectory)) fail("output changed during build");
     if (prior) { backupDirectory = join(parent, `.${name}.previous-${randomUUID()}`); renameSync(outputDirectory, backupDirectory); }
-    try { renameSync(stagingDirectory, outputDirectory); }
+    try {
+      await publishStagingDirectory(stagingDirectory, outputDirectory, {
+        directories: manifest.tree.directories,
+        files: [...manifest.tree.files, { path: MANIFEST, size: manifestBytes.length, sha256: sha(manifestBytes) }]
+          .sort((a, b) => a.path.localeCompare(b.path)),
+      });
+    }
     catch (error) {
-      if (backupDirectory && !existsSync(outputDirectory)) renameSync(backupDirectory, outputDirectory);
+      if (backupDirectory && !existsSync(outputDirectory)) {
+        try { renameSync(backupDirectory, outputDirectory); }
+        catch (rollbackError) {
+          throw new AggregateError([error, rollbackError],
+            `Daemon bundle publish and rollback failed: ${error.message}; rollback: ${rollbackError.message}`, { cause: error });
+        }
+      }
       throw error;
     }
     return { outputDirectory, ...(backupDirectory ? { backupDirectory } : {}), manifestSha256: sha(manifestBytes), playwrightVersion: playwright.version };
