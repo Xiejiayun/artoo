@@ -16,6 +16,7 @@ export function read(file) {
 }
 const same = (actual, expected, message) => assert.ok(isDeepStrictEqual(actual, expected), message);
 const captures = new WeakMap();
+const reopenCaptures = new WeakMap();
 function freeze(value) {
   if (value && typeof value === 'object') { for (const child of Object.values(value)) freeze(child); Object.freeze(value); }
   return value;
@@ -225,4 +226,171 @@ export async function recheck(inputs) {
   check(original.configuration); physical(original.parent, true);
   same(installation(original.installation), original.installed, 'Installed runtime changed during this session');
   check(original.configuration);
+}
+
+// Reopening consumes retained local evidence only. It never opens the old
+// database, submits a goal, reads a provider credential or repairs a journal.
+export function validateStoppedProductRecords(result, published, binding, sessionRoot) {
+  assert.ok(result?.version === 1 && result.scope === 'windows-local-single-goal', 'Unsupported original daily result');
+  assert.ok(result.status === 'stopped-after-publication' && result.product_published === true
+    && result.shutdown_confirmed === true && result.server_closed === true && result.inputs_unchanged === true
+    && Array.isArray(result.errors) && result.errors.length === 0, 'Only a successfully published, normally closed daily product can reopen');
+  same(result.shutdown_control, { version: 1, mode: 'stdin', commands: 1, complete: true },
+    'This daily result has no confirmed original stdin shutdown');
+  assert.ok(result.publisher_ownership, 'This older daily result has no shared publisher ownership evidence');
+  const ownership = result.publisher_ownership;
+  exact(ownership, ['version', 'session_root', 'mode', 'owner_id', 'acquired_at', 'released_at', 'lock_removed']);
+  assert.ok(ownership.version === 1 && ownership.session_root === sessionRoot && ownership.mode === 'daily'
+    && typeof ownership.owner_id === 'string' && ownership.owner_id.length > 0 && ownership.lock_removed === true
+    && Number.isFinite(Date.parse(ownership.acquired_at)) && Number.isFinite(Date.parse(ownership.released_at))
+    && Date.parse(ownership.acquired_at) <= Date.parse(ownership.released_at), 'Original publisher ownership was not normally released');
+  assert.equal(result.output, sessionRoot, 'Original daily result belongs to another session');
+  assert.ok(typeof result.goal_id === 'string' && result.goal_id.length > 0, 'Missing original goal identity');
+  assert.ok(['browser', 'console'].includes(result.submission_owner)
+    && result.goal_posts === (result.submission_owner === 'browser' ? 0 : 1)
+    && result.logical_goals_created === 1, 'Original request identity is incomplete');
+  assert.ok(Number.isFinite(Date.parse(result.stop_requested_at)) && Number.isFinite(Date.parse(result.finished_at))
+    && Date.parse(result.stop_requested_at) <= Date.parse(result.finished_at), 'Original stop timing is incomplete');
+  assert.ok(published?.version === 1 && published.retained === true && published.session_root === sessionRoot
+    && published.goal_id === result.goal_id, 'Published record belongs to another product');
+  same(published.publication, result.publication, 'Published identity differs from the original final result');
+  const publication = result.publication;
+  for (const key of ['release_id', 'run_id', 'evidence_id'])
+    assert.ok(typeof publication?.[key] === 'string' && publication[key].length > 0 && publication[key].length <= 256,
+      'Incomplete publication identity');
+  assert.match(publication.artifact_digest, /^sha256:[a-f0-9]{64}$/u, 'Invalid immutable product digest');
+  for (const key of ['request_sha256', 'receipt_sha256']) assert.match(publication[key], /^[a-f0-9]{64}$/u, 'Invalid publication record digest');
+  assert.ok(publication.request && typeof publication.request === 'object' && !Array.isArray(publication.request)
+    && publication.receipt && typeof publication.receipt === 'object' && !Array.isArray(publication.receipt),
+    'This product has no retained immutable publication request and receipt');
+  assert.equal(sha(JSON.stringify(publication.request)), publication.request_sha256, 'Original publication request changed');
+  assert.equal(sha(JSON.stringify(publication.receipt)), publication.receipt_sha256, 'Original publication receipt changed');
+  assert.ok(publication.request.release_id === publication.release_id && publication.request.run_id === publication.run_id
+    && publication.request.goal_id === result.goal_id && publication.request.subject_digest === publication.artifact_digest
+    && publication.receipt.outcome === 'published' && publication.receipt.endpoint === publication.url
+    && publication.receipt.artifact_digest === publication.artifact_digest, 'Original publication fields disagree');
+  same(publication.receipt.request, publication.request, 'Original receipt does not bind the same request');
+  const url = new URL(publication.url);
+  assert.ok(url.protocol === 'http:' && url.hostname === '127.0.0.1' && url.port && url.origin === publication.url
+    && url.pathname === '/' && !url.search && !url.hash && !url.username && !url.password,
+    'Reopening requires the exact original loopback origin');
+  if (result.last_publication_observation) {
+    for (const key of ['release_id', 'run_id', 'evidence_id', 'artifact_digest', 'url', 'request_sha256', 'receipt_sha256'])
+      assert.equal(result.last_publication_observation[key], publication[key], 'Last publication observation changed product identity');
+  }
+  assert.ok(binding?.version === 1 && Array.isArray(binding.nodes) && Array.isArray(binding.files), 'Missing original configuration binding');
+  assert.ok(Array.isArray(result.nodes) && result.nodes.length === 2 && binding.nodes.length === 2, 'Expected both original nodes');
+  same(result.nodes.map(node => node.role).sort(), ['destination', 'source'], 'Unexpected original node roles');
+  same(binding.nodes.map(node => node.role).sort(), ['destination', 'source'], 'Unexpected configured node roles');
+  for (const node of result.nodes) {
+    const configured = binding.nodes.find(item => item.role === node.role), cli = node.cli;
+    assert.ok(node.registry_disconnected === true && node.discovery?.started === true && node.discovery.stopped === true
+      && node.discovery.registry_disconnected === true, 'An original node has no confirmed disconnect');
+    same(node.identity, configured.identity, 'Original node identity changed');
+    same(node.registration, configured.registration, 'Original node registration changed');
+    assert.equal(cli?.pid, configured.cli?.pid, 'Original CLI identity changed');
+    assert.ok(Number.isSafeInteger(cli.pid) && cli.pid > 0 && cli.spawned === true && cli.shutdown_written === true
+      && cli.forced_root_kill === false && cli.stdout_eof === true && cli.stderr_eof === true,
+      'An original CLI has incomplete process closure');
+    for (const event of [cli.exit, cli.close]) same(event, { code: 0, signal: null }, 'Original CLI did not close normally');
+    same(cli.stopped, { kind: 'artoo.supervised.stopped', cleanupConfirmed: true }, 'Original CLI cleanup was not confirmed');
+    same(cli.ready, configured.cli.ready, 'Original CLI readiness identity changed');
+    assert.ok(node.identity?.project_id === 'proj_artoo' && typeof node.identity.computer_id === 'string'
+      && node.identity.computer_id.length > 0 && typeof node.identity.device_id === 'string'
+      && node.identity.device_id.length > 0, 'Missing original destination identity');
+    assert.equal(node.identity.workspace, path.join(sessionRoot, node.role, 'workspace'), 'Original workspace is outside its session');
+    // Two absent values can compare equal; require the actual readiness and
+    // registration observations as well as equality with the live binding.
+    same(cli.ready, { kind: 'artoo.supervised.ready', generation: 0, node_id: node.identity.computer_id },
+      'Original CLI readiness was not confirmed');
+    const registration = node.registration;
+    assert.ok(registration && typeof registration === 'object' && !Array.isArray(registration)
+      && ['id', 'session_id', 'epoch_id'].every(key => typeof registration[key] === 'string' && registration[key].length > 0)
+      && registration.computer_id === node.identity.computer_id && registration.device_id === node.identity.device_id
+      && registration.generation === 0 && registration.workspace === node.identity.workspace,
+      'Original node registration was not confirmed');
+  }
+  assert.notEqual(result.nodes[0].identity.computer_id, result.nodes[1].identity.computer_id, 'Original nodes must be distinct');
+  return result.nodes.find(node => node.role === 'destination');
+}
+
+function productSessionPath(selected) {
+  assert.ok(typeof selected === 'string' && path.isAbsolute(selected), 'Choose an absolute product session or retained record path');
+  const candidate = path.resolve(selected), stat = fs.lstatSync(candidate);
+  if (stat.isDirectory()) return physical(candidate, true);
+  physical(candidate);
+  assert.ok(['RESULT.json', 'PUBLISHED.json'].includes(path.basename(candidate)), 'Choose the original RESULT.json, PUBLISHED.json or session directory');
+  return physical(path.dirname(candidate), true);
+}
+
+export async function captureReopen({ product_path, configuration_file }) {
+  assert.equal(process.platform, 'win32'); assert.equal(process.arch, 'x64');
+  const sessionRoot = productSessionPath(product_path);
+  const record = name => {
+    const pin = reference(path.join(sessionRoot, name));
+    assert.ok(pin.bytes <= 8 * 1024 * 1024, 'Retained product record exceeds its limit');
+    return { pin, value: read(pin.path) };
+  };
+  const original = record('RESULT.json'), published = record('PUBLISHED.json'), binding = record('CONFIG-BINDING.json');
+  const destination = validateStoppedProductRecords(original.value, published.value, binding.value, sessionRoot);
+  const configurationPin = check(original.value.configuration);
+  if (configuration_file !== undefined) assert.equal(physical(path.resolve(configuration_file)), configurationPin.path,
+    'Use the original product installation configuration');
+  const local = configuration(configurationPin.path), installed = installation(local.value.installation);
+  same(local.pin, configurationPin, 'Original product configuration changed');
+  same(installed.installation_manifest, original.value.installation_manifest, 'Original product installation changed');
+  const parent = local.value.runtime.private_parent;
+  assert.ok(path.dirname(sessionRoot) === parent && path.basename(sessionRoot).startsWith('session-'),
+    'The selected product must be an original session in its installed private parent');
+  const protectedRoots = [toolsRoot, installed.bundle, installed.server.root, ...installed.dependencies.packages.map(item => item.directory),
+    ...(installed.web ? [installed.web.root] : [])];
+  assert.ok(protectedRoots.every(root => !inside(root, parent)), 'Product observations must be outside installation code');
+  same(binding.value.programs, installed.programs, 'Original executable bindings changed');
+  const bundle = physical(path.join(sessionRoot, 'bundle'), true), bundleTree = tree(bundle);
+  same(bundleTree, installed.bundle_tree, 'Retained private bundle differs from its installation');
+  const bundleManifest = check(binding.value.bundle_manifest), nativeManifest = check(binding.value.native_manifest);
+  assert.equal(bundleManifest.path, path.join(bundle, 'bundle-manifest.json'), 'Unexpected private bundle manifest');
+  assert.equal(nativeManifest.path, path.join(bundle, 'native', 'windows-process', 'manifest.json'), 'Unexpected native manifest');
+  assert.equal(bundleManifest.sha256, installed.bundle_manifest.sha256, 'Private bundle manifest differs');
+  const expectedFiles = ['source', 'destination'].flatMap(role => ['browser.json', 'verifiers.json', 'releases.json', 'discovered-capabilities.json', 'source.json']
+    .map(name => path.join(sessionRoot, role, 'config', name))).sort();
+  same(binding.value.files.map(pin => pin.path).sort(), expectedFiles, 'Original configuration file set differs');
+  for (const pin of binding.value.files) check(pin);
+  const verificationProfilesFile = path.join(sessionRoot, 'destination', 'config', 'verifiers.json');
+  const releaseProfilesFile = path.join(sessionRoot, 'destination', 'config', 'releases.json');
+  const verifier = read(verificationProfilesFile), releases = read(releaseProfilesFile);
+  assert.ok(Array.isArray(verifier) && verifier.length === 1 && Array.isArray(releases) && releases.length === 1,
+    'Expected the original single verifier and publisher profiles');
+  const workspace = physical(destination.identity.workspace, true), storage = physical(path.join(sessionRoot, 'destination', 'release'), true);
+  assert.ok(verifier[0].id === 'native-web' && verifier[0].project_id === destination.identity.project_id
+    && verifier[0].workspace_root === workspace, 'Original verifier identity changed');
+  const release = releases[0];
+  assert.ok(release.id === 'native-publish' && release.project_id === destination.identity.project_id
+    && release.verification_profile_id === verifier[0].id && release.storage_root === storage
+    && release.public_url === original.value.publication.url && release.listen_host === '127.0.0.1'
+    && release.listen_port === Number(new URL(original.value.publication.url).port), 'Original publisher origin or storage changed');
+  const output = path.join(parent, 'reopen-' + new Date().toISOString().replaceAll(/[-:.]/gu, '') + '-' + randomUUID());
+  assert.equal(fs.existsSync(output), false, 'A reopen observation directory must be fresh');
+  const records = [original.pin, published.pin, binding.pin];
+  for (const pin of records) check(pin);
+  const inputs = freeze({ version: 1, session_root: sessionRoot, output, configuration: local.pin,
+    installation_manifest: installed.installation_manifest, original_result: original.pin, published_record: published.pin,
+    config_binding: binding.pin, bundle, bundle_manifest: bundleManifest, native_manifest: nativeManifest,
+    verification_profiles_file: verificationProfilesFile, release_profiles_file: releaseProfilesFile,
+    release_profile_id: release.id, workspace, storage_root: storage, publication: original.value.publication,
+    original_ownership: original.value.publisher_ownership,
+    windows_process_installation: { directory: path.dirname(nativeManifest.path), manifestSha256: 'sha256:' + nativeManifest.sha256,
+      writableWorkspaceRoots: [workspace] } });
+  reopenCaptures.set(inputs, { local: local.pin, installed, records, configFiles: binding.value.files, bundleTree, parent });
+  return inputs;
+}
+
+export async function recheckReopen(inputs) {
+  const captured = reopenCaptures.get(inputs); assert.ok(captured, 'Expected the original reopen capture');
+  for (const pin of [captured.local, ...captured.records, ...captured.configFiles]) check(pin);
+  physical(captured.parent, true);
+  same(installation(captured.installed.installation_manifest), captured.installed, 'Original installation changed while reopening');
+  same(tree(inputs.bundle), captured.bundleTree, 'Retained private bundle changed while reopening');
+  // Release health journals may change under the exclusively held publisher.
+  // The backend verifies immutable release request/receipt/artifact identities.
 }

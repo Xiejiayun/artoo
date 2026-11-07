@@ -54,14 +54,32 @@ API key 仅来自启动进程环境或现有 Aerial 本地文件，经 `ARTOO_CO
 
 每次调用使用 fresh session 目录并保留数据库、workspace、来源与恢复信息、验证证据、发布存储及最终结果；不删除成功或失败历史。`goal_posts` 记录 launcher 实际发送次数（Console 为 1，Browser 为 0），`logical_goals_created` 记录实际数据库核对的一项需求。浏览器网络重试次数不能冒充多个逻辑需求，也不能用 launcher POST=0 声称页面已经提交。
 
-当前范围为同一物理电脑的两个独立节点、静态 Web 产品和临时 loopback 发布。任意远程电脑/agent 自动接入、后端或数据库产品、旧 session 安全恢复、签名安装与公网生产发布仍需各自实现和验收。
+## 重新打开已完成的本机产品
+
+新版入口成功发布并从原 stdin 正常停止后，输出中的 `open_product` 是可选择的原 session 路径。重新使用产品时运行：
+
+```powershell
+& .\scripts\windows-local-request\Start-ArtooDaily.ps1 -OpenProduct '<原 session 的绝对路径>'
+```
+
+也可选择该目录中的 `RESULT.json` 或 `PUBLISHED.json`。入口自动校验并使用原安装配置，不再次询问需求，不读取 Aerial 密钥，不启动模型、agents 或原数据库。`-OpenProduct` 与 `-Objective`、`-ObjectiveFile`、`-BrowserInput` 互斥。重开后访问输出的原产品 URL；地址与端口保持不变，因此浏览器仍使用原 origin。若原端口已被占用，会明确失败，不自动改地址。
+
+保留原控制台，停止时仍向同一 stdin 发送一次 `{"version":1,"kind":"shutdown"}` 并换行。`local-product.ready` 表示既有发布器已启动且 HTTP 身份检查通过；`local-product.stopped` 与新观察目录中的 `RESULT.json` 记录本次真实关闭。每次重开写新的 `reopen-*` 观察目录，原目标、审核、制品和发布证据保留。
+
+重开沿用原受保护发布配置授权的健康监控和撤回策略。这些监控动作可能更新健康 journal 与 `current.json`。若原选定版本被撤回或当前版本发生变化，本次重开必须记为失败并保留变化前后的证据；不能将监控动作视为保持原产品身份的成功证明。重开不会启动旧 goal、agents、source-recovery 或 clean 工作流。
+
+原 daily 与重开入口在任何发布器初始化前共享同一独占锁。原两个节点、Server 与输入校验全部正常结束后才释放；重开也仅在发布器明确关闭和输入复核通过后释放。并发运行或异常遗留的锁会拒绝启动，不按 PID 猜测删除。旧版本缺少共享锁释放记录、原 stdin 关闭记录或完整发布 request/receipt 的 session 不支持重开；有 recovery/clean publisher fence 的记录也保留原拒绝规则。这不是旧任务恢复、crash 恢复、后台服务或公网托管。
+
+当前范围为同一物理电脑的两个独立节点、静态 Web 产品和前台 loopback 发布。任意远程电脑/agent 自动接入、后端或数据库产品、旧任务安全恢复、签名安装与公网生产发布仍需各自实现和验收。
 
 ## 维护者检查
 
 入口和 Web/server 必须在同一版本集成；不能把仅实现 `-BrowserInput` 参数的启动器配给旧 Console 草案。先运行项目规定检查以及：
 
 ```powershell
-node --test scripts/windows-local-request/launcher.test.mjs scripts/windows-local-request/entry-preflight.test.mjs
+node --test scripts/windows-local-request/launcher.test.mjs scripts/windows-local-request/entry-preflight.test.mjs scripts/windows-local-request/reopen-inputs.test.mjs
 ```
 
 启动器套件使用真实 PowerShell/Node 与明确标注的假 entry，只验证参数、环境、stdin 和退出行为。预检套件使用真实 entry 和明确不存在的配置，验证输入模式在应用启动前被正确处理。随后仍需通过实际交付入口提交一次非固定产品需求，验证真实模型、native、独立审核、HTTP 发布、保持及原 stdin 关闭。结果应明确区分这些证据范围。
+
+重开元数据测试拒绝不完整关闭、错配记录和变更的发布身份；它不替代发布器的实际 HTTP/端口/独占/停止测试。交付前还须用同一最终安装完成真实产品“正常停止 → 重开原 URL → 操作产品 → 原 stdin 停止”的验收，不能以源码、fixture 或一次 HTTP 可访问宣称完成。
