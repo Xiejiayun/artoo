@@ -1346,8 +1346,18 @@ describe("imported design continuation (controlled DB/protocol evidence, no nati
       acceptance: { version: 1, scope: "node-http-point-in-time", binding_digest: releaseAcceptanceBindingDigest(publication.acceptance_binding!), settled_criteria: publication.acceptance_binding!.criteria } });
     return { ...f, originalAutomation: a, author, review, capabilities, release, publication, receipt, create };
   }
-  it("H8 automatically retries an original closed H7 publication failure without rerunning its accepted author", async () => {
-    const f = await prepareH7Publication(), support = f.actor.supportsExecutionFeature;
+  it("H8 automatically retries an original closed H7 publication failure without rerunning its accepted author", async context => {
+    type Phase = "prepare-publication" | "ingest-original-failure" | "retry-pump-and-stop" | "retry-dispatch-binding"
+      | "publication-binding" | "ingest-retry-success" | "replay-original-failure" | "final-pump-and-stop" | "recorded-completion";
+    const started = performance.now(), phases: { phase: Phase; started_ms: number; ended_ms?: number }[] = [];
+    const timed = async <T>(phase: Phase, operation: () => Promise<T>): Promise<T> => {
+      const span: (typeof phases)[number] = { phase, started_ms: performance.now() - started };
+      phases.push(span);
+      try { return await operation(); } finally { span.ended_ms = performance.now() - started; }
+    };
+    // Keep body-relative spans when fixture cleanup drains work after a timeout; report only fixed labels and timings.
+    context.onTestFailed(() => { console.error("H8 publication retry phase timings", JSON.stringify(phases)); });
+    const f = await timed("prepare-publication", prepareH7Publication), support = f.actor.supportsExecutionFeature;
     f.actor.supportsExecutionFeature = (computer, feature) => feature === PRODUCT_RELEASE_RETRY_FEATURE_V1
       ? computer === f.author.computerId : support?.(computer, feature) === true;
     const session = f.actor.getPairedNodeSession!(f.author.computerId)!;
@@ -1356,10 +1366,10 @@ describe("imported design continuation (controlled DB/protocol evidence, no nati
       reason: "Controlled H8 original listener closure", retry_source: { version: 1, source_id: "controlled-H8-H7-source",
         closure: "local-release-settled.v1", recovery: { kind: "listener-closed", active_release_id: null, active_artifact_digest: null } } });
     const originalRuns = await fixture().server.db.db.select().from(runs), [beforeGoal] = await fixture().server.db.db.select().from(goals).where(eq(goals.id, f.author.goalId));
-    await ingestProductReleaseReceipt(f.actor, f.author.computerId, failed, () => true, session);
+    await timed("ingest-original-failure", () => ingestProductReleaseReceipt(f.actor, f.author.computerId, failed, () => true, session));
     expect(await fixture().server.db.db.select().from(productReleaseRetrySources)).toHaveLength(1);
     const errors: unknown[] = [], dispatcher = createGoalAutomationDispatcher(f.actor, async () => {}, error => { errors.push(error); });
-    await dispatcher.pump(); await dispatcher.stop(); expect(errors).toEqual([]);
+    await timed("retry-pump-and-stop", async () => { await dispatcher.pump(); await dispatcher.stop(); }); expect(errors).toEqual([]);
     const releases = await fixture().server.db.db.select().from(productReleases).where(eq(productReleases.goalId, f.author.goalId));
     expect(releases).toHaveLength(2);
     const next = releases.find(item => item.publicationGeneration === 1)!;
@@ -1370,16 +1380,16 @@ describe("imported design continuation (controlled DB/protocol evidence, no nati
     expect(next.runId).toBe(f.release.runId); expect(next.evidenceId).toBe(f.release.evidenceId);
     expect(await fixture().server.db.db.select().from(runs)).toEqual(originalRuns);
     expect(await fixture().server.db.db.select().from(goalImportedValidationPublications)).toHaveLength(2);
-    await fixture().server.db.transaction(tx => assertProductReleaseRetryDispatch(f.actor, tx, next, session));
-    await fixture().server.db.transaction(tx => inspectImportedValidationPublicationDispatch(f.actor, tx, next));
+    await timed("retry-dispatch-binding", () => fixture().server.db.transaction(tx => assertProductReleaseRetryDispatch(f.actor, tx, next, session)));
+    await timed("publication-binding", () => fixture().server.db.transaction(tx => inspectImportedValidationPublicationDispatch(f.actor, tx, next)));
     const retryReceipt = ProductReleaseReceiptSchema.parse({ ...f.receipt, request });
-    await ingestProductReleaseReceipt(f.actor, f.author.computerId, retryReceipt, () => true, session);
+    await timed("ingest-retry-success", () => ingestProductReleaseReceipt(f.actor, f.author.computerId, retryReceipt, () => true, session));
     // An old receipt replay resolves its exact historical H7 publication relation.
-    await ingestProductReleaseReceipt(f.actor, f.author.computerId, failed, () => true, session);
+    await timed("replay-original-failure", () => ingestProductReleaseReceipt(f.actor, f.author.computerId, failed, () => true, session));
     const finalErrors: unknown[] = [], finalDispatcher = createGoalAutomationDispatcher(f.actor, async () => {}, error => { finalErrors.push(error); });
-    await finalDispatcher.pump(); await finalDispatcher.stop(); expect(finalErrors).toEqual([]);
+    await timed("final-pump-and-stop", async () => { await finalDispatcher.pump(); await finalDispatcher.stop(); }); expect(finalErrors).toEqual([]);
     expect((await fixture().server.db.db.select().from(goals).where(eq(goals.id, f.author.goalId)))[0]!.status).toBe("completed");
-    await fixture().server.db.transaction(tx => assertRecordedGoalReleaseCompletion(f.actor, tx, f.originalAutomation));
+    await timed("recorded-completion", () => fixture().server.db.transaction(tx => assertRecordedGoalReleaseCompletion(f.actor, tx, f.originalAutomation)));
     expect((await fixture().server.db.db.select().from(productReleases).where(eq(productReleases.id, f.release.id)))[0]!.receipt).toEqual(failed);
     expect((await f.automation()).computerId).toBe(f.originalAutomation.computerId);
   });
