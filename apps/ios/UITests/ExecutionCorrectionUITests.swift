@@ -553,9 +553,63 @@ final class ExecutionCorrectionUITests: XCTestCase {
     }
 
     @MainActor
+    private func focusPairingCode(_ input: XCUIElement) throws {
+        let started = ProcessInfo.processInfo.systemUptime, deadline = started + 10
+        let matches = app.textFields.matching(identifier: "pairingCode")
+        try require(input.identifier == "pairingCode" && input.elementType == .textField && matches.count == 1,
+                    "Focus preparation must target the unique native pairing-code text field")
+        guard let originalValue = input.value as? String else {
+            throw correctionError("The pairing-code input must expose its existing native value before focus preparation")
+        }
+        var taps = 0, observations = 0, lastFocus = false, lastKeyboard = false, accepted = false
+        defer {
+            let attachment = XCTAttachment(string:
+                "field=pairingCode; taps=\(taps); observations=\(observations); ui_focus=\(lastFocus); " +
+                "keyboard_visible=\(lastKeyboard); accepted=\(accepted); elapsed_seconds=\(ProcessInfo.processInfo.systemUptime - started)")
+            attachment.name = "Native pairing-code UI focus"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        func focusedInTime() -> Bool {
+            guard ProcessInfo.processInfo.systemUptime <= deadline else { return false }
+            observations += 1
+            lastFocus = input.hasFocus
+            lastKeyboard = app.keyboards.firstMatch.exists
+            let unchanged = input.value as? String == originalValue
+            return lastFocus && lastKeyboard && unchanged && app.state == .runningForeground
+                && ProcessInfo.processInfo.systemUptime <= deadline
+        }
+        for _ in 0..<2 {
+            try require(ProcessInfo.processInfo.systemUptime < deadline, "Pairing-code focus preparation exceeded its ten-second deadline")
+            try requireForeground("focusing the pairing-code input")
+            try require(matches.count == 1 && input.isEnabled && input.isHittable
+                        && input.value as? String == originalValue,
+                        "A focus tap requires the same unique editable pairing-code field with its value unchanged")
+            if focusedInTime() { accepted = true; return }
+            // Read the real target again before a bounded retry. If focus arrived
+            // before its keyboard, skip the tap and keep observing within the same budget.
+            if !input.hasFocus {
+                try require(ProcessInfo.processInfo.systemUptime < deadline,
+                            "Retry focus only while the exact pairing-code field is still unfocused within the original deadline")
+                taps += 1
+                input.tap()
+            }
+            let focused = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in focusedInTime() }, object: input)
+            let remaining = max(0, deadline - ProcessInfo.processInfo.systemUptime)
+            if XCTWaiter.wait(for: [focused], timeout: min(3, remaining)) == .completed && focusedInTime() {
+                accepted = true; return
+            }
+        }
+        // Never repeat typing or accept a focus observation completed after the deadline.
+        try require(focusedInTime(), "The exact pairing-code field must gain UI focus before its original typing operation")
+        accepted = true
+    }
+
+    @MainActor
     private func replace(_ input: XCUIElement, _ text: String, identifier: String, preferTop: Bool = false) throws {
         try reveal(input, identifier: identifier, preferTop: preferTop); try require(input.isEnabled && input.isHittable, "The exact input must be editable through the native UI")
-        input.tap()
+        if identifier == "pairingCode" { try focusPairingCode(input) }
+        else { input.tap() }
         if input.value as? String == text { return }
         if !empty(input) {
             if identifier == "pairingDeviceName" {
@@ -579,6 +633,10 @@ final class ExecutionCorrectionUITests: XCTestCase {
             let clearedInput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@ OR value == %@", "", input.placeholderValue ?? ""), object: input)
             try require(XCTWaiter.wait(for: [clearedInput], timeout: 45) == .completed, "The existing native Delete action must finish clearing the input")
             try require(empty(input), "Deleting the selection must clear the entire native input")
+        }
+        if identifier == "pairingCode" {
+            try require(app.keyboards.firstMatch.exists && input.hasFocus,
+                        "The exact pairing-code field must retain UI focus for its original typing operation")
         }
         input.typeText(text)
         // Queued native key events can outlive typeText's return. Observe the
