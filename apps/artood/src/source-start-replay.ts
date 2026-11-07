@@ -8,7 +8,7 @@ export interface SourceStartScope { readonly runtime: object; readonly session: 
 interface Attempt {
   readonly key: string; readonly ownerId: string; readonly runId: string; readonly scope: SourceStartScope;
   readonly ready: Promise<void>; resolve?: () => void; outcome?: SourceStartOutcome;
-  delivery?: "sent" | "failed"; stopped: boolean; waiters: number;
+  delivery?: "sent" | "failed"; workSettled: boolean; stopped: boolean; waiters: number;
 }
 declare const sourceStartTicket: unique symbol;
 export interface SourceStartTicket { readonly [sourceStartTicket]: true }
@@ -59,7 +59,7 @@ export function createSourceStartReplay() {
       if (owners.size >= 4096) throw Error("Source startup command identity capacity reached; original bindings are retained");
       let resolve!: () => void;
       const attempt: Attempt = { key, ownerId: command.id, runId, scope: Object.freeze({ ...scope }),
-        ready: new Promise<void>(done => { resolve = done; }), resolve: () => resolve(), stopped: false, waiters: 0 };
+        ready: new Promise<void>(done => { resolve = done; }), resolve: () => resolve(), workSettled: false, stopped: false, waiters: 0 };
       attempts.set(runId, attempt); owners.set(command.id, attempt);
       freeze(command);
       return { fresh: true, ticket: ticketFor(attempt), command };
@@ -69,15 +69,17 @@ export function createSourceStartReplay() {
       return operation.run(attempt, async () => {
         try { return await work(); }
         finally {
-          if (!attempt.outcome) attempt.outcome = rejected("Original source startup returned without a confirmed startup outcome; ownership remains unknown");
-          if (!attempt.delivery) attempt.delivery = "failed";
+          // Ending startup does not establish an outcome or prove that an ACK send failed.
+          // Only the original ACK observation and actual send completion record those facts.
+          attempt.workSettled = true;
           wake(attempt);
         }
       });
     },
     observeAck(commandId: string, value: SourceStartOutcome): ObservedAck | undefined {
       const attempt = operation.getStore();
-      if (!attempt || attempt.ownerId !== commandId || attempt.outcome) return undefined;
+      // Detached descendants retain async context, but cannot supply a first outcome after startup ended.
+      if (!attempt || attempt.ownerId !== commandId || attempt.outcome || attempt.workSettled) return undefined;
       // Bound retained diagnostics; the original and replay ACK use the same explicitly truncated text.
       const outcome: SourceStartOutcome = value.status === "accepted" ? Object.freeze({ status: "accepted" })
         : Object.freeze({ ...value, message: value.message.length <= 8192 ? value.message : value.message.slice(0, 8150) + "\n[Startup diagnostic truncated]" });
@@ -98,8 +100,10 @@ export function createSourceStartReplay() {
           const scope = readScope();
           if (!scope || !current(attempt, scope) || !safe()) return unavailable();
         } catch { return unavailable(); }
-        if (attempt.delivery !== "sent") return rejected("Original source startup ACK delivery failed; original execution ownership is retained");
-        return attempt.outcome ?? rejected("Original source startup outcome remains unknown");
+        if (attempt.delivery === "failed") return rejected("Original source startup ACK delivery failed; original execution ownership is retained");
+        if (!attempt.outcome) return rejected("Original source startup outcome remains unknown; original execution ownership is retained");
+        if (attempt.delivery !== "sent") return rejected("Original source startup ACK delivery remains unconfirmed; original execution ownership is retained");
+        return attempt.outcome;
       } finally { attempt.waiters--; }
     },
     isStopped(runId: string): boolean { return stopped || stoppedRuns.has(runId) || attempts.get(runId)?.stopped === true; },

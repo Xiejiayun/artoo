@@ -39,6 +39,7 @@ import {
 } from "./process-adapter.js";
 import { snapshotGitOptions, type GitReadOptions } from "./owned/git-operations.js";
 import { OwnedGitError } from "./owned/owned-git.js";
+import { readWindowsNativeFailure } from "./owned/windows-process-diagnostic.js";
 import { prepareVerificationProfiles, selectVerificationProfile, readVerificationCapabilities, readWindowsVerificationBackend, assertVerificationWorkspaceBoundary, runVerification, runVerificationPreview, VerificationCleanupError,
   type VerificationProfile, type PreparedVerificationProfile } from "./verification.js";
 import { createProductReleaseExecutor, prepareReleaseProfiles, type ReleaseProfile } from "./product-release.js";
@@ -1708,9 +1709,20 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       operation_id: message.payload.review_id, request_digest: importedValidationReviewRequestDigestV1(message.payload, sha) };
     else if (message.type === "product.release" || message.type === "product.release.cancel") operation = { kind: "release",
       operation_id: message.payload.release_id, request_digest: sha(canonicalProductSourceTransferValueV1(message.payload)) };
-    const runtime = sourceRecovery.readRuntime();
-    return withWindowsSourceRecoveryOperation(runtime, { operationId: operation?.operation_id ?? message.id,
-      bindingDigest: operation?.request_digest ?? sha(canonicalProductSourceTransferValueV1(message)), serverOperation: operation }, () => dispatchActive(message));
+    let dispatched = false;
+    try {
+      const runtime = sourceRecovery.readRuntime();
+      // Return the promise without awaiting it: only synchronous admission errors
+      // before dispatch belong to this rejection, never a later ACK delivery failure.
+      return withWindowsSourceRecoveryOperation(runtime, { operationId: operation?.operation_id ?? message.id,
+        bindingDigest: operation?.request_digest ?? sha(canonicalProductSourceTransferValueV1(message)), serverOperation: operation }, () => {
+        dispatched = true;
+        return dispatchActive(message);
+      });
+    } catch (error) {
+      if (dispatched || message.type !== "run.start") throw error;
+      return ackRejected(message.id, "process_start_failed", errorMessage(error));
+    }
   }
 
   async function dispatchActive(message: ServerToNodeMessage): Promise<void> {
@@ -1973,7 +1985,14 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
 }
 
 function errorMessage(err: unknown): string {
-  return err instanceof Error && err.message.length > 0 ? err.message : "process start failed";
+  const message = err instanceof Error && err.message.length > 0 ? err.message : "process start failed";
+  const native = readWindowsNativeFailure(err);
+  if (!native) return message;
+  // The local tag already projects a bounded allowlist. Preserve its exact
+  // code/detail pair, never the raw cause, and keep the suffix inside replay's bound.
+  const suffix = `\n[windows_native_failure.v1 ${JSON.stringify({ version: 1, ...native })}]`;
+  const available = 8192 - suffix.length, truncated = "\n[Startup diagnostic truncated]";
+  return (message.length <= available ? message : message.slice(0, available - truncated.length) + truncated) + suffix;
 }
 
 /** Same canonical legacy payload identity as journal.admitStart, detached before I/O. */
