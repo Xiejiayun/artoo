@@ -1,4 +1,5 @@
 import { computers } from "@artoo/db";
+import { parseDeviceToken, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1 } from "@artoo/domain";
 import { randomUUID } from "node:crypto";
 import type { NodeHello, NodeToServerMessage, NodeTransport } from "@artoo/protocol";
 import { and, eq } from "drizzle-orm";
@@ -17,7 +18,7 @@ import type { DeviceConnectionRegistry } from "./device-connections.js";
 import { createServerNodeTransport, type RawServerSocket } from "./ws-node-transport.js";
 
 /** Authenticated identity of a `/api/v1/node` connection (#28 slice 3a). */
-type NodeAuth = { mode: "dev" } | { mode: "device"; deviceId: string; computerId: string };
+type NodeAuth = { mode: "dev" } | { mode: "device"; deviceId: string; computerId: string; tokenLookup: string };
 
 /**
  * Authenticate a node connection's `?token=`. Returns:
@@ -45,7 +46,9 @@ async function authenticateNodeToken(
   if (resolved === null || resolved.computerId === null) {
     return null;
   }
-  return { mode: "device", deviceId: resolved.deviceId, computerId: resolved.computerId };
+  const parsed = parseDeviceToken(token);
+  if (!parsed) return null;
+  return { mode: "device", deviceId: resolved.deviceId, computerId: resolved.computerId, tokenLookup: parsed.lookup };
 }
 
 /**
@@ -71,14 +74,17 @@ function helloComputerId(auth: NodeAuth, helloNodeId: string): string | null {
 export function registerNodeWsRoute(
   app: FastifyInstance, ctx: ServerContext, registry: NodeRegistry,
   deviceConnections?: DeviceConnectionRegistry, graceWindow?: GraceWindowManager,
+  artifactDir?: string,
 ): void {
   const disconnectSnapshots = new Map<string, Promise<string[]>>();
   app.get("/api/v1/node", { websocket: true }, (socket: unknown, req: FastifyRequest) => {
     const raw = socket as RawServerSocket;
     const token = (req.query as { token?: string }).token;
     const transport = createServerNodeTransport(raw);
+    // Server-owned per-connection identity also fences ordinary paired nodes.
+    const connectionId = randomUUID();
     let binding: NodeBinding | undefined, nodeId: string | undefined, auth: NodeAuth | undefined;
-    let terminated = false, registered = false, managedRequested = false;
+    let terminated = false, registered = false, managedRequested = false, qualifiedReceiptsReady = false;
     let releaseDeviceConn: (() => void) | undefined;
     let initializationTimer: ReturnType<typeof setTimeout> | undefined;
     let initializationDeadline: number | undefined;
@@ -102,6 +108,7 @@ export function registerNodeWsRoute(
       }
       registered = true; clearTimeout(initializationTimer);
       registry.register(nodeId, binding);
+      if (qualifiedReceiptsReady) void binding.announceSourceRecoverySession?.().catch(() => close(1008, "recovery session announcement failed"));
       void setComputerOnline(ctx, nodeId);
       if (auth.mode === "device") void recordDeviceActivity(ctx, auth.deviceId, "node").catch(() => {});
       const resumeSnapshot = graceWindow?.disarm(nodeId) ?? [];
@@ -118,12 +125,21 @@ export function registerNodeWsRoute(
         }
       })().catch(() => {});
     }
-    function attach(features: readonly string[] | undefined, gated: boolean): void {
+    function attach(message: NodeHello, gated: boolean): void {
       const privateTransport: NodeTransport = gated ? {
         send: (message) => transport.send(message), close: () => transport.close(),
         subscribe: (handler) => transport.subscribe((message) => {
           if (terminated) return;
-          if (message.kind !== "run.event" && message.kind !== "command.ack") return;
+          if (message.kind !== "run.event" && message.kind !== "command.ack" && message.kind !== "product.release.receipt" && message.kind !== "product.release.health"
+            && message.kind !== "product.source.review.ack.v1" && message.kind !== "product.source.review.result.v1"
+            && message.kind !== "product.source.operation.ack.v1" && message.kind !== "product.source.operation.result.v1"
+            && message.kind !== "product.source.design.ack.v1" && message.kind !== "product.source.design.result.v1"
+            && message.kind !== "product.source.design-review.ack.v1" && message.kind !== "product.source.design-review.result.v1"
+            && message.kind !== "product.source.execution.ack.v1" && message.kind !== "product.source.execution.result.v1"
+            && message.kind !== "product.source.recovery.register.v1" && message.kind !== "product.source.recovery.available.v1"
+            && message.kind !== "product.source.recovery.ack.v1" && message.kind !== "product.source.recovery.result.v1"
+            && message.kind !== "product.source.recovery-validation.ack.v1" && message.kind !== "product.source.recovery-validation.result.v1"
+            && message.kind !== "product.source.recovery-validation-review.ack.v1" && message.kind !== "product.source.recovery-validation-review.result.v1") return;
           if (!registered || !managed?.active || registry.get(nodeId!) !== binding) {
             close(1008, "managed application frame before current session activation"); return;
           }
@@ -131,8 +147,15 @@ export function registerNodeWsRoute(
         }),
       } : transport;
       const computerId = nodeId!;
-      binding = attachNodeBinding(ctx, privateTransport, computerId, features,
-        () => !terminated && registered && registry.get(computerId) === binding && (!gated || managed?.active === true));
+      binding = attachNodeBinding(ctx, privateTransport, computerId, message.execution_features,
+        () => !terminated && registered && registry.get(computerId) === binding && (!gated || managed?.active === true),
+        message.verification_profiles, message.release_profiles, message.owned_result_profiles,
+        () => gated && !terminated && registered && managed?.active === true && registry.get(computerId) === binding, message.machine.os,
+        auth?.mode === "device" && artifactDir ? {
+          identity: { deviceId: auth.deviceId, computerId: auth.computerId, tokenLookup: auth.tokenLookup }, sessionId: managed?.id ?? connectionId, artifactDir,
+          qualifiedRunEventReceiptsReady: () => qualifiedReceiptsReady && raw.readyState === 1 && !terminated && registered
+            && registry.get(computerId) === binding && (!gated || managed?.active === true),
+        } : undefined, message.product_source_routing);
     }
     async function initializeManaged(message: NodeHello): Promise<void> {
       const request = message.managed_receipts!;
@@ -145,14 +168,26 @@ export function registerNodeWsRoute(
         if (raw.readyState !== 1 || initializationDeadline === undefined || performance.now() >= initializationDeadline) {
           close(1008, "managed session closed or initialization expired"); return;
         }
+        qualifiedReceiptsReady = true;
         managed = { id: randomUUID(), nonce: request.nonce, active: false, firstPongPending: false };
-        attach(message.execution_features, true);
+        attach(message, true);
         await transport.send({ kind: "command", id: `session:${managed.id}`, idempotency_key: `session:${managed.id}`,
           type: "node.session.ready", payload: { version: 1, node_id: nodeId!, hello_nonce: managed.nonce,
             session_id: managed.id, receipt_contract: QUALIFIED_RECEIPT_PROFILE, sequence_max: 2147483647,
             liveness: { probe_interval_ms: 10000, probe_timeout_ms: 10000 } } });
         // Registration deliberately waits for the first authenticated probe/pong.
       } catch { close(1008, "managed receipt session initialization failed"); }
+    }
+    async function initializeOrdinaryImportedDesignReceipts(): Promise<void> {
+      // H3's ordinary Windows transport waits for committed run.event ACKs.
+      // Validate the server schema independently from managed-workspace negotiation.
+      const candidate = binding;
+      try {
+        await requireQualifiedReceiptSchema(ctx);
+        if (terminated || raw.readyState !== 1 || !registered || binding !== candidate || registry.get(nodeId!) !== candidate) return;
+        qualifiedReceiptsReady = true;
+        await candidate?.announceSourceRecoverySession?.();
+      } catch { close(1008, "imported design receipt schema unavailable"); }
     }
     const handleMessage = (message: NodeToServerMessage): void => {
       const currentAuth = auth;
@@ -165,7 +200,13 @@ export function registerNodeWsRoute(
         nodeId = computerId;
         managedRequested = message.managed_receipts !== undefined;
         if (managedRequested) { armManagedInitialization(); void initializeManaged(message); }
-        else { attach(message.execution_features, false); activate(); }
+        else {
+          attach(message, false); activate();
+          if (currentAuth.mode === "device" && artifactDir && message.execution_features?.some(feature => [IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
+            PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1].includes(feature))) {
+            void initializeOrdinaryImportedDesignReceipts();
+          }
+        }
         return;
       }
       if (message.kind === "node.session.probe") {
@@ -216,7 +257,9 @@ export function registerNodeWsRoute(
         handleMessage(queued);
         // Only legacy replay may precede async auth completion. Managed peers
         // have no business-frame authority until ready plus the first pong.
-        if (!managedRequested && (queued.kind === "run.event" || queued.kind === "command.ack")) binding?.receive(queued);
+        if (!managedRequested && (queued.kind === "run.event" || queued.kind === "command.ack" || queued.kind === "product.release.receipt" || queued.kind === "product.release.health"
+          || queued.kind === "product.source.review.ack.v1" || queued.kind === "product.source.review.result.v1"
+          || queued.kind === "product.source.operation.ack.v1" || queued.kind === "product.source.operation.result.v1")) binding?.receive(queued);
       }
       earlyQueue.length = 0;
     })();
@@ -269,3 +312,4 @@ async function updatePresence(
     // best-effort presence; ignore (e.g. db shutting down on disconnect)
   }
 }
+import { PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1 } from "@artoo/domain";

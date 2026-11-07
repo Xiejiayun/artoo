@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
+    <PublishTrimmed>false</PublishTrimmed>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <StartupObject>GuardianRegressionProgram</StartupObject>
+    <AssemblyName>Artoo.WindowsGuardianRegression</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Compile the actual implementation; do not copy its state machine. -->
+    <Compile Include="../../native/windows-process-host/Program.cs" Link="Production/Program.cs" />
+    <Compile Include="../../native/windows-process-host/Guardian.cs" Link="Production/Guardian.cs" />
+    <Compile Include="../../native/windows-process-host/Supervisor.cs" Link="Production/Supervisor.cs" />
+    <Compile Include="../../native/windows-process-host/NativeFailureDiagnostic.cs" Link="Production/NativeFailureDiagnostic.cs" />
+    <Compile Include="Harness.cs" />
+    <Compile Include="GuardianProbe.cs" />
+    <Content Include="daemon.mjs" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+  </ItemGroup>
+</Project>

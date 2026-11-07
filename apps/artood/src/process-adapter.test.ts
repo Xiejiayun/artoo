@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, relative } from "node:path";
@@ -9,6 +10,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { assertRealWorkspaceScope, createProcessAdapter } from "./process-adapter.js";
 import { buildRegistry, loadConfigFromEnv } from "./main.js";
+import { productDevelopmentContext, CONFIGURED_STATIC_PUBLICATION_CLAIM, CONFIGURED_STATIC_PUBLICATION_STATEMENT,
+  CONFIGURED_STATIC_PUBLICATION_STATEMENT_DIGEST, type ReleaseCapabilitiesV1 } from "@artoo/domain";
+import { bindWorkspaceToolVerifier, bindWorkspaceToolEvidenceReader, bindWorkspaceToolCapabilities, bindWorkspaceToolReleaseCapabilities } from "./workspace-tools.js";
+import { prepareStaticWebCapabilities } from "./web-acceptance.js";
 
 const fixture = fileURLToPath(new URL("../test-fixtures/mock-agent.mjs", import.meta.url));
 const structuredFixture = fileURLToPath(new URL("../test-fixtures/structured-agent.mjs", import.meta.url));
@@ -65,6 +70,204 @@ function isOutput(e: RunEvent): e is Extract<RunEvent, { type: "run.output" }> {
 const cmd = [process.execPath, fixture, "--workspace", "{{workspace_root}}", "--context", "{{context_pack_path}}"];
 
 describe("createProcessAdapter", () => {
+  it.each([false, true])("preserves every bound context field across compact UTF-8 MCP pages (peer=%s)", async (peer) => {
+    const ws = realpathSync.native(makeWorkspace()), config = makeConfig(ws), payload = config.runStart.context_pack.payload!;
+    const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
+    const prepared = prepareStaticWebCapabilities({ viewports: [1280, 768, 390, 320] });
+    const capabilities = { version: 1 as const, profile_id: "profile", profile_digest: sha("profile"),
+      checks: [{ command_id: "browser", config_digest: prepared.config_digest, contract_digest: prepared.contract_digest, contract: prepared.contract }] };
+    const release: ReleaseCapabilitiesV1 = { version: 1, binding: { version: 1, release_profile_id: "release", release_profile_digest: sha("release"),
+      contract_digest: sha("release-contract"), project_id: "proj_1", workspace_root: ws,
+      verification_profile_id: capabilities.profile_id, verification_profile_digest: capabilities.profile_digest },
+      contract: { version: 1, kind: "configured-static-release", claim: "configured", execution_phase: "after-stage-acceptance",
+        endpoint_scope: "configured-origin", measurement_scope: "node-http-point-in-time", lifecycle: "while-configured-node-service-running",
+        health_checks: [{ path: "/", expected_status: 200, body: "immutable-artifact-equality", identity: "release-id-and-artifact-digest-headers" }],
+        criterion: { id: CONFIGURED_STATIC_PUBLICATION_CLAIM, statement: CONFIGURED_STATIC_PUBLICATION_STATEMENT, statement_digest: CONFIGURED_STATIC_PUBLICATION_STATEMENT_DIGEST } } };
+    payload.verification_capabilities = capabilities; payload.release_capabilities = release;
+    payload.goal_context = { version: 1, goal_id: "goal_1", objective: "完整需求🌱", acceptance_criteria: ["保留所有条件"],
+      plan: { id: "plan_1", version: 3, rationale: "Accepted plan", spec_ref: null } };
+    payload.memory = { task_summary: "摘要\n含引号\"与路径\\", project_notes: ["多字节🌱é".repeat(2200), "末尾必读🌱"] };
+    payload.dependency_context = { version: 1, truncated: false, entries: [{ task_id: "research_task", title: "Accepted research", dependency_type: "requires",
+      status: "accepted", acceptance_criteria: ["原始要求"], run_id: "research_run", workspace_root: ws, artifacts_truncated: false,
+      artifacts: [{ id: "research_artifact", type: "report", run_id: "research_run", checksum: sha("research"), content_path: "/artifacts/research/content" }] }] };
+    const verify = vi.fn(async () => { throw new Error("This transport fixture does not verify a product"); });
+    const readEvidence = vi.fn(async () => { throw new Error("This transport fixture does not read evidence"); });
+    if (peer) {
+      config.runStart.context_pack.uri = "artoo://context/ctx_1";
+      payload.policy = { execution_mode: "discussion", filesystem_write_scope: [], requires_approval: [] };
+      payload.review_subject = { version: 1, task_id: "author_task", run_id: "author_run", evidence_id: "final_evidence", subject_digest: sha("source"),
+        development_stage: "design", verification: { version: 1, request_id: "final_request", profile_id: capabilities.profile_id,
+          profile_digest: capabilities.profile_digest, checks: [{ id: "browser", output_digest: sha("actual output") }] } };
+      bindWorkspaceToolEvidenceReader(config, readEvidence);
+    } else {
+      const accepted = '{"fixture":"接受的研究🌱"}';
+      mkdirSync(join(ws, ".artoo", "product"), { recursive: true }); writeFileSync(join(ws, ".artoo", "product", "research.json"), accepted);
+      payload.product_development = { ...productDevelopmentContext("design", capabilities), accepted_inputs: { version: 1, files: [{
+        path: ".artoo/product/research.json", checksum: sha(accepted), size: Buffer.byteLength(accepted),
+        source_task_id: "research_task", source_run_id: "research_run", evidence_id: "research_evidence" }] } };
+      bindWorkspaceToolVerifier(config, verify);
+    }
+    bindWorkspaceToolCapabilities(config, () => capabilities); bindWorkspaceToolReleaseCapabilities(config, () => release);
+    const original = structuredClone(payload);
+    const script = `const fs=require('node:fs'),assert=require('node:assert/strict');
+      const path=JSON.parse(process.argv[1]),c=JSON.parse(fs.readFileSync(path,'utf8'));
+      (async()=>{const pages=[];let offset=0,checksum;
+        for(let i=0;i<100;i++){
+          const r=await fetch(c.url,{method:'POST',headers:{authorization:'Bearer '+c.token,'content-type':'application/json'},
+            body:JSON.stringify({tool:'context',offset,limit:4096,...(checksum?{expected_checksum:checksum}:{})})});
+          assert.equal(r.status,200);const page=await r.json();pages.push(page);checksum??=page.checksum;
+          if(page.eof)break;offset=page.next_offset;
+        }
+        assert.equal(pages.at(-1).eof,true);
+        console.log(JSON.stringify({pages,fileText:fs.readFileSync(process.argv[2],'utf8'),filePath:process.argv[2],configPath:path,tools:c.tools}));
+        process.exitCode=7;
+      })().catch(error=>{console.error(error);process.exitCode=1;});`;
+    const command = [process.execPath, "-e", script, "{{workspace_tools_config_json}}", "{{context_pack_path}}"];
+    const adapter = createProcessAdapter({ command: [process.execPath, "-e", "process.exit(51)"],
+      discussionCommand: [process.execPath, "-e", "process.exit(52)"], productCommand: command, reviewCommand: command, allowedRoots: [ws], artifacts: [] });
+    try {
+      const events = await drain(adapter.streamEvents(await adapter.start(config)));
+      const output = JSON.parse(events.filter(isOutput).filter(event => event.payload.stream === "stdout").map(event => event.payload.text).join(""));
+      const pages = output.pages as Array<{ version: number; format: string; content: string; checksum: string; size: number;
+        offset: number; next_offset: number | null; eof: boolean }>;
+      const text = pages.map(page => page.content).join(""), checksum = sha(text), size = Buffer.byteLength(text);
+      expect(pages.length).toBeGreaterThan(3); let offset = 0;
+      for (const [index, page] of pages.entries()) {
+        expect(Object.keys(page).sort()).toEqual(["checksum", "content", "eof", "format", "next_offset", "offset", "size", "version"]);
+        expect(page).toMatchObject({ version: 1, format: "artoo-context-text-page.v1", checksum, size, offset });
+        const bytes = Buffer.byteLength(page.content); expect(bytes).toBeGreaterThan(0); expect(bytes).toBeLessThanOrEqual(4096);
+        expect(page.content).not.toContain("\uFFFD"); offset += bytes;
+        expect(page.eof).toBe(index === pages.length - 1); expect(page.next_offset).toBe(page.eof ? null : offset);
+      }
+      expect(offset).toBe(size);
+      expect(pages.some(page => !page.eof && Buffer.byteLength(page.content) < 4096)).toBe(true);
+      const header = `# Context Pack ctx_1\ntask: task_1\nrun: run_1${peer ? "\nuri: artoo://context/ctx_1" : ""}\n`;
+      expect(text).toBe(`${header}\n## Raw Payload\n${JSON.stringify(original)}\n`);
+      expect(JSON.parse(text.split("\n## Raw Payload\n")[1]!)).toEqual(original);
+      expect(output.fileText).toContain("\n## Task\n"); expect(output.fileText.startsWith(header)).toBe(true);
+      expect(output.fileText.endsWith(`\n## Raw Payload\n${JSON.stringify(original, null, 2)}\n`)).toBe(true);
+      expect(JSON.parse(output.fileText.split("\n## Raw Payload\n")[1])).toEqual(original);
+      expect(Buffer.byteLength(output.fileText)).toBeGreaterThan(size);
+      expect(existsSync(output.configPath)).toBe(false); expect(existsSync(output.filePath)).toBe(!peer);
+      if (peer) expect(output.tools).toEqual(["context", "read_evidence"]);
+      else expect(output.tools).toContain("verify");
+      expect(verify).not.toHaveBeenCalled(); expect(readEvidence).not.toHaveBeenCalled();
+      // Exit 7 ends this transport-only fixture without claiming product-stage acceptance.
+      expect(events.at(-1)).toMatchObject({ type: "run.lifecycle", payload: { phase: "failed" } });
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+  });
+  it.each(["manual", "discussion", "peer-without-grant"])("preserves the complete legacy context file bytes for %s", async (mode) => {
+    const ws = makeWorkspace(), config = makeConfig(ws), payload = config.runStart.context_pack.payload!;
+    config.runStart.context_pack.uri = "artoo://context/ctx_1";
+    if (mode !== "manual") payload.policy.execution_mode = "discussion";
+    if (mode === "peer-without-grant") payload.review_subject = { version: 1, task_id: "author_task", run_id: "author_run",
+      evidence_id: "evidence", subject_digest: `sha256:${"a".repeat(64)}` };
+    const expected = ["# Context Pack ctx_1", "task: task_1", "run: run_1", "uri: artoo://context/ctx_1", "", "## Task", "id: task_1",
+      "title: Process adapter task", "description: Make the runtime prove it received the task.", "acceptance_criteria:", "- write changes.patch",
+      "", "## Project", "id: proj_1", "name: Artoo", `default_workspace: ${ws}`, "", "## Workspace", `root: ${ws}`, "file_scope:", "- src/**",
+      "", "## Policy", "filesystem_write_scope:", `- ${ws}`, "requires_approval:", "- git.push", "", "## Memory", "task_summary: ",
+      "project_notes:", "- prefer small patches", "", "## Expected Artifacts", "- changes.patch", "", "## Raw Payload", JSON.stringify(payload, null, 2), ""].join("\n");
+    const command = [process.execPath, "-e", "const fs=require('node:fs');console.log(JSON.stringify({path:process.argv[1],text:fs.readFileSync(process.argv[1],'utf8')}));", "{{context_pack_path}}"];
+    const adapter = createProcessAdapter({ command, discussionCommand: command,
+      reviewCommand: [process.execPath, "-e", "process.exit(53)"], allowedRoots: [ws], artifacts: [] });
+    try {
+      const events = await drain(adapter.streamEvents(await adapter.start(config)));
+      const output = JSON.parse(events.filter(isOutput).filter(event => event.payload.stream === "stdout").map(event => event.payload.text).join(""));
+      expect(Buffer.from(output.text).equals(Buffer.from(expected))).toBe(true);
+      expect(JSON.parse(output.text.split("\n## Raw Payload\n")[1])).toEqual(payload);
+      expect(existsSync(output.path)).toBe(mode === "manual");
+      expect(events.at(-1)).toMatchObject({ type: "run.lifecycle", payload: { phase: "completed" } });
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+  });
+  it.each([false, true])("rejects serialized capability authority before writing model context (discussion=%s)", async (discussion) => {
+    const ws = realpathSync.native(makeWorkspace()), config = makeConfig(ws), prepared = prepareStaticWebCapabilities({});
+    config.runStart.context_pack.payload!.verification_capabilities = { version: 1, profile_id: "profile", profile_digest: `sha256:${"a".repeat(64)}`,
+      checks: [{ command_id: "browser", config_digest: prepared.config_digest, contract_digest: prepared.contract_digest, contract: prepared.contract }] };
+    if (discussion) config.runStart.context_pack.payload!.policy = { execution_mode: "discussion", filesystem_write_scope: [], requires_approval: [] };
+    const adapter = createProcessAdapter({ command: cmd, discussionCommand: cmd, allowedRoots: [ws], artifacts: [] });
+    try { await expect(adapter.start(config)).rejects.toThrow(/local binding/); expect(existsSync(join(ws, "context_pack.md"))).toBe(false); }
+    finally { rmSync(ws, { recursive: true, force: true }); }
+  });
+  it("includes the locally bound contract in the first author prompt", async () => {
+    const ws = realpathSync.native(makeWorkspace()), config = makeConfig(ws), prepared = prepareStaticWebCapabilities({ viewports: [768, 320] });
+    const capabilities = { version: 1 as const, profile_id: "profile", profile_digest: `sha256:${"a".repeat(64)}`,
+      checks: [{ command_id: "browser", config_digest: prepared.config_digest, contract_digest: prepared.contract_digest, contract: prepared.contract }] };
+    config.runStart.context_pack.payload!.verification_capabilities = capabilities;
+    config.runStart.context_pack.payload!.product_development = productDevelopmentContext("research");
+    bindWorkspaceToolCapabilities(config, () => capabilities);
+    bindWorkspaceToolVerifier(config, async () => { throw new Error("This prompt fixture never invokes verification"); });
+    const adapter = createProcessAdapter({ command: cmd, productCommand: cmd, allowedRoots: [ws], artifacts: [] });
+    try {
+      await drain(adapter.streamEvents(await adapter.start(config)));
+      const context = readFileSync(join(ws, "context_pack.md"), "utf8");
+      expect(context).toContain('"verification_capabilities"'); expect(context).toContain(capabilities.checks[0]!.config_digest);
+      expect(context).toContain('"claim": "configured"'); expect(context).toContain('"screenshots": "final-visible-viewport"');
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+  });
+  it("routes only a locally bound peer to the evidence bridge without granting verification", async () => {
+    const ws = realpathSync.native(makeWorkspace()), config = makeConfig(ws), digest = `sha256:${"a".repeat(64)}`;
+    config.runStart.context_pack.payload!.policy = { execution_mode: "discussion", filesystem_write_scope: [], requires_approval: [] };
+    config.runStart.context_pack.payload!.review_subject = { version: 1, task_id: "author_task", run_id: "author", evidence_id: "evidence", subject_digest: digest };
+    const script = `const fs=require('node:fs');const c=JSON.parse(fs.readFileSync(JSON.parse(process.argv[1]),'utf8'));(async()=>{const send=async(tool)=>{const r=await fetch(c.url,{method:'POST',headers:{authorization:'Bearer '+c.token,'content-type':'application/json'},body:JSON.stringify(tool)});return {status:r.status,body:await r.json()}};console.log(JSON.stringify({read:await send({tool:'read_evidence',reference:'browser_granted'}),verify:await send({tool:'verify'}),tools:c.tools}));})();`;
+    const adapter = createProcessAdapter({ command: cmd, discussionCommand: [process.execPath, "-e", "console.log('ordinary discussion')"],
+      reviewCommand: [process.execPath, "-e", script, "{{workspace_tools_config_json}}"], allowedRoots: [ws], artifacts: [] });
+    try {
+      bindWorkspaceToolEvidenceReader(config, async (reference) => ({ reference, provenance: { requestId: "final", profileId: "profile", profileDigest: digest,
+        subjectDigest: digest, checkId: "browser", scope: "final", bundle_id: "browser_granted", manifest_digest: digest }, mime_type: "application/json", text: "actual fixture evidence" }));
+      const events = await drain(adapter.streamEvents(await adapter.start(config)));
+      const output = JSON.parse(events.filter(isOutput).find((event) => event.payload.stream === "stdout")!.payload.text);
+      expect(output).toMatchObject({ read: { status: 200 }, verify: { status: 400 }, tools: ["context", "read_evidence"] });
+      expect(existsSync(join(ws, "context_pack.md"))).toBe(false);
+      expect(events.at(-1)).toMatchObject({ type: "run.lifecycle", payload: { phase: "completed" } });
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+  });
+  it("routes product author diagnostics through the bound broker and JSON-escaped configuration argument", async () => {
+    const ws = realpathSync.native(makeWorkspace()), config = makeConfig(ws);
+    config.runStart.context_pack.payload!.product_development = productDevelopmentContext("research");
+    const digest = `sha256:${"a".repeat(64)}`;
+    const verify = vi.fn(async () => ({ version: 1 as const, request_id: "preview_fixture", profile_id: "protected",
+      profile_digest: digest, subject_digest: digest, outcome: "failed" as const, checks: [], required_files: [], reason: "Actual fixture diagnostic" }));
+    const script = `const fs=require('node:fs');const path=JSON.parse(process.argv[1]);const c=JSON.parse(fs.readFileSync(path,'utf8'));
+      fetch(c.url,{method:'POST',headers:{authorization:'Bearer '+c.token,'content-type':'application/json'},body:JSON.stringify({tool:'verify'})})
+      .then(async r=>{console.log(JSON.stringify({path,status:r.status,result:await r.json()}));process.exitCode=7;});`;
+    const adapter = createProcessAdapter({ command: [process.execPath, "-e", "process.exit(51)"],
+      productCommand: [process.execPath, "-e", script, "{{workspace_tools_config_json}}"], allowedRoots: [ws], artifacts: [] });
+    try {
+      await expect(adapter.start(config)).rejects.toThrow(/local verified-run binding/);
+      expect(existsSync(join(ws, "context_pack.md"))).toBe(false);
+      bindWorkspaceToolVerifier(config, verify);
+      const events = await drain(adapter.streamEvents(await adapter.start(config)));
+      const output = JSON.parse(events.filter(isOutput).find((event) => event.payload.stream === "stdout")!.payload.text);
+      expect(output).toMatchObject({ status: 200, result: { diagnostic_only: true, verification: { outcome: "failed", reason: "Actual fixture diagnostic" } } });
+      expect(verify).toHaveBeenCalledOnce();
+      expect(existsSync(output.path)).toBe(false);
+      expect(events.at(-1)).toMatchObject({ type: "run.lifecycle", payload: { phase: "failed" } });
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+  });
+  it.each(["completed", "failed", "cancelled"])("keeps discussion context outside the workspace and cleans it after %s", async (outcome) => {
+    const ws = makeWorkspace();
+    writeFileSync(join(ws, "context_pack.md"), "do not overwrite");
+    const config = makeConfig(ws); config.runStart.context_pack.payload!.policy.execution_mode = "discussion";
+    config.runStart.context_pack.payload!.policy.filesystem_write_scope = [];
+    const script = `const fs=require('node:fs');const path=process.argv[1];console.log(JSON.stringify({path,text:fs.readFileSync(path,'utf8')}));${outcome === "cancelled" ? "setInterval(()=>{},1000)" : `process.exit(${outcome === "failed" ? 2 : 0})`}`;
+    const adapter = createProcessAdapter({ command: cmd, discussionCommand: [process.execPath, "-e", script, "{{context_pack_path}}"], allowedRoots: [ws] });
+    try {
+      const handle = await adapter.start(config);
+      let resolveOutput!: () => void;
+      const gotOutput = new Promise<void>((resolve) => { resolveOutput = resolve; });
+      const events: RunEvent[] = [];
+      const complete = (async () => { for await (const event of adapter.streamEvents(handle)) { events.push(event); if (isOutput(event)) resolveOutput(); } })();
+      await gotOutput;
+      if (outcome === "cancelled") await adapter.stop(handle, "user_cancelled");
+      await complete;
+      const reported = JSON.parse(events.filter(isOutput).find((event) => event.payload.stream === "stdout")!.payload.text);
+      expect(reported.text).toContain("Make the runtime prove it received the task.");
+      expect(relative(ws, reported.path).startsWith("..")).toBe(true);
+      expect(existsSync(reported.path)).toBe(false);
+      expect(readFileSync(join(ws, "context_pack.md"), "utf8")).toBe("do not overwrite");
+      expect(events.at(-1)).toMatchObject({ type: "run.lifecycle", payload: { phase: outcome } });
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+  });
   it("redacts quoted keys in nested JSON error bodies before publishing diagnostics", async () => {
     const ws = makeWorkspace();
     vi.stubEnv("ARTOO_CODEX_PROVIDER_KEY", 'sentinel-"private"-\\key');

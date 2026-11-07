@@ -29,6 +29,24 @@ v0.1 has been accepted on `origin/main` at `eec68d8`. It proves the core loop:
 5. review the artifact and mark the task done.
 
 The v1 workstream is tracked in [docs/v1-roadmap.md](docs/v1-roadmap.md).
+Agent Team execution, research, stage handoffs, independent review and configured
+static-web publication are described in [the Agent Team guide](docs/agent-team-development.md).
+Native Windows progress and the limits of multi-computer execution are recorded in
+[Windows native development](docs/windows-native-development.md).
+The current stage is Windows native execution and Agent Team local development
+preview. It passed typecheck, build, 4,329 source tests (88 skipped), and Web E2E
+27/27. A real Aerial run also completed research, design, automatic correction,
+implementation, validation, independent review and healthy local static-site
+publication from one objective. The fixture used isolated authenticated transport;
+its temporary local site has been cleaned up. For source-checkout setup, follow
+[the Windows setup guide](docs/windows-native-development.md).
+Preparation scripts and detailed historical evidence under `artifacts/` belong to
+the existing local environment and are not included in this stage's source delivery.
+Activation requires protected local configuration, qualified NTFS storage and the
+prepared native process backend. Physical multi-computer product acceptance,
+signed desktop distribution and production hosting remain unverified. Integrated
+cross-computer continuation currently stops after the destination design writer.
+The [original autonomous development guide](docs/autonomous-development.md) records the first verified-workspace milestone.
 Release gates and the local self-host runbook are tracked in
 [docs/v1-release-gates.md](docs/v1-release-gates.md). The historical v1 release
 candidate decision audit is tracked in

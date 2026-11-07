@@ -187,8 +187,15 @@ export function registerApiAuthGuard(app: FastifyInstance, ctx: ServerContext, c
     if (req.method === "GET" && (route === "/api/v1/node" || route === "/api/v1/ws")) {
       return;
     }
+    if (req.method === "GET" && route === "/api/v1/node/source-lifecycle") {
+      return; // Exact WS route authenticates a paired node bearer; no dev escape.
+    }
     if (req.method === "PUT" && route === "/api/v1/node/runs/:id/artifacts") {
       return;
+    }
+    if ((req.method === "PUT" || req.method === "GET") && (route === "/api/v1/node/product-source-transfers/:id/content"
+      || route === "/api/v1/node/product-source-transfers-v2/:id/content")) {
+      return; // Dedicated route requires paired node credentials and exact durable admission.
     }
     // Device pairing claim (#28 4b) is authenticated by the pairing CODE itself —
     // an unpaired device has no session yet — so this exact route is exempt from

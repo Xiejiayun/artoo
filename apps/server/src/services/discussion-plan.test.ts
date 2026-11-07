@@ -2,9 +2,78 @@ import { describe, expect, it } from "vitest";
 import { DiscussionPlanPreviewSchema, TaskSpecSchema } from "@artoo/domain";
 import { parseDiscussionPlan } from "./discussion-plan.js";
 import { validatePlanTaskSpecs } from "./plan-service.js";
+import { AppError } from "../errors.js";
 
 const spec = { title: "Implement", acceptance_criteria: ["Works"] };
 const metadata = (task_specs: unknown[]) => ({ version: 1, discussion_id: "discussion", goal_id: "goal", rationale: "Why", task_specs: task_specs.map((spec) => TaskSpecSchema.parse(spec)) });
+
+function invalid(body: string): AppError {
+  try { parseDiscussionPlan(body); }
+  catch (error) { expect(error).toBeInstanceOf(AppError); return error as AppError; }
+  throw new Error("Expected invalid task plan");
+}
+
+describe("bounded discussion plan diagnostics", () => {
+  it("reports nested field paths and expected types without echoing received values", () => {
+    const error = invalid(JSON.stringify({ rationale: "private-token-in-rationale", task_specs: [{ ...spec,
+      title: { secret: "private-token-in-title" }, dependencies: [{ ref: 0, type: "blocks" }] }] }));
+    expect(error).toMatchObject({ code: "validation_error", httpStatus: 400, details: { diagnostic_version: 1, omitted_issues: 0,
+      diagnostics: [{ code: "invalid_type", path: "$.task_specs[0].title", expected: "string" },
+        { code: "invalid_type", path: "$.task_specs[0].dependencies[0].ref", expected: "string" }] } });
+    expect(error.message).toContain("$.task_specs[0].dependencies[0].ref: invalid_type; expected string");
+    expect(JSON.stringify(error.toEnvelope())).not.toContain("private-token");
+    expect(error.message).not.toContain("manually");
+  });
+  it("keeps missing fields, wrong root shapes and invalid enum values invalid", () => {
+    expect(invalid("{}").details.diagnostics).toEqual([{ code: "invalid_type", path: "$.task_specs", expected: "array" }]);
+    expect(invalid('"private-root-value"').details.diagnostics).toEqual([{ code: "invalid_type", path: "$", expected: "object" }]);
+    const error = invalid(JSON.stringify({ task_specs: [{ ...spec, development_stage: "private-token-as-stage" }] }));
+    expect(error.message).toContain('$.task_specs[0].development_stage: invalid_enum_value; expected one of "research", "design", "implementation", "validation"');
+    expect(JSON.stringify(error.toEnvelope())).not.toContain("private-token-as-stage");
+  });
+  it("reports the real JSON syntax location without copying parser excerpts", () => {
+    const body = '{\n  "rationale": "private-provider-credential",\n  "task_specs": [],\n}';
+    const error = invalid(body);
+    expect(error.details.diagnostics).toEqual([{ code: "invalid_json", path: "$", expected: "a double-quoted property name",
+      position: body.length - 1, line: 4, column: 1 }]);
+    expect(error.message).toContain("line 4, column 1");
+    expect(JSON.stringify(error.toEnvelope())).not.toContain("private-provider-credential");
+  });
+  it.each([{ body: "", expected: "a complete JSON value" },
+    { body: '{"rationale":"private-provider-credential",', expected: "a double-quoted property name" }])
+    ("identifies incomplete JSON without repairing or exposing its content", ({ body, expected }) => {
+      expect(invalid(body).details.diagnostics).toEqual([{ code: "invalid_json", path: "$", expected,
+        position: body.length, line: 1, column: body.length + 1 }]);
+    });
+  it("does not leak invalid JSON tokens or accept prose and trailing content", () => {
+    for (const body of ["private-provider-credential", `${JSON.stringify({ task_specs: [spec] })} private-provider-credential`]) {
+      const error = invalid(body);
+      expect(error.details.diagnostics).toEqual([expect.objectContaining({ code: "invalid_json", path: "$" })]);
+      expect(JSON.stringify(error.toEnvelope())).not.toContain("private-provider-credential");
+    }
+  });
+  it("bounds feedback for invalid members within the collection limit", () => {
+    const error = invalid(JSON.stringify({ rationale: "private-secret".repeat(2000), task_specs: Array.from({ length: 50 }, () => ({ title: "", acceptance_criteria: [] })) }));
+    expect(error.details.diagnostics).toHaveLength(6);
+    expect(error.details.omitted_issues).toBeGreaterThan(0);
+    expect(error.message).toContain("$.rationale: too_big; expected string with at most 20000 characters");
+    expect(error.message).toContain("expected array with at least 1 item");
+    expect(error.message.length).toBeLessThan(2000);
+    expect(JSON.stringify(error.toEnvelope()).length).toBeLessThan(4000);
+    expect(JSON.stringify(error.toEnvelope())).not.toContain("private-secret");
+  });
+});
+
+describe("discussion plan collection limit", () => {
+  it("accepts exactly 50 tasks and rejects an oversized collection before inspecting invalid members", () => {
+    expect(parseDiscussionPlan(JSON.stringify({ task_specs: Array.from({ length: 50 }, () => spec) })).task_specs).toHaveLength(50);
+    const error = invalid(JSON.stringify({ task_specs: Array.from({ length: 60 }, () => ({ title: "", acceptance_criteria: [] })) }));
+    expect(error.details).toEqual({ diagnostic_version: 1, omitted_issues: 0,
+      diagnostics: [{ code: "too_big", path: "$.task_specs", expected: "array with at most 50 items" }] });
+    expect(error.message).toContain("$.task_specs: too_big; expected array with at most 50 items");
+    expect(error.message).not.toContain("$.task_specs[");
+  });
+});
 
 describe("discussion plan presentation contract", () => {
   it("uses the proposal content rules while keeping defaults and raw output separate", () => {

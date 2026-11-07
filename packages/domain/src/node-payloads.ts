@@ -11,6 +11,7 @@ import { z } from "zod";
 
 import { ContextPackSchema } from "./context-pack.js";
 import { WorkspaceAllocationRecordSchema } from "./workspace-allocation.js";
+import { VerificationRequirementSchema } from "./autonomy.js";
 
 export const ArtifactTypeSchema = z.enum([
   "patch",
@@ -45,6 +46,8 @@ export const RunStartPayloadSchema = z.object({
   workspace_allocation: WorkspaceAllocationRecordSchema.optional(),
   /** Server support advertisement; unknown versions retain legacy behavior. */
   workspace_retention_reporting: z.string().min(1).max(64).optional(),
+  /** Opt-in node-owned verification; unsupported nodes must not claim evidence. */
+  verification: VerificationRequirementSchema.optional(),
   context_pack: z
     .object({
       id: z.string().min(1),
@@ -98,7 +101,7 @@ export type RunLifecyclePayload = z.infer<typeof RunLifecyclePayloadSchema>;
 export const ArtifactPayloadSchema = z.object({
   type: ArtifactTypeSchema,
   uri: z.string(),
-  metadata: z.record(z.unknown()).default({}),
+  metadata: z.record(z.string(), z.unknown()).default({}),
   checksum: z.string().nullish(),
 });
 export type ArtifactPayload = z.infer<typeof ArtifactPayloadSchema>;

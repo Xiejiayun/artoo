@@ -1,4 +1,4 @@
-import { appendEvent, goals, plans, rooms, runs, taskDependencies, tasks } from "@artoo/db";
+import { appendEvent, goalAutomations, goals, plans, rooms, runs, taskDependencies, tasks } from "@artoo/db";
 import {
   type DagEdge,
   type GoalStatus,
@@ -13,6 +13,8 @@ import {
   ID_PREFIXES,
   PlanSchema,
   TaskSpecSchema,
+  validateProductDevelopmentPlan,
+  type DevelopmentStage,
   wouldCreateCycle,
 } from "@artoo/domain";
 import { and, desc, eq } from "drizzle-orm";
@@ -23,7 +25,7 @@ import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { createCheckpointInTx, hasMaterializeCheckpoint } from "./checkpoint-service.js";
-import { unsettledGoalRunIds } from "./execution-state.js";
+import { unsettledGoalRunIds, unsettledStandaloneExecutions } from "./execution-state.js";
 import { transitionTask } from "./transition-service.js";
 import { propagateBlocked } from "./dag-service.js";
 import { supportedGoalPolicy } from "./budget-policy.js";
@@ -110,6 +112,7 @@ function buildEdges(specs: TaskSpec[], idForIndex: (i: number) => string): { fro
 }
 
 export interface ProposePlanSpecInput {
+  development_stage?: DevelopmentStage;
   title: string;
   description?: string;
   acceptance_criteria: string[];
@@ -143,7 +146,7 @@ export async function proposePlan(ctx: ServerContext, goalId: string, input: Pro
   return ctx.db.transaction((tx) => proposePlanInTx(ctx, tx, goalId, input));
 }
 
-/** Allows an orchestrator to link its proposal atomically; acceptance remains a separate human action. */
+/** Allows an orchestrator to link its proposal atomically; acceptance is a separate authorized action. */
 export async function proposePlanInTx(ctx: ServerContext, tx: Tx, goalId: string, input: ProposePlanInput): Promise<Plan> {
   const specs = validatePlanTaskSpecs(input.task_specs);
   const now = ctx.clock.nowIso();
@@ -181,8 +184,8 @@ export async function proposePlanInTx(ctx: ServerContext, tx: Tx, goalId: string
       tx,
       buildEvent(ctx, {
         type: "goal.plan_proposed",
-        actorType: "user",
-        actorId: ctx.actorUserId,
+        actorType: ctx.automationActor?.type ?? "user",
+        actorId: ctx.automationActor?.id ?? ctx.actorUserId,
         correlationId: goalId,
         projectId: goal.projectId,
         roomId: goal.roomId,
@@ -231,8 +234,8 @@ export async function rejectPlan(ctx: ServerContext, planId: string): Promise<Pl
       tx,
       buildEvent(ctx, {
         type: "goal.plan_rejected",
-        actorType: "user",
-        actorId: ctx.actorUserId,
+        actorType: ctx.automationActor?.type ?? "user",
+        actorId: ctx.automationActor?.id ?? ctx.actorUserId,
         correlationId: row.goalId,
         projectId: goal.projectId,
         roomId: goal.roomId,
@@ -402,11 +405,19 @@ export async function acceptPlan(ctx: ServerContext, planId: string): Promise<Ma
     const lookup = (await tx.select({ goalId: plans.goalId }).from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId))))[0];
     if (!lookup) throw AppError.notFound(`plan not found: ${planId}`, { plan_id: planId });
     const goal = await requireGoalInOrg(ctx, tx, lookup.goalId);
+    const automation = (await tx.select().from(goalAutomations).where(eq(goalAutomations.goalId, goal.id)))[0];
+    if (automation && (!ctx.automationActor || ctx.actorUserId !== automation.actorUserId || (automation.planId !== null && automation.planId !== planId))) {
+      throw AppError.permissionDenied("Autonomous goals only accept the runner's original validated plan");
+    }
     const plan = (
       await tx.select().from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId)))
     )[0];
     if (plan === undefined) {
       throw AppError.notFound(`plan not found: ${planId}`, { plan_id: planId });
+    }
+    if (automation?.executionMode === "agent_team") {
+      const errors = validateProductDevelopmentPlan((plan.taskSpecs as unknown[]).map((spec) => TaskSpecSchema.parse(spec)));
+      if (errors.length) throw AppError.validation(`Agent Team plan is incomplete: ${errors.join("; ")}`);
     }
     if (plan.status === "accepted") {
       return materializeInTx(ctx, tx, planId, now); // re-entrant
@@ -427,14 +438,15 @@ export async function acceptPlan(ctx: ServerContext, planId: string): Promise<Ma
       const current = (await tx.select({ version: plans.version }).from(plans).where(and(eq(plans.id, goal.currentPlanId!), eq(plans.organizationId, ctx.organizationId))))[0];
       if (!current || plan.version <= current.version) throw AppError.conflict("A replacement plan must be newer than the current accepted plan");
       const unsettled = await unsettledGoalRunIds(ctx, tx, goal.id);
-      if (unsettled.length > 0) throw AppError.conflict("Cannot replace a plan until all goal executions have confirmed they stopped", { run_ids: unsettled });
+      const standalone = await unsettledStandaloneExecutions(ctx, tx, { goalId: goal.id });
+      if (unsettled.length > 0 || standalone.length > 0) throw AppError.conflict("Cannot replace a plan until all goal executions have confirmed they stopped", { run_ids: unsettled, standalone_operations: standalone.map(operation => ({ kind: operation.kind, id: operation.id })) });
       const previous = await tx.select().from(tasks).where(and(eq(tasks.organizationId, ctx.organizationId), eq(tasks.goalId, goal.id), eq(tasks.sourcePlanId, goal.currentPlanId!)));
       const executed = await tx.select({ taskId: runs.taskId }).from(runs).innerJoin(tasks, eq(tasks.id, runs.taskId)).where(and(eq(runs.organizationId, ctx.organizationId), eq(tasks.goalId, goal.id)));
       const historical = new Set(executed.map((run) => run.taskId));
       for (const task of previous) {
         if (historical.has(task.id) || !canTransitionTask(task.status as TaskStatus, "cancel")) continue;
         await transitionTask(tx, ctx, { taskId: task.id, from: task.status as TaskStatus, trigger: "cancel", now,
-          events: (to) => [buildEvent(ctx, { type: "task.updated", actorType: "user", actorId: ctx.actorUserId,
+          events: (to) => [buildEvent(ctx, { type: "task.updated", actorType: ctx.automationActor?.type ?? "user", actorId: ctx.automationActor?.id ?? ctx.actorUserId,
             correlationId: goal.id, projectId: goal.projectId, taskId: task.id, roomId: task.roomId, goalId: goal.id,
             payload: { status: to, reason: "plan_superseded", source_plan_id: task.sourcePlanId, replacement_plan_id: planId },
           })],
@@ -458,8 +470,8 @@ export async function acceptPlan(ctx: ServerContext, planId: string): Promise<Ma
       tx,
       buildEvent(ctx, {
         type: "goal.plan_accepted",
-        actorType: "user",
-        actorId: ctx.actorUserId,
+        actorType: ctx.automationActor?.type ?? "user",
+        actorId: ctx.automationActor?.id ?? ctx.actorUserId,
         correlationId: plan.goalId,
         projectId: goal.projectId,
         roomId: goal.roomId,

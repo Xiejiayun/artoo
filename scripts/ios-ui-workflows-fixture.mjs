@@ -7,6 +7,77 @@ import { pathToFileURL } from "node:url";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
+const errorKinds = new Map([["Error", "error"], ["TypeError", "type_error"], ["RangeError", "range_error"],
+  ["AssertionError", "assertion"], ["AbortError", "abort"], ["TimeoutError", "timeout"],
+  ["VerificationCleanupError", "verification_cleanup"]]);
+const errorCodes = new Set(["ERR_ASSERTION", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EPIPE", "ENOENT", "EACCES", "EPERM",
+  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_SOCKET"]);
+function dataProperty(value, key) {
+  // Error text, arbitrary getters and stack/cause serialization are not diagnostics.
+  try {
+    for (let depth = 0; value && typeof value === "object" && depth < 4; depth++, value = Object.getPrototypeOf(value)) {
+      const property = Object.getOwnPropertyDescriptor(value, key);
+      if (property) return Object.hasOwn(property, "value") ? property.value : undefined;
+    }
+  } catch { /* An opaque thrown value has no safe diagnostic fields. */ }
+}
+function safeNodeFailure(error, start, phase) {
+  const diagnostic = { version: 1, action: start ? "start" : "stop", phase,
+    kind: errorKinds.get(dataProperty(error, "name")) ?? "unknown", code: "unknown" };
+  for (let current = error, depth = 0; current && depth < 4; depth++, current = dataProperty(current, "cause")) {
+    const code = dataProperty(current, "code");
+    if (errorCodes.has(code)) { diagnostic.code = code; break; }
+  }
+  const message = dataProperty(error, "message");
+  if (message === `Authenticated fixture node did not become ${start ? "online" : "offline"}`) diagnostic.code = "presence_timeout";
+  if (typeof message === "string" && message.length <= 256) {
+    const upstream = /^GET \/api\/v1\/daemons failed \(([45]\d{2})\)$/.exec(message);
+    if (upstream) { diagnostic.code = "daemon_http_error"; diagnostic.upstream_status = Number(upstream[1]); }
+  }
+  return Object.freeze(diagnostic);
+}
+class WorkflowNodeChangeError extends Error {
+  constructor(diagnostic, cause) {
+    super(`Fixture node transition failed: ${JSON.stringify(diagnostic)}`, { cause });
+    this.diagnostic = diagnostic;
+  }
+}
+
+/** Same transition and deadline as the fixture; only failure evidence is added.
+ * Injectable operations let regression tests exercise failures without a node. */
+export async function changeWorkflowNode({ start, node, readDaemon, runtimeNames, until, transitions,
+  reportFailure = (diagnostic) => console.error(`[ios-ui-node] ${JSON.stringify(diagnostic)}`) }) {
+  let phase = start ? "node_start" : "node_stop";
+  try {
+    if (start) await node.start(); else await node.stop();
+    phase = "presence_wait";
+    await until(async () => {
+      phase = "presence_read";
+      const daemon = await readDaemon();
+      phase = "presence_check";
+      const matches = start ? daemon?.status === "online" && daemon.connected && daemon.runtimes.length === runtimeNames.length
+        && runtimeNames.every((name) => daemon.runtimes.some((runtime) => runtime.runtime === name))
+        : daemon?.status === "offline" && !daemon.connected;
+      phase = "presence_wait";
+      return matches;
+    }, `Authenticated fixture node did not become ${start ? "online" : "offline"}`, 60_000);
+    phase = "final_presence_read";
+    const daemon = await readDaemon();
+    phase = "record_transition";
+    transitions.push({ action: start ? "start" : "stop", status: daemon.status, connected: daemon.connected,
+      last_heartbeat_at: daemon.last_heartbeat_at, checked_at: new Date().toISOString() });
+    return { daemon };
+  } catch (cause) {
+    const diagnostic = safeNodeFailure(cause, start, phase);
+    reportFailure(diagnostic);
+    throw new WorkflowNodeChangeError(diagnostic, cause);
+  }
+}
+
+export function workflowNodeFailureResponse(error) {
+  return { error: "Fixture node transition failed", ...(error instanceof WorkflowNodeChangeError ? { diagnostic: error.diagnostic } : {}) };
+}
+
 /** Register a second visible instance with the original executor's exact
  * presentation fields, without adding a runtime or changing any task state. */
 export async function registerExecutorCollision({ original, request, peerToken }) {
@@ -83,19 +154,7 @@ export async function createWorkflowFixture({ root, temporary, origin, projectId
   let control;
   let operation = Promise.resolve();
   let closing = false;
-  const changeNode = async (start) => {
-    if (start) await node.start(); else await node.stop();
-    await until(async () => {
-      const daemon = await readDaemon();
-      return start ? daemon?.status === "online" && daemon.connected && daemon.runtimes.length === runtimeNames.length
-        && runtimeNames.every((name) => daemon.runtimes.some((runtime) => runtime.runtime === name))
-        : daemon?.status === "offline" && !daemon.connected;
-    }, `Authenticated fixture node did not become ${start ? "online" : "offline"}`, 60_000);
-    const daemon = await readDaemon();
-    transitions.push({ action: start ? "start" : "stop", status: daemon.status, connected: daemon.connected,
-      last_heartbeat_at: daemon.last_heartbeat_at, checked_at: new Date().toISOString() });
-    return { daemon };
-  };
+  const changeNode = (start) => changeWorkflowNode({ start, node, readDaemon, runtimeNames, until, transitions });
   const close = async () => {
     closing = true;
     await operation.catch(() => {});
@@ -170,7 +229,7 @@ export async function createWorkflowFixture({ root, temporary, origin, projectId
       }
       if (req.method !== "POST" || !["/node/start", "/node/stop"].includes(req.url)) { reply(404, { error: "Unknown fixture operation" }); return; }
       operation = operation.catch(() => {}).then(() => changeNode(req.url === "/node/start"));
-      void operation.then((result) => reply(200, result), (error) => reply(500, { error: error.message }));
+      void operation.then((result) => reply(200, result), (error) => reply(500, workflowNodeFailureResponse(error)));
     });
     control.requestTimeout = 70_000;
     await new Promise((resolve, reject) => { control.once("error", reject); control.listen(0, "127.0.0.1", resolve); });

@@ -31,6 +31,9 @@ export const CoreEventTypeSchema = z.enum([
   "run.started",
   "run.output",
   "run.workspace.retained",
+  "run.verification",
+  "run.product-source.export.v1",
+  "run.product-source.export.v2",
   "run.failed",
   "run.cancelled",
   "approval.requested",
@@ -95,7 +98,7 @@ export const EventEnvelopeSchema = z.object({
   correlation_id: z.string().min(1),
   idempotency_key: z.string().nullish(),
   sequence: z.number().int().nullish(),
-  payload: z.record(z.unknown()).default({}),
+  payload: z.record(z.string(), z.unknown()).default({}),
 });
 export type EventEnvelope = z.infer<typeof EventEnvelopeSchema>;
 

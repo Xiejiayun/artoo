@@ -77,8 +77,9 @@ targets:
     platform: iOS
     sources:
       - path: Tests
-      # Exercise the same snapshot measurement used by native UI preparation.
+      # Exercise the same observers and diagnostics used by native UI preparation.
       - path: UITests/NativePairingInput.swift
+      - path: UITests/PeerHTTPFailure.swift
     dependencies:
       - target: Artoo
     settings:

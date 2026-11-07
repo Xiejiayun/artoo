@@ -1,5 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import type { AddressInfo } from "node:net";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,13 +14,20 @@ import type {
   RunStartCommand
 } from "@artoo/protocol";
 import { nodeHeartbeatSchema } from "@artoo/protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 
 import { createAdapterRegistry } from "./adapter-registry.js";
 import { createArtoodNode } from "./node-runner.js";
 import { createProcessAdapter } from "./process-adapter.js";
 import { claudeCodeRuntime, codexRuntime } from "./runtimes.js";
+import { VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE, VERIFICATION_CAPABILITIES_FEATURE, MEASUREMENT_PLAN_FEATURE, MEASUREMENT_PLAN_V2_FEATURE, verificationSupported } from "./verification.js";
+import * as verification from "./verification.js";
+import * as windowsProcess from "./owned/windows-owned-process.js";
+import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
+import * as nodeClient from "./node-client.js";
+import { PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE } from "./product-release.js";
+import { PRODUCT_RELEASE_RETRY_FEATURE_V1 } from "@artoo/domain";
 
 const fixture = fileURLToPath(new URL("../test-fixtures/mock-agent.mjs", import.meta.url));
 
@@ -127,7 +134,266 @@ class FakeClientWebSocket {
   }
 }
 
+describe("Windows node activation (controlled backend admission; no native helper or provider run)", () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!, roots: string[] = [];
+  let backends: WeakSet<object>, invalidated: boolean;
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    backends = new WeakSet(); invalidated = false;
+    vi.spyOn(windowsProcess, "assertWindowsProcessBackend").mockImplementation(value => {
+      if (!backends.has(value) || invalidated) throw new Error("Unprepared or changed Windows backend");
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform);
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  function backend() {
+    const value = Object.freeze({}) as PreparedWindowsProcessBackend; backends.add(value); return value;
+  }
+  function profilesFixture(capabilities = false) {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-windows-node-activation-"))); roots.push(root);
+    const workspace = join(root, "workspace"), script = join(root, "verify.mjs"); mkdirSync(workspace);
+    writeFileSync(script, "process.exit(0)\n");
+    const profile: verification.VerificationProfile = { id: "local", project_id: "project", workspace_root: workspace,
+      commands: [{ id: "check", argv: [process.execPath, script], timeout_ms: 1000 }], required_files: [], subject_paths: ["product", ".artoo/product"] };
+    if (capabilities) {
+      const evidence = join(root, "evidence"), config = join(root, "browser.json"); mkdirSync(evidence);
+      writeFileSync(config, JSON.stringify({ evidence_root: evidence, viewports: [768, 320], design_capture_cases: true }));
+      profile.commands = [{ id: "browser", argv: [process.execPath, fileURLToPath(new URL("../dist/web-acceptance-cli.js", import.meta.url)), config], timeout_ms: 1000,
+        observation: { format: "static-web-acceptance.v1", evidence_root: evidence, capabilities: { version: 1 } } }];
+      profile.measurement_plan_policy = { version: 1, coverage: "every-must-criterion" };
+    }
+    return { root, workspace, script, profile };
+  }
+  const injectedHello = (): NodeHello => ({ ...hello, execution_features: [VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE,
+    VERIFICATION_CAPABILITIES_FEATURE, MEASUREMENT_PLAN_FEATURE, MEASUREMENT_PLAN_V2_FEATURE, PRODUCT_RELEASE_FEATURE,
+    PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE, PRODUCT_RELEASE_RETRY_FEATURE_V1, "product-source-transfer.v1", "product-source-transfer.v2", "other-feature"],
+    verification_profiles: [{ profile_id: "forged", project_id: "forged", workspace_root: "/forged" }],
+    release_profiles: [{ profile_id: "forged", project_id: "forged", workspace_root: "/forged", verification_profile_id: "forged", target_kind: "static_site" }] });
+
+  it("attaches every prepared profile and advertises only their exact supported Windows verification scope", async () => {
+    const f = profilesFixture(true), other = join(f.root, "other"); mkdirSync(other);
+    const localBackend = backend(), create = vi.spyOn(nodeClient, "createNodeClient");
+    const profiles = [f.profile, { ...f.profile, id: "second", workspace_root: other }];
+    const node = createArtoodNode({ url: "ws://example.invalid/api/v1/node", hello: injectedHello(), adapter: idleAdapter,
+      verificationProfiles: profiles, windowsProcessBackend: localBackend, WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
+    try {
+      profiles.length = 0;
+      const started = node.start(); fakeClientSockets.at(-1)!.open(); await started;
+      const sent = JSON.parse(fakeClientSockets.at(-1)!.sent[0]!);
+      expect(verificationSupported()).toBe(false);
+      expect(sent.execution_features).toEqual(["other-feature", VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE,
+        VERIFICATION_CAPABILITIES_FEATURE, MEASUREMENT_PLAN_FEATURE]);
+      expect(sent.verification_profiles.map((item: { profile_id: string; workspace_root: string }) => [item.profile_id, item.workspace_root]))
+        .toEqual([["local", f.workspace], ["second", other]]);
+      expect(sent.verification_profiles[0].capabilities.measurement_plan_policy).toEqual({ version: 1, coverage: "every-must-criterion" });
+      const prepared = create.mock.calls[0]![0].verificationProfiles as readonly verification.PreparedVerificationProfile[];
+      expect(prepared).toHaveLength(2);
+      for (const profile of prepared) expect(verification.readWindowsVerificationBackend(profile)).toBe(localBackend);
+      expect(sent).not.toHaveProperty("release_profiles");
+      for (const value of ["windowsProcessBackend", "trustedFiles", "argv", "manifestSha256"]) expect(JSON.stringify(sent)).not.toContain(value);
+    } finally { await node.stop(); }
+  });
+
+  it.each(["no profiles", "no local backend"] as const)("does not authorize injected hello capabilities with %s", async missing => {
+    const f = profilesFixture(), localBackend = backend();
+    const node = createArtoodNode({ url: "ws://example.invalid/api/v1/node", hello: injectedHello(), adapter: idleAdapter,
+      verificationProfiles: missing === "no profiles" ? [] : [f.profile],
+      ...(missing === "no profiles" ? { windowsProcessBackend: localBackend } : {}), WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
+    try {
+      const started = node.start(); fakeClientSockets.at(-1)!.open(); await started;
+      const sent = JSON.parse(fakeClientSockets.at(-1)!.sent[0]!);
+      expect(sent.execution_features).toEqual(["other-feature"]);
+      expect(sent).not.toHaveProperty("verification_profiles"); expect(sent).not.toHaveProperty("release_profiles");
+    } finally { await node.stop(); }
+  });
+
+  it("rejects forged or serialized backends before creating any transport even without profiles", () => {
+    const localBackend = backend();
+    for (const value of [{}, structuredClone(localBackend)]) {
+      expect(() => createArtoodNode({ url: "ws://example.invalid/api/v1/node", hello, adapter: idleAdapter,
+        windowsProcessBackend: value as PreparedWindowsProcessBackend, WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket })).toThrow(/Unprepared/);
+    }
+    expect(fakeClientSockets).toHaveLength(0);
+  });
+
+  it("rejects a Windows backend on other platforms and with a managed session", () => {
+    const localBackend = backend();
+    expect(() => createArtoodNode({ url: "ws://example.invalid/api/v1/node", adapter: idleAdapter, windowsProcessBackend: localBackend,
+      hello: { ...hello, managed_receipts: { version: 1, nonce: "00000000-0000-4000-8000-000000000001", required_contract: "qualified" } } })).toThrow(/cannot be combined with managed/);
+    Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+    expect(() => createArtoodNode({ url: "ws://example.invalid/api/v1/node", hello, adapter: idleAdapter,
+      windowsProcessBackend: localBackend })).toThrow(/only on Windows/);
+    expect(fakeClientSockets).toHaveLength(0);
+  });
+
+  it("rejects an installation invalidated after construction before publishing any hello", async () => {
+    const node = createArtoodNode({ url: "ws://example.invalid/api/v1/node", hello, adapter: idleAdapter,
+      windowsProcessBackend: backend(), WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
+    try {
+      invalidated = true;
+      await expect(node.start()).rejects.toThrow(/changed Windows backend/);
+      expect(fakeClientSockets).toHaveLength(0);
+    } finally { await node.stop(); }
+  });
+
+  it("rejects a protected verifier changed after construction before publishing its advertisement", async () => {
+    const f = profilesFixture(), node = createArtoodNode({ url: "ws://example.invalid/api/v1/node", hello, adapter: idleAdapter,
+      verificationProfiles: [f.profile], windowsProcessBackend: backend(), WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
+    try {
+      writeFileSync(f.script, "process.exit(1)\n");
+      await expect(node.start()).rejects.toThrow(/administrator verifier changed/);
+      expect(fakeClientSockets).toHaveLength(0);
+    } finally { await node.stop(); }
+  });
+});
+
 describe("createArtoodNode (WS + ProcessAdapter end-to-end)", () => {
+  it("advertises verifier support only when a configured profile has platform process-group support", async () => {
+    const root = mkdtempSync(join(tmpdir(), "artoo-verification-hello-"));
+    const workspace = join(root, "product"); mkdirSync(workspace);
+    const script = join(root, "verify.mjs"); writeFileSync(script, "process.exit(0)");
+    const node = createArtoodNode({ url: "ws://example.invalid/api/v1/node?token=dev",
+      hello: { ...hello, execution_features: [VERIFICATION_FEATURE, VERIFICATION_CAPABILITIES_FEATURE, MEASUREMENT_PLAN_FEATURE],
+        verification_profiles: [{ profile_id: "forged", project_id: "forged", workspace_root: "/forged" }] }, adapter: idleAdapter,
+      verificationProfiles: [{ id: "default", project_id: "p", workspace_root: workspace, commands: [{ id: "check", argv: [process.execPath, script], timeout_ms: 1000 }], required_files: [], subject_paths: ["src"] }],
+      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
+    try {
+      const started = node.start(); fakeClientSockets.at(-1)!.open(); await started;
+      const sent = JSON.parse(fakeClientSockets.at(-1)!.sent[0]!);
+      expect(sent.execution_features.includes(VERIFICATION_FEATURE)).toBe(verificationSupported());
+      expect(sent.execution_features.includes(PRODUCT_STAGE_VERIFICATION_FEATURE)).toBe(verificationSupported());
+      expect(sent.execution_features.includes(VERIFICATION_CAPABILITIES_FEATURE)).toBe(false);
+      expect(sent.execution_features.includes(MEASUREMENT_PLAN_FEATURE)).toBe(false);
+      expect(sent.verification_profiles).toEqual(verificationSupported()
+        ? [{ profile_id: "default", project_id: "p", workspace_root: realpathSync.native(workspace) }] : undefined);
+    } finally { await node.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
+  it("derives and snapshots discovery from local profiles rather than mutable caller advertisements", async () => {
+    const supported = vi.spyOn(verification, "verificationSupported").mockReturnValue(true);
+    const root = mkdtempSync(join(tmpdir(), "artoo-verification-discovery-"));
+    const workspace = join(root, "product"); mkdirSync(workspace);
+    const script = join(root, "verify.mjs"); writeFileSync(script, "process.exit(0)");
+    const profiles = [{ id: "local", project_id: "project_local", workspace_root: workspace,
+      commands: [{ id: "check", argv: [process.execPath, script], timeout_ms: 1000 }], required_files: [], subject_paths: ["src"] }];
+    const callerHello: NodeHello = { ...hello, machine: { ...hello.machine }, execution_features: [VERIFICATION_FEATURE],
+      verification_profiles: [{ profile_id: "forged", project_id: "forged", workspace_root: "/forged" }] };
+    const node = createArtoodNode({ url: "ws://example.invalid/api/v1/node?token=dev", hello: callerHello,
+      adapter: idleAdapter, verificationProfiles: profiles, WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
+    try {
+      profiles[0]!.id = "changed"; profiles[0]!.project_id = "changed"; profiles[0]!.workspace_root = "/missing";
+      profiles[0]!.commands[0]!.argv[1] = "/missing-script"; profiles.length = 0;
+      callerHello.node_id = "changed_node"; callerHello.machine.hostname = "changed_host";
+      callerHello.execution_features!.push("forged-feature"); callerHello.verification_profiles![0]!.project_id = "changed-again";
+      const started = node.start(); fakeClientSockets.at(-1)!.open(); await started;
+      const sent = JSON.parse(fakeClientSockets.at(-1)!.sent[0]!);
+      expect(sent.node_id).toBe(hello.node_id); expect(sent.machine.hostname).toBe(hello.machine.hostname);
+      expect(sent.execution_features).toEqual([VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE]);
+      expect(sent.verification_profiles).toEqual([{ profile_id: "local", project_id: "project_local", workspace_root: realpathSync.native(workspace) }]);
+      expect(JSON.stringify(sent)).not.toContain("argv"); expect(JSON.stringify(sent)).not.toContain(script);
+    } finally { await node.stop(); supported.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+  });
+  it("drops injected profile discovery and verification capability when no local profiles exist", async () => {
+    const node = createArtoodNode({ url: "ws://example.invalid/api/v1/node?token=dev", adapter: idleAdapter,
+      hello: { ...hello, execution_features: [VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE, VERIFICATION_CAPABILITIES_FEATURE, MEASUREMENT_PLAN_FEATURE, PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_RETRY_FEATURE_V1, "other-feature"],
+        release_profiles: [{ profile_id: "forged", project_id: "p", workspace_root: "/forged", verification_profile_id: "forged", target_kind: "static_site" }],
+        verification_profiles: [{ profile_id: "forged", project_id: "p", workspace_root: "/forged" }] },
+      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
+    try {
+      const started = node.start(); fakeClientSockets.at(-1)!.open(); await started;
+      const sent = JSON.parse(fakeClientSockets.at(-1)!.sent[0]!);
+      expect(sent.execution_features).toEqual(["other-feature"]); expect(sent).not.toHaveProperty("verification_profiles");
+      expect(sent).not.toHaveProperty("release_profiles");
+    } finally { await node.stop(); }
+  });
+  it.each([false, true])("advertises the frozen opt-in contract and only locally enforced measurement policy (enabled=%s)", async (enabled) => {
+    const supported = vi.spyOn(verification, "verificationSupported").mockReturnValue(true);
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-capability-discovery-")));
+    const workspace = join(root, "workspace"), evidence = join(root, "evidence"), path = join(root, "browser.json"); mkdirSync(workspace); mkdirSync(evidence);
+    writeFileSync(path, JSON.stringify({ evidence_root: evidence, viewports: [768, 320], design_capture_cases: true }));
+    readFileSync(path); // Settle NTFS's initial access metadata before immutable preparation.
+    const profile: verification.VerificationProfile = { id: "local", project_id: "project", workspace_root: workspace,
+      commands: [{ id: "browser", argv: [process.execPath, fileURLToPath(new URL("../dist/web-acceptance-cli.js", import.meta.url)), path], timeout_ms: 1000,
+        observation: { format: "static-web-acceptance.v1", evidence_root: evidence, capabilities: { version: 1 } } }], required_files: [], subject_paths: ["product", ".artoo/product"],
+      ...(enabled ? { measurement_plan_policy: { version: 1, coverage: "every-must-criterion" } as const } : {}) };
+    const node = createArtoodNode({ url: "ws://example.invalid/api/v1/node", hello, adapter: idleAdapter,
+      verificationProfiles: [profile], WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
+    try {
+      // Startup passes prepared objects into createNodeClient; their private snapshot must survive.
+      const started = node.start(); fakeClientSockets.at(-1)!.open(); await started;
+      const sent = JSON.parse(fakeClientSockets.at(-1)!.sent[0]!);
+      expect(sent.execution_features).toContain(VERIFICATION_CAPABILITIES_FEATURE);
+      expect(sent.execution_features.includes(MEASUREMENT_PLAN_FEATURE)).toBe(enabled);
+      expect(sent.verification_profiles[0].capabilities.measurement_plan_policy).toEqual(enabled ? { version: 1, coverage: "every-must-criterion" } : undefined);
+      expect(sent.verification_profiles[0]).toMatchObject({ profile_id: "local", capabilities: { version: 1,
+        checks: [{ command_id: "browser", contract: { claim: "configured", viewports: [{ width: 768, height: 900 }, { width: 320, height: 900 }],
+          stage_policy: { design: "declared-cases" } } }] } });
+      for (const privateValue of [path, evidence, "argv", "options", "trustedFiles"]) expect(JSON.stringify(sent)).not.toContain(privateValue);
+    } finally { await node.stop(); supported.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+  });
+  it("keeps measurement v2 publication discovery without advertising unsupported research transfer semantics", async () => {
+    const supported = vi.spyOn(verification, "verificationSupported").mockReturnValue(true);
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-release-acceptance-discovery-")));
+    const workspace = join(root, "workspace"), storage = join(root, "storage"), evidence = join(root, "evidence"), path = join(root, "browser.json");
+    mkdirSync(workspace); mkdirSync(storage); mkdirSync(evidence);
+    writeFileSync(path, JSON.stringify({ evidence_root: evidence, design_capture_cases: true,
+      browser_program: { version: 3, viewports: [{ id: "compact", width: 390, height: 900 }] } })); readFileSync(path);
+    const listener = createServer(); await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
+    const port = (listener.address() as AddressInfo).port; await new Promise<void>(resolve => listener.close(() => resolve()));
+    const node = createArtoodNode({ url: "ws://example.invalid/api/v1/node", hello: { ...hello,
+      execution_features: [MEASUREMENT_PLAN_FEATURE, MEASUREMENT_PLAN_V2_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE,
+        "product-source-transfer.v1", "product-source-transfer.v2"] }, adapter: idleAdapter,
+      verificationProfiles: [{ id: "verify", project_id: "project", workspace_root: workspace, subject_paths: ["product", ".artoo/product"], required_files: [],
+        measurement_plan_policy: { version: 2, coverage: "every-must-criterion", methods: ["workspace-check", "configured-static-release"] },
+        commands: [{ id: "browser", argv: [process.execPath, fileURLToPath(new URL("../dist/web-acceptance-cli.js", import.meta.url)), path], timeout_ms: 1000,
+          observation: { format: "static-web-acceptance.v3", evidence_root: evidence, capabilities: { version: 1 } } }] }],
+      releaseProfiles: [{ id: "site", project_id: "project", verification_profile_id: "verify", storage_root: storage, output_path: "product",
+        public_url: `http://127.0.0.1:${port}`, listen_host: "127.0.0.1", listen_port: port, health_checks: [{ path: "/" }], health_timeout_ms: 1000,
+        criterion_acceptance: { version: 1 } }], WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
+    try {
+      const started = node.start(); fakeClientSockets.at(-1)!.open(); await started;
+      const sent = JSON.parse(fakeClientSockets.at(-1)!.sent[0]!);
+      expect(sent.execution_features).toContain(MEASUREMENT_PLAN_V2_FEATURE); expect(sent.execution_features).toContain(PRODUCT_RELEASE_ACCEPTANCE_FEATURE);
+      expect(sent.execution_features).not.toContain(MEASUREMENT_PLAN_FEATURE);
+      expect(sent.execution_features).not.toContain("product-source-transfer.v1");
+      expect(sent.execution_features).not.toContain("product-source-transfer.v2");
+      expect(sent.verification_profiles[0].capabilities.measurement_plan_policy).toEqual({ version: 2,
+        coverage: "every-must-criterion", methods: ["workspace-check", "configured-static-release"] });
+      expect(sent.release_profiles[0]).toMatchObject({ profile_id: "site", capabilities: { version: 1,
+        binding: { release_profile_id: "site", project_id: "project", workspace_root: workspace, verification_profile_id: "verify",
+          verification_profile_digest: sent.verification_profiles[0].capabilities.profile_digest },
+        contract: { kind: "configured-static-release", measurement_scope: "node-http-point-in-time" } } });
+      for (const privateValue of [storage, path, evidence, "argv", "trustedFiles"]) expect(JSON.stringify(sent)).not.toContain(privateValue);
+    } finally { await node.stop(); supported.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+  });
+  it.each([false, true])("advertises only local capabilities and target metadata (monitoring=%s)", async (monitoring) => {
+    const supported = vi.spyOn(verification, "verificationSupported").mockReturnValue(true);
+    const root = mkdtempSync(join(tmpdir(), "artoo-release-discovery-"));
+    const workspace = join(root, "workspace"), storage = join(root, "storage"); mkdirSync(workspace); mkdirSync(storage);
+    const script = join(root, "verify.mjs"); writeFileSync(script, "process.exit(0)");
+    const listener = createServer(); await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
+    const port = (listener.address() as AddressInfo).port; await new Promise<void>((resolve) => listener.close(() => resolve()));
+    const releases = [{ id: "local-release", project_id: "project", verification_profile_id: "local-verify", storage_root: storage,
+      output_path: "web", public_url: `http://127.0.0.1:${port}`, listen_host: "127.0.0.1", listen_port: port,
+      health_checks: [{ path: "/" }], health_timeout_ms: 1000,
+      ...(monitoring ? { monitoring: { interval_ms: 60000, failure_threshold: 2 } } : {}) }];
+    const node = createArtoodNode({ url: "ws://example.invalid/api/v1/node", hello, adapter: idleAdapter,
+      verificationProfiles: [{ id: "local-verify", project_id: "project", workspace_root: workspace,
+        commands: [{ id: "check", argv: [process.execPath, script], timeout_ms: 1000 }], required_files: [], subject_paths: ["web"] }],
+      releaseProfiles: releases, WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket });
+    try {
+      releases[0]!.storage_root = "/changed"; releases[0]!.id = "changed"; releases.length = 0;
+      const started = node.start(); fakeClientSockets.at(-1)!.open(); await started;
+      const sent = JSON.parse(fakeClientSockets.at(-1)!.sent[0]!);
+      expect(sent.release_profiles).toEqual([{ profile_id: "local-release", project_id: "project",
+        verification_profile_id: "local-verify", workspace_root: realpathSync.native(workspace), target_kind: "static_site" }]);
+      expect(sent.execution_features).toContain(PRODUCT_RELEASE_FEATURE);
+      expect(sent.execution_features).toContain(PRODUCT_RELEASE_RETRY_FEATURE_V1);
+      expect(sent.execution_features.includes(PRODUCT_RELEASE_HEALTH_FEATURE)).toBe(monitoring);
+      expect(JSON.stringify(sent)).not.toContain(storage); expect(JSON.stringify(sent)).not.toContain("health_checks");
+    } finally { await node.stop(); supported.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+  });
   it("does not open the WebSocket until start is called", async () => {
     const node = createArtoodNode({
       url: "ws://example.invalid/api/v1/node?token=dev",
@@ -225,11 +491,11 @@ describe("createArtoodNode registry heartbeat wiring", () => {
     const parsed = nodeHeartbeatSchema.parse(heartbeatFrames(socket)[0]);
     expect(parsed.node_id).toBe("computer_1");
     expect(parsed.runtimes).toEqual([
-      { runtime: "codex", status: "available", capabilities: ["code.read", "code.modify"] },
+      { runtime: "codex", status: "available", capabilities: ["code.read", "code.modify", "code.review", "test.run"] },
       {
         runtime: "claude-code",
         status: "available",
-        capabilities: ["code.read", "code.modify", "code.review"]
+        capabilities: ["code.read", "code.modify", "code.review", "test.run"]
       }
     ]);
 

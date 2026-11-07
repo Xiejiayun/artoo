@@ -1,9 +1,13 @@
 import { approvals, assistantTurns, contextPacks, fileLeases, messages, plans, runs, tasks } from "@artoo/db";
 import { ContextPackSchema } from "@artoo/domain";
+import { createNodeClient } from "@artoo/artood";
+import type { NodeTransport, RuntimeAdapter } from "@artoo/protocol";
+import { createInProcessChannel, createMockAdapter } from "@artoo/testkit";
 import { and, eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildTestServer, type TestServer } from "../test-support.js";
+import { attachNodeBinding } from "../node-binding.js";
 import { cancelAssistantTurn, createAssistantDispatcher, enqueueAssistantTurn, listAssistantTurns } from "./assistant-service.js";
 import { requestExecutionApproval, resolveApproval } from "./approval-service.js";
 import { createChannel } from "./channel-service.js";
@@ -76,6 +80,53 @@ describe("durable assistant conversation dispatch", () => {
     await dispatcher.pump();
     expect(await server.db.db.select().from(runs)).toHaveLength(2);
     expect(errors).not.toHaveBeenCalled();
+  });
+
+  it("replays a queued assistant recovery against starting, live and finished node identities without launching twice", async () => {
+    const task = await newTask();
+    const pending = await enqueue(task.room_id, "Recover the original intent");
+    await createAssistantDispatcher(server.ctx).pump();
+    const runId = (await turn(pending.turn.id)).runId!;
+    const channel = createInProcessChannel();
+    let releaseStart!: () => void, releaseRun!: () => void, entered!: () => void, started!: () => void, completed!: () => void;
+    const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    const runGate = new Promise<void>((resolve) => { releaseRun = resolve; });
+    const startEntered = new Promise<void>((resolve) => { entered = resolve; });
+    const nodeStarted = new Promise<void>((resolve) => { started = resolve; });
+    const nodeCompleted = new Promise<void>((resolve) => { completed = resolve; });
+    let starts = 0;
+    const adapter: RuntimeAdapter = { ...createMockAdapter(),
+      async start(config) { starts++; entered(); await startGate; return { runId: config.runId }; },
+      async *streamEvents() { yield { type: "run.lifecycle", payload: { phase: "started" } }; await runGate;
+        yield { type: "run.lifecycle", payload: { phase: "completed" } }; },
+    };
+    // Deliberately lose lifecycle delivery: the server still knows only its
+    // durable queued intent while the real node progresses through all states.
+    const transport: NodeTransport = { ...channel.serverTransport, subscribe(handler) {
+      return channel.serverTransport.subscribe((message) => {
+        if (message.kind === "command.ack") handler(message);
+        if (message.kind === "run.event" && message.event.type === "run.lifecycle") {
+          if (message.event.payload.phase === "started") started();
+          if (message.event.payload.phase === "completed") completed();
+        }
+      });
+    } };
+    const binding = attachNodeBinding(server.ctx, transport, NODE);
+    const node = createNodeClient({ nodeId: NODE, transport: channel.node, adapter });
+    node.start();
+    try {
+      await binding.dispatchRunResume(runId); await startEntered;
+      await binding.dispatchRunStart(runId); // Same node launch is still starting.
+      releaseStart(); await nodeStarted;
+      await binding.dispatchRunStart(runId); // Same live handle.
+      releaseRun(); await nodeCompleted;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await binding.dispatchRunStart(runId); // Finished-ID tombstone.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(starts).toBe(1);
+      expect((await server.db.db.select().from(runs).where(eq(runs.id, runId)))[0]?.status).toBe("queued");
+      expect(await server.db.db.select().from(runs).where(eq(runs.taskId, task.id))).toHaveLength(1);
+    } finally { releaseStart(); releaseRun(); await node.stop(); binding.close(); }
   });
 
   it("reports completion without a structured answer as failed and never dispatches a cancelled queued turn", async () => {

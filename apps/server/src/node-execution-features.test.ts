@@ -1,4 +1,5 @@
 import type { NodeTransport } from "@artoo/protocol";
+import type { VerificationProfileAdvertisement } from "@artoo/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ServerContext } from "./context.js";
@@ -16,14 +17,15 @@ describe("current binding execution-feature snapshots", () => {
   // This predicate models an explicitly qualified current session. Actual
   // WebSocket negotiation is exercised by the separate managed transport gate.
   function bind(computerId = "computer_one", features?: readonly string[], registry = createNodeRegistry(),
-    qualification: { state: "hello" | "ready" | "active" } = { state: "active" }): NodeBinding {
+    qualification: { state: "hello" | "ready" | "active" } = { state: "active" },
+    profiles?: readonly VerificationProfileAdvertisement[], nodeOs?: string): NodeBinding {
     const transport: NodeTransport = {
       send: vi.fn(async () => { throw new Error("Feature queries must not dispatch commands"); }),
       subscribe: vi.fn(() => vi.fn()),
       close: vi.fn(async () => {}),
     };
     const binding: NodeBinding = attachNodeBinding(context, transport, computerId, features,
-      () => qualification.state === "active" && registry.get(computerId) === binding);
+      () => qualification.state === "active" && registry.get(computerId) === binding, profiles, undefined, undefined, undefined, nodeOs);
     registry.register(computerId, binding);
     bindings.push(binding);
     transports.push({ send: transport.send as ReturnType<typeof vi.fn>, close: transport.close as ReturnType<typeof vi.fn> });
@@ -42,6 +44,29 @@ describe("current binding execution-feature snapshots", () => {
     expect(bind("computer_empty", []).supportsExecutionFeature(feature)).toBe(false);
   });
 
+  it("requires an exact immutable profile binding on the active current session", () => {
+    const registry = createNodeRegistry(), qualification: { state: "hello" | "ready" | "active" } = { state: "hello" };
+    const profiles = [{ profile_id: "default", project_id: "project_1", workspace_root: "/work/product" }];
+    const current = bind("computer_one", ["run-verification.v1"], registry, qualification, profiles);
+    const supported = () => current.supportsVerificationProfile("default", "project_1", "/work/product");
+    expect(supported()).toBe(false);
+    qualification.state = "active"; expect(supported()).toBe(true);
+    profiles[0]!.workspace_root = "/changed"; profiles.push({ profile_id: "new", project_id: "project_1", workspace_root: "/new" });
+    expect(supported()).toBe(true);
+    for (const [profile, project, root] of [["new", "project_1", "/new"], ["default", "other", "/work/product"],
+      ["default", "project_1", "/work/product/child"], ["default", "project_1", "/work/Product"]]) {
+      expect(current.supportsVerificationProfile(profile!, project!, root!)).toBe(false);
+    }
+    expect(bind("without_feature", [], registry, qualification, profiles).supportsVerificationProfile("default", "project_1", "/changed")).toBe(false);
+    const replacement = bind("computer_one", ["run-verification.v1"], registry);
+    expect(supported()).toBe(false);
+    expect(replacement.supportsVerificationProfile("default", "project_1", "/work/product")).toBe(false);
+    const restored = bind("computer_one", ["run-verification.v1"], registry, qualification,
+      [{ profile_id: "default", project_id: "project_1", workspace_root: "/work/product" }]);
+    expect(restored.supportsVerificationProfile("default", "project_1", "/work/product")).toBe(true);
+    restored.close(); expect(restored.supportsVerificationProfile("default", "project_1", "/work/product")).toBe(false);
+  });
+
   it("matches exact advertised strings and does not infer related support", () => {
     const binding = bind("computer_one", [feature, "future-feature.v2"]);
     expect(binding.supportsExecutionFeature(feature)).toBe(true);
@@ -49,6 +74,56 @@ describe("current binding execution-feature snapshots", () => {
     expect(binding.supportsExecutionFeature("workspace-allocation.per-run-v2")).toBe(false);
     expect(binding.supportsExecutionFeature(feature.toUpperCase())).toBe(false);
     expect(binding.supportsExecutionFeature("code.modify")).toBe(false);
+  });
+
+  it.each(["win32", "windows"])("resolves %s lexical variants to the exact immutable current advertised root", (os) => {
+    const registry = createNodeRegistry(), qualification: { state: "hello" | "ready" | "active" } = { state: "hello" };
+    const root = "C:\\Work Space\\产品", profiles = [{ profile_id: "default", project_id: "project_1", workspace_root: root }];
+    const binding = bind("computer_one", ["run-verification.v1"], registry, qualification, profiles, os);
+    const resolve = (path: string) => binding.getVerificationWorkspace("default", "project_1", path);
+    expect(resolve(root)).toBeUndefined(); qualification.state = "active";
+    for (const path of [root, "c:\\Work Space\\产品", "C:/WORK SPACE/产品/", "c:\\work space\\产品\\", "C:/Work Space/产品/."]) {
+      expect(resolve(path)).toBe(root);
+    }
+    // Matching is routing only; exact run/profile checks still reject the alternate spelling.
+    expect(binding.supportsVerificationProfile("default", "project_1", root)).toBe(true);
+    expect(binding.supportsVerificationProfile("default", "project_1", "c:/work space/产品/")).toBe(false);
+    profiles[0]!.workspace_root = "D:\\changed";
+    expect(resolve(root)).toBe(root);
+    for (const path of ["D:/Work Space/产品", "C:/Work Space/产品/child", "C:Work Space", "relative", "C:/Work\0Space"]) {
+      expect(resolve(path)).toBeUndefined();
+    }
+    expect(binding.getVerificationWorkspace("other", "project_1", root)).toBeUndefined();
+    expect(binding.getVerificationWorkspace("default", "other", root)).toBeUndefined();
+    const replacement = bind("computer_one", ["run-verification.v1"], registry, qualification,
+      [{ profile_id: "default", project_id: "project_1", workspace_root: "D:\\Other" }], os);
+    expect(resolve(root)).toBeUndefined(); expect(replacement.getVerificationWorkspace("default", "project_1", root)).toBeUndefined();
+    expect(replacement.getVerificationWorkspace("default", "project_1", "d:/other")).toBe("D:\\Other");
+    replacement.close(); expect(replacement.getVerificationWorkspace("default", "project_1", "d:/other")).toBeUndefined();
+    const unfeatured = bind("computer_missing_feature", [], registry, qualification,
+      [{ profile_id: "default", project_id: "project_1", workspace_root: root }], os);
+    expect(unfeatured.getVerificationWorkspace("default", "project_1", root)).toBeUndefined();
+  });
+
+  it.each(["project_1", "other_project"])("fails closed on colliding Windows advertisements, including %s", (project) => {
+    const binding = bind("computer_one", ["run-verification.v1"], createNodeRegistry(), { state: "active" }, [
+      { profile_id: "default", project_id: "project_1", workspace_root: "C:\\Work\\Product" },
+      { profile_id: "different_profile", project_id: project, workspace_root: "c:/work/product/" },
+    ], "win32");
+    // Even an exact first match cannot disambiguate two claimed physical roots.
+    expect(binding.getVerificationWorkspace("default", "project_1", "C:\\Work\\Product")).toBeUndefined();
+    expect(binding.getVerificationWorkspace("different_profile", project, "c:/work/product/")).toBeUndefined();
+    expect(binding.supportsVerificationProfile("default", "project_1", "C:\\Work\\Product")).toBe(false);
+    expect(binding.supportsVerificationProfile("different_profile", project, "c:/work/product/")).toBe(false);
+  });
+
+  it.each(["linux", "darwin", undefined])("keeps exact advertised path matching for %s sessions", (os) => {
+    const binding = bind("computer_one", ["run-verification.v1"], createNodeRegistry(), { state: "active" },
+      [{ profile_id: "default", project_id: "project_1", workspace_root: "/Work/Product" }], os);
+    expect(binding.getVerificationWorkspace("default", "project_1", "/Work/Product")).toBe("/Work/Product");
+    for (const path of ["/work/product", "/Work/Product/", "/Work/./Product", "\\Work\\Product"]) {
+      expect(binding.getVerificationWorkspace("default", "project_1", path)).toBeUndefined();
+    }
   });
 
   it("copies the input list so later mutation cannot add or remove support", () => {

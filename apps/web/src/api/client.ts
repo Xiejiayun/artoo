@@ -24,6 +24,7 @@ import type {
   Message,
   Approval,
   Goal, Plan, Checkpoint, TaskDependency, FileLease, Device, DevicePlatform,
+  GoalAutomation, CreateAutonomousGoalRequest, ProductRelease,
   CreateGoalRequest, ProposePlanRequest, CreateDependencyRequest, InstallSkillRequest, SkillInstall,
   DecisionRecord, HandoffRecord, BlockerRecord, CreateDecisionRequest, CreateHandoffRequest, CreateBlockerRequest,
   UpdateDecisionRequest, UpdateHandoffRequest, UpdateBlockerRequest,
@@ -227,6 +228,15 @@ export class ApiClient {
   }
   listGoals(projectId: string): Promise<{ goals: Goal[] }> { return this.request("GET", `/goals?project_id=${encodeURIComponent(projectId)}`); }
   createGoal(body: CreateGoalRequest, key: string): Promise<{ goal: Goal }> { return this.request("POST", "/goals", { body, idempotencyKey: key }); }
+  createAutonomousGoal(body: CreateAutonomousGoalRequest, key: string): Promise<{ goal: Goal; automation: GoalAutomation }> {
+    return this.request("POST", "/autonomous-goals", { body, idempotencyKey: key });
+  }
+  getGoalAutomation(id: string): Promise<{ automation: GoalAutomation | null }> {
+    return this.request("GET", `/goals/${encodeURIComponent(id)}/automation`);
+  }
+  getGoalRelease(id: string): Promise<{ release: ProductRelease | null }> {
+    return this.request("GET", `/goals/${encodeURIComponent(id)}/release`);
+  }
   goalAction(id: string, action: "pause" | "resume" | "cancel" | "reconcile", key: string): Promise<unknown> { return this.request("POST", `/goals/${encodeURIComponent(id)}/${action}`, { idempotencyKey: key }); }
   listPlans(id: string): Promise<{ plans: Plan[] }> { return this.request("GET", `/goals/${encodeURIComponent(id)}/plans`); }
   proposePlan(id: string, body: ProposePlanRequest, key: string): Promise<{ plan: Plan }> { return this.request("POST", `/goals/${encodeURIComponent(id)}/plans`, { body, idempotencyKey: key }); }

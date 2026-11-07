@@ -1,0 +1,803 @@
+{
+  "scope": "Recorded data for ordinary contract tests only; no native execution in these tests",
+  "admission": {
+    "mapping": {
+      "checks": [
+        {
+          "destination": {
+            "command_id": "destination-browser",
+            "config_digest": "sha256:769fdd809f4bc7213cf4969c739e165cee11e12c94f1985cef4c4b5a35738f2b",
+            "contract_digest": "sha256:9976e3b6528cca03bb6e966a240a7d5a57fda2e5abc19d654de1b3986a52caa6"
+          },
+          "source": {
+            "command_id": "source-browser",
+            "config_digest": "sha256:b1a2d87efd7bf137dfb5772295511a9375f01680d13cd212d737233e50b25ebc",
+            "contract_digest": "sha256:9976e3b6528cca03bb6e966a240a7d5a57fda2e5abc19d654de1b3986a52caa6"
+          }
+        }
+      ],
+      "claim": "configured-measurement-equivalence",
+      "destination_capabilities_digest": "sha256:2befd1534fcd1b909d33fee4b65d307d190e4a62be1b225b137da1fccad8b50e",
+      "destination_profile_digest": "sha256:64a2830b476a1793b9da80dabc2a9724a2bd772640710703413e42726a7f5950",
+      "effective_measurement_plan_digest": "sha256:6d52291b04771e58b81c9cb14a8cc4e4310ebda3bd6da200d9aa94cb2d999384",
+      "execution_authorized": false,
+      "release": {
+        "contract_digest": "sha256:d5ba6226ba30faf78068510a7aed644f9b3277c4b661e5c42be9918180606f30",
+        "destination_capabilities_digest": "sha256:f23ffa590ef453f5f431150fe0e906cf19ec380dca457b69ecb4c5e79b6eef03",
+        "source_capabilities_digest": "sha256:6b331e2f555f909298be2fcb904b60c173ab097961130a40fb07e75ed414f31b"
+      },
+      "research": {
+        "checksum": "sha256:637c64c097e4be4edcb8dac2b4203cb3eb84e4a6304a1fe4f3d6ecc206d5a8f7",
+        "path": ".artoo/product/research.json",
+        "size": 2261
+      },
+      "source_capabilities_digest": "sha256:4c48455b8d91114a95c070fb7b67456ed59c185f0a55b9ab4093940d958db1ee",
+      "source_measurement_plan_digest": "sha256:dc0966ff52fd86e9f4f6d94487b86e6eb57e155da584fec324305262c9ce80f6",
+      "source_profile_digest": "sha256:029560e7ffef3bf732f20f3a665553203fd7adb127e671c5d9bdd0fd75a722c2",
+      "transfer": {
+        "capsule_digest": "sha256:ff6f6ddf24f47ade6886b1294844623e1b97ad0d8ca66282ccc39694131c2df2",
+        "destination_subject_digest": "sha256:59542966a35ce9dfce81825bcb48b1536cbb3f78af5675ee9e78e6f58be6f80e",
+        "request_digest": "sha256:8834c978f066298797e1350385d2bbc50baefd10bec67381f031ac0210354592",
+        "source_subject_digest": "sha256:59542966a35ce9dfce81825bcb48b1536cbb3f78af5675ee9e78e6f58be6f80e"
+      },
+      "verification_passed": false,
+      "version": 1
+    },
+    "ready": {
+      "capsule_digest": "sha256:ff6f6ddf24f47ade6886b1294844623e1b97ad0d8ca66282ccc39694131c2df2",
+      "destination": {
+        "node_id": "destination-node",
+        "profile_digest": "sha256:64a2830b476a1793b9da80dabc2a9724a2bd772640710703413e42726a7f5950",
+        "profile_id": "destination",
+        "project_id": "project",
+        "subject_digest": "sha256:59542966a35ce9dfce81825bcb48b1536cbb3f78af5675ee9e78e6f58be6f80e",
+        "workspace_root": "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\destination"
+      },
+      "execution_authorized": false,
+      "git_metadata_digest": "sha256:94124d1b39e6cdc360fcaf240020f5a0256639f47f60feb4ae8743fcaf0a3f56",
+      "git_processes_closed": true,
+      "manifest_digest": "sha256:11c5a7c4db111370350dd108fd93dd2400f18ae341e78197c85c069a04d5eb4b",
+      "request_digest": "sha256:34fb7f6db4ead2cda46d078f51ab5d71ef7d24152c4f99b1a14480e16320e14f",
+      "semantic_mapping_accepted": false,
+      "transfer_id": "semantic-transfer",
+      "verification_passed": false,
+      "version": 1
+    },
+    "request": {
+      "byte_request": {
+        "authorization": {
+          "actor_user_id": "user",
+          "consent_id": null,
+          "policy_version": "policy"
+        },
+        "destination": {
+          "capabilities": {
+            "checks": [
+              {
+                "command_id": "destination-browser",
+                "config_digest": "sha256:769fdd809f4bc7213cf4969c739e165cee11e12c94f1985cef4c4b5a35738f2b",
+                "contract": {
+                  "actions": [
+                    "navigate",
+                    "reload",
+                    "click",
+                    "fill",
+                    "check",
+                    "assert_visible",
+                    "assert_hidden",
+                    "assert_text",
+                    "assert_value",
+                    "assert_count",
+                    "press",
+                    "type_text",
+                    "focus",
+                    "assert_focused",
+                    "assert_focus_within",
+                    "open_page",
+                    "close_page"
+                  ],
+                  "browser_steps_version": 3,
+                  "checks": [
+                    "horizontal-overflow",
+                    "dom-control-name-heuristic"
+                  ],
+                  "claim": "configured",
+                  "device_scale_factor": 1,
+                  "keyboard": {
+                    "allowed_keys": [
+                      "Tab",
+                      "Shift+Tab",
+                      "Enter",
+                      "Escape",
+                      "Space",
+                      "ArrowUp",
+                      "ArrowDown",
+                      "ArrowLeft",
+                      "ArrowRight",
+                      "Home",
+                      "End",
+                      "Backspace",
+                      "Delete"
+                    ],
+                    "focus_scope": "main-frame-dom",
+                    "focus_setup": "programmatic",
+                    "typing_max_length": 1000
+                  },
+                  "kind": "static-web",
+                  "legacy_browser_steps": "rejected",
+                  "limits": {
+                    "action_timeout_ms": 5000,
+                    "max_cases": 50,
+                    "max_steps_per_case": 100
+                  },
+                  "pages": {
+                    "counting": "cumulative-created",
+                    "main_close": "rejected",
+                    "max_pages": 3,
+                    "name_reuse": "rejected",
+                    "same_browser_context": true,
+                    "same_origin": true
+                  },
+                  "screenshots": "each-created-page-visible-viewport",
+                  "stage_policy": {
+                    "design": "prototype-only",
+                    "implementation": "declared-cases",
+                    "research": "no-browser",
+                    "validation": "declared-cases"
+                  },
+                  "unavailable": [
+                    "storage-exception-injection",
+                    "native-screen-reader",
+                    "browser-zoom"
+                  ],
+                  "version": 3,
+                  "viewports": [
+                    {
+                      "height": 844,
+                      "id": "compact",
+                      "width": 390
+                    }
+                  ]
+                },
+                "contract_digest": "sha256:9976e3b6528cca03bb6e966a240a7d5a57fda2e5abc19d654de1b3986a52caa6"
+              }
+            ],
+            "measurement_plan_policy": {
+              "coverage": "every-must-criterion",
+              "methods": [
+                "workspace-check",
+                "configured-static-release"
+              ],
+              "version": 2
+            },
+            "profile_digest": "sha256:64a2830b476a1793b9da80dabc2a9724a2bd772640710703413e42726a7f5950",
+            "version": 1
+          },
+          "capability_digest": "sha256:2befd1534fcd1b909d33fee4b65d307d190e4a62be1b225b137da1fccad8b50e",
+          "node_id": "destination-node",
+          "profile_id": "destination",
+          "workspace_root": "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\destination"
+        },
+        "goal_id": "goal",
+        "kind": "product-source-transfer.v1",
+        "organization_id": "organization",
+        "plan_id": "plan",
+        "project_id": "project",
+        "source": {
+          "capsule_bytes": 3966,
+          "capsule_digest": "sha256:ff6f6ddf24f47ade6886b1294844623e1b97ad0d8ca66282ccc39694131c2df2",
+          "evidence_id": "source-evidence",
+          "manifest_digest": "sha256:11c5a7c4db111370350dd108fd93dd2400f18ae341e78197c85c069a04d5eb4b",
+          "node_id": "source-node",
+          "profile_digest": "sha256:029560e7ffef3bf732f20f3a665553203fd7adb127e671c5d9bdd0fd75a722c2",
+          "profile_id": "source",
+          "review_id": "independent-review",
+          "reviewer_evidence_id": "independent-review-evidence",
+          "reviewer_run_id": "independent-review-run",
+          "run_id": "source-run",
+          "subject_digest": "sha256:59542966a35ce9dfce81825bcb48b1536cbb3f78af5675ee9e78e6f58be6f80e",
+          "task_id": "source-run-task",
+          "verification_request_id": "source-run-verify",
+          "workspace_root": "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\source"
+        },
+        "transfer_id": "semantic-transfer",
+        "version": 1
+      },
+      "command_pairs": [
+        {
+          "destination_command_id": "destination-browser",
+          "source_command_id": "source-browser"
+        }
+      ],
+      "kind": "product-source-transfer.v2",
+      "measurement_v2": {
+        "destination_release": {
+          "binding": {
+            "contract_digest": "sha256:d5ba6226ba30faf78068510a7aed644f9b3277c4b661e5c42be9918180606f30",
+            "project_id": "project",
+            "release_profile_digest": "sha256:374634ff76a2161e989967add5af8de7ec7d2cee0ad114a10118793f5e8cd074",
+            "release_profile_id": "destination-release",
+            "verification_profile_digest": "sha256:64a2830b476a1793b9da80dabc2a9724a2bd772640710703413e42726a7f5950",
+            "verification_profile_id": "destination",
+            "version": 1,
+            "workspace_root": "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\destination"
+          },
+          "contract": {
+            "claim": "configured",
+            "criterion": {
+              "id": "configured-static-publication",
+              "statement": "The final verified immutable static product is activated at the configured endpoint, and the node's point-in-time HTTP checks confirm the configured paths, content digests and release identity.",
+              "statement_digest": "sha256:65cbd1da085b0caaa00787fd877924dd79ac1157e869285019fd01686411451f"
+            },
+            "endpoint_scope": "configured-origin",
+            "execution_phase": "after-stage-acceptance",
+            "health_checks": [
+              {
+                "body": "immutable-artifact-equality",
+                "expected_status": 200,
+                "identity": "release-id-and-artifact-digest-headers",
+                "path": "/"
+              }
+            ],
+            "kind": "configured-static-release",
+            "lifecycle": "while-configured-node-service-running",
+            "measurement_scope": "node-http-point-in-time",
+            "version": 1
+          },
+          "version": 1
+        },
+        "version": 1
+      },
+      "source_export": {
+        "byte_export": {
+          "author_closure": "windows-job-and-tools-closed.v1",
+          "capsule_bytes": 3966,
+          "capsule_digest": "sha256:ff6f6ddf24f47ade6886b1294844623e1b97ad0d8ca66282ccc39694131c2df2",
+          "context_digest": "sha256:0e446e3a069d8ffa7ee30ee3206e07ab2efa1398049f097d7bc49ece306408d6",
+          "execution_authorized": false,
+          "export_id": "sha256:7ced72d5897444f179a35283bc95e2c2cf93576915162172311d0890ea16bb2e",
+          "goal_id": "goal",
+          "manifest_digest": "sha256:11c5a7c4db111370350dd108fd93dd2400f18ae341e78197c85c069a04d5eb4b",
+          "node_id": "source-node",
+          "plan_id": "plan",
+          "profile_digest": "sha256:029560e7ffef3bf732f20f3a665553203fd7adb127e671c5d9bdd0fd75a722c2",
+          "profile_id": "source",
+          "project_id": "project",
+          "run_id": "source-run",
+          "subject_digest": "sha256:59542966a35ce9dfce81825bcb48b1536cbb3f78af5675ee9e78e6f58be6f80e",
+          "task_id": "source-run-task",
+          "verification_digest": "sha256:3073b5937083fe1270098c04d8ba5e42108ea00115a816c8d665bbda5c2d53ed",
+          "verification_request_id": "source-run-verify",
+          "version": 1
+        },
+        "measurement_v2": {
+          "source_release": {
+            "binding": {
+              "contract_digest": "sha256:d5ba6226ba30faf78068510a7aed644f9b3277c4b661e5c42be9918180606f30",
+              "project_id": "project",
+              "release_profile_digest": "sha256:27c95779a04d195ae1dc939a07404f4f16cc985a7233d0850e217568d9216589",
+              "release_profile_id": "source-release",
+              "verification_profile_digest": "sha256:029560e7ffef3bf732f20f3a665553203fd7adb127e671c5d9bdd0fd75a722c2",
+              "verification_profile_id": "source",
+              "version": 1,
+              "workspace_root": "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\source"
+            },
+            "contract": {
+              "claim": "configured",
+              "criterion": {
+                "id": "configured-static-publication",
+                "statement": "The final verified immutable static product is activated at the configured endpoint, and the node's point-in-time HTTP checks confirm the configured paths, content digests and release identity.",
+                "statement_digest": "sha256:65cbd1da085b0caaa00787fd877924dd79ac1157e869285019fd01686411451f"
+              },
+              "endpoint_scope": "configured-origin",
+              "execution_phase": "after-stage-acceptance",
+              "health_checks": [
+                {
+                  "body": "immutable-artifact-equality",
+                  "expected_status": 200,
+                  "identity": "release-id-and-artifact-digest-headers",
+                  "path": "/"
+                }
+              ],
+              "kind": "configured-static-release",
+              "lifecycle": "while-configured-node-service-running",
+              "measurement_scope": "node-http-point-in-time",
+              "version": 1
+            },
+            "version": 1
+          },
+          "version": 1
+        },
+        "research_provenance": {
+          "chain_depth": 0,
+          "research": {
+            "checksum": "sha256:637c64c097e4be4edcb8dac2b4203cb3eb84e4a6304a1fe4f3d6ecc206d5a8f7",
+            "path": ".artoo/product/research.json",
+            "size": 2261
+          },
+          "sources": [
+            {
+              "content_bytes": 577,
+              "metadata": {
+                "content_digest": "sha256:25ddf2c883e0d1958ea971d279a7e4f0fd446724ee3db7db19dadabd4a62e484",
+                "id": "source_0e22644cbd8341018b03d62ab9651423",
+                "retrieved_at": "2026-11-05T16:25:24.147Z",
+                "title": "Example Domain",
+                "url": "https://example.com/"
+              },
+              "metadata_digest": "sha256:443ae28230b6a2b2af8c619e71de64b58b4faceafc29d547d9e7568d57dda544",
+              "origin": {
+                "goal_id": "goal",
+                "node_id": "source-node",
+                "project_id": "project",
+                "run_id": "source-run",
+                "task_id": "source-run-task",
+                "workspace_root": "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\source"
+              }
+            }
+          ],
+          "version": 1
+        },
+        "research_provenance_digest": "sha256:317154f999f36afb310c5bdbb962f38d9b137cec2a5e2c8d5461f1d5f91bfe98",
+        "source_capabilities": {
+          "checks": [
+            {
+              "command_id": "source-browser",
+              "config_digest": "sha256:b1a2d87efd7bf137dfb5772295511a9375f01680d13cd212d737233e50b25ebc",
+              "contract": {
+                "actions": [
+                  "navigate",
+                  "reload",
+                  "click",
+                  "fill",
+                  "check",
+                  "assert_visible",
+                  "assert_hidden",
+                  "assert_text",
+                  "assert_value",
+                  "assert_count",
+                  "press",
+                  "type_text",
+                  "focus",
+                  "assert_focused",
+                  "assert_focus_within",
+                  "open_page",
+                  "close_page"
+                ],
+                "browser_steps_version": 3,
+                "checks": [
+                  "horizontal-overflow",
+                  "dom-control-name-heuristic"
+                ],
+                "claim": "configured",
+                "device_scale_factor": 1,
+                "keyboard": {
+                  "allowed_keys": [
+                    "Tab",
+                    "Shift+Tab",
+                    "Enter",
+                    "Escape",
+                    "Space",
+                    "ArrowUp",
+                    "ArrowDown",
+                    "ArrowLeft",
+                    "ArrowRight",
+                    "Home",
+                    "End",
+                    "Backspace",
+                    "Delete"
+                  ],
+                  "focus_scope": "main-frame-dom",
+                  "focus_setup": "programmatic",
+                  "typing_max_length": 1000
+                },
+                "kind": "static-web",
+                "legacy_browser_steps": "rejected",
+                "limits": {
+                  "action_timeout_ms": 5000,
+                  "max_cases": 50,
+                  "max_steps_per_case": 100
+                },
+                "pages": {
+                  "counting": "cumulative-created",
+                  "main_close": "rejected",
+                  "max_pages": 3,
+                  "name_reuse": "rejected",
+                  "same_browser_context": true,
+                  "same_origin": true
+                },
+                "screenshots": "each-created-page-visible-viewport",
+                "stage_policy": {
+                  "design": "prototype-only",
+                  "implementation": "declared-cases",
+                  "research": "no-browser",
+                  "validation": "declared-cases"
+                },
+                "unavailable": [
+                  "storage-exception-injection",
+                  "native-screen-reader",
+                  "browser-zoom"
+                ],
+                "version": 3,
+                "viewports": [
+                  {
+                    "height": 844,
+                    "id": "compact",
+                    "width": 390
+                  }
+                ]
+              },
+              "contract_digest": "sha256:9976e3b6528cca03bb6e966a240a7d5a57fda2e5abc19d654de1b3986a52caa6"
+            }
+          ],
+          "measurement_plan_policy": {
+            "coverage": "every-must-criterion",
+            "methods": [
+              "workspace-check",
+              "configured-static-release"
+            ],
+            "version": 2
+          },
+          "profile_digest": "sha256:029560e7ffef3bf732f20f3a665553203fd7adb127e671c5d9bdd0fd75a722c2",
+          "version": 1
+        },
+        "stage": "research",
+        "version": 2
+      },
+      "source_export_digest": "sha256:60e630390f47641a0719a6299cd0cd8e64dd36632051f0e4a09b821a5f68fd6c",
+      "version": 2
+    },
+    "request_digest": "sha256:8834c978f066298797e1350385d2bbc50baefd10bec67381f031ac0210354592",
+    "run_start": {
+      "agent_instance_id": "fixture-agent",
+      "artifact_rules": {
+        "paths": []
+      },
+      "context_pack": {
+        "id": "destination-run-context",
+        "payload": {
+          "artifacts": {
+            "expected": []
+          },
+          "goal_context": {
+            "acceptance_criteria": [],
+            "goal_id": "goal",
+            "objective": "Controlled transfer",
+            "plan": {
+              "id": "plan",
+              "rationale": "First-hop",
+              "spec_ref": null,
+              "version": 1
+            },
+            "version": 1
+          },
+          "memory": {
+            "project_notes": [],
+            "task_summary": null
+          },
+          "policy": {
+            "filesystem_write_scope": [
+              "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\destination"
+            ],
+            "requires_approval": []
+          },
+          "product_development": {
+            "deliverables": [
+              {
+                "format": "json",
+                "path": ".artoo/product/research.json",
+                "purpose": "Requirements, assumptions and research findings linked to retrieved source receipts"
+              }
+            ],
+            "instructions": [
+              "Initialize product/ for product source, prototypes, assets and test evidence. Keep these files under product/ and stage handoffs under .artoo/product/ so the configured verifier measures the complete delivered version.",
+              "Use the configured research tools to retrieve sources. Record the tool's actual URL, retrieval time and content digest; never invent citations or receipts.",
+              "Write research.json with version:1, objective, assumptions:[], requirements:[{id,description,priority:\"must\"|\"should\",acceptance_criteria:[]}], sources:[{id,url,title,retrieved_at,content_digest}], findings:[{summary,source_ids:[]}], decisions:[{question,decision,rationale,source_ids:[]}]. Each source id must equal the actual research tool receipt id. Resolve reversible choices and record their rationale.",
+              "When verification_capabilities is present, use its configured actions, viewport sizes, stage policy and unavailable measurements when planning acceptance checks. Configured capability is not evidence that a check ran or passed. Preserve explicit user requirements; an unavailable required measurement remains unmet. For reversible choices the user did not specify, choose verifiable criteria within this contract and record the rationale. Never add unsupported mandatory measurements or use product-authored simulation buttons as trusted browser evidence. Missing capability context means measurement scope is unknown, not unlimited.",
+              "Protected verification screenshots are delivered as node-sealed evidence references outside the measured workspace. Start with available node-bound check outcomes, measured scope, case entries and viewport outcomes. Review every acceptance criterion against source, accepted cases and observed execution; use read_evidence to inspect relevant raw traces and screenshots for concrete semantic, visual, failure or coverage questions, following the tool's integrity and pagination requirements for each selected reference. Do not enumerate every trace by default or claim visual inspection of unseen screenshots. Do not describe sealed evidence as product files or require copying PNGs into the measured tree. For validation evidence_paths, write a factual text record under product/ citing the request, measured scope and evidence references. Reused source and cases still require node measurement of the current exact source; earlier-stage or preview results do not replace required final verification or independent review. A prototype-only observation does not prove functional cases; unknown scope or an unrun required check is not a pass."
+            ],
+            "stage": "research",
+            "version": 1
+          },
+          "project": {
+            "default_workspace": "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\destination",
+            "id": "project",
+            "name": "Fixture"
+          },
+          "release_capabilities": {
+            "binding": {
+              "contract_digest": "sha256:d5ba6226ba30faf78068510a7aed644f9b3277c4b661e5c42be9918180606f30",
+              "project_id": "project",
+              "release_profile_digest": "sha256:374634ff76a2161e989967add5af8de7ec7d2cee0ad114a10118793f5e8cd074",
+              "release_profile_id": "destination-release",
+              "verification_profile_digest": "sha256:64a2830b476a1793b9da80dabc2a9724a2bd772640710703413e42726a7f5950",
+              "verification_profile_id": "destination",
+              "version": 1,
+              "workspace_root": "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\destination"
+            },
+            "contract": {
+              "claim": "configured",
+              "criterion": {
+                "id": "configured-static-publication",
+                "statement": "The final verified immutable static product is activated at the configured endpoint, and the node's point-in-time HTTP checks confirm the configured paths, content digests and release identity.",
+                "statement_digest": "sha256:65cbd1da085b0caaa00787fd877924dd79ac1157e869285019fd01686411451f"
+              },
+              "endpoint_scope": "configured-origin",
+              "execution_phase": "after-stage-acceptance",
+              "health_checks": [
+                {
+                  "body": "immutable-artifact-equality",
+                  "expected_status": 200,
+                  "identity": "release-id-and-artifact-digest-headers",
+                  "path": "/"
+                }
+              ],
+              "kind": "configured-static-release",
+              "lifecycle": "while-configured-node-service-running",
+              "measurement_scope": "node-http-point-in-time",
+              "version": 1
+            },
+            "version": 1
+          },
+          "task": {
+            "acceptance_criteria": [],
+            "description": "First-hop fixture",
+            "id": "destination-run-task",
+            "title": "Controlled native research"
+          },
+          "verification_capabilities": {
+            "checks": [
+              {
+                "command_id": "destination-browser",
+                "config_digest": "sha256:769fdd809f4bc7213cf4969c739e165cee11e12c94f1985cef4c4b5a35738f2b",
+                "contract": {
+                  "actions": [
+                    "navigate",
+                    "reload",
+                    "click",
+                    "fill",
+                    "check",
+                    "assert_visible",
+                    "assert_hidden",
+                    "assert_text",
+                    "assert_value",
+                    "assert_count",
+                    "press",
+                    "type_text",
+                    "focus",
+                    "assert_focused",
+                    "assert_focus_within",
+                    "open_page",
+                    "close_page"
+                  ],
+                  "browser_steps_version": 3,
+                  "checks": [
+                    "horizontal-overflow",
+                    "dom-control-name-heuristic"
+                  ],
+                  "claim": "configured",
+                  "device_scale_factor": 1,
+                  "keyboard": {
+                    "allowed_keys": [
+                      "Tab",
+                      "Shift+Tab",
+                      "Enter",
+                      "Escape",
+                      "Space",
+                      "ArrowUp",
+                      "ArrowDown",
+                      "ArrowLeft",
+                      "ArrowRight",
+                      "Home",
+                      "End",
+                      "Backspace",
+                      "Delete"
+                    ],
+                    "focus_scope": "main-frame-dom",
+                    "focus_setup": "programmatic",
+                    "typing_max_length": 1000
+                  },
+                  "kind": "static-web",
+                  "legacy_browser_steps": "rejected",
+                  "limits": {
+                    "action_timeout_ms": 5000,
+                    "max_cases": 50,
+                    "max_steps_per_case": 100
+                  },
+                  "pages": {
+                    "counting": "cumulative-created",
+                    "main_close": "rejected",
+                    "max_pages": 3,
+                    "name_reuse": "rejected",
+                    "same_browser_context": true,
+                    "same_origin": true
+                  },
+                  "screenshots": "each-created-page-visible-viewport",
+                  "stage_policy": {
+                    "design": "prototype-only",
+                    "implementation": "declared-cases",
+                    "research": "no-browser",
+                    "validation": "declared-cases"
+                  },
+                  "unavailable": [
+                    "storage-exception-injection",
+                    "native-screen-reader",
+                    "browser-zoom"
+                  ],
+                  "version": 3,
+                  "viewports": [
+                    {
+                      "height": 844,
+                      "id": "compact",
+                      "width": 390
+                    }
+                  ]
+                },
+                "contract_digest": "sha256:9976e3b6528cca03bb6e966a240a7d5a57fda2e5abc19d654de1b3986a52caa6"
+              }
+            ],
+            "measurement_plan_policy": {
+              "coverage": "every-must-criterion",
+              "methods": [
+                "workspace-check",
+                "configured-static-release"
+              ],
+              "version": 2
+            },
+            "profile_digest": "sha256:64a2830b476a1793b9da80dabc2a9724a2bd772640710703413e42726a7f5950",
+            "profile_id": "destination",
+            "version": 1
+          },
+          "workspace": {
+            "file_scope": [],
+            "root": "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\destination"
+          }
+        }
+      },
+      "policy_snapshot": {
+        "filesystem_write_scope": [
+          "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\destination"
+        ],
+        "requires_approval": []
+      },
+      "run_id": "destination-run",
+      "runtime": "fixture",
+      "task_id": "destination-run-task",
+      "verification": {
+        "capability_binding": {
+          "checks": [
+            {
+              "command_id": "destination-browser",
+              "config_digest": "sha256:769fdd809f4bc7213cf4969c739e165cee11e12c94f1985cef4c4b5a35738f2b",
+              "contract_digest": "sha256:9976e3b6528cca03bb6e966a240a7d5a57fda2e5abc19d654de1b3986a52caa6"
+            }
+          ],
+          "profile_digest": "sha256:64a2830b476a1793b9da80dabc2a9724a2bd772640710703413e42726a7f5950",
+          "version": 1
+        },
+        "expected_subject_digest": "sha256:59542966a35ce9dfce81825bcb48b1536cbb3f78af5675ee9e78e6f58be6f80e",
+        "profile_id": "destination",
+        "release_capability_binding": {
+          "contract_digest": "sha256:d5ba6226ba30faf78068510a7aed644f9b3277c4b661e5c42be9918180606f30",
+          "project_id": "project",
+          "release_profile_digest": "sha256:374634ff76a2161e989967add5af8de7ec7d2cee0ad114a10118793f5e8cd074",
+          "release_profile_id": "destination-release",
+          "verification_profile_digest": "sha256:64a2830b476a1793b9da80dabc2a9724a2bd772640710703413e42726a7f5950",
+          "verification_profile_id": "destination",
+          "version": 1,
+          "workspace_root": "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\destination"
+        },
+        "request_id": "destination-run-verify",
+        "version": 1
+      },
+      "workspace": {
+        "root": "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\destination"
+      }
+    },
+    "version": 2
+  },
+  "fresh": {
+    "admission_digest": "sha256:7dbf05a0e64319f65dbf16a575e48c58c4166f21786a47b958938ff09f93673e",
+    "automatic_review_authorized": false,
+    "claim": "fresh-destination-research-verification",
+    "destination_run_id": "destination-run",
+    "execution_authorized": false,
+    "mapping_digest": "sha256:22597551121097fa481d63911033d92514ce14f341da12db50fb938ef52a62f6",
+    "request_digest": "sha256:8834c978f066298797e1350385d2bbc50baefd10bec67381f031ac0210354592",
+    "research_provenance_digest": "sha256:317154f999f36afb310c5bdbb962f38d9b137cec2a5e2c8d5461f1d5f91bfe98",
+    "source_export_digest": "sha256:60e630390f47641a0719a6299cd0cd8e64dd36632051f0e4a09b821a5f68fd6c",
+    "verification": {
+      "checks": [
+        {
+          "duration_ms": 2000.6998000000021,
+          "exit_code": 0,
+          "id": "destination-browser",
+          "observation": {
+            "capability_binding": {
+              "command_id": "destination-browser",
+              "config_digest": "sha256:769fdd809f4bc7213cf4969c739e165cee11e12c94f1985cef4c4b5a35738f2b",
+              "contract_digest": "sha256:9976e3b6528cca03bb6e966a240a7d5a57fda2e5abc19d654de1b3986a52caa6",
+              "profile_digest": "sha256:64a2830b476a1793b9da80dabc2a9724a2bd772640710703413e42726a7f5950",
+              "version": 1
+            },
+            "cases": [],
+            "device_scale_factor": 1,
+            "evidence_bundle": {
+              "bundle_id": "browser_2aaf7ad089f0f23e9ed1680809744c307b3497121c9026750914a5d95d63b45a",
+              "manifest_digest": "sha256:2aaf7ad089f0f23e9ed1680809744c307b3497121c9026750914a5d95d63b45a"
+            },
+            "format": "static-web-acceptance.v3",
+            "scope": "final",
+            "stage": "research",
+            "version": 3
+          },
+          "output_digest": "sha256:f03ddfb6446269a56917cc2e453bb5608c02594e7a705e767626f6856d5e0a4f"
+        }
+      ],
+      "measurement_plan": {
+        "claim": "declared-mapping-feasibility",
+        "mapped_criterion_count": 2,
+        "measurement_plan_digest": "sha256:6d52291b04771e58b81c9cb14a8cc4e4310ebda3bd6da200d9aa94cb2d999384",
+        "must_criterion_count": 2,
+        "pending_release": [
+          {
+            "claim_id": "configured-static-publication",
+            "criterion_digest": "sha256:248e5d8d126cb31963f7c310558b4870c5286fc0f47d63cea9a2a9130e038617",
+            "criterion_index": 0,
+            "release_binding": {
+              "contract_digest": "sha256:d5ba6226ba30faf78068510a7aed644f9b3277c4b661e5c42be9918180606f30",
+              "project_id": "project",
+              "release_profile_digest": "sha256:374634ff76a2161e989967add5af8de7ec7d2cee0ad114a10118793f5e8cd074",
+              "release_profile_id": "destination-release",
+              "verification_profile_digest": "sha256:64a2830b476a1793b9da80dabc2a9724a2bd772640710703413e42726a7f5950",
+              "verification_profile_id": "destination",
+              "version": 1,
+              "workspace_root": "C:\\Users\\jiaxie\\.artoo\\native-development\\artoo-semantic-v2-Sw101i\\destination"
+            },
+            "requirement_id": "publish",
+            "statement_digest": "sha256:65cbd1da085b0caaa00787fd877924dd79ac1157e869285019fd01686411451f"
+          }
+        ],
+        "policy": {
+          "coverage": "every-must-criterion",
+          "methods": [
+            "workspace-check",
+            "configured-static-release"
+          ],
+          "version": 2
+        },
+        "release_criterion_count": 1,
+        "research": {
+          "checksum": "sha256:637c64c097e4be4edcb8dac2b4203cb3eb84e4a6304a1fe4f3d6ecc206d5a8f7",
+          "path": ".artoo/product/research.json",
+          "size": 2261
+        },
+        "scope": "final",
+        "used_checks": [
+          {
+            "command_id": "destination-browser",
+            "config_digest": "sha256:769fdd809f4bc7213cf4969c739e165cee11e12c94f1985cef4c4b5a35738f2b",
+            "contract_digest": "sha256:9976e3b6528cca03bb6e966a240a7d5a57fda2e5abc19d654de1b3986a52caa6"
+          }
+        ],
+        "version": 2,
+        "workspace_criterion_count": 1
+      },
+      "outcome": "passed",
+      "profile_digest": "sha256:64a2830b476a1793b9da80dabc2a9724a2bd772640710703413e42726a7f5950",
+      "profile_id": "destination",
+      "request_id": "destination-run-verify",
+      "required_files": [
+        {
+          "checksum": "sha256:637c64c097e4be4edcb8dac2b4203cb3eb84e4a6304a1fe4f3d6ecc206d5a8f7",
+          "path": ".artoo/product/research.json",
+          "size": 2261
+        }
+      ],
+      "subject_digest": "sha256:59542966a35ce9dfce81825bcb48b1536cbb3f78af5675ee9e78e6f58be6f80e",
+      "version": 1
+    },
+    "version": 1
+  },
+  "research": "{\"version\":1,\"objective\":\"Controlled first-hop research transfer\",\"assumptions\":[],\"requirements\":[{\"id\":\"preserve\",\"description\":\"Preserve native authored bytes\",\"priority\":\"must\",\"acceptance_criteria\":[\"  The product shows its exact title  \"]},{\"id\":\"publish\",\"description\":\"Configured publication remains pending\",\"priority\":\"must\",\"acceptance_criteria\":[\"The final verified immutable static product is activated at the configured endpoint, and the node's point-in-time HTTP checks confirm the configured paths, content digests and release identity.\"]}],\"decisions\":[],\"measurement_plan\":{\"version\":2,\"profile_digest\":\"sha256:029560e7ffef3bf732f20f3a665553203fd7adb127e671c5d9bdd0fd75a722c2\",\"entries\":[{\"method\":\"workspace-check\",\"requirement_id\":\"preserve\",\"criterion_index\":0,\"command_id\":\"source-browser\",\"config_digest\":\"sha256:b1a2d87efd7bf137dfb5772295511a9375f01680d13cd212d737233e50b25ebc\",\"contract_digest\":\"sha256:9976e3b6528cca03bb6e966a240a7d5a57fda2e5abc19d654de1b3986a52caa6\",\"actions\":[\"navigate\",\"assert_text\"],\"keys\":[],\"viewports\":[{\"id\":\"compact\",\"width\":390,\"height\":844}],\"needs\":[]},{\"method\":\"configured-static-release\",\"requirement_id\":\"publish\",\"criterion_index\":0,\"release_binding\":{\"version\":1,\"release_profile_id\":\"source-release\",\"release_profile_digest\":\"sha256:27c95779a04d195ae1dc939a07404f4f16cc985a7233d0850e217568d9216589\",\"contract_digest\":\"sha256:d5ba6226ba30faf78068510a7aed644f9b3277c4b661e5c42be9918180606f30\",\"project_id\":\"project\",\"workspace_root\":\"C:\\\\Users\\\\jiaxie\\\\.artoo\\\\native-development\\\\artoo-semantic-v2-Sw101i\\\\source\",\"verification_profile_id\":\"source\",\"verification_profile_digest\":\"sha256:029560e7ffef3bf732f20f3a665553203fd7adb127e671c5d9bdd0fd75a722c2\"},\"claim_id\":\"configured-static-publication\",\"statement_digest\":\"sha256:65cbd1da085b0caaa00787fd877924dd79ac1157e869285019fd01686411451f\"}]},\"sources\":[{\"id\":\"source_0e22644cbd8341018b03d62ab9651423\",\"url\":\"https://example.com/\",\"title\":\"Example Domain\",\"retrieved_at\":\"2026-11-05T16:25:24.147Z\",\"content_digest\":\"sha256:25ddf2c883e0d1958ea971d279a7e4f0fd446724ee3db7db19dadabd4a62e484\"}],\"findings\":[{\"summary\":\"The public reference was retrieved through the original node-owned broker\",\"source_ids\":[\"source_0e22644cbd8341018b03d62ab9651423\"]}]}"
+}

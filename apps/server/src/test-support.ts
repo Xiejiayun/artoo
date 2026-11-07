@@ -50,6 +50,8 @@ export interface TestServer {
 }
 
 export interface BuildTestServerOptions {
+  /** Scoped tests register each handle immediately, including failed setup before a TestServer is returned. */
+  onResourceAcquired?: (resource: { close(): Promise<void> }) => void;
   /** Default fixtures use deterministic local processes. Live provider tests must override this declaration. */
   aiDataSharingPolicy?: AiDataSharingPolicy | null;
   assistantDispatcher?: boolean;
@@ -89,6 +91,7 @@ export async function buildTestServer(
   options: BuildTestServerOptions = {},
 ): Promise<TestServer> {
   const db = await PgliteDbClient.create();
+  options.onResourceAcquired?.(db);
   await db.migrate(await loadMigrationStatements());
   await seed(db, FIXED_ISO, { workspaceRoot: options.workspaceRoot });
   const authConfig = testAuthConfig(options.authConfig);
@@ -125,7 +128,9 @@ export async function buildTestServer(
     desktopCors: options.desktopCors,
     graceWindow: options.graceWindow,
   });
+  options.onResourceAcquired?.({ close: async () => { await app.close(); } });
   const publisher = createEventPublisher(ctx, wsHub);
+  options.onResourceAcquired?.({ close: async () => { publisher.stop(); } });
   await app.ready();
   return {
     app,

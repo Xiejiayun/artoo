@@ -2,6 +2,10 @@ import { parentPort, workerData } from "node:worker_threads";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { NodeOwnedResultVerificationEvidenceV1Schema, canonicalOwnedResultRequirementV1, canonicalOwnedResultVerificationIntentV1 } from "@artoo/domain";
+import { snapshotOwnedResultRunAdmission } from "../owned-result-admission.js";
+import { OWNED_RESULT_FINALIZATION_MIGRATION_004 } from "./migrations/004-owned-result-finalization.js";
 import { assertBoundary, beginProvision, finishProvision, openBoundary, syncDatabase,
   type Boundary, type Marker } from "./journal-boundary.js";
 import { readDeliveryClock, type DeliveryClock } from "./journal-clock.js";
@@ -10,10 +14,11 @@ import type { ClosedRunDeliveryView, LiveDeliveryAbort, LiveDeliveryView, Delive
 // Private worker protocol. No public API accepts a serialized physical proof.
 // The facade authenticates the real producer object before this private channel.
 type Command = { id: string; controlKey: string; op: string; input: Record<string, unknown> };
-interface Boot extends JournalLocation { action: "provision" | "open"; expectedNamespace?: string; controlKey: string }
+interface Boot extends JournalLocation { action: "provision" | "open" | "upgrade_owned_results"; expectedNamespace?: string; controlKey: string }
 interface RunRow {
   namespace: string; run_id: string; mode: JournalRun["mode"]; launch_key: string | null;
   canonical_payload: string | null; owner_nonce: string | null; owner_incarnation: string | null;
+  owned_result_admission_json?: string | null; owned_result_admission_digest?: string | null;
   revision: number; phase: JournalRun["phase"]; stop_requested: number; next_sequence: number;
   receipt_id: string | null; final_outcome_json: string | null;
   delivery_revision: 0 | 1; delivery_state: ClosedRunDeliveryView["state"]; delivery_correction_json: string | null;
@@ -31,6 +36,7 @@ const applicationId = 0x4152544f;
 const codec = "run-start-schema-json-v1";
 let database: DatabaseSync | undefined, boundary: Boundary | undefined, marker: Marker;
 let unavailable = false;
+let schemaVersion: 3 | 4 | undefined;
 let deliveryClock: DeliveryClock | null = null;
 const maxSequence = 2 ** 31 - 1, maxBacklog = 10000, receiptWindowMs = 30000, maxAttempts = 3;
 // Wait only inside SQLite; never replay a transaction after an uncertain commit.
@@ -53,12 +59,20 @@ function configure(provision: boolean): Record<string, string | number> {
   return settings;
 }
 function assertMetadata(): void {
+  const actualVersion = pragma("user_version");
   const meta = row<{ namespace: string; controller_scope: string; node_id: string; codec: string; version: number }>("SELECT * FROM journal_meta WHERE id=1");
   if (!meta || meta.namespace !== marker.namespace || meta.controller_scope !== marker.controllerScope
     || meta.node_id !== marker.nodeId || meta.codec !== codec || meta.version !== 3
-    || pragma("application_id") !== applicationId || pragma("user_version") !== 3) {
+    || pragma("application_id") !== applicationId || ![3, 4].includes(Number(actualVersion))
+    || (schemaVersion !== undefined && actualVersion !== schemaVersion)) {
     throw new Error("Journal metadata continuity failed; Older-schema delivery history is unknown and is not migrated/reset");
   }
+  if (actualVersion === 4) {
+    const extension = row<{ version: number }>("SELECT version FROM journal_extensions WHERE name='owned-result-finalization'");
+    const columns = rows<{ name: string }>("PRAGMA table_info(runs)").map(column => column.name);
+    if (extension?.version !== 1 || !columns.includes("owned_result_admission_json") || !columns.includes("owned_result_admission_digest")) throw new Error("Owned result journal extension is incomplete");
+  }
+  schemaVersion ??= actualVersion as 3 | 4;
 }
 function transaction<T>(operation: () => T): T {
   assertBoundary(boundary!); assertMetadata();
@@ -85,22 +99,53 @@ function receipt(receiptId: string | null): DurableReceipt | null {
     launchKey: value.launch_key, ownerRevision: value.owner_revision, kind: value.kind, contentJson: value.content_json };
 }
 function view(value: RunRow): JournalRun {
+  const admission = readOwnedResultAdmission(value);
   const recorded = receipt(value.receipt_id);
   if (value.phase === "closed" && (!recorded || recorded.kind === "accepted")) throw new Error("Closed journal row lacks its durable fence receipt");
   if (recorded?.kind === "process_exit_confirmed") {
     if (!value.final_outcome_json || !value.launch_key) throw new Error("Physical closure lacks a durable terminal outcome");
-    const outcome = JSON.parse(value.final_outcome_json) as { retained: unknown; terminal: unknown };
-    const expected = [JSON.stringify(outcome.retained), JSON.stringify(outcome.terminal)];
-    for (const [index, suffix] of ["retained", "terminal"].entries()) {
+    const outcome = JSON.parse(value.final_outcome_json) as SettlementOutcome;
+    validateOwnedResultOutcome(value, outcome);
+    const expected = [...(outcome.ownedResultEvidence ? [JSON.stringify(outcome.ownedResultEvidence)] : []), JSON.stringify(outcome.retained), JSON.stringify(outcome.terminal)];
+    for (const [index, suffix] of [...(outcome.ownedResultEvidence ? ["owned-result"] : []), "retained", "terminal"].entries()) {
       const saved = row<EventRow>("SELECT * FROM outbox WHERE namespace=? AND run_id=? AND event_id=?", value.namespace, value.run_id, `sys:settlement:${value.launch_key}:${suffix}`);
       if (!saved || saved.content_json !== expected[index]) throw new Error("Physical closure lacks an exact required terminal event");
       event(saved);
     }
   }
   return { namespace: value.namespace, runId: value.run_id, mode: value.mode, launchKey: value.launch_key,
+    ...(admission ? { ownedResultAdmissionDigest: admission.digest } : {}),
     revision: value.revision, phase: value.phase, stopRequested: value.stop_requested === 1,
     ownership: value.phase === "closed" ? "fenced" : value.owner_incarnation === incarnation ? "local_claim" : "unknown",
     receipt: recorded, finalOutcomeJson: value.final_outcome_json, liveAbort: liveAbort(value) };
+}
+interface SettlementOutcome {
+  retained: { type: string; payload: { workspace_root: string; workspace_branch: string; outcome: string } };
+  terminal: { type: string; payload: { phase: string } };
+  ownedResultEvidence?: { type: string; payload: unknown };
+}
+function readOwnedResultAdmission(value: RunRow): ReturnType<typeof snapshotOwnedResultRunAdmission> | undefined {
+  const json = value.owned_result_admission_json ?? null, savedDigest = value.owned_result_admission_digest ?? null;
+  if ((json === null) !== (savedDigest === null)) throw new Error("Incomplete owned result admission identity");
+  if (json === null) return undefined;
+  const admitted = snapshotOwnedResultRunAdmission(JSON.parse(json));
+  if (schemaVersion !== 4 || admitted.canonical !== json || admitted.digest !== savedDigest || admitted.launch.key !== value.launch_key
+    || admitted.request.run_start.run_id !== value.run_id || JSON.stringify(admitted.request.run_start) !== value.canonical_payload
+    || admitted.request.requirement.profile.node_id !== marker.nodeId || value.mode !== "per-run") throw new Error("Durable owned result admission differs from its base launch");
+  return admitted;
+}
+function validateOwnedResultOutcome(value: RunRow, outcome: SettlementOutcome): void {
+  const admission = readOwnedResultAdmission(value), event = outcome.ownedResultEvidence;
+  if (!admission) { if (event) throw new Error("Ordinary launch cannot acquire owned result evidence"); return; }
+  if (!event) { if (outcome.terminal.payload.phase === "completed") throw new Error("Owned result completion has no verification evidence"); return; }
+  const evidence = NodeOwnedResultVerificationEvidenceV1Schema.parse(event.payload);
+  const sha = (value: string) => `sha256:${digest(value)}`;
+  if (event.type !== "run.owned-result.verification" || !isDeepStrictEqual(event.payload, evidence)
+    || !isDeepStrictEqual(evidence.requirement, admission.request.requirement) || !isDeepStrictEqual(evidence.author, admission.author)
+    || evidence.requirement_digest !== sha(canonicalOwnedResultRequirementV1(admission.request.requirement))
+    || evidence.verification.intent_digest !== sha(canonicalOwnedResultVerificationIntentV1(evidence))) throw new Error("Owned result evidence differs from the durable complete request");
+  const phase = outcome.terminal.payload.phase, verified = evidence.verification.payload.outcome;
+  if (phase === "completed" && verified !== "passed" || phase === "failed" && ["passed", "cancelled"].includes(verified)) throw new Error("Owned result terminal differs from its verification outcome");
 }
 function owned(input: Record<string, unknown>): RunRow {
   const value = run(string(input["runId"]));
@@ -129,7 +174,7 @@ function runEvents(runId: string): EventRow[] {
   const active = rows<EventRow>("SELECT * FROM outbox WHERE namespace=? AND run_id=? AND committed=0 AND superseded=0 ORDER BY sequence LIMIT ?", marker.namespace, runId, maxBacklog + 1);
   if (active.length > maxBacklog) throw new Error("Active outbox bound exceeded");
   const current = run(runId);
-  const original = ["retained", "terminal"].flatMap((suffix) => {
+  const original = ["owned-result", "retained", "terminal"].flatMap((suffix) => {
     if (!current?.launch_key || current.phase !== "closed") return [];
     const saved = row<EventRow>("SELECT * FROM outbox WHERE namespace=? AND run_id=? AND event_id=?", marker.namespace, runId, `sys:settlement:${current.launch_key}:${suffix}`);
     return saved ? [saved] : [];
@@ -213,7 +258,7 @@ function createCorrection(value: RunRow, trigger: EventRow, attempt: Attempt, re
   // Indexed active range is bounded by maxBacklog. Already-ACKed original
   // settlement rows are then reached through their unique event identities.
   let superseded = Number(write("UPDATE outbox SET superseded=1 WHERE namespace=? AND run_id=? AND committed=0 AND superseded=0 AND sequence<?", marker.namespace, value.run_id, value.next_sequence).changes);
-  for (const suffix of ["retained", "terminal"]) superseded += Number(write("UPDATE outbox SET superseded=1 WHERE namespace=? AND run_id=? AND event_id=? AND superseded=0", marker.namespace, value.run_id, `sys:settlement:${value.launch_key}:${suffix}`).changes);
+  for (const suffix of ["owned-result", "retained", "terminal"]) superseded += Number(write("UPDATE outbox SET superseded=1 WHERE namespace=? AND run_id=? AND event_id=? AND superseded=0", marker.namespace, value.run_id, `sys:settlement:${value.launch_key}:${suffix}`).changes);
   write("UPDATE runs SET superseded_count=superseded_count+? WHERE namespace=? AND run_id=?", superseded, marker.namespace, value.run_id);
   write("UPDATE runs SET delivery_revision=1, delivery_state='correcting', delivery_correction_json=?, next_sequence=next_sequence+2 WHERE namespace=? AND run_id=?",
     JSON.stringify(saved), marker.namespace, value.run_id);
@@ -363,6 +408,9 @@ function executeDelivery(op: string, input: Record<string, unknown>): unknown {
     if (target.role === "original_terminal" && successPath) {
       const retention = events.find((e) => e.role === "original_retention");
       if (!retention?.committed) return { kind: "waiting", reason: "completed_retention_not_accepted", view: deliveryView(value) };
+      if (value.owned_result_admission_json && !events.find(e => e.event_id === `sys:settlement:${value.launch_key}:owned-result`)?.committed) {
+        return { kind: "waiting", reason: "completed_owned_result_evidence_not_accepted", view: deliveryView(value) };
+      }
     }
     if (saved.length >= maxAttempts) throw new Error("Delivery attempt budget differs from exhaustion state");
     const deadline = target.deadline_tick_ms ?? now + receiptWindowMs;
@@ -383,15 +431,25 @@ function execute(op: string, input: Record<string, unknown>): unknown {
   }
   if (op === "admit") return transaction(() => {
     const runId = string(input["runId"]), existing = run(runId);
+    const admissionJson = input["ownedResultAdmissionJson"] === undefined ? null : string(input["ownedResultAdmissionJson"]);
+    const admissionDigest = input["ownedResultAdmissionDigest"] === undefined ? null : string(input["ownedResultAdmissionDigest"]);
+    if ((admissionJson === null) !== (admissionDigest === null)) throw new Error("Incomplete requested owned result identity");
+    if (admissionJson !== null) {
+      readOwnedResultAdmission({ mode: string(input["mode"]), run_id: runId, launch_key: string(input["key"]), canonical_payload: string(input["canonical"]),
+        owned_result_admission_json: admissionJson, owned_result_admission_digest: admissionDigest } as RunRow);
+    }
     if (existing) {
       const record = view(existing);
       if (existing.launch_key !== null && (existing.launch_key !== input["key"] || (existing.mode !== "fenced" && existing.mode !== input["mode"]))) return { kind: "conflict", run: record };
+      if (existing.mode !== "fenced" && (existing.canonical_payload !== input["canonical"]
+        || (existing.owned_result_admission_json ?? null) !== admissionJson || (existing.owned_result_admission_digest ?? null) !== admissionDigest)) return { kind: "conflict", run: record };
       if (existing.phase === "closed") return { kind: "fenced", run: record };
       if (existing.owner_incarnation !== incarnation) return { kind: "unknown", run: record };
       return { kind: existing.receipt_id ? "replay" : "pending", run: record };
     }
     write("INSERT INTO runs (namespace,run_id,mode,launch_key,canonical_payload,owner_nonce,owner_incarnation,revision,phase,stop_requested,next_sequence,receipt_id,final_outcome_json) VALUES (?,?,?,?,?,?,?,1,'admitted',0,0,NULL,NULL)", marker.namespace, runId,
       string(input["mode"]), string(input["key"]), string(input["canonical"]), string(input["nonce"]), incarnation);
+    if (admissionJson !== null) write("UPDATE runs SET owned_result_admission_json=?,owned_result_admission_digest=? WHERE namespace=? AND run_id=?", admissionJson, admissionDigest, marker.namespace, runId);
     return { kind: "fresh", run: view(run(runId)!) };
   });
   if (op === "advance") return transaction(() => {
@@ -421,24 +479,30 @@ function execute(op: string, input: Record<string, unknown>): unknown {
   });
   if (op === "producer_closed") return transaction(() => {
     const value = owned(input), outcome = string(input["outcome"]);
-    if (value.live_abort_json && JSON.parse(outcome).terminal.payload.phase === "completed") throw new Error("Live delivery abort forbids completed settlement");
     if (value.phase === "closed") {
       if (value.final_outcome_json !== outcome) throw new Error("An immutable terminal settlement already differs");
       return view(value);
     }
+    const parsedOutcome = JSON.parse(outcome) as SettlementOutcome;
+    if ((value.live_abort_json || value.stop_requested) && parsedOutcome.terminal.payload.phase === "completed") throw new Error("Live delivery abort or Stop forbids completed settlement");
+    validateOwnedResultOutcome(value, parsedOutcome);
+    if (parsedOutcome.ownedResultEvidence && input["ownedResultAdmissionDigest"] !== value.owned_result_admission_digest) throw new Error("Finalization has a different full admission digest");
     if (input["proofSource"] === "returned_handle" ? value.phase !== "started"
       : input["proofSource"] === "startup_error" ? value.phase !== "launch_intent" : true) throw new Error("Physical settlement has no corresponding owned producer stage");
     const contents = input["eventContents"];
-    if (!Array.isArray(contents) || contents.length !== 2 || contents.some((item) => typeof item !== "string")) throw new Error("Two required terminal event contents are necessary");
+    const suffixes = [...(parsedOutcome.ownedResultEvidence ? ["owned-result"] : []), "retained", "terminal"];
+    const expectedContents = [...(parsedOutcome.ownedResultEvidence ? [JSON.stringify(parsedOutcome.ownedResultEvidence)] : []), JSON.stringify(parsedOutcome.retained), JSON.stringify(parsedOutcome.terminal)];
+    if (!Array.isArray(contents) || !isDeepStrictEqual(contents, expectedContents)) throw new Error("Required atomic evidence, retention and terminal event contents differ");
     const pending = row<{ count: number }>("SELECT count(*) AS count FROM outbox WHERE namespace=? AND run_id=? AND committed=0 AND superseded=0", marker.namespace, value.run_id)!.count;
-    if (pending > maxBacklog - 4 || value.next_sequence > maxSequence - 3) throw new Error("Required terminal events cannot be durably allocated");
+    const reserved = suffixes.length + 2;
+    if (pending > maxBacklog - reserved || value.next_sequence > maxSequence - reserved + 1) throw new Error("Required terminal events cannot be durably allocated");
     const identities = [];
-    for (const [index, suffix] of ["retained", "terminal"].entries()) {
+    for (const [index, suffix] of suffixes.entries()) {
       const eventId = `sys:settlement:${value.launch_key}:${suffix}`, content = string(contents[index]), sequence = value.next_sequence + index;
-      write("INSERT INTO outbox (namespace,node_id,run_id,sequence,event_id,content_json,content_sha256,committed,role) VALUES (?,?,?,?,?,?,?,0,?)", marker.namespace, marker.nodeId, value.run_id, sequence, eventId, content, digest(content), index === 0 ? "original_retention" : "original_terminal");
+      write("INSERT INTO outbox (namespace,node_id,run_id,sequence,event_id,content_json,content_sha256,committed,role) VALUES (?,?,?,?,?,?,?,0,?)", marker.namespace, marker.nodeId, value.run_id, sequence, eventId, content, digest(content), suffix === "owned-result" ? "event" : suffix === "retained" ? "original_retention" : "original_terminal");
       identities.push({ eventId, sequence, contentSha256: digest(content) });
     }
-    write("UPDATE runs SET phase='closed', stop_requested=1, revision=revision+1, next_sequence=next_sequence+2, final_outcome_json=? WHERE namespace=? AND run_id=?", outcome, marker.namespace, value.run_id);
+    write("UPDATE runs SET phase='closed', stop_requested=1, revision=revision+1, next_sequence=next_sequence+?, final_outcome_json=? WHERE namespace=? AND run_id=?", suffixes.length, outcome, marker.namespace, value.run_id);
     insertReceipt(run(value.run_id)!, "process_exit_confirmed", { producer: input["detail"], proofSource: input["proofSource"], outcome: JSON.parse(outcome), events: identities });
     return view(run(value.run_id)!);
   });
@@ -448,7 +512,8 @@ function execute(op: string, input: Record<string, unknown>): unknown {
     if (prior) return { kind: prior.content_json === content ? "stored" : "conflict", event: event(prior), revision: value.revision };
     const count = row<{ count: number }>("SELECT count(*) AS count FROM outbox WHERE namespace=? AND run_id=? AND committed=0 AND superseded=0", marker.namespace, value.run_id)!.count;
     if (value.phase === "closed" || value.live_abort_json) return { kind: "closed_or_aborted" };
-    if (count >= maxBacklog - 4 || value.next_sequence > maxSequence - 4) return { kind: "full" };
+    const reserved = value.owned_result_admission_json ? 5 : 4;
+    if (count >= maxBacklog - reserved || value.next_sequence > maxSequence - reserved) return { kind: "full" };
     const hash = digest(content);
     write("INSERT INTO outbox (namespace,node_id,run_id,sequence,event_id,content_json,content_sha256,committed,role) VALUES (?,?,?,?,?,?,?,0,'event')", marker.namespace, marker.nodeId, value.run_id, value.next_sequence, eventId, content, hash);
     write("UPDATE runs SET next_sequence=next_sequence+1, revision=revision+1 WHERE namespace=? AND run_id=?", marker.namespace, value.run_id);
@@ -489,9 +554,27 @@ try {
     database = new DatabaseSync(boundary.databasePath, { allowExtension: false, timeout: busyTimeoutMs });
     assertMetadata();
     const pragmas = configure(false);
-    deliveryClock = readDeliveryClock();
     if (pragma("quick_check(1)") !== "ok") throw new Error("Journal quick_check failed");
     assertBoundary(boundary);
+    if (boot.action === "upgrade_owned_results") {
+      // Offline migration uses the same inode and transaction. A retained live
+      // or unknown row prevents migration; it never becomes a recoverable writer.
+      let committed = false;
+      try {
+        database.exec("BEGIN IMMEDIATE");
+        assertBoundary(boundary); assertMetadata();
+        if (row<{ count: number }>("SELECT count(*) AS count FROM runs WHERE phase!='closed'")!.count !== 0) throw new Error("Owned result journal migration requires no retained live/unknown run rows");
+        if (schemaVersion === 3) database.exec(OWNED_RESULT_FINALIZATION_MIGRATION_004);
+        database.exec("COMMIT"); committed = true; schemaVersion = 4;
+        assertMetadata(); assertBoundary(boundary); syncDatabase(boundary.databasePath);
+        database.close(); database = undefined;
+        parentPort!.postMessage({ kind: "upgraded", namespace: marker.namespace, schemaVersion: 4, pragmas }); parentPort!.close();
+      } catch (error) {
+        if (!committed) { try { database?.exec("ROLLBACK"); } catch { /* No migration receipt is inferred. */ } }
+        throw error;
+      }
+    } else {
+    deliveryClock = readDeliveryClock();
     parentPort!.on("message", (command: Command) => {
       if (command.controlKey !== boot.controlKey) { unavailable = true; return; }
       if (command.op === "close") {
@@ -508,7 +591,8 @@ try {
         parentPort!.postMessage({ kind: "error", id: command.id, message: String(error) });
       }
     });
-    parentPort!.postMessage({ kind: "ready", namespace: marker.namespace, incarnation, pragmas });
+    parentPort!.postMessage({ kind: "ready", namespace: marker.namespace, incarnation, pragmas, schemaVersion });
+    }
   }
 } catch (error) {
   try { database?.close(); } catch { /* Failed initialization remains unavailable; files retained. */ }

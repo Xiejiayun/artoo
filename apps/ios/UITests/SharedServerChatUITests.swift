@@ -1115,11 +1115,123 @@ final class SharedServerChatUITests: XCTestCase {
         let done = app.buttons[identifier]
         try require(done.waitForExistence(timeout: 10) && done.isHittable,
                     "Multiline input must expose a reachable keyboard Done action")
+        let tapStarted = ProcessInfo.processInfo.systemUptime
         done.tap()
-        let dismissed = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
-        try require(XCTWaiter.wait(for: [dismissed], timeout: 10) == .completed,
-                    "Done must dismiss the keyboard before continuing the workflow")
+        let started = ProcessInfo.processInfo.systemUptime, deadline = started + 10
+        var observations: [[String: Any]] = [], observationCount = 0
+        var acceptedAt: TimeInterval?
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate { [self] _, _ in
+            let observationStarted = ProcessInfo.processInfo.systemUptime
+            guard observationStarted <= deadline else { return false }
+            observationCount += 1
+            var observation: [String: Any] = ["start_seconds": observationStarted - started]
+            var keyboardCount: Int?
+            do {
+                let foreground = app.state == .runningForeground
+                observation["foreground"] = foreground
+                if foreground && ProcessInfo.processInfo.systemUptime <= deadline {
+                    let snapshotStarted = ProcessInfo.processInfo.systemUptime
+                    // Resolve the existing app once. Traversal below never asks XCTest
+                    // to find a keyboard element that may already be absent.
+                    let snapshot = try app.snapshot()
+                    observation["snapshot_seconds"] = ProcessInfo.processInfo.systemUptime - snapshotStarted
+                    let measured = keyboardAbsenceSnapshot(snapshot, doneIdentifier: identifier)
+                    keyboardCount = measured.keyboardCount
+                    observation["snapshot"] = measured.diagnostic
+                    observation["outcome"] = keyboardCount == nil ? "incomplete_snapshot" : "observed"
+                } else {
+                    observation["outcome"] = foreground ? "deadline_before_snapshot" : "not_foreground"
+                }
+            } catch {
+                // A failed snapshot is unknown, never an empty keyboard collection.
+                // Do not copy AX error descriptions, input values or labels into this trace.
+                observation["outcome"] = "snapshot_error"
+            }
+            let ended = ProcessInfo.processInfo.systemUptime
+            let inTime = ended <= deadline, absent = keyboardCount == 0
+            observation["end_seconds"] = ended - started
+            observation["observation_seconds"] = ended - observationStarted
+            observation["within_deadline"] = inTime
+            observation["accepted"] = inTime && absent
+            if observations.count == 12 { observations.removeFirst() }
+            observations.append(observation)
+            if inTime && absent { acceptedAt = ended; return true }
+            return false
+        }, object: app)
+        // Synchronous AX calls cannot be cancelled by XCTWaiter. A late zero is
+        // still a failure; the deadline is never restarted after a slow query.
+        let result = XCTWaiter.wait(for: [dismissed], timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime))
+        let passed = result == .completed && acceptedAt != nil
+        retainKeyboardAbsenceDiagnostic([
+            "done_identifier": identifier, "tap_calls": 1, "tap_seconds": started - tapStarted,
+            "timeout_seconds": 10, "tap_started_uptime": tapStarted, "tap_returned_uptime": started,
+            "deadline_uptime": deadline, "wait_seconds": ProcessInfo.processInfo.systemUptime - started,
+            "waiter_result": String(describing: result), "waiter_result_raw": result.rawValue,
+            "accepted_seconds": acceptedAt.map { ($0 - started) as Any } ?? NSNull(),
+            "passed": passed, "observation_count": observationCount,
+            "omitted_observations": max(0, observationCount - observations.count), "observations": observations,
+        ])
+        try require(passed, "Done must dismiss the keyboard before continuing the workflow")
+    }
+
+    @MainActor
+    private func keyboardAbsenceSnapshot(_ root: XCUIElementSnapshot, doneIdentifier: String)
+        -> (keyboardCount: Int?, diagnostic: [String: Any]) {
+        let fixedInputIDs: Set<String> = ["serverURL", "pairingCode", "pairingDeviceName", "messageComposer",
+                                          "task.create.title", "task.create.criteria", "task.create.capabilities"]
+        func number(_ value: CGFloat) -> Any { value.isFinite ? Double(value) as Any : NSNull() }
+        var pending: [XCUIElementSnapshot] = [root], visited = 0, keyboards = 0, doneCount = 0, elementCount = 0
+        var elements: [[String: Any]] = []
+        var complete = root.elementType == .application && !root.children.isEmpty
+        while complete, let node = pending.popLast() {
+            visited += 1
+            var fixedID: String?
+            if node.elementType == .keyboard { keyboards += 1; fixedID = "keyboard" }
+            else if node.elementType == .button && node.identifier == doneIdentifier { doneCount += 1; fixedID = doneIdentifier }
+            else if node.elementType == .textField || node.elementType == .secureTextField || node.elementType == .textView {
+                if fixedInputIDs.contains(node.identifier) { fixedID = node.identifier }
+                else if node.identifier.hasPrefix("task.review.comment.") { fixedID = "task.review.comment" }
+                else if node.identifier.hasPrefix("task.approval.summary.") { fixedID = "task.approval.summary" }
+                else if node.identifier.hasPrefix("task.approval.risk.") { fixedID = "task.approval.risk" }
+                else { fixedID = "other_input" }
+            }
+            if let fixedID {
+                elementCount += 1
+                if elements.count < 8 {
+                    let frame = node.frame
+                    elements.append(["identifier": fixedID, "type": node.elementType.rawValue, "focused": node.hasFocus,
+                                     "frame": ["x": number(frame.minX), "y": number(frame.minY),
+                                               "width": number(frame.width), "height": number(frame.height)]])
+                }
+            }
+            let children = node.children
+            // Truncation can limit diagnostics, but cannot prove keyboard absence.
+            if visited + pending.count + children.count > 4096 { complete = false; break }
+            pending.append(contentsOf: children.reversed())
+        }
+        return (complete ? keyboards : nil, ["scan_complete": complete, "nodes_scanned": visited,
+            "keyboard_count": keyboards, "done_count": doneCount, "elements": elements,
+            "omitted_elements": max(0, elementCount - elements.count)])
+    }
+
+    @MainActor
+    private func retainKeyboardAbsenceDiagnostic(_ diagnostic: [String: Any]) {
+        var bounded = diagnostic
+        let text: String
+        do {
+            var data = try JSONSerialization.data(withJSONObject: bounded, options: [.sortedKeys])
+            if data.count > 32_768 {
+                bounded["observations"] = []
+                bounded["diagnostic_truncated"] = true
+                bounded["omitted_observations"] = bounded["observation_count"]
+                data = try JSONSerialization.data(withJSONObject: bounded, options: [.sortedKeys])
+            }
+            text = data.count <= 32_768 ? String(decoding: data, as: UTF8.self) : "{\"diagnostic_limit_exceeded\":true}"
+        } catch { text = "{\"diagnostic_encoding_failed\":true}" }
+        let attachment = XCTAttachment(string: text)
+        attachment.name = "Native keyboard absence observations"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     @MainActor
@@ -1408,7 +1520,8 @@ final class SharedServerChatUITests: XCTestCase {
         let (data, response) = try await session.data(for: request)
         let http = try XCTUnwrap(response as? HTTPURLResponse)
         guard (200..<300).contains(http.statusCode) else {
-            throw NSError(domain: "ArtooUITestPeer", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Authenticated peer request failed with HTTP \(http.statusCode)"])
+            throw NSError(domain: "ArtooUITestPeer", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey:
+                PeerHTTPFailure.description(request: request, status: http.statusCode, data: data)])
         }
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(Response.self, from: data)
