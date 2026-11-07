@@ -605,7 +605,7 @@ final class SharedServerChatUITests: XCTestCase {
             try reveal(title, searchTowardTop: step == 0)
             try require(title.label == "Planning instruction · Step \(step + 1)", "Each real coordinator step must display its readable summary title")
             let brief = app.staticTexts["message.planning.summary.\(instruction.id)"]
-            try reveal(brief)
+            try revealText(brief, attempts: 10)
             try require(brief.label == "The agents use the goal and earlier replies to prepare a plan. You review a proposal before accepting it.",
                         "Coordinator instructions must show the human-readable planning brief")
             let toggle = app.buttons["message.planning.original.\(instruction.id)"]
@@ -624,8 +624,8 @@ final class SharedServerChatUITests: XCTestCase {
                 try attachConnectedScreenshot("Native planning instructions summarized before proposal")
                 toggle.tap()
                 try waitForValue(toggle, "Expanded", message: "Show agent instructions must expand the actual coordinator prompt")
-                // Only the expanded original is selectable text. Summary labels
-                // and buttons retain strict hittability checks above.
+                // The brief is plain read-only text; the expanded original is selectable.
+                // Disclosure buttons retain enabled/hittable checks before each tap.
                 try revealText(originalInstruction)
                 try require(Array(originalInstruction.label.utf8) == Array(instruction.body.utf8),
                             "Expanded coordinator instructions must match the exact persisted server body")
@@ -1276,14 +1276,15 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func revealText(_ element: XCUIElement, preferTop: Bool = false) throws {
-        // Selectable SwiftUI text can be visibly rendered yet make XCTest's
-        // activation-point lookup throw. Read-only checks need visible content.
-        // Disclosure callers also require enabled/hittable controls before taps.
+    private func revealText(_ element: XCUIElement, preferTop: Bool = false, attempts: Int = 24) throws {
+        // Plain summaries and selectable originals can be visibly rendered yet
+        // make XCTest's activation-point lookup throw. Read-only checks require
+        // visible content; disclosure callers separately check enabled/hittable.
+        try require(attempts > 0 && attempts <= 24, "Read-only text scrolling must stay within its existing attempt limit")
         let list = app.collectionViews.firstMatch
         try require(list.exists, "The displayed text must belong to a visible list")
         try require(!app.keyboards.firstMatch.exists, "Read-only content must not be covered by the keyboard")
-        for attempt in 0..<24 {
+        for attempt in 0..<attempts {
             var viewport = list.frame.intersection(app.frame)
             let navigation = app.navigationBars.firstMatch
             let tabs = app.tabBars.firstMatch
@@ -1296,7 +1297,7 @@ final class SharedServerChatUITests: XCTestCase {
             viewport = CGRect(x: viewport.minX, y: top, width: viewport.width, height: max(0, bottom - top)).insetBy(dx: 2, dy: 2)
             try require(!viewport.isEmpty && !viewport.isNull && !viewport.isInfinite,
                         "The list must have an unobscured content viewport")
-            var scrollUp = preferTop ? attempt >= 12 : attempt < 12
+            var scrollUp = preferTop ? attempt >= attempts / 2 : attempt < attempts / 2
             if element.exists {
                 let frame = element.frame
                 if !frame.isEmpty && !frame.isNull && !frame.isInfinite {
