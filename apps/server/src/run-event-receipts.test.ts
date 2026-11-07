@@ -12,8 +12,8 @@ import { getRun, ingestRunEvent, ingestWireRunEvent } from "./services/run-servi
 import { qualifyRunEventMessage } from "./services/run-event-receipt.js";
 
 const NODE = "computer_local_mock", ROOT = "/owned/receipt-fixture";
-type Kind = "started" | "output" | "answer" | "usage" | "artifact" | "retention" | "terminal";
-const kinds: Kind[] = ["started", "output", "answer", "usage", "artifact", "retention", "terminal"];
+type Kind = "started" | "output" | "answer" | "usage" | "artifact" | "retention" | "verification" | "terminal";
+const kinds: Kind[] = ["started", "output", "answer", "usage", "artifact", "retention", "verification", "terminal"];
 const frame = (run: Run, sequence: number, event: NodeRunEvent): RunEventMessage =>
   ({ kind: "run.event", node_id: NODE, run_id: run.id, sequence, event });
 function body(kind: Kind, run: Run): NodeRunEvent {
@@ -24,6 +24,9 @@ function body(kind: Kind, run: Run): NodeRunEvent {
     case "usage": return { type: "run.usage", payload: { input_tokens: 1, cost_usd: 0, currency: "USD", provider_session_id: "p1" } };
     case "artifact": return { type: "artifact.created", payload: { type: "report", uri: "report.txt", metadata: { nested: { a: 1, b: 2 } }, checksum: null } };
     case "retention": return { type: "run.workspace.retained", payload: { version: 1, workspace_root: run.workspace_root!, workspace_branch: run.workspace_branch!, outcome: "completed" } };
+    case "verification": return { type: "run.verification", payload: { version: 1, request_id: `verify:${run.id}`, profile_id: "default",
+      profile_digest: `sha256:${"a".repeat(64)}`, subject_digest: `sha256:${"b".repeat(64)}`, outcome: "passed",
+      checks: [{ id: "check", exit_code: 0, duration_ms: 1, output_digest: `sha256:${"c".repeat(64)}` }], required_files: [] } };
     case "terminal": return { type: "run.lifecycle", payload: { phase: "completed", reason: null } };
   }
 }
@@ -35,6 +38,11 @@ function changed(event: NodeRunEvent): NodeRunEvent {
     case "run.usage": return { ...event, payload: { ...event.payload, cost_usd: 2 } };
     case "artifact.created": return { ...event, payload: { ...event.payload, metadata: { nested: { a: 1, b: 3 } } } };
     case "run.workspace.retained": return { ...event, payload: { ...event.payload, outcome: "incomplete_delivery" } };
+    case "run.verification": return { ...event, payload: { ...event.payload, subject_digest: `sha256:${"d".repeat(64)}` } };
+    case "run.product-source.export.v1": return { ...event, payload: { ...event.payload, capsule_digest: `sha256:${"d".repeat(64)}` } };
+    case "run.product-source.export.v2": return { ...event, payload: { ...event.payload, research_provenance_digest: `sha256:${"d".repeat(64)}` } };
+    case "run.owned-result.verification": return { ...event, payload: { ...event.payload,
+      result: { ...event.payload.result, manifest_digest: `sha256:${"d".repeat(64)}` } } };
   }
 }
 
@@ -69,7 +77,7 @@ describe("qualified full-body run receipts through the real binding", () => {
   }
   async function state() {
     const result: Record<string, unknown> = {};
-    for (const name of ["runs", "tasks", "event_log", "messages", "run_usage", "artifacts", "integration_queue", "file_leases", "assistant_turns"]) {
+    for (const name of ["runs", "tasks", "event_log", "messages", "run_usage", "artifacts", "integration_queue", "file_leases", "assistant_turns", "run_evidence"]) {
       result[name] = (await server.db.db.execute(sql.raw(`SELECT to_jsonb(t) AS row FROM ${name} t ORDER BY to_jsonb(t)::text`))).rows;
     }
     return result;
@@ -78,6 +86,9 @@ describe("qualified full-body run receipts through the real binding", () => {
 
   it.each(kinds)("qualifies first %s, accepts exact replay and rejects a changed body without repeated effects", async (kind) => {
     const { run } = await assigned();
+    if (kind === "verification") await server.db.db.update(runs).set({ verificationRequirement: {
+      version: 1, request_id: `verify:${run.id}`, profile_id: "default",
+    } }).where(eq(runs.id, run.id));
     if (kind !== "started") await started(run);
     const message = frame(run, kind === "started" ? 0 : 1, body(kind, run));
     let committedAtAck = 0;

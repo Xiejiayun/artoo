@@ -101,7 +101,7 @@ export const ComputerSchema = z.object({
   arch: z.string(),
   status: ComputerStatusSchema,
   last_heartbeat_at: z.string().nullish(),
-  resources: z.record(z.unknown()).default({}),
+  resources: z.record(z.string(), z.unknown()).default({}),
   capabilities: z.array(CapabilitySchema).default([]),
   created_at: z.string(),
 });
@@ -117,7 +117,7 @@ export const ModelProfileSchema = z.object({
   cost_tier: CostTierSchema,
   latency_tier: LatencyTierSchema,
   capability_tags: z.array(CapabilitySchema).default([]),
-  config: z.record(z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).default({}),
   enabled: z.boolean(),
   created_at: z.string(),
 });
@@ -133,7 +133,7 @@ export const EffortProfileSchema = z.object({
   max_tool_calls: z.number().int().nullish(),
   retry_budget: z.number().int(),
   description: z.string().default(""),
-  config: z.record(z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).default({}),
   enabled: z.boolean(),
   created_at: z.string(),
 });
@@ -149,7 +149,7 @@ export const AgentInstanceSchema = z.object({
   effort_profile_id: z.string().nullish(),
   status: AgentInstanceStatusSchema,
   workspace_root: z.string().nullish(),
-  config: z.record(z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).default({}),
   created_at: z.string(),
 });
 export type AgentInstance = z.infer<typeof AgentInstanceSchema>;
@@ -251,7 +251,7 @@ export const RunSchema = z.object({
   started_at: z.string().nullish(),
   ended_at: z.string().nullish(),
   failure_reason: z.string().nullish(),
-  sequence: z.number().int().default(0),
+  sequence: z.number().refine(Number.isInteger, "Expected an integer").default(0),
   /** Allocated workspace (#20). Real FS/git paths — source-case preserved. */
   workspace_root: z.string().nullish(),
   workspace_branch: z.string().nullish(),
@@ -296,7 +296,7 @@ export type Room = z.infer<typeof RoomSchema>;
 
 export const MessageSchema = z.object({
   id: z.string(),
-  sequence: z.number().int().positive().optional(),
+  sequence: z.number().refine(Number.isInteger, "Expected an integer").positive().optional(),
   organization_id: z.string(),
   room_id: z.string(),
   thread_root_id: z.string().nullable().optional(),
@@ -308,7 +308,7 @@ export const MessageSchema = z.object({
   // Free-form for forward-compat; render via normalizeMessageKind.
   kind: z.string(),
   body: z.string().default(""),
-  payload: z.record(z.unknown()).default({}),
+  payload: z.record(z.string(), z.unknown()).default({}),
   created_at: z.string(),
 });
 export type Message = z.infer<typeof MessageSchema>;
@@ -320,7 +320,7 @@ export const ArtifactSchema = z.object({
   run_id: z.string().nullish(),
   type: ArtifactTypeSchema,
   uri: z.string(),
-  metadata: z.record(z.unknown()).default({}),
+  metadata: z.record(z.string(), z.unknown()).default({}),
   checksum: z.string().nullish(),
   created_at: z.string(),
 });
@@ -337,13 +337,13 @@ export const SchedulerDecisionSchema = z.object({
   mode: z.enum(["auto", "manual"]),
   score: z.number().int(),
   reason: z.string(),
-  candidates: z.array(z.record(z.unknown())).default([]),
+  candidates: z.array(z.record(z.string(), z.unknown())).default([]),
   created_at: z.string(),
 });
 export type SchedulerDecision = z.infer<typeof SchedulerDecisionSchema>;
 
 export const AuditEventSchema = EventEnvelopeSchema.extend({
-  position: z.number().int(),
+  position: z.number().refine(Number.isInteger, "Expected an integer"),
 });
 export type AuditEvent = z.infer<typeof AuditEventSchema>;
 

@@ -19,6 +19,8 @@ export default defineConfig({
     include: ["{apps,packages}/**/*.test.{ts,tsx}"],
     globals: false,
     environment: "node",
+    // Let jsdom provide per-window storage instead of Node's process-wide Web Storage.
+    execArgv: ["--no-experimental-webstorage"],
     // PGlite (embedded Postgres, WASM) integration tests are CPU-heavy; under
     // full-suite parallelism a fresh instance per test can exceed the 5s default
     // and flake. Generous timeouts keep the shared `npm test` gate reliable.

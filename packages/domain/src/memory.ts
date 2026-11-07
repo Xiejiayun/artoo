@@ -103,7 +103,7 @@ export const MemorySchema = z
     confidence: z.number().min(0).max(1).default(1),
     // Injectable content: at least one of text / payload (see refine).
     text: z.string().nullish(),
-    payload: z.record(z.unknown()).nullish(),
+    payload: z.record(z.string(), z.unknown()).nullish(),
     tags: z.array(z.string()).default([]),
     // Supersession links.
     supersedes_id: z.string().nullish(),

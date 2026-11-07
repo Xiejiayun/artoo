@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { artifacts, runs } from "@artoo/db";
@@ -10,6 +10,7 @@ import type { FastifyInstance } from "fastify";
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import { resolveNodeToken } from "./services/device-service.js";
+import { writeContentAddressedBlob } from "./content-addressed-blob.js";
 
 export const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
 
@@ -49,15 +50,7 @@ export function registerArtifactRoutes(app: FastifyInstance, ctx: ServerContext,
     const digest = createHash("sha256").update(bytes).digest("hex");
     const checksum = `sha256:${digest}`;
     if (req.headers["x-artoo-checksum"] !== checksum) throw AppError.validation("artifact checksum does not match uploaded bytes");
-    await mkdir(artifactDir, { recursive: true });
-    // Flush a private temp file then atomically publish it, so interruption can
-    // never leave a partially written blob under its permanent content hash.
-    const staging = join(artifactDir, `${randomUUID()}.upload`);
-    try {
-      const handle = await open(staging, "wx");
-      try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
-      await rename(staging, join(artifactDir, digest));
-    } finally { await unlink(staging).catch(() => {}); }
+    await writeContentAddressedBlob(artifactDir, bytes);
     const artifact = await ctx.db.transaction(async (tx) => {
       const current = (await tx.select().from(runs).where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId))))[0];
       if (!current || current.computerId !== computerId || !["queued", "starting", "running"].includes(current.status)) {

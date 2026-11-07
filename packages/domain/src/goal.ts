@@ -10,6 +10,7 @@
  * is the accepted #128 supplement (docs/v3-115-goals-schema-design.md).
  */
 import { z } from "zod";
+import { DevelopmentStageSchema } from "./product-development.js";
 
 import { ActorTypeSchema } from "./events.js";
 import { AuditEventSchema, DependencyTypeSchema, PrioritySchema, RoomSchema, TaskAuditBundleSchema } from "./schemas.js";
@@ -170,6 +171,7 @@ export function canProposePlan(goalStatus: GoalStatus, hasAcceptedPlan: boolean)
 /** A planned task within a plan version. `dependencies[].ref` points at another
  *  spec by its 0-based index in the same plan (string form of the index). */
 export const TaskSpecSchema = z.object({
+  development_stage: DevelopmentStageSchema.optional(),
   title: z.string().min(1),
   description: z.string().default(""),
   // Plan materialization creates ordinary backlog tasks, and the existing task
@@ -234,7 +236,7 @@ export const CheckpointRefsSchema = z.object({
   active_runs: z.array(z.string()).default([]),
   open_blockers: z.array(z.string()).default([]),
   pending_approvals: z.array(z.string()).default([]),
-  event_cursor: z.number().int().nonnegative(),
+  event_cursor: z.number().refine(Number.isInteger, "Expected an integer").nonnegative(),
 });
 export type CheckpointRefs = z.infer<typeof CheckpointRefsSchema>;
 
@@ -256,10 +258,11 @@ export type Checkpoint = z.infer<typeof CheckpointSchema>;
 // ---------------------------------------------------------------------------
 
 export const GoalBudgetsSchema = z.object({
-  max_elapsed_ms: z.number().int().positive().nullable().default(null),
+  // Existing JSONB budgets accept finite integers beyond Zod 4's safe-only int().
+  max_elapsed_ms: z.number().refine(Number.isInteger, "Expected an integer").positive().nullable().default(null),
   max_cost_usd: z.number().positive().nullable().default(null),
-  max_retries: z.number().int().nonnegative().nullable().default(null),
-  max_concurrent_runs: z.number().int().positive().nullable().default(null),
+  max_retries: z.number().refine(Number.isInteger, "Expected an integer").nonnegative().nullable().default(null),
+  max_concurrent_runs: z.number().refine(Number.isInteger, "Expected an integer").positive().nullable().default(null),
   allowed_runtimes: z.array(z.string()).nullable().default(null),
 });
 export type GoalBudgets = z.infer<typeof GoalBudgetsSchema>;

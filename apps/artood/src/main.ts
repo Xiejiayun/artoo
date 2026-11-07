@@ -12,8 +12,15 @@ import { createArtoodNode, type ArtoodNode } from "./node-runner.js";
 import { claudeCodeRuntime, codexRuntime, type CodexSettings, type RuntimePresetOptions } from "./runtimes.js";
 import { createManagedBootstrap, validateManagedJournalBinding, validateManagedJournalPreparation,
   type ManagedJournalBinding } from "./managed/managed-bootstrap.js";
-import { provisionLocalJournal } from "./managed/journal.js";
+import { provisionLocalJournal, upgradeLocalJournalForOwnedResults } from "./managed/journal.js";
+import { initializeOwnedResultProfilesFile } from "./owned-result-profiles.js";
 import { DeliveryCancelled } from "./managed/managed-delivery.js";
+import { loadVerificationProfilesFile, type VerificationProfile } from "./verification.js";
+import { loadReleaseProfilesFile, type ReleaseProfile } from "./product-release.js";
+import { prepareWindowsProcessInstallation } from "./windows-process-installation.js";
+import { prepareWindowsReleaseStorage, type PreparedWindowsReleaseStorage } from "./windows-release-storage.js";
+import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
+import type { ResearchOptions } from "./research.js";
 
 /**
  * artood node entrypoint: an env-driven bootstrap that wires the runtime presets,
@@ -26,6 +33,14 @@ import { DeliveryCancelled } from "./managed/managed-delivery.js";
  * - `ARTOO_RUNTIMES`           csv of runtime presets to register (default: codex,claude-code)
  * - `ARTOO_ALLOWED_ROOTS`      (required) `;`/`,`-separated filesystem roots the adapters may operate in
  * - `ARTOO_REPORT_ARTIFACTS`   `default` (collect the preset's report) or explicit `none`
+ * - `ARTOO_VERIFICATION_PROFILES_FILE` absolute administrator JSON file outside coding roots;
+ *   reserves dedicated ordinary workspaces and enables node-owned verification on POSIX
+ *   or an explicitly qualified Windows process installation.
+ * - `ARTOO_WINDOWS_PROCESS_BUNDLE` + `ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256` opt into
+ *   a protected local Windows helper installation. Both are required together;
+ *   all allowed roots must be existing physical directories outside that installation.
+ * - `ARTOO_OWNED_RESULT_PROFILES_FILE` protected local JSON; managed fresh-allocation
+ *   startup opens previously initialized stores after an explicit journal v4 upgrade.
  * - `ARTOO_WORKTREE_BASE_REPO` (opt-in) git repo to create per-run worktrees from. Absent ->
  *                              branch-backed runs are rejected with process_start_failed (#19/#23).
  * - `ARTOO_MANAGED_EXECUTION`  explicit 0/1 new-allocation choice for a prepared profile.
@@ -34,8 +49,8 @@ import { DeliveryCancelled } from "./managed/managed-delivery.js";
  *   IPC-owned desktop launches additionally require `--prepared-journal` in argv;
  *   inherited environment fields alone cannot select that desktop execution path.
  *
- * The config/registry/hello builders are pure and exported for tests; `main` is
- * only invoked when this module is executed directly (not when imported).
+ * Config loading qualifies local profiles and optional installations. Builders
+ * are exported for tests; `main` only runs when this module is executed directly.
  */
 const PROTOCOL_VERSION = "2026-06-11";
 const ARTOOD_VERSION = "0.1.0";
@@ -60,6 +75,17 @@ export interface ArtoodConfig {
   /** Exact saved local binding; it remains present when new allocations are disabled. */
   managedJournal?: ManagedJournalBinding;
   allowNewAllocations?: boolean;
+  /** Local administrator-owned file, never server/task-supplied commands. */
+  verificationProfiles?: readonly VerificationProfile[];
+  /** Opaque authority returned by protected local Windows installation qualification. */
+  windowsProcessBackend?: PreparedWindowsProcessBackend;
+  releaseProfiles?: readonly ReleaseProfile[];
+  windowsReleaseStorage?: ReadonlyMap<string, PreparedWindowsReleaseStorage>;
+  ownedResultProfilesFile?: string;
+  research?: ResearchOptions;
+  initializeRepository?: boolean;
+  /** Versioned protected local selection of source transfer and continuation roles. */
+  productSourceConfigFile?: string;
 }
 
 const JOURNAL_ENV_KEYS = ["ARTOO_JOURNAL_VERSION", "ARTOO_JOURNAL_SERVER_ORIGIN", "ARTOO_JOURNAL_NODE_ID",
@@ -126,6 +152,17 @@ function parsePositiveMs(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function windowsProcessBackendFromEnv(env: NodeJS.ProcessEnv, allowedRoots: readonly string[], managed: boolean): PreparedWindowsProcessBackend | undefined {
+  if (env.ARTOO_WINDOWS_PROCESS_BUNDLE === undefined && env.ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256 === undefined) return undefined;
+  if (process.platform !== "win32") throw new Error("Windows process installation is supported only on Windows");
+  const directory = env.ARTOO_WINDOWS_PROCESS_BUNDLE?.trim(), manifestSha256 = env.ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256?.trim();
+  if (!directory || !manifestSha256) throw new Error("ARTOO_WINDOWS_PROCESS_BUNDLE and ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256 must both be provided");
+  if (!isAbsolute(directory) || /[\u0000-\u001f\u007f]/.test(directory)) throw new Error("ARTOO_WINDOWS_PROCESS_BUNDLE must be an absolute local directory");
+  if (!/^sha256:[a-f0-9]{64}$/.test(manifestSha256)) throw new Error("ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256 must be a sha256 digest");
+  if (managed) throw new Error("Windows process installation cannot be combined with managed execution");
+  return prepareWindowsProcessInstallation({ directory, manifestSha256, writableWorkspaceRoots: allowedRoots });
+}
+
 /** Parse the artood config from environment variables, throwing on missing required keys. */
 export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
   const url = env.ARTOO_NODE_URL?.trim();
@@ -144,6 +181,20 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
   if (reportArtifacts !== undefined && reportArtifacts !== "default" && reportArtifacts !== "none") {
     throw new Error("ARTOO_REPORT_ARTIFACTS must be default or none");
   }
+  if (env.ARTOO_RESEARCH_ENABLED !== undefined && !["", "0", "1"].includes(env.ARTOO_RESEARCH_ENABLED)) throw new Error("ARTOO_RESEARCH_ENABLED must be 0 or 1");
+  if (env.ARTOO_INITIALIZE_REPOSITORY !== undefined && !["", "0", "1"].includes(env.ARTOO_INITIALIZE_REPOSITORY)) throw new Error("ARTOO_INITIALIZE_REPOSITORY must be 0 or 1");
+  if (env.ARTOO_RESEARCH_ENABLED === "1" && !env.ARTOO_RESEARCH_RECEIPTS_DIR) throw new Error("Research requires ARTOO_RESEARCH_RECEIPTS_DIR outside writable roots");
+  const managed = managedSettingsFromEnv(env, { url, nodeId });
+  const windowsProcessBackend = windowsProcessBackendFromEnv(env, allowedRoots, managed.managedJournal !== undefined);
+  const productSourceConfigFile = env.ARTOO_PRODUCT_SOURCE_CONFIG_FILE;
+  if (productSourceConfigFile !== undefined && (!productSourceConfigFile || !isAbsolute(productSourceConfigFile)
+    || /[\u0000-\u001f\u007f]/.test(productSourceConfigFile) || !windowsProcessBackend)) {
+    throw new Error("ARTOO_PRODUCT_SOURCE_CONFIG_FILE requires an absolute protected file and native Windows backend");
+  }
+  const verificationProfiles = env.ARTOO_VERIFICATION_PROFILES_FILE ? loadVerificationProfilesFile(env.ARTOO_VERIFICATION_PROFILES_FILE, allowedRoots) : undefined;
+  const releaseProfiles = env.ARTOO_RELEASE_PROFILES_FILE ? loadReleaseProfilesFile(env.ARTOO_RELEASE_PROFILES_FILE, verificationProfiles, allowedRoots) : undefined;
+  const windowsReleaseStorage = windowsProcessBackend && releaseProfiles?.length ? new Map(releaseProfiles.map(profile => [profile.storage_root,
+    prepareWindowsReleaseStorage({ directory: profile.storage_root, writableWorkspaceRoots: allowedRoots })])) : undefined;
   return {
     url,
     nodeId,
@@ -152,9 +203,18 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
     trustedExecution: env.ARTOO_TRUSTED_EXECUTION === "1",
     codex: codexSettingsFromEnv(env),
     ...(reportArtifacts ? { reportArtifacts } : {}),
-    ...managedSettingsFromEnv(env, { url, nodeId }),
+    ...managed,
     worktreeBaseRepo: env.ARTOO_WORKTREE_BASE_REPO?.trim() || undefined,
-    heartbeatIntervalMs: parsePositiveMs(env.ARTOO_HEARTBEAT_INTERVAL_MS)
+    heartbeatIntervalMs: parsePositiveMs(env.ARTOO_HEARTBEAT_INTERVAL_MS),
+    ...(verificationProfiles ? { verificationProfiles } : {}),
+    ...(windowsProcessBackend ? { windowsProcessBackend } : {}),
+    ...(productSourceConfigFile ? { productSourceConfigFile } : {}),
+    ...(env.ARTOO_OWNED_RESULT_PROFILES_FILE ? { ownedResultProfilesFile: env.ARTOO_OWNED_RESULT_PROFILES_FILE } : {}),
+    ...(releaseProfiles ? { releaseProfiles } : {}),
+    ...(windowsReleaseStorage ? { windowsReleaseStorage } : {}),
+    ...(env.ARTOO_RESEARCH_ENABLED === "1" ? { research: { receiptDirectory: env.ARTOO_RESEARCH_RECEIPTS_DIR!,
+      ...(env.ARTOO_RESEARCH_BRAVE_KEY ? { braveApiKeyEnv: "ARTOO_RESEARCH_BRAVE_KEY" } : {}) } } : {}),
+    ...(env.ARTOO_INITIALIZE_REPOSITORY === "1" ? { initializeRepository: true } : {})
   };
 }
 
@@ -168,6 +228,7 @@ export function buildRegistry(config: ArtoodConfig): AdapterRegistry {
       );
     }
     return preset({ allowedRoots: config.allowedRoots, trustedExecution: config.trustedExecution,
+      research: config.research, initializeRepository: config.initializeRepository,
       ...(config.reportArtifacts === "none" ? { artifacts: [] } : {}),
       ...(name === "codex" ? { codex: config.codex } : {}) });
   });
@@ -187,6 +248,13 @@ export function helloFor(config: ArtoodConfig): NodeHello {
 
 /** Construct (without connecting) an {@link ArtoodNode} from config. */
 export function createNodeFromConfig(config: ArtoodConfig): ArtoodNode {
+  if (config.productSourceConfigFile !== undefined && (!config.windowsProcessBackend || config.managedJournal !== undefined)) {
+    throw new Error("Product source configuration requires ordinary native Windows execution");
+  }
+  if (config.windowsProcessBackend !== undefined) {
+    if (process.platform !== "win32") throw new Error("Windows process installation is supported only on Windows");
+    if (config.managedJournal !== undefined) throw new Error("Windows process installation cannot be combined with managed execution");
+  }
   if (config.allowNewAllocations !== undefined && typeof config.allowNewAllocations !== "boolean") {
     throw new Error("New-allocation choice must be a boolean");
   }
@@ -194,6 +262,8 @@ export function createNodeFromConfig(config: ArtoodConfig): ArtoodNode {
   const binding = config.managedJournal === undefined ? undefined
     : validateManagedJournalBinding(config.managedJournal, { url: config.url, nodeId: config.nodeId });
   if (binding && config.allowNewAllocations === undefined) throw new Error("Prepared journal requires an explicit new-allocation choice");
+  if (binding && config.verificationProfiles?.length) throw new Error("Verification profiles require a non-managed ordinary-workspace worker");
+  if (config.ownedResultProfilesFile && (!binding || config.allowNewAllocations !== true)) throw new Error("Owned-result profiles require a prepared journal with fresh allocations enabled");
   const registry = buildRegistry(config);
   const common = {
     url: config.url,
@@ -205,9 +275,16 @@ export function createNodeFromConfig(config: ArtoodConfig): ArtoodNode {
     }),
     uploadArtifact: createArtifactUploader(config.url, config.nodeId),
     workspace: { worktreeBaseRepo: config.worktreeBaseRepo, allowedRoots: config.allowedRoots },
-    heartbeatIntervalMs: config.heartbeatIntervalMs
+    heartbeatIntervalMs: config.heartbeatIntervalMs,
+    verificationProfiles: config.verificationProfiles,
+    windowsProcessBackend: config.windowsProcessBackend,
+    releaseProfiles: config.releaseProfiles,
+    windowsReleaseStorage: config.windowsReleaseStorage,
+    productSourceConfigFile: config.productSourceConfigFile,
+    research: config.research,
   };
-  return binding ? createManagedBootstrap({ ...common, binding, allowNewAllocations: config.allowNewAllocations! })
+  return binding ? createManagedBootstrap({ ...common, binding, allowNewAllocations: config.allowNewAllocations!,
+    ...(config.ownedResultProfilesFile ? { ownedResultProfilesFile: config.ownedResultProfilesFile } : {}) })
     : createArtoodNode({ ...common, acknowledgeRunEvents: true });
 }
 
@@ -418,6 +495,26 @@ export async function provisionManagedJournal(env: NodeJS.ProcessEnv, host: Shut
 /** Dispatch provisioning before normal config, registry, provider or WebSocket construction. */
 export async function runDaemonEntrypoint(env: NodeJS.ProcessEnv = process.env, host: ShutdownHost = process): Promise<ArtoodNode | void> {
   const args = (host.argv ?? []).slice(2);
+  const initializeResults = args.includes("--initialize-owned-result-profiles"), upgradeResults = args.includes("--upgrade-owned-result-journal");
+  if (initializeResults || upgradeResults) {
+    if (host.connected !== undefined || initializeResults && upgradeResults || args.includes("--prepared-journal") || args.includes("--provision-managed-journal")) {
+      throw new Error("Owned-result administration requires one explicit standalone offline selector");
+    }
+    if (initializeResults) {
+      const path = env.ARTOO_OWNED_RESULT_PROFILES_FILE, nodeId = env.ARTOO_NODE_ID, roots = splitList(env.ARTOO_ALLOWED_ROOTS);
+      if (!path || !nodeId || !roots.length) throw new Error("Result initialization requires local profiles file, node ID and coding roots");
+      const profiles = await initializeOwnedResultProfilesFile(path, nodeId, roots);
+      console.log(JSON.stringify({ kind: "owned-result-profiles.initialized", version: 1, node_id: profiles.node_id, descriptors: profiles.descriptors }));
+    } else {
+      if (env.ARTOO_MANAGED_EXECUTION !== "0" || !env.ARTOO_NODE_URL || !env.ARTOO_NODE_ID) throw new Error("Offline result journal upgrade requires the saved connection binding and ARTOO_MANAGED_EXECUTION=0");
+      const binding = managedSettingsFromEnv(env, { url: env.ARTOO_NODE_URL, nodeId: env.ARTOO_NODE_ID }).managedJournal;
+      if (!binding) throw new Error("Result journal upgrade requires an existing saved namespace");
+      const receipt = await upgradeLocalJournalForOwnedResults({ directory: binding.directory, controllerScope: binding.controllerScope,
+        nodeId: binding.nodeId, expectedNamespace: binding.expectedNamespace });
+      console.log(JSON.stringify({ kind: "owned-result-journal.upgraded", ...receipt }));
+    }
+    return;
+  }
   if (args.includes("--provision-managed-journal")) {
     if (args.includes("--prepared-journal")) {
       const errors = [new Error("Provisioning and prepared execution selectors cannot be combined")];

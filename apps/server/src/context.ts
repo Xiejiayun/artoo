@@ -1,5 +1,5 @@
 import type { AiDataSharingPolicy } from "./config/ai-data-sharing.js";
-import type { Clock, IdGen } from "@artoo/domain";
+import type { Clock, IdGen, VerificationCapabilities, ReleaseCapabilitiesV1, NodeOwnedResultProfileDescriptorV1 } from "@artoo/domain";
 import type { DbClient } from "@artoo/storage";
 
 import type { AuthConfig } from "./auth/auth-config.js";
@@ -20,6 +20,8 @@ export interface ServerContext {
   organizationId: string;
   /** The acting user for v0.1 (no auth yet); used as created_by / actor. */
   actorUserId: string;
+  /** Internal automation attribution; never populated from an HTTP request. */
+  automationActor?: { type: "system"; id: "goal_runner" };
   /** Device-auth secrets/policy (#28): pairing pepper + dev node-token escape. */
   deviceAuth: DeviceAuthConfig;
   /** Google-auth wiring (#34): OIDC provider coords, cookies, session policy. */
@@ -34,4 +36,23 @@ export interface ServerContext {
   onRunQueued?: (runId: string) => Promise<void>;
   /** Query an exact execution contract on the current accepted node session. */
   supportsExecutionFeature?: (computerId: string, feature: string) => boolean;
+  /** Exact public verifier binding from the current authenticated node session. */
+  supportsVerificationProfile?: (computerId: string, profileId: string, projectId: string, workspaceRoot: string) => boolean;
+  /** Resolve a lexical location to one current node-advertised root; never proves physical alias equivalence. */
+  getVerificationWorkspace?: (computerId: string, profileId: string, projectId: string, workspaceRoot: string) => string | undefined;
+  /** Exact descriptor from a current fully qualified managed receipt session. */
+  getOwnedResultProfile?: (computerId: string, resultProfileId: string, verifierTemplateId: string, projectId: string) => NodeOwnedResultProfileDescriptorV1 | undefined;
+  /** One defensive snapshot from the current authenticated connection, never caller metadata. */
+  getVerificationCapabilities?: (computerId: string, profileId: string, projectId: string, workspaceRoot: string) => VerificationCapabilities | undefined;
+  supportsReleaseProfile?: (computerId: string, profileId: string, projectId: string, workspaceRoot: string, verificationProfileId: string) => boolean;
+  /** Exact configured publication scope from the current authenticated node, never an agent declaration. */
+  getReleaseCapabilities?: (computerId: string, profileId: string, projectId: string, workspaceRoot: string, verificationProfileId: string) => ReleaseCapabilitiesV1 | undefined;
+  onProductReleaseQueued?: (releaseId: string) => Promise<void>;
+  onProductReleaseCancel?: (releaseId: string) => Promise<void>;
+  /** Dedicated imported-subject controller; never routes through ordinary run.start. */
+  onImportedProductReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;
+  onProductSourceOperationQueued?: (operationId: string, control: "start" | "stop" | "status" | "qualify") => Promise<void>;
+  /** Server-local artifact store configured by app startup, never supplied by a task or frame. */
+  productSourceArtifactDir?: string;
+  onImportedDesignContinuationQueued?: (continuationId: string, control: "start" | "stop" | "status") => Promise<void>;
 }

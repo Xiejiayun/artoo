@@ -1,7 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { ManagedDelivery, boundedOperation, abortableOperation, DeliveryCancelled,
   type ManagedJournalOptions, type ManagedSession } from "./managed/managed-delivery.js";
 import type { FreshLaunchPermit, JournalRun, TerminalSettlement } from "./managed/journal-types.js";
+import { PRODUCT_SOURCE_TRANSFER_FEATURE_V1, PRODUCT_SOURCE_TRANSFER_FEATURE_V2, PRODUCT_SOURCE_TRANSFER_MEASUREMENT_V2_FEATURE_V1,
+  PRODUCT_SOURCE_OPERATIONS_FEATURE_V1, IMPORTED_PRODUCT_REVIEW_FEATURE_V1, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1 } from "@artoo/domain";
+import { readProductSourceRuntimeCapabilities } from "./product-source-runtime.js";
 import type {
   AgentInstanceHandle,
   NodeSideTransport,
@@ -9,29 +12,48 @@ import type {
   NodeErrorCode,
   RunEventMessage,
   RunStartCommand,
+  RunStartOwnedResultCommand,
   RunStopCommand,
   RunResumeCommand,
   RuntimeAdapter,
   ServerToNodeMessage,
   Unsubscribe
 } from "@artoo/protocol";
-import { adapterRunEventBodySchema, assertWorkspaceScope } from "@artoo/protocol";
-import { RunStartPayloadSchema, RunWorkspaceRetainedPayloadSchema,
-  type RunStartPayload, type WorkspaceRetentionOutcome } from "@artoo/domain";
+import { adapterRunEventBodySchema, assertWorkspaceScope, runStartCommandSchema } from "@artoo/protocol";
+import { RunStartPayloadSchema, RunWorkspaceRetainedPayloadSchema, AutonomousPlanningRequestV1Schema,
+  type OwnedResultRunAdmissionV1, type RunStartPayload, type WorkspaceRetentionOutcome, type ProductReleaseHealthReport } from "@artoo/domain";
+import { snapshotOwnedResultRunAdmission } from "./owned-result-admission.js";
+import { prepareOwnedResultRun, materializeOwnedResultRun, finalizeOwnedResultRun, readOwnedResultProfileDescriptors, selectOwnedResultProfile,
+  type PreparedOwnedResultProfiles, type PreparedOwnedResultRun, type OwnedResultFinalizationV1 } from "./owned-worktree-verification.js";
+import { worktreeResultFailureIsUncertain } from "./owned/worktree-results.js";
 
 import type { AdapterRegistry } from "./adapter-registry.js";
 import { allocationStartBinding, assertMatchingAllocationReplay, type AllocationStartBinding, type AllocationReplayIdentity } from "./node-allocation-identity.js";
 import {
   assertRealWorkspaceScope, createOwnedRunAdmission, getOwnedStartupReceipt, getOwnedStopReceipt,
-  getOwnedRunStatusReceipt, isOwnedRunAdapter,
-  type OwnedRunAdmission, type OwnedRunRuntimeAdapter,
+  getOwnedRunStatusReceipt, isOwnedRunAdapter, bindWindowsVerifiedExecution, assertWindowsVerifiedExecutionClosed, supportsWorkspaceReadOnlyTools,
+  type OwnedRunAdmission, type OwnedRunRuntimeAdapter, type WindowsVerifiedExecutionAdmission,
 } from "./process-adapter.js";
 import { snapshotGitOptions, type GitReadOptions } from "./owned/git-operations.js";
 import { OwnedGitError } from "./owned/owned-git.js";
+import { prepareVerificationProfiles, selectVerificationProfile, readVerificationCapabilities, assertVerificationWorkspaceBoundary, runVerification, runVerificationPreview, VerificationCleanupError,
+  type VerificationProfile, type PreparedVerificationProfile } from "./verification.js";
+import { createProductReleaseExecutor, prepareReleaseProfiles, type ReleaseProfile } from "./product-release.js";
+import { bindWorkspaceToolVerifier, bindWorkspaceToolEvidenceReader, bindWorkspaceToolCapabilities, bindWorkspaceToolReleaseCapabilities } from "./workspace-tools.js";
+import { bindWorkspaceReadOnlyTools } from "./workspace-readonly.js";
+import { createProductSourceOperationClient } from "./product-source-operations.js";
+import { createImportedProductReviewClient } from "./imported-product-review.js";
+import { createImportedDesignContinuationClient } from "./imported-design-continuation.js";
+import type { createProductSourceSemanticClient } from "./product-source-semantic-client.js";
+import type { ReleaseCapabilityReader } from "./release-capability-authority.js";
+import { readBrowserEvidence, type BrowserEvidenceGrant } from "./browser-evidence.js";
 import { provisionRunNamespace } from "./owned/workspace-namespace.js";
 import { prepareOwnedWorktree, reserveOwnedWorktree, materializeOwnedWorktree,
   type MaterializedWorktree, type OwnedReservation } from "./owned/worktree-reservation.js";
 import type { ArtifactUploader } from "./artifact-upload.js";
+import { assertProductSourceRuntimeConfiguration, assertProductSourceWorkspaceBoundary, claimProductSourceRun,
+  releaseProductSourceRun, captureProductSourceExport, captureProductSourceExportV2, productSourceSemanticExportEnabled, productSourceMeasurementV2ExportEnabled,
+  type PreparedProductSourceRuntime } from "./product-source-runtime.js";
 import {
   createGitCliExecutor,
   materializeWorkspace,
@@ -75,10 +97,25 @@ export interface NodeClientOptions {
   uploadArtifact?: ArtifactUploader;
   /** Trusted local managed delivery. It never falls back to transport replay. */
   managedJournal?: ManagedJournalOptions;
+  /** Administrator-owned ordinary-workspace verifiers; never read from task content. */
+  verificationProfiles?: readonly VerificationProfile[];
+  releaseProfiles?: readonly ReleaseProfile[];
+  /** Genuine locally prepared registry; requires an explicitly upgraded managed journal. */
+  ownedResultProfiles?: PreparedOwnedResultProfiles;
+  /** Explicit local Windows source transport slice; no wire/config object can mint this authority. */
+  productSourceRuntime?: PreparedProductSourceRuntime;
+  /** Explicit local transport preparation. Absence preserves ordinary/manual behavior and import fencing. */
+  productSourceOperations?: {client:ReturnType<typeof createProductSourceSemanticClient>;isCurrent:()=>boolean;importedReview?:boolean;importedDesign?:boolean};
 }
 
 export interface NodeClient {
+  /** Controller-derived discovery; wire metadata cannot enable any of these features. */
+  productSourceFeatures?(): readonly string[];
   start(): void;
+  /** Confirms configured publication listeners are available; startup errors are not hidden. */
+  ready(): Promise<void>;
+  /** Replays node-owned latest health observations after a new transport connection. */
+  replayReleaseHealth(): Promise<void>;
   stop(cancelRunning?: boolean): Promise<void>;
   invalidateManagedStartupSession(session: ManagedSession | undefined, cause: Error): void;
   failManagedConnection(cause: Error): Promise<void>;
@@ -102,6 +139,10 @@ interface PhysicalExecution {
 }
 interface PhysicalStartRecord {
   readonly identity: AllocationReplayIdentity;
+  /** Retained after compaction so a legacy duplicate cannot downgrade this mode. */
+  readonly ownedResultDigest?: string;
+  ownedResult?: { request: OwnedResultRunAdmissionV1; selection: ReturnType<typeof selectOwnedResultProfile>;
+    prepared?: PreparedOwnedResultRun; worktree?: MaterializedWorktree; finalizing?: Promise<OwnedResultFinalizationV1>; unsafe?: boolean };
   readonly ready: Promise<PhysicalStartupOutcome>;
   resolveReady?: (outcome: PhysicalStartupOutcome) => void;
   outcome?: PhysicalStartupOutcome;
@@ -147,8 +188,99 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   const resolveAdapter = (runtime: string): RuntimeAdapter | undefined =>
     options.registry ? options.registry.resolve(runtime) : options.adapter;
   const workspaceConfig: WorkspaceConfig = options.workspace ?? {};
+  if (options.ownedResultProfiles) {
+    readOwnedResultProfileDescriptors(options.ownedResultProfiles, nodeId);
+    if (options.managedJournal?.journal.ownedResultFinalizationVersion !== 1
+      || !options.managedJournal.journal.admitOwnedResultStart || !options.managedJournal.journal.settleOwnedResultProcess
+      || options.managedJournal.mixed?.allowNewAllocations === false || transport.acknowledgesRunEvents !== true) {
+      throw new Error("Owned result profiles require fresh managed allocations, committed receipts and an explicitly upgraded journal");
+    }
+  }
   const git: GitExecutor = options.git ?? createGitCliExecutor();
+  const verificationProfiles = prepareVerificationProfiles(options.verificationProfiles, workspaceConfig.allowedRoots);
+  if (options.productSourceRuntime) {
+    if (process.platform !== "win32" || options.managedJournal || options.ownedResultProfiles) {
+      throw new Error("Product source runtime supports only ordinary Windows verified execution");
+    }
+    assertProductSourceRuntimeConfiguration(options.productSourceRuntime, nodeId, workspaceConfig.allowedRoots, verificationProfiles);
+  }
+  if(options.productSourceOperations&&(!options.productSourceRuntime||typeof options.productSourceOperations.isCurrent!=="function"))throw new Error("Source operations require an original local runtime and current authenticated session");
+  const sourceOperations=options.productSourceOperations?createProductSourceOperationClient({nodeId,transport,runtime:options.productSourceRuntime!,
+    client:options.productSourceOperations.client,isCurrent:options.productSourceOperations.isCurrent}):undefined;
+  const importedReviews=sourceOperations&&options.productSourceOperations?.importedReview?createImportedProductReviewClient({nodeId,transport,
+    runtime:options.productSourceRuntime!,sourceOperations,resolveAdapter,isCurrent:options.productSourceOperations.isCurrent}):undefined;
+  if (options.productSourceOperations?.importedDesign && !importedReviews) throw new Error("Imported design requires the original local imported-review controller");
+  const importedDesigns = importedReviews && options.productSourceOperations?.importedDesign ? createImportedDesignContinuationClient({ nodeId, transport,
+    runtime: options.productSourceRuntime!, reviews: importedReviews, resolveAdapter, isCurrent: options.productSourceOperations.isCurrent,
+    uploadArtifact: options.uploadArtifact }) : undefined;
+  const releaseProfiles = prepareReleaseProfiles(options.releaseProfiles, verificationProfiles);
+  if (releaseProfiles.length && options.managedJournal) throw new Error("Product publication does not support managed journal nodes");
+  const pendingHealth = new Map<string, ProductReleaseHealthReport>();
+  let healthSending: Promise<void> | undefined, healthStopped = false;
+  let healthRetry: ReturnType<typeof setTimeout> | undefined;
+  function retryHealth(): void {
+    if (healthStopped || healthRetry || !pendingHealth.size) return;
+    healthRetry = setTimeout(() => { healthRetry = undefined; void flushHealth().catch(() => {}); }, 10_000);
+    healthRetry.unref();
+  }
+  function flushHealth(): Promise<void> {
+    if (healthSending) return healthSending;
+    if (healthStopped) return Promise.resolve();
+    const operation = (async () => {
+      const failed = new Set<string>(); let deliveryError: unknown;
+      while (pendingHealth.size && !healthStopped) {
+        const next = [...pendingHealth.entries()].find(([id]) => !failed.has(id));
+        if (!next) break;
+        const [id, report] = next;
+        try {
+          // The server serializes these frames. Replay immutable publication
+          // evidence first, including the restored version, before its health.
+          const receipts = new Map(releaseExecutor.getPublicationReceipts().map((receipt) => [receipt.request.release_id, receipt]));
+          for (const releaseId of new Set([id, ...(report.active_release_id ? [report.active_release_id] : [])])) {
+            const receipt = receipts.get(releaseId);
+            if (!receipt || receipt.outcome !== "published") throw new Error("Health replay has no matching published receipt");
+            await transport.send({ kind: "product.release.receipt", node_id: nodeId, payload: receipt });
+          }
+          await transport.send({ kind: "product.release.health", node_id: nodeId, payload: report });
+          const newer = pendingHealth.get(id);
+          pendingHealth.delete(id);
+          if (newer && newer !== report) pendingHealth.set(id, newer); // Give other releases a turn before the next observation.
+        } catch (error) {
+          // A rejected historical report must not prevent other profiles from
+          // reporting an outage. Retry each failed identity once per round.
+          failed.add(id); deliveryError = error;
+        }
+      }
+      if (failed.size) throw deliveryError;
+    })();
+    healthSending = operation;
+    void operation.then(() => { if (healthSending === operation) healthSending = undefined; }, () => {
+      if (healthSending === operation) healthSending = undefined;
+      retryHealth();
+    });
+    return operation;
+  }
+  function enqueueHealth(report: ProductReleaseHealthReport): void {
+    if (healthStopped) return;
+    const current = pendingHealth.get(report.request.release_id);
+    if (!current || current.sequence < report.sequence) pendingHealth.set(report.request.release_id, report);
+    // The durable journal is the retry authority. A disconnected transport must
+    // not block health checks or grow a queue for every periodic observation.
+    void flushHealth().catch(() => {});
+  }
+  const releaseExecutor = createProductReleaseExecutor(releaseProfiles, { onHealthReport: enqueueHealth,
+    onError: (error) => { process.stderr.write(`Product publication monitoring failed: ${errorMessage(error).slice(0, 2000)}\n`); } });
+  let releaseReady: Promise<void> | undefined;
+  const releasingWorkspaces = new Map<string, number>();
+  const verificationRuns = new Map<string, { profile: PreparedVerificationProfile; requestId: string;
+    runStart: RunStartPayload;
+    adapterInvoked?: boolean; workspaceProcessInvoked?: boolean;
+    context: RunStartPayload["context_pack"]["payload"]; expectedSubjectDigest?: string;
+    readReleaseCapabilities?: ReleaseCapabilityReader;
+    windowsAdmission?: WindowsVerifiedExecutionAdmission;
+    controller: AbortController; pending?: Promise<unknown>; unsafe?: boolean }>();
   const runs = new Map<string, { handle: AgentInstanceHandle; adapter: RuntimeAdapter }>();
+  const planningToolRuns = new Map<string, AbortController>();
   const starting = new Map<string, Promise<void>>();
   const finished = new Set<string>();
   // Includes legacy (undefined) bindings, distinguishing an actual launch from
@@ -197,7 +329,10 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     record.outcome = Object.freeze(outcome);
     record.resolveReady!(record.outcome);
     record.resolveReady = undefined;
-    record.controller = undefined;
+    // Owned results keep the original cancellation signal through capture,
+    // verification and journal settlement. Startup readiness does not end
+    // that lifetime; compactPhysical releases it after closed delivery.
+    if (!record.ownedResult) record.controller = undefined;
   }
 
   function settleMixedLegacy(record: MixedLegacyStartRecord, outcome: PhysicalStartupOutcome): void {
@@ -216,6 +351,20 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   async function stopLegacyRun(runId: string, run: { handle: AgentInstanceHandle; adapter: RuntimeAdapter }): Promise<void> {
+    const verification = verificationRuns.get(runId);
+    if (verification) {
+      verification.controller.abort();
+      try {
+        await run.adapter.stop(run.handle, "user_cancelled");
+        if (verification.windowsAdmission) assertWindowsVerifiedExecutionClosed(verification.windowsAdmission, run.handle);
+      } catch (error) {
+        if (verification.windowsAdmission) { verification.unsafe = true; throw new VerificationCleanupError("Windows verified stop remains unconfirmed"); }
+        throw error;
+      }
+      await verification.pending;
+      if (verification.unsafe) throw new VerificationCleanupError("Verifier closure remains unconfirmed");
+      return;
+    }
     const record = mixedLegacyStarts.get(runId);
     if (!record) return run.adapter.stop(run.handle, "user_cancelled");
     if (record.stopCompleted) return;
@@ -234,11 +383,13 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   function compactPhysical(record: PhysicalStartRecord): void {
+    if (record.ownedResult?.unsafe) return;
     if (record.managed && (!record.managed.settled || record.managed.deliveryPending)) return;
     if (record.confirmedClosed && !record.execution?.deliveryPending) {
       record.execution = undefined;
       record.closureReceipt = undefined;
       record.controller = undefined;
+      record.ownedResult = undefined;
       // Keep identity and the original startup outcome. No ContextPack, worktree
       // inventory, error chain, child/queue or resolved-handle promise is retained.
     }
@@ -278,7 +429,16 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     finally { if (execution.stopPending === operation) execution.stopPending = undefined; }
   }
 
-  async function executePhysicalStart(command: RunStartCommand, binding: AllocationStartBinding,
+  async function joinOwnedResultFinalization(record: PhysicalStartRecord): Promise<void> {
+    const result = record.ownedResult;
+    if (result?.finalizing) {
+      try { await result.finalizing; }
+      catch (error) { if (worktreeResultFailureIsUncertain(error)) result.unsafe = true; }
+    }
+    if (result?.unsafe) throw new Error("Owned result verifier or persistence remains uncertain; result authority is retained");
+  }
+
+  async function executePhysicalStart(command: Pick<RunStartCommand, "id" | "idempotency_key">, binding: AllocationStartBinding,
     record: PhysicalStartRecord, controller: AbortController): Promise<void> {
     const payload = binding.payload;
     let materialized: MaterializedWorktree | undefined;
@@ -312,8 +472,14 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         const journal = options.managedJournal.journal;
         options.managedJournal.channel.assertCurrentSession(record.startupSession);
         controller.signal.throwIfAborted();
-        const admitted = await journal.admitStart({ expectedNamespace: journal.namespace, runId: payload.run_id,
-          idempotencyKey: command.idempotency_key, payload });
+        const ownedResult = record.ownedResult;
+        if (ownedResult) {
+          ownedResult.prepared = await prepareOwnedResultRun(ownedResult.selection.store, ownedResult.selection.template, ownedResult.request);
+          options.managedJournal.channel.assertCurrentSession(record.startupSession); controller.signal.throwIfAborted();
+        }
+        const admissionRequest = { expectedNamespace: journal.namespace, runId: payload.run_id, idempotencyKey: command.idempotency_key };
+        const admitted = ownedResult ? await journal.admitOwnedResultStart!({ ...admissionRequest, admission: ownedResult.prepared! })
+          : await journal.admitStart({ ...admissionRequest, payload });
         if (admitted.kind !== "fresh") throw new Error(`Durable managed start is ${admitted.kind}; no new execution authority`);
         options.managedJournal.mixed?.bindRun(payload.run_id, "managed");
         record.managed = { permit: admitted.permit, settled: false, deliveryPending: true,
@@ -326,6 +492,11 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         agentInstanceId: payload.agent_instance_id, runId: payload.run_id, sourceRepo: baseRepo, allowedRoots });
       controller.signal.throwIfAborted();
       physicalWorkEntered = true;
+      if (record.ownedResult) {
+        record.recovery.phase = "materializing_result_input";
+        materialized = await materializeOwnedResultRun(record.ownedResult.prepared!, controller.signal);
+        record.ownedResult.worktree = materialized;
+      } else {
       record.recovery.phase = "namespace";
       await provisionRunNamespace(input, gitOptions);
       record.recovery.phase = "preparing";
@@ -334,6 +505,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       reservation = await reserveOwnedWorktree(prepared);
       record.recovery.phase = "materializing";
       materialized = await materializeOwnedWorktree(reservation);
+      }
       record.recovery.phase = "adapter_startup";
       adapterInvoked = true;
       let handle: AgentInstanceHandle;
@@ -420,10 +592,12 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     }
   }
 
-  function beginPhysicalStart(command: RunStartCommand, binding: AllocationStartBinding): Promise<void> {
+  function beginPhysicalStart(command: Pick<RunStartCommand, "id" | "idempotency_key">, binding: AllocationStartBinding,
+    ownedResult?: { request: OwnedResultRunAdmissionV1; digest: string; selection: ReturnType<typeof selectOwnedResultProfile> }): Promise<void> {
     let resolveReady!: (outcome: PhysicalStartupOutcome) => void;
     const controller = new AbortController();
     const record: PhysicalStartRecord = { identity: Object.freeze({ key: binding.key }),
+      ...(ownedResult ? { ownedResultDigest: ownedResult.digest, ownedResult: { request: ownedResult.request, selection: ownedResult.selection } } : {}),
       ready: new Promise<PhysicalStartupOutcome>((resolve) => { resolveReady = resolve; }),
       controller, confirmedClosed: false, startupSession: options.managedJournal?.channel.assertCurrentSession(),
       recovery: { runId: binding.payload.run_id, taskId: binding.payload.task_id,
@@ -478,10 +652,66 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     })();
   }
 
+  async function onRunStartOwnedResult(command: RunStartOwnedResultCommand): Promise<void> {
+    try {
+      // Detach the entire versioned admission before any await or duplicate ACK.
+      const snapshot = snapshotOwnedResultRunAdmission(command.payload), payload = snapshot.request.run_start, runId = payload.run_id;
+      if(payload.context_pack.payload?.imported_review_subject || payload.context_pack.payload?.transferred_product_input)throw new Error("Imported research does not support ordinary owned-result execution");
+      if (options.productSourceRuntime) {
+        assertProductSourceWorkspaceBoundary(options.productSourceRuntime, payload.workspace.root);
+        throw new Error("Product source runtime does not admit owned-result execution");
+      }
+      const managed = options.managedJournal, registry = options.ownedResultProfiles;
+      if (!managed || !registry || managed.journal.ownedResultFinalizationVersion !== 1
+        || !managed.journal.admitOwnedResultStart || !managed.journal.settleOwnedResultProcess
+        || managed.mixed?.allowNewAllocations === false || transport.acknowledgesRunEvents !== true
+        || command.idempotency_key !== `${runId}:start`) throw new Error("Owned result command requires configured managed result execution and a stable start key");
+      managed.channel.assertCurrentSession();
+      const selection = selectOwnedResultProfile(registry, nodeId, snapshot.request.requirement.profile);
+      releaseExecutor.assertWorkspaceBoundary(payload);
+      if (releasingWorkspaces.has(payload.workspace.root)) throw new Error("Workspace has a product publication in progress");
+      const adapter = resolveAdapter(payload.runtime);
+      assertVerificationWorkspaceBoundary(payload, verificationProfiles, adapter !== undefined && isOwnedRunAdapter(adapter));
+      const previous = physicalStarts.get(runId);
+      if (previous) {
+        if (previous.ownedResultDigest !== snapshot.digest) throw new Error("Owned result mode or complete admission changed");
+        assertMatchingAllocationReplay(previous.identity, snapshot.launch);
+        await acknowledgePhysicalStart(command.id, await previous.ready); return;
+      }
+      if (mixedLegacyStarts.has(runId) || launchBindings.has(runId) || starting.has(runId) || runs.has(runId)
+        || finished.has(runId) || mixedStopIntents.has(runId)) throw new Error("Existing run identity or Stop fence denies a new owned result launch");
+      // beginPhysicalStart installs the immutable mode/digest fence synchronously.
+      return beginPhysicalStart(command, snapshot.launch, { request: snapshot.request, digest: snapshot.digest, selection });
+    } catch (error) { await ackRejected(command.id, "process_start_failed", errorMessage(error)); }
+  }
+
   async function onRunStart(command: RunStartCommand): Promise<void> {
     let binding: AllocationStartBinding | undefined;
     let legacy: { key: string; payload: RunStartPayload } | undefined;
+    let verifiedSnapshot: { key: string; payload: RunStartPayload } | undefined;
+    let verificationProfile: PreparedVerificationProfile | undefined;
+    let readReleaseCapabilities: ReleaseCapabilityReader | undefined;
     try {
+      runStartCommandSchema.parse(command); // Also guard typed/in-memory transports before duplicate ACKs.
+      if(command.payload.context_pack.payload?.imported_review_subject || command.payload.context_pack.payload?.transferred_product_input)throw new Error("Imported research requires its dedicated local operation controller");
+      if (options.productSourceRuntime) assertProductSourceWorkspaceBoundary(options.productSourceRuntime, command.payload.workspace.root);
+      const configuredAdapter = resolveAdapter(command.payload.runtime);
+      releaseExecutor.assertWorkspaceBoundary(command.payload);
+      if (releasingWorkspaces.has(command.payload.workspace.root)) throw new Error("Workspace has a product publication in progress");
+      assertVerificationWorkspaceBoundary(command.payload, verificationProfiles, configuredAdapter !== undefined && isOwnedRunAdapter(configuredAdapter));
+      if (command.payload.verification || (configuredAdapter && supportsWorkspaceReadOnlyTools(configuredAdapter)
+        && isAutonomousPlanningContext(command.payload))) {
+        verifiedSnapshot = snapshotMixedLegacyStart(command.payload);
+      }
+      const admitted = verifiedSnapshot?.payload ?? command.payload;
+      if (admitted.verification?.release_capability_binding || admitted.context_pack.payload?.release_capabilities) {
+        if (!admitted.verification?.release_capability_binding || !admitted.context_pack.payload?.release_capabilities) {
+          throw new Error("Release capability requires both exact request and context bindings");
+        }
+        readReleaseCapabilities = releaseExecutor.getCapabilityReader(admitted.verification.release_capability_binding.release_profile_id);
+      }
+      verificationProfile = selectVerificationProfile(admitted, verificationProfiles, options.managedJournal !== undefined, readReleaseCapabilities, nodeId);
+      if (options.productSourceRuntime && !verificationProfile) throw new Error("Product source runtime requires original Windows verified execution");
       binding = allocationStartBinding(command.payload, process.platform, transport.acknowledgesRunEvents);
       if (options.managedJournal) {
         options.managedJournal.channel.assertCurrentSession();
@@ -498,8 +728,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       return;
     }
     // Per-run launches use the detached frozen snapshot, including after awaits.
-    const launchCommand = binding || legacy ? { ...command, payload: (binding ?? legacy)!.payload } : command;
-    const replayIdentity = binding ? Object.freeze({ key: binding.key }) : undefined;
+    const launchCommand = binding || legacy || verifiedSnapshot ? { ...command, payload: (binding ?? legacy ?? verifiedSnapshot)!.payload } : command;
+    const replayIdentity = binding || verifiedSnapshot ? Object.freeze({ key: (binding ?? verifiedSnapshot)!.key }) : undefined;
     const runId = launchCommand.payload.run_id;
     const ordinary = mixedLegacyStarts.get(runId);
     if (ordinary) {
@@ -513,6 +743,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     }
     const physical = physicalStarts.get(runId);
     if (physical) {
+      if (physical.ownedResultDigest) { await ackRejected(command.id, "process_start_failed", "Owned result admission cannot be replayed as legacy run.start"); return; }
       try { assertMatchingAllocationReplay(physical.identity, binding); }
       catch (error) { await ackRejected(command.id, "process_start_failed", errorMessage(error)); return; }
       await acknowledgePhysicalStart(command.id, await physical.ready);
@@ -524,7 +755,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     if (legacy) return beginMixedLegacyStart(launchCommand, legacy);
     if (starting.has(runId) || runs.has(runId) || finished.has(runId)) {
       try {
-        if (launchBindings.has(runId)) assertMatchingAllocationReplay(launchBindings.get(runId), binding);
+        if (launchBindings.has(runId)) assertMatchingAllocationReplay(launchBindings.get(runId), replayIdentity);
       } catch (error) {
         await ackRejected(command.id, "process_start_failed", errorMessage(error));
         return;
@@ -546,14 +777,39 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       }
       return beginPhysicalStart(launchCommand, binding);
     }
+    if (verificationProfile) {
+      if ([...verificationRuns.values()].some((run) => run.profile.workspace_root === verificationProfile.workspace_root)) {
+        await ackRejected(command.id, "process_start_failed", "Verification workspace already has an active execution"); return;
+      }
+      if (options.productSourceRuntime) {
+        try { claimProductSourceRun(options.productSourceRuntime, runId, launchCommand.payload.workspace.root); }
+        catch (error) { await ackRejected(command.id, "process_start_failed", errorMessage(error)); return; }
+      }
+      verificationRuns.set(runId, { profile: verificationProfile, runStart: launchCommand.payload, requestId: launchCommand.payload.verification!.request_id,
+        expectedSubjectDigest: launchCommand.payload.verification!.expected_subject_digest,
+        context: launchCommand.payload.context_pack.payload, readReleaseCapabilities, controller: new AbortController() });
+    }
+    if (!options.managedJournal && isAutonomousPlanningContext(launchCommand.payload)) {
+      const adapter = resolveAdapter(launchCommand.payload.runtime);
+      if (adapter && supportsWorkspaceReadOnlyTools(adapter)) planningToolRuns.set(runId, new AbortController());
+    }
     let ready!: () => void;
     launchBindings.set(runId, replayIdentity);
     starting.set(runId, new Promise<void>((resolve) => { ready = resolve; }));
     try {
       await executeStart(launchCommand, () => { starting.delete(runId); ready(); });
     } finally {
+      planningToolRuns.get(runId)?.abort();
+      planningToolRuns.delete(runId);
       starting.delete(runId);
       if (!runs.has(runId) && !finished.has(runId)) launchBindings.delete(runId);
+      if (options.productSourceRuntime && !runs.has(runId) && !finished.has(runId)) {
+        const verification = verificationRuns.get(runId);
+        if (verification && !verification.adapterInvoked && !verification.workspaceProcessInvoked && !verification.unsafe) {
+          releaseProductSourceRun(options.productSourceRuntime, runId);
+        } else if (verification) verification.unsafe = true; // An invoked producer without a closed handle retains its source claim.
+      }
+      if (!runs.has(runId) && !verificationRuns.get(runId)?.unsafe) verificationRuns.delete(runId);
       ready();
     }
   }
@@ -597,6 +853,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         assertRealWorkspaceScope(plan.root, workspaceConfig.allowedRoots);
         if (plan.kind === "worktree") assertRealWorkspaceScope(plan.baseRepo, workspaceConfig.allowedRoots);
       }
+      const sourceVerification = verificationRuns.get(payload.run_id);
+      if (sourceVerification && plan.kind === "worktree") sourceVerification.workspaceProcessInvoked = true;
       await materializeWorkspace(plan, git);
     } catch (err) {
       await rejectStart("process_start_failed", errorMessage(err));
@@ -606,15 +864,121 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     let handle: AgentInstanceHandle;
     try {
       if (mixed) { assertMixedLegacyStartup(payload.run_id, mixed); mixed.adapterInvoked = true; }
-      handle = await adapter.start({
+      const config = {
         runId: payload.run_id,
         taskId: payload.task_id,
         agentInstanceId: payload.agent_instance_id,
         runtime: payload.runtime,
         workspaceRoot: payload.workspace.root,
         runStart: payload
-      });
+      };
+      const verification = verificationRuns.get(payload.run_id);
+      if (verification?.profile.capabilities) {
+        bindWorkspaceToolCapabilities(config, () => {
+          verification.controller.signal.throwIfAborted();
+          return readVerificationCapabilities(verification.profile)!;
+        });
+      }
+      if (verification?.readReleaseCapabilities) {
+        bindWorkspaceToolReleaseCapabilities(config, () => {
+          verification.controller.signal.throwIfAborted();
+          return verification.readReleaseCapabilities!();
+        });
+      }
+      const evidenceGrants = new Map<string, BrowserEvidenceGrant>();
+      const grantEvidence = (receipt: Pick<import("@artoo/domain").RunVerificationPayload, "request_id" | "profile_id" | "profile_digest"> & {
+        checks: Pick<import("@artoo/domain").RunVerificationPayload["checks"][number], "id" | "observation">[] },
+        subjectDigest: string, scope: "preview" | "final") => {
+        if (!verification || receipt.profile_id !== verification.profile.id || receipt.profile_digest !== verification.profile.digest) throw new Error("Browser evidence profile differs from this run");
+        for (const check of receipt.checks) {
+          const observation = check.observation;
+          if (!observation?.evidence_bundle) continue;
+          const evidenceRoot = verification.profile.commands.find((command) => command.id === check.id)?.observation?.evidence_root;
+          if (!evidenceRoot || observation.scope !== scope) throw new Error("Browser evidence is not authorized by this run's protected profile");
+          const grant: BrowserEvidenceGrant = { evidenceRoot, requestId: receipt.request_id, profileId: receipt.profile_id,
+            profileDigest: receipt.profile_digest, subjectDigest, checkId: check.id, scope, ...observation.evidence_bundle };
+          // Validate the local sealed provenance before admitting any server-supplied reference.
+          readBrowserEvidence(grant, grant.bundle_id);
+          evidenceGrants.set(grant.bundle_id, grant);
+          if (observation.version !== 1) {
+            for (const item of observation.cases) {
+              evidenceGrants.set(item.trace_ref, grant);
+              for (const capture of item.captures) evidenceGrants.set(capture.screenshot_ref, grant);
+            }
+          } else {
+            for (const item of observation.cases) if (item.screenshot_ref) evidenceGrants.set(item.screenshot_ref, grant);
+          }
+        }
+      };
+      const review = payload.context_pack.payload?.review_subject;
+      if (verification && review?.verification) {
+        if (verification.expectedSubjectDigest !== review.subject_digest) throw new Error("Review browser evidence differs from the admitted source");
+        grantEvidence(review.verification, review.subject_digest, "final");
+      }
+      if (verification && (evidenceGrants.size || (!review && verification.profile.commands.some((command) => command.observation?.evidence_root)))) {
+        bindWorkspaceToolEvidenceReader(config, async (reference, readOptions) => {
+          verification.controller.signal.throwIfAborted();
+          const grant = evidenceGrants.get(reference);
+          if (!grant) throw new Error("Evidence reference is not granted to this session");
+          return readBrowserEvidence(grant, reference, readOptions);
+        });
+      }
+      if (verification && payload.context_pack.payload?.product_development
+        && payload.context_pack.payload.policy.execution_mode !== "discussion") {
+        let attempts = 0;
+        bindWorkspaceToolVerifier(config, async (toolSignal) => {
+          verification.controller.signal.throwIfAborted(); toolSignal.throwIfAborted();
+          if (verification.unsafe) throw new VerificationCleanupError("Verifier closure remains unconfirmed");
+          if (verification.pending) throw new Error("A verifier is already running");
+          if (++attempts > 12) throw new Error("In-task verification attempt budget exhausted");
+          // Preview diagnostics must never consume the final evidence ID or
+          // create a release attestation. Final verification still runs after exit.
+          const pending = runVerificationPreview(verification.profile, `preview_${randomUUID().replaceAll("-", "")}`,
+            AbortSignal.any([verification.controller.signal, toolSignal]), verification.context, verification.expectedSubjectDigest, verification.readReleaseCapabilities);
+          verification.pending = pending;
+          try {
+            const result = await pending;
+            if (result.verification.outcome === "passed" && result.verification.subject_digest) grantEvidence(result.verification, result.verification.subject_digest, "preview");
+            return result;
+          }
+          catch (error) { if (error instanceof VerificationCleanupError) verification.unsafe = true; throw error; }
+          finally { if (!verification.unsafe && verification.pending === pending) verification.pending = undefined; }
+        });
+      }
+      if (supportsWorkspaceReadOnlyTools(adapter) && payload.context_pack.payload?.policy.execution_mode === "discussion") {
+        const context = payload.context_pack.payload;
+        const planning = planningToolRuns.get(payload.run_id);
+        if (verification && review) {
+          if (!verification.expectedSubjectDigest) throw new Error("Read-only review requires its admitted source digest");
+          bindWorkspaceReadOnlyTools(config, { projectId: context.project.id, workspaceRoot: plan.root,
+            source: { profile: verification.profile, subjectDigest: verification.expectedSubjectDigest }, assertCurrent: () => {
+              verification.controller.signal.throwIfAborted();
+              if (verificationRuns.get(payload.run_id) !== verification || verification.unsafe || finished.has(payload.run_id)) {
+                throw new Error("Read-only review is no longer current");
+              }
+            } });
+        } else if (planning) {
+          bindWorkspaceReadOnlyTools(config, { projectId: context.project.id, workspaceRoot: plan.root, assertCurrent: () => {
+            planning.signal.throwIfAborted();
+            if (planningToolRuns.get(payload.run_id) !== planning || finished.has(payload.run_id)) {
+              throw new Error("Read-only planning is no longer current");
+            }
+          } });
+        }
+      }
+      if (verification && process.platform === "win32") {
+        Object.freeze(config);
+        verification.windowsAdmission = bindWindowsVerifiedExecution(adapter, config, verification.profile, verification.controller.signal, () => {
+          if (verificationRuns.get(payload.run_id) !== verification || verification.unsafe) throw new Error("Windows verified run is no longer current");
+        });
+      }
+      if (verification) verification.adapterInvoked = true;
+      handle = await adapter.start(config);
     } catch (err) {
+      if (err instanceof VerificationCleanupError) {
+        const verification = verificationRuns.get(payload.run_id);
+        if (verification) verification.unsafe = true;
+      }
       // start() can reject after a child already wrote files (for example, a
       // process guardian failed to launch). Preserve the materialized worktree
       // even when the adapter never returned a handle to this client.
@@ -634,11 +998,25 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
 
   async function streamManagedRun(delivery: RunDelivery, handle: AgentInstanceHandle, physical: PhysicalStartRecord): Promise<void> {
     const managed = physical.managed!, journal = options.managedJournal!.journal;
-    let delivered = false;
+    let delivered = false, ownedResultSettlementAttempted = false;
     const persist = async (settlement: TerminalSettlement): Promise<void> => {
       await stopPhysical(physical);
       if (!physical.confirmedClosed || !physical.closureReceipt) throw new Error("Managed settlement lacks the retained genuine closure object");
-      const run = await journal.settleOwnedProcess(managed.permit, handle, physical.closureReceipt, settlement);
+      let run: JournalRun;
+      const result = physical.ownedResult;
+      if (result && settlement.terminal.payload.phase === "completed") {
+        if (!result.prepared || !result.worktree || !physical.execution || !physical.controller) throw new Error("Owned result execution lost its original finalization authority");
+        physical.recovery.phase = "finalizing_result";
+        result.finalizing ??= finalizeOwnedResultRun(result.prepared, { worktree: result.worktree,
+          admission: physical.execution.admission, handle, closure: physical.closureReceipt, signal: physical.controller.signal });
+        let bundle: OwnedResultFinalizationV1;
+        try { bundle = await result.finalizing; }
+        catch (error) { if (worktreeResultFailureIsUncertain(error)) result.unsafe = true; throw error; }
+        // After this call a missing reply may mean the atomic commit succeeded.
+        // Never replace that outcome with a new failed settlement.
+        ownedResultSettlementAttempted = true;
+        run = await journal.settleOwnedResultProcess!(managed.permit, handle, physical.closureReceipt, bundle);
+      } else run = await journal.settleOwnedProcess(managed.permit, handle, physical.closureReceipt, settlement);
       managed.run = run; managed.settled = true; managed.delivery.useClosed(run);
       // Receipt is retained until the preceding real journal commit succeeds.
       physical.closureReceipt = undefined;
@@ -673,6 +1051,10 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       throw new Error("Managed stream ended without a terminal outcome");
     } catch (error) {
       if (managed.settled) throw error; // Closed correction/receipt state remains durable; never settle again.
+      if (physical.ownedResult?.unsafe || ownedResultSettlementAttempted) {
+        physical.recovery.phase = physical.ownedResult?.unsafe ? "result_finalization_uncertain" : "result_settlement_unknown";
+        throw error;
+      }
       const prior = managed.observedTerminal;
       let storedAbort: JournalRun["liveAbort"] = null;
       try { storedAbort = (await journal.lookupRun({ expectedNamespace: journal.namespace, runId: delivery.runId }))?.liveAbort ?? null; }
@@ -690,7 +1072,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         : priorNonSuccess ? "failed" : "incomplete_delivery" });
     } finally {
       if (physical.execution) physical.execution.deliveryPending = !delivered;
-      physical.recovery.phase = managed.settled ? "closed" : physical.confirmedClosed ? "physical_closed_journal_unknown" : "cleanup_uncertain";
+      physical.recovery.phase = managed.settled ? "closed" : physical.ownedResult?.unsafe ? "result_finalization_uncertain"
+        : ownedResultSettlementAttempted ? "result_settlement_unknown" : physical.confirmedClosed ? "physical_closed_journal_unknown" : "cleanup_uncertain";
       compactPhysical(physical);
     }
   }
@@ -743,11 +1126,57 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         // Custom adapters and child output have no authority to report retention.
         const rawEvent = adapterRunEventBodySchema.parse(yielded);
         if (rawEvent.type === "run.lifecycle" && (rawEvent.payload.phase === "completed" || rawEvent.payload.phase === "failed" || rawEvent.payload.phase === "cancelled")) {
+          const verification = verificationRuns.get(delivery.runId);
+          if (verification?.windowsAdmission) assertWindowsVerifiedExecutionClosed(verification.windowsAdmission, handle);
+          if (verification && rawEvent.payload.phase === "completed") {
+            // The coding producer no longer owns completion. Close it before
+            // hashing or starting the independent administrator verifier.
+            await adapter.stop(handle, "user_cancelled");
+            if (verification.windowsAdmission) assertWindowsVerifiedExecutionClosed(verification.windowsAdmission, handle);
+            const pending = runVerification(verification.profile, verification.requestId, verification.controller.signal, verification.context, verification.expectedSubjectDigest,
+              verification.readReleaseCapabilities);
+            verification.pending = pending;
+            let evidence;
+            try { evidence = await pending; }
+            catch (error) {
+              if (error instanceof VerificationCleanupError) verification.unsafe = true;
+              throw error;
+            }
+            releaseExecutor.recordVerification(delivery.runId, verification.profile.project_id, verification.profile.workspace_root, evidence,
+              verification.readReleaseCapabilities ? { context: verification.context!, readCapabilities: verification.readReleaseCapabilities } : undefined);
+            await transport.send({ kind: "run.event", node_id: nodeId, run_id: delivery.runId, sequence: sequence++,
+              event: { type: "run.verification", payload: evidence } });
+            if (options.productSourceRuntime && evidence.outcome === "passed" && verification.context?.product_development
+              && verification.context.policy.execution_mode !== "discussion" && !verification.controller.signal.aborted) {
+              try {
+                if (!verification.windowsAdmission) throw new Error("Source export requires original native Windows author closure");
+                const input = { runStart: verification.runStart, profile: verification.profile, evidence, admission: verification.windowsAdmission, handle };
+                // First-hop v2 requires the explicit local prepared release
+                // association. Other stages/policies retain the ordinary byte route.
+                const semanticResearch = verification.context.product_development.stage === "research"
+                  && (verification.profile.capabilities?.measurement_plan_policy?.version === 1
+                    && productSourceSemanticExportEnabled(options.productSourceRuntime)
+                    || verification.profile.capabilities?.measurement_plan_policy?.version === 2
+                    && productSourceMeasurementV2ExportEnabled(options.productSourceRuntime, verification.profile));
+                const event = semanticResearch
+                  ? { type: "run.product-source.export.v2" as const, payload: captureProductSourceExportV2(options.productSourceRuntime, input) }
+                  : { type: "run.product-source.export.v1" as const, payload: captureProductSourceExport(options.productSourceRuntime, input) };
+                await transport.send({ kind: "run.event", node_id: nodeId, run_id: delivery.runId, sequence: sequence++, event });
+              } catch (error) {
+                // Storage or delivery uncertainty retains this workspace even after process closure.
+                verification.unsafe = true;
+                throw new VerificationCleanupError(`Product source export remains unconfirmed: ${errorMessage(error)}`);
+              }
+            }
+            // Failed checks remain reviewable. An explicit stop still cancels
+            // the run and never starts another verification command.
+            if (verification.controller.signal.aborted) rawEvent.payload = { phase: "cancelled", reason: "user_cancelled" };
+          }
           if (physical) {
             ownedStopAttempted = true;
             await stopPhysical(physical);
           }
-          await reportRetainedWorkspace(rawEvent.payload.phase);
+          await reportRetainedWorkspace(rawEvent.payload.phase as "completed" | "failed" | "cancelled");
         }
         const event = rawEvent.type === "artifact.created" && options.uploadArtifact
           ? await options.uploadArtifact(delivery.runId, delivery.workspaceRoot, rawEvent) : rawEvent;
@@ -760,8 +1189,15 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         };
         sequence += 1;
         await transport.send(message);
+        if (verificationRuns.has(delivery.runId) && rawEvent.type === "run.lifecycle"
+          && ["completed", "failed", "cancelled"].includes(rawEvent.payload.phase)) break;
       }
     } catch (error) {
+      if (error instanceof VerificationCleanupError) {
+        const verification = verificationRuns.get(delivery.runId);
+        if (verification) verification.unsafe = true;
+        throw error;
+      }
       // Preserve the worktree when a deliverable could not be safely transferred.
       // A delivery error can occur while the process is still writing. Confirm
       // process stop before reporting failure and allowing lease release.
@@ -776,16 +1212,23 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         event: { type: "run.lifecycle", payload: { phase: "failed", reason: errorMessage(error) } },
       }).catch(() => {});
     } finally {
-      if (!physical) {
+      if (!physical && !verificationRuns.get(delivery.runId)?.unsafe) {
+        if (options.productSourceRuntime) {
+          const verification = verificationRuns.get(delivery.runId);
+          if (!verification?.windowsAdmission) throw new VerificationCleanupError("Product source run lost native closure authority");
+          assertWindowsVerifiedExecutionClosed(verification.windowsAdmission, handle);
+          releaseProductSourceRun(options.productSourceRuntime, delivery.runId);
+        }
         finished.add(delivery.runId);
         const ordinary = mixedLegacyStarts.get(delivery.runId);
         // Stream completion does not erase a mixed run's remaining Stop
         // authority while persistence or an adapter Stop is still pending.
         const awaitingRequestedStop = ordinary && mixedStopIntents.has(delivery.runId) && !ordinary.stopCompleted;
         if (!awaitingRequestedStop && !ordinary?.stopFailure && !ordinary?.stopPending) runs.delete(delivery.runId);
+        verificationRuns.delete(delivery.runId);
         // Artifacts do not certify that all modified/new/ignored bytes are saved.
         await reportRetainedWorkspace("unconfirmed");
-      } else {
+      } else if (physical) {
         try {
           // Stream completion alone does not prove guardian/group closure.
           if (!physical.confirmedClosed && !ownedStopAttempted) await stopPhysical(physical);
@@ -812,14 +1255,17 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     catch (error) {
       await physical.ready;
       try { await stopPhysical(physical); } catch { /* Preserve unknown closure while surfacing the original storage error. */ }
+      try { await joinOwnedResultFinalization(physical); } catch { /* Retained finalizer uncertainty remains observable on the next Stop. */ }
       throw error;
     }
     await physical.ready;
-    await stopPhysical(physical);
+    try { await stopPhysical(physical); } finally { await joinOwnedResultFinalization(physical); }
   }
 
   async function onRunStop(command: RunStopCommand): Promise<void> {
     const runId = command.payload.run_id;
+    verificationRuns.get(runId)?.controller.abort();
+    planningToolRuns.get(runId)?.abort();
     if (options.managedJournal?.mixed) mixedStopIntents.add(runId);
     const ordinary = mixedLegacyStarts.get(runId);
     if (ordinary) {
@@ -887,6 +1333,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     }
     await starting.get(command.payload.run_id);
     const run = runs.get(command.payload.run_id);
+    if (!run && verificationRuns.get(runId)?.unsafe) {
+      await ackRejected(command.id, "process_start_failed", "Verifier closure remains unconfirmed after startup failure"); return;
+    }
     if (!run && !finished.has(command.payload.run_id)) {
       // A cancellation can race ahead of run.start. Record the tombstone before
       // acknowledging absence, so a later start for this run cannot spawn.
@@ -895,7 +1344,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       return;
     }
     try {
-      if (run) await run.adapter.stop(run.handle, "user_cancelled");
+      if (run) await stopLegacyRun(runId, run);
       await ackAccepted(command.id);
     } catch (error) {
       await ackRejected(command.id, "process_exited", errorMessage(error));
@@ -909,6 +1358,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   // (the existing streamEvents loop keeps flowing). Lost → ack rejected
   // (process_exited), and the server maps that to the daemon_disconnect path.
   async function onRunResume(command: RunResumeCommand): Promise<void> {
+    if (verificationRuns.get(command.payload.run_id)?.unsafe && !runs.has(command.payload.run_id)) {
+      await ackRejected(command.id, "process_start_failed", "Verifier closure remains unconfirmed after startup failure"); return;
+    }
     const ordinary = mixedLegacyStarts.get(command.payload.run_id);
     if (ordinary) {
       const outcome = await ordinary.ready;
@@ -995,6 +1447,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     // reconnect. Absence from the live map is not proof of exit until that
     // start has either installed its process handle or definitively failed.
     await starting.get(command.payload.run_id);
+    if (verificationRuns.get(command.payload.run_id)?.unsafe) {
+      await ackRejected(command.id, "process_start_failed", "Verifier process-group closure remains unconfirmed"); return;
+    }
     if (runs.has(command.payload.run_id)) {
       await ackAccepted(command.id);
     } else {
@@ -1003,9 +1458,48 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   async function dispatch(message: ServerToNodeMessage): Promise<void> {
+    if(sourceOperations&&await sourceOperations.handle(message))return;
+    if(importedReviews&&await importedReviews.handle(message))return;
+    if(importedDesigns&&await importedDesigns.handle(message))return;
     switch (message.type) {
+      case "product.release.cancel": {
+        try {
+          const receipt = await releaseExecutor.cancel(message.payload);
+          await transport.send({ kind: "product.release.receipt", node_id: nodeId, payload: receipt });
+          await ackAccepted(message.id);
+        } catch (error) { await ackRejected(message.id, "process_start_failed", errorMessage(error)); }
+        return;
+      }
+      case "product.release": {
+        const profile = releaseProfiles.find((item) => item.id === message.payload.release_profile_id);
+        if (!profile || [...verificationRuns.values()].some((run) => run.profile.workspace_root === profile.verifier.workspace_root)) {
+          return ackRejected(message.id, "process_start_failed", "Release profile unavailable or its workspace is still executing");
+        }
+        const root = profile.verifier.workspace_root;
+        const sourceClaim = `product-release:${message.payload.release_id}`;
+        if (options.productSourceRuntime) {
+          try { claimProductSourceRun(options.productSourceRuntime, sourceClaim, root); }
+          catch (error) { return ackRejected(message.id, "process_start_failed", errorMessage(error)); }
+        }
+        let releaseClosed = false;
+        releasingWorkspaces.set(root, (releasingWorkspaces.get(root) ?? 0) + 1);
+        try {
+          const receipt = await releaseExecutor.release(message.payload);
+          releaseClosed = true;
+          await transport.send({ kind: "product.release.receipt", node_id: nodeId, payload: receipt });
+          await ackAccepted(message.id);
+        } catch (error) { await ackRejected(message.id, "process_start_failed", errorMessage(error)); }
+        finally {
+          if (options.productSourceRuntime && releaseClosed) releaseProductSourceRun(options.productSourceRuntime, sourceClaim);
+          const pending = (releasingWorkspaces.get(root) ?? 1) - 1;
+          if (pending) releasingWorkspaces.set(root, pending); else releasingWorkspaces.delete(root);
+        }
+        return;
+      }
       case "run.start":
         return onRunStart(message);
+      case "run.start.owned-result.v1":
+        return onRunStartOwnedResult(message);
       case "run.stop":
         return onRunStop(message);
       case "artifact.collect":
@@ -1013,6 +1507,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       case "run.resume":
         return onRunResume(message);
       case "run.event.ack":
+      case "product.release.health.ack":
         return; // WebSocket transport owns persisted-event acknowledgements.
       case "node.session.ready":
       case "node.session.pong":
@@ -1021,6 +1516,16 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   const client: NodeClient = {
+    productSourceFeatures() {
+      if (!options.productSourceRuntime) return Object.freeze([]);
+      const roles = readProductSourceRuntimeCapabilities(options.productSourceRuntime);
+      return Object.freeze([PRODUCT_SOURCE_TRANSFER_FEATURE_V1,
+        ...(roles.semantic ? [PRODUCT_SOURCE_TRANSFER_FEATURE_V2] : []),
+        ...(roles.measurementV2 ? [PRODUCT_SOURCE_TRANSFER_MEASUREMENT_V2_FEATURE_V1] : []),
+        ...(sourceOperations && roles.semantic ? [PRODUCT_SOURCE_OPERATIONS_FEATURE_V1] : []),
+        ...(importedReviews && roles.importedReview ? [IMPORTED_PRODUCT_REVIEW_FEATURE_V1] : []),
+        ...(importedDesigns && roles.importedDesign ? [IMPORTED_DESIGN_CONTINUATION_FEATURE_V1] : [])]);
+    },
     requestManagedRunStop,
     invalidateManagedStartupSession(session, cause): void {
       for (const physical of physicalStarts.values()) {
@@ -1045,14 +1550,35 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       await client.stop(true);
     },
     start(): void {
+      releaseReady ??= releaseExecutor.start();
+      track(releaseReady);
+      void releaseReady.then(() => client.replayReleaseHealth()).catch(() => {});
       unsubscribe = transport.subscribe((message) => {
         track(dispatch(message));
       });
     },
+    ready(): Promise<void> { return releaseReady ?? Promise.reject(new Error("Node client has not started")); },
+    async replayReleaseHealth(): Promise<void> {
+      await client.ready();
+      if (healthStopped) return;
+      for (const report of releaseExecutor.getHealthReports()) {
+        const current = pendingHealth.get(report.request.release_id);
+        if (!current || current.sequence < report.sequence) pendingHealth.set(report.request.release_id, report);
+      }
+      await flushHealth();
+    },
     async stop(cancelRunning = false): Promise<void> {
+      healthStopped = true;
+      if (healthRetry) clearTimeout(healthRetry);
+      healthRetry = undefined;
+      pendingHealth.clear();
       unsubscribe?.();
       unsubscribe = undefined;
+      sourceOperations?.invalidate();importedReviews?.invalidate();importedDesigns?.invalidate();
+      releaseExecutor.requestStop();
       if (cancelRunning) {
+        for (const planning of planningToolRuns.values()) planning.abort();
+        for (const verification of verificationRuns.values()) verification.controller.abort();
         for (const [runId, ordinary] of mixedLegacyStarts) {
           mixedStopIntents.add(runId);
           ordinary.controller?.abort(new DeliveryCancelled("Node shutdown requested"));
@@ -1066,21 +1592,38 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         await Promise.allSettled([...starting.values()]);
         const stopped = await Promise.allSettled([
           ...[...runs.entries()].map(([runId, run]) => stopLegacyRun(runId, run)),
+          ...[...verificationRuns.entries()].filter(([runId, verification]) => verification.unsafe && !runs.has(runId))
+            .map(() => Promise.reject(new VerificationCleanupError("Verifier closure remains unconfirmed after startup failure"))),
           ...[...mixedLegacyStarts.entries()]
             .filter(([runId, ordinary]) => !runs.has(runId) && (ordinary.stopFailure
               || (ordinary.adapterInvoked && ordinary.outcome?.kind !== "started" && !ordinary.stopCompleted)))
             .map(([, ordinary]) => Promise.reject(new Error(ordinary.stopFailure ?? "Ordinary startup closure remains uncertain; durable identity is retained"))),
           ...[...physicalStarts.values()]
             .filter((physical) => physical.execution || physical.outcome?.kind === "uncertain")
-            .map((physical) => stopPhysical(physical)),
+            .map(async (physical) => { try { await stopPhysical(physical); } finally { await joinOwnedResultFinalization(physical); } }),
         ]);
         const failure = stopped.find((result) => result.status === "rejected");
         if (failure?.status === "rejected") throw failure.reason;
       }
       await Promise.allSettled([...inflight]);
+      await sourceOperations?.settled();await importedReviews?.settled();await importedDesigns?.settled();
+      await releaseExecutor.stop();
     }
   };
   return client;
+}
+
+/** A planning snapshot describes a future worker; it grants no access to that worker's files. */
+function isAutonomousPlanningContext(payload: RunStartPayload): boolean {
+  const context = payload.context_pack.payload;
+  if (!context?.conversation || context.policy.execution_mode !== "discussion" || context.policy.filesystem_write_scope.length
+    || context.product_development || context.review_subject || payload.verification || context.verification_capabilities
+    || context.release_capabilities || payload.workspace.branch != null || payload.workspace_allocation !== undefined) return false;
+  try {
+    const request = AutonomousPlanningRequestV1Schema.safeParse(JSON.parse(context.conversation.current_request));
+    return request.success && request.data.planning_capability_snapshot !== null
+      && request.data.planning_capability_snapshot.project_id === context.project.id;
+  } catch { return false; }
 }
 
 function errorMessage(err: unknown): string {

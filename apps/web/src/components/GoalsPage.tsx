@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Flag, Plus, Download, ListChecks, MessageSquare } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { canProposePlan, canTransitionGoal, type Goal, type TaskSpec } from "@artoo/domain";
+import { canProposePlan, canTransitionGoal, type Goal, type GoalAutomation, type TaskSpec } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
 import { useProject } from "../app/useProject.js";
 import { useSelection } from "../app/SelectionContext.js";
@@ -46,15 +46,22 @@ function GoalForm({ projectId, onCreated, onClose }: { projectId: string; onCrea
   const [objective, setObjective] = useState("");
   const [criteria, setCriteria] = useState("");
   const [minutes, setMinutes] = useState("");
-  const mutation = useMutation({ mutationFn: () => api.createGoal({ project_id: projectId, title: title.trim(), objective: objective.trim(), priority: "p2", acceptance_criteria: lines(criteria), budgets: { max_elapsed_ms: minutes ? Number(minutes) * 60000 : null, max_cost_usd: null, max_retries: null, max_concurrent_runs: null, allowed_runtimes: null } }, newIdempotencyKey()), onSuccess: async ({ goal }) => { await query.invalidateQueries({ queryKey: ["goals", projectId] }); onCreated(goal.id); } });
-  return <Modal open onClose={() => { if (!mutation.isPending) onClose(); }} title="New goal"><form className="insights-goal-form u-stack" aria-label="Create goal" onSubmit={(event) => { event.preventDefault(); if (!mutation.isPending) mutation.mutate(); }}>
-    <p className="insights-help">Describe the outcome first. You can build or discuss the plan after creating this goal.</p>
-    <Input label="Goal title" placeholder="What do you want to achieve?" value={title} required maxLength={300} disabled={mutation.isPending} onChange={(event) => setTitle(event.target.value)} />
+  const [mode, setMode] = useState("manual");
+  const [requestKey, setRequestKey] = useState(newIdempotencyKey);
+  const autonomous = mode !== "manual";
+  const mutation = useMutation({ mutationFn: () => autonomous
+    ? api.createAutonomousGoal({ project_id: projectId, objective: objective.trim(), verification_profile_id: "default", execution_mode: "agent_team", ...(mode === "publish" ? { release_profile_id: "default" } : {}), max_retries: 3 }, requestKey)
+    : api.createGoal({ project_id: projectId, title: title.trim(), objective: objective.trim(), priority: "p2", acceptance_criteria: lines(criteria), budgets: { max_elapsed_ms: minutes ? Number(minutes) * 60000 : null, max_cost_usd: null, max_retries: null, max_concurrent_runs: null, allowed_runtimes: null } }, requestKey),
+    onSuccess: async ({ goal }) => { await query.invalidateQueries({ queryKey: ["goals", projectId] }); onCreated(goal.id); } });
+  return <Modal open onClose={() => { if (!mutation.isPending) onClose(); }} title="New goal"><form className="insights-goal-form u-stack" aria-label="Create goal" onChange={() => setRequestKey(newIdempotencyKey())} onSubmit={(event) => { event.preventDefault(); if (!mutation.isPending) mutation.mutate(); }}>
+    <Select label="Execution mode" value={mode} disabled={mutation.isPending} onChange={(event) => setMode(event.target.value)}><option value="manual">Review each step</option><option value="autonomous">Agent Team — verified workspace</option><option value="publish">Agent Team — build and publish</option></Select>
+    <p className="insights-help">{autonomous ? `Describe what you need. Your team handles research, design, implementation, tests and independent review, with up to three retries and an eight-hour scheduling budget. ${mode === "publish" ? "Publish to your team's configured destination after acceptance checks pass, then check the live product. A configured publishing destination is required." : "Deliver a verified workspace. Choose build and publish to include deployment."}` : "Describe the outcome first. You can build or discuss the plan after creating this goal."}</p>
+    {!autonomous && <Input label="Goal title" placeholder="What do you want to achieve?" value={title} required maxLength={300} disabled={mutation.isPending} onChange={(event) => setTitle(event.target.value)} />}
     <Textarea label="Objective" placeholder="Describe the result and why it matters." value={objective} required disabled={mutation.isPending} onChange={(event) => setObjective(event.target.value)} />
-    <Textarea label="Goal acceptance criteria" helperText="One criterion per line" value={criteria} required onChange={(event) => setCriteria(event.target.value)} />
-    <details className="insights-disclosure"><summary>Set a time budget</summary><Input label="Time budget (minutes, optional)" type="number" min="1" step="1" value={minutes} disabled={mutation.isPending} onChange={(event) => setMinutes(event.target.value)} /><p className="insights-help">Cost budgets are unavailable until runtimes report reliable usage costs.</p></details>
+    {!autonomous && <><Textarea label="Goal acceptance criteria" helperText="One criterion per line" value={criteria} required onChange={(event) => setCriteria(event.target.value)} />
+    <details className="insights-disclosure"><summary>Set a time budget</summary><Input label="Time budget (minutes, optional)" type="number" min="1" step="1" value={minutes} disabled={mutation.isPending} onChange={(event) => setMinutes(event.target.value)} /><p className="insights-help">Cost budgets are unavailable until runtimes report reliable usage costs.</p></details></>}
     <ActionError error={mutation.error} />
-    <div className="action-row"><Button variant="primary" type="submit" loading={mutation.isPending} disabled={!title.trim() || !objective.trim() || !lines(criteria).length}>Create goal</Button><Button onClick={onClose} disabled={mutation.isPending}>Cancel</Button></div>
+    <div className="action-row"><Button variant="primary" type="submit" loading={mutation.isPending} disabled={!objective.trim() || (!autonomous && (!title.trim() || !lines(criteria).length))}>{autonomous ? "Start autonomous goal" : "Create goal"}</Button><Button onClick={onClose} disabled={mutation.isPending}>Cancel</Button></div>
   </form></Modal>;
 }
 
@@ -65,9 +72,12 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
   const { setSelectedTaskId } = useSelection();
   const [proposing, setProposing] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
-  const plans = useQuery({ queryKey: ["plans", goal.id], queryFn: () => api.listPlans(goal.id) });
+  const automation = useQuery({ queryKey: ["goal-automation", goal.id], queryFn: () => api.getGoalAutomation(goal.id), refetchInterval: 5000 });
+  const autonomous = !!automation.data?.automation;
+  const manual = automation.data?.automation === null;
+  const plans = useQuery({ queryKey: ["plans", goal.id], queryFn: () => api.listPlans(goal.id), refetchInterval: autonomous ? 5000 : false });
   const checkpoints = useQuery({ queryKey: ["checkpoints", goal.id], queryFn: () => api.listCheckpoints(goal.id), refetchInterval: 10000 });
-  const refresh = async (): Promise<void> => { await Promise.all(["goals", "plans", "checkpoints", "tasks"].map((key) => query.invalidateQueries({ queryKey: [key] }))); };
+  const refresh = async (): Promise<void> => { await Promise.all(["goals", "plans", "checkpoints", "tasks", "goal-automation"].map((key) => query.invalidateQueries({ queryKey: [key] }))); };
   const action = useMutation({ mutationFn: (name: "pause" | "resume" | "cancel" | "reconcile") => api.goalAction(goal.id, name, newIdempotencyKey()), onSuccess: async () => { setConfirmCancel(false); await refresh(); }, onError: refresh });
   const planAction = useMutation({ mutationFn: ({ id, name }: { id: string; name: "accept" | "reject" }) => api.planAction(id, name, newIdempotencyKey()), onSuccess: refresh });
   const audit = useMutation({ mutationFn: async () => { const result = await api.goalAuditExport(goal.id); const url = URL.createObjectURL(new Blob([JSON.stringify(result.export, null, 2)], { type: "application/json" })); const a = document.createElement("a"); a.href = url; a.download = `${goal.id}-audit.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } });
@@ -75,10 +85,12 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
   const taskStates = latestCheckpoint?.state_refs.task_statuses ?? [];
   return <article className="insights-goal-detail u-stack">
     <header className="insights-goal-title"><span className="insights-eyebrow">Outcome</span><div className="action-row"><h2>{goal.title}</h2><Badge tone={goal.status === "completed" ? "success" : goal.status === "blocked" ? "warning" : "neutral"}>{goal.status}</Badge></div><p className="insights-prose">{goal.objective}</p></header>
+    <ActionError error={automation.error} />
+    {automation.data?.automation && <AutonomousProgress goal={goal} automation={automation.data.automation} />}
     <section className="insights-criteria" aria-label="Goal acceptance criteria"><h3><ListChecks size={16} aria-hidden="true" /> Success criteria</h3><ul>{goal.acceptance_criteria.map((item, i) => <li key={i}>{item}</li>)}</ul></section>
     {latestCheckpoint && <div className="insights-goal-progress"><span><strong>{taskStates.filter((task) => task.status === "done").length}/{taskStates.length}</strong> tasks completed</span><span><strong>{latestCheckpoint.state_refs.active_runs.length}</strong> active runs</span><span><strong>{latestCheckpoint.state_refs.open_blockers.length}</strong> blockers</span><small>Last checkpoint · {taskUpdatedLabel(latestCheckpoint.created_at)}</small></div>}
     <div className="action-row insights-goal-actions">
-      {canTransitionGoal(goal.status, "pause") && <Button disabled={action.isPending} onClick={() => action.mutate("pause")}>Pause goal</Button>}
+      {(canTransitionGoal(goal.status, "pause") || (autonomous && goal.status === "draft")) && <Button disabled={action.isPending} onClick={() => action.mutate("pause")}>Pause goal</Button>}
       {canTransitionGoal(goal.status, "resume") && <Button disabled={action.isPending} onClick={() => action.mutate("resume")}>Resume goal</Button>}
       {canTransitionGoal(goal.status, "cancel") && <Button variant="danger" disabled={action.isPending} onClick={() => setConfirmCancel(true)}>Cancel goal</Button>}
       {goal.current_plan_id && <Button disabled={action.isPending} onClick={() => action.mutate("reconcile")}>Refresh from checkpoint</Button>}
@@ -89,19 +101,60 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
     <ActionError error={action.error ?? planAction.error ?? audit.error} />
     <section className="u-stack insights-plans" aria-label="Plans"><div className="insights-section-heading"><h3>Plans</h3><Badge>{plans.data?.plans.length ?? 0}</Badge></div><ActionError error={plans.error} />
       {plans.isLoading && <p role="status">Loading plans…</p>}
-      {canProposePlan(goal.status, !!goal.current_plan_id) && <Button onClick={() => setProposing(!proposing)}>{proposing ? "Close plan editor" : "Propose plan"}</Button>}
+      {manual && canProposePlan(goal.status, !!goal.current_plan_id) && <Button onClick={() => setProposing(!proposing)}>{proposing ? "Close plan editor" : "Propose plan"}</Button>}
       {goal.current_plan_id && (goal.status === "paused" || goal.status === "blocked") && <p className="t-subtle">To replace a plan, pause the goal and stop its active runs first. Accepted replacement tasks remain paused until you resume the goal; prior execution evidence is kept.</p>}
       {proposing && <PlanForm goalId={goal.id} onCreated={async () => { setProposing(false); await refresh(); }} />}
-      {plans.data?.plans.length === 0 && <p>No plan proposed. Add tasks and acceptance criteria, then review the plan before creating its tasks.</p>}
+      {plans.data?.plans.length === 0 && <p>{autonomous ? "The plan will appear here when agent planning finishes." : "No plan proposed. Add tasks and acceptance criteria, then review the plan before creating its tasks."}</p>}
       {plans.data?.plans.map((plan) => <article key={plan.id} className="insights-plan u-stack-sm"><div className="action-row"><h4>Plan {plan.version}</h4><Badge tone={plan.status === "accepted" ? "success" : plan.status === "proposed" ? "info" : "neutral"}>{plan.status}</Badge><span className="insights-help">{plan.task_specs.length} tasks</span></div><p className="insights-prose">{plan.rationale}</p>
-        <ol className="insights-plan-tasks">{plan.task_specs.map((spec, i) => <li key={i}><span className="insights-step-number" aria-hidden="true">{i + 1}</span><div><strong>{spec.title}</strong>{spec.description && <p>{spec.description}</p>}<ul>{spec.acceptance_criteria.map((criterion, j) => <li key={j}>{criterion}</li>)}</ul>{spec.dependencies.length > 0 && <p className="insights-dependency">Depends on: {spec.dependencies.map((dep) => plan.task_specs[Number(dep.ref)]?.title ?? dep.ref).join(", ")}</p>}</div></li>)}</ol>
-        {plan.status === "proposed" && <div className="action-row"><Button variant="primary" disabled={planAction.isPending} onClick={() => planAction.mutate({ id: plan.id, name: "accept" })}>Accept plan and create tasks</Button><Button disabled={planAction.isPending} onClick={() => planAction.mutate({ id: plan.id, name: "reject" })}>Reject plan</Button></div>}
+        <ol className="insights-plan-tasks">{plan.task_specs.map((spec, i) => <li key={i}><span className="insights-step-number" aria-hidden="true">{i + 1}</span><div><strong>{spec.title}</strong>{spec.development_stage && <Badge>{stageLabels[spec.development_stage]}</Badge>}{spec.description && <p>{spec.description}</p>}<ul>{spec.acceptance_criteria.map((criterion, j) => <li key={j}>{criterion}</li>)}</ul>{spec.dependencies.length > 0 && <p className="insights-dependency">Depends on: {spec.dependencies.map((dep) => plan.task_specs[Number(dep.ref)]?.title ?? dep.ref).join(", ")}</p>}</div></li>)}</ol>
+        {manual && plan.status === "proposed" && <div className="action-row"><Button variant="primary" disabled={planAction.isPending} onClick={() => planAction.mutate({ id: plan.id, name: "accept" })}>Accept plan and create tasks</Button><Button disabled={planAction.isPending} onClick={() => planAction.mutate({ id: plan.id, name: "reject" })}>Reject plan</Button></div>}
       </article>)}
     </section>
-    <GoalDiscussion goal={goal} />
+    {manual && <GoalDiscussion goal={goal} />}
     <section className="u-stack-sm insights-checkpoints" aria-label="Checkpoints"><h3>Checkpoints</h3><p className="insights-help">Saved progress and decisions throughout this goal.</p><ActionError error={checkpoints.error} />{checkpoints.isLoading && <p role="status">Loading checkpoints…</p>}{checkpoints.data?.checkpoints.length === 0 && <p>No checkpoints yet.</p>}{checkpoints.data?.checkpoints.map((checkpoint) => <details className="insights-disclosure" key={checkpoint.id}><summary>{checkpoint.type.replaceAll("_", " ")} · {new Date(checkpoint.created_at).toLocaleString()}</summary><p>{checkpoint.summary}</p><p>{checkpoint.state_refs.active_runs.length} active runs · {checkpoint.state_refs.open_blockers.length} blockers · {checkpoint.state_refs.pending_approvals.length} approvals</p><ul>{checkpoint.state_refs.task_statuses.map((task) => <li key={task.task_id}><Button size="sm" onClick={() => { setSelectedTaskId(task.task_id); navigate("/"); }}>Open task {task.task_id}</Button><StatusBadge status={task.status} /></li>)}</ul></details>)}</section>
     {goal.room_id && <section className="insights-goal-conversation" aria-label="Goal conversation"><h3><MessageSquare size={16} aria-hidden="true" /> Goal conversation</h3><RoomConversation key={goal.room_id} roomId={goal.room_id} goalId={goal.id} /></section>}
   </article>;
+}
+
+const stageLabels = { research: "Research", design: "Design", implementation: "Implementation", validation: "Testing" };
+
+function AutonomousProgress({ goal, automation }: { goal: Goal; automation: GoalAutomation }): React.ReactNode {
+  const api = useApi();
+  const { bootstrap } = useProject();
+  const release = useQuery({ queryKey: ["goal-release", goal.id], queryFn: () => api.getGoalRelease(goal.id), enabled: !!automation.release_profile_id, refetchInterval: 5000 });
+  const publication = release.data?.release;
+  const published = publication?.status === "published" && publication.receipt?.outcome === "published";
+  const health = publication?.health;
+  const unhealthy = health && health.state !== "healthy";
+  const endpoint = published && !unhealthy ? publication.receipt?.endpoint : null;
+  let link: string | null = null;
+  if (endpoint) {
+    try { const url = new URL(endpoint); if (["https:", "http:"].includes(url.protocol) && !url.username && !url.password) link = url.href; } catch { /* Invalid endpoints stay visible in the evidence export only. */ }
+  }
+  const name = (instanceId: string): string => {
+    const instance = bootstrap.data?.agent_instances.find((item) => item.id === instanceId);
+    const agent = bootstrap.data?.agents.find((item) => item.id === instance?.agent_id);
+    return agent?.display_name ?? instance?.runtime ?? "Assigned agent";
+  };
+  return <section className="product-card u-stack-sm" aria-label="Autonomous progress">
+    <div className="action-row"><strong>{automation.execution_mode === "agent_team" ? "Agent Team" : "Autonomous development"}</strong><Badge>{goal.status === "paused" ? "paused" : automation.status}</Badge></div>
+    <p>{published ? unhealthy ? "The product was published; a later health check reported a problem." : "The verified product was published and its endpoint passed the configured health checks." : automation.status === "completed" && !automation.release_profile_id ? "Configured acceptance checks passed. The verified workspace is ready; it has not been automatically published." : "Artoo manages the plan, task execution and acceptance checks. You can pause or cancel at any time."}</p>
+    {automation.team && <div aria-label="Team responsibilities"><ul>{automation.team.members.map((member) => <li key={member.stage}><strong>{stageLabels[member.stage]}</strong> · {name(member.agent_instance_id)}</li>)}</ul><p className="insights-help">Each task is reviewed by another team member against the same verified source version.</p></div>}
+    {automation.release_profile_id && <div aria-label="Product publication"><strong>Publication</strong><p role="status">{health?.state === "rolled_back" ? "Post-publication health checks failed; the previous release was restored and checked."
+      : health?.state === "unavailable" ? "The publication was taken offline after failed health checks."
+      : health?.state === "degraded" ? "The latest health check failed. The worker is checking recovery."
+      : health?.state === "healthy" ? "Published — the latest health check passed."
+      : published ? "Published" : publication?.status === "rolled_back" ? "Health checks failed; the previous release was restored." : publication?.status === "failed" ? "Publication failed. See the recorded reason below." : publication?.status === "queued" ? "Publishing and checking the product endpoint…" : "Waiting for implementation, tests and independent review."}</p>
+      {publication?.request.acceptance_binding && <p className="insights-help" aria-label="Publication acceptance">{publication.receipt?.acceptance
+        ? `The published version satisfied ${publication.receipt.acceptance.settled_criteria.length} publication acceptance ${publication.receipt.acceptance.settled_criteria.length === 1 ? "criterion" : "criteria"} at publication time.`
+        : publication.status === "failed" || publication.status === "rolled_back"
+          ? "Publication acceptance remains unsatisfied."
+          : "Publication acceptance remains pending until the configured endpoint checks pass."}</p>}
+      {health && <p className="insights-help">Last measured: <time dateTime={health.checked_at}>{new Date(health.checked_at).toLocaleString()}</time>. This is the latest received observation.</p>}
+      {link && <a href={link} target="_blank" rel="noopener noreferrer">Open published product</a>}
+      {(health?.reason ?? publication?.receipt?.reason) && <p>{health?.reason ?? publication?.receipt?.reason}</p>}<ActionError error={release.error} /></div>}
+    {automation.last_error && <p role="status">{automation.last_error}</p>}
+  </section>;
 }
 
 const blankTask = (): TaskSpec => ({ title: "", description: "", acceptance_criteria: [], required_capabilities: [], dependencies: [], approval_gates: [], write_scopes: [], expected_artifacts: [] });

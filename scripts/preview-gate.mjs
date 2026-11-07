@@ -94,7 +94,8 @@ const checks = {
     runNode("Mac distribution configuration and mount integrity", "apps/desktop/scripts/mac-distribution.test.mjs"),
     runNode("Mac DMG build retry policy and vendor delegation", "apps/desktop/scripts/mac-dmgbuild.test.mjs"),
     runNpm("Mac execution and worker shutdown regressions", "test", "--", "--maxWorkers=1",
-      "apps/artood/src/main.test.ts", "apps/artood/src/process-adapter.test.ts", "apps/server/src/desktop-worker-posix.test.ts"),
+      "apps/artood/src/main.test.ts", "apps/artood/src/process-adapter.test.ts", "apps/server/src/desktop-worker-posix.test.ts",
+      "apps/server/src/web-static.test.ts"),
     runNpm("Mac DMG installation smoke", "run", "smoke:mac:dmg", "--workspace", "@artoo/desktop"),
   ],
 }[suite];

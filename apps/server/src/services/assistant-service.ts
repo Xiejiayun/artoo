@@ -1,7 +1,7 @@
 import { requireContentAllowed } from "./content-moderation-service.js";
-import { requireAiSharingAuthorization } from "./ai-data-sharing-service.js";
-import { appendEvent, approvals, assistantTurns, discussions, goals, messages, rooms, runs, tasks, users } from "@artoo/db";
-import { AssistantTurnSchema, ID_PREFIXES, type AssistantTurn, type SendAssistantTurnRequest } from "@artoo/domain";
+import { requireAiSharingAuthorization, requireRunAiSharingAuthorization } from "./ai-data-sharing-service.js";
+import { appendEvent, approvals, assistantTurns, autonomousReviews, contextPacks, discussions, goalAutomations, goals, messages, rooms, runs, tasks, users } from "@artoo/db";
+import { AssistantTurnSchema, ContextPackSchema, GoalBudgetsSchema, ID_PREFIXES, VerificationRequirementSchema, type AssistantTurn, type ContextPack, type SendAssistantTurnRequest } from "@artoo/domain";
 import { and, asc, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -11,6 +11,9 @@ import { assignTask, markReady, retryTask, reviewTask } from "./lifecycle-servic
 import { cancelRun } from "./run-service.js";
 import { EXECUTION_GATE_CURRENT } from "./approval-service.js";
 import { resolveExecutionPolicyTask } from "./task-execution-policy.js";
+import { inspectRunVerification } from "./verification-service.js";
+import { assertPlanningContext, persistedPlanningSnapshot, recheckPlanningSnapshot } from "./planning-capabilities.js";
+import { isDeepStrictEqual } from "node:util";
 
 type TurnRow = typeof assistantTurns.$inferSelect;
 type Tx = ServerContext["db"]["db"];
@@ -59,6 +62,9 @@ export async function enqueueAssistantTurn(ctx: ServerContext, roomId: string, r
     const root = await requireThreadRoot(ctx, tx, roomId, request.thread_root_id);
     if (root && (await tx.select({ id: discussions.id }).from(discussions).where(and(eq(discussions.threadRootId, root.id), eq(discussions.organizationId, ctx.organizationId))).limit(1)).length) {
       throw AppError.validation("Use team discussion to add input to this planning thread; the coordinator chooses the next agent.");
+    }
+    if (root?.taskId && (await tx.select({ id: autonomousReviews.id }).from(autonomousReviews).where(and(eq(autonomousReviews.reviewTaskId, root.taskId), eq(autonomousReviews.organizationId, ctx.organizationId))).limit(1)).length) {
+      throw AppError.validation("Independent review threads are controlled by the goal runner");
     }
     const duplicate = (await tx.select().from(assistantTurns).where(and(eq(assistantTurns.roomId, roomId), eq(assistantTurns.actorUserId, ctx.actorUserId), eq(assistantTurns.clientRequestId, request.client_request_id))))[0];
     if (duplicate) {
@@ -142,6 +148,121 @@ async function changeTurn(ctx: ServerContext, id: string, status: string, error:
   });
 }
 
+/** Replaying a committed start does not create new execution authority. Recheck
+ * its durable intent at both the dispatcher and the final node-send boundary. */
+export async function canDispatchAssistantRun(ctx: ServerContext, run: typeof runs.$inferSelect,
+  options: { context?: ContextPack; recheckPlanningCapabilities?: boolean;
+    /** Defer the authenticated getter until after this async fence returns at the final send boundary. */
+    onPlanningRecheckReady?: (recheck: () => void) => void } = {}): Promise<boolean> {
+  const [turn] = await ctx.db.db.select().from(assistantTurns).where(and(eq(assistantTurns.runId, run.id), eq(assistantTurns.organizationId, ctx.organizationId)));
+  if (!turn) return true; // Ordinary task executions retain their existing path.
+  if (!pendingStatuses.includes(turn.status) || turn.taskId !== run.taskId || turn.actorUserId !== run.requestedByUserId
+    || (turn.agentInstanceId !== null && turn.agentInstanceId !== run.agentInstanceId)) return false;
+  const actorCtx = { ...ctx, actorUserId: turn.actorUserId };
+  const [actor] = await ctx.db.db.select().from(users).where(and(eq(users.id, turn.actorUserId), eq(users.organizationId, ctx.organizationId)));
+  if (!actor || (ctx.authConfig.allowedEmails && !ctx.authConfig.allowedEmails.includes(actor.email.toLowerCase()))
+    || (ctx.authConfig.hostedDomain && !actor.email.toLowerCase().endsWith(`@${ctx.authConfig.hostedDomain}`))) return false;
+  await requireAiSharingAuthorization(actorCtx, ctx.db.db, { consentId: turn.aiDataSharingConsentId, policyVersion: turn.aiDataSharingPolicyVersion });
+  await requireRunAiSharingAuthorization(actorCtx, run);
+  const [task] = await ctx.db.db.select().from(tasks).where(and(eq(tasks.id, run.taskId), eq(tasks.organizationId, ctx.organizationId)));
+  if (!task || task.status !== "assigned") return false;
+  const [discussion] = await ctx.db.db.select().from(discussions).where(and(eq(discussions.taskId, task.id), eq(discussions.organizationId, ctx.organizationId)));
+  // Find by task, not current turn: a superseded reviewer turn must not fall
+  // through to the ordinary conversation path after a verdict-format repair.
+  const [review] = await ctx.db.db.select().from(autonomousReviews).where(and(eq(autonomousReviews.reviewTaskId, task.id), eq(autonomousReviews.organizationId, ctx.organizationId)));
+  const policyTask = await resolveExecutionPolicyTask(actorCtx, ctx.db.db, task);
+  const goalId = discussion?.goalId ?? review?.goalId ?? policyTask.goalId;
+  let goalFence: typeof goals.$inferSelect | undefined, automationFence: typeof goalAutomations.$inferSelect | undefined;
+  if (goalId) {
+    const [goal] = await ctx.db.db.select().from(goals).where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId)));
+    if (!goal || goal.projectId !== task.projectId) return false;
+    const [automation] = await ctx.db.db.select().from(goalAutomations).where(and(eq(goalAutomations.goalId, goalId), eq(goalAutomations.organizationId, ctx.organizationId)));
+    goalFence = goal; automationFence = automation;
+    const budgets = GoalBudgetsSchema.parse(goal.budgets);
+    if ((budgets.allowed_runtimes && !budgets.allowed_runtimes.includes(run.runtimeId))
+      || (budgets.max_elapsed_ms !== null && goal.runningSince !== null
+        && ctx.clock.now().getTime() - Date.parse(goal.runningSince) >= budgets.max_elapsed_ms)) return false;
+    if (discussion) {
+      if (discussion.status !== "running" || discussion.activeTurnId !== turn.id || discussion.actorUserId !== turn.actorUserId
+        || ctx.clock.now().getTime() >= Date.parse(discussion.deadlineAt)) return false;
+      if (automation && (goal.status !== "draft" || automation.discussionId !== discussion.id || automation.actorUserId !== turn.actorUserId
+        || !["planning", "waiting"].includes(automation.status))) return false;
+      if (!automation && ["cancelled", "completed", "archived"].includes(goal.status)) return false;
+    } else if (review) {
+      const request = VerificationRequirementSchema.safeParse(run.verificationRequirement);
+      const [subject] = await ctx.db.db.select().from(runs).where(and(eq(runs.id, review.subjectRunId), eq(runs.organizationId, ctx.organizationId)));
+      const [sourceTask] = await ctx.db.db.select().from(tasks).where(and(eq(tasks.id, review.taskId), eq(tasks.organizationId, ctx.organizationId)));
+      if (!automation || automation.executionMode !== "agent_team" || automation.actorUserId !== turn.actorUserId
+        || goal.status !== "running" || !["executing", "waiting"].includes(automation.status) || goal.currentPlanId !== automation.planId
+        || review.status !== "pending" || review.turnId !== turn.id || review.reviewerInstanceId !== run.agentInstanceId
+        || subject?.status !== "completed" || sourceTask?.status !== "review" || sourceTask.sourcePlanId !== goal.currentPlanId
+        || !request.success || request.data.profile_id !== automation.verificationProfileId || request.data.expected_subject_digest !== review.subjectDigest) return false;
+      const measured = await inspectRunVerification(actorCtx, ctx.db.db, subject);
+      if (!measured.passed || measured.evidence?.id !== review.evidenceId || measured.evidence.payload.subject_digest !== review.subjectDigest) return false;
+    } else if (["paused", "cancelled", "completed", "archived", "awaiting_approval"].includes(goal.status)
+      || (policyTask.sourcePlanId !== null && policyTask.sourcePlanId !== goal.currentPlanId)) return false;
+    if (automation) await requireAiSharingAuthorization(actorCtx, ctx.db.db, { consentId: automation.consentId, policyVersion: automation.policyVersion });
+  }
+  if (discussion && automationFence) {
+    const snapshot = persistedPlanningSnapshot(automationFence, task.projectId);
+    const [request] = await ctx.db.db.select().from(messages).where(and(eq(messages.id, turn.userMessageId),
+      eq(messages.organizationId, ctx.organizationId), eq(messages.taskId, task.id)));
+    const [stored] = await ctx.db.db.select().from(contextPacks).where(and(eq(contextPacks.id, run.contextPackId ?? ""),
+      eq(contextPacks.organizationId, ctx.organizationId), eq(contextPacks.taskId, task.id), eq(contextPacks.runId, run.id)));
+    if (!request || !stored || run.verificationRequirement !== null) return false;
+    const context = ContextPackSchema.parse(stored.payload);
+    for (const candidate of options.context ? [context, options.context] : [context]) {
+      if (candidate.project.id !== task.projectId || candidate.task.id !== task.id || candidate.conversation?.turn_id !== turn.id
+        || candidate.conversation.room_id !== turn.roomId || candidate.conversation.thread_root_id !== turn.threadRootId) return false;
+      assertPlanningContext(candidate, request.body, snapshot);
+    }
+  }
+  // Cancellation or a first delivery can settle while the above checks await.
+  // Re-read both records; never replay a terminal, replaced or already-started run.
+  const [current] = await ctx.db.db.select({ runStatus: runs.status, turnStatus: assistantTurns.status, taskStatus: tasks.status,
+    goalStatus: goals.status, goalProjectId: goals.projectId, taskProjectId: tasks.projectId,
+    planId: goals.currentPlanId, automationStatus: goalAutomations.status,
+    automationPlanId: goalAutomations.planId, discussionStatus: discussions.status, discussionTurnId: discussions.activeTurnId,
+    reviewStatus: autonomousReviews.status, reviewTurnId: autonomousReviews.turnId,
+    planningSnapshot: goalAutomations.planningCapabilitySnapshot, automationComputerId: goalAutomations.computerId,
+    automationWorkspaceRoot: goalAutomations.workspaceRoot, automationProfileId: goalAutomations.verificationProfileId,
+    automationReleaseProfileId: goalAutomations.releaseProfileId,
+    automationDiscussionId: goalAutomations.discussionId, automationExecutionMode: goalAutomations.executionMode }).from(runs)
+    .innerJoin(assistantTurns, and(eq(assistantTurns.runId, runs.id), eq(assistantTurns.id, turn.id)))
+    .innerJoin(tasks, eq(tasks.id, runs.taskId))
+    .leftJoin(goals, eq(goals.id, goalId ?? ""))
+    .leftJoin(goalAutomations, eq(goalAutomations.goalId, goals.id))
+    .leftJoin(discussions, eq(discussions.id, discussion?.id ?? ""))
+    .leftJoin(autonomousReviews, eq(autonomousReviews.id, review?.id ?? ""))
+    .where(and(eq(runs.id, run.id), eq(runs.organizationId, ctx.organizationId)));
+  const allowed = current?.runStatus === "queued" && current.taskStatus === "assigned" && pendingStatuses.includes(current.turnStatus)
+    && (!goalFence || (current.goalStatus === goalFence.status && current.planId === goalFence.currentPlanId))
+    && (!automationFence || (current.automationStatus === automationFence.status && current.automationPlanId === automationFence.planId))
+    && (!discussion || (current.discussionStatus === "running" && current.discussionTurnId === turn.id))
+    && (!review || (current.reviewStatus === "pending" && current.reviewTurnId === turn.id));
+  if (!allowed) return false;
+  if (discussion && automationFence) {
+    if (current.goalProjectId !== task.projectId || current.taskProjectId !== task.projectId
+      || current.automationExecutionMode !== automationFence.executionMode
+      || current.automationComputerId !== automationFence.computerId || current.automationWorkspaceRoot !== automationFence.workspaceRoot
+      || current.automationProfileId !== automationFence.verificationProfileId || current.automationDiscussionId !== discussion.id
+      || current.automationReleaseProfileId !== automationFence.releaseProfileId
+      || !isDeepStrictEqual(current.planningSnapshot, automationFence.planningCapabilitySnapshot)) return false;
+    // Capture only the validated writer identity and a defensive parsed copy.
+    // The final node sender invokes this closure after awaiting this function,
+    // so even its promise continuation cannot separate the getter from send.
+    const planningProjectId = task.projectId;
+    const planningOwner = { computerId: automationFence.computerId, workspaceRoot: automationFence.workspaceRoot,
+      verificationProfileId: automationFence.verificationProfileId, executionMode: automationFence.executionMode,
+      releaseProfileId: automationFence.releaseProfileId,
+      planningCapabilitySnapshot: persistedPlanningSnapshot(automationFence, planningProjectId) };
+    const recheck = () => recheckPlanningSnapshot(ctx, planningOwner, planningProjectId);
+    if (options.recheckPlanningCapabilities !== false) recheck();
+    options.onPlanningRecheckReady?.(recheck);
+  }
+  return true;
+}
+
 /** One serial pump per server. Every assignment still uses the normal policy/approval/scheduler gates. */
 export function createAssistantDispatcher(ctx: ServerContext, onError: (error: unknown) => void = () => {}): { pump(): Promise<void>; start(): void; stop(): Promise<void> } {
   let inFlight: Promise<void> | undefined;
@@ -159,7 +280,13 @@ export function createAssistantDispatcher(ctx: ServerContext, onError: (error: u
       const scope = `${item.roomId}:${item.threadRootId ?? ""}`;
       if (stopped || !pendingStatuses.includes(item.status) || seenConversations.has(scope)) continue;
       seenConversations.add(scope);
-      const actorCtx = { ...ctx, actorUserId: item.actorUserId };
+      const actorCtx: ServerContext = { ...ctx, actorUserId: item.actorUserId };
+      const autonomousPlanning = (await ctx.db.db.select({ goalId: goalAutomations.goalId }).from(discussions)
+        .innerJoin(goalAutomations, eq(goalAutomations.goalId, discussions.goalId))
+        .where(and(eq(discussions.taskId, item.taskId), eq(discussions.organizationId, ctx.organizationId))).limit(1))[0];
+      if (autonomousPlanning) actorCtx.automationActor = { type: "system", id: "goal_runner" };
+      const independentReview = (await ctx.db.db.select().from(autonomousReviews).where(and(eq(autonomousReviews.turnId, item.id), eq(autonomousReviews.organizationId, ctx.organizationId))))[0];
+      if (independentReview) actorCtx.automationActor = { type: "system", id: "goal_runner" };
       try {
         if (item.runId) {
           const run = (await ctx.db.db.select().from(runs).where(eq(runs.id, item.runId)))[0];
@@ -167,6 +294,11 @@ export function createAssistantDispatcher(ctx: ServerContext, onError: (error: u
             const state = !run ? "failed" : run.status;
             await changeTurn(actorCtx, item.id, state,
               state === "failed" ? run?.failureReason ?? "Execution record is unavailable" : null, item.runId);
+          } else if (run.status === "queued" && await canDispatchAssistantRun(actorCtx, run)) {
+            // A crash/disconnect may have lost the post-commit callback. Preserve
+            // the exact run/context and let the node's runId:start key dedupe it.
+            await actorCtx.onRunQueued?.(run.id);
+            if (item.status === "waiting") await changeTurn(actorCtx, item.id, "running", null, run.id);
           }
           continue;
         }
@@ -185,11 +317,21 @@ export function createAssistantDispatcher(ctx: ServerContext, onError: (error: u
           const prompt = (await ctx.db.db.select({ body: messages.body }).from(messages).where(eq(messages.id, item.userMessageId)))[0];
           await reviewTask(actorCtx, task.id, { outcome: "changes_requested", comment: prompt?.body ?? "Assistant follow-up" });
         }
-        await assignTask(actorCtx, task.id, { mode: item.agentInstanceId ? "manual" : "auto", agent_instance_id: item.agentInstanceId }, item.id);
+        const [reviewAutomation] = independentReview ? await ctx.db.db.select().from(goalAutomations).where(eq(goalAutomations.goalId, independentReview.goalId)) : [];
+        await assignTask(actorCtx, task.id, { mode: item.agentInstanceId ? "manual" : "auto", agent_instance_id: item.agentInstanceId }, item.id,
+          independentReview && reviewAutomation ? { version: 1, request_id: ctx.idGen.generate("verify"), profile_id: reviewAutomation.verificationProfileId,
+            expected_subject_digest: independentReview.subjectDigest } : undefined);
       } catch (error) {
-        // Assignment may have committed before node transport failed. Never clear its run link or dispatch twice.
+        // A committed assignment may have lost delivery. Keep its identity so
+        // the next pump can retry the same idempotent start after recovery.
         const current = await requireTurn(actorCtx, item.id);
-        if (current.runId) continue;
+        if (current.runId) {
+          if (error instanceof AppError && error.httpStatus < 500) {
+            const [run] = await ctx.db.db.select().from(runs).where(eq(runs.id, current.runId));
+            if (run?.status === "queued") await changeTurn(actorCtx, item.id, "waiting", error.message, current.runId);
+          }
+          continue;
+        }
         await changeTurn(actorCtx, item.id, error instanceof AppError && error.httpStatus < 500 ? "waiting" : "failed", error instanceof Error ? error.message : "Assistant dispatch failed");
       }
     }

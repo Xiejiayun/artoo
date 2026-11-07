@@ -1,3 +1,6 @@
+import type {ProductSourceOperationCommand,ProductSourceOperationStop,ProductSourceOperationStatus,ProductSourceOperationReceipt,ProductSourceOperationAck,ProductSourceOperationResult} from "./product-source-operations.js";
+import type { ImportedProductReviewCommand, ImportedProductReviewStop, ImportedProductReviewStatus, ImportedProductReviewReceipt, ImportedProductReviewAck, ImportedProductReviewResult } from "./imported-product-review.js";
+import type { ImportedDesignContinuationCommand, ImportedDesignContinuationStop, ImportedDesignContinuationStatus, ImportedDesignContinuationReceipt, ImportedDesignContinuationAck, ImportedDesignContinuationResult } from "./imported-design-continuation.js";
 import type {
   ArtifactCollectCommand,
   CommandAck,
@@ -10,7 +13,13 @@ import type {
   RunEventAckCommand,
   RunResumeCommand,
   RunStartCommand,
-  RunStopCommand
+  RunStartOwnedResultCommand,
+  RunStopCommand,
+  ProductReleaseCommand,
+  ProductReleaseCancelCommand,
+  ProductReleaseReceiptMessage,
+  ProductReleaseHealthMessage,
+  ProductReleaseHealthAckCommand,
 } from "./node-messages.js";
 
 /**
@@ -23,9 +32,9 @@ import type {
  * Payloads inside run.start / run.event are owned by @artoo/domain; the wire
  * envelopes are owned by this package (single source of truth, no redefinition).
  */
-export type NodeToServerMessage = NodeHello | NodeHeartbeat | CommandAck | RunEventMessage | NodeSessionProbe;
+export type NodeToServerMessage = ImportedDesignContinuationAck | ImportedDesignContinuationResult | ImportedProductReviewAck | ImportedProductReviewResult | ProductSourceOperationAck | ProductSourceOperationResult | NodeHello | NodeHeartbeat | CommandAck | RunEventMessage | NodeSessionProbe | ProductReleaseReceiptMessage | ProductReleaseHealthMessage;
 
-export type ServerToNodeMessage = RunStartCommand | RunStopCommand | ArtifactCollectCommand | RunResumeCommand | RunEventAckCommand | NodeSessionReadyCommand | NodeSessionPongCommand;
+export type ServerToNodeMessage = ImportedDesignContinuationCommand | ImportedDesignContinuationStop | ImportedDesignContinuationStatus | ImportedDesignContinuationReceipt | ImportedProductReviewCommand | ImportedProductReviewStop | ImportedProductReviewStatus | ImportedProductReviewReceipt | ProductSourceOperationCommand | ProductSourceOperationStop | ProductSourceOperationStatus | ProductSourceOperationReceipt | RunStartCommand | RunStartOwnedResultCommand | RunStopCommand | ArtifactCollectCommand | RunResumeCommand | RunEventAckCommand | NodeSessionReadyCommand | NodeSessionPongCommand | ProductReleaseCommand | ProductReleaseCancelCommand | ProductReleaseHealthAckCommand;
 
 export type Unsubscribe = () => void;
 

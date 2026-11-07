@@ -2,12 +2,37 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, createHash } = require("node:crypto");
+const { constants } = require("node:fs");
 const { createConnectionStore, normalizeServerUrl } = require("./connection-store.cjs");
 const { createManagedProfileStore } = require("./managed-profile-store.cjs");
 const { validateCodexSettings } = require("./codex-settings.cjs");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MANAGED_ENV = /^(ARTOO_MANAGED_|ARTOO_JOURNAL_|ARTOO_WORKER_LAUNCH_ID$)/i;
+const LOCAL_AUTOMATION_ENV = /^(ARTOO_WINDOWS_PROCESS_|ARTOO_VERIFICATION_PROFILES_FILE$|ARTOO_RELEASE_PROFILES_FILE$|ARTOO_OWNED_RESULT_PROFILES_FILE$)/i;
+function inside(candidate, root) {
+  const suffix = path.relative(root, candidate);
+  return suffix === "" || suffix !== ".." && !suffix.startsWith(`..${path.sep}`) && !path.isAbsolute(suffix);
+}
+async function protectedConfigBytes(filename, roots, label, maximum = 1024 * 1024) {
+  if (typeof filename !== "string" || !path.isAbsolute(filename) || /[\u0000-\u001f\u007f]/u.test(filename)
+    || path.resolve(filename) !== filename || path.parse(filename).root.startsWith("\\\\")) throw new Error(`${label} must be an absolute local physical file`);
+  if (roots.some(root => inside(filename, root))) throw new Error(`${label} must be outside every allowed workspace folder`);
+  const before = await fs.lstat(filename);
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > maximum || await fs.realpath(filename) !== filename) {
+    throw new Error(`${label} must be a bounded regular physical file without links`);
+  }
+  const handle = await fs.open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const bytes = Buffer.alloc(maximum + 1); let length = 0;
+    while (length < bytes.length) { const result = await handle.read(bytes, length, bytes.length - length, length); if (!result.bytesRead) break; length += result.bytesRead; }
+    const opened = await handle.stat(), named = await fs.lstat(filename);
+    if (length > maximum || [opened, named].some(stat => !stat.isFile() || stat.nlink !== 1 || stat.dev !== before.dev || stat.ino !== before.ino
+      || stat.size !== length || stat.size !== before.size || stat.mtimeMs !== before.mtimeMs)
+      || await fs.realpath(filename) !== filename) throw new Error(`${label} changed while reading`);
+    return bytes.subarray(0, length);
+  } finally { await handle.close(); }
+}
 
 function createDesktopController(options) {
   const store = createConnectionStore(options.directory, options.safeStorage, options.serverUrl);
@@ -31,6 +56,51 @@ function createDesktopController(options) {
   const workerConfig = () => ({ ...store.daemonConfig(), allowNewAllocations: store.daemonConfig().allowNewAllocations === true });
   const selectedIdentity = () => ({ serverOrigin: store.connection().serverUrl, nodeId: store.connection().computerId });
   const configurationLocked = () => child !== null || preparing || state === "stopping" || !!closureFailure;
+  async function nativeVerificationSettings(input, roots, allowNewAllocations) {
+    if (input === undefined) return undefined;
+    if (platform !== "win32") throw new Error("Native automatic-task verification is available only on Windows");
+    if (!input || typeof input !== "object" || Array.isArray(input) || input.version !== 1 || typeof input.profilesFile !== "string"
+      || Object.keys(input).some(key => !["version", "profilesFile"].includes(key))) throw new Error("Invalid native verification configuration");
+    if (allowNewAllocations) throw new Error("Native verification requires ordinary workspaces without managed task allocations");
+    let profiles;
+    try { profiles = JSON.parse((await protectedConfigBytes(input.profilesFile, roots, "Verification profiles file")).toString("utf8")); }
+    catch (error) { if (error instanceof SyntaxError) throw new Error("Verification profiles file must contain valid JSON"); throw error; }
+    if (!Array.isArray(profiles) || !profiles.length || profiles.length > 64) throw new Error("Verification profiles file must contain one to 64 local profiles");
+    return { version: 1, profilesFile: input.profilesFile };
+  }
+  async function nativePublicationSettings(input, roots, verification) {
+    if (input === undefined) return undefined;
+    if (platform !== "win32") throw new Error("Native product publication is available only on Windows");
+    if (!verification) throw new Error("Automatic product publication requires automatic task verification");
+    if (!input || typeof input !== "object" || Array.isArray(input) || input.version !== 1 || typeof input.profilesFile !== "string"
+      || Object.keys(input).some(key => !["version", "profilesFile"].includes(key))) throw new Error("Invalid native publication configuration");
+    let profiles;
+    try { profiles = JSON.parse((await protectedConfigBytes(input.profilesFile, roots, "Publication profiles file")).toString("utf8")); }
+    catch (error) { if (error instanceof SyntaxError) throw new Error("Publication profiles file must contain valid JSON"); throw error; }
+    if (!Array.isArray(profiles) || !profiles.length || profiles.length > 64) throw new Error("Publication profiles file must contain one to 64 local profiles");
+    return { version: 1, profilesFile: input.profilesFile };
+  }
+  async function nativeVerificationEnvironment(config) {
+    if (!config.nativeVerification) return {};
+    const root = path.dirname(options.daemonEntry), bundleFile = path.join(root, "bundle-manifest.json");
+    let bundle;
+    try { bundle = JSON.parse((await protectedConfigBytes(bundleFile, config.allowedRoots, "Packaged worker manifest", 8 * 1024 * 1024)).toString("utf8")); }
+    catch (error) { if (error.code === "ENOENT") throw new Error("This desktop installation does not include a native Windows verification bundle"); throw error; }
+    const native = bundle?.windows_process;
+    if (bundle?.format !== "artoo.desktop-daemon.v1" || bundle.node_target !== "node24" || !native || typeof native !== "object"
+      || native.directory !== "native/windows-process" || native.executable !== "Artoo.WindowsProcessHost.exe"
+      || !/^sha256:[a-f0-9]{64}$/.test(native.manifest_sha256) || Object.keys(native).some(key => !["directory", "manifest_sha256", "executable"].includes(key))) {
+      throw new Error("This desktop installation has no supported native Windows verification binding");
+    }
+    const directory = path.join(root, "native", "windows-process");
+    const manifest = await protectedConfigBytes(path.join(directory, "manifest.json"), config.allowedRoots, "Native process manifest");
+    if (`sha256:${createHash("sha256").update(manifest).digest("hex")}` !== native.manifest_sha256) throw new Error("The packaged native process manifest has changed");
+    // Saving only checks local configuration. The daemon still checks all protected
+    // files, ACLs and actual native process support before it can advertise verification.
+    return { ARTOO_VERIFICATION_PROFILES_FILE: config.nativeVerification.profilesFile,
+      ARTOO_WINDOWS_PROCESS_BUNDLE: directory, ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256: native.manifest_sha256,
+      ...(config.nativePublication ? { ARTOO_RELEASE_PROFILES_FILE: config.nativePublication.profilesFile } : {}) };
+  }
   async function profileStatus() {
     if (!profiles) return { state: "unsupported" };
     if (preparing || activeLaunch?.kind === "provision") return { state: "preparing" };
@@ -76,6 +146,7 @@ function createDesktopController(options) {
     if (!input || !Array.isArray(input.allowedRoots) || !Array.isArray(input.runtimes) || typeof input.trustedExecution !== "boolean") throw new Error("Invalid worker configuration");
     if (input.allowNewAllocations !== undefined && typeof input.allowNewAllocations !== "boolean") throw new Error("Invalid separate-workspace setting");
     const allowNewAllocations = input.allowNewAllocations === true;
+    if (input.nativeVerification !== undefined && allowNewAllocations) throw new Error("Native verification requires ordinary workspaces without managed task allocations");
     if (allowNewAllocations && (!profiles || !store.connection().computerId || (await profiles.inspect(selectedIdentity())).state !== "ready")) {
       throw new Error("Prepare separate task workspaces on this Mac before enabling new allocations");
     }
@@ -96,8 +167,11 @@ function createDesktopController(options) {
     }
     if (allowNewAllocations && !worktreeBaseRepo) throw new Error("Choose a Git repository for separate task workspaces before enabling new allocations");
     const codex = await validateCodexSettings(input.codex, store.daemonConfig().codex);
+    const nativeVerification = await nativeVerificationSettings(input.nativeVerification, roots, allowNewAllocations);
+    const nativePublication = await nativePublicationSettings(input.nativePublication, roots, nativeVerification);
+    if (nativeVerification) await nativeVerificationEnvironment({ nativeVerification, nativePublication, allowedRoots: roots });
     await store.configureDaemon({ allowedRoots: [...new Set(roots)], runtimes, trustedExecution: input.trustedExecution, allowNewAllocations,
-      codex: codex.config, ...(worktreeBaseRepo ? { worktreeBaseRepo } : {}) }, codex.keyUpdate);
+      codex: codex.config, ...(worktreeBaseRepo ? { worktreeBaseRepo } : {}), ...(nativeVerification ? { nativeVerification } : {}), ...(nativePublication ? { nativePublication } : {}) }, codex.keyUpdate);
   }
   function observeChild(launched, attempt) {
     child = launched;
@@ -246,6 +320,8 @@ function createDesktopController(options) {
     const binding = profile.state === "ready" ? profile.binding : undefined;
     if (binding && (binding.serverOrigin !== connection.serverUrl || binding.nodeId !== connection.computerId)) throw new Error("Prepared workspace identity does not match this enrolled computer");
     if (config.allowNewAllocations && !binding) throw new Error("Prepare separate task workspaces before enabling new allocations");
+    if (config.nativeVerification && binding) throw new Error("Native verification cannot use a managed worker");
+    const nativeEnvironment = await nativeVerificationEnvironment(config);
     const launchId = randomUUID();
     stopRequested = false;
     lastError = undefined;
@@ -255,7 +331,7 @@ function createDesktopController(options) {
     let launched;
     try { launched = spawnProcess(options.executable, [options.daemonEntry, ...(binding ? ["--prepared-journal"] : [])], {
       windowsHide: true, stdio: ["ignore", "ignore", "ignore", "ipc"],
-      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^ARTOO_CODEX_/i.test(key) && !MANAGED_ENV.test(key))), ELECTRON_RUN_AS_NODE: "1", NODE_ENV: "production", NODE_OPTIONS: "",
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^ARTOO_CODEX_/i.test(key) && !MANAGED_ENV.test(key) && !(platform === "win32" && LOCAL_AUTOMATION_ENV.test(key)))), ELECTRON_RUN_AS_NODE: "1", NODE_ENV: "production", NODE_OPTIONS: "",
         ARTOO_NODE_URL: nodeUrl.toString(), ARTOO_NODE_ID: connection.computerId,
         ARTOO_WORKER_LAUNCH_ID: launchId,
         ...(binding ? { ARTOO_MANAGED_EXECUTION: config.allowNewAllocations ? "1" : "0", ARTOO_JOURNAL_VERSION: "1",
@@ -264,6 +340,7 @@ function createDesktopController(options) {
           ARTOO_JOURNAL_CONTROLLER_SCOPE: binding.controllerScope } : {}),
         ARTOO_ALLOWED_ROOTS: config.allowedRoots.join(";"), ARTOO_RUNTIMES: config.runtimes.join(","),
         ARTOO_WORKTREE_BASE_REPO: config.worktreeBaseRepo ?? "", ARTOO_TRUSTED_EXECUTION: config.trustedExecution ? "1" : "0",
+        ...nativeEnvironment,
         // Explicitly replace inherited overrides; changing connection mode must
         // never reuse a parent process's provider or secret.
         ARTOO_CODEX_BINARY: codex.binaryPath, ARTOO_CODEX_MODEL: codex.model,

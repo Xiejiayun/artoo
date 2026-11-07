@@ -1,3 +1,6 @@
+import {productSourceOperationCommandSchema,productSourceOperationStopSchema,productSourceOperationStatusSchema,productSourceOperationReceiptSchema} from "./product-source-operations.js";
+import { importedProductReviewCommandSchema, importedProductReviewStopSchema, importedProductReviewStatusSchema, importedProductReviewReceiptSchema } from "./imported-product-review.js";
+import { importedDesignContinuationCommandSchema, importedDesignContinuationStopSchema, importedDesignContinuationStatusSchema, importedDesignContinuationReceiptSchema } from "./imported-design-continuation.js";
 import { z } from "zod";
 
 import {
@@ -7,8 +10,16 @@ import {
   RunOutputPayloadSchema,
   RunStartPayloadSchema,
   RunWorkspaceRetainedPayloadSchema,
+  RunVerificationPayloadSchema,
+  VerificationProfileAdvertisementsSchema,
+  ReleaseProfileAdvertisementsSchema,
+  ProductReleaseRequestSchema,
+  ProductReleaseReceiptSchema,
+  ProductReleaseHealthReportSchema,
   RunUsagePayloadSchema
 } from "@artoo/domain";
+import { ProductSourceExportV1Schema, ProductSourceExportV2Schema, NodeOwnedResultProfileDescriptorsV1Schema, NodeOwnedResultVerificationEvidenceV1Schema,
+  OwnedResultRunAdmissionV1Schema } from "@artoo/domain";
 
 import { nodeErrorCodeSchema } from "./errors.js";
 
@@ -30,6 +41,7 @@ export const machineSchema = z.object({
 
 export const MANAGED_RECEIPT_CONTRACT = "run-event-body-v1" as const;
 const sessionIdentifier = z.string().min(1).max(128);
+// These opaque identifiers retain the v3 hexadecimal UUID shape; v4 uuid() would add version/variant restrictions.
 
 // --- Node -> Server -------------------------------------------------------
 
@@ -40,12 +52,15 @@ export const nodeHelloSchema = z.object({
   artood_version: z.string().min(1),
   machine: machineSchema,
   execution_features: z.array(z.string().min(1).max(128)).max(32).optional(),
-  managed_receipts: z.object({ version: z.number().int().positive(), nonce: z.string().uuid(),
+  verification_profiles: VerificationProfileAdvertisementsSchema.optional(),
+  release_profiles: ReleaseProfileAdvertisementsSchema.optional(),
+  owned_result_profiles: NodeOwnedResultProfileDescriptorsV1Schema.optional(),
+  managed_receipts: z.object({ version: z.number().int().positive(), nonce: z.string().guid(),
     required_contract: z.string().min(1).max(128) }).optional()
 });
 
 export const nodeSessionProbeSchema = z.object({ kind: z.literal("node.session.probe"),
-  node_id: sessionIdentifier, session_id: z.string().uuid(), probe_id: z.string().uuid() });
+  node_id: sessionIdentifier, session_id: z.string().guid(), probe_id: z.string().guid() });
 
 export const runtimeStatusSchema = z.object({
   runtime: z.string().min(1),
@@ -60,7 +75,7 @@ export const runtimeStatusSchema = z.object({
 export const nodeHeartbeatSchema = z.object({
   kind: z.literal("node.heartbeat"),
   node_id: z.string().min(1),
-  sequence: z.number().int().nonnegative(),
+  sequence: z.number().refine(Number.isInteger, "Expected an integer").nonnegative(),
   resources: z.object({
     cpu_load: z.number(),
     memory_used_pct: z.number(),
@@ -111,11 +126,11 @@ const commandEnvelope = {
 
 export const nodeSessionReadyCommandSchema = z.object({ ...commandEnvelope, type: z.literal("node.session.ready"),
   payload: z.object({ version: z.number().int().positive(), node_id: sessionIdentifier,
-    hello_nonce: z.string().uuid(), session_id: z.string().uuid(), receipt_contract: z.string().min(1).max(128),
+    hello_nonce: z.string().guid(), session_id: z.string().guid(), receipt_contract: z.string().min(1).max(128),
     sequence_max: z.number().int().positive(), liveness: z.object({
       probe_interval_ms: z.number().int().positive(), probe_timeout_ms: z.number().int().positive() }) }) });
 export const nodeSessionPongCommandSchema = z.object({ ...commandEnvelope, type: z.literal("node.session.pong"),
-  payload: z.object({ node_id: sessionIdentifier, session_id: z.string().uuid(), probe_id: z.string().uuid() }) });
+  payload: z.object({ node_id: sessionIdentifier, session_id: z.string().guid(), probe_id: z.string().guid() }) });
 
 export const runStopCommandSchema = z.object({
   ...commandEnvelope,
@@ -159,21 +174,69 @@ export const runEventAckCommandSchema = z.object({
 // run.start carries the domain RunStartPayload (imported, not redefined — the
 // payload is owned by @artoo/domain). The wire envelope (id/idempotency_key/
 // deadline_at) is owned here.
+const ownedResultModeMarkers = {
+  requirement: z.never().optional(), run_start: z.never().optional(),
+  owned_result: z.never().optional(), owned_result_assignment: z.never().optional(),
+  owned_result_requirement: z.never().optional(), owned_result_admission: z.never().optional(),
+  owned_result_profile: z.never().optional(), owned_result_profiles: z.never().optional(),
+};
+// Inspect raw payload keys before the ordinary domain codec can strip them.
+// Unrelated legacy extension fields retain their existing compatibility.
+const legacyRunStartPayloadSchema = z.unknown().superRefine((raw, ctx) => {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    for (const key of Object.keys(ownedResultModeMarkers)) if (Object.hasOwn(raw, key)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: "Owned result requests require run.start.owned-result.v1" });
+    }
+  }
+}).pipe(RunStartPayloadSchema);
 export const runStartCommandSchema = z.object({
   ...commandEnvelope,
+  ...ownedResultModeMarkers,
   type: z.literal("run.start"),
-  payload: RunStartPayloadSchema
+  payload: legacyRunStartPayloadSchema
+});
+
+export const runStartOwnedResultCommandSchema = z.object({
+  ...commandEnvelope, type: z.literal("run.start.owned-result.v1"), payload: OwnedResultRunAdmissionV1Schema,
+}).strict();
+
+export const productReleaseCommandSchema = z.object({
+  ...commandEnvelope, type: z.literal("product.release"), payload: ProductReleaseRequestSchema,
+});
+export const productReleaseCancelCommandSchema = z.object({
+  ...commandEnvelope, type: z.literal("product.release.cancel"), payload: ProductReleaseRequestSchema,
+});
+
+export const productReleaseReceiptMessageSchema = z.object({
+  kind: z.literal("product.release.receipt"), node_id: z.string().min(1), payload: ProductReleaseReceiptSchema,
+});
+export const productReleaseHealthMessageSchema = z.object({
+  kind: z.literal("product.release.health"), node_id: z.string().min(1), payload: ProductReleaseHealthReportSchema,
+});
+/** Commits one immutable health observation; a socket write alone is not a receipt. */
+export const productReleaseHealthAckCommandSchema = z.object({
+  ...commandEnvelope, type: z.literal("product.release.health.ack"),
+  payload: z.object({ event_id: sessionIdentifier, release_id: sessionIdentifier,
+    sequence: z.number().int().min(1).max(2147483647), status: z.enum(["accepted", "rejected"]),
+    message: z.string().max(2000).optional() }).strict(),
 });
 
 /** All Server -> Node commands, discriminated on `type`. */
 export const commandSchema = z.discriminatedUnion("type", [
+  importedDesignContinuationCommandSchema, importedDesignContinuationStopSchema, importedDesignContinuationStatusSchema, importedDesignContinuationReceiptSchema,
+  importedProductReviewCommandSchema, importedProductReviewStopSchema, importedProductReviewStatusSchema, importedProductReviewReceiptSchema,
+  productSourceOperationCommandSchema,productSourceOperationStopSchema,productSourceOperationStatusSchema,productSourceOperationReceiptSchema,
   nodeSessionReadyCommandSchema,
   nodeSessionPongCommandSchema,
   runStartCommandSchema,
+  runStartOwnedResultCommandSchema,
   runStopCommandSchema,
   artifactCollectCommandSchema,
   runResumeCommandSchema,
-  runEventAckCommandSchema
+  runEventAckCommandSchema,
+  productReleaseCommandSchema,
+  productReleaseCancelCommandSchema,
+  productReleaseHealthAckCommandSchema,
 ]);
 
 // --- Node -> Server: run.event --------------------------------------------
@@ -188,10 +251,14 @@ export const adapterRunEventBodySchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("artifact.created"), payload: ArtifactPayloadSchema })
 ]);
 
-/** Retention evidence is node-owned and cannot be supplied by a RuntimeAdapter. */
+/** Retention/verification evidence is node-owned, never adapter-supplied. */
 export const runEventBodySchema = z.discriminatedUnion("type", [
   ...adapterRunEventBodySchema.options,
   z.object({ type: z.literal("run.workspace.retained"), payload: RunWorkspaceRetainedPayloadSchema }),
+  z.object({ type: z.literal("run.verification"), payload: RunVerificationPayloadSchema }),
+  z.object({ type: z.literal("run.product-source.export.v1"), payload: ProductSourceExportV1Schema }),
+  z.object({ type: z.literal("run.product-source.export.v2"), payload: ProductSourceExportV2Schema }),
+  z.object({ type: z.literal("run.owned-result.verification"), payload: NodeOwnedResultVerificationEvidenceV1Schema }),
 ]);
 
 export const runEventMessageSchema = z.object({
@@ -203,6 +270,11 @@ export const runEventMessageSchema = z.object({
 });
 
 export type Machine = z.infer<typeof machineSchema>;
+export type ProductReleaseCommand = z.infer<typeof productReleaseCommandSchema>;
+export type ProductReleaseCancelCommand = z.infer<typeof productReleaseCancelCommandSchema>;
+export type ProductReleaseReceiptMessage = z.infer<typeof productReleaseReceiptMessageSchema>;
+export type ProductReleaseHealthMessage = z.infer<typeof productReleaseHealthMessageSchema>;
+export type ProductReleaseHealthAckCommand = z.infer<typeof productReleaseHealthAckCommandSchema>;
 export type NodeHello = z.infer<typeof nodeHelloSchema>;
 export type NodeSessionProbe = z.infer<typeof nodeSessionProbeSchema>;
 export type NodeSessionReadyCommand = z.infer<typeof nodeSessionReadyCommandSchema>;
@@ -213,6 +285,7 @@ export type CommandAck = z.infer<typeof commandAckSchema>;
 export type RunStopCommand = z.infer<typeof runStopCommandSchema>;
 export type ArtifactCollectCommand = z.infer<typeof artifactCollectCommandSchema>;
 export type RunStartCommand = z.infer<typeof runStartCommandSchema>;
+export type RunStartOwnedResultCommand = z.infer<typeof runStartOwnedResultCommandSchema>;
 export type RunResumeCommand = z.infer<typeof runResumeCommandSchema>;
 export type RunEventAckCommand = z.infer<typeof runEventAckCommandSchema>;
 export type Command = z.infer<typeof commandSchema>;

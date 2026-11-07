@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page, type Request, type Response } from "@playwright/test";
 
 const PROJECT_ID = "proj_artoo";
 const NODE_ID = "computer_local_mock";
@@ -296,8 +296,26 @@ test("create → ready → assign → mock run → review → accept → done", 
   } finally { node.close(); }
 });
 
-test("request changes returns ready, and retry recovers a failed run", async ({ page, request }) => {
+test("request changes returns ready, and retry recovers a failed run", async ({ page, request }, testInfo) => {
   const node = await connectManualNode(request, true);
+  const startedAt = performance.now();
+  const network: Array<{ elapsed_ms: number; method: string; pathname: string; status?: number; errorText?: string }> = [];
+  let observedTaskId: string | undefined;
+  const record = (observed: Request, result: { status?: number; errorText?: string }): void => {
+    const method = observed.method(), pathname = new URL(observed.url()).pathname;
+    if (!observedTaskId || !(method === "GET" && pathname === `/api/v1/tasks/${observedTaskId}`
+      || method === "POST" && pathname === `/api/v1/tasks/${observedTaskId}/retry`)) return;
+    if (network.length === 64) network.shift();
+    network.push({ elapsed_ms: Math.round(performance.now() - startedAt), method, pathname, ...result });
+  };
+  const onResponse = (response: Response): void => record(response.request(), { status: response.status() });
+  const onFailed = (observed: Request): void => {
+    // Keep only Chromium's error code, never arbitrary text containing a URL or credentials.
+    const errorText = observed.failure()?.errorText.match(/^net::[A-Z0-9_]+$/)?.[0] ?? "browser-request-failed";
+    record(observed, { errorText });
+  };
+  page.on("response", onResponse);
+  page.on("requestfailed", onFailed);
   try {
   await page.goto("/");
   await page.getByRole("combobox", { name: "Project", exact: true }).selectOption(PROJECT_ID);
@@ -305,6 +323,7 @@ test("request changes returns ready, and retry recovers a failed run", async ({ 
 
   const title = uniqueTitle("E2E retry path");
   const taskId = await createTaskViaUi(page, request, title);
+  observedTaskId = taskId;
 
   await page.getByRole("button", { name: "Mark ready", exact: true }).click();
   await page.getByRole("button", { name: "Assign", exact: true }).click();
@@ -328,7 +347,14 @@ test("request changes returns ready, and retry recovers a failed run", async ({ 
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expectDetailStatus(page, "ready");
   await waitForTaskStatus(request, taskId, "ready");
-  } finally { node.close(); }
+  } catch (error) {
+    await testInfo.attach("retry-task-network", { body: Buffer.from(JSON.stringify({ version: 1, events: network }, null, 2)), contentType: "application/json" });
+    throw error;
+  } finally {
+    page.off("response", onResponse);
+    page.off("requestfailed", onFailed);
+    node.close();
+  }
 });
 
 test("DAG unlock marks a dependent task ready after its prerequisite is accepted", async ({

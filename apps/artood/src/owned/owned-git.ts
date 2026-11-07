@@ -1,7 +1,8 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import type { Readable } from "node:stream";
+import { spawnParentGuardedProcess, type ParentGuardedProcess, type ParentGuardReceipt } from "./parent-guard.js";
 
 export interface OwnedGitRequest {
   readonly cwd: string;
@@ -19,6 +20,10 @@ export interface OwnedGitOptions {
   readonly normalExitDrainMs?: number;
   /** Operator-owned snapshot only; never wire supplied. Snapshotted synchronously per invocation. */
   readonly environment?: Readonly<NodeJS.ProcessEnv>;
+  /** Node-local private index, never accepted from a transport or model payload. */
+  readonly indexFile?: string;
+  /** Local verifier opt-in. The command remains owned if the daemon is killed. */
+  readonly guardParent?: boolean;
 }
 export type OwnedGitErrorCode = "invalid_input" | "unsupported_platform" | "spawn_failed" | "aborted"
   | "timeout" | "output_limit" | "stream_failed" | "signaled" | "lingering_group" | "cleanup_uncertain";
@@ -61,6 +66,7 @@ export interface OwnedGitReceipt {
   readonly observersDisposed: boolean;
   readonly trigger: Trigger | null;
   readonly spawnErrorCode?: string;
+  readonly parent_guard?: ParentGuardReceipt;
 }
 export interface OwnedGitResult {
   readonly status: number;
@@ -77,7 +83,7 @@ export class OwnedGitError extends Error {
 }
 
 /** Trusted local-operation policy, copied once; no environment values are exposed in receipts. */
-function gitEnvironment(source: Readonly<NodeJS.ProcessEnv>): NodeJS.ProcessEnv {
+function gitEnvironment(source: Readonly<NodeJS.ProcessEnv>, indexFile?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source };
   for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
   Object.assign(env, {
@@ -86,6 +92,7 @@ function gitEnvironment(source: Readonly<NodeJS.ProcessEnv>): NodeJS.ProcessEnv 
     GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "core.fsmonitor", GIT_CONFIG_VALUE_0: "false",
     GIT_CONFIG_KEY_1: "core.hooksPath", GIT_CONFIG_VALUE_1: "/dev/null",
   });
+  if (indexFile !== undefined) env.GIT_INDEX_FILE = indexFile;
   return env;
 }
 
@@ -100,8 +107,11 @@ export function runOwnedGit(request: OwnedGitRequest, options: OwnedGitOptions):
   const timeoutMs = kind === "materialize" ? materializeTimeoutMs : readTimeoutMs;
   const maxOutputBytes = options.maxOutputBytes, terminationTimeoutMs = options.terminationTimeoutMs ?? 5000;
   const normalExitDrainMs = options.normalExitDrainMs ?? 250;
-  const env = gitEnvironment(options.environment ?? process.env), startedAt = new Date().toISOString(), started = performance.now();
-  let child: ChildProcessByStdio<null, Readable, Readable> | undefined;
+  const indexFile = options.indexFile;
+  const env = gitEnvironment(options.environment ?? process.env, indexFile), startedAt = new Date().toISOString(), started = performance.now();
+  const guardParent = options.guardParent === true;
+  let child: ChildProcessByStdio<null, Readable, Readable> | ParentGuardedProcess | undefined;
+  let guarded: ParentGuardedProcess | undefined, guardReceipt: ParentGuardReceipt | undefined, guardClosing = false, guardCloseFailed = false;
   let spawnAttempted = false, synchronousSpawnFailure = false, asyncSpawnFailure = false;
   let pid: number | null = null, spawned = false, exitObserved = false, closeObserved = false;
   let exitObservedAt: string | null = null, closeObservedAt: string | null = null;
@@ -134,10 +144,23 @@ export function runOwnedGit(request: OwnedGitRequest, options: OwnedGitOptions):
         signals: Object.freeze(signals.map(item => Object.freeze({ ...item }))),
         outputBytesObserved: observedBytes, outputBytesCaptured: capturedBytes, outputTruncated,
         cleanupConfirmed, observersDisposed, trigger, ...(spawnErrorCode ? { spawnErrorCode } : {}),
+        ...(guardReceipt ? { parent_guard: guardReceipt } : {}),
       });
     }
     function finish(errorCode?: OwnedGitErrorCode): void {
-      if (settled) return;
+      if (settled || guardClosing) return;
+      const commandConfirmed = pid === null ? !spawnAttempted || synchronousSpawnFailure || (asyncSpawnFailure && closeObserved)
+        : exitObserved && closeObserved && groupState === "absent";
+      if (guarded && !guardReceipt && !guardCloseFailed) {
+        guardClosing = true;
+        clearTimeout(operationTimer); clearTimeout(cleanupTimer); clearTimeout(normalDrainTimer);
+        signal?.removeEventListener("abort", onAbort);
+        void guarded.closeGuard(commandConfirmed).then((observed) => {
+          guardReceipt = observed; guardClosing = false;
+          finish(observed.cleanupConfirmed && (!observed.spawned || observed.status === 0 && observed.signal === null) ? errorCode : "cleanup_uncertain");
+        }, () => { guardCloseFailed = true; guardClosing = false; finish("cleanup_uncertain"); });
+        return;
+      }
       settled = true;
       clearTimeout(operationTimer); clearTimeout(cleanupTimer); clearTimeout(normalDrainTimer);
       signal?.removeEventListener("abort", onAbort);
@@ -149,8 +172,7 @@ export function runOwnedGit(request: OwnedGitRequest, options: OwnedGitOptions):
         child.stdout.destroy(); child.stderr.destroy();
       }
       observersDisposed = true;
-      const confirmed = pid === null ? !spawnAttempted || synchronousSpawnFailure || (asyncSpawnFailure && closeObserved)
-        : exitObserved && closeObserved && groupState === "absent";
+      const confirmed = commandConfirmed && (!guarded || guardReceipt?.cleanupConfirmed === true && !guarded.cleanupUncertain);
       const record = receipt(confirmed), out = Buffer.concat(stdout), err = Buffer.concat(stderr);
       if (!errorCode && typeof status !== "number") errorCode = "spawn_failed";
       if (errorCode) rejectResult(new OwnedGitError(errorCode, record, out, err));
@@ -185,7 +207,7 @@ export function runOwnedGit(request: OwnedGitRequest, options: OwnedGitOptions):
       signals.push(entry);
     }
     function pollCleanup(): void {
-      if (settled || terminationStarted === null) return;
+      if (settled || guardClosing || terminationStarted === null) return;
       if (spawned) probeGroup();
       if (pid === null && closeObserved) { finish(trigger ?? "spawn_failed"); return; }
       if (exitObserved && closeObserved && groupState === "absent") { finish(trigger ?? undefined); return; }
@@ -198,7 +220,7 @@ export function runOwnedGit(request: OwnedGitRequest, options: OwnedGitOptions):
       cleanupTimer = setTimeout(pollCleanup, 10);
     }
     function terminate(reason: Trigger): void {
-      if (settled) return;
+      if (settled || guardClosing) return;
       trigger ??= reason;
       clearTimeout(operationTimer); clearTimeout(normalDrainTimer);
       if (normalDrainStarted !== null && normalDrainOutcome === "not-entered") {
@@ -269,6 +291,9 @@ export function runOwnedGit(request: OwnedGitRequest, options: OwnedGitOptions):
     if (process.platform !== "darwin" && process.platform !== "linux") { trigger = "unsupported_platform"; finish(trigger); return; }
     if (typeof cwd !== "string" || !isAbsolute(cwd) || cwd.includes("\0")
       || typeof executable !== "string" || !isAbsolute(executable) || executable.includes("\0")
+      || (indexFile !== undefined && (typeof indexFile !== "string" || !isAbsolute(indexFile)
+        || resolve(indexFile) !== indexFile
+        || /[\u0000-\u001f\u007f]/u.test(indexFile) || indexFile.split(/[\\/]/u).some(part => part === "." || part === "..")))
       || !Array.isArray(inputArgs) || args.some(arg => typeof arg !== "string" || arg.includes("\0"))
       || !["read", "materialize"].includes(kind) || !bounded(readTimeoutMs, 30_000)
       || !bounded(materializeTimeoutMs, 600_000) || !bounded(maxOutputBytes, 16 * 1024 * 1024)
@@ -280,7 +305,8 @@ export function runOwnedGit(request: OwnedGitRequest, options: OwnedGitOptions):
     operationTimer = setTimeout(() => terminate("timeout"), timeoutMs);
     try {
       spawnAttempted = true;
-      child = spawn(executable, args, { cwd, env, detached: true, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+      child = guardParent ? (guarded = spawnParentGuardedProcess(executable, args, cwd, env))
+        : spawn(executable, args, { cwd, env, detached: true, shell: false, stdio: ["ignore", "pipe", "pipe"] });
       pid = child.pid ?? null;
     } catch (error) {
       synchronousSpawnFailure = true;

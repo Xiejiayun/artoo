@@ -17,6 +17,8 @@ import { and, eq, isNull, or } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
+import { unsettledStandaloneExecutions } from "./execution-state.js";
+import { goalImportedDesignContinuations } from "@artoo/db";
 
 /**
  * How long after its last heartbeat a runtime row is considered stale (and its
@@ -53,6 +55,8 @@ export interface SchedulerOutcome {
 }
 
 export interface ScheduleOptions {
+  /** Internal H3 revalidation of its own exact reservation; never populated from assignment requests. */
+  importedDesignRunId?: string;
   mode: "auto" | "manual";
   projectId: string;
   /** Derived from the validated explicit/generated branch request. */
@@ -110,6 +114,12 @@ export async function scheduleTask(
   required: readonly Capability[],
   opts: ScheduleOptions,
 ): Promise<SchedulerOutcome> {
+  if (opts.importedDesignRunId) {
+    const [owner] = await tx.select().from(goalImportedDesignContinuations).where(and(eq(goalImportedDesignContinuations.organizationId, ctx.organizationId),
+      eq(goalImportedDesignContinuations.runId, opts.importedDesignRunId)));
+    if (!owner || owner.stopRequested || owner.result !== null || opts.mode !== "manual" || opts.agentInstanceId !== owner.writerInstanceId)
+      throw AppError.conflict("Only an unused imported design can revalidate its exact reserved run");
+  }
   const enabledSkillInstalls = await loadEnabledSkillInstallStates(tx, ctx, opts.projectId);
   const rows = await tx
     .select({
@@ -152,14 +162,18 @@ export async function scheduleTask(
 
   // Active (non-terminal) runs per instance, for capacity. One query; counted in JS.
   const activeRunRows = await tx
-    .select({ agentInstanceId: runs.agentInstanceId, status: runs.status })
+    .select({ id: runs.id, agentInstanceId: runs.agentInstanceId, status: runs.status })
     .from(runs)
     .where(eq(runs.organizationId, ctx.organizationId));
   const activeRunsByInstance = new Map<string, number>();
   for (const r of activeRunRows) {
-    if (isActiveRunStatus(r.status)) {
+    if (r.id !== opts.importedDesignRunId && isActiveRunStatus(r.status)) {
       activeRunsByInstance.set(r.agentInstanceId, (activeRunsByInstance.get(r.agentInstanceId) ?? 0) + 1);
     }
+  }
+  for (const operation of await unsettledStandaloneExecutions(ctx, tx)) {
+    if (operation.kind === "design" && (operation.runId === opts.importedDesignRunId || activeRunRows.some(run => run.id === operation.runId && isActiveRunStatus(run.status)))) continue;
+    activeRunsByInstance.set(operation.agentInstanceId, (activeRunsByInstance.get(operation.agentInstanceId) ?? 0) + 1);
   }
 
   // Computers with a bound REVOKED device (exists/aggregate, so multiple device

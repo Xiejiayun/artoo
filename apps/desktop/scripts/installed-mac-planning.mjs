@@ -186,7 +186,7 @@ export async function runInstalledMacPlanning({ page, workspace, configurationPa
     assert.deepEqual(tasks.map((task) => task.acceptance_criteria), [[fixture.task_1_criterion], [fixture.task_2_criterion]]);
     const { dependencies } = await api(`/tasks/${tasks[1].id}/dependencies`);
     assert.deepEqual(dependencies.map((edge) => [edge.from_task_id, edge.to_task_id, edge.type]), [[tasks[0].id, tasks[1].id, "blocks"]]);
-    assert.deepEqual(readdirSync(planningWorkspace), ["context_pack.md"], "Planning must not write work files or inherit the earlier patch");
+    assert.deepEqual(readdirSync(planningWorkspace), [], "Planning must not write work files or inherit the earlier patch");
     const plans = page.getByRole("region", { name: "Plans", exact: true });
     await expect(plans).toContainText("accepted"); await expect(plans).toContainText(fixture.task_2_title);
     await capture(plans, macPlanningImageNames[3], "Installed Mac: human acceptance creates two tasks with the reviewed criteria and dependency");

@@ -10,7 +10,8 @@ const row: typeof runs.$inferSelect = {
   agentInstanceId: "ai_A", runtimeId: "mock", schedulerDecisionId: null, modelProfileId: null,
   effortProfileId: null, status: "queued", contextPackId: null, startedAt: null, endedAt: null,
   failureReason: null, sequence: 0, workspaceRoot: "/Legacy//Cafe\u0301/\u8349\u7a3f /",
-  workspaceBranch: "Feature/Keep-\u00c9", workspaceAllocation: null, createdAt: "2026-10-03T00:00:00.000Z",
+  workspaceBranch: "Feature/Keep-\u00c9", workspaceAllocation: null, verificationRequirement: null,
+  ownedResultAssignment: null, createdAt: "2026-10-03T00:00:00.000Z",
 };
 const allocation = { version: 1, strategy: "per-run", base_path: "/Approved//Cafe\u0301/\u8349\u7a3f /" };
 

@@ -92,7 +92,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env) {
   }
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const server = await startServer();
   const address = server.app.server.address();
   console.log(`Artoo server ready on ${typeof address === "object" && address ? address.port : address}; storage=${server.persistent ? "persistent" : "ephemeral"}`);

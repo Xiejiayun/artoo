@@ -10,5 +10,7 @@ contextBridge.exposeInMainWorld("artooDesktop", {
   prepareManagedWorkspace: () => ipcRenderer.invoke("artoo:prepareManagedWorkspace"),
   startDaemon: invoke("startDaemon"), stopDaemon: invoke("stopDaemon"), restartDaemon: invoke("restartDaemon"),
   chooseDirectory: invoke("chooseDirectory"), chooseExecutable: invoke("chooseExecutable"), openExternal: invoke("openExternal"),
+  chooseVerificationProfilesFile: invoke("chooseVerificationProfilesFile"),
+  choosePublicationProfilesFile: invoke("choosePublicationProfilesFile"),
   writeClipboardText: invoke("writeClipboardText"),
 });

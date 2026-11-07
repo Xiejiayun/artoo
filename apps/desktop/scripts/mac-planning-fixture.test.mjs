@@ -39,7 +39,9 @@ function contextFor(state, index) {
 
 function execute(state, pack, program) {
   writeFileSync(state.contextPath, `# Unit context\ntask: unit-task\nrun: unit-run-${state.ledger.turns.length}\n\n## Raw Payload\n${JSON.stringify(pack)}`);
-  const args = program ? [program] : ["--input-type=module", "--eval", `import {runMacPlanningFixture} from ${JSON.stringify(moduleUrl)}; runMacPlanningFixture({contextPath:${JSON.stringify(state.contextPath)},configurationPath:${JSON.stringify(state.configurationPath)}});`];
+  const args = program ? [program, "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", pack.policy.execution_mode === "discussion" ? "read-only" : "workspace-write",
+    "-C", state.workspace, `Read the file ${state.contextPath}. If its payload contains conversation, respond to conversation.current_request.`]
+    : ["--input-type=module", "--eval", `import {runMacPlanningFixture} from ${JSON.stringify(moduleUrl)}; runMacPlanningFixture({contextPath:${JSON.stringify(state.contextPath)},configurationPath:${JSON.stringify(state.configurationPath)}});`];
   return spawnSync(process.execPath, args, { cwd: state.workspace, encoding: "utf8", timeout: 10_000, env: { ...process.env, ARTOO_CODEX_PROVIDER_KEY: "unit-credential" } });
 }
 
@@ -128,6 +130,35 @@ test("Mac embedded CLI delegates discussion to the fixture with correctly escape
   assert.equal(verifyMacPlanningTurns(state.ledger).length, 3);
   assert.equal(existsSync(join(state.workspace, "changes.patch")), false);
 });
+
+for (const decoy of [false, true]) test(`Mac embedded planning reads the supplied external context with ${decoy ? "an untouched cwd decoy" : "no cwd context"}`, (t) => {
+  const state = setup(t), external = join(state.directory, "external context.with spaces");
+  mkdirSync(external); state.contextPath = join(external, "context_pack.md");
+  const stalePath = join(state.workspace, "context_pack.md"), stale = "An old workspace file must never supply the discussion context.";
+  if (decoy) writeFileSync(stalePath, stale);
+  const program = embeddedProgram(state, true);
+  for (let index = 0; index < 3; index++) recordStep(state, index, program);
+  assert.equal(verifyMacPlanningTurns(state.ledger).length, 3);
+  assert.deepEqual(readdirSync(state.workspace), decoy ? ["context_pack.md"] : []);
+  if (decoy) assert.equal(readFileSync(stalePath, "utf8"), stale);
+  assert.deepEqual(readdirSync(external), ["context_pack.md"]);
+  assert.equal(readdirSync(state.fixture.context_receipts_directory).length, 3);
+  assert.equal(existsSync(join(state.workspace, "changes.patch")), false);
+  assert.equal(existsSync(join(state.workspace, "fixture-execution.json")), false);
+});
+
+for (const prompt of [null, "Read the file context_pack.md. If its payload contains conversation, respond to conversation.current_request."])
+  test(`Mac embedded CLI rejects ${prompt === null ? "a missing context prompt" : "a relative context path"} instead of reading cwd`, (t) => {
+    const state = setup(t), program = embeddedProgram(state, true);
+    writeFileSync(state.contextPath, "A cwd context must not be used as a fallback.");
+    const result = spawnSync(process.execPath, [program, ...(prompt === null ? [] : ["exec", prompt])], {
+      cwd: state.workspace, encoding: "utf8", timeout: 10_000, env: { ...process.env, ARTOO_CODEX_PROVIDER_KEY: "unit-credential" },
+    });
+    assert.notEqual(result.status, 0); assert.equal(result.stdout, "");
+    assert.match(result.stderr, prompt === null ? /requires the production context prompt/ : /requires an absolute context path/);
+    assert.deepEqual(readdirSync(state.fixture.context_receipts_directory), []);
+    assert.equal(readFileSync(state.contextPath, "utf8"), "A cwd context must not be used as a fallback.");
+  });
 
 test("Mac and Windows embedded CLI retain the original artifact and credential diagnostic branch", (t) => {
   for (const isMac of [true, false]) {

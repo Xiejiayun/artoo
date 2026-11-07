@@ -3,7 +3,7 @@ import { z } from "zod";
 /** Durable task-level review; artifact attribution is unknown for legacy events. */
 export const TaskReviewSchema = z.object({
   event_id: z.string().min(1),
-  position: z.number().int().positive(),
+  position: z.number().refine(Number.isInteger, "Expected an integer").positive(),
   task_id: z.string().min(1),
   outcome: z.enum(["accepted", "changes_requested"]),
   comment: z.string().nullable(),

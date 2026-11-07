@@ -1,0 +1,378 @@
+// Controlled protocol regression only: spawn, filesystem, Windows paths and native
+// lifecycle events are simulated. No Win32 process or Job is created by this suite.
+import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { Writable } from "node:stream";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocked = vi.hoisted(() => ({
+  spawn: vi.fn(),
+  files: new Map<string, Buffer>(),
+  directories: new Set<string>(),
+  bundle: "C:\\artoo-controlled-helper",
+  systemRoot: "C:\\Windows",
+}));
+
+vi.mock("node:child_process", () => ({ spawn: mocked.spawn }));
+vi.mock("node:path", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:path")>();
+  return { ...actual, ...actual.win32, default: actual.win32 };
+});
+vi.mock("node:fs", () => ({
+  lstatSync: (path: string) => {
+    const directory = mocked.directories.has(path), bytes = mocked.files.get(path);
+    if (!directory && !bytes) throw new Error("Controlled filesystem path not found");
+    return { isDirectory: () => directory, isFile: () => !directory, isSymbolicLink: () => false,
+      nlink: 1, ino: directory ? 1 : 2, dev: 1, size: bytes?.length ?? 0, mtimeMs: 1 };
+  },
+  readFileSync: (path: string) => {
+    const bytes = mocked.files.get(path);
+    if (!bytes) throw new Error("Controlled filesystem file not found");
+    return Buffer.from(bytes);
+  },
+  readdirSync: (path: string) => {
+    if (path !== mocked.bundle) throw new Error("Unexpected controlled directory read");
+    return ["Artoo.WindowsProcessHost.exe", "manifest.json"];
+  },
+  realpathSync: Object.assign((path: string) => path, { native: (path: string) => {
+    if (!mocked.directories.has(path) && !mocked.files.has(path)) throw new Error("Controlled realpath not found");
+    return path;
+  } }),
+}));
+
+import {
+  isWindowsOwnedClosureReceipt, prepareWindowsProcessBackend, startWindowsOwnedProcess,
+  WindowsOwnedCleanupError, WindowsOwnedStartupError, type WindowsOwnedClosureReceipt, type WindowsOwnedProcess,
+  type WindowsOwnedStart,
+} from "./windows-owned-process.js";
+
+const sha = (bytes: Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const ROOT_PID = 4242, CREATION_TIME = "133806600000000000";
+let manifestSha256: string;
+
+interface ControlWrite { kind: string; token?: string; env?: Record<string, string>; [key: string]: unknown }
+
+class ControlledHelper extends EventEmitter {
+  readonly writes: ControlWrite[] = [];
+  readonly stdout = new EventEmitter();
+  readonly stderr = new EventEmitter();
+  readonly stdin = new Writable({ write: (chunk, _encoding, callback) => {
+    this.writes.push(JSON.parse(Buffer.from(chunk).toString("utf8")) as ControlWrite);
+    callback();
+  } });
+  readonly kill = vi.fn(() => true);
+  sequence = 0;
+
+  get launch(): ControlWrite | undefined { return this.writes.find(write => write.kind === "launch"); }
+  send(kind: string, payload: Record<string, unknown>, overrides: Record<string, unknown> = {}): void {
+    const frame = { version: 1, token: this.launch?.token ?? null, sequence: this.sequence++, kind, payload, ...overrides };
+    this.stdout.emit("data", Buffer.from(`${JSON.stringify(frame)}\n`));
+  }
+  ready(): void { this.send("ready", { protocol: "artoo.windows-job-process.v1", atomicJobList: true }, { token: null }); }
+  created(): void { this.send("created", { pid: ROOT_PID, creationTime: CREATION_TIME, jobMember: true }); }
+  started(): void { this.send("started", { pid: ROOT_PID }); }
+  rootExit(code = 0): void { this.send("root_exit", { code }); }
+  eof(stream: "stdout" | "stderr"): void { this.send("pipe_eof", { stream }); }
+  exit(code = 0): void { this.emit("exit", code, null); }
+  close(code = 0): void { this.emit("close", code, null); }
+}
+
+const helpers: ControlledHelper[] = [], runs: WindowsOwnedProcess[] = [];
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  Object.defineProperty(process, "platform", { ...originalPlatform, value: "win32" });
+  vi.stubEnv("SystemRoot", mocked.systemRoot);
+  mocked.files.clear(); mocked.directories.clear(); helpers.length = 0; runs.length = 0;
+  mocked.directories.add(mocked.bundle); mocked.directories.add(mocked.systemRoot);
+  const executable = Buffer.from("CONTROLLED TEST BYTES, NOT A WINDOWS EXECUTABLE");
+  mocked.files.set(`${mocked.bundle}\\Artoo.WindowsProcessHost.exe`, executable);
+  const manifest = Buffer.from(JSON.stringify({ version: 1, protocol: "artoo.windows-job-process.v1", runtime: "win-x64",
+    executable: "Artoo.WindowsProcessHost.exe", files: [{ path: "Artoo.WindowsProcessHost.exe", size: executable.length, sha256: sha(executable) }] }));
+  mocked.files.set(`${mocked.bundle}\\manifest.json`, manifest); manifestSha256 = sha(manifest);
+  mocked.spawn.mockReset().mockImplementation(() => { const helper = new ControlledHelper(); helpers.push(helper); return helper; });
+});
+
+afterEach(async () => {
+  // Finish every simulated owner even after an assertion fails. These are explicit
+  // simulated failure events, not evidence that a real helper was killed or closed.
+  for (const helper of helpers) { helper.exit(1); helper.close(1); helper.stdin.destroy(); }
+  await Promise.all(runs.map(run => run.closed.then(() => undefined, () => undefined)));
+  try { expect(vi.getTimerCount()).toBe(0); }
+  finally {
+    vi.useRealTimers(); vi.unstubAllEnvs(); Object.defineProperty(process, "platform", originalPlatform);
+  }
+});
+
+function prepare(assertLocalInstallation: () => void = () => undefined) {
+  return prepareWindowsProcessBackend({ directory: mocked.bundle, manifestSha256, assertLocalInstallation });
+}
+function input(overrides: Partial<WindowsOwnedStart> = {}): WindowsOwnedStart {
+  return { executable: "C:\\tools\\node.exe", args: ["--version"], cwd: "C:\\workspace\\controlled",
+    env: { SystemRoot: mocked.systemRoot, ARTOO_TEST_SECRET: "fixture-only-secret" }, timeoutMs: 20_000,
+    maxOutputBytes: 65_536, cleanupTimeoutMs: 5000, normalExitPolicy: "require-empty", normalExitGraceMs: 250, ...overrides };
+}
+function begin(overrides: Partial<WindowsOwnedStart> = {}) {
+  const run = startWindowsOwnedProcess(prepare(), input(overrides)); runs.push(run);
+  const helper = helpers.at(-1)!; helper.emit("spawn");
+  return { run, helper };
+}
+function establishRoot(helper: ControlledHelper): void { helper.ready(); helper.created(); helper.started(); }
+function normalFinal(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { rootCreated: true, rootStarted: true, rootPid: ROOT_PID, rootCreationTime: CREATION_TIME,
+    atomicJobMember: true, rootWaitObserved: true, rootExitCode: 0, stdoutEof: true, stderrEof: true,
+    stdoutCreated: true, stderrCreated: true, jobCreated: true, jobEmptyObserved: true, noTargetCreated: false,
+    terminationReason: null, failureCode: null, nativeError: null, outputBytesObserved: 0, outputBytesCaptured: 0,
+    cleanupConfirmed: true, ...overrides };
+}
+function noTargetFinal(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { rootCreated: false, rootStarted: false, rootPid: null, rootCreationTime: null,
+    atomicJobMember: false, rootWaitObserved: false, rootExitCode: null, stdoutEof: false, stderrEof: false,
+    stdoutCreated: false, stderrCreated: false, jobCreated: false, jobEmptyObserved: false, noTargetCreated: true,
+    terminationReason: "parent_eof", failureCode: "no_launch", nativeError: null,
+    outputBytesObserved: 0, outputBytesCaptured: 0, cleanupConfirmed: true, ...overrides };
+}
+function completeRoot(helper: ControlledHelper, overrides: Record<string, unknown> = {}): void {
+  const final = normalFinal(overrides);
+  helper.rootExit(final.rootExitCode as number);
+  if (final.stdoutEof) helper.eof("stdout");
+  if (final.stderrEof) helper.eof("stderr");
+  helper.send("complete", final);
+}
+async function rejectedClosure(run: WindowsOwnedProcess, helper: ControlledHelper, failureCode = "control_protocol"): Promise<WindowsOwnedClosureReceipt> {
+  helper.exit(); helper.close();
+  const caught: unknown = await run.closed.then(() => { throw new Error("Unexpected controlled closure success"); }, error => error);
+  expect(caught).toBeInstanceOf(WindowsOwnedCleanupError);
+  const receipt = (caught as WindowsOwnedCleanupError).receipt;
+  expect(isWindowsOwnedClosureReceipt(receipt)).toBe(true);
+  expect(receipt.cleanupConfirmed).toBe(false); expect(receipt.failureCode).toBe(failureCode);
+  return receipt;
+}
+async function expectPending(run: WindowsOwnedProcess): Promise<void> {
+  const settled = vi.fn(); void run.closed.then(settled, settled);
+  await Promise.resolve(); await Promise.resolve(); expect(settled).not.toHaveBeenCalled();
+}
+
+describe("controlled Windows protocol, not native containment", () => {
+  it("keeps a synchronous pre-dispatch rejection unchanged and does not invent process diagnostics", () => {
+    const controller = new AbortController(), reason = new Error("Controlled admission cancelled before dispatch");
+    controller.abort(reason);
+    expect(() => startWindowsOwnedProcess(prepare(), input({ signal: controller.signal }))).toThrow(reason);
+    expect(mocked.spawn).not.toHaveBeenCalled(); expect(reason).not.toHaveProperty("diagnostic");
+  });
+
+  it("preserves simulated CreateProcess failure and native error after both helper exit and close events", async () => {
+    const { run, helper } = begin(); helper.ready(); helper.eof("stdout"); helper.eof("stderr");
+    helper.send("complete", noTargetFinal({ jobCreated: true, jobEmptyObserved: true, stdoutCreated: true, stderrCreated: true,
+      stdoutEof: true, stderrEof: true, failureCode: "create_process", nativeError: 5, terminationReason: "create_process" }));
+    await expectPending(run); helper.exit(); helper.close();
+    const failure = await run.started.catch(error => error as WindowsOwnedStartupError), receipt = await run.closed;
+    expect(failure).toBeInstanceOf(WindowsOwnedStartupError);
+    expect(failure).toMatchObject({ diagnostic: { failureCode: "create_process", nativeError: 5, rootCreated: false, rootStarted: false,
+      noTargetCreated: true, cleanupConfirmed: true, helperExitObserved: true, helperCloseObserved: true } });
+    expect((failure as Error).message).toContain("Windows target did not start");
+    expect((failure as Error).message).toContain('"nativeError":5'); expect((failure as Error).message).not.toContain("fixture-only-secret");
+    expect((failure as Error).message).not.toContain("--version");
+    expect(isWindowsOwnedClosureReceipt(receipt)).toBe(true);
+    expect(isWindowsOwnedClosureReceipt((failure as WindowsOwnedStartupError).diagnostic)).toBe(false);
+  });
+
+  it("keeps unknown startup closure distinct from an observed no-target result", async () => {
+    const { run, helper } = begin(); helper.ready(); helper.exit(1); helper.close(1);
+    const startup = await run.started.catch(error => error as WindowsOwnedStartupError);
+    const cleanup = await run.closed.catch(error => error as WindowsOwnedCleanupError);
+    expect(startup).toBeInstanceOf(WindowsOwnedStartupError); expect(cleanup).toBeInstanceOf(WindowsOwnedCleanupError);
+    expect(startup).toMatchObject({ diagnostic: { failureCode: "missing_complete", nativeError: null, cleanupConfirmed: false, noTargetCreated: false } });
+    expect((cleanup as WindowsOwnedCleanupError).diagnostic).toEqual((startup as WindowsOwnedStartupError).diagnostic);
+    expect((cleanup as Error).message).toContain("closure remains unconfirmed");
+  });
+
+  it("requires both helper exit and close after complete, and brands only local receipts", async () => {
+    const { run, helper } = begin(); const closeEvent = vi.fn(); run.on("close", closeEvent);
+    establishRoot(helper); completeRoot(helper); await expectPending(run);
+    helper.exit(); await expectPending(run); expect(closeEvent).not.toHaveBeenCalled();
+    helper.close(); const receipt = await run.closed;
+    expect(receipt).toMatchObject({ cleanupConfirmed: true, rootExitCode: 0, rootWaitObserved: true,
+      stdoutEof: true, stderrEof: true, jobEmptyObserved: true, helperSpawnObserved: true,
+      helperExitObserved: true, helperCloseObserved: true, helperExitCode: 0 });
+    expect(closeEvent).toHaveBeenCalledOnce(); expect(isWindowsOwnedClosureReceipt(receipt)).toBe(true);
+    expect(isWindowsOwnedClosureReceipt({ ...receipt })).toBe(false);
+    expect(isWindowsOwnedClosureReceipt(JSON.parse(JSON.stringify(receipt)))).toBe(false);
+    expect(JSON.stringify(receipt)).not.toContain("fixture-only-secret");
+    expect(JSON.stringify(receipt)).not.toContain("--version");
+  });
+
+  it.each([
+    ["stdout existence", { stdoutCreated: false, stdoutEof: false }],
+    ["stderr existence", { stderrCreated: false, stderrEof: false }],
+    ["Job existence", { jobCreated: false, jobEmptyObserved: false }],
+    ["all existence flags", { stdoutCreated: false, stdoutEof: false, stderrCreated: false, stderrEof: false, jobCreated: false, jobEmptyObserved: false }],
+    ["stdout EOF", { stdoutEof: false }],
+    ["stderr EOF", { stderrEof: false }],
+    ["Job empty", { jobEmptyObserved: false }],
+    ["root wait", { rootWaitObserved: false }],
+  ] as const)("rejects complete that skips %s proof after a started root", async (_label, overrides) => {
+    const { run, helper } = begin(); establishRoot(helper); completeRoot(helper, overrides);
+    await rejectedClosure(run, helper);
+  });
+
+  it.each([
+    ["changed creation time", { rootCreationTime: "133806600000000001" }],
+    ["missing creation time", { rootCreationTime: null }],
+    ["changed PID", { rootPid: ROOT_PID + 1 }],
+    ["missing membership", { atomicJobMember: false }],
+    ["contradictory no-target", { rootCreated: false, noTargetCreated: true }],
+  ] as const)("rejects %s instead of trusting complete metadata", async (_label, overrides) => {
+    const { run, helper } = begin(); establishRoot(helper); completeRoot(helper, overrides);
+    await rejectedClosure(run, helper);
+  });
+
+  it.each(["created", "started"] as const)("rejects %s after root_exit", async (kind) => {
+    const { run, helper } = begin(); helper.ready(); if (kind === "started") helper.created();
+    helper.rootExit(); if (kind === "created") helper.created(); else helper.started();
+    await rejectedClosure(run, helper); await expect(run.started).rejects.toThrow("did not start");
+  });
+
+  it("preserves no-created-frame cleanup after a simulated membership failure", async () => {
+    const { run, helper } = begin(); helper.ready(); helper.rootExit(0xE0000001); helper.eof("stdout"); helper.eof("stderr");
+    helper.send("complete", normalFinal({ rootStarted: false, rootCreationTime: null, atomicJobMember: false,
+      rootExitCode: 0xE0000001, terminationReason: "job_membership", failureCode: "job_membership", nativeError: 5 }));
+    helper.exit(); helper.close(); const receipt = await run.closed;
+    expect(receipt).toMatchObject({ cleanupConfirmed: true, rootCreated: true, rootStarted: false,
+      rootWaitObserved: true, failureCode: "job_membership", rootExitCode: 0xE0000001 });
+    await expect(run.started).rejects.toThrow("did not start");
+  });
+
+  it.each([
+    ["wrong invocation nonce", { token: "00000000-0000-0000-0000-000000000000" }],
+    ["skipped sequence", { sequence: 2 }],
+    ["replayed sequence", { sequence: 0 }],
+    ["wrong version", { version: 2 }],
+  ] as const)("rejects %s even with otherwise valid created facts", async (_label, overrides) => {
+    const { run, helper } = begin(); helper.ready();
+    helper.send("created", { pid: ROOT_PID, creationTime: CREATION_TIME, jobMember: true }, overrides);
+    await rejectedClosure(run, helper);
+  });
+
+  it("does not infer helper exit from the close event", async () => {
+    const { run, helper } = begin(); establishRoot(helper); completeRoot(helper); helper.close();
+    const failure = await run.closed.catch(error => error as WindowsOwnedCleanupError);
+    expect(failure).toBeInstanceOf(WindowsOwnedCleanupError);
+    expect((failure as WindowsOwnedCleanupError).receipt).toMatchObject({ cleanupConfirmed: false,
+      helperCloseObserved: true, helperExitObserved: false });
+  });
+
+  it("rejects helper nonzero exit even when native complete claims success", async () => {
+    const { run, helper } = begin(); establishRoot(helper); completeRoot(helper); helper.exit(1); helper.close(1);
+    await expect(run.closed).rejects.toMatchObject({ receipt: { cleanupConfirmed: false, helperExitCode: 1,
+      helperExitObserved: true, helperCloseObserved: true } });
+  });
+
+  it("rejects helper death without a complete frame", async () => {
+    const { run, helper } = begin(); establishRoot(helper);
+    await rejectedClosure(run, helper, "missing_complete");
+  });
+
+  it("rejects an extra terminal frame after complete", async () => {
+    const { run, helper } = begin(); establishRoot(helper); completeRoot(helper);
+    helper.send("complete", normalFinal()); await rejectedClosure(run, helper);
+  });
+
+  it("confirms cancellation before ready only through an explicit no-target terminal and helper closure", async () => {
+    const { run, helper } = begin(); run.cancel();
+    expect(helper.stdin.writableEnded).toBe(true); expect(helper.writes).toEqual([]);
+    helper.ready(); helper.send("complete", noTargetFinal(), { token: null }); await expectPending(run);
+    helper.exit(); helper.close(); const receipt = await run.closed;
+    expect(helper.writes).toEqual([]);
+    expect(receipt).toMatchObject({ cleanupConfirmed: true, noTargetCreated: true, rootCreated: false,
+      rootStarted: false, terminationReason: "cancelled", nativeTerminationReason: "parent_eof" });
+    await expect(run.started).rejects.toThrow("did not start");
+  });
+
+  it("rejects target work smuggled into a pre-dispatch terminal", async () => {
+    const { run, helper } = begin(); run.cancel(); helper.ready();
+    helper.send("complete", noTargetFinal({ jobCreated: true, jobEmptyObserved: true }), { token: null });
+    await rejectedClosure(run, helper);
+  });
+
+  it("accepts a bound no-target validation failure as failure facts with confirmed cleanup", async () => {
+    const { run, helper } = begin({ executable: "C:\\missing\\not-present.exe" }); helper.ready();
+    expect(helper.launch?.token).toEqual(expect.any(String));
+    helper.send("complete", noTargetFinal({ terminationReason: "invalid_request", failureCode: "invalid_request" }));
+    helper.exit(); helper.close();
+    expect(await run.closed).toMatchObject({ cleanupConfirmed: true, noTargetCreated: true,
+      rootExitCode: null, rootStarted: false, failureCode: "invalid_request" });
+    await expect(run.started).rejects.toThrow("did not start");
+  });
+
+  it.each(["resolved", "rejected"] as const)("rejects %s asynchronous installation qualification before spawn", async (outcome) => {
+    const check = () => outcome === "resolved" ? Promise.resolve() : Promise.reject(new Error("controlled ACL failure"));
+    expect(() => prepare(check)).toThrow("synchronous");
+    await Promise.resolve(); await Promise.resolve(); expect(mocked.spawn).not.toHaveBeenCalled();
+  });
+
+  it("rechecks synchronous qualification at launch and rejects a later thenable", async () => {
+    let asynchronous = false;
+    const backend = prepare(() => asynchronous ? Promise.resolve() : undefined); asynchronous = true;
+    expect(() => startWindowsOwnedProcess(backend, input())).toThrow("synchronous");
+    await Promise.resolve(); expect(mocked.spawn).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized launch frame before a helper can spawn", () => {
+    expect(() => startWindowsOwnedProcess(prepare(), input({ env: { SystemRoot: mocked.systemRoot,
+      TOO_LARGE: "x".repeat(1024 * 1024) } }))).toThrow("fixed bound");
+    expect(mocked.spawn).not.toHaveBeenCalled();
+  });
+
+  it("keeps lifecycle-looking target output as data", async () => {
+    const { run, helper } = begin(); const output: Buffer[] = []; run.stdout.on("data", chunk => output.push(Buffer.from(chunk)));
+    establishRoot(helper);
+    const bytes = Buffer.from(`${JSON.stringify({ version: 1, kind: "complete", token: helper.launch?.token,
+      sequence: 3, payload: normalFinal() })}\n`);
+    helper.send("output", { stream: "stdout", data: bytes.toString("base64") }); await expectPending(run);
+    completeRoot(helper, { outputBytesCaptured: bytes.length, outputBytesObserved: bytes.length });
+    helper.exit(); helper.close(); expect((await run.closed).cleanupConfirmed).toBe(true);
+    expect(Buffer.concat(output)).toEqual(bytes);
+  });
+
+  it("takes the helper system root from its prepared backend, independently of target env", async () => {
+    const { run, helper } = begin({ env: { SystemRoot: "C:\\target-root", DOTNET_STARTUP_HOOKS: "target-only-hook" } }); helper.ready();
+    const options = mocked.spawn.mock.calls[0]![2] as { env: Record<string, string> };
+    expect(options.env).toEqual({ SystemRoot: mocked.systemRoot, WINDIR: mocked.systemRoot, PATH: `${mocked.systemRoot}\\System32` });
+    expect(helper.launch?.env).toMatchObject({ SystemRoot: "C:\\target-root", DOTNET_STARTUP_HOOKS: "target-only-hook" });
+    helper.send("complete", noTargetFinal({ terminationReason: "invalid_request", failureCode: "invalid_request" }));
+    helper.exit(); helper.close(); expect((await run.closed).cleanupConfirmed).toBe(true);
+  });
+
+  it("keeps the fixed startup timer running after ready until started or terminal", async () => {
+    const { run, helper } = begin(); helper.ready();
+    expect(helper.launch).toBeDefined();
+    vi.advanceTimersByTime(9999); expect(helper.writes.some(write => write.kind === "cancel")).toBe(false);
+    vi.advanceTimersByTime(1); expect(helper.writes.filter(write => write.kind === "cancel")).toHaveLength(1);
+    await expectPending(run);
+    helper.send("complete", noTargetFinal({ terminationReason: "cancelled", failureCode: "cancelled_before_create" }));
+    helper.exit(); helper.close();
+    expect(await run.closed).toMatchObject({ cleanupConfirmed: true, noTargetCreated: true, terminationReason: "timeout" });
+    await expect(run.started).rejects.toThrow("did not start");
+  });
+
+  it("does not renew the first cleanup timer on repeated cancel or output, and kill alone proves nothing", async () => {
+    const { run, helper } = begin({ timeoutMs: 100_000 }); establishRoot(helper); run.cancel();
+    vi.advanceTimersByTime(6000); run.cancel();
+    helper.send("output", { stream: "stdout", data: Buffer.from("late output").toString("base64") });
+    vi.advanceTimersByTime(1499); expect(helper.kill).not.toHaveBeenCalled(); await expectPending(run);
+    vi.advanceTimersByTime(1); expect(helper.kill).toHaveBeenCalledOnce();
+    await expect(run.closed).rejects.toMatchObject({ receipt: { cleanupConfirmed: false,
+      failureCode: "cleanup_deadline", terminationReason: "cancelled", helperExitObserved: false, helperCloseObserved: false } });
+  });
+
+  it("never dispatches a target after the abort observer cannot be installed", () => {
+    const brokenSignal = { aborted: false, throwIfAborted: () => undefined,
+      addEventListener: () => { throw new Error("controlled listener failure"); }, removeEventListener: vi.fn() } as unknown as AbortSignal;
+    expect(() => startWindowsOwnedProcess(prepare(), input({ signal: brokenSignal }))).toThrow("target was not dispatched");
+    const helper = helpers.at(-1)!; helper.emit("spawn"); helper.ready();
+    expect(helper.writes).toEqual([]); expect(helper.stdin.writableEnded).toBe(true);
+    helper.send("complete", noTargetFinal(), { token: null }); helper.exit(); helper.close();
+  });
+});
