@@ -105,7 +105,8 @@ export function verifyCorrectionCheckpoint({ name, observation: value, fields, p
     "Every real launch must have exactly one startup receipt");
   requireEvidence(new Set(snapshot.runs.map((run) => run.id)).size === runCount
     && new Set(value.receipts.map((receipt) => receipt.run_id)).size === runCount
-    && new Set(value.launches.map((launch) => launch.run_id)).size === runCount,
+    && new Set(value.launches.map((launch) => launch.run_id)).size === runCount
+    && new Set(value.launches.map((launch) => launch.launch_id)).size === runCount,
     "Duplicate launches or run identities are not allowed");
   requireEvidence(fields.instances.length === 4 && new Set(fields.instances.map((item) => item.root)).size === 4
     && new Set(fields.instances.map((item) => item.id)).size === 4 && value.workspaces.length === 4,
@@ -131,7 +132,8 @@ export function verifyCorrectionCheckpoint({ name, observation: value, fields, p
     requireEvidence(receipt.workspace_root === instance.root && receipt.project_id === fields.project_id,
       "Actual child must execute in the correct task-owned workspace");
     const launch = value.launches.find((launch) => launch.run_id === run.id);
-    requireEvidence(launch.pid === receipt.pid && launch.slot === receipt.slot
+    requireEvidence(typeof launch.launch_id === "string" && /^[a-f0-9]{16}$/.test(launch.launch_id)
+      && launch.launch_id === receipt.launch_id && launch.pid === receipt.pid && launch.slot === receipt.slot
       && launch.workspace_root === instance.root && launch.task_id === snapshot.task.id,
     "Independent launch record must match startup receipt");
     const workspace = value.workspaces[index];

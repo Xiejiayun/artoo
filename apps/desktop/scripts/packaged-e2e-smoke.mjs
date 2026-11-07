@@ -803,7 +803,7 @@ ${isMac ? "}" : ""}
       try {
         const launches = readdirSync(correctionSetup.receiptsDirectory).filter((name) => name.startsWith("launch-") && name.endsWith(".json"))
           .map((name) => JSON.parse(readFileSync(join(correctionSetup.receiptsDirectory, name), "utf8")));
-        await until(() => launches.every(({ pid }) => !correctionProcessAlive(pid)), "Correction child remained live after worker shutdown", 10_000);
+        await until(() => launches.every((launch) => !correctionSetup.processAlive(launch)), "Correction child remained live after worker shutdown", 10_000);
         cleanup.correction_processes_closed = true;
       } catch { cleanup.correction_processes_closed = false; }
       if (cleanup.correction_processes_closed) try {

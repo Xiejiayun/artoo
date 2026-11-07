@@ -65,8 +65,9 @@ function readExecution(contextPath, configurationPath) {
   const index = configuration.workspaces.findIndex((item) => resolve(item.root) === workspace);
   // Count actual invocations before substantive validation or duplicate-run
   // rejection. A second process cannot hide behind an existing run receipt.
-  publishJSON(join(directory, `launch-${process.pid}-${randomBytes(8).toString("hex")}.json`), {
-    pid: process.pid, run_id: runIds.length === 1 ? runIds[0] : null,
+  const launchId = randomBytes(8).toString("hex");
+  publishJSON(join(directory, `launch-${process.pid}-${launchId}.json`), {
+    launch_id: launchId, pid: process.pid, run_id: runIds.length === 1 ? runIds[0] : null,
     task_id: taskIds.length === 1 ? taskIds[0] : null, workspace_root: workspace,
     slot: index + 1, started_at: new Date().toISOString(),
   });
@@ -102,12 +103,12 @@ function readExecution(contextPath, configurationPath) {
   assert.ok(!existsSync(join(workspace, "unsaved.txt")) && !existsSync(join(workspace, configuration.artifact_filename)));
   assert.ok(!existsSync(join(workspace, CORRECTION_IGNORED_FILE)));
   publishExclusive(correctionContextPath(directory, runId), context);
-  return { configuration, directory, context, pack, runId, workspace, index, mode, original, entries };
+  return { configuration, directory, context, pack, runId, launchId, workspace, index, mode, original, entries };
 }
 
 export async function runExecutionCorrectionFixture({ contextPath, configurationPath, emit = (line) => console.log(line) }) {
   const value = readExecution(contextPath, configurationPath);
-  const { configuration, directory, context, pack, runId, workspace, index, mode, original, entries } = value;
+  const { configuration, directory, context, pack, runId, launchId, workspace, index, mode, original, entries } = value;
   const implementation = correctionImplementation(pack, runId, mode);
   const pending = `Unuploaded work for task ${pack.task.id}, run ${runId}, stage ${mode}.\nContext SHA256 ${correctionHash(context)}\n`;
   writeFileSync(join(workspace, "implementation.txt"), implementation, { mode: 0o600 });
@@ -121,7 +122,7 @@ export async function runExecutionCorrectionFixture({ contextPath, configuration
     publishExclusive(correctionReportPath(directory, runId), patch); reportHash = correctionHash(patch);
   }
   const receipt = {
-    slot: index + 1, mode, pid: process.pid, run_id: runId, task_id: pack.task.id, project_id: pack.project.id,
+    launch_id: launchId, slot: index + 1, mode, pid: process.pid, run_id: runId, task_id: pack.task.id, project_id: pack.project.id,
     workspace_root: workspace, context_sha256: correctionHash(context),
     implementation_sha256: correctionHash(implementation), unsaved_sha256: correctionHash(pending),
     ignored_sha256: correctionHash(ignored), ignored_size: ignored.length,
