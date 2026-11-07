@@ -20,23 +20,34 @@ afterEach(async () => {
   finally { vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform); }
 });
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
+const settleDispatch = () => new Promise<void>(resolve => setImmediate(resolve));
 async function waitFor(check: () => boolean) {
   await vi.waitFor(() => { expect(check()).toBe(true); }, { timeout: 5000, interval: 5 });
 }
 function fixture(options: { holdAck?: boolean; holdStop?: boolean; replay?: boolean; clean?: boolean;
-  acceptStart?: boolean; failAcceptedAck?: boolean } = {}) {
+  acceptStart?: boolean; failAcceptedAck?: boolean; holdStream?: boolean; holdReplayAck?: boolean;
+  dropReplayAckOnce?: boolean; failReplayAckOnce?: boolean } = {}) {
   let active = true, session: object | undefined = {}, receive!: (message: ServerToNodeMessage) => void;
   const originalSession = session;
   const entered = deferred(), startup = deferred(), ackEntered = deferred(), ackSend = deferred();
   const stopEntered = deferred(), stopAudit = deferred();
+  const streamEntered = deferred(), streamDone = deferred(), replayEntered = deferred(), replaySend = deferred();
   if (!options.holdAck) ackSend.resolve();
   if (!options.holdStop) stopAudit.resolve();
+  if (!options.holdStream) streamDone.resolve();
+  if (!options.holdReplayAck) replaySend.resolve();
+  let replaySends = 0;
   const messages: NodeToServerMessage[] = [], sendAttempts: NodeToServerMessage[] = [];
   const transport: NodeSideTransport = { acknowledgesRunEvents: true, async send(message) {
     sendAttempts.push(message);
     if (message.kind === "command.ack" && message.command_id === "original") { ackEntered.resolve(); await ackSend.promise; }
     if (options.failAcceptedAck && message.kind === "command.ack" && message.command_id === "original" && message.status === "accepted") {
       throw Error("Controlled accepted ACK delivery failure");
+    }
+    if (message.kind === "command.ack" && message.command_id === "retry") {
+      replayEntered.resolve(); await replaySend.promise; replaySends++;
+      if (replaySends === 1 && options.failReplayAckOnce) throw Error("Controlled replay ACK delivery failure");
+      if (replaySends === 1 && options.dropReplayAckOnce) return;
     }
     messages.push(message);
   }, subscribe(handler) { receive = handler; return () => {}; } };
@@ -77,7 +88,7 @@ function fixture(options: { holdAck?: boolean; holdStop?: boolean; replay?: bool
     if (options.acceptStart) return { runId: "run" };
     throw Error("Forbidden fixture execution");
   }),
-    async *streamEvents() {}, async stop() {}, async collectArtifacts() { return []; } };
+    async *streamEvents() { streamEntered.resolve(); await streamDone.promise; }, async stop() {}, async collectArtifacts() { return []; } };
   const client = createNodeClient({ nodeId: "node", adapter, transport, productSourceRecovery: { configuration: {} as never,
     features: [], isCurrent: () => session === originalSession, activate: () => sourceRuntime,
     ...(options.clean ? { cleanLifecycle: {} as never } : {}),
@@ -90,15 +101,91 @@ function fixture(options: { holdAck?: boolean; holdStop?: boolean; replay?: bool
       ...(options.acceptStart ? { verification: { version: 1, request_id: "verify", profile_id: "profile" } } : {}) } });
   const start = (id = "original") => receive({ ...command, id });
   const ack = (id: string) => messages.find(message => message.kind === "command.ack" && message.command_id === id);
-  cleanups.push(async () => { startup.resolve(); ackSend.resolve(); stopAudit.resolve(); await client.stop(true); });
+  cleanups.push(async () => { startup.resolve(); ackSend.resolve(); stopAudit.resolve(); streamDone.resolve(); replaySend.resolve(); await client.stop(true); });
   return { client, handle, readRuntime, operation, boundary, claim, release, adapter, entered, startup, ackEntered, ackSend,
-    messages, sendAttempts, start, ack,
-    stopEntered, stopAudit,
+    messages, sendAttempts, start, ack, receive, command,
+    stopEntered, stopAudit, streamEntered, streamDone, replayEntered, replaySend,
     disconnect() { session = {}; }, stop() { receive({ kind: "command", id: "stop", type: "run.stop", idempotency_key: "run:stop",
       payload: { run_id: "run", reason: "user_cancelled" } }); } };
 }
 
 describe("source startup replay before NodeClient audit", () => {
+  it.each(["original", "retry"])("coalesces 256 pending retransmissions of %s without retaining the original run lifetime", async id => {
+    const f = fixture({ acceptStart: true, holdAck: true, holdStream: true });
+    const replies = () => f.messages.filter(message => message.kind === "command.ack" && message.command_id === id);
+    f.start(); await f.entered.promise;
+    for (let index = 0; index < 256; index++) f.start(id);
+    await settleDispatch(); expect(f.messages).toEqual([]); expect(f.handle).toHaveBeenCalledTimes(1);
+    f.startup.resolve(); await f.ackEntered.promise;
+    expect(f.messages).toEqual([]); expect(f.adapter.start).toHaveBeenCalledTimes(1);
+    f.ackSend.resolve(); await f.streamEntered.promise;
+    const firstCount = id === "original" ? 2 : 1;
+    await waitFor(() => replies().length === firstCount);
+    expect(replies()).toEqual(Array.from({ length: firstCount }, () => f.ack("original"))
+      .map(message => ({ ...message, command_id: id })));
+    expect(f.release).not.toHaveBeenCalled();
+    await settleDispatch(); f.start(id);
+    await waitFor(() => replies().length === firstCount + 1);
+    expect(replies().at(-1)).toMatchObject({ status: "accepted" });
+    expect(f.handle).toHaveBeenCalledTimes(1); expect(f.adapter.start).toHaveBeenCalledTimes(1);
+    expect(f.claim).toHaveBeenCalledTimes(1); expect(f.release).not.toHaveBeenCalled();
+  });
+
+  it.each(["sent", "lost", "failed"])("coalesces a pending replay send and allows the same ID again after its ACK is %s", async delivery => {
+    const f = fixture({ acceptStart: true, holdStream: true, holdReplayAck: true,
+      dropReplayAckOnce: delivery === "lost", failReplayAckOnce: delivery === "failed" });
+    const attempts = () => f.sendAttempts.filter(message => message.kind === "command.ack" && message.command_id === "retry");
+    const replies = () => f.messages.filter(message => message.kind === "command.ack" && message.command_id === "retry");
+    f.start(); f.startup.resolve(); await f.streamEntered.promise;
+    f.start("retry"); await f.replayEntered.promise;
+    for (let index = 0; index < 256; index++) f.start("retry");
+    await settleDispatch(); expect(attempts()).toHaveLength(1); expect(replies()).toEqual([]);
+    f.replaySend.resolve(); await settleDispatch();
+    expect(replies()).toHaveLength(delivery === "sent" ? 1 : 0);
+    f.start("retry"); await waitFor(() => replies().length === (delivery === "sent" ? 2 : 1));
+    expect(attempts()).toHaveLength(2); expect(replies().at(-1)).toEqual({ ...f.ack("original"), command_id: "retry" });
+    expect(f.adapter.start).toHaveBeenCalledTimes(1); expect(f.handle).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["payload", "unknown-field"])("still validates %s changes before coalescing a pending command ID", async variant => {
+    const f = fixture(); f.start(); await f.entered.promise; f.start("retry");
+    const changed = structuredClone(f.command); changed.id = "retry";
+    if (variant === "payload") changed.payload.context_pack.uri = "artoo://context/changed";
+    else Object.assign(changed.payload, { unrecognized_authority: true });
+    f.receive(changed); await waitFor(() => !!f.ack("retry"));
+    expect(f.ack("retry")).toMatchObject({ status: "rejected", error_code: "process_start_failed",
+      message: expect.stringMatching(variant === "payload" ? /changed payload/ : /complete supported schema/) });
+    expect(f.readRuntime).not.toHaveBeenCalled(); expect(f.adapter.start).not.toHaveBeenCalled();
+    f.startup.resolve(); await waitFor(() => f.messages.filter(message => message.kind === "command.ack" && message.command_id === "retry").length === 2);
+    expect(f.handle).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["stop", "session"])("keeps the %s fence ahead of pending same-ID retransmissions", async fence => {
+    const f = fixture(); f.start(); await f.entered.promise;
+    for (let index = 0; index < 256; index++) f.start("retry");
+    if (fence === "stop") f.stop(); else f.disconnect();
+    f.start("retry"); await waitFor(() => !!f.ack("retry"));
+    expect(f.ack("retry")).toMatchObject({ status: "rejected", message: expect.stringMatching(/Stop|stopped|session/) });
+    f.startup.resolve(); await waitFor(() => !!f.ack("original")); await settleDispatch();
+    const replies = f.messages.filter(message => message.kind === "command.ack" && message.command_id === "retry");
+    expect(replies).toHaveLength(2);
+    for (const reply of replies) expect(reply).toMatchObject({ status: "rejected", message: expect.stringMatching(/Stop|stopped|session/) });
+    expect(f.handle.mock.calls.filter(([message]) => message.type === "run.start")).toHaveLength(1);
+    expect(f.adapter.start).not.toHaveBeenCalled(); expect(f.claim).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  });
+
+  it("retains the 64-waiter limit for 65 distinct pending reply IDs", async () => {
+    const f = fixture(); f.start(); await f.entered.promise;
+    for (let index = 0; index < 65; index++) f.start(`distinct-${index}`);
+    await waitFor(() => !!f.ack("distinct-64"));
+    expect(f.ack("distinct-64")).toMatchObject({ status: "rejected", error_code: "process_start_failed",
+      message: "Source startup replay waiter capacity reached; original execution is retained" });
+    expect(f.messages).toHaveLength(1); expect(f.handle).toHaveBeenCalledTimes(1);
+    f.startup.resolve(); await waitFor(() => !!f.ack("distinct-63"));
+    for (let index = 0; index < 64; index++) expect(f.ack(`distinct-${index}`)).toEqual({ ...f.ack("original"), command_id: `distinct-${index}` });
+    expect(f.adapter.start).not.toHaveBeenCalled();
+  });
+
   it.each(["readRuntime", "operation"] as const)("records a synchronous %s failure in the original ticket without repeating its audit", async point => {
     const f = fixture({ holdAck: true });
     const failure = markWindowsNativeFailure(new Error("Controlled synchronous source admission failure"), "native_timeout");

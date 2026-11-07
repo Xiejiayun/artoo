@@ -120,6 +120,7 @@ describe("owned result assignment through qualified dispatch and committed recei
       worktree_workspace_base: { version: 1, strategy: "per-run", basePath: "/changed" } } }).where(eq(agentInstances.id, INSTANCE));
     await binding.dispatchRunStart(value.run.id);
     expect(sent[1]).toMatchObject({ payload: value.assignment.request });
+    expect(sent[1]!.id).not.toBe(sent[0]!.id); // Ordinary source-start replay must not reinterpret owned-result delivery.
     await expect(server.db.db.update(runs).set({ ownedResultAssignment: null }).where(eq(runs.id, value.run.id))).rejects.toThrow();
     const measured = await complete(binding, value);
     expect(await deliver(binding, measured)).toBe("accepted");

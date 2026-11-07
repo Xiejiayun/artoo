@@ -154,6 +154,25 @@ export function attachNodeBinding(
   const ownedResultSnapshot = NodeOwnedResultProfileDescriptorsV1Schema.parse(ownedResultProfiles);
   if (ownedResultSnapshot.some(profile => profile.node_id !== computerId)) throw AppError.permissionDenied("Owned result descriptors belong to another node");
   const pendingCommandRun = new Map<string, string>(); // command_id -> run_id (run.start)
+  // One exposed request per pending normal source start, scoped to this binding.
+  // Periodic re-delivery must not allocate another node-side reply identity.
+  const pendingSourceStarts = new Map<string, RunStartCommand>();
+  // Stop/rejection can arrive before durable state leaves queued. Retain the
+  // original snapshot as a retired entry until that advancement is observed.
+  const retiredSourceStarts = new Set<string>();
+  function retireSourceStart(runId: string, commandId?: string): void {
+    const command = pendingSourceStarts.get(runId);
+    if (!command || commandId !== undefined && command.id !== commandId) return;
+    retiredSourceStarts.add(runId);
+    if (pendingCommandRun.get(command.id) === runId) pendingCommandRun.delete(command.id);
+  }
+  function forgetSourceStart(runId: string, commandId?: string): void {
+    const command = pendingSourceStarts.get(runId);
+    if (!command || commandId !== undefined && command.id !== commandId) return;
+    pendingSourceStarts.delete(runId);
+    retiredSourceStarts.delete(runId);
+    if (pendingCommandRun.get(command.id) === runId) pendingCommandRun.delete(command.id);
+  }
   const pendingResumeRun = new Map<string, { runId: string; timer: ReturnType<typeof setTimeout> }>();
   const pendingStops = new Map<string, { runId: string; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const pendingReleaseStops = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -562,6 +581,9 @@ export function attachNodeBinding(
           });
           if (result === null) return;
           if (!result.receiptBodyIdentity) throw new Error("run event did not obtain a qualified receipt");
+          if (frame.event.type === "run.lifecycle" && ["started", "completed", "failed", "cancelled"].includes(frame.event.payload.phase)) {
+            forgetSourceStart(frame.run_id);
+          }
         } catch { status = "rejected"; }
         if (closed || !isCurrentBinding()) return;
         await transport.send({
@@ -583,14 +605,18 @@ export function attachNodeBinding(
       enqueue(async () => {
         if (!(await ownsRun(pending.runId))) pending.reject(AppError.permissionDenied("run is not owned by this node"));
         else if (message.status === "rejected") pending.reject(AppError.conflict(`node could not stop run: ${message.message}`));
-        else pending.resolve();
+        else { retireSourceStart(pending.runId); pending.resolve(); }
       });
     } else if (message.kind === "command.ack" && message.status === "rejected") {
       const startRunId = pendingCommandRun.get(message.command_id);
       if (startRunId !== undefined) {
         pendingCommandRun.delete(message.command_id);
+        retireSourceStart(startRunId, message.command_id);
         enqueue(async () => {
-          if (await ownsRun(startRunId)) await failRunStart(ctx, startRunId, message.error_code, message.message);
+          if (await ownsRun(startRunId)) {
+            await failRunStart(ctx, startRunId, message.error_code, message.message);
+            forgetSourceStart(startRunId, message.command_id);
+          }
         });
         return;
       }
@@ -607,6 +633,8 @@ export function attachNodeBinding(
       }
     } else if (message.kind === "command.ack") {
       // Accepted: no server-side transition (resume just continues the live run).
+      // An ACK can arrive before the first lifecycle event commits. Keep the
+      // complete source-start identity until the run actually leaves queued.
       pendingCommandRun.delete(message.command_id);
       const resume = pendingResumeRun.get(message.command_id);
       if (resume !== undefined) {
@@ -667,6 +695,9 @@ export function attachNodeBinding(
 
   async function sendRunStart(runId: string): Promise<void> {
     assertCurrentStartBinding(runId);
+    // Capture before the first read: Stop/rejection/lifecycle handling may retire
+    // this entry during any awaited admission check, not only the transaction.
+    const previousSourceStart = pendingSourceStarts.get(runId);
     if (await importedExecutionForRun(runId)) throw AppError.permissionDenied("H5 requires its dedicated single-use execution command");
     if (await importedExecutionRepairForRun(runId)) throw AppError.permissionDenied("Repair requires its dedicated single-use authorization command");
     if (await recoveryValidationForRun(runId)) throw AppError.permissionDenied("Recovery validation requires its dedicated current-epoch command");
@@ -678,7 +709,7 @@ export function attachNodeBinding(
     ));
     assertCurrentStartBinding(runId);
     if (!run || run.computerId !== computerId) throw AppError.permissionDenied("run is not owned by this node");
-    if (run.status !== "queued") return;
+    if (run.status !== "queued") { forgetSourceStart(runId); return; }
     const ownedAssignment = parseOwnedResultAssignment(run);
     const assertOwnedProfile = () => {
       if (!ownedAssignment) return;
@@ -758,10 +789,19 @@ export function attachNodeBinding(
     ));
     assertCurrentStartBinding(runId);
     if (!latest || latest.computerId !== computerId) throw AppError.permissionDenied("run is not owned by this node");
-    if (latest.status !== "queued") return;
+    if (latest.status !== "queued") { forgetSourceStart(runId); return; }
     if (allocated) assertAllocationFeature(runId);
 
-    const commandId = ctx.idGen.generate("cmd");
+    // Legacy manual starts can generate a fresh fallback ContextPack ID on each
+    // invocation. Keep them, clean mode and owned-result admissions unchanged.
+    const sourceStartScope = () => !ownedAssignment && !allocated && verification !== undefined
+      && run.contextPackId !== null && context.payload !== undefined
+      && !!(context.payload.product_development?.stage || context.payload.review_subject?.development_stage)
+      && !executionFeatureSet.has(SOURCE_CLEAN_RESTART_FEATURE_V1)
+      && binding.supportsExecutionFeature(PRODUCT_SOURCE_RECOVERY_FEATURE_V1);
+    const retainSourceStart = sourceStartScope();
+    if (previousSourceStart && !retainSourceStart) throw AppError.conflict("Pending source startup no longer has its original dispatch scope");
+    const commandId = previousSourceStart?.id ?? ctx.idGen.generate("cmd");
     const command: RunStartCommand | RunStartOwnedResultCommand = ownedAssignment ? {
       kind: "command", id: commandId, idempotency_key: runId + ":start", type: "run.start.owned-result.v1",
       payload: structuredClone(ownedAssignment.request),
@@ -779,6 +819,9 @@ export function attachNodeBinding(
         artifact_rules: { paths: ["artifacts/**", "*.patch"] },
       },
     };
+    if (previousSourceStart && !isDeepStrictEqual(previousSourceStart, command)) {
+      throw AppError.conflict("Pending source startup complete request changed; original execution identity is retained");
+    }
     assertCurrentStartBinding(runId);
     if (allocated) assertAllocationFeature(runId);
     await requireAuthorizedRun(runId, run);
@@ -848,11 +891,33 @@ export function attachNodeBinding(
         }
         if (assistantTurn) exposedAssistantRuns.add(run.id);
         assertOwnedProfile();
+        // A fresh invocation must also respect Stop/rejection while the durable
+        // transition is still pending. This marker never authorizes a restart.
+        if (retiredSourceStarts.has(runId)) return;
+        let delivery = command;
+        if (retainSourceStart || previousSourceStart) {
+          const current = pendingSourceStarts.get(runId);
+          // A lifecycle or confirmed Stop may retire the pending start while
+          // this re-delivery awaits the fences above. Never resurrect it.
+          if (previousSourceStart && current !== previousSourceStart) return;
+          if (!sourceStartScope() || command.type !== "run.start") throw AppError.conflict("Pending source startup no longer has its original dispatch scope");
+          if (current && !isDeepStrictEqual(current, command)) throw AppError.conflict("Pending source startup complete request changed; original execution identity is retained");
+          if (!current) {
+            const snapshot = structuredClone(command);
+            const freeze = (value: object): void => {
+              for (const child of Object.values(value)) if (child !== null && typeof child === "object") freeze(child);
+              Object.freeze(value);
+            };
+            freeze(snapshot);
+            pendingSourceStarts.set(runId, snapshot);
+          }
+          delivery = pendingSourceStarts.get(runId)!;
+        }
         pendingCommandRun.set(commandId, runId);
         // After send is invoked, disconnect/error may still mean delivery occurred.
         // Do not fail the run or release leases from this dispatch path.
         sendInvoked = true;
-        await transport.send(command);
+        await transport.send(delivery);
       });
     } catch (error) {
       // Only a known admission rejection before send proves this invocation did
@@ -1201,6 +1266,7 @@ export function attachNodeBinding(
     close(): void {
       closed = true;
       unsubscribe();
+      for (const runId of pendingSourceStarts.keys()) forgetSourceStart(runId);
       for (const pending of pendingResumeRun.values()) clearTimeout(pending.timer);
       pendingResumeRun.clear();
       for (const pending of pendingStops.values()) {

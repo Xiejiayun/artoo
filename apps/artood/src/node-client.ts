@@ -404,6 +404,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   const inflight = new Set<Promise<void>>();
   let unsubscribe: Unsubscribe | undefined;
   const sourceStartReplay = createSourceStartReplay();
+  const pendingSourceReplaySends = new Map<string, symbol>();
   // Clean lifecycle's ordinary-state reader performs its own audit. Keep that
   // existing path until it has a separate local-fact replay capability.
   const sourceReplayEnabled = !!options.productSourceRecovery?.replaySession && !options.productSourceRecovery.cleanLifecycle;
@@ -1668,9 +1669,18 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       admission = sourceStartReplay.enter(message, scope);
     } catch (error) { await sendOutcome({ status: "rejected", error_code: "process_start_failed", message: errorMessage(error) }); return; }
     if (!admission.fresh) {
+      // Validate every retransmission before joining an existing reply. Retain only
+      // its replay/send lifetime; the original dispatch may continue running after ACK.
+      const commandId = admission.command.id;
+      if (pendingSourceReplaySends.has(commandId)) return;
+      const pending = Symbol(); pendingSourceReplaySends.set(commandId, pending);
       const runId = admission.command.payload.run_id;
-      await sendOutcome(await sourceStartReplay.replay(admission.ticket, sourceReplayScope, () => !planningToolRuns.get(runId)?.unsafe
-        && !verificationRuns.get(runId)?.unsafe && !mixedStopIntents.has(runId)));
+      try {
+        await sendOutcome(await sourceStartReplay.replay(admission.ticket, sourceReplayScope, () => !planningToolRuns.get(runId)?.unsafe
+          && !verificationRuns.get(runId)?.unsafe && !mixedStopIntents.has(runId)));
+      } finally {
+        if (pendingSourceReplaySends.get(commandId) === pending) pendingSourceReplaySends.delete(commandId);
+      }
       return;
     }
     return sourceStartReplay.run(admission.ticket, () => dispatchFresh(admission.command));
