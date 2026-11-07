@@ -222,8 +222,7 @@ final class SharedServerChatUITests: XCTestCase {
         try reveal(reviewInput)
         try replace(editableField("task.review.comment.\(taskId)"), with: fixture.executionReviewComment)
         try dismissKeyboard(using: "task.detail.keyboard.done")
-        let accept = app.buttons["task.action.accept.\(taskId)"]
-        try reveal(accept); accept.tap()
+        try tapTaskAccept(taskId)
         let accepted = try await waitForExecutionTask(taskId) { $0.task.status == "done" }
         XCTAssertEqual(accepted.runs.map(\.id), [run.id])
         XCTAssertEqual(accepted.artifacts.map(\.id), [artifact.id])
@@ -1301,6 +1300,71 @@ final class SharedServerChatUITests: XCTestCase {
                 .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: viewport.midX, dy: endY)))
         }
         try require(false, "Required text must be visibly rendered in the unobscured list")
+    }
+
+    @MainActor
+    private func tapTaskAccept(_ taskId: String) throws {
+        try require(!taskId.isEmpty, "Acceptance must identify the exact reviewed task")
+        let identifier = "task.action.accept.\(taskId)"
+        let matches = app.buttons.matching(identifier: identifier), button = matches.firstMatch
+        func finiteNonempty(_ frame: CGRect) -> Bool {
+            !frame.isEmpty && !frame.isNull && !frame.isInfinite
+                && [frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite }
+        }
+        func requireTaskSurface() throws {
+            try require(app.state == .runningForeground && app.navigationBars["Task"].exists
+                        && !app.keyboards.firstMatch.exists && !app.alerts.firstMatch.exists && !app.sheets.firstMatch.exists,
+                        "Acceptance must remain on the foreground, unobscured Task detail")
+        }
+        func viewport() throws -> CGRect {
+            let bounds = app.frame, list = app.collectionViews.firstMatch
+            let navigation = app.navigationBars["Task"], tabs = app.tabBars.firstMatch
+            try require(list.exists && navigation.exists && tabs.exists,
+                        "The reviewed task must retain its list and navigation")
+            let rect = list.frame.intersection(bounds)
+            let top = max(rect.minY, navigation.frame.maxY), bottom = min(rect.maxY, tabs.frame.minY)
+            let area = CGRect(x: rect.minX + 6, y: top + 8, width: rect.width - 12, height: bottom - top - 16)
+            try require(finiteNonempty(bounds) && finiteNonempty(area) && bounds.contains(area),
+                        "Acceptance geometry must stay inside the unobscured task viewport")
+            return area
+        }
+        try requireTaskSurface()
+        // Accept precedes the review input. Reveal that exact row toward the top
+        // without asking XCTest to derive an activation point for a virtualized row.
+        try revealText(button, preferTop: true)
+        try require(matches.count == 1 && button.label == "Accept" && button.isEnabled,
+                    "The reviewed task must expose exactly one enabled Accept button")
+        let deadline = ProcessInfo.processInfo.systemUptime + 20
+        var previous: (area: CGRect, frame: CGRect)?, stable: (area: CGRect, frame: CGRect)?
+        var samples: [String] = []
+        while samples.count < 8 && ProcessInfo.processInfo.systemUptime < deadline {
+            let area = try viewport(), frame = button.frame
+            let complete = finiteNonempty(frame) && area.contains(frame)
+            samples.append("sample \(samples.count + 1): viewport=\(area), frame=\(frame), complete=\(complete)")
+            if ProcessInfo.processInfo.systemUptime < deadline, complete,
+               let prior = previous, prior.area == area, prior.frame == frame {
+                stable = (area, frame); break
+            }
+            previous = complete ? (area, frame) : nil
+        }
+        let geometry = XCTAttachment(string: "identifier: \(identifier)\n" + samples.joined(separator: "\n"))
+        geometry.name = "Native task Accept geometry observations"; geometry.lifetime = .keepAlways; add(geometry)
+        try require(stable != nil, "Accept must retain a finite, stable frame fully inside the task viewport")
+        let (area, frame) = stable!
+        try requireTaskSurface()
+        try require(matches.count == 1 && button.label == "Accept" && button.isEnabled,
+                    "The exact Accept button must remain unique and enabled before its one touch")
+        let bounds = app.frame, currentArea = try viewport(), currentFrame = button.frame
+        let center = CGPoint(x: currentFrame.midX, y: currentFrame.midY)
+        try require(ProcessInfo.processInfo.systemUptime < deadline && currentArea == area && currentFrame == frame
+                    && finiteNonempty(bounds) && bounds.contains(area) && area.contains(center),
+                    "The verified Accept frame must remain unchanged and unobscured immediately before its one touch")
+        // Like the correction tests' inline Task actions, this enabled row can
+        // have an invalid XCTest activation point despite stable visible geometry.
+        // Touch it once; the caller still requires the real server's done state
+        // and the unchanged run, artifact and checksum.
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: center.x - bounds.minX, dy: center.y - bounds.minY)).tap()
     }
 
     @MainActor
