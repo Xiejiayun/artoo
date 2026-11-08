@@ -126,7 +126,7 @@ npm run verify:desktop
 Windows CI runs the complete Vitest inventory in two shards, each with two
 workers and the existing 75-minute job limit. `shared-checks` runs the other
 preview checks, including both browser suites and the production audit. The
-required `shared` check succeeds only when both Vitest shards and
+aggregate `shared` check succeeds only when both Vitest shards and
 `shared-checks` succeed; a failed, cancelled or skipped partition fails the
 aggregate. Local `npm run verify:preview` still runs the complete suite once.
 
