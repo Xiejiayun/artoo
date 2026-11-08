@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { VerificationCapabilitiesSchema } from "./verification-capabilities.js";
 import { ReleaseCapabilitiesV1Schema } from "./release-capabilities.js";
+import { ApplicationDeliveryV1Schema } from "./application-development.js";
 
 const identifier = z.string().min(1).max(128);
 const workspace = z.string().min(1).max(4096)
@@ -15,8 +16,11 @@ export const GoalPlanningCapabilitySnapshotSchema = z.object({
   verification_profile_id: identifier,
   // Required null means explicitly captured unknown; an absent historical DB value is separate.
   capabilities: VerificationCapabilitiesSchema.nullable(),
+  app_delivery: ApplicationDeliveryV1Schema.optional(),
   release: z.object({ version: z.literal(1), capabilities: ReleaseCapabilitiesV1Schema }).strict().optional(),
 }).strict().superRefine((snapshot, ctx) => {
+  if (snapshot.app_delivery && (!snapshot.capabilities?.application || snapshot.release)) ctx.addIssue({
+    code: z.ZodIssueCode.custom, path: ["app_delivery"], message: "Application planning requires its configured development capability without static publication" });
   const binding = snapshot.release?.capabilities.binding;
   if (binding && (binding.project_id !== snapshot.project_id || binding.workspace_root !== snapshot.workspace_root
     || binding.verification_profile_id !== snapshot.verification_profile_id

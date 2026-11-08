@@ -28,12 +28,18 @@ const hostNames = ['application-compiler-process-entry.ts', 'application-compile
 const overlayNames = new Set((await readdir(resolve(scripts, '../src'))).filter(name => name.endsWith('.ts')));
 const sources = new Map([...new Set([...guestNames, ...hostNames])].map(name => [name,
   overlayNames.has(name) ? resolve(scripts, '../src', name) : join(root, 'apps/artood/src', name)]));
+const sdkSource = join(root, 'packages/domain/src/application-sdk-v1.ts');
 const zod = requireBuild.resolve('zod'), zodPackage = requireBuild.resolve('zod/package.json'), zodRoot = dirname(zodPackage);
 const allowedBuiltins = new Set(['node:crypto', 'node:fs', 'node:module', 'node:path', 'node:url', 'node:util']);
 function plugin(names, host) {
   const allowed = new Set(names.map(name => sources.get(name)));
+  if (names.includes('application-sdk-v1.ts')) allowed.add(sdkSource);
   return { name: 'fixed-compiler-package-closure', setup(api) {
     api.onResolve({ filter: /^zod$/ }, () => ({ path: zod }));
+    api.onResolve({ filter: /^@artoo\/domain$/ }, args => {
+      if (resolve(args.importer) !== sources.get('application-sdk-v1.ts') || !allowed.has(sdkSource)) throw Error('Unexpected domain import');
+      return { path: sdkSource };
+    });
     api.onResolve({ filter: /^node:/ }, args => {
       if (!host || !allowedBuiltins.has(args.path)) throw Error('Unexpected packaged builtin'); return { path: args.path, external: true };
     });

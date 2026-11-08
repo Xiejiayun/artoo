@@ -6,6 +6,7 @@
  * the shape below.
  */
 import { z } from "zod";
+import { ApplicationDeliveryV1Schema } from "./application-development.js";
 
 import { ActorSchema } from "./events.js";
 import { ProductDevelopmentContextSchema } from "./product-development.js";
@@ -25,6 +26,7 @@ import { ImportedRecoveryValidationContextV1Schema, ImportedRecoveryValidationRe
 import { ImportedCleanValidationContextV1Schema, ImportedCleanValidationReviewSubjectV1Schema } from "./clean-validation-context.js";
 
 export const ContextPackSchema = z.object({
+  app_delivery: ApplicationDeliveryV1Schema.optional(),
   product_research_revision: ProductResearchRevisionContextV1Schema.optional(),
   imported_clean_validation: ImportedCleanValidationContextV1Schema.optional(),
   imported_clean_validation_review_subject: ImportedCleanValidationReviewSubjectV1Schema.optional(),
@@ -46,6 +48,11 @@ export const ContextPackSchema = z.object({
     subject_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/), development_stage: DevelopmentStageSchema.optional(),
     verification: ReviewVerificationContextSchema.optional(),
   }).superRefine((subject, ctx) => {
+    if (subject.verification?.application && (subject.verification.application.run_id !== subject.run_id
+      || subject.verification.application.candidate.subject_digest !== subject.subject_digest
+      || subject.verification.application.stage !== subject.development_stage)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["verification", "application"], message: "Application review evidence must match the original run, source and stage" });
+    }
     if (subject.development_stage && subject.verification?.checks.some((check) => check.observation
       && check.observation.stage !== subject.development_stage)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["verification"], message: "Review observations must match the bound development stage" });

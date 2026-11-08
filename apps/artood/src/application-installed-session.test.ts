@@ -3,17 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PreparedApplicationInstallation } from "./application-installation.js";
 import type { InstalledApplicationReopenOptions } from "./application-installed-session.js";
 const state = vi.hoisted(() => ({ describe: vi.fn(), bind: vi.fn(), audit: vi.fn(), reference: vi.fn(), reopen: vi.fn(), retire: vi.fn(),
-  acquire: vi.fn(), release: vi.fn(), profile: vi.fn(), initialize: vi.fn(), preflight: vi.fn(), start: vi.fn(), host: vi.fn(), backend: vi.fn() }));
+  acquire: vi.fn(), release: vi.fn(), profile: vi.fn(), initialize: vi.fn(), preflight: vi.fn(), start: vi.fn(), host: vi.fn(), backend: vi.fn(), localClosure: vi.fn() }));
 vi.mock("./application-installation.js", () => ({ describeApplicationInstallation: state.describe, bindApplicationInstallationSession: state.bind,
   auditApplicationInstallation: state.audit, createApplicationInstallationReopenReference: state.reference,
   reopenApplicationInstallation: state.reopen, retireApplicationInstallation: state.retire }));
 vi.mock("./application-session-ownership.js", () => ({ acquireApplicationSession: state.acquire, releaseApplicationSession: state.release }));
 vi.mock("./application-service-profile.js", () => ({ prepareInstalledApplicationServiceProfile: state.profile }));
 vi.mock("./application-local-service.js", () => ({ initializeApplicationStore: state.initialize, checkExistingApplicationStore: state.preflight,
-  startLocalApplicationService: state.start }));
+  startLocalApplicationService: state.start, readApplicationLocalServiceClosure: state.localClosure }));
 vi.mock("./windows-code-installation.js", () => ({ assertWindowsCodeInstallation: state.host }));
 vi.mock("./owned/windows-owned-process.js", () => ({ assertWindowsProcessBackend: state.backend }));
-import { initializeRestartableApplication, reopenInstalledApplicationService } from "./application-installed-session.js";
+import { initializeRestartableApplication, reopenInstalledApplicationService, readInitializedApplicationClosure, readInstalledApplicationClosure } from "./application-installed-session.js";
 const installation = Object.freeze({}) as PreparedApplicationInstallation, session = Object.freeze({}), profile = Object.freeze({});
 const reference = { path: "C:\\installed\\generation\\control\\REOPEN.v1.json", bytes: 42, sha256: "sha256:" + "a".repeat(64) };
 function deferred<T>() {
@@ -35,8 +35,26 @@ beforeEach(() => {
   state.reference.mockReturnValue(reference); state.initialize.mockResolvedValue({ normalShutdown: true }); state.preflight.mockResolvedValue({ normalShutdown: true });
   closure = deferred(); close = vi.fn(() => closure.promise);
   state.start.mockResolvedValue({ origin: "http://127.0.0.1:31000", closed: closure.promise, close });
+  state.localClosure.mockReturnValue({ version: 1, invocations: 2, runtime_normal_closures: 2, broker_normal_closures: 2, listener_closed: true });
 });
 describe("clean-only installed application coordination", () => {
+  it("exposes closure only for the original initialized reference and fully closed installed service", async () => {
+    const unique = Object.freeze({ ...reference }); state.reference.mockReturnValue(unique);
+    expect(() => readInitializedApplicationClosure(unique)).toThrow("Original");
+    const actual = await initializeRestartableApplication(installation);
+    expect(readInitializedApplicationClosure(actual)).toMatchObject({ create_broker_normal: true, session_released: true });
+    expect(() => readInitializedApplicationClosure({ ...actual })).toThrow("Original");
+    const service = await reopenInstalledApplicationService(input());
+    expect(() => readInstalledApplicationClosure(service)).toThrow("has not closed");
+    closure.resolve(); await service.closed;
+    expect(readInstalledApplicationClosure(service)).toMatchObject({ invocations: 2, preflight_normal: true, session_released: true });
+    expect(() => readInstalledApplicationClosure({ ...service })).toThrow("Original");
+  });
+  it("refuses an installed closure observation if the inner listener lacks normal native evidence", async () => {
+    const service = await reopenInstalledApplicationService(input()); closure.resolve(); await service.closed;
+    state.localClosure.mockImplementation(() => { throw Error("normal native closure absent"); });
+    expect(() => readInstalledApplicationClosure(service)).toThrow("normal native closure absent");
+  });
   it("publishes the pinned descriptor only after the actual initializer resolves, then retires before releasing", async () => {
     const initialized = deferred<void>(); state.initialize.mockReturnValue(initialized.promise);
     const work = initializeRestartableApplication(installation); await tick();

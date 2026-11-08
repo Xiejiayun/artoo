@@ -4,10 +4,24 @@ import { describeApplicationInstallation, bindApplicationInstallationSession, au
   type PreparedApplicationInstallation, type ApplicationInstallationReopenOptions } from "./application-installation.js";
 import { acquireApplicationSession, releaseApplicationSession } from "./application-session-ownership.js";
 import { prepareInstalledApplicationServiceProfile } from "./application-service-profile.js";
-import { initializeApplicationStore, checkExistingApplicationStore, startLocalApplicationService, type LocalApplicationService } from "./application-local-service.js";
+import { initializeApplicationStore, checkExistingApplicationStore, startLocalApplicationService, readApplicationLocalServiceClosure,
+  type ApplicationLocalServiceClosure, type LocalApplicationService } from "./application-local-service.js";
 import { ApplicationRuntimeFilePinSchema, type ApplicationRuntimeFilePin } from "./application-runtime-process-protocol.js";
 import { assertWindowsCodeInstallation } from "./windows-code-installation.js";
 import { assertWindowsProcessBackend } from "./owned/windows-owned-process.js";
+
+const initialized = new WeakSet<object>();
+const closedServices = new WeakMap<object, () => ApplicationLocalServiceClosure>();
+export function readInitializedApplicationClosure(reference: ApplicationRuntimeFilePin) {
+  if (!initialized.has(reference)) throw Error("Original initialized application reference required");
+  return Object.freeze({ version: 1 as const, scope: "original-native-owners" as const,
+    create_broker_normal: true as const, installation_audited: true as const, session_released: true as const });
+}
+export function readInstalledApplicationClosure(service: LocalApplicationService) {
+  const read = closedServices.get(service); if (!read) throw Error("Original installed application service required");
+  return Object.freeze({ ...read(), scope: "original-native-owners" as const, preflight_normal: true as const,
+    installation_audited: true as const, session_released: true as const });
+}
 
 /** First creation only. The original installation is retired after real database
  * initialization/normal closure, descriptor publication and exclusive release.
@@ -23,6 +37,7 @@ export async function initializeRestartableApplication(installation: PreparedApp
   if (signal?.aborted) throw Error("Installed application initialization cancelled; ownership retained");
   const reference = createApplicationInstallationReopenReference(installation);
   auditApplicationInstallation(installation); retireApplicationInstallation(installation); releaseApplicationSession(session);
+  initialized.add(reference);
   return reference;
 }
 
@@ -58,10 +73,12 @@ export async function reopenInstalledApplicationService(input: InstalledApplicat
   try {
     original = await startLocalApplicationService(profile);
     const owner = original;
+    let installedClosed = false;
     const closed = owner.closed.then(() => {
       auditApplicationInstallation(installation);
       retireApplicationInstallation(installation);
       releaseApplicationSession(session);
+      installedClosed = true;
     }).finally(() => signal?.removeEventListener("abort", stop));
     void closed.catch(() => {});
     let closing: Promise<void> | undefined;
@@ -71,7 +88,12 @@ export async function reopenInstalledApplicationService(input: InstalledApplicat
       if (errors.length) throw new AggregateError(errors, "Installed application closure failed; ownership retained if unsettled");
     })();
     if (signal?.aborted) { await close(); throw Error("Installed application startup cancelled"); }
-    return Object.freeze({ origin: owner.origin, closed, close });
+    const result = Object.freeze({ origin: owner.origin, closed, close });
+    closedServices.set(result, () => {
+      if (!installedClosed) throw Error("Original installed application has not closed");
+      return readApplicationLocalServiceClosure(owner);
+    });
+    return result;
   } catch (error) {
     signal?.removeEventListener("abort", stop);
     if (!original) throw error;

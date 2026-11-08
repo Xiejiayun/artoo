@@ -29,6 +29,8 @@ const binary = join(dirname(binaryPackage), 'esbuild.exe');
 const allowedSource = ['application-compiler-entry.ts', 'application-compiler-protocol.ts', 'application-compiler-contract.ts',
   'application-build-core.ts', 'application-build-kernel.ts', 'application-sdk-v1.ts']
   .map(name => resolve(scripts, '../src', name));
+const sdkSource = join(root, 'packages/domain/src/application-sdk-v1.ts');
+allowedSource.push(sdkSource);
 const sourceSet = new Set(allowedSource);
 const allowedBuiltins = new Set(['fs', 'path', 'os', 'crypto', 'perf_hooks', 'util'].flatMap(name => [name, `node:${name}`]));
 const deniedCompatibility = new Set(['source-map-support', 'inspector']);
@@ -104,6 +106,10 @@ try {
     external: [...deniedCompatibility], define: { __ARTOO_PACKAGED_COMPILER_LIBRARIES__: injectedLibraries },
     plugins: [{ name: 'fixed-compiler-inputs', setup(plugin) {
       plugin.onResolve({ filter: /^(?:typescript|zod)$/ }, args => ({ path: args.path === 'typescript' ? compiler : zod }));
+      plugin.onResolve({ filter: /^@artoo\/domain$/ }, args => {
+        if (resolve(args.importer) !== resolve(scripts, '../src/application-sdk-v1.ts')) throw Error('Unexpected domain import');
+        return { path: sdkSource };
+      });
       plugin.onLoad({ filter: /\.(?:[cm]?js|ts)$/, namespace: 'file' }, async args => {
         const path = resolve(args.path);
         if (!sourceSet.has(path) && path !== compiler && !(path.startsWith(zodRoot + sep) && /\.[cm]?js$/u.test(path))) throw Error('Unexpected packaged input');

@@ -1,5 +1,10 @@
 # Agent Team product development
 
+The opt-in native Windows application development increment is documented in
+[Application development verification](application-development-verification.md),
+including local configuration, validation status and unsupported publication and
+failure-recovery scopes.
+
 Browser acceptance now retains both a case failure and a subsequent context, owned-browser or local-site cleanup failure. Cleanup failures have a fixed top-level message, so a negative product test cannot pass by matching a hidden case error; the original error objects remain available through causes and aggregate errors. V3 keeps its synchronous cancellation latch before queued continuations. Unexpected negative Web E2E failures retain their own fixture and bounded diagnostics. Cleanup order, timeouts and process-closure requirements are unchanged.
 
 This diagnostic repair passed 175 tests across 15 focused suites, type checking and workspace build. Its actual full Web invocation passed 26 cases and failed one: the task retry workflow observed only one run while waiting for the second. The same invocation logged Vite proxy `EADDRINUSE` errors, but their causal relationship is unconfirmed. All seven product-browser cases passed, including the three unchanged negative assertions and real Windows browser closure. The original npm process exited/closed with 1 and both output streams reached EOF; the failed invocation is retained and has not been retried. The original PR #18 CI also remains failed: one negative case reached its five-second navigation timeout and another failed browser disconnection/closure. The latter previously hid the case error, so its original cause is unknown. One later passing product-browser group does not establish that those timing failures are fixed or that the complete Web gate passed.

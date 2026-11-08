@@ -1334,7 +1334,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
             await adapter.stop(handle, "user_cancelled");
             if (verification.windowsAdmission) assertWindowsVerifiedExecutionClosed(verification.windowsAdmission, handle);
             const pending = runVerification(verification.profile, verification.requestId, verification.controller.signal, verification.context, verification.expectedSubjectDigest,
-              verification.readReleaseCapabilities);
+              verification.readReleaseCapabilities, { nodeId, runStart: verification.runStart });
             verification.pending = pending;
             let evidence;
             try { evidence = await pending; }
@@ -1342,11 +1342,11 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
               if (error instanceof VerificationCleanupError) verification.unsafe = true;
               throw error;
             }
-            releaseExecutor.recordVerification(delivery.runId, verification.profile.project_id, verification.profile.workspace_root, evidence,
+            if (!verification.context?.app_delivery) releaseExecutor.recordVerification(delivery.runId, verification.profile.project_id, verification.profile.workspace_root, evidence,
               verification.readReleaseCapabilities ? { context: verification.context!, readCapabilities: verification.readReleaseCapabilities } : undefined);
             await transport.send({ kind: "run.event", node_id: nodeId, run_id: delivery.runId, sequence: sequence++,
               event: { type: "run.verification", payload: evidence } });
-            if (sourceRuntime && evidence.outcome === "passed" && verification.context?.product_development
+            if (sourceRuntime && evidence.outcome === "passed" && verification.context?.product_development && !verification.context.app_delivery
               && verification.context.policy.execution_mode !== "discussion" && !verification.controller.signal.aborted) {
               try {
                 if (!verification.windowsAdmission) throw new Error("Source export requires original native Windows author closure");

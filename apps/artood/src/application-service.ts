@@ -12,6 +12,9 @@ export interface ApplicationServiceInstallation {
    * preparations; neither accepts request text, argv or a remote profile. */
   prepareRuntime(): PreparedApplicationRuntimeProcess;
   prepareBroker(): PreparedApplicationBrokerProcess;
+  /** Trusted owner observation only; called after both original native owners
+   * have returned their successful normal-closure receipts. */
+  observeNormalClosure?(): void;
 }
 
 /** Bounded development service only. One request owns one actual guest and one
@@ -21,6 +24,7 @@ export function createApplicationService(installation: ApplicationServiceInstall
   const maximumAccess = installation.maximumAccess;
   if (maximumAccess !== "read" && maximumAccess !== "write") throw Error("Fixed application access required");
   const prepareRuntime = installation.prepareRuntime.bind(installation), prepareBroker = installation.prepareBroker.bind(installation);
+  const observeNormalClosure = installation.observeNormalClosure?.bind(installation);
   return Object.freeze({ maximumAccess, begin(action: Parameters<ApplicationHttpService["begin"]>[0], signal: AbortSignal): ApplicationHttpInvocation {
     // Validate before allocating any native work. Broker validates again against
     // its actual immutable local maximum, scope and existing request contract.
@@ -90,7 +94,7 @@ export function createApplicationService(installation: ApplicationServiceInstall
         // stdin EOF. broker.stop's private shutdown wire is never claimed sent.
         const receipts = await live(Promise.all([runtime.close(), broker.stop()]));
         if (!receipts[0].normalShutdown || !receipts[1].normalShutdown) throw Error("Application normal closure not established");
-        check(); resolveSettled(); resolveResponse(result);
+        check(); observeNormalClosure?.(); resolveSettled(); resolveResponse(result);
       } catch (error) {
         if (!failed) failed = error instanceof Error ? error : Error("Application invocation failed");
         rejectResponse(failed); finishing = true;

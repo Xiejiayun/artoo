@@ -5,7 +5,7 @@ import { basename, dirname } from "node:path";
 import { isPromise } from "node:util/types";
 import { TextDecoder } from "node:util";
 import type { z } from "zod";
-import { createApplicationCompilerCaptureOwner, type ApplicationCompilerContent,
+import { createApplicationCompilerCaptureOwner, readApplicationCompilerRejection, type ApplicationCompilerContent,
   type CapturedApplicationCompilerContent } from "./application-compiler-capture.js";
 import { loadApplicationCompilerConfiguration } from "./application-compiler-installation.js";
 import { APPLICATION_COMPILER_PROCESS_LIMITS as limits, ApplicationCompilerNativeOutputSchema } from "./application-compiler-process-protocol.js";
@@ -141,6 +141,7 @@ export function startApplicationCompilerProcess(token: PreparedApplicationCompil
   let terminal: ApplicationCompilerProcessReceipt["terminal"], admitted = false, cancelled = false, inputClosed = false, contentEof = false;
   let nativeSequence = 0, controlSequence = 0, helperBytes = 0, helperErrors = 0, targetBytes = 0, targetErrors = 0, writtenBytes = 0, writes = 0;
   let nativePending = "", queuedBytes = 0, captured: CapturedApplicationCompilerContent | undefined, delivered = false;
+  let contentFailure: unknown;
   const decoder = new TextDecoder("utf-8", { fatal: true }), queue: Buffer[] = [];
   let reader: { resolve: (value: Uint8Array | undefined) => void; reject: (error: Error) => void } | undefined;
   let resolveAdmitted!: () => void, rejectAdmitted!: (error: Error) => void;
@@ -189,7 +190,7 @@ export function startApplicationCompilerProcess(token: PreparedApplicationCompil
   } };
   const captureWork = capture.capture(contentStream).then(value => {
     captured = value; if (failure) revoke();
-  }, () => { fail("compiler-content-rejected"); });
+  }, error => { contentFailure = error; fail("compiler-content-rejected"); });
   function nativeLine(line: string): void {
     if (Buffer.byteLength(line) + 1 > limits.nativeLineBytes) throw Error("compiler-native-line");
     const frame = ApplicationCompilerNativeOutputSchema.parse(JSON.parse(line));
@@ -282,7 +283,22 @@ export function startApplicationCompilerProcess(token: PreparedApplicationCompil
     });
   }));
   const completed = closed.then(receipt => {
-    if (!receipt.normalShutdown || failure || !delivered || !captured) throw Error(failure ?? "compiler-completion-not-established");
+    if (!receipt.normalShutdown || failure || !delivered || !captured) {
+      const diagnostics = receipt.closureConfirmed && receipt.inputsUnchanged ? readApplicationCompilerRejection(contentFailure) : undefined;
+      let summary = "";
+      if (diagnostics) {
+        const bounded: unknown[] = [];
+        for (const diagnostic of diagnostics.slice(0, 4)) {
+          const value = { category: diagnostic.category, code: diagnostic.code.slice(0, 96),
+            ...(diagnostic.file ? { file: diagnostic.file.slice(0, 160) } : {}),
+            ...(diagnostic.line !== undefined ? { line: diagnostic.line } : {}),
+            ...(diagnostic.column !== undefined ? { column: diagnostic.column } : {}), message: diagnostic.message.slice(0, 256) };
+          if (JSON.stringify([...bounded, value]).length > 1500) break; bounded.push(value);
+        }
+        summary = "; compiler diagnostics (untrusted product data): " + JSON.stringify({ diagnostics: bounded, omitted: diagnostics.length - bounded.length });
+      }
+      throw Error((failure ?? "compiler-completion-not-established") + summary, { cause: contentFailure });
+    }
     return captured;
   });
   void completed.catch(() => {});

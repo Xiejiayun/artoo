@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ApplicationVerificationObservationV1Schema } from "./application-development.js";
 import { MeasurementPlanSummarySchema } from "./measurement-plan.js";
 import { DevelopmentStageSchema } from "./product-development.js";
 import { StaticWebCapabilityBindingSchema } from "./verification-capabilities.js";
@@ -137,11 +138,15 @@ export const MAX_VERIFICATION_OBSERVATIONS_LENGTH = 1024 * 1024;
 /** Missing observations mean unknown execution scope, including for legacy verifier profiles. */
 export const ReviewVerificationContextSchema = z.object({
   version: z.literal(1), request_id: identifier, profile_id: identifier, profile_digest: digest,
+  application: ApplicationVerificationObservationV1Schema.optional(),
   measurement_plan: MeasurementPlanSummarySchema.optional(),
   checks: z.array(z.object({
     id: identifier, output_digest: digest, observation: VerificationObservationSchema.optional(),
   }).strict()).max(64),
 }).strict().superRefine((value, ctx) => {
+  if (value.application && (value.application.request_id !== value.request_id || value.measurement_plan)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["application"], message: "Application review observation requires its original request without a static measurement plan" });
+  }
   if (value.measurement_plan && (value.measurement_plan.scope !== "final" || value.measurement_plan.used_checks.some(used => {
     const binding = value.checks.find(check => check.id === used.command_id)?.observation?.capability_binding;
     return !binding || binding.config_digest !== used.config_digest || binding.contract_digest !== used.contract_digest;

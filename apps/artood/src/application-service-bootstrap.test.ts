@@ -8,6 +8,13 @@ const state = vi.hoisted(() => ({ selection: vi.fn(), prepare: vi.fn(), current:
   events: [] as string[], imports: 0 }));
 vi.mock("./application-bootstrap-admission.js", () => ({ applicationServiceSelection: state.selection, prepareApplicationBootstrap: state.prepare }));
 const originalProcess = process;
+// Explicit controlled native-closure observations. Production uses the original
+// initialized reference/service WeakMaps and cannot obtain these from task JSON.
+const initializedClosure = Object.freeze({ version: 1, scope: "original-native-owners", create_broker_normal: true,
+  installation_audited: true, session_released: true });
+const serviceClosure = Object.freeze({ version: 1, scope: "original-native-owners", invocations: 0,
+  runtime_normal_closures: 0, broker_normal_closures: 0, listener_closed: true, preflight_normal: true,
+  installation_audited: true, session_released: true });
 const shutdown = Buffer.from('{"version":1,"kind":"shutdown"}\n');
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void;
@@ -40,7 +47,8 @@ beforeEach(() => {
   vi.resetModules(); state.events.length = 0; state.imports = 0;
   for (const mock of [state.selection, state.prepare, state.current, state.reopen, state.initialize]) mock.mockReset();
   vi.doMock("./application-service-host-api.js", () => {
-    state.imports++; state.events.push("host-import"); return { reopenInstalledApplicationService: state.reopen, initializeApplicationPackage: state.initialize };
+    state.imports++; state.events.push("host-import"); return { reopenInstalledApplicationService: state.reopen, initializeApplicationPackage: state.initialize,
+      readInitializedApplicationClosure: () => initializedClosure, readInstalledApplicationClosure: () => serviceClosure };
   });
 });
 afterEach(async () => {
@@ -151,7 +159,7 @@ describe("application-only bootstrap runner with original controlled owners", ()
     expect(f.settled).toBe(false); expect(f.stdout.records).toEqual([]);
     f.closeDone.resolve(); await new Promise<void>(resolve => setImmediate(resolve)); expect(f.settled).toBe(false);
     f.closed.resolve(); await work;
-    expect(f.stdout.records).toEqual([{ version: 1, kind: "application-service.closed", started: true, reason: "stdin", qualified_for_product: false }]); expectDetached(f);
+    expect(f.stdout.records).toEqual([{ version: 1, kind: "application-service.closed", started: true, reason: "stdin", closure: serviceClosure, qualified_for_product: false }]); expectDetached(f);
   });
   it("waits for both original close and closed after readiness output callback failure", async () => {
     const f = await fixture(), failure = Error("readiness pipe failed"); f.stdout.onWrite = (_record, complete) => complete(failure);
@@ -221,7 +229,7 @@ describe("fixed package initialization runner", () => {
     expect(f.stdout.records).toEqual([]); expect(f.settled).toBe(false);
     expect(state.initialize.mock.calls[0]![0]).toBe(f.options); expect(state.initialize.mock.calls[0]![0].bootstrap).toBe(f.options.bootstrap);
     initialized.resolve(reference); await work;
-    expect(f.stdout.records).toEqual([{ version: 1, kind: "application-service.initialized", reference, qualified_for_product: false }]);
+    expect(f.stdout.records).toEqual([{ version: 1, kind: "application-service.initialized", reference, closure: initializedClosure, qualified_for_product: false }]);
     expect(state.reopen).not.toHaveBeenCalled(); expect(f.close).not.toHaveBeenCalled(); expectDetached(f);
   });
   it("does not manufacture a reference after an initialization failure", async () => {

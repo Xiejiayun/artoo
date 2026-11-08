@@ -20,6 +20,10 @@ import { verificationCapabilityBinding } from "./services/verification-capabilit
 import { releaseAcceptanceFixture } from "./test-fixtures/release-acceptance.js";
 import { releaseAcceptanceBindingDigest } from "./services/release-acceptance.js";
 import { getGoalProductRelease, ingestProductReleaseReceipt, ingestProductReleaseHealthReport } from "./services/product-release-service.js";
+import { randomUUID } from "node:crypto";
+import { APPLICATION_VERIFICATION_FEATURE_V1, type ApplicationVerificationObservationV1 } from "@artoo/domain";
+import { readRunVerificationEvidence } from "./services/verification-service.js";
+import { runStartCommandSchema } from "@artoo/protocol";
 
 const digest = `sha256:${"a".repeat(64)}`, changedDigest = `sha256:${"b".repeat(64)}`;
 const specs = ["research", "design", "implementation", "validation"].map((stage, index) => ({
@@ -61,7 +65,7 @@ describe("Agent Team execution and independent source-bound review", () => {
   }
 
   async function complete(run: typeof runs.$inferSelect, answer?: string, source = digest, receipt = true, files: RunVerificationPayload["required_files"] = [],
-    outcome: "passed" | "failed" = "passed", observation?: RunVerificationPayload["checks"][number]["observation"]) {
+    outcome: "passed" | "failed" = "passed", observation?: RunVerificationPayload["checks"][number]["observation"], omitApplication = false) {
     let sequence = 0;
     const send = (event: RunEventMessage["event"]) => ingestWireRunEvent(server.ctx,
       { kind: "run.event", node_id: run.computerId, run_id: run.id, sequence: sequence++, event });
@@ -79,10 +83,18 @@ describe("Agent Team execution and independent source-bound review", () => {
         observation = { version: 1, format: "static-web-acceptance.v1", scope: "final", stage, cases: [], ...observation,
           capability_binding: { version: 1, profile_digest: request.capability_binding.profile_digest,
             ...request.capability_binding.checks.find((check) => check.command_id === "acceptance")! } };
+        if (context.app_delivery) observation = { version: 3, format: "static-web-acceptance.v3", scope: "final", stage,
+          device_scale_factor: 1, cases: [], evidence_bundle: { bundle_id: "controlled_app_bundle", manifest_digest: digest },
+          capability_binding: { version: 1, profile_digest: request.capability_binding.profile_digest,
+            ...request.capability_binding.checks.find(check => check.command_id === "acceptance")! } };
       }
       const payload: RunVerificationPayload = { version: 1, request_id: request.request_id, profile_id: request.profile_id,
         profile_digest: request.capability_binding?.profile_digest ?? digest, subject_digest: source, outcome, checks: [{ id: "acceptance", exit_code: outcome === "passed" ? 0 : 1, duration_ms: 10, output_digest: digest,
           ...(observation ? { observation } : {}) }], required_files: [...measured.values()] };
+      if (request.application && outcome === "passed" && !omitApplication && (stage === "implementation" || stage === "validation")) {
+        // Controlled node evidence only: these digests/closures do not claim a native compiler, app service or browser run.
+        payload.application = applicationObservation(run.id, request, stage, source);
+      }
       if (outcome === "passed" && context.verification_capabilities?.measurement_plan_policy?.version === 2 && context.release_capabilities) {
         const fixture = releaseAcceptanceFixture(stage), summary = fixture.payload.measurement_plan;
         if (summary?.version !== 2) throw new Error("Expected controlled publication summary");
@@ -95,9 +107,10 @@ describe("Agent Team execution and independent source-bound review", () => {
     await send({ type: "run.lifecycle", payload: { phase: "completed" } });
   }
 
-  async function create(team = true, maxRetries = 3) {
+  async function create(team = true, maxRetries = 3, application = false) {
     const response = await server.app.inject({ method: "POST", url: "/api/v1/autonomous-goals", headers: { "idempotency-key": "team-objective" },
-      payload: { project_id: "proj_artoo", objective: "Build a journal product", max_retries: maxRetries, ...(team ? { execution_mode: "agent_team" } : {}) } });
+      payload: { project_id: "proj_artoo", objective: "Build a journal product", max_retries: maxRetries, ...(team ? { execution_mode: "agent_team" } : {}),
+        ...(application ? { app_delivery: { version: 1, kind: "local-application-development" } } : {}) } });
     expect(response.statusCode, response.body).toBe(201);
     return response.json().goal.id as string;
   }
@@ -120,6 +133,111 @@ describe("Agent Team execution and independent source-bound review", () => {
     await planner.stop(); await assistant.stop();
     return taskRows(goalId);
   }
+
+  function applicationObservation(runId: string, request: VerificationRequirement, stage: "implementation" | "validation", source = digest): ApplicationVerificationObservationV1 {
+    const expected = request.application?.expected_candidate;
+    return { version: 1, scope: "local-development-api-browser-reopen", stage, run_id: runId, request_id: request.request_id,
+      origin_run_id: expected?.origin_run_id ?? runId, origin_request_id: expected?.origin_request_id ?? request.request_id,
+      candidate: expected?.candidate ?? { version: 1, subject_digest: source, source_digest: digest, artifact_digest: digest,
+        toolchain_digest: digest, package_digest: digest, schema_digest: digest, qualified_for_product: false }, qualified_for_product: false,
+      acceptance: { version: 1, cases: [{ case_id: "save", program_digest: digest, trace_digest: digest, assertions: 1, capture_digests: [digest] }],
+        persistence: { request_digest: digest, before_read_digest: digest, after_read_digest: digest, replay_response_digest: digest,
+          after_replay_read_digest: digest, browser_trace_digest: digest },
+        closures: { compiler: true, initialize: true, services: 2, browser: true }, test_store_id: randomUUID() } };
+  }
+
+  async function applicationWorker() {
+    const root = "C:\\Work Space\\Team", capabilities = verificationCapabilitiesV3Fixture();
+    capabilities.profile_digest = digest;
+    capabilities.application = { version: 1, kind: "local-application-development", claim: "configured", config_digest: digest,
+      contract_digest: changedDigest, source_paths: ["product/client", "product/server", ".artoo/product/application.json"],
+      definition_format: "artoo.application-definition.v1", test_scope: "normal-api-browser-reopen", failure_recovery: "unsupported",
+      browser_viewport: { width: 1280, height: 900, device_scale_factor: 1 },
+      publication: "unsupported", qualified_for_product: false };
+    await server.db.db.update(computers).set({ os: "windows" });
+    await server.db.db.update(agentInstances).set({ workspaceRoot: root });
+    server.ctx.supportsExecutionFeature = (_node, feature) => ["run-verification.v1", "product-stage-verification.v1", APPLICATION_VERIFICATION_FEATURE_V1].includes(feature);
+    server.ctx.supportsVerificationProfile = (_node, profile, project, workspace) => profile === "default" && project === "proj_artoo" && workspace === root;
+    server.ctx.getVerificationCapabilities = () => structuredClone(capabilities);
+    return { root, capabilities };
+  }
+
+  it("routes an explicitly authorized application through actual planning, four stages and fresh independent review, then waits for unsupported publication", async () => {
+    const { root, capabilities } = await applicationWorker();
+    const goalId = await create(true, 3, true), stageTasks = await plan(goalId);
+    const sent: ServerToNodeMessage[] = [];
+    const connect = (application = true) => {
+      const transport: NodeTransport = { async send(message) { sent.push(structuredClone(message)); }, subscribe() { return () => {}; }, async close() {} };
+      const binding: NodeBinding = attachNodeBinding(server.ctx, transport, "computer_local_mock",
+        ["run-verification.v1", "product-stage-verification.v1", "verification-capabilities.v1", ...(application ? [APPLICATION_VERIFICATION_FEATURE_V1] : [])],
+        () => server.nodeRegistry.get("computer_local_mock") === binding,
+        [{ profile_id: "default", project_id: "proj_artoo", workspace_root: root, capabilities }], undefined, undefined, undefined, "windows");
+      bindings.push(binding); server.nodeRegistry.register("computer_local_mock", binding); return binding;
+    };
+    let binding = connect();
+    const original = await getGoalAutomation(server.ctx, goalId);
+    expect(original?.planning_capability_snapshot?.app_delivery).toEqual({ version: 1, kind: "local-application-development" });
+    for (const task of stageTasks) {
+      const author = await start(goalId, task.id), requirement = author.verificationRequirement as VerificationRequirement;
+      expect(requirement.application).toMatchObject({ version: 1, config_digest: digest, contract_digest: changedDigest });
+      if (task.title === "implementation") {
+        const old = connect(false);
+        await expect(old.dispatchRunStart(author.id)).rejects.toMatchObject({ details: { reason: "unsupported_application_verification" } });
+        binding = connect();
+      }
+      await binding.dispatchRunStart(author.id);
+      const startCommand = sent.find(message => message.kind === "command" && message.type === "run.start" && message.payload.run_id === author.id)!;
+      expect(runStartCommandSchema.parse(startCommand).payload.verification?.application).toEqual(requirement.application);
+      await complete(author);
+      const peer = await verdict(author), source = await readRunVerificationEvidence(server.ctx, server.db.db, author.id);
+      const reviewed = await readRunVerificationEvidence(server.ctx, server.db.db, peer.run.id);
+      if (task.title === "implementation" || task.title === "validation") {
+        expect(reviewed?.payload.application).toMatchObject({ run_id: peer.run.id, origin_run_id: author.id,
+          origin_request_id: requirement.request_id, candidate: source?.payload.application?.candidate, qualified_for_product: false });
+        expect(reviewed?.payload.application?.acceptance.test_store_id).not.toBe(source?.payload.application?.acceptance.test_store_id);
+      } else expect(source?.payload.application).toBeUndefined();
+    }
+    await pump();
+    expect((await taskRows(goalId)).every(task => task.status === "done")).toBe(true);
+    expect(await getGoalAutomation(server.ctx, goalId)).toMatchObject({ status: "waiting", delivery: "verified_workspace",
+      last_error: expect.stringContaining("publication remains unsupported") });
+    expect((await server.db.db.select().from(goals).where(eq(goals.id, goalId)))[0]?.status).toBe("running");
+    expect(await getGoalProductRelease(server.ctx, goalId)).toBeNull();
+  });
+
+  it("refuses application planning on an old node and makes the original application grant immutable", async () => {
+    await applicationWorker();
+    const goalId = await create(true, 3, true);
+    server.ctx.supportsExecutionFeature = (_node, feature) => feature !== APPLICATION_VERIFICATION_FEATURE_V1;
+    await pump();
+    expect(await getGoalAutomation(server.ctx, goalId)).toMatchObject({ status: "waiting", discussion_id: null });
+    expect(await server.db.db.select().from(runs)).toHaveLength(0);
+    await expect(server.db.db.update(goalAutomations).set({ appDelivery: null }).where(eq(goalAutomations.goalId, goalId))).rejects.toThrow();
+    await expect(server.db.db.update(goalAutomations).set({ status: "completed" }).where(eq(goalAutomations.goalId, goalId))).rejects.toThrow();
+  });
+
+  it("rejects missing application measurement and requalifies current-run, origin and authorization bindings on read", async () => {
+    await applicationWorker();
+    const goalId = await create(true, 3, true), stageTasks = await plan(goalId);
+    for (const task of stageTasks.slice(0, 2)) { const run = await start(goalId, task.id); await complete(run); await verdict(run); }
+    const author = await start(goalId, stageTasks[2]!.id);
+    await expect(complete(author, undefined, digest, true, [], "passed", undefined, true)).rejects.toThrow("lacks successful evidence");
+    await complete(author);
+    const evidence = (await readRunVerificationEvidence(server.ctx, server.db.db, author.id))!;
+    expect(evidence.payload.application).toBeDefined();
+    for (const application of [undefined, { ...evidence.payload.application!, run_id: "another-run" },
+      { ...evidence.payload.application!, origin_run_id: "another-author" }, { ...evidence.payload.application!, origin_request_id: "another-request" }]) {
+      const payload = { ...evidence.payload, application };
+      await server.db.db.update(runEvidence).set({ payload }).where(eq(runEvidence.id, evidence.id));
+      await server.db.db.update(eventLog).set({ payload }).where(eq(eventLog.id, evidence.eventId));
+      expect(await readRunVerificationEvidence(server.ctx, server.db.db, author.id)).toBeNull();
+    }
+    await server.db.db.update(runEvidence).set({ payload: evidence.payload }).where(eq(runEvidence.id, evidence.id));
+    await server.db.db.update(eventLog).set({ payload: evidence.payload }).where(eq(eventLog.id, evidence.eventId));
+    expect(await readRunVerificationEvidence(server.ctx, server.db.db, author.id)).not.toBeNull();
+    await server.db.db.update(eventLog).set({ actorId: "another-user" }).where(and(eq(eventLog.goalId, goalId), eq(eventLog.type, "goal.application-development.authorized")));
+    expect(await readRunVerificationEvidence(server.ctx, server.db.db, author.id)).toBeNull();
+  });
 
   async function start(goalId: string, taskId: string) {
     for (let step = 0; step < 3; step++) {

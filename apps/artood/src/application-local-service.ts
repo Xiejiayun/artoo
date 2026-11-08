@@ -57,6 +57,16 @@ export interface LocalApplicationService {
   readonly closed: Promise<void>;
   close(): Promise<void>;
 }
+export interface ApplicationLocalServiceClosure {
+  readonly version: 1; readonly invocations: number; readonly runtime_normal_closures: number;
+  readonly broker_normal_closures: number; readonly listener_closed: true;
+}
+const normalClosures = new WeakMap<object, () => ApplicationLocalServiceClosure>();
+/** An original closed listener owns this observation; a copied service or JSON
+ * cannot supply the normal native-closure counts used by application verification. */
+export function readApplicationLocalServiceClosure(service: LocalApplicationService): ApplicationLocalServiceClosure {
+  const read = normalClosures.get(service); if (!read) throw Error("Original application listener required"); return read();
+}
 
 /** A bounded loopback application API. Installation and database creation are
  * separate commands; each request opens the existing store under its fixed profile. */
@@ -74,8 +84,10 @@ export async function startLocalApplicationService(profile: PreparedApplicationS
 }
 async function startBoundLocalApplicationService(profile: PreparedApplicationServiceProfile,
   binding: ApplicationServiceBinding, clientReader: ApplicationClientReader | undefined): Promise<LocalApplicationService> {
+  let successfulInvocations = 0, normallyClosed = false;
   const service = createApplicationService({ maximumAccess: binding.maximumAccess,
-    prepareRuntime: () => prepareProfileApplicationRuntime(profile), prepareBroker: () => prepareProfileApplicationBroker(profile, "open") });
+    prepareRuntime: () => prepareProfileApplicationRuntime(profile), prepareBroker: () => prepareProfileApplicationBroker(profile, "open"),
+    observeNormalClosure: () => { successfulInvocations++; } });
   const handles: ApplicationHttpInvocation[] = [], transports = new Set<Promise<void>>(), sockets = new Set<Socket>();
   const headerTimers = new Map<Socket, ReturnType<typeof setTimeout>>();
   const clearHeaderTimer = (socket: Socket) => {
@@ -151,6 +163,7 @@ async function startBoundLocalApplicationService(profile: PreparedApplicationSer
       const outcomes = [...transportOutcomes, ...ownerOutcomes];
       const errors = [...failures, ...outcomes.flatMap(result => result.status === "rejected" ? [result.reason] : [])];
       if (errors.length) throw new AggregateError(errors, "Application listener or original owner closure failed");
+      normallyClosed = true;
       } finally {
         // Budget exhaustion drains its last admitted asset/API request before
         // revocation. Failed closure still relinquishes the same client reader.
@@ -175,7 +188,13 @@ async function startBoundLocalApplicationService(profile: PreparedApplicationSer
       server.once("error", error); server.once("listening", ready);
       server.listen({ host: "127.0.0.1", port: binding.port, exclusive: true });
     });
-    return Object.freeze({ origin: binding.origin, closed, close: () => stop(true) });
+    const result = Object.freeze({ origin: binding.origin, closed, close: () => stop(true) });
+    normalClosures.set(result, () => {
+      if (!normallyClosed || successfulInvocations !== handles.length) throw Error("Application invocation normal closure is incomplete");
+      return Object.freeze({ version: 1, invocations: handles.length, runtime_normal_closures: successfulInvocations,
+        broker_normal_closures: successfulInvocations, listener_closed: true });
+    });
+    return result;
   } catch (error) {
     const cleanup = await Promise.allSettled([stop(true)]);
     throw Object.assign(Error("Application listener startup failed", { cause: error }), { cleanup });

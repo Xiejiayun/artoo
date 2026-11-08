@@ -15,6 +15,7 @@ export async function runApplicationServiceBootstrap(): Promise<void> {
   const control = installApplicationBootstrapControl(process.stdin, process), failedOutput = new AbortController();
   const signal = AbortSignal.any([control.signal, failedOutput.signal]);
   let outputFailure: Error | undefined, service: LocalApplicationService | undefined;
+  let readClosure: (() => unknown) | undefined;
   const outputFailed = (error: Error) => { outputFailure ??= error; failedOutput.abort(); };
   process.stdout.on("error", outputFailed); process.stderr.on("error", outputFailed);
   try {
@@ -30,13 +31,15 @@ export async function runApplicationServiceBootstrap(): Promise<void> {
           selected.assertCurrent();
           if (control.failure || outputFailure) throw control.failure ?? outputFailure;
           if (signal.aborted) throw Error("Application package initialization cancelled before handoff");
-          await output(process.stdout, { version: 1, kind: "application-service.initialized", reference, qualified_for_product: false });
+          await output(process.stdout, { version: 1, kind: "application-service.initialized", reference,
+            closure: api.readInitializedApplicationClosure(reference), qualified_for_product: false });
           if (control.failure || outputFailure) throw control.failure ?? outputFailure;
           selected.assertCurrent();
           if (signal.aborted) throw Error("Application package initialization cancelled before handoff");
           return;
         }
         service = await api.reopenInstalledApplicationService(selected.options, signal);
+        const original = service; readClosure = () => api.readInstalledApplicationClosure(original);
       }
     }
     if (service) {
@@ -49,7 +52,7 @@ export async function runApplicationServiceBootstrap(): Promise<void> {
     if (control.failure || outputFailure) throw control.failure ?? outputFailure;
     selected.assertCurrent();
     await output(process.stdout, { version: 1, kind: "application-service.closed", started: !!service,
-      reason: control.reason ?? "budget-exhausted", qualified_for_product: false });
+      reason: control.reason ?? "budget-exhausted", ...(service ? { closure: readClosure!() } : {}), qualified_for_product: false });
     if (control.failure || outputFailure) throw control.failure ?? outputFailure;
   } catch (error) {
     failedOutput.abort();

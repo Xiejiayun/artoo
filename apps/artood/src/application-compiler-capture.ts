@@ -4,7 +4,7 @@ import { decodeApplicationCompilerRequest } from "./application-compiler-protoco
 import { readApplicationCompilerResponse } from "./application-compiler-response.js";
 import { APPLICATION_SDK_V1_SOURCE } from "./application-sdk-v1.js";
 import { isWellFormedApplicationUtf8 } from "./application-build-primitives.js";
-import type { ApplicationBuildDraft, ApplicationBuildFilePin, ApplicationBuildTextFile } from "./application-build-kernel.js";
+import type { ApplicationBuildDiagnostic, ApplicationBuildDraft, ApplicationBuildFilePin, ApplicationBuildTextFile } from "./application-build-kernel.js";
 
 /** Expected content selected locally. A version/library match does not prove
  * which compiler implementation, process, package or executable produced output. */
@@ -33,6 +33,12 @@ export class ApplicationCompilerCaptureError extends Error {
   constructor(readonly code: Failure) { super("Application compiler content capture rejected: " + code); }
 }
 const fail = (code: Failure): never => { throw new ApplicationCompilerCaptureError(code); };
+// Diagnostic data only, associated with one actual parsed rejection and original
+// request. Copies, claimed error fields and a constructed error grant no access.
+const rejections = new WeakMap<object, readonly Readonly<ApplicationBuildDiagnostic>[]>();
+export function readApplicationCompilerRejection(error: unknown): readonly Readonly<ApplicationBuildDiagnostic>[] | undefined {
+  return error !== null && typeof error === "object" ? rejections.get(error) : undefined;
+}
 const sha = (text: string): string => "sha256:" + createHash("sha256").update(text, "utf8").digest("hex");
 const order = (a: { path: string }, b: { path: string }) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
 const portable = (path: string) => path.length <= 512 && path.split("/").every(part =>
@@ -92,7 +98,10 @@ export function createApplicationCompilerCaptureOwner(requestBytes: Uint8Array, 
       if (attempted) return fail("attempt-used"); attempted = true;
       const response = await readApplicationCompilerResponse(stream);
       if (response.request_id !== requestId) return fail("response-mismatch");
-      if (response.result.status !== "compiled") return fail("compiler-rejected");
+      if (response.result.status !== "compiled") {
+        const error = new ApplicationCompilerCaptureError("compiler-rejected");
+        rejections.set(error, freeze(response.result.diagnostics.map(value => ({ ...value })))); throw error;
+      }
       const { manifest } = response.result, files = boundedFiles(response.result.files, "artifacts");
       const measured = pins(files);
       if (manifest.compiler_version !== compilerVersion || manifest.source_digest !== sourceDigest

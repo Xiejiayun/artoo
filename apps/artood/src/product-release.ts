@@ -1405,6 +1405,7 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
     },
     recordVerification(runId: string, projectId: string, workspaceRoot: string, evidence: RunVerificationPayload,
       local?: LocalReleaseVerificationContext): void {
+      if (evidence.application || local?.context.app_delivery) fail("Application development cannot authorize static publication");
       if (evidence.outcome !== "passed") return;
       const clean = local?.importedClean ? readPreparedCleanValidationRelease(local.importedClean) : undefined;
       if (local?.context.imported_clean_validation_review_subject || !!local?.context.imported_clean_validation !== !!clean

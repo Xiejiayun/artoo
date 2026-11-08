@@ -63,6 +63,8 @@ import { validatePersistedAllocationStart } from "./persisted-allocation-start.j
 import { ingestProductReleaseReceipt, ingestProductReleaseHealthReport } from "./services/product-release-service.js";
 import { assertProductReleaseRetryDispatch } from "./services/product-release-retry-service.js";
 import { verificationCapabilityBinding } from "./services/verification-capabilities.js";
+import { APPLICATION_VERIFICATION_FEATURE_V1 } from "@artoo/domain";
+import { applicationRequirement } from "./services/application-verification.js";
 import { canonicalAutomationWorkspace } from "./services/automation-workspace.js";
 import { OWNED_RESULT_FEATURE, parseOwnedResultAssignment, assertOwnedResultStoredContext,
   assertOwnedResultDispatchInput } from "./services/owned-result-service.js";
@@ -869,6 +871,14 @@ export function attachNodeBinding(
               { run_id: runId, dispatch: "blocked", reason: "unsupported_measurement_plan_verification" });
           }
           const expected = verification.capability_binding, supplied = context.payload!.verification_capabilities;
+          if (verification.application || context.payload!.app_delivery) {
+            if (!verification.application || !context.payload!.app_delivery || !current?.application || allocated || workspaceBranch !== null
+              || !binding.supportsExecutionFeature(APPLICATION_VERIFICATION_FEATURE_V1)
+              || !isDeepStrictEqual(verification.application, applicationRequirement(current.application, context.payload!.review_subject?.verification?.application))) {
+              throw AppError.conflict("The current node cannot enforce this application's exact configured development requirement",
+                { run_id: runId, dispatch: "blocked", reason: "unsupported_application_verification" });
+            }
+          }
           if ((current || expected || supplied) && (!current || !expected || !supplied
             || !isDeepStrictEqual(expected, verificationCapabilityBinding(current))
             || !isDeepStrictEqual(supplied, { ...current, profile_id: verification.profile_id }))) {

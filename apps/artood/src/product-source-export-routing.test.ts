@@ -1,7 +1,7 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
-import { ContextPackSchema, productDevelopmentContext, type MeasurementPlanPolicy, type ProductSourceExportV1,
+import { ApplicationCapabilitiesV1Schema, ContextPackSchema, productDevelopmentContext, type MeasurementPlanPolicy, type ProductSourceExportV1,
   type ProductSourceExportV2, type RunVerificationPayload } from "@artoo/domain";
 import type { NodeToServerMessage, RuntimeAdapter, ServerToNodeMessage } from "@artoo/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,8 @@ import { createNodeClient } from "./node-client.js";
 import * as verification from "./verification.js";
 import * as execution from "./process-adapter.js";
 import * as sourceRuntime from "./product-source-runtime.js";
+import * as productRelease from "./product-release.js";
+import { prepareStaticWebCapabilities } from "./web-acceptance.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!, roots: string[] = [];
 const digest = `sha256:${"a".repeat(64)}`;
@@ -34,16 +36,30 @@ describe("product source export stage routing (controlled authority mocks; no na
     ["design", 2, true, true, "v1"],
     ["implementation", 2, true, true, "v1"],
     ["validation", 2, true, true, "v1"],
+    ["research", 0, false, false, "none"],
+    ["design", 0, false, false, "none"],
+    ["implementation", 0, false, false, "none"],
+    ["validation", 0, false, false, "none"],
   ] as const)("completes %s with policy %i, legacy opt-in %s, prepared v2 opt-in %s through %s export", async (stage, policyVersion, enabled, enabledV2, expected) => {
     Object.defineProperty(process, "platform", { ...platform, value: "win32" });
     const workspace = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-source-export-routing-"))); roots.push(workspace);
+    const application = expected === "none";
     const policy: MeasurementPlanPolicy = policyVersion === 1 ? { version: 1, coverage: "every-must-criterion" }
       : { version: 2, coverage: "every-must-criterion", methods: ["workspace-check", "configured-static-release"] };
     // This test checks NodeClient's routing/completion boundary. Native provenance
     // is deliberately mocked here and is covered by the separate native fixture.
+    const app = ApplicationCapabilitiesV1Schema.parse({ version: 1, kind: "local-application-development", claim: "configured",
+      config_digest: digest, contract_digest: digest, source_paths: ["product/client", "product/server", ".artoo/product/application.json"],
+      definition_format: "artoo.application-definition.v1", test_scope: "normal-api-browser-reopen", failure_recovery: "unsupported",
+      browser_viewport: { width: 1280, height: 900, device_scale_factor: 1 }, publication: "unsupported", qualified_for_product: false });
+    const staticWeb = prepareStaticWebCapabilities({ browser_program: { version: 3, viewports: [{ id: "desktop", width: 1280, height: 900 }] } });
     const profile: verification.PreparedVerificationProfile = { id: "profile", project_id: "project", workspace_root: workspace,
       commands: [], required_files: [], subject_paths: [".artoo/product", "product"], digest, trustedFiles: [],
-      capabilities: { version: 1, profile_digest: digest, measurement_plan_policy: policy, checks: [] } };
+      capabilities: application ? { version: 1, profile_digest: digest, application: app,
+        checks: [{ command_id: "check", config_digest: staticWeb.config_digest, contract_digest: staticWeb.contract_digest, contract: staticWeb.contract }] }
+        : { version: 1, profile_digest: digest, measurement_plan_policy: policy, checks: [] } };
+    const publisher = productRelease.createProductReleaseExecutor([]), record = vi.spyOn(publisher, "recordVerification");
+    vi.spyOn(productRelease, "createProductReleaseExecutor").mockReturnValue(publisher);
     vi.spyOn(verification, "prepareVerificationProfiles").mockReturnValue([profile]);
     vi.spyOn(verification, "selectVerificationProfile").mockReturnValue(profile);
     vi.spyOn(verification, "assertVerificationWorkspaceBoundary").mockImplementation(() => {});
@@ -73,7 +89,9 @@ describe("product source export stage routing (controlled authority mocks; no na
     const context = ContextPackSchema.parse({ task: { id: "task", title: "Routing fixture", description: "Controlled routing fixture", acceptance_criteria: [] },
       project: { id: "project", name: "Fixture", default_workspace: workspace }, workspace: { root: workspace, file_scope: [] },
       policy: { filesystem_write_scope: [workspace], requires_approval: [] }, memory: { task_summary: null, project_notes: [] }, artifacts: { expected: [] },
-      product_development: productDevelopmentContext(stage) });
+      product_development: productDevelopmentContext(stage), ...(application ? {
+        app_delivery: { version: 1, kind: "local-application-development" }, verification_capabilities: { ...profile.capabilities, profile_id: profile.id },
+      } : {}) });
     const messages: NodeToServerMessage[] = []; let receive: ((message: ServerToNodeMessage) => void) | undefined;
     const adapter: RuntimeAdapter = { runtimeId: "fixture", async start() { return { runId: "run" }; },
       async *streamEvents() { yield { type: "run.lifecycle", payload: { phase: "completed" } }; }, async stop() {}, async collectArtifacts() { return []; } };
@@ -85,7 +103,8 @@ describe("product source export stage routing (controlled authority mocks; no na
       receive!({ kind: "command", id: "start", idempotency_key: "run:start", type: "run.start", payload: {
         run_id: "run", task_id: "task", agent_instance_id: "agent", runtime: "fixture", workspace: { root: workspace }, context_pack: { id: "context", payload: context },
         policy_snapshot: { filesystem_write_scope: [workspace], requires_approval: [] }, artifact_rules: { paths: [] },
-        verification: { version: 1, request_id: "verify", profile_id: profile.id } } });
+        verification: { version: 1, request_id: "verify", profile_id: profile.id,
+          ...(application ? { application: { version: 1, config_digest: digest, contract_digest: digest } } : {}) } } });
       await vi.waitFor(() => {
         expect(messages.some(message => message.kind === "command.ack" && message.status === "rejected")).toBe(false);
         expect(messages.some(message => message.kind === "run.event" && message.event.type === "run.lifecycle" && message.event.payload.phase === "failed")).toBe(false);
@@ -93,6 +112,13 @@ describe("product source export stage routing (controlled authority mocks; no na
         expect(release).toHaveBeenCalledWith(runtime, "run");
       });
       const events = messages.filter(message => message.kind === "run.event");
+      if (application) {
+        expect(events.map(message => message.event.type)).toEqual(["run.verification", "run.lifecycle"]);
+        expect(events.map(message => message.sequence)).toEqual([0, 1]);
+        expect(bytes).not.toHaveBeenCalled(); expect(semantic).not.toHaveBeenCalled(); expect(record).not.toHaveBeenCalled();
+        return;
+      }
+      expect(record).toHaveBeenCalledOnce();
       expect(events.map(message => message.event.type)).toEqual(["run.verification", `run.product-source.export.${expected}`, "run.lifecycle"]);
       expect(events.map(message => message.sequence)).toEqual([0, 1, 2]);
       expect(expected === "v2" ? semantic : bytes).toHaveBeenCalledTimes(1);

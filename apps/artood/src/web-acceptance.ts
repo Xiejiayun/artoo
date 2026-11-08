@@ -183,7 +183,7 @@ export function deriveExpectedWebAcceptanceV3(workspace: string, context: Contex
   return deriveWebAcceptanceV3Plan(workspace, context, snapshot.options, snapshot.binding);
 }
 
-async function inspectPage(page: Page): Promise<void> {
+export async function inspectPage(page: Page): Promise<void> {
   if (!(await page.title()).trim() || !(await page.locator("body").innerText()).trim()) throw new Error("A usable product needs a title and visible content");
   const facts = await page.evaluate(() => {
     const unnamed: string[] = [];

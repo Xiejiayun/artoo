@@ -1,6 +1,6 @@
 import { observeWindowsStopStage, recordWindowsStopDiagnostic } from "./windows-stop-diagnostics.js";
 import type { NodeHeartbeat, NodeHello, RuntimeAdapter } from "@artoo/protocol";
-import { PRODUCT_DESIGN_REVISION_FEATURE_V1, SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1 } from "@artoo/domain";
+import { APPLICATION_VERIFICATION_FEATURE_V1, PRODUCT_DESIGN_REVISION_FEATURE_V1, SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1 } from "@artoo/domain";
 
 import type { AdapterRegistry } from "./adapter-registry.js";
 import type { ArtifactUploader } from "./artifact-upload.js";
@@ -10,7 +10,7 @@ import { createWebSocketTransport } from "./ws-transport.js";
 import type { GitExecutor, WorkspaceConfig } from "./workspace-binding.js";
 import { VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE, VERIFICATION_CAPABILITIES_FEATURE, MEASUREMENT_PLAN_FEATURE, MEASUREMENT_PLAN_V2_FEATURE,
   verificationSupported, prepareVerificationProfiles, attachWindowsVerificationBackend, readWindowsVerificationBackend,
-  productDesignRevisionVerificationSupported, type VerificationProfile } from "./verification.js";
+  productDesignRevisionVerificationSupported, applicationVerificationSupported, type VerificationProfile } from "./verification.js";
 import { PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE, prepareReleaseProfiles, readReleaseCapabilities, releaseProfileExecutionSupported, type ReleaseProfile } from "./product-release.js";
 import { PRODUCT_RELEASE_RETRY_FEATURE_V1 } from "@artoo/domain";
 import { assertWindowsProcessBackend, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
@@ -104,7 +104,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
   delete hello.product_source_routing;
   const configuredFeatures = (hello.execution_features ?? []).filter((feature) => ![VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE, VERIFICATION_CAPABILITIES_FEATURE,
     MEASUREMENT_PLAN_FEATURE, MEASUREMENT_PLAN_V2_FEATURE, PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE, PRODUCT_RELEASE_RETRY_FEATURE_V1,
-      PRODUCT_DESIGN_REVISION_FEATURE_V1,
+      PRODUCT_DESIGN_REVISION_FEATURE_V1, APPLICATION_VERIFICATION_FEATURE_V1,
       "owned-result-run.v1", "product-source-transfer.v1", "product-source-transfer.v2", "product-source-transfer.measurement-v2.v1",
       "product-source-operations.v1", "product-research-revision.v1", "imported-product-review.v1", "imported-design-continuation.v1", "imported-design-review.v1", "imported-execution.v1", "imported-execution-review.v1", "imported-validation.v1",
       "product.source.recovery.v1", SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1,
@@ -115,6 +115,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
     if (advertisedVerificationProfiles.some((profile) => profile.measurement_plan_policy?.version === 1)) configuredFeatures.push(MEASUREMENT_PLAN_FEATURE);
     if (advertisedVerificationProfiles.some((profile) => profile.measurement_plan_policy?.version === 2)) configuredFeatures.push(MEASUREMENT_PLAN_V2_FEATURE);
     if (advertisedVerificationProfiles.some(productDesignRevisionVerificationSupported)) configuredFeatures.push(PRODUCT_DESIGN_REVISION_FEATURE_V1);
+    if (advertisedVerificationProfiles.some(applicationVerificationSupported)) configuredFeatures.push(APPLICATION_VERIFICATION_FEATURE_V1);
     hello.verification_profiles = advertisedVerificationProfiles.map((profile) => Object.freeze({
       profile_id: profile.id, project_id: profile.project_id, workspace_root: profile.workspace_root,
       ...(profile.capabilities ? { capabilities: profile.capabilities } : {}),

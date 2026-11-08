@@ -117,6 +117,29 @@ async function writeRequest(helper: Helper) {
 async function complete(helper: Helper) { await writeRequest(helper); helper.output(); helper.terminal(); await helper.finish(0); }
 
 describe("fixed compiler owner controlled closure", () => {
+  it("returns bounded parsed source diagnostics only after original closure, without a content token", async () => {
+    const { owner, helper } = begin(); await writeRequest(helper);
+    const diagnostics = Array.from({ length: 32 }, () => ({ category: "compiler", code: "TS2322", file: "product/server/handler.ts",
+      line: 7, column: 3, message: "Type mismatch. ".repeat(100) }));
+    helper.output(Buffer.from(JSON.stringify({ version: 1, kind: "compile-result", request_id: "controlled-1", qualified_for_product: false,
+      result: { status: "rejected", diagnostics, execution: APPLICATION_BUILD_EXECUTION_STATUS } })));
+    helper.terminal(); let settled = false; void owner.completed.then(() => { settled = true; }, () => { settled = true; });
+    await tick(); expect(settled).toBe(false); await helper.finish(0);
+    const failure = await owner.completed.catch(error => error);
+    expect(failure.message).toContain("untrusted product data"); expect(failure.message).toContain("TS2322");
+    expect(failure.message).toContain('"file":"product/server/handler.ts"'); expect(failure.message).toContain('"line":7');
+    expect(failure.message.length).toBeLessThan(1800); expect(failure.cause).toBeInstanceOf(Error);
+    await expect(owner.closed).resolves.toMatchObject({ closureConfirmed: true, inputsUnchanged: true, normalShutdown: false, contentValidated: false });
+    expect(() => owner.read({} as CapturedApplicationCompilerContent)).toThrow("Original completed");
+  });
+  it("does not present compiler diagnostics when the original installation changed", async () => {
+    const { owner, helper, config } = begin(); await writeRequest(helper);
+    helper.output(Buffer.from(JSON.stringify({ version: 1, kind: "compile-result", request_id: "controlled-1", qualified_for_product: false,
+      result: { status: "rejected", diagnostics: [{ category: "compiler", code: "TS2322", message: "Controlled rejection" }], execution: APPLICATION_BUILD_EXECUTION_STATUS } })));
+    helper.terminal(); writeFileSync(join(dirname(dirname(config.entry.path)), "toolchain/content.bin"), "changed toolchain"); await helper.finish(0);
+    const failure = await owner.completed.catch(error => error); expect(failure.message).not.toContain("TS2322");
+    await expect(owner.closed).resolves.toMatchObject({ inputsUnchanged: false, normalShutdown: false, contentValidated: false });
+  });
   it("uses only the fixed compiler selector and pinned installation, copying source data before spawn", async () => {
     const bytes = request(), original = Buffer.from(bytes), { owner, helper, config, token } = begin(undefined, bytes);
     bytes.fill(0);

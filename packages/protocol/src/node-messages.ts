@@ -209,7 +209,16 @@ const legacyRunStartPayloadSchema = z.unknown().superRefine((raw, ctx) => {
       }
     }
   }
-}).pipe(RunStartPayloadSchema);
+}).pipe(RunStartPayloadSchema).superRefine((start, ctx) => {
+  const context = start.context_pack.payload;
+  if (!start.verification?.application && !context?.app_delivery) return;
+  if (!start.verification?.application || !context?.app_delivery || !context.verification_capabilities?.application
+    || start.workspace_allocation || start.workspace.branch != null || context.release_capabilities
+    || Object.keys(context).some(key => key.startsWith("imported_") || key === "transferred_product_input" || key === "product_research_revision")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["verification", "application"],
+      message: "Application development requires its ordinary inline workspace context without handoff, managed allocation or static publication" });
+  }
+});
 export const runStartCommandSchema = z.object({
   ...commandEnvelope,
   ...ownedResultModeMarkers,

@@ -1105,6 +1105,7 @@ export const goalAutomations = pgTable("goal_automations", {
   team: jsonb("team"),
   // An explicit grant on new goals only; historical fixed-computer goals retain SQL NULL.
   sourceHandoff: jsonb("source_handoff"),
+  appDelivery: jsonb("app_delivery"),
   // SQL NULL preserves unsampled historical planning; captured unknown scope is a versioned object.
   planningCapabilitySnapshot: jsonb("planning_capability_snapshot"),
   releaseProfileId: text("release_profile_id"),
@@ -1115,6 +1116,9 @@ export const goalAutomations = pgTable("goal_automations", {
   check("goal_automations_status_chk", sql`${t.status} in ('planning','executing','waiting','completed','failed','cancelled')`),
   index("goal_automations_status_idx").on(t.organizationId, t.status, t.createdAt),
   check("goal_automations_mode_chk", sql`${t.executionMode} in ('single_agent','agent_team')`),
+  check("goal_automations_app_delivery_chk", sql`${t.appDelivery} IS NULL OR
+    (${t.executionMode} = 'agent_team' AND ${t.status} <> 'completed' AND ${t.sourceHandoff} IS NULL AND ${t.releaseProfileId} IS NULL
+      AND ${t.appDelivery} = '{"version":1,"kind":"local-application-development"}'::jsonb) IS TRUE`),
   check("goal_automations_source_handoff_chk", sql`${t.sourceHandoff} IS NULL OR
     (${t.executionMode} = 'agent_team' AND ${t.releaseProfileId} IS NOT NULL
       AND ${t.sourceHandoff} IN ('{"version":1,"mode":"automatic"}'::jsonb,

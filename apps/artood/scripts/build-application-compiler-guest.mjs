@@ -27,6 +27,8 @@ const zod = requireBuild.resolve('zod'), zodPackage = requireBuild.resolve('zod/
 const binaryPackage = requireBuild.resolve(`@esbuild/win32-${process.arch}/package.json`), binary = join(dirname(binaryPackage), 'esbuild.exe');
 const allowedSource = ['application-compiler-guest-entry.ts', 'application-compiler-contract.ts',
   'application-build-kernel.ts', 'application-build-primitives.ts', 'application-sdk-v1.ts'].map(name => resolve(scripts, '../src', name));
+const sdkSource = join(root, 'packages/domain/src/application-sdk-v1.ts');
+allowedSource.push(sdkSource);
 const sourceSet = new Set(allowedSource);
 
 function auditGuestImports(text) {
@@ -60,6 +62,10 @@ try {
     define: { __ARTOO_GUEST_TYPESCRIPT__: 'ts', __ARTOO_PACKAGED_COMPILER_LIBRARIES__: injectedLibraries },
     plugins: [{ name: 'fixed-guest-compiler-inputs', setup(plugin) {
       plugin.onResolve({ filter: /^zod$/ }, () => ({ path: zod }));
+      plugin.onResolve({ filter: /^@artoo\/domain$/ }, args => {
+        if (resolve(args.importer) !== resolve(scripts, '../src/application-sdk-v1.ts')) throw Error('Unexpected domain import');
+        return { path: sdkSource };
+      });
       plugin.onLoad({ filter: /\.(?:[cm]?js|ts)$/, namespace: 'file' }, async args => {
         const path = resolve(args.path);
         if (!sourceSet.has(path) && !(path.startsWith(zodRoot + sep) && /\.[cm]?js$/u.test(path))) throw Error('Unexpected packaged guest input');

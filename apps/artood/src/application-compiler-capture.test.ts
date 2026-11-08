@@ -9,7 +9,8 @@ import ts from "typescript";
 import { compileApplicationDraft, assertApplicationBuildOutput, type ApplicationBuildDraft } from "./application-build-core.js";
 import { APPLICATION_BUILD_EXECUTION_STATUS, type ApplicationBuildTextFile } from "./application-build-kernel.js";
 import { encodeApplicationCompilerResponse, type ApplicationCompilerResponse } from "./application-compiler-protocol.js";
-import { createApplicationCompilerCaptureOwner, type CapturedApplicationCompilerContent } from "./application-compiler-capture.js";
+import { createApplicationCompilerCaptureOwner, readApplicationCompilerRejection, ApplicationCompilerCaptureError,
+  type CapturedApplicationCompilerContent } from "./application-compiler-capture.js";
 
 const compilerDirectory = dirname(createRequire(import.meta.url).resolve("typescript"));
 const libraries = readdirSync(compilerDirectory).filter(path => /^lib\.[a-z0-9.]+\.d\.ts$/u.test(path)).sort()
@@ -109,7 +110,13 @@ describe("original-request compiler content captures", () => {
     const factory = owner(), rejected: ApplicationCompilerResponse = { ...response(),
       result: { status: "rejected", execution: APPLICATION_BUILD_EXECUTION_STATUS,
         diagnostics: [{ category: "compiler", code: "fixture-rejected", message: "Controlled rejection" }] } };
-    await expect(capture(factory, rejected)).rejects.toThrow("compiler-rejected");
+    const failure = await capture(factory, rejected).catch(error => error);
+    expect(failure).toBeInstanceOf(ApplicationCompilerCaptureError); expect(failure.message).toContain("compiler-rejected");
+    const diagnostics = readApplicationCompilerRejection(failure)!;
+    expect(diagnostics).toEqual(rejected.result.diagnostics); expect(Object.isFrozen(diagnostics)).toBe(true); expect(Object.isFrozen(diagnostics[0])).toBe(true);
+    expect(readApplicationCompilerRejection({ ...failure })).toBeUndefined();
+    expect(readApplicationCompilerRejection(new ApplicationCompilerCaptureError("compiler-rejected"))).toBeUndefined();
+    expect(() => factory.read(failure as CapturedApplicationCompilerContent)).toThrow("original-capture-required");
     await expect(capture(factory)).rejects.toThrow("attempt-used");
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; }), current = owner();

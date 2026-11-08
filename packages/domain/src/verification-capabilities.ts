@@ -4,6 +4,7 @@ import { BrowserActionV3Schema } from "./browser-program-v3.js";
 import { StorageFaultCapabilitiesV1Schema } from "./storage-fault.js";
 import { StoragePreconditionCapabilitiesV1Schema } from "./storage-precondition.js";
 import { MeasurementPlanPolicySchema } from "./measurement-plan.js";
+import { ApplicationCapabilitiesV1Schema } from "./application-development.js";
 
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const identifier = z.string().min(1).max(128);
@@ -62,15 +63,22 @@ const checkBinding = z.object({ command_id: identifier, config_digest: digest, c
 const uniqueCommands = (checks: { command_id: string }[]) => unique(checks.map((check) => check.command_id));
 const capabilitiesShape = {
   version: z.literal(1), profile_digest: digest,
+  application: ApplicationCapabilitiesV1Schema.optional(),
   measurement_plan_policy: MeasurementPlanPolicySchema.optional(),
   checks: z.array(checkBinding.extend({ contract: StaticWebCapabilitiesSchema }).strict()).min(1).max(32)
     .refine(uniqueCommands, "Duplicate capability check IDs"),
 };
 
 /** Derived by the authenticated execution node from its protected local configuration. */
-export const VerificationCapabilitiesSchema = z.object(capabilitiesShape).strict();
+const applicationPolicy = (value: { application?: unknown; measurement_plan_policy?: unknown; checks: { contract: { version: number } }[] }, ctx: z.RefinementCtx) => {
+  if (value.application && value.measurement_plan_policy) ctx.addIssue({ code: z.ZodIssueCode.custom,
+    path: ["measurement_plan_policy"], message: "Application development cannot claim the static measurement-plan contract" });
+  if (value.application && value.checks.some(check => check.contract.version !== 3)) ctx.addIssue({ code: z.ZodIssueCode.custom,
+    path: ["checks"], message: "Application development requires version-3 browser program capabilities" });
+};
+export const VerificationCapabilitiesSchema = z.object(capabilitiesShape).strict().superRefine(applicationPolicy);
 export type VerificationCapabilities = z.infer<typeof VerificationCapabilitiesSchema>;
-export const VerificationCapabilitiesContextSchema = z.object({ ...capabilitiesShape, profile_id: identifier }).strict();
+export const VerificationCapabilitiesContextSchema = z.object({ ...capabilitiesShape, profile_id: identifier }).strict().superRefine(applicationPolicy);
 export type VerificationCapabilitiesContext = z.infer<typeof VerificationCapabilitiesContextSchema>;
 
 /** The selected public snapshot is checked against the node's local prepared profile at admission. */

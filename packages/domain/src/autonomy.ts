@@ -5,6 +5,7 @@ import { GoalPlanningCapabilitySnapshotSchema } from "./planning-capabilities.js
 import { MeasurementPlanSummarySchema } from "./measurement-plan.js";
 import { ReleaseCapabilityBindingV1Schema } from "./release-capabilities.js";
 import { AdditiveDesignRevisionRequestV1Schema, ProductDesignRevisionEvidenceV1Schema } from "./product-design-revision.js";
+import { ApplicationDeliveryV1Schema, ApplicationRequirementV1Schema, ApplicationVerificationObservationV1Schema } from "./application-development.js";
 
 const identifier = z.string().min(1).max(128);
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -19,8 +20,13 @@ export const VerificationRequirementSchema = z.object({
   /** Read-only review must inspect the exact subject accepted by the writer's verifier. */
   expected_subject_digest: digest.optional(),
   capability_binding: VerificationCapabilityBindingSchema.optional(),
+  application: ApplicationRequirementV1Schema.optional(),
   release_capability_binding: ReleaseCapabilityBindingV1Schema.optional(),
 }).superRefine((value, ctx) => {
+  if (value.application && (!value.capability_binding || value.release_capability_binding
+    || value.application.expected_candidate && value.expected_subject_digest !== value.application.expected_candidate.candidate.subject_digest)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["application"], message: "Application verification requires a bound profile and exact review source without static publication" });
+  }
   const binding = value.release_capability_binding;
   if (binding && (binding.verification_profile_id !== value.profile_id || binding.verification_profile_digest !== value.capability_binding?.profile_digest)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["release_capability_binding"], message: "Release capability requires the exact selected verifier binding" });
@@ -56,9 +62,14 @@ export const RunVerificationPayloadSchema = z.object({
   })).max(64),
   required_files: z.array(z.object({ path: relativePath, checksum: digest, size: z.number().int().nonnegative() })).max(1000),
   measurement_plan: MeasurementPlanSummarySchema.optional(),
+  application: ApplicationVerificationObservationV1Schema.optional(),
   product_design_revision: ProductDesignRevisionEvidenceV1Schema.optional(),
   reason: z.string().max(2000).optional(),
 }).superRefine((value, ctx) => {
+  if (value.application && (value.outcome !== "passed" || value.subject_digest !== value.application.candidate.subject_digest
+    || value.request_id !== value.application.request_id || value.measurement_plan)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["application"], message: "Application observation requires its successful current request and exact source without a static measurement plan" });
+  }
   const revision = value.product_design_revision;
   if (revision && (value.outcome !== "passed" || value.subject_digest === null || !value.required_files.some(file =>
     file.path === revision.revised_design.path && file.checksum === revision.revised_design.checksum && file.size === revision.revised_design.size))) {
@@ -160,6 +171,7 @@ export const GoalAutomationSchema = z.object({
   planning_capability_snapshot: GoalPlanningCapabilitySnapshotSchema.nullable().default(null),
   team: AutonomousTeamSchema.nullable().default(null),
   source_handoff: AutonomousSourceHandoffV1Schema.nullable().optional(),
+  app_delivery: ApplicationDeliveryV1Schema.nullable().optional(),
   release_profile_id: identifier.nullable().default(null),
   delivery: z.enum(["verified_workspace", "published_product"]).default("verified_workspace"),
   last_error: z.string().nullable(),
@@ -176,7 +188,12 @@ export const CreateAutonomousGoalRequestSchema = z.object({
   release_profile_id: identifier.optional(),
   max_retries: z.number().int().min(0).max(10).default(3),
   source_handoff: AutonomousSourceHandoffV1Schema.optional(),
+  app_delivery: ApplicationDeliveryV1Schema.optional(),
 }).superRefine((value, ctx) => {
+  if (value.app_delivery && (value.execution_mode !== "agent_team" || value.source_handoff || value.release_profile_id)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["app_delivery"],
+      message: "Application development requires Agent Team without source handoff or a static publication profile" });
+  }
   if (value.source_handoff && (value.execution_mode !== "agent_team" || !value.release_profile_id)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["source_handoff"],
       message: "Automatic source handoff requires Agent Team and a configured publication profile" });

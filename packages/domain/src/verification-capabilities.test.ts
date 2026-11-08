@@ -16,6 +16,21 @@ const capabilities = { version: 1, profile_digest: digest, checks: [{ ...check, 
 const binding = { version: 1, profile_digest: digest, checks: [check] };
 
 describe("configured verification capability contracts", () => {
+  it("keeps application development separate from static measurement-plan declarations", () => {
+    const application = { version: 1, kind: "local-application-development", claim: "configured", config_digest: digest, contract_digest: digest,
+      source_paths: ["product/client", "product/server", ".artoo/product/application.json"], definition_format: "artoo.application-definition.v1",
+      test_scope: "normal-api-browser-reopen", failure_recovery: "unsupported", browser_viewport: { width: 1280, height: 900, device_scale_factor: 1 },
+      publication: "unsupported", qualified_for_product: false };
+    const v3 = { ...contract, version: 3, browser_steps_version: 3, legacy_browser_steps: "rejected", device_scale_factor: 1,
+      keyboard: { allowed_keys: ["Tab"], typing_max_length: 1000, focus_setup: "programmatic", focus_scope: "main-frame-dom" },
+      screenshots: "each-created-page-visible-viewport", pages: { max_pages: 3, counting: "cumulative-created", same_origin: true,
+        same_browser_context: true, name_reuse: "rejected", main_close: "rejected" }, unavailable: ["native-screen-reader", "browser-zoom"] };
+    const value = { ...capabilities, application, checks: [{ ...check, contract: v3 }] };
+    expect(VerificationCapabilitiesSchema.parse(value)).toEqual(value);
+    expect(VerificationCapabilitiesSchema.safeParse({ ...capabilities, application }).success).toBe(false);
+    for (const version of [1, 2]) expect(VerificationCapabilitiesSchema.safeParse({ ...value,
+      measurement_plan_policy: { version, coverage: "every-must-criterion", ...(version === 2 ? { methods: ["workspace-check", "configured-static-release"] } : {}) } }).success).toBe(false);
+  });
   it("keeps existing ads, requirements and observations unchanged when the extension is absent", () => {
     const ad = { profile_id: "profile", project_id: "project", workspace_root: "/workspace" };
     const requirement = { version: 1, request_id: "request", profile_id: "profile" };

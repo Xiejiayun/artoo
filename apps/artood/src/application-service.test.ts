@@ -14,7 +14,7 @@ async function until(predicate: () => boolean) {
 }
 const action = { kind: "begin" as const, invocation: "host-invocation", requestJson: '{"request_id":"r","method":"GET","path":"/","query":{},"body":null}',
   purpose: "application" as const, access: "read" as const, lifetimeMs: 1000 };
-function fixture(startupPending = false) {
+function fixture(startupPending = false, observeNormalClosure?: () => void) {
   // Deliberate controlled original-owner stand-ins. No native launch, database,
   // product or HTTP publication is performed by these coordinator regressions.
   const runtimeReady = deferred<void>(), brokerReady = deferred<void>();
@@ -39,12 +39,27 @@ function fixture(startupPending = false) {
   starts.runtime.mockReturnValue(runtime); starts.broker.mockReturnValue(broker);
   const prepareRuntime = vi.fn(() => Object.freeze({}) as PreparedApplicationRuntimeProcess);
   const prepareBroker = vi.fn(() => Object.freeze({}) as PreparedApplicationBrokerProcess);
-  const service = createApplicationService({ maximumAccess: "read", prepareRuntime, prepareBroker });
+  const service = createApplicationService({ maximumAccess: "read", prepareRuntime, prepareBroker, observeNormalClosure });
   return { runtime, broker, invoke, runtimeClosed, brokerClosed, runtimeReceipt, brokerReceipt, runtimeReady, brokerReady,
     prepareRuntime, prepareBroker, service, reply };
 }
 describe("single-request application coordinator", () => {
   beforeEach(() => vi.clearAllMocks());
+  it("observes normal native closure only after both original receipts, including a business 409", async () => {
+    const observed = vi.fn(), f = fixture(false, observed), handle = f.service.begin(action, new AbortController().signal);
+    f.broker.command.mockImplementation(async command => command.kind === "begin" ? f.reply(0, [f.invoke.toString("base64")], [])
+      : f.reply(1, [], [{ invocation: action.invocation, response: { status: 409, body: { error: "conflict" } } }]));
+    await until(() => f.broker.stop.mock.calls.length === 1); expect(observed).not.toHaveBeenCalled();
+    f.runtimeClosed.resolve(f.runtimeReceipt); await Promise.resolve(); expect(observed).not.toHaveBeenCalled();
+    f.brokerClosed.resolve(f.brokerReceipt); await expect(handle.response).resolves.toContain('"status":409'); await handle.settled;
+    expect(observed).toHaveBeenCalledOnce();
+  });
+  it("does not turn safe cancellation settlement into normal native-closure evidence", async () => {
+    const observed = vi.fn(), f = fixture(false, observed), handle = f.service.begin(action, new AbortController().signal);
+    await until(() => f.broker.stop.mock.calls.length === 1); handle.cancel();
+    f.runtimeClosed.resolve({ ...f.runtimeReceipt, normalShutdown: false }); f.brokerClosed.resolve(f.brokerReceipt);
+    await expect(handle.response).rejects.toThrow(); await handle.settled; expect(observed).not.toHaveBeenCalled();
+  });
   it("returns the original handle before startup and withholds response/settlement until both original closures", async () => {
     const f = fixture(), handle = f.service.begin(action, new AbortController().signal);
     expect(starts.runtime).not.toHaveBeenCalled(); expect(starts.broker).not.toHaveBeenCalled();

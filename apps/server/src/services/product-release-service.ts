@@ -90,6 +90,7 @@ export async function ensureGoalProductRelease(ctx: ServerContext, tx: DrizzleDb
   status: "pending" | "succeeded" | "failed"; reason?: string; endpoint?: string;
   settlement?: ReturnType<typeof releaseAcceptanceSettlement>;
 }> {
+  if (automation.appDelivery != null) return { status: "failed", reason: "Application publication is unsupported; static publication cannot release an application candidate" };
   await assertNoActiveDesignRevision(ctx, tx, automation.goalId);
   if (!automation.planId) throw AppError.validation("Product release is missing its accepted plan");
   // Health ingestion takes the same release lock. Keep its latest observation and

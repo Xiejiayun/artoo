@@ -53,6 +53,9 @@ import { assertProductResearchRevisionRun } from "./product-research-revision.js
 import { sealBrowserEvidence, validateBrowserEvidenceRoot } from "./browser-evidence.js";
 import { deriveExpectedWebAcceptanceV2, deriveExpectedWebAcceptanceV3, prepareStaticWebCapabilities, type PreparedStaticWebCapabilities } from "./web-acceptance.js";
 import { isV2WebAcceptanceOptions, isV3WebAcceptanceOptions, normalizeWebAcceptanceOptions, STATIC_WEB_MAX_CONFIG_BYTES } from "./web-acceptance-config.js";
+import { prepareApplicationVerificationProfile, readApplicationVerificationProfile, assertApplicationVerificationProfile,
+  type ApplicationVerificationProfileSelection, type PreparedApplicationVerificationProfile } from "./application-verification-profile.js";
+import { executeApplicationVerification, type ApplicationVerificationRun } from "./application-verification.js";
 
 export const VERIFICATION_FEATURE = "run-verification.v1";
 export const PRODUCT_STAGE_VERIFICATION_FEATURE = "product-stage-verification.v1";
@@ -68,6 +71,7 @@ export interface VerificationProfile {
   required_files: string[];
   subject_paths: string[];
   measurement_plan_policy?: MeasurementPlanPolicy;
+  application?: ApplicationVerificationProfileSelection;
 }
 interface FileFact { path: string; checksum: string; size: number }
 export interface PreparedVerificationProfile extends Readonly<VerificationProfile> {
@@ -81,6 +85,7 @@ const staticWebProfiles = new WeakMap<PreparedVerificationProfile, ReadonlyMap<s
 const measurementPlanPolicies = new WeakMap<PreparedVerificationProfile, MeasurementPlanPolicy>();
 const locallyPreparedProfiles = new WeakSet<PreparedVerificationProfile>();
 const windowsProfileBackends = new WeakMap<PreparedVerificationProfile, PreparedWindowsProcessBackend>();
+const applicationProfiles = new WeakMap<PreparedVerificationProfile, PreparedApplicationVerificationProfile>();
 const exportableFinalVerifications = new WeakMap<RunVerificationPayload, { profile: PreparedVerificationProfile; requestId: string; context: string; payload: string }>();
 type ImportedVerifierPermit = PreparedImportedDesignContinuation | PreparedImportedDesignReview | PreparedImportedExecution | PreparedImportedExecutionReview
   | PreparedImportedExecutionRepair | PreparedImportedValidation | PreparedImportedValidationReview
@@ -254,6 +259,7 @@ function assertWorkspace(profile: PreparedVerificationProfile): void {
 }
 function assertTrusted(profile: PreparedVerificationProfile): void {
   assertWorkspace(profile);
+  const application = applicationProfiles.get(profile); if (application) assertApplicationVerificationProfile(application);
   for (const command of profile.commands) {
     const root = command.observation?.evidence_root;
     if (root && validateBrowserEvidenceRoot(root, [profile.workspace_root]) !== root) fail("browser evidence root identity changed");
@@ -306,7 +312,7 @@ export function prepareVerificationProfiles(input: readonly VerificationProfile[
         fail("measurement-plan policy must cover the complete product and product handoffs");
       }
     }
-    if (optedIn) knownFields(raw, ["id", "project_id", "workspace_root", "commands", "required_files", "subject_paths", "measurement_plan_policy"], "capability profile");
+    if (optedIn || raw.application !== undefined) knownFields(raw, ["id", "project_id", "workspace_root", "commands", "required_files", "subject_paths", "measurement_plan_policy", "application"], "capability profile");
     const files = new Map<string, FileFact>(), commandIds = new Set<string>();
     const staticWeb = new Map<string, PreparedStaticWebCapabilities>();
     const commands = raw.commands.map((command: VerificationProfile["commands"][number]) => {
@@ -382,8 +388,19 @@ export function prepareVerificationProfiles(input: readonly VerificationProfile[
       || commands.some(command => command.observation && command.observation.format !== "static-web-acceptance.v3"))) {
       fail("v2 measurement-plan policy requires installed v3 browser checks");
     }
+    let application: PreparedApplicationVerificationProfile | undefined;
+    if (raw.application !== undefined) {
+      if (!writableRoots?.length || measurementPolicy || !staticWeb.size || [...staticWeb.values()].some(check => check.contract.version !== 3)
+        || !subjects.includes("product") || !subjects.some(path => path === ".artoo" || path === ".artoo/product")) {
+        fail("application verification requires complete local write roots, v3 prototype checks and full product subjects without measurement policy");
+      }
+      application = prepareApplicationVerificationProfile(raw.application, [...new Set([...writableRoots, ...input.map(item => realpathSync.native(item.workspace_root))])]);
+      for (const file of readApplicationVerificationProfile(application).files) files.set(file.pin.path, { path: file.pin.path, checksum: file.pin.sha256, size: file.pin.bytes });
+    }
+    const applicationSelection = application ? Object.freeze({ version: 1 as const, configuration: readApplicationVerificationProfile(application).configuration }) : undefined;
     const value: VerificationProfile = { id: raw.id, project_id: raw.project_id, workspace_root: root,
       commands, required_files: Object.freeze(required) as unknown as string[], subject_paths: Object.freeze(subjects) as unknown as string[],
+      ...(applicationSelection ? { application: applicationSelection } : {}),
       ...(measurementPolicy ? { measurement_plan_policy: measurementPolicy } : {}) };
     const trustedFiles = Object.freeze([...files.values()].sort((a, b) => a.path.localeCompare(b.path)).map((fact) => Object.freeze(fact)));
     // Keep the legacy serialization byte-for-byte unchanged. Capability digests
@@ -392,13 +409,15 @@ export function prepareVerificationProfiles(input: readonly VerificationProfile[
     const capabilities: VerificationCapabilities | undefined = staticWeb.size ? Object.freeze({ version: 1, profile_digest: digest,
       checks: Object.freeze([...staticWeb].map(([command_id, prepared]) => Object.freeze({ command_id,
         config_digest: prepared.config_digest, contract_digest: prepared.contract_digest, contract: prepared.contract }))) as unknown as VerificationCapabilities["checks"],
-      ...(measurementPolicy ? { measurement_plan_policy: measurementPolicy } : {}) }) : undefined;
+      ...(measurementPolicy ? { measurement_plan_policy: measurementPolicy } : {}),
+      ...(application ? { application: readApplicationVerificationProfile(application).capabilities } : {}) }) : undefined;
     const profile = Object.freeze({ ...value, commands: Object.freeze(commands) as unknown as typeof commands,
       trustedFiles, digest, ...(capabilities ? { capabilities } : {}) });
     const configurationFile = profileConfigurationFiles.get(raw);
     if (configurationFile) profileConfigurationFiles.set(profile, configurationFile);
     if (capabilities) staticWebProfiles.set(profile, staticWeb);
     if (measurementPolicy) measurementPlanPolicies.set(profile, measurementPolicy);
+    if (application) applicationProfiles.set(profile, application);
     locallyPreparedProfiles.add(profile);
     return profile;
   });
@@ -450,6 +469,10 @@ export function readVerificationCapabilities(profile: PreparedVerificationProfil
   return Object.freeze({ ...profile.capabilities, profile_id: profile.id });
 }
 
+export function applicationVerificationSupported(profile: PreparedVerificationProfile): boolean {
+  return process.platform === "win32" && applicationProfiles.has(profile) && windowsProfileBackends.has(profile);
+}
+
 function assertCapabilityContext(profile: PreparedVerificationProfile, context: RunStartPayload["context_pack"]["payload"]): void {
   const expected = readVerificationCapabilities(profile), supplied = context?.verification_capabilities;
   if (!expected) { if (supplied !== undefined) fail("capability context requires an opted-in local profile"); return; }
@@ -494,6 +517,17 @@ export function selectVerificationProfile(payload: RunStartPayload, profiles: re
   if (realpathSync.native(payload.workspace.root) !== profile.workspace_root || payload.workspace.root !== profile.workspace_root) fail("verification workspace mismatch");
   if (context.policy.execution_mode === "discussion" && !payload.verification.expected_subject_digest) fail("verified discussion requires an exact source digest");
   assertCapabilityContext(profile, context);
+  if (context.app_delivery || payload.verification.application) {
+    const selected = applicationProfiles.get(profile), requirement = payload.verification.application;
+    if (!selected || !applicationVerificationSupported(profile) || !context.app_delivery || !requirement
+      || payload.workspace_allocation || context.transferred_product_input || Object.keys(context).some(key => key.startsWith("imported_"))
+      || requirement.config_digest !== profile.capabilities?.application?.config_digest
+      || requirement.contract_digest !== profile.capabilities?.application?.contract_digest) fail("application verification requires its original Windows ordinary-run profile");
+    const stage = productStage(context), source = context.review_subject?.verification?.application;
+    const needsCandidate = !!context.review_subject && (stage === "implementation" || stage === "validation");
+    const expected = needsCandidate && source ? { candidate: source.candidate, origin_run_id: source.origin_run_id, origin_request_id: source.origin_request_id } : undefined;
+    if (needsCandidate && !expected || !isDeepStrictEqual(requirement.expected_candidate, expected)) fail("application review requires the exact original candidate");
+  }
   const release = assertReleaseContext(profile, context, readReleaseCapabilities);
   if (release ? !isDeepStrictEqual(payload.verification.release_capability_binding, release.binding) : payload.verification.release_capability_binding !== undefined) {
     fail("release capability binding differs from the protected profile");
@@ -676,7 +710,10 @@ function physicalWritableRoots(roots: readonly string[]): readonly string[] {
 function assertVerificationAssetBoundary(profile: PreparedVerificationProfile, target: string): void {
   const configurationFile = profileConfigurationFiles.get(profile);
   const files = [...profile.trustedFiles.map(file => file.path), ...(configurationFile ? [configurationFile] : [])];
+  const application = applicationProfiles.get(profile), selected = application ? readApplicationVerificationProfile(application) : undefined;
+  const applicationRoots = selected ? [selected.config.candidate_parent, selected.config.installation_parent, selected.config.selection_parent] : [];
   if (files.some(file => inside(file, target) || inside(target, file))
+    || applicationRoots.some(root => inside(root, target) || inside(target, root))
     || profile.commands.some(command => {
       const evidence = command.observation?.evidence_root;
       return evidence !== undefined && (inside(evidence, target) || inside(target, evidence));
@@ -735,11 +772,28 @@ export function assertVerificationSubject(profile: PreparedVerificationProfile, 
 
 export async function runVerification(profile: PreparedVerificationProfile, requestId: string, signal: AbortSignal,
   context?: RunStartPayload["context_pack"]["payload"], expectedSubjectDigest?: string,
-  readReleaseCapabilities?: ReleaseCapabilityReader): Promise<RunVerificationPayload> {
+  readReleaseCapabilities?: ReleaseCapabilityReader, applicationRun?: ApplicationVerificationRun): Promise<RunVerificationPayload> {
   if (context?.imported_clean_validation || context?.imported_clean_validation_review_subject || context?.imported_recovery_validation || context?.imported_recovery_validation_review_subject || context?.imported_validation || context?.imported_validation_review_subject || context?.transferred_product_input || context?.imported_design_review_subject || context?.imported_execution || context?.imported_execution_review_subject || context?.imported_execution_repair) fail("Imported design requires its original dedicated verifier admission");
   const originalContext = JSON.stringify(context ?? null);
   const result = await executeVerification(profile, requestId, signal, context, expectedSubjectDigest, "final", undefined, readReleaseCapabilities);
-  if (result.outcome === "passed" && !signal.aborted && locallyPreparedProfiles.has(profile) && JSON.stringify(context ?? null) === originalContext) {
+  if (result.outcome === "passed" && context?.app_delivery) {
+    try {
+      const selected = applicationProfiles.get(profile), backend = windowsProfileBackends.get(profile), stage = productStage(context);
+      if (!selected || !backend || !applicationRun || applicationRun.runStart.context_pack.payload !== context
+        || applicationRun.runStart.verification?.request_id !== requestId || applicationRun.runStart.verification.profile_id !== profile.id) fail("application verifier lacks its original run.start binding");
+      if (stage === "implementation" || stage === "validation") {
+        const subject = subjectManifest(profile); if (subject.digest !== result.subject_digest) fail("application source changed after prototype verification");
+        result.application = await executeApplicationVerification(selected, { run: applicationRun, requestId, workspace: profile.workspace_root,
+          stage, subject, assertSubject: () => assertVerificationSubject(profile, subject.digest), backend, signal });
+      }
+      if (JSON.stringify(context) !== originalContext || !RunVerificationPayloadSchema.safeParse(result).success) fail("application evidence or original context differs");
+    } catch (error) {
+      if (error instanceof VerificationCleanupError) throw error;
+      result.outcome = signal.aborted ? "cancelled" : "failed"; result.reason = (error instanceof Error ? error.message : "Application verification failed").slice(0, 2000);
+      delete result.application; for (const check of result.checks) delete check.observation;
+    }
+  }
+  if (result.outcome === "passed" && !context?.app_delivery && !signal.aborted && locallyPreparedProfiles.has(profile) && JSON.stringify(context ?? null) === originalContext) {
     exportableFinalVerifications.set(result, { profile, requestId, context: originalContext, payload: JSON.stringify(result) });
   }
   return result;

@@ -30,7 +30,8 @@ export function loadGoalEntryConfig(env: NodeJS.ProcessEnv): PreparedGoalEntryCo
     || !["127.0.0.1", "::1", "localhost"].includes(env.ARTOO_HOST ?? "127.0.0.1") || env.ARTOO_ALLOW_DEV_NODE_TOKEN !== "0")) {
     throw new Error("Prepared polling requires explicit loopback development mode with dev node tokens disabled");
   }
-  Object.freeze(result.data.request.source_handoff); Object.freeze(result.data.request); return Object.freeze(result.data);
+  Object.freeze(result.data.request.source_handoff); Object.freeze(result.data.request.app_delivery);
+  Object.freeze(result.data.request); return Object.freeze(result.data);
 }
 export function assertPreparedManualGoal(ctx: ServerContext, projectId: string): void {
   if (ctx.goalEntry?.project_id === projectId) throw AppError.conflict("This prepared session accepts its bound product request; start another session for a new goal");
@@ -69,7 +70,8 @@ export async function preparedGoalEntrySnapshot(ctx: ServerContext): Promise<Pre
     const actual = { project_id: result.goal.project_id, objective: result.goal.objective,
       execution_mode: result.automation.execution_mode, verification_profile_id: result.automation.verification_profile_id,
       release_profile_id: result.automation.release_profile_id ?? undefined,
-      max_retries: result.goal.budgets.max_retries ?? 3, source_handoff: result.automation.source_handoff ?? undefined };
+      max_retries: result.goal.budgets.max_retries ?? 3, source_handoff: result.automation.source_handoff ?? undefined,
+      app_delivery: result.automation.app_delivery ?? undefined };
     assertPreparedGoalRequest(ctx, actual, { key: entry.request_key, url: AUTONOMOUS_GOAL_PATH, rawBody: actual });
     goalId = result.goal.id;
   }

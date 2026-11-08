@@ -66,6 +66,7 @@ import { goalImportedDesignCompletions, goalImportedDesignReviewReceipts, goalIm
   goalImportedExecutionReviewReceipts, goalImportedExecutionRepairCompletions, goalImportedExecutionRepairReceipts,
   goalImportedValidationCompletions, goalImportedValidationReceipts, goalImportedValidationReviewReceipts } from "@artoo/db";
 import { IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1 } from "@artoo/domain";
+import { APPLICATION_VERIFICATION_FEATURE_V1 } from "@artoo/domain";
 
 type AutomationRow = typeof goalAutomations.$inferSelect;
 type StopProcess = (ctx: ServerContext, runId: string) => Promise<void>;
@@ -86,6 +87,7 @@ export function mapGoalAutomation(row: AutomationRow, importedPublication = fals
     status: row.status, discussion_id: row.discussionId, plan_id: row.planId, agent_instance_id: row.agentInstanceId,
     computer_id: row.computerId, workspace_root: row.workspaceRoot,
     planning_capability_snapshot: row.planningCapabilitySnapshot,
+    ...(row.appDelivery != null ? { app_delivery: row.appDelivery } : {}),
     verification_profile_id: row.verificationProfileId, execution_mode: row.executionMode, team: row.team, source_handoff: row.sourceHandoff, release_profile_id: row.releaseProfileId, last_error: row.lastError,
     delivery: row.status === "completed" && (row.releaseProfileId || importedPublication) ? "published_product" : "verified_workspace",
     created_at: row.createdAt, updated_at: row.updatedAt });
@@ -148,8 +150,12 @@ export async function createAutonomousGoal(ctx: ServerContext, request: CreateAu
       actorUserId: ctx.actorUserId, consentId: sharing.consentId, policyVersion: sharing.policyVersion,
       status: "planning", verificationProfileId: input.verification_profile_id, executionMode: input.execution_mode ?? "single_agent", releaseProfileId: input.release_profile_id ?? null,
       sourceHandoff: input.source_handoff ?? null,
+      appDelivery: input.app_delivery ?? null,
       createdAt: ctx.clock.nowIso(), updatedAt: ctx.clock.nowIso(),
     }).returning();
+    if (input.app_delivery) await appendEvent(tx, buildEvent(ctx, { type: "goal.application-development.authorized", actorType: "user", actorId: ctx.actorUserId,
+      goalId: goal.id, projectId: goal.project_id, correlationId: goal.id,
+      payload: { version: 1, app_delivery: input.app_delivery, consent_id: sharing.consentId, policy_version: sharing.policyVersion } }));
     if (input.source_handoff) await appendEvent(tx, buildEvent(ctx, { type: "goal.product-handoff.authorized", actorType: "user", actorId: ctx.actorUserId,
       goalId: goal.id, projectId: goal.project_id, correlationId: goal.id,
       payload: { version: 1, source_handoff: input.source_handoff, consent_id: sharing.consentId, policy_version: sharing.policyVersion } }));
@@ -304,6 +310,7 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
   if (!goal) return;
   if (["cancelled", "archived"].includes(goal.status)) { await update(ctx, tx, row, { status: "cancelled", lastError: null }); return; }
   if (goal.status === "completed") {
+    if (row.appDelivery != null) throw AppError.conflict("Application publication is unsupported; development verification cannot complete a product goal");
     await assertRecordedGoalReleaseCompletion(ctx, tx, row);
     await update(ctx, tx, row, { status: "completed", lastError: null }); return;
   }
@@ -338,6 +345,7 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
       const computer = availableComputers.find((item) => item.id === candidate.computer_id);
       if (!instance?.workspaceRoot || !computer || ctx.supportsExecutionFeature?.(computer.id, "run-verification.v1") !== true) continue;
       if (row.executionMode === "agent_team" && ctx.supportsExecutionFeature?.(computer.id, "product-stage-verification.v1") !== true) continue;
+      if (row.appDelivery != null && ctx.supportsExecutionFeature?.(computer.id, APPLICATION_VERIFICATION_FEATURE_V1) !== true) continue;
       const root = resolveAutomationWorkspace(ctx, computer, row.verificationProfileId, goal.projectId, instance.workspaceRoot);
       if (root !== undefined) {
         profileRoots.set(candidate.agent_instance_id, root);
@@ -355,6 +363,8 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
       if (!computer) continue;
       const root = resolveAutomationWorkspace(ctx, computer, row.verificationProfileId, goal.projectId, instance.workspaceRoot);
       if (root === undefined || root !== profileRoots.get(candidate.agent_instance_id)) continue;
+      if (row.appDelivery != null && (!['windows', 'win32'].includes(computer.os)
+        || !ctx.getVerificationCapabilities?.(computer.id, row.verificationProfileId, goal.projectId, root)?.application)) continue;
       if (row.sourceHandoff != null && (!row.releaseProfileId || !["windows", "win32"].includes(computer.os)
         || !automaticSourceAvailable(ctx, computer.id, goal.projectId, root, row.verificationProfileId, row.releaseProfileId))) continue;
       if (row.releaseProfileId) {
@@ -544,6 +554,9 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
     }
     // An unqualified H7 destination remains at H6; ordinary review/retry/release cannot bypass this fence.
     await update(ctx, tx, row, { status: "waiting", lastError: reason }); return;
+  }
+  if (row.appDelivery != null && planTasks.every((task) => task.status === "done")) {
+    await update(ctx, tx, row, { status: "waiting", lastError: "Application development verification and independent review completed. Application publication remains unsupported." }); return;
   }
   if (row.releaseProfileId && planTasks.every((task) => task.status === "done")) {
     await advancePublication(ctx, tx, row, goal); return;
