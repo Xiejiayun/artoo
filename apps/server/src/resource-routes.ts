@@ -107,6 +107,13 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext)
     }
     const runtime = input.runtime.trim();
     const workspaceRoot = input.workspace_root;
+    const existingAgentId = input.agent_id;
+    if (existingAgentId !== undefined && (typeof existingAgentId !== "string" || !existingAgentId.trim() || existingAgentId.length > 128)) {
+      throw AppError.validation("agent_id must identify an existing agent");
+    }
+    if (existingAgentId !== undefined && (input.display_name !== undefined || input.capabilities !== undefined)) {
+      throw AppError.validation("An existing agent retains its name and declared capabilities");
+    }
     const displayName = typeof input.display_name === "string" ? input.display_name.trim() : runtime;
     if (!displayName || displayName.length > 160) throw AppError.validation("display_name must contain between 1 and 160 characters");
     const result = await c.db.transaction(async (tx) => {
@@ -118,23 +125,30 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext)
       ));
       if (!registered || registered.status !== "available") throw AppError.conflict("The computer must advertise an available runtime before it can be configured");
       const available = registered.capabilities as string[];
-      const capabilities = input.capabilities ?? available;
+      // Separate workspaces can retain the same logical contributor. Selecting
+      // an existing identity never edits its declarations or crosses an org.
+      const [existingAgent] = typeof existingAgentId === "string" ? await tx.select().from(agents).where(and(
+        eq(agents.id, existingAgentId), eq(agents.organizationId, c.organizationId),
+      )).for("share") : [];
+      if (existingAgentId !== undefined && !existingAgent) throw AppError.notFound("agent not found");
+      const capabilities = existingAgent?.capabilities ?? input.capabilities ?? available;
       if (!Array.isArray(capabilities) || capabilities.some((value) => typeof value !== "string" || !available.includes(value))) {
         throw AppError.validation("capabilities must be supported by the advertised runtime");
       }
+      await requireAdministrator(c, tx);
       const now = c.clock.nowIso();
-      const agentId = c.idGen.generate(ID_PREFIXES.agent);
-      const [agent] = await tx.insert(agents).values({
-        id: agentId, organizationId: c.organizationId, displayName, kind: "coding",
+      const agent = existingAgent ?? (await tx.insert(agents).values({
+        id: c.idGen.generate(ID_PREFIXES.agent), organizationId: c.organizationId, displayName, kind: "coding",
         status: "idle", capabilities: [...new Set(capabilities)], createdAt: now,
-      }).returning();
+      }).returning())[0]!;
       const [instance] = await tx.insert(agentInstances).values({
         id: c.idGen.generate(ID_PREFIXES.agentInstance), organizationId: c.organizationId,
-        computerId, agentId, runtime, status: "idle", workspaceRoot, config: {}, createdAt: now,
+        computerId, agentId: agent.id, runtime, status: "idle", workspaceRoot, config: {}, createdAt: now,
       }).returning();
       await appendEvent(tx, buildEvent(c, {
         type: "agent_instance.created", actorType: "user", actorId: c.actorUserId, correlationId: instance!.id,
-        payload: { agent_instance_id: instance!.id, computer_id: computerId, runtime },
+        payload: { agent_instance_id: instance!.id, computer_id: computerId, runtime,
+          ...(existingAgent ? { agent_id: existingAgent.id } : {}) },
       }));
       return { agent: mapAgent(agent!), agent_instance: mapAgentInstance(instance!) };
     });

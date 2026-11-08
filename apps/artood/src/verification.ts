@@ -49,6 +49,7 @@ import { VerificationCleanupError } from "./verification-cleanup-error.js";
 export { VerificationCleanupError } from "./verification-cleanup-error.js";
 import { assertAcceptedProductInputs, readProductFile } from "./product-stage.js";
 import { assertProductDesignRevisionRun, assertProductDesignRevisionBaseline, inspectProductDesignRevision, readProductDesignRevision } from "./product-design-revision.js";
+import { assertProductResearchRevisionRun } from "./product-research-revision.js";
 import { sealBrowserEvidence, validateBrowserEvidenceRoot } from "./browser-evidence.js";
 import { deriveExpectedWebAcceptanceV2, deriveExpectedWebAcceptanceV3, prepareStaticWebCapabilities, type PreparedStaticWebCapabilities } from "./web-acceptance.js";
 import { isV2WebAcceptanceOptions, isV3WebAcceptanceOptions, normalizeWebAcceptanceOptions, STATIC_WEB_MAX_CONFIG_BYTES } from "./web-acceptance-config.js";
@@ -464,6 +465,7 @@ function commandCapabilityBinding(profile: PreparedVerificationProfile, commandI
 export function selectVerificationProfile(payload: RunStartPayload, profiles: readonly PreparedVerificationProfile[], managed: boolean,
   readReleaseCapabilities?: ReleaseCapabilityReader, computerId?: string): PreparedVerificationProfile | undefined {
   assertProductDesignRevisionRun(payload, computerId);
+  assertProductResearchRevisionRun(payload, computerId);
   if (!payload.verification) {
     if (payload.context_pack.payload?.verification_capabilities !== undefined) fail("capability context requires node verification authority");
     assertReleaseCapabilityContext(payload.context_pack.payload, readReleaseCapabilities);

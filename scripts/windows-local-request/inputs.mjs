@@ -7,6 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
+import { configuredSlotLayout, slotConfigurationPaths, selectPublicationSlot, assertLoopbackEndpoint } from './slots.mjs';
 
 export const toolsRoot = path.dirname(fileURLToPath(import.meta.url));
 export const sha = value => createHash('sha256').update(value).digest('hex');
@@ -288,6 +289,8 @@ export function validateStoppedProductRecords(result, published, binding, sessio
       && node.discovery.registry_disconnected === true, 'An original node has no confirmed disconnect');
     same(node.identity, configured.identity, 'Original node identity changed');
     same(node.registration, configured.registration, 'Original node registration changed');
+    same(node.workspace_slots, configured.workspace_slots, 'Original node workspace slots changed');
+    configuredSlotLayout(node, sessionRoot);
     assert.equal(cli?.pid, configured.cli?.pid, 'Original CLI identity changed');
     assert.ok(Number.isSafeInteger(cli.pid) && cli.pid > 0 && cli.spawned === true && cli.shutdown_written === true
       && cli.forced_root_kill === false && cli.stdout_eof === true && cli.stderr_eof === true,
@@ -312,6 +315,37 @@ export function validateStoppedProductRecords(result, published, binding, sessio
   }
   assert.notEqual(result.nodes[0].identity.computer_id, result.nodes[1].identity.computer_id, 'Original nodes must be distinct');
   return result.nodes.find(node => node.role === 'destination');
+}
+
+/** Values here must have already passed the original configuration file pins.
+ * Selection is by the accepted profile pair and complete capability binding;
+ * matching an endpoint or a directory prefix is never enough. */
+export function selectStoppedProductConfiguration({ sessionRoot, destination, publication, verifiers, releases, discovered }) {
+  const slots = configuredSlotLayout(destination, sessionRoot), projectId = destination.identity.project_id;
+  assert.ok(Array.isArray(verifiers) && verifiers.length === slots.length && Array.isArray(releases) && releases.length === slots.length,
+    'Original configured verifier and publisher counts differ');
+  const discovery = destination.workspace_slots === undefined
+    ? [{ index: 0, verifier: discovered.verifier, release: discovered.release }] : discovered.slots;
+  assert.ok(Array.isArray(discovery) && discovery.length === slots.length, 'Original slot capability discovery differs');
+  const configured = slots.map(slot => {
+    const verifier = verifiers.filter(item => item.id === slot.verification_profile_id), release = releases.filter(item => item.id === slot.release_profile_id);
+    assert.ok(verifier.length === 1 && verifier[0].project_id === projectId && verifier[0].workspace_root === slot.workspace,
+      'Original verifier identity changed');
+    assert.ok(release.length === 1 && release[0].project_id === projectId
+      && release[0].verification_profile_id === slot.verification_profile_id && release[0].storage_root === slot.storage_root,
+      'Original publisher identity or storage changed');
+    const endpoint = slot.endpoint ?? release[0].public_url, port = assertLoopbackEndpoint(endpoint);
+    assert.ok(release[0].public_url === endpoint && release[0].listen_host === '127.0.0.1' && release[0].listen_port === port,
+      'Original publisher origin changed');
+    const capability = discovery.filter(item => item.index === slot.index);
+    assert.equal(capability.length, 1, 'Original slot capability discovery is ambiguous');
+    return { ...slot, endpoint, verifier: capability[0].verifier, release: capability[0].release };
+  });
+  const selected = selectPublicationSlot(configured, publication.request);
+  assert.equal(selected.endpoint, publication.url, 'Published endpoint differs from its configured slot');
+  assert.equal(publication.receipt.release_profile_digest, selected.release.binding.release_profile_digest,
+    'Published receipt differs from its original profile');
+  return { selected, slots: configured };
 }
 
 function productSessionPath(selected) {
@@ -352,23 +386,16 @@ export async function captureReopen({ product_path, configuration_file }) {
   assert.equal(bundleManifest.path, path.join(bundle, 'bundle-manifest.json'), 'Unexpected private bundle manifest');
   assert.equal(nativeManifest.path, path.join(bundle, 'native', 'windows-process', 'manifest.json'), 'Unexpected native manifest');
   assert.equal(bundleManifest.sha256, installed.bundle_manifest.sha256, 'Private bundle manifest differs');
-  const expectedFiles = ['source', 'destination'].flatMap(role => ['browser.json', 'verifiers.json', 'releases.json', 'discovered-capabilities.json', 'source.json']
-    .map(name => path.join(sessionRoot, role, 'config', name))).sort();
+  const expectedFiles = slotConfigurationPaths(sessionRoot, binding.value.nodes);
   same(binding.value.files.map(pin => pin.path).sort(), expectedFiles, 'Original configuration file set differs');
   for (const pin of binding.value.files) check(pin);
   const verificationProfilesFile = path.join(sessionRoot, 'destination', 'config', 'verifiers.json');
   const releaseProfilesFile = path.join(sessionRoot, 'destination', 'config', 'releases.json');
-  const verifier = read(verificationProfilesFile), releases = read(releaseProfilesFile);
-  assert.ok(Array.isArray(verifier) && verifier.length === 1 && Array.isArray(releases) && releases.length === 1,
-    'Expected the original single verifier and publisher profiles');
-  const workspace = physical(destination.identity.workspace, true), storage = physical(path.join(sessionRoot, 'destination', 'release'), true);
-  assert.ok(verifier[0].id === 'native-web' && verifier[0].project_id === destination.identity.project_id
-    && verifier[0].workspace_root === workspace, 'Original verifier identity changed');
-  const release = releases[0];
-  assert.ok(release.id === 'native-publish' && release.project_id === destination.identity.project_id
-    && release.verification_profile_id === verifier[0].id && release.storage_root === storage
-    && release.public_url === original.value.publication.url && release.listen_host === '127.0.0.1'
-    && release.listen_port === Number(new URL(original.value.publication.url).port), 'Original publisher origin or storage changed');
+  const { selected, slots } = selectStoppedProductConfiguration({ sessionRoot, destination, publication: original.value.publication,
+    verifiers: read(verificationProfilesFile), releases: read(releaseProfilesFile),
+    discovered: read(path.join(sessionRoot, 'destination', 'config', 'discovered-capabilities.json')) });
+  const workspace = physical(selected.workspace, true), storage = physical(selected.storage_root, true);
+  const writableWorkspaceRoots = slots.map(slot => physical(slot.workspace, true));
   const output = path.join(parent, 'reopen-' + new Date().toISOString().replaceAll(/[-:.]/gu, '') + '-' + randomUUID());
   assert.equal(fs.existsSync(output), false, 'A reopen observation directory must be fresh');
   const records = [original.pin, published.pin, binding.pin];
@@ -377,10 +404,10 @@ export async function captureReopen({ product_path, configuration_file }) {
     installation_manifest: installed.installation_manifest, original_result: original.pin, published_record: published.pin,
     config_binding: binding.pin, bundle, bundle_manifest: bundleManifest, native_manifest: nativeManifest,
     verification_profiles_file: verificationProfilesFile, release_profiles_file: releaseProfilesFile,
-    release_profile_id: release.id, workspace, storage_root: storage, publication: original.value.publication,
+    release_profile_id: selected.release_profile_id, workspace, storage_root: storage, publication: original.value.publication,
     original_ownership: original.value.publisher_ownership,
     windows_process_installation: { directory: path.dirname(nativeManifest.path), manifestSha256: 'sha256:' + nativeManifest.sha256,
-      writableWorkspaceRoots: [workspace] } });
+      writableWorkspaceRoots } });
   reopenCaptures.set(inputs, { local: local.pin, installed, records, configFiles: binding.value.files, bundleTree, parent });
   return inputs;
 }

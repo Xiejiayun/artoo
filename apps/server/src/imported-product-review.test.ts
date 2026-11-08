@@ -42,6 +42,14 @@ import { createGoalAutomationDispatcher } from "./services/goal-automation-servi
 import { unsettledGoalExecutionCount, unsettledStandaloneExecutions } from "./services/execution-state.js";
 import { attachNodeBinding } from "./node-binding.js";
 import { ensureGoalProductRelease } from "./services/product-release-service.js";
+import { goalResearchDestinationPools as revisionPools, goalResearchDestinationSlots as revisionSlots, goalResearchRevisions as researchRevisions, goalImportedDesignContinuations } from "@artoo/db";
+import { GoalBudgetsSchema, ResearchDestinationPoolSnapshotV1Schema, ResearchRevisionIntentV1Schema, PRODUCT_RESEARCH_REVISION_FEATURE_V1, VerificationRequirementSchema } from "@artoo/domain";
+import { ensureGoalResearchRevision } from "./services/research-revision-service.js";
+import { researchRevisionGoalDigest, researchRevisionPlanDigest,
+  readCurrentResearchHandoff, resolveResearchRevisionOrigin, researchRevisionContext } from "./services/research-revision-origin-service.js";
+import { persistResearchDestinationPool } from "./services/research-destination-pool-service.js";
+import { assertResearchHandoffDestinationOwner } from "./services/research-handoff-guard.js";
+import { createAssistantDispatcher } from "./services/assistant-service.js";
 
 const sha = (bytes: string | Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const hash = (value: unknown) => sha(canonicalProductSourceTransferValueV1(value));
@@ -74,7 +82,7 @@ describe("imported destination review orchestration (controlled DB/protocol evid
     return { ...device, nodeId };
   }
   async function prepare(options: { malformed?: "metadata" | "omitted" | "duplicate"; skipExport?: boolean; originalReceiptRun?: boolean;
-    measurementV2?: boolean; legacyResearch?: boolean } = {}) {
+    measurementV2?: boolean; legacyResearch?: boolean; revision?: boolean } = {}) {
     const source = await paired("source"), destination = await paired("destination"), other = await paired("other");
     await server.db.db.update(agentInstances).set({ computerId: source.nodeId }).where(eq(agentInstances.id, "instance_mock_coder"));
     const releaseFixture = options.measurementV2 ? releaseAcceptanceFixture("research") : undefined;
@@ -128,6 +136,11 @@ describe("imported destination review orchestration (controlled DB/protocol evid
     await server.db.db.update(autonomousReviews).set({ status: "accepted", verdict: review.verdict }).where(eq(autonomousReviews.id, "measurement_review"));
     await server.db.db.insert(goalAutomations).values({ goalId: "measurement_goal", organizationId: server.ctx.organizationId,
       actorUserId: server.ctx.actorUserId, policyVersion: server.ctx.aiDataSharingPolicy!.version, status: "executing", planId: "transfer_plan",
+      ...(options.revision ? { executionMode: "agent_team", releaseProfileId: sourceRelease!.binding.release_profile_id,
+        agentInstanceId: review.source.run.agentInstanceId,
+        planningCapabilitySnapshot: { version: 1, computer_id: source.nodeId, project_id: "proj_artoo", workspace_root: "/workspace/product",
+          verification_profile_id: "default", capabilities: f.capabilities, release: { version: 1, capabilities: sourceRelease } },
+        sourceHandoff: { version: 1, mode: "automatic", research_revision: { version: 1, strategy: "configured_pool" } } } : {}),
       computerId: source.nodeId, workspaceRoot: "/workspace/product", verificationProfileId: "default", createdAt: now, updatedAt: now });
     const destinationProfile = sourceRelease ? "destination-verify" : "default", destinationCapabilities = structuredClone(f.capabilities);
     if (sourceRelease) {
@@ -224,13 +237,38 @@ describe("imported destination review orchestration (controlled DB/protocol evid
       sourceRelease, destinationRelease, researchBytes, researchReport };
   }
 
-  async function prepareHandoff(){
-    const f=await prepare({measurementV2:true}),now=server.ctx.clock.nowIso();
+  async function prepareHandoff(revision = false){
+    const f=await prepare({measurementV2:true, revision}),now=server.ctx.clock.nowIso();
     await server.db.db.update(tasks).set({sourcePlanSpecRef:"0"}).where(eq(tasks.id,f.base.source.task_id));
     await server.db.db.update(plans).set({taskSpecs:[{development_stage:"research",title:"Research",acceptance_criteria:["Source research accepted"]},
       {development_stage:"design",title:"Design",acceptance_criteria:["Design the product"],dependencies:[{ref:"0",type:"blocks"}]}]}).where(eq(plans.id,f.base.plan_id));
     await server.db.db.insert(tasks).values({id:"handoff_design",organizationId:server.ctx.organizationId,projectId:f.base.project_id,goalId:f.base.goal_id,
       sourcePlanId:f.base.plan_id,sourcePlanSpecRef:"1",title:"Next design",status:"ready",acceptanceCriteria:["Design the product"],createdByType:"system",createdById:"goal_runner",createdAt:now,updatedAt:now});
+    if (revision) {
+      const [sourceTask] = await server.db.db.select().from(tasks).where(eq(tasks.id, f.base.source.task_id));
+      await server.db.db.update(plans).set({ taskSpecs: [{ development_stage: "research", title: sourceTask!.title,
+        description: sourceTask!.description, acceptance_criteria: sourceTask!.acceptanceCriteria, required_capabilities: sourceTask!.requiredCapabilities },
+      { development_stage: "design", title: "Next design", acceptance_criteria: ["Design the product"], dependencies: [{ ref: "0", type: "blocks" }] },
+      { development_stage: "implementation", title: "Implement", acceptance_criteria: ["Implement the product"], dependencies: [{ ref: "1", type: "blocks" }] },
+      { development_stage: "validation", title: "Validate", acceptance_criteria: ["Validate the product"], dependencies: [{ ref: "2", type: "blocks" }] }] }).where(eq(plans.id, f.base.plan_id));
+      await server.db.db.insert(tasks).values(["implementation", "validation"].map((stage, index) => ({ id: `revision_${stage}`, organizationId: server.ctx.organizationId,
+        projectId: f.base.project_id, goalId: f.base.goal_id, sourcePlanId: f.base.plan_id, sourcePlanSpecRef: String(index + 2),
+        title: stage === "implementation" ? "Implement" : "Validate", status: "backlog", acceptanceCriteria: [stage === "implementation" ? "Implement the product" : "Validate the product"],
+        createdByType: "system", createdById: "goal_runner", createdAt: now, updatedAt: now })));
+      await server.db.db.update(agentInstances).set({ runtime: "codex", status: "idle", workspaceRoot: f.base.source.workspace_root })
+        .where(sql`${agentInstances.id} in ('instance_mock_coder','review_instance')`);
+      const [writer] = await server.db.db.select().from(agentInstances).where(eq(agentInstances.id, "instance_mock_coder"));
+      for (const agentId of [writer!.agentId, "review_agent"]) {
+        const [agent] = await server.db.db.select().from(agents).where(eq(agents.id, agentId));
+        await server.db.db.update(agents).set({ capabilities: [...new Set([...(agent!.capabilities as string[]), "code.read", "code.modify", "code.review"])] }).where(eq(agents.id, agentId));
+      }
+      await server.db.db.update(runs).set({ runtimeId: "codex", modelProfileId: writer!.modelProfileId, effortProfileId: writer!.effortProfileId })
+        .where(sql`${runs.id} in ('measurement_author_run','measurement_peer_run')`);
+      await server.db.db.insert(agentInstances).values({ ...writer!, id: "destination_writer_instance", computerId: f.destination.nodeId,
+        workspaceRoot: f.base.destination.workspace_root });
+      const [goal] = await server.db.db.select().from(goals).where(eq(goals.id, f.base.goal_id));
+      await server.db.db.update(goals).set({ budgets: { ...GoalBudgetsSchema.parse(goal!.budgets), max_retries: 1 } }).where(eq(goals.id, f.base.goal_id));
+    }
     const context=structuredClone(f.review.source.context);context.task.id="handoff_verification_task";context.workspace.root=f.base.destination.workspace_root;
     context.policy.filesystem_write_scope=[f.base.destination.workspace_root];context.verification_capabilities={...f.base.destination.capabilities,profile_id:f.base.destination.profile_id};
     context.release_capabilities=f.destinationRelease;
@@ -239,7 +277,7 @@ describe("imported destination review orchestration (controlled DB/protocol evid
     context.goal_context = { version: 1, goal_id: f.base.goal_id, objective: originalGoal!.objective, acceptance_criteria: originalGoal!.acceptanceCriteria as string[],
       plan: { id: f.base.plan_id, version: originalPlan!.version, rationale: originalPlan!.rationale ?? "", spec_ref: "0" } };
     const intent=ProductSourceHandoffIntentV1Schema.parse({version:1,request:f.request,next_task_id:"handoff_design",destination_start:{run_id:"handoff_verification_run",
-      task_id:context.task.id,agent_instance_id:"controlled_operation",runtime:"controlled_fixture",workspace:{root:context.workspace.root},context_pack:{id:"handoff_context",payload:context},
+      task_id:context.task.id,agent_instance_id:revision ? "destination_writer_instance" : "controlled_operation",runtime:revision ? "codex" : "controlled_fixture",workspace:{root:context.workspace.root},context_pack:{id:"handoff_context",payload:context},
       policy_snapshot:context.policy,artifact_rules:{paths:[]},verification:{version:1,profile_id:f.base.destination.profile_id,request_id:"handoff_verification_request",
         expected_subject_digest:f.base.source.subject_digest,capability_binding:verificationCapabilityBinding(f.base.destination.capabilities),release_capability_binding:f.destinationRelease!.binding}}});
     const supports=f.actor.supportsExecutionFeature;f.actor.supportsExecutionFeature=(node,feature)=>feature===PRODUCT_SOURCE_OPERATIONS_FEATURE_V1||supports?.(node,feature)===true;
@@ -260,8 +298,8 @@ describe("imported destination review orchestration (controlled DB/protocol evid
   }
   // The source/H1 fixture above is copied from the R6 semantic-transfer suite.
   // All author/import/verifier/reviewer results below are explicitly controlled data.
-  async function prepareImported() {
-    const f = await prepareHandoff(); await uploadHandoff(f);
+  async function prepareImported(revision = false) {
+    const f = await prepareHandoff(revision); await uploadHandoff(f);
     const imported = (await f.ops()).find(row => row.kind === "import_verify")!;
     const importBinding = f.binding(f.destination.nodeId), command = await importBinding.dispatch(imported.id);
     const measured = controlledDestinationResult(ProductSourceOperationV1Schema.parse(imported.payload), f.researchBytes);
@@ -269,7 +307,7 @@ describe("imported destination review orchestration (controlled DB/protocol evid
     await importBinding.qualify(imported.id);
     const [sourceInstance] = await server.db.db.select().from(agentInstances).where(eq(agentInstances.id, f.review.source.run.agentInstanceId));
     const [sourceAgent] = await server.db.db.select().from(agents).where(eq(agents.id, sourceInstance!.agentId));
-    await server.db.db.insert(agents).values({ ...sourceAgent!, id: "imported_reviewer_agent", kind: "reviewer", capabilities: ["code.read", "code.review"] });
+    await server.db.db.insert(agents).values({ ...sourceAgent!, id: "imported_reviewer_agent", kind: "reviewer", capabilities: ["code.read", "code.review", ...(revision ? ["code.modify"] : [])] });
     await server.db.db.insert(agentInstances).values({ ...sourceInstance!, id: "imported_reviewer_instance", agentId: "imported_reviewer_agent",
       computerId: f.destination.nodeId, runtime: "codex", status: "idle", workspaceRoot: f.base.destination.workspace_root });
     const team = { version: 1, reviewer_instance_ids: ["review_instance", "imported_reviewer_instance"],
@@ -301,6 +339,274 @@ describe("imported destination review orchestration (controlled DB/protocol evid
       verdict: { version: 1, review_id: row.id, transfer_id: row.handoffId, subject_digest: request.operation.intent.request.byte_request.source.subject_digest,
         source_export_digest: request.operation.intent.request.source_export_digest, outcome: "accepted", summary: "Controlled substantive imported research verdict; no model was invoked", findings: [] } });
   }
+  // Prepared slot candidates are controlled; pool persistence, H1/H2 admission,
+  // credentials, capsule bytes and all SQL guards use their actual services.
+  async function prepareRevision(outcome: "changes_requested" | "accepted" | "uncertain" = "changes_requested") {
+    const f = await prepareImported(true), db = server.db.db;
+    const instance = async (id: string) => (await db.select().from(agentInstances).where(eq(agentInstances.id, id)))[0]!;
+    const sourceWriter = await instance("instance_mock_coder"), sourceReviewer = await instance("review_instance");
+    const destinationWriter = await instance("destination_writer_instance"), destinationReviewer = await instance("imported_reviewer_instance");
+    const laterRoot = "/destination/research-revision-1";
+    await db.insert(agentInstances).values([{ ...destinationWriter, id: "revision_writer_1", workspaceRoot: laterRoot },
+      { ...destinationReviewer, id: "revision_reviewer_1", workspaceRoot: laterRoot }]);
+    const role = (value: typeof sourceWriter) => ({ instance_id: value.id, agent_id: value.agentId, runtime: value.runtime,
+      model_profile_id: value.modelProfileId, effort_profile_id: value.effortProfileId });
+    const mapping = { source_release: f.sourceRelease!, destination_release: f.destinationRelease!, command_pairs: f.request.command_pairs };
+    const laterCapabilities = { ...f.base.destination.capabilities, profile_digest: sha("controlled revision verifier 1") };
+    const laterMapping = { ...mapping, destination_release: { ...mapping.destination_release, binding: { ...mapping.destination_release.binding,
+      workspace_root: laterRoot, release_profile_id: "revision-release-1", release_profile_digest: sha("controlled revision release 1"),
+      verification_profile_id: "revision-verifier-1", verification_profile_digest: laterCapabilities.profile_digest } } };
+    const [goal] = await db.select().from(goals).where(eq(goals.id, f.base.goal_id));
+    const [plan] = await db.select().from(plans).where(eq(plans.id, f.base.plan_id));
+    const snapshot = ResearchDestinationPoolSnapshotV1Schema.parse({ version: 1, project_id: goal!.projectId, goal_id: goal!.id,
+      plan_id: plan!.id, next_task_id: "handoff_design", base_research_task_id: f.base.source.task_id,
+      actor_user_id: f.actor.actorUserId, consent_id: null, policy_version: f.actor.aiDataSharingPolicy!.version,
+      goal_digest: researchRevisionGoalDigest(goal!), plan_digest: researchRevisionPlanDigest(plan!), max_retries: 1,
+      source: { computer_id: f.source.nodeId, workspace_root: f.base.source.workspace_root, release: f.sourceRelease!,
+        writer: role(sourceWriter), reviewer: role(sourceReviewer) },
+      destination: { computer_id: f.destination.nodeId, writer_agent_id: destinationWriter.agentId, reviewer_agent_id: destinationReviewer.agentId },
+      members: [{ slot_id: "revision_slot_0", index: 0, mapping, writer: role(destinationWriter), reviewer: role(destinationReviewer) },
+        { slot_id: "revision_slot_1", index: 1, mapping: laterMapping,
+          writer: role(await instance("revision_writer_1")), reviewer: role(await instance("revision_reviewer_1")) }] });
+    const originalFeature = f.actor.supportsExecutionFeature, originalRelease = f.actor.getReleaseCapabilities;
+    const originalVerifierSupport = f.actor.supportsVerificationProfile, originalVerifier = f.actor.getVerificationCapabilities, originalReleaseSupport = f.actor.supportsReleaseProfile;
+    const laterVerifier = (node: string, profile: string, project: string, root: string) => node === f.destination.nodeId
+      && profile === "revision-verifier-1" && project === goal!.projectId && root === laterRoot;
+    f.actor.supportsVerificationProfile = (node, profile, project, root) => laterVerifier(node, profile, project, root) || originalVerifierSupport?.(node, profile, project, root) === true;
+    f.actor.getVerificationCapabilities = (node, profile, project, root) => laterVerifier(node, profile, project, root) ? laterCapabilities : originalVerifier?.(node, profile, project, root);
+    f.actor.getVerificationWorkspace = (node, profile, project, root) => f.actor.supportsVerificationProfile?.(node, profile, project, root) ? root : undefined;
+    const destinationFeatures = ["imported-design-continuation.v1", "imported-design-review.v1", "imported-execution.v1",
+      "imported-execution-review.v1", "imported-validation.v1", "product-release.acceptance.v1"];
+    f.actor.supportsExecutionFeature = (node, feature) => feature === PRODUCT_RESEARCH_REVISION_FEATURE_V1 ? node === f.source.nodeId
+      : ["run-verification.v1", "product-stage-verification.v1", "product-release.acceptance.v1", "measurement-plan.v2"].includes(feature) && [f.source.nodeId, f.destination.nodeId].includes(node)
+      || node === f.destination.nodeId && destinationFeatures.includes(feature) || originalFeature?.(node, feature) === true;
+    f.actor.supportsReleaseProfile = (node, profile, project, root, verifier) => node === f.destination.nodeId && profile === "revision-release-1"
+      && laterVerifier(node, verifier, project, root) || originalReleaseSupport?.(node, profile, project, root, verifier) === true;
+    f.actor.getReleaseCapabilities = (node, profile, project, root, verifier) => node === f.destination.nodeId
+      && profile === laterMapping.destination_release.binding.release_profile_id && project === goal!.projectId && root === laterRoot
+      && verifier === laterMapping.destination_release.binding.verification_profile_id ? laterMapping.destination_release : originalRelease?.(node, profile, project, root, verifier);
+    f.actor.getProductSourceRouting = node => node === f.destination.nodeId ? { version: 1, source_exports: [], destination_mappings: [mapping, laterMapping] }
+      : node === f.source.nodeId ? { version: 1, source_exports: [f.sourceRelease!], destination_mappings: [] } : undefined;
+    f.actor.getPairedNodeSession = node => {
+      const paired = [f.source, f.destination].find(value => value.nodeId === node);
+      return paired ? { computerId: node, deviceId: paired.device.id, tokenLookup: parseDeviceToken(paired.node_token)!.lookup, sessionId: `revision-session-${node}` } : undefined;
+    };
+    const [sourceTask] = await db.select().from(tasks).where(eq(tasks.id, f.base.source.task_id));
+    const [sourceRun] = await db.select().from(runs).where(eq(runs.id, f.base.source.run_id));
+    const [destinationComputer] = await db.select().from(computers).where(eq(computers.id, f.destination.nodeId));
+    const originalAutomation = await f.automation();
+    await server.db.transaction(tx => persistResearchDestinationPool(f.actor, tx, { automation: originalAutomation, goal: goal!, plan: plan!, sourceTask: sourceTask!,
+      sourceRun: sourceRun!, sourceReviewerRunId: f.base.source.reviewer_run_id, members: snapshot.members, destinationComputer: destinationComputer!, handoffId: f.base.transfer_id }));
+    const [storedPool] = await db.select().from(revisionPools).where(eq(revisionPools.goalId, f.base.goal_id));
+    expect(storedPool!.snapshot).toEqual(snapshot);
+    const parent = await f.ensure(), binding = f.binding(), command = await binding.dispatch(parent.id);
+    const result = reviewed(parent, f.researchBytes);
+    if (result.outcome !== "reviewed") throw Error("Controlled reviewed result required");
+    if (outcome === "changes_requested") result.verdict = { ...result.verdict, outcome,
+      summary: "The source research needs a documented failure case", findings: [{ severity: "blocking", description: "Research omits recovery after a failed save" }] };
+    await binding.receive({ kind: "product.source.review.result.v1", node_id: f.destination.nodeId, command_id: command.id,
+      payload: outcome === "uncertain" ? { version: 1, review_id: parent.id, request_digest: parent.requestDigest,
+        outcome: "uncertain", closed: false, execution_authorized: false, reason: "Controlled unclosed reviewer" } : result });
+    const admit = async () => { const automation = await f.automation(); return server.db.transaction(tx => ensureGoalResearchRevision(f.actor, tx, automation, parent.id)); };
+    return { ...f, parent, snapshot, poolId: storedPool!.id, admit };
+  }
+  it("creates one authorized H2 research successor without resetting original plan/history or spending twice", async () => {
+    const f = await prepareRevision(), db = server.db.db;
+    const [original] = await db.select().from(tasks).where(eq(tasks.id, f.base.source.task_id));
+    const [plan] = await db.select().from(plans).where(eq(plans.id, f.base.plan_id));
+    const beforeHandoff = await db.select().from(goalProductHandoffs), beforeReview = await db.select().from(goalImportedProductReviews);
+    const revision = await f.admit(); expect((await f.admit()).id).toBe(revision.id);
+    expect(await db.select().from(tasks).where(eq(tasks.id, original!.id))).toEqual([original]);
+    expect(await db.select().from(plans).where(eq(plans.id, plan!.id))).toEqual([plan]);
+    expect(await db.select().from(goalProductHandoffs)).toEqual(beforeHandoff); expect(await db.select().from(goalImportedProductReviews)).toEqual(beforeReview);
+    expect((await db.select().from(goals).where(eq(goals.id, f.base.goal_id)))[0]!.retryCount).toBe(1);
+    const [auxiliary] = await db.select().from(tasks).where(eq(tasks.id, revision.auxiliaryTaskId));
+    expect(auxiliary).toMatchObject({ status: "ready", sourcePlanId: null, sourcePlanSpecRef: null,
+      parentTaskId: original!.id, executionPolicyTaskId: original!.id, goalId: original!.goalId });
+    const origin = await resolveResearchRevisionOrigin(f.actor, db, auxiliary!); expect(origin?.specRef).toBe("0");
+    expect(await readCurrentResearchHandoff(f.actor, db, f.base.goal_id, f.base.plan_id, "handoff_design")).toMatchObject({ handoffId: null, revision: { id: revision.id } });
+    const context = researchRevisionContext(ResearchRevisionIntentV1Schema.parse(revision.intent), revision.intentDigest, "actual-author-run");
+    expect(context).toMatchObject({ author_run_id: "actual-author-run", baseline: { source_run_id: f.base.source.run_id, subject_digest: f.base.source.subject_digest } });
+    expect(context).not.toHaveProperty("expected_subject_digest");
+    await expect(db.update(researchRevisions).set({ attemptIndex: 2 }).where(eq(researchRevisions.id, revision.id))).rejects.toThrow();
+    await expect(db.update(revisionPools).set({ currentRevisionId: null }).where(eq(revisionPools.id, f.poolId))).rejects.toThrow();
+    await expect(db.update(revisionSlots).set({ status: "reserved", handoffId: null }).where(eq(revisionSlots.id, "revision_slot_0"))).rejects.toThrow();
+    await expect(db.update(goalAutomations).set({ sourceHandoff: { version: 1, mode: "automatic" } }).where(eq(goalAutomations.goalId, f.base.goal_id))).rejects.toThrow();
+  });
+  it.each(["accepted", "uncertain"] as const)("does not create research repair from an %s H2", async outcome => {
+    const f = await prepareRevision(outcome); await expect(f.admit()).rejects.toThrow("closed substantive H2 rejection");
+    expect(await server.db.db.select().from(researchRevisions)).toEqual([]);
+    expect((await server.db.db.select().from(goals).where(eq(goals.id, f.base.goal_id)))[0]!.retryCount).toBe(0);
+  });
+  it.each(["feature", "session", "budget"])("keeps source history closed when revision %s is unavailable", async missing => {
+    const f = await prepareRevision();
+    if (missing === "feature") { const supports = f.actor.supportsExecutionFeature; f.actor.supportsExecutionFeature = (node, feature) => feature !== PRODUCT_RESEARCH_REVISION_FEATURE_V1 && supports?.(node, feature) === true; }
+    if (missing === "session") f.actor.getPairedNodeSession = () => undefined;
+    if (missing === "budget") await server.db.db.update(goals).set({ retryCount: 1 }).where(eq(goals.id, f.base.goal_id));
+    await expect(f.admit()).rejects.toThrow(); expect(await server.db.db.select().from(researchRevisions)).toEqual([]);
+    expect((await server.db.db.select().from(tasks).where(eq(tasks.id, f.base.source.task_id)))[0]!.status).toBe("done");
+    expect((await server.db.db.select().from(revisionSlots).where(eq(revisionSlots.id, "revision_slot_1")))[0]).toMatchObject({ status: "reserved", handoffId: null, revisionId: null });
+  });
+  it("cannot retrofit research revision authority onto a legacy goal", async () => {
+    const f = await prepareImported(), parent = await f.ensure(), automation = await f.automation();
+    await expect(server.db.transaction(tx => ensureGoalResearchRevision(f.actor, tx, automation, parent.id))).rejects.toThrow("original explicit configured-pool grant");
+    await expect(server.db.db.update(goalAutomations).set({ sourceHandoff: { version: 1, mode: "automatic", research_revision: { version: 1, strategy: "configured_pool" } } })
+      .where(eq(goalAutomations.goalId, f.base.goal_id))).rejects.toThrow();
+    expect(await server.db.db.select().from(researchRevisions)).toEqual([]);
+  });
+  it("research revision reservations reject another goal, another handoff, overlapping scopes and ancestor restart", async () => {
+    const f = await prepareRevision();
+    await expect(server.db.transaction(tx => assertResearchHandoffDestinationOwner(f.actor, tx, f.intent))).resolves.toBeUndefined();
+    for (const change of ["goal", "handoff", "child", "unused"]) {
+      const intent = structuredClone(f.intent), base = intent.request.byte_request;
+      if (change === "goal") base.goal_id = "other-goal";
+      if (change === "handoff") base.transfer_id = "other-handoff";
+      if (change === "child") base.destination.workspace_root += "/child";
+      if (change === "unused") base.destination.workspace_root = f.snapshot.members[1]!.mapping.destination_release.binding.workspace_root;
+      await expect(server.db.transaction(tx => assertResearchHandoffDestinationOwner(f.actor, tx, intent))).rejects.toThrow("retained research reservation");
+    }
+    await f.admit();
+    await expect(server.db.transaction(tx => assertResearchHandoffDestinationOwner(f.actor, tx, f.intent))).rejects.toThrow("awaiting its exact accepted source");
+    expect(await server.db.db.select().from(goalProductHandoffs)).toHaveLength(1);
+  });
+  it("research revision assignment rechecks the frozen writer after admission", async () => {
+    const f = await prepareRevision(), revision = await f.admit(), db = server.db.db;
+    const before = await db.select().from(runs), requirement = VerificationRequirementSchema.parse({
+      ...f.review.source.run.verificationRequirement as object, request_id: "revision-author-verification" });
+    await db.update(agentInstances).set({ runtime: "claude" }).where(eq(agentInstances.id, f.snapshot.source.writer.instance_id));
+    await expect(assignTask(f.actor, revision.auxiliaryTaskId, { mode: "manual", agent_instance_id: f.snapshot.source.writer.instance_id }, undefined, requirement))
+      .rejects.toThrow("original source contributor");
+    expect(await db.select().from(runs)).toEqual(before);
+    expect((await db.select().from(tasks).where(eq(tasks.id, revision.auxiliaryTaskId)))[0]!.status).toBe("ready");
+  });
+  it("research revision GoalRunner independently accepts a revised source, imports a fresh slot, and starts H3 exactly once", async () => {
+    const f = await prepareRevision(); await prepareDispatcher(f);
+    const errors: unknown[] = [], queued: string[] = [];
+    f.actor.onRunQueued = async id => { queued.push(id); };
+    const dispatcher = createGoalAutomationDispatcher(f.actor, async () => {}, error => { errors.push(error); });
+    try {
+      await dispatcher.pump();
+      expect(errors).toEqual([]);
+      const [revision] = await server.db.db.select().from(researchRevisions);
+      expect(revision).toBeDefined(); expect(revision!.parentReviewId).toBe(f.parent.id);
+      await dispatcher.pump();
+      expect(errors).toEqual([]);
+      const authorRuns = await server.db.db.select().from(runs).where(eq(runs.taskId, revision!.auxiliaryTaskId));
+      expect(authorRuns).toHaveLength(1);
+      const author = authorRuns[0]!;
+      expect(author).toMatchObject({ status: "queued", computerId: f.source.nodeId, agentInstanceId: f.snapshot.source.writer.instance_id,
+        workspaceRoot: f.base.source.workspace_root });
+      expect(author.verificationRequirement).not.toHaveProperty("expected_subject_digest");
+      const [context] = await server.db.db.select().from(contextPacks).where(eq(contextPacks.id, author.contextPackId!));
+      expect(context!.payload).toMatchObject({ goal_context: { plan: { id: f.base.plan_id, spec_ref: "0" } },
+        product_research_revision: { revision_id: revision!.id, author_run_id: author.id, baseline: { source_run_id: f.base.source.run_id } } });
+      expect((context!.payload as { task: { description: string } }).task.description).toContain("Research omits recovery after a failed save");
+      expect(queued).toContain(author.id);
+      await dispatcher.pump();
+      expect(await server.db.db.select().from(researchRevisions)).toHaveLength(1);
+      expect(await server.db.db.select().from(runs).where(eq(runs.taskId, revision!.auxiliaryTaskId))).toHaveLength(1);
+      expect((await server.db.db.select().from(tasks).where(eq(tasks.id, f.base.source.task_id)))[0]!.status).toBe("done");
+      // Controlled owning-node evidence for a new subject, carried through the
+      // actual wire ingest and independent-review services (no model process).
+      const report = structuredClone(f.researchReport);
+      report.findings[0]!.summary += "; recovery after a failed save has been added to the research";
+      const researchBytes = Buffer.from(JSON.stringify(report)), researchPin = { path: ".artoo/product/research.json" as const, checksum: sha(researchBytes), size: researchBytes.length };
+      const subject = sha("controlled revised research subject"), requirement = VerificationRequirementSchema.parse(author.verificationRequirement);
+      const measurement = structuredClone(f.review.source.evidence.payload);
+      measurement.request_id = requirement.request_id; measurement.subject_digest = subject; measurement.required_files = [researchPin];
+      measurement.measurement_plan!.research = researchPin;
+      const capsule = JSON.parse(f.bytes.toString("utf8")); capsule.source.subject_digest = subject;
+      capsule.manifest.entries = capsule.manifest.entries.map((entry: { path: string }) => entry.path === researchPin.path ? { ...researchPin, kind: "file" } : entry);
+      capsule.manifest_digest = sha(JSON.stringify(capsule.manifest)); capsule.files = [{ path: researchPin.path, base64: researchBytes.toString("base64") }];
+      const bytes = Buffer.from(JSON.stringify(capsule)), capsuleDigest = sha(bytes);
+      const provenance = { ...structuredClone(f.proof.research_provenance), research: researchPin };
+      const proof = ProductSourceExportV2Schema.parse({ ...f.proof, byte_export: { ...f.proof.byte_export,
+        export_id: hash({ run_id: author.id, request_id: requirement.request_id, capsule_digest: capsuleDigest }),
+        run_id: author.id, task_id: author.taskId, verification_request_id: requirement.request_id,
+        subject_digest: subject, context_digest: hash(context!.payload), verification_digest: hash(measurement),
+        capsule_digest: capsuleDigest, manifest_digest: capsule.manifest_digest, capsule_bytes: bytes.length },
+        research_provenance: provenance, research_provenance_digest: hash(provenance) });
+      const wire = (run: typeof author, sequence: number, type: string, payload: unknown) => ingestWireRunEvent(f.actor,
+        { kind: "run.event", node_id: run.computerId, run_id: run.id, sequence, event: { type, payload } });
+      await wire(author, 0, "run.lifecycle", { phase: "started" });
+      await wire(author, 1, "run.verification", measurement);
+      await wire(author, 2, "run.product-source.export.v2", proof);
+      await wire(author, 3, "run.lifecycle", { phase: "completed" });
+      await dispatcher.pump(); expect(errors).toEqual([]);
+      const [peer] = await server.db.db.select().from(autonomousReviews).where(eq(autonomousReviews.subjectRunId, author.id));
+      expect(peer).toMatchObject({ status: "pending", reviewerInstanceId: f.snapshot.source.reviewer.instance_id });
+      const assistants = createAssistantDispatcher(f.actor, error => { errors.push(error); });
+      try { await assistants.pump(); } finally { await assistants.stop(); }
+      const [peerRun] = await server.db.db.select().from(runs).where(eq(runs.taskId, peer!.reviewTaskId));
+      expect(peerRun).toBeDefined(); expect(errors).toEqual([]);
+      const peerRequirement = VerificationRequirementSchema.parse(peerRun!.verificationRequirement);
+      await wire(peerRun!, 0, "run.lifecycle", { phase: "started" });
+      await wire(peerRun!, 1, "run.verification", { ...measurement, request_id: peerRequirement.request_id });
+      await wire(peerRun!, 2, "run.answer", { text: JSON.stringify({ version: 1, reviewed_run_id: author.id, verification_evidence_id: peer!.evidenceId,
+        subject_digest: subject, outcome: "accepted", summary: "Controlled independent review accepted the revised research", findings: [] }) });
+      await wire(peerRun!, 3, "run.lifecycle", { phase: "completed" });
+      const peerSettlement = createAssistantDispatcher(f.actor, error => { errors.push(error); });
+      try { await peerSettlement.pump(); } finally { await peerSettlement.stop(); }
+      await dispatcher.pump(); expect(errors).toEqual([]);
+      expect((await server.db.db.select().from(tasks).where(eq(tasks.id, author.taskId)))[0]!.status).toBe("done");
+      f.actor.onProductSourceOperationQueued = async () => {};
+      await dispatcher.pump(); expect(errors).toEqual([]);
+      const handoffs = await server.db.db.select().from(goalProductHandoffs);
+      expect(handoffs).toHaveLength(2);
+      const successor = handoffs.find(value => value.id !== f.base.transfer_id)!;
+      const successorIntent = ProductSourceHandoffIntentV1Schema.parse(successor.intent);
+      expect(successorIntent.request.byte_request).toMatchObject({ source: { task_id: author.taskId, run_id: author.id, subject_digest: subject },
+        destination: { workspace_root: f.snapshot.members[1]!.mapping.destination_release.binding.workspace_root } });
+      expect(successorIntent.destination_start.context_pack.payload).not.toHaveProperty("product_research_revision");
+      // The HTTP content route reads the same controlled current-node registry
+      // as the orchestration service; it still authenticates the actual paired token.
+      for (const key of ["supportsExecutionFeature", "supportsVerificationProfile", "supportsReleaseProfile", "getVerificationCapabilities",
+        "getReleaseCapabilities", "getVerificationWorkspace", "getProductSourceRouting", "getPairedNodeSession"] as const)
+        Object.assign(server.ctx, { [key]: f.actor[key] });
+      const sourceOps = await f.ops(), uploadOp = sourceOps.find(value => value.handoffId === successor.id && value.kind === "upload")!,
+        importOp = sourceOps.find(value => value.handoffId === successor.id && value.kind === "import_verify")!;
+      const handoffBinding = (node: typeof f.source) => createGoalProductHandoffBinding(f.actor, {
+        identity: { computerId: node.nodeId, deviceId: node.device.id, tokenLookup: parseDeviceToken(node.node_token)!.lookup },
+        sessionId: f.actor.getPairedNodeSession!(node.nodeId)!.sessionId, isCurrent: () => true, artifactDir: directory, transport: { send: async () => {} },
+      });
+      const uploadBinding = handoffBinding(f.source), uploadCommand = await uploadBinding.dispatch(uploadOp.id),
+        successorDigest = productSourceTransferRequestDigestV2(successorIntent.request, sha);
+      const uploaded = await server.app.inject({ method: "PUT", url: `/api/v1/node/product-source-transfers-v2/${successor.id}/content`, payload: bytes,
+        headers: { authorization: `Bearer ${f.source.node_token}`, "content-type": "application/octet-stream",
+          "x-artoo-transfer-request-digest": successorDigest, "x-artoo-checksum": capsuleDigest } });
+      expect(uploaded.statusCode, uploaded.body).toBe(200);
+      await uploadBinding.receive({ kind: "product.source.operation.result.v1", node_id: f.source.nodeId, command_id: uploadCommand.id,
+        payload: { version: 1, operation_id: uploadOp.id, payload_digest: uploadOp.payloadDigest, request_digest: successorDigest,
+          outcome: "uploaded", closed: true, receipt: uploaded.json().transfer } });
+      const importBinding = handoffBinding(f.destination), importCommand = await importBinding.dispatch(importOp.id);
+      await importBinding.receive({ kind: "product.source.operation.result.v1", node_id: f.destination.nodeId, command_id: importCommand.id,
+        payload: controlledDestinationResult(ProductSourceOperationV1Schema.parse(importOp.payload), researchBytes) });
+      await importBinding.qualify(importOp.id);
+      await dispatcher.pump(); expect(errors).toEqual([]);
+      const [nextH2] = await server.db.db.select().from(goalImportedProductReviews).where(eq(goalImportedProductReviews.handoffId, successor.id));
+      expect(nextH2).toMatchObject({ reviewerInstanceId: f.snapshot.members[1]!.reviewer.instance_id, sourceRunId: author.id });
+      const reviewBinding = createGoalImportedProductReviewBinding(f.actor, {
+        identity: { computerId: f.destination.nodeId, deviceId: f.destination.device.id, tokenLookup: parseDeviceToken(f.destination.node_token)!.lookup },
+        sessionId: f.actor.getPairedNodeSession!(f.destination.nodeId)!.sessionId, isCurrent: () => true, artifactDir: directory, transport: { send: async () => {} },
+      });
+      const reviewCommand = await reviewBinding.dispatch(nextH2!.id);
+      await reviewBinding.receive({ kind: "product.source.review.result.v1", node_id: f.destination.nodeId, command_id: reviewCommand.id,
+        payload: reviewed(nextH2!, researchBytes) });
+      const designQueued: string[] = [];
+      f.actor.onImportedDesignContinuationQueued = async id => { designQueued.push(id); };
+      await dispatcher.pump(); expect(errors).toEqual([]);
+      const continuations = await server.db.db.select().from(goalImportedDesignContinuations);
+      expect(continuations).toHaveLength(1);
+      expect(continuations[0]).toMatchObject({ reviewId: nextH2!.id, writerInstanceId: f.snapshot.members[1]!.writer.instance_id,
+        workspaceRoot: f.snapshot.members[1]!.mapping.destination_release.binding.workspace_root });
+      expect(designQueued).toContain(continuations[0]!.id);
+      await dispatcher.pump(); expect(errors).toEqual([]);
+      expect(await server.db.db.select().from(goalImportedDesignContinuations)).toHaveLength(1);
+      expect((await server.db.db.select().from(goals).where(eq(goals.id, f.base.goal_id)))[0]!.retryCount).toBe(1);
+      expect((await server.db.db.select().from(goalImportedProductReviews).where(eq(goalImportedProductReviews.id, f.parent.id)))[0]!.result)
+        .toMatchObject({ outcome: "reviewed", verdict: { outcome: "changes_requested" } });
+    } finally { await dispatcher.stop(); }
+  });
   async function ordinaryTask(id: string) {
     const now = server.ctx.clock.nowIso();
     await server.db.db.insert(tasks).values({ id, organizationId: server.ctx.organizationId, projectId: "proj_artoo", title: id,

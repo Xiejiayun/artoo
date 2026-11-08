@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ProductReleaseReceiptSchema, type ProductReleaseRequest, type ProductReleaseReceipt } from "@artoo/domain";
+import { ProductReleaseReceiptSchema, canonicalReleaseAcceptanceBinding, type ProductReleaseRequest, type ProductReleaseReceipt } from "@artoo/domain";
 import type { PreparedVerificationProfile } from "./verification.js";
 import type { PreparedReleaseProfile, ProductReleaseExecutorOptions } from "./product-release.js";
 
@@ -42,15 +42,18 @@ afterEach(async () => {
 function directory(): string {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-published-product-"))); roots.push(root); return root;
 }
-async function fixture() {
-  const root = directory(), destination = join(root, "destination"), storage = join(destination, "release"), workspace = join(destination, "workspace"), config = join(destination, "config");
-  for (const path of [destination, storage, workspace, config, join(storage, "operations"), join(storage, "health"), join(storage, "attestations"), join(storage, "artifacts")]) mkdirSync(path);
+async function fixture(selectedSlot?: number) {
+  const root = directory(), destination = join(root, "destination"), slotDirectory = selectedSlot ? join(destination, "slots", String(selectedSlot)) : destination;
+  const storage = join(slotDirectory, "release"), workspace = join(slotDirectory, "workspace"), config = join(destination, "config");
+  const verificationId = selectedSlot === undefined ? "verify" : "native-web" + (selectedSlot ? `-slot-${selectedSlot}` : "");
+  const releaseId = selectedSlot === undefined ? "site" : "native-publish" + (selectedSlot ? `-slot-${selectedSlot}` : "");
+  for (const path of [destination, storage, workspace, config, join(storage, "operations"), join(storage, "health"), join(storage, "attestations"), join(storage, "artifacts")]) mkdirSync(path, { recursive: true });
   const originalOwner = acquirePublishedProductOwnership({ sessionRoot: root, mode: "daily" });
   const originalReceipt = originalOwner.release();
   const body = "<!doctype html><title>Saved product</title><p>original content</p>";
   const prepared = join(root, "prepared"), content = join(prepared, "content"); mkdirSync(prepared); mkdirSync(content); mkdirSync(join(content, "product"));
   writeFileSync(join(content, "product", "index.html"), body);
-  const verifier = { id: "verify", project_id: "project", workspace_root: workspace, subject_paths: ["product"], required_files: [], commands: [],
+  const verifier = { id: verificationId, project_id: "project", workspace_root: workspace, subject_paths: ["product"], required_files: [], commands: [],
     digest: `sha256:${"a".repeat(64)}`, trustedFiles: [] } as unknown as PreparedVerificationProfile;
   const manifest = subjectManifest({ ...verifier, workspace_root: content });
   const artifact = join(storage, "artifacts", manifest.digest.slice(7)); mkdirSync(artifact); mkdirSync(join(artifact, "content")); mkdirSync(join(artifact, "content", "product"));
@@ -60,21 +63,42 @@ async function fixture() {
   await new Promise<void>(resolve => reservation.listen(0, "127.0.0.1", resolve));
   const port = (reservation.address() as { port: number }).port; await close(reservation);
   const url = `http://127.0.0.1:${port}`;
-  const profile: PreparedReleaseProfile = { id: "site", project_id: "project", verification_profile_id: "verify", storage_root: storage,
+  const profile: PreparedReleaseProfile = { id: releaseId, project_id: "project", verification_profile_id: verificationId, storage_root: storage,
     output_path: "product", public_url: url, listen_host: "127.0.0.1", listen_port: port,
     health_checks: [{ path: "/", expect_text: "original content" }], health_timeout_ms: 2000, verifier, digest: `sha256:${"b".repeat(64)}` };
   const request: ProductReleaseRequest = { version: 1, release_id: "release", goal_id: "goal", project_id: "project", run_id: "run",
-    release_profile_id: "site", verification_profile_id: "verify", verification_profile_digest: verifier.digest,
+    release_profile_id: releaseId, verification_profile_id: verificationId, verification_profile_digest: verifier.digest,
     verification_request_id: "verification", subject_digest: manifest.digest };
+  if (selectedSlot !== undefined) request.acceptance_binding = { version: 1, plan: { id: "plan", version: 1 },
+    research: { path: ".artoo/product/research.json", checksum: verifier.digest, size: 1 }, measurement_plan_digest: verifier.digest,
+    release_binding: { version: 1, release_profile_id: profile.id, release_profile_digest: profile.digest,
+      contract_digest: `sha256:${"c".repeat(64)}`, project_id: profile.project_id, workspace_root: workspace,
+      verification_profile_id: verifier.id, verification_profile_digest: verifier.digest },
+    criteria: [{ requirement_id: "publication", criterion_index: 0, criterion_digest: verifier.digest, claim_id: "configured-static-publication" }] };
   const receipt: ProductReleaseReceipt = ProductReleaseReceiptSchema.parse({ request, release_profile_digest: profile.digest,
     artifact_digest: manifest.digest, outcome: "published", endpoint: url, previous_release_id: null,
+    ...(request.acceptance_binding ? { acceptance: { version: 1,
+      binding_digest: `sha256:${sha(canonicalReleaseAcceptanceBinding(request.acceptance_binding))}`,
+      scope: "node-http-point-in-time", settled_criteria: request.acceptance_binding.criteria } } : {}),
     health_checks: [{ path: "/", status_code: 200, body_digest: `sha256:${sha(body)}`, passed: true, checked_at: new Date().toISOString() }] });
   const operationPath = join(storage, "operations", `${sha(request.release_id)}.json`);
   writeFileSync(operationPath, JSON.stringify({ request, previous: null, phase: "terminal", receipt }));
   writeFileSync(join(storage, "current.json"), JSON.stringify({ release_id: request.release_id, artifact_digest: manifest.digest, release_profile_digest: profile.digest }));
   const publication = { release_id: request.release_id, run_id: request.run_id, evidence_id: "evidence", artifact_digest: manifest.digest, url,
     request_sha256: sha(JSON.stringify(request)), receipt_sha256: sha(JSON.stringify(receipt)), request, receipt };
-  const node = (role: string) => ({ role, registry_disconnected: true, cli: { spawned: true, shutdown_written: true, forced_root_kill: false,
+  const layout = (role: string) => ({ version: 1, max_retries: role === "source" ? 0 : 3,
+    members: Array.from({ length: role === "source" ? 1 : 4 }, (_, index) => {
+      const base = index === 0 ? join(root, role) : join(root, role, "slots", String(index)), suffix = index === 0 ? "" : `-slot-${index}`;
+      return { index, workspace: join(base, "workspace"), verification_profile_id: `native-web${suffix}`, release_profile_id: `native-publish${suffix}`,
+        storage_root: join(base, "release"), evidence_root: join(base, "evidence"), browser_config: join(base, "config", "browser.json"),
+        endpoint: role === "destination" && index === selectedSlot ? url : `http://127.0.0.1:${port === 1024 + index ? 2000 + index : 1024 + index}` };
+    }) });
+  const node = (role: string) => ({ role, registry_disconnected: true,
+    ...(selectedSlot === undefined ? {} : { workspace_slots: layout(role),
+      identity: { project_id: "project", computer_id: `computer-${role}`, device_id: `device-${role}`, workspace: join(root, role, "workspace") },
+      registration: { computer_id: `computer-${role}`, device_id: `device-${role}`, workspace: join(root, role, "workspace"), generation: 0, session_id: `session-${role}` } }),
+    cli: { spawned: true, shutdown_written: true, forced_root_kill: false,
+    ...(selectedSlot === undefined ? {} : { ready: { kind: "artoo.supervised.ready", generation: 0, node_id: `computer-${role}` } }),
     stdout_eof: true, stderr_eof: true, stopped: { kind: "artoo.supervised.stopped", cleanupConfirmed: true },
     exit: { code: 0, signal: null }, close: { code: 0, signal: null } } });
   const result = { version: 1, scope: "windows-local-single-goal", output: root, status: "stopped-after-publication", product_published: true,
@@ -85,8 +109,9 @@ async function fixture() {
   const owner = acquirePublishedProductOwnership({ sessionRoot: root, mode: "reopen" });
   const bytes = readFileSync(resultPath);
   const options: PublishedProductOptions = { version: 1, closedSessionResult: { path: resultPath, bytes: bytes.length, sha256: sha(bytes) },
-    verificationProfilesFile: join(config, "verifiers.json"), releaseProfilesFile: join(config, "releases.json"), releaseProfileId: "site",
-    windowsProcessInstallation: { directory: root, manifestSha256: `sha256:${"c".repeat(64)}`, writableWorkspaceRoots: [workspace] }, publication, exclusive: owner };
+    verificationProfilesFile: join(config, "verifiers.json"), releaseProfilesFile: join(config, "releases.json"), releaseProfileId: releaseId,
+    windowsProcessInstallation: { directory: root, manifestSha256: `sha256:${"c".repeat(64)}`,
+      writableWorkspaceRoots: selectedSlot === undefined ? [workspace] : result.nodes[1]!.workspace_slots!.members.map(slot => slot.workspace) }, publication, exclusive: owner };
   let outputBody = body, outputRelease = request.release_id, hold: (() => Promise<void>) | undefined, requested: (() => void) | undefined;
   const server = createServer(async (_request, response) => {
     requested?.(); if (hold) await hold();
@@ -98,9 +123,35 @@ async function fixture() {
     getHealthFaults: vi.fn(() => []), requestStop: vi.fn(), stop: vi.fn(async () => { await close(server); }),
   };
   controlled.qualify.mockReturnValue({}); controlled.storage.mockReturnValue({}); controlled.verifiers = [verifier]; controlled.releases = [profile]; controlled.prepared = profile;
+  let binding: { version: number; nodes: typeof result.nodes; files: { path: string; bytes: number; sha256: string }[] } | undefined;
+  const bindingPath = join(root, "CONFIG-BINDING.json");
+  if (selectedSlot !== undefined) {
+    const configured = result.nodes[1]!.workspace_slots!.members;
+    controlled.verifiers = configured.map(slot => ({ ...verifier, id: slot.verification_profile_id, workspace_root: slot.workspace }));
+    controlled.releases = configured.map(slot => ({ ...profile, id: slot.release_profile_id, verification_profile_id: slot.verification_profile_id,
+      storage_root: slot.storage_root, public_url: slot.endpoint, listen_port: Number(new URL(slot.endpoint).port) }));
+    const files: string[] = [];
+    for (const current of result.nodes) {
+      for (const slot of current.workspace_slots!.members) {
+        for (const folder of [slot.workspace, slot.storage_root, slot.evidence_root, join(slot.workspace, "..", "config")]) mkdirSync(folder, { recursive: true });
+        writeFileSync(slot.browser_config, "{\"fixture_only\":true}"); files.push(slot.browser_config);
+      }
+      for (const name of ["verifiers.json", "releases.json", "discovered-capabilities.json", "source.json"]) {
+        const file = join(root, current.role, "config", name); writeFileSync(file, "{\"fixture_only\":true}"); files.push(file);
+      }
+    }
+    writeFileSync(options.verificationProfilesFile, JSON.stringify(controlled.verifiers)); writeFileSync(options.releaseProfilesFile, JSON.stringify(controlled.releases));
+    writeFileSync(join(config, "discovered-capabilities.json"), JSON.stringify({ slots: configured.map(slot => ({ index: slot.index,
+      verifier: { profile_digest: verifier.digest }, release: { binding: { ...request.acceptance_binding!.release_binding,
+        workspace_root: slot.workspace, release_profile_id: slot.release_profile_id, verification_profile_id: slot.verification_profile_id } } })) }));
+    binding = { version: 1, nodes: structuredClone(result.nodes), files: files.map(path => {
+      const bytes = readFileSync(path); return { path, bytes: bytes.length, sha256: sha(bytes) };
+    }) }; writeFileSync(bindingPath, JSON.stringify(binding));
+  }
   let executorOptions: ProductReleaseExecutorOptions | undefined;
   controlled.create.mockImplementation((_profiles, setup: ProductReleaseExecutorOptions) => { executorOptions = setup; return executor; });
-  return { root, storage, artifact, result, resultPath, owner, options, receipt, operationPath, executor, server,
+  return { root, storage, artifact, result, resultPath, owner, options, receipt, operationPath, executor, server, binding, bindingPath,
+    repinBinding() { if (!binding) throw Error("No controlled slot binding"); writeFileSync(bindingPath, JSON.stringify(binding)); },
     changeBody(value: string) { outputBody = value; }, changeRelease(value: string) { outputRelease = value; },
     fault(error: Error) { executorOptions!.onError!(error); },
     holdNextRequest() {
@@ -148,6 +199,50 @@ describe("published product ownership (real local filesystem)", () => {
 });
 
 describe("saved product reopening (controlled native admission/executor, actual HTTP)", () => {
+  it.each([0, 3])("serves exact configured slot %s with all original roots and retains the other scopes", async slot => {
+    const f = await fixture(slot), product = createPublishedProduct(f.options);
+    expect(controlled.qualify).toHaveBeenCalledWith(expect.objectContaining({
+      writableWorkspaceRoots: f.result.nodes[1]!.workspace_slots!.members.map(member => member.workspace),
+    }));
+    expect(controlled.storage).toHaveBeenCalledWith({ directory: f.storage, writableWorkspaceRoots: f.options.windowsProcessInstallation.writableWorkspaceRoots });
+    const before = f.binding!.files.map(pin => ({ path: pin.path, bytes: readFileSync(pin.path) }));
+    await expect(product.start()).resolves.toMatchObject({ release_id: "release", url: f.options.publication.url });
+    await product.stop(); f.owner.release();
+    for (const file of before) expect(readFileSync(file.path)).toEqual(file.bytes);
+  });
+  it.each(["missing root", "extra root", "reordered roots", "wrong selected profile", "changed binding slot", "missing binding slot", "changed source registration", "nonexact slot directory", "changed unused config", "removed destination layout", "removed all layouts"])(
+    "rejects versioned slot %s before native admission", async kind => {
+      const f = await fixture(3); let options = f.options;
+      if (kind === "missing root" || kind === "extra root" || kind === "reordered roots") {
+        const roots = [...options.windowsProcessInstallation.writableWorkspaceRoots];
+        if (kind === "missing root") roots.shift(); else if (kind === "extra root") roots.push(join(f.root, "extra-workspace")); else roots.reverse();
+        options = { ...options, windowsProcessInstallation: { ...options.windowsProcessInstallation, writableWorkspaceRoots: roots } };
+      } else if (kind === "wrong selected profile") options = { ...options, releaseProfileId: "native-publish" };
+      else if (kind === "changed binding slot") { f.binding!.nodes[1]!.workspace_slots!.members[3]!.endpoint = "http://127.0.0.1:50000"; f.repinBinding(); }
+      else if (kind === "missing binding slot") { f.binding!.nodes[1]!.workspace_slots!.members.pop(); f.repinBinding(); }
+      else if (kind === "changed source registration") { f.binding!.nodes[0]!.registration!.session_id += "-substitute"; f.repinBinding(); }
+      else if (kind === "nonexact slot directory") {
+        for (const nodes of [f.result.nodes, f.binding!.nodes]) nodes[1]!.workspace_slots!.members[3]!.storage_root = join(f.storage, "nested");
+        f.repinBinding(); options = f.repin();
+      } else if (kind === "removed destination layout" || kind === "removed all layouts") {
+        delete f.result.nodes[1]!.workspace_slots;
+        if (kind === "removed all layouts") delete f.result.nodes[0]!.workspace_slots;
+        options = f.repin();
+      } else writeFileSync(f.result.nodes[1]!.workspace_slots!.members[0]!.browser_config, "{\"changed\":true}");
+      expect(() => createPublishedProduct(options)).toThrow(); expect(controlled.qualify).not.toHaveBeenCalled();
+    });
+  it("retains ownership when the original slot binding changes after startup", async () => {
+    const f = await fixture(3), product = createPublishedProduct(f.options); await product.start();
+    writeFileSync(f.bindingPath, "{}");
+    await expect(product.observe()).rejects.toThrow("pinned local file");
+    await expect(product.stop()).rejects.toThrow("pinned local file"); expect(() => f.owner.release()).toThrow("closure");
+  });
+  it.each(["recovery", "clean"])("does not reinterpret a successful later slot as %s authority", async mode => {
+    const f = await fixture(3);
+    writeFileSync(join(f.storage, mode === "recovery" ? "source-recovery.json" : "source-clean-restart.json"), "{}");
+    const product = createPublishedProduct(f.options); await expect(product.start()).rejects.toThrow("recovery or clean fence");
+    expect(f.executor.start).not.toHaveBeenCalled(); expect(() => f.owner.release()).toThrow("closure");
+  });
   it("serves the same bytes and identity, retains ownership until close, and exposes no publication API", async () => {
     const f = await fixture(), product = createPublishedProduct(f.options);
     expect(Object.keys(product).sort()).toEqual(["observe", "start", "stop"]);

@@ -1,4 +1,6 @@
 import { assertSourceLineageDispatch } from "./source-lineage-fence.js";
+import { assertResearchDestinationUnreserved } from "./research-destination-pool-service.js";
+import { resolveResearchRevisionOrigin } from "./research-revision-origin-service.js";
 import { currentImportedDesignBoundary } from "./execution-state.js";
 import { requireAiSharingAuthorization } from "./ai-data-sharing-service.js";
 import {
@@ -244,14 +246,17 @@ export async function assignTask(
     const planningAutomation = planning ? (await tx.select().from(goalAutomations).where(and(
       eq(goalAutomations.goalId, planning.goalId), eq(goalAutomations.organizationId, ctx.organizationId))))[0] : undefined;
     const independentReview = (await tx.select().from(autonomousReviews).where(and(eq(autonomousReviews.reviewTaskId, taskId), eq(autonomousReviews.organizationId, ctx.organizationId))))[0];
+    let reviewedResearchOrigin: Awaited<ReturnType<typeof resolveResearchRevisionOrigin>> = undefined;
     const reviewAutomation = independentReview ? (await tx.select().from(goalAutomations).where(eq(goalAutomations.goalId, independentReview.goalId)))[0] : undefined;
     if (independentReview) {
       const goal = (await tx.select().from(goals).where(eq(goals.id, independentReview.goalId)).for("update"))[0];
       const [subject] = await tx.select().from(runs).where(eq(runs.id, independentReview.subjectRunId));
       const [sourceTask] = await tx.select().from(tasks).where(eq(tasks.id, independentReview.taskId));
+      const sourceOrigin = sourceTask ? await resolveResearchRevisionOrigin(ctx, tx, sourceTask) : undefined;
+      reviewedResearchOrigin = sourceOrigin;
       if (!reviewAutomation || reviewAutomation.executionMode !== "agent_team" || !ctx.automationActor || ctx.actorUserId !== reviewAutomation.actorUserId
         || !goal || goal.status !== "running" || !["executing", "waiting"].includes(reviewAutomation.status) || goal.currentPlanId !== reviewAutomation.planId
-        || sourceTask?.status !== "review" || sourceTask.sourcePlanId !== goal.currentPlanId || subject?.status !== "completed"
+        || sourceTask?.status !== "review" || (sourceOrigin?.plan.id ?? sourceTask.sourcePlanId) !== goal.currentPlanId || subject?.status !== "completed"
         || independentReview.status !== "pending" || assistantTurnId !== independentReview.turnId || req.mode !== "manual"
         || req.agent_instance_id !== independentReview.reviewerInstanceId || req.branch_backed || req.workspace_branch != null
         || verificationRequirement?.profile_id !== reviewAutomation.verificationProfileId || verificationRequirement?.expected_subject_digest !== independentReview.subjectDigest) {
@@ -286,6 +291,9 @@ export async function assignTask(
       if (active.length) throw AppError.conflict("Another assistant turn is still running in this room");
     }
     const policyTask = await resolveExecutionPolicyTask(ctx, tx, row);
+    const researchOrigin = await resolveResearchRevisionOrigin(ctx, tx, row);
+    const executionPlanId = researchOrigin?.plan.id ?? row.sourcePlanId;
+    const executionSpecRef = researchOrigin?.specRef ?? row.sourcePlanSpecRef;
     const automation = await automationForTask(ctx, tx, policyTask);
     if (ownedSelection && (automation || independentReview || planning)) {
       throw AppError.validation("Owned result v1 does not support product stages, independent review or planning");
@@ -293,11 +301,11 @@ export async function assignTask(
     if (automation) {
       let permittedInstance = automation.agentInstanceId;
       if (automation.executionMode === "agent_team") {
-        const [plan] = await tx.select().from(plans).where(eq(plans.id, row.sourcePlanId!));
-        const spec = TaskSpecSchema.parse((plan?.taskSpecs as unknown[] | undefined)?.[Number(row.sourcePlanSpecRef)]);
+        const [plan] = await tx.select().from(plans).where(eq(plans.id, executionPlanId!));
+        const spec = TaskSpecSchema.parse((plan?.taskSpecs as unknown[] | undefined)?.[Number(executionSpecRef)]);
         permittedInstance = AutonomousTeamSchema.parse(automation.team).members.find((member) => member.stage === spec.development_stage)?.agent_instance_id ?? null;
       }
-      if (!ctx.automationActor || ctx.actorUserId !== automation.actorUserId || !verificationRequirement || assistantTurnId || automation.planId !== row.sourcePlanId
+      if (!ctx.automationActor || ctx.actorUserId !== automation.actorUserId || !verificationRequirement || assistantTurnId || automation.planId !== executionPlanId
         || !permittedInstance || req.mode !== "manual" || req.agent_instance_id !== permittedInstance || req.branch_backed || req.workspace_branch != null
         || verificationRequirement.profile_id !== automation.verificationProfileId || !["planning", "executing", "waiting"].includes(automation.status)) {
         throw AppError.permissionDenied("Autonomous goal execution must use its fixed worker and trusted verification request");
@@ -340,6 +348,17 @@ export async function assignTask(
       eq(computers.id, instance.computerId), eq(computers.organizationId, ctx.organizationId),
     )).for("update");
     if (!computer) throw AppError.conflict("Selected execution computer is no longer available");
+    const revisionAdmission = researchOrigin ?? reviewedResearchOrigin;
+    const revisionRole = researchOrigin?.snapshot.source.writer ?? reviewedResearchOrigin?.snapshot.source.reviewer;
+    if (revisionAdmission && revisionRole && (instance.id !== revisionRole.instance_id || instance.agentId !== revisionRole.agent_id
+      || instance.runtime !== revisionRole.runtime || instance.modelProfileId !== revisionRole.model_profile_id
+      || instance.effortProfileId !== revisionRole.effort_profile_id || instance.computerId !== revisionAdmission.snapshot.source.computer_id
+      || instance.workspaceRoot !== revisionAdmission.snapshot.source.workspace_root
+      || ctx.supportsExecutionFeature?.(instance.computerId, "product-research-revision.v1") !== true
+      || !isDeepStrictEqual(ctx.getReleaseCapabilities?.(instance.computerId, revisionAdmission.snapshot.source.release.binding.release_profile_id,
+        row.projectId, instance.workspaceRoot, revisionAdmission.snapshot.source.release.binding.verification_profile_id), revisionAdmission.snapshot.source.release))) {
+      throw AppError.conflict("Research revision must retain its original source contributor, model, effort and prepared scope");
+    }
     let ownedProfile: NodeOwnedResultProfileDescriptorV1 | undefined;
     if (ownedSelection) {
       ownedProfile = ctx.getOwnedResultProfile?.(instance.computerId, ownedSelection.result_profile_id,
@@ -432,6 +451,7 @@ export async function assignTask(
     // a trailing-slash/dot alias that the node correctly rejects as a different binding.
     if (executionAutomation) workspaceRoot = executionAutomation.workspaceRoot;
     await assertSourceLineageDispatch(ctx, tx, instance.computerId, workspaceRoot);
+    await assertResearchDestinationUnreserved(ctx, tx, instance.computerId, workspaceRoot);
     // H2 holds the same instance -> computer fence when issuing its delivery.
     const standalone = await unsettledStandaloneExecutions(ctx, tx, { computerId: instance.computerId });
     if (standalone.some(operation => operation.participantInstanceIds.includes(instance.id) || !workspaceRoot || automationWorkspacesOverlap(operation.workspaceRoot, workspaceRoot, computer.os)))
@@ -641,6 +661,9 @@ export async function reviewTask(
         status: row.status,
       });
     }
+    const researchOrigin = await resolveResearchRevisionOrigin(ctx, tx, row);
+    const reviewPlanId = researchOrigin?.plan.id ?? row.sourcePlanId;
+    const reviewSpecRef = researchOrigin?.specRef ?? row.sourcePlanSpecRef;
     const automation = await automationForTask(ctx, tx, row);
     if (row.goalId && await currentImportedDesignBoundary(ctx, tx, row.goalId, row.sourcePlanId)) throw AppError.conflict("Imported design cannot be accepted through ordinary task review; H4 and H5 remain separately fenced");
     let verifiedReview: {
@@ -652,7 +675,7 @@ export async function reviewTask(
     let revisionAcceptance: DesignRevision | undefined;
     if (automation) {
       if (!ctx.automationActor || ctx.actorUserId !== automation.actorUserId) throw AppError.permissionDenied("Autonomous tasks require the goal runner's evidence review");
-      if (automation.planId !== row.sourcePlanId) throw AppError.conflict("The autonomous task is not in the current plan");
+      if (automation.planId !== reviewPlanId) throw AppError.conflict("The autonomous task is not in the current plan");
       await requireAiSharingAuthorization(ctx, tx, { consentId: automation.consentId, policyVersion: automation.policyVersion });
       const goal = (await tx.select().from(goals).where(eq(goals.id, automation.goalId)).for("update"))[0];
       if (!goal || goal.status !== "running" || goal.currentPlanId !== automation.planId) throw AppError.conflict("Autonomous review is paused or its plan changed");
@@ -662,8 +685,8 @@ export async function reviewTask(
         await assertDesignRevisionRunAdmission(ctx, tx, run, { acceptance: true });
         const verification = await inspectRunVerification(ctx, tx, run);
         if (!verification.passed || !verification.evidence) throw AppError.conflict(verification.reason);
-        const plan = (await tx.select().from(plans).where(eq(plans.id, row.sourcePlanId!)))[0];
-        const spec = TaskSpecSchema.parse((plan?.taskSpecs as unknown[] | undefined)?.[Number(row.sourcePlanSpecRef)]);
+        const plan = (await tx.select().from(plans).where(eq(plans.id, reviewPlanId!)))[0];
+        const spec = TaskSpecSchema.parse((plan?.taskSpecs as unknown[] | undefined)?.[Number(reviewSpecRef)]);
         const outputs = await tx.select({ type: artifacts.type }).from(artifacts).where(and(eq(artifacts.runId, run.id), eq(artifacts.organizationId, ctx.organizationId)));
         if (spec.expected_artifacts.some((expected) => !outputs.some((actual) => actual.type === expected.type))) throw AppError.conflict("The latest execution is missing an expected artifact type");
         // Keep the acceptance bound to the exact node receipt, not just a human-readable comment.

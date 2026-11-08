@@ -2,6 +2,10 @@
 
 本入口用两个独立的原生 Windows 监督节点和四个 Codex agents，把一次静态 Web 产品需求交给 Artoo GoalRunner，执行调研、设计、实现、测试、独立审核和配置内的本机发布。模型使用已配置的 Aerial `127.0.0.1:18181` / `gpt-6.1-sol`，其上游是 GitHub Copilot。无需 WSL。
 
+新版入口为 `max_retries=3` 在启动时准备一个源工作区和四个独立目标工作区。源端作者、审核者各一个实例；目标端同一逻辑作者、审核者各有四个实例，共四个逻辑 agents、十个执行实例。每个目标工作区分别绑定验证配置、证据目录、发布存储和端口，slot 0 保持原路径和配置 ID。所有节点声明和完整写入根范围均在提交前确定，执行中不会按模型输出创建新配置或扩大目录权限。
+
+入口显式请求 `source_handoff.research_revision.strategy=configured_pool`，并在 READY/提交前检查真实源节点是否声明 `product-research-revision.v1`。仅有新 schema 或配置文件不能满足此条件；旧安装或尚未实现基线保留的节点会停止启动，不会提交一个无法完成的需求。该检查和下面的配置测试不代替最终版本的原生修订、发布验收。
+
 源码存在不表示当前电脑已安装或验收。维护者须先准备与最终提交、成功候选和成功 normal 运行一致的安装元数据，再分别验证启动器、实际页面、完整产品运行、发布保持和停止。不得把 fixture、元数据生成或 Web build 当作完整日常使用验收。
 
 ## 一次安装后使用
@@ -68,6 +72,12 @@ API key 仅来自启动进程环境或现有 Aerial 本地文件，经 `ARTOO_CO
 
 重开沿用原受保护发布配置授权的健康监控和撤回策略。这些监控动作可能更新健康 journal 与 `current.json`。若原选定版本被撤回或当前版本发生变化，本次重开必须记为失败并保留变化前后的证据；不能将监控动作视为保持原产品身份的成功证明。重开不会启动旧 goal、agents、source-recovery 或 clean 工作流。
 
+多工作区 session 的重开按已成功发布 request 中的配置 ID、完整 capability binding 和 digest 精确选择原 slot，并交叉检查原 RESULT、CONFIG-BINDING 和所有配置文件。成功的是后续 slot 时使用它自己的原 URL、工作区和发布存储，同时保留全部目标写入根的隔离检查。不会按端口相似、目录前缀或最新修改时间猜测产品。旧单工作区记录保留原语义。
+
+后续 slot 的普通 publisher-only 重开目前由受控 native 准入、真实本地 HTTP 和文件 journal 测试覆盖；这不代表真实 native 安装或模型产品流程已验收。交付仍须用最终安装完成实际产品停止、重开与原 stdin 再停止的验证。
+
+当前 source-recovery/clean 授权仍精确绑定节点原始主工作区注册；额外目标 slot 的准备不等于给它们授予恢复权限。后续 slot 的异常重启恢复尚需独立实现和验证，现有保护会拒绝没有对应注册的恢复操作。
+
 原 daily 与重开入口在任何发布器初始化前共享同一独占锁。原两个节点、Server 与输入校验全部正常结束后才释放；重开也仅在发布器明确关闭和输入复核通过后释放。并发运行或异常遗留的锁会拒绝启动，不按 PID 猜测删除。旧版本缺少共享锁释放记录、原 stdin 关闭记录或完整发布 request/receipt 的 session 不支持重开；有 recovery/clean publisher fence 的记录也保留原拒绝规则。这不是旧任务恢复、crash 恢复、后台服务或公网托管。
 
 当前范围为同一物理电脑的两个独立节点、静态 Web 产品和前台 loopback 发布。任意远程电脑/agent 自动接入、后端或数据库产品、旧任务安全恢复、签名安装与公网生产发布仍需各自实现和验收。
@@ -77,7 +87,7 @@ API key 仅来自启动进程环境或现有 Aerial 本地文件，经 `ARTOO_CO
 入口和 Web/server 必须在同一版本集成；不能把仅实现 `-BrowserInput` 参数的启动器配给旧 Console 草案。先运行项目规定检查以及：
 
 ```powershell
-node --test scripts/windows-local-request/launcher.test.mjs scripts/windows-local-request/entry-preflight.test.mjs scripts/windows-local-request/reopen-inputs.test.mjs
+node --test scripts/windows-local-request/launcher.test.mjs scripts/windows-local-request/entry-preflight.test.mjs scripts/windows-local-request/reopen-inputs.test.mjs scripts/windows-local-request/slots.test.mjs
 ```
 
 启动器套件使用真实 PowerShell/Node 与明确标注的假 entry，只验证参数、环境、stdin 和退出行为。预检套件使用真实 entry 和明确不存在的配置，验证输入模式在应用启动前被正确处理。随后仍需通过实际交付入口提交一次非固定产品需求，验证真实模型、native、独立审核、HTTP 发布、保持及原 stdin 关闭。结果应明确区分这些证据范围。

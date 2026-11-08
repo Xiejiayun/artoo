@@ -1,3 +1,5 @@
+import { readCurrentResearchHandoff, resolveResearchRevisionOrigin } from "./research-revision-origin-service.js";
+import { assertCurrentResearchHandoff } from "./research-handoff-guard.js";
 import { assertSourceLineageDispatch } from "./source-lineage-fence.js";
 import { agentInstances, agents, appendEvent, computers, devices, deviceTokens, goalAutomations, goals, plans, runs, tasks,
   goalProductHandoffs as handoffs, goalProductHandoffOperations as operations, goalProductHandoffDeliveries as operationDeliveries,
@@ -58,6 +60,7 @@ async function nextTaskAndBudget(ctx: ServerContext, tx: DrizzleDb, operation: P
   const base = operation.intent.request.byte_request;
   const [goal] = await tx.select().from(goals).where(and(eq(goals.id, base.goal_id), eq(goals.organizationId, ctx.organizationId))).for("update");
   if (!goal || goal.status !== "running" || goal.currentPlanId !== base.plan_id) throw AppError.conflict("Imported review requires the current running goal");
+  await assertCurrentResearchHandoff(ctx, tx, operation.intent);
   const { budgets } = supportedGoalPolicy(goal.budgets, goal.stopConditions);
   if (budgets.max_elapsed_ms !== null && goal.runningSince !== null && Math.max(0, Date.parse(ctx.clock.nowIso()) - Date.parse(goal.runningSince)) >= budgets.max_elapsed_ms)
     throw AppError.conflict("Goal elapsed time budget has been reached");
@@ -65,14 +68,16 @@ async function nextTaskAndBudget(ctx: ServerContext, tx: DrizzleDb, operation: P
   const [next] = await tx.select().from(tasks).where(and(eq(tasks.id, operation.intent.next_task_id), eq(tasks.organizationId, ctx.organizationId))).for("update");
   const [source] = await tx.select().from(tasks).where(and(eq(tasks.id, base.source.task_id), eq(tasks.organizationId, ctx.organizationId)));
   const [plan] = await tx.select().from(plans).where(and(eq(plans.id, base.plan_id), eq(plans.organizationId, ctx.organizationId)));
-  const index = Number(next?.sourcePlanSpecRef), sourceIndex = Number(source?.sourcePlanSpecRef);
+  const sourceOrigin = source ? await resolveResearchRevisionOrigin(ctx, tx, source) : undefined;
+  const sourceRef = sourceOrigin?.specRef ?? source?.sourcePlanSpecRef;
+  const index = Number(next?.sourcePlanSpecRef), sourceIndex = Number(sourceRef);
   const spec = Array.isArray(plan?.taskSpecs) && Number.isSafeInteger(index) ? TaskSpecSchema.safeParse(plan.taskSpecs[index]) : undefined;
   if (!next || next.projectId !== base.project_id || next.goalId !== base.goal_id || next.sourcePlanId !== base.plan_id || next.status !== "ready"
-    || next.sourcePlanSpecRef === null || String(index) !== next.sourcePlanSpecRef || !source || source.sourcePlanSpecRef === null || String(sourceIndex) !== source.sourcePlanSpecRef
-    || !spec?.success || spec.data.development_stage !== "design" || !spec.data.dependencies.some(d => d.ref === source.sourcePlanSpecRef && ["blocks", "artifact_required"].includes(d.type)))
+    || next.sourcePlanSpecRef === null || String(index) !== next.sourcePlanSpecRef || !source || sourceRef == null || String(sourceIndex) !== sourceRef
+    || !spec?.success || spec.data.development_stage !== "design" || !spec.data.dependencies.some(d => d.ref === sourceRef && ["blocks", "artifact_required"].includes(d.type)))
     throw AppError.conflict("Imported research review requires its ready dependent design task");
   const expectedGoal = { version: 1, goal_id: goal.id, objective: goal.objective, acceptance_criteria: goal.acceptanceCriteria,
-    plan: { id: plan!.id, version: plan!.version, rationale: plan!.rationale ?? "", spec_ref: source.sourcePlanSpecRef } };
+    plan: { id: plan!.id, version: plan!.version, rationale: plan!.rationale ?? "", spec_ref: sourceRef } };
   if (canonical(operation.intent.destination_start.context_pack.payload?.goal_context) !== canonical(expectedGoal))
     throw AppError.conflict("Imported handoff context differs from the original goal and accepted plan");
   const standalone = (await unsettledStandaloneExecutions(ctx, tx, { goalId: base.goal_id })).filter(row => row.kind !== "review" || row.id !== currentReviewId);
@@ -101,9 +106,14 @@ async function reviewerAdmission(ctx: ServerContext, tx: DrizzleDb, request: Imp
   const [agent] = instance ? await tx.select().from(agents).where(and(eq(agents.id, instance.agentId), eq(agents.organizationId, ctx.organizationId))) : [];
   const [automation] = await tx.select().from(goalAutomations).where(and(eq(goalAutomations.goalId, base.goal_id), eq(goalAutomations.organizationId, ctx.organizationId)));
   const team = AutonomousTeamSchema.safeParse(automation?.team);
+  const currentResearch = await readCurrentResearchHandoff(ctx, tx, base.goal_id, base.plan_id, request.operation.intent.next_task_id);
+  const fixedReviewer = currentResearch?.snapshot.members[currentResearch.revision?.generation ?? 0]?.reviewer;
   const [goal] = await tx.select().from(goals).where(and(eq(goals.id, base.goal_id), eq(goals.organizationId, ctx.organizationId)));
   const allowed = goal ? supportedGoalPolicy(goal.budgets, goal.stopConditions).budgets.allowed_runtimes : [];
   if (canonical(author) !== canonical(request.source_author) || !instance || !computer || computer.status !== "online" || !agent || !team.success || !team.data.reviewer_instance_ids.includes(instance.id)
+    || currentResearch && (!fixedReviewer || currentResearch.handoffId !== base.transfer_id
+      || instance.id !== fixedReviewer.instance_id || instance.agentId !== fixedReviewer.agent_id || instance.runtime !== fixedReviewer.runtime
+      || instance.modelProfileId !== fixedReviewer.model_profile_id || instance.effortProfileId !== fixedReviewer.effort_profile_id)
     || instance.agentId !== request.reviewer.agent_id || author.agent_id === instance.agentId || author.instance_id === instance.id
     || instance.computerId !== base.destination.node_id || instance.runtime !== request.review_start.runtime || instance.runtime === "mock"
     || allowed !== null && !allowed.includes(instance.runtime)
@@ -155,7 +165,12 @@ export async function ensureGoalImportedProductReview(ctx: ServerContext, tx: Dr
   const choices = await scheduleTask(tx, ctx, ["code.read", "code.review"], { mode: "auto", projectId: base.project_id, branchBacked: false,
     allowedRuntimes: supportedGoalPolicy(goal.budgets, goal.stopConditions).budgets.allowed_runtimes });
   const team = AutonomousTeamSchema.parse(automation.team);
-  const candidate = choices.candidates.find(c => c.agent_id !== source_author.agent_id && c.computer_id === base.destination.node_id && c.runtime !== "mock" && team.reviewer_instance_ids.includes(c.agent_instance_id));
+  const currentResearch = await readCurrentResearchHandoff(ctx, tx, base.goal_id, base.plan_id, operation.intent.next_task_id);
+  const fixedReviewer = currentResearch?.snapshot.members[currentResearch.revision?.generation ?? 0]?.reviewer;
+  const candidate = choices.candidates.find(c => c.agent_id !== source_author.agent_id && c.computer_id === base.destination.node_id && c.runtime !== "mock"
+    && team.reviewer_instance_ids.includes(c.agent_instance_id) && (!currentResearch || fixedReviewer
+      && c.agent_instance_id === fixedReviewer.instance_id && c.agent_id === fixedReviewer.agent_id && c.runtime === fixedReviewer.runtime
+      && c.model_profile_id === fixedReviewer.model_profile_id && c.effort_profile_id === fixedReviewer.effort_profile_id));
   if (!candidate) throw AppError.conflict("Waiting for a distinct team reviewer on the imported research computer");
   const reviewer = { instance_id: candidate.agent_instance_id, agent_id: candidate.agent_id }, review_id = ctx.idGen.generate("imported_review");
   const original = operation.intent.destination_start, reviewRunId = ctx.idGen.generate("imported_review_run"), reviewTaskId = ctx.idGen.generate("imported_review_task");
@@ -187,7 +202,10 @@ export async function ensureGoalImportedProductReview(ctx: ServerContext, tx: Dr
 
 /** A positive imported review still stops at the single-use writer-authority boundary. Ordinary assignments never consume it. */
 export async function advanceGoalImportedProductReview(ctx: ServerContext, tx: DrizzleDb, automation: Automation, nextTaskId: string) {
+  const current = await readCurrentResearchHandoff(ctx, tx, automation.goalId, automation.planId!, nextTaskId);
+  if (current && current.handoffId === null) return { reason: "Research revision is awaiting independently accepted source work before its next transfer." };
   const matches = await tx.select().from(handoffs).where(and(eq(handoffs.organizationId, ctx.organizationId), eq(handoffs.goalId, automation.goalId),
+    current ? eq(handoffs.id, current.handoffId!) : undefined,
     eq(handoffs.planId, automation.planId!), eq(handoffs.nextTaskId, nextTaskId)));
   if (matches.length === 0) return null;
   if (matches.length !== 1) throw AppError.conflict("Multiple imported subjects require explicit reconciliation");

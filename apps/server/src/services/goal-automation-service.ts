@@ -52,6 +52,9 @@ import { settleRecoveryPublications } from "./product-release-recovery-service.j
 import { ensureGoalRecoveryValidation, ensureGoalRecoveryValidationRepair, advanceGoalRecoveryValidation, stopGoalRecoveryValidations } from "./recovery-validation-service.js";
 import { advanceGoalRecoveryValidationReview, stopGoalRecoveryValidationReviews } from "./recovery-validation-review-service.js";
 import { automaticSourceAvailable, automaticSourceHandoffPlanErrors, ensureAutomaticProductHandoff } from "./automatic-product-handoff-service.js";
+import { researchRevisionPoolRequested } from "./research-destination-pool-service.js";
+import { readCurrentResearchHandoff, resolveResearchRevisionOrigin } from "./research-revision-origin-service.js";
+import { ensureGoalResearchRevision } from "./research-revision-service.js";
 import { goalCleanValidations, goalCleanValidationReviews, sourceCleanStops, sourceCleanGenerations, sourceWorkspaceLineages } from "@artoo/db";
 import { ImportedCleanValidationResultV1Schema, ImportedCleanValidationReviewResultV1Schema, SOURCE_CLEAN_RESTART_FEATURE_V1 } from "@artoo/domain";
 import { settleSourceCleanGeneration } from "./source-clean-lifecycle-service.js";
@@ -554,13 +557,23 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
     await update(ctx, tx, row, { status: uncertain ? "waiting" : "executing", lastError: uncertain ? "Waiting for the previous execution's process exit and workspace release." : null }); return;
   }
   const revision = await latestDesignRevision(ctx, tx, goal.id);
-  const runnable = revision?.state === "active" ? planTasks.filter(task => task.id === revision.designTaskId) : planTasks;
+  const designTask = planTasks.find(task => task.sourcePlanSpecRef === "1");
+  const research = researchRevisionPoolRequested(row) && designTask
+    ? await readCurrentResearchHandoff(ctx, tx, goal.id, row.planId, designTask.id) : undefined;
+  const [researchTask] = research?.revision && research.handoffId === null ? await tx.select().from(tasks).where(and(
+    eq(tasks.id, research.revision.auxiliaryTaskId), eq(tasks.organizationId, ctx.organizationId))) : [];
+  if (researchTask?.status === "cancelled") {
+    await update(ctx, tx, row, { status: "failed", lastError: "The required research revision was cancelled." }); return;
+  }
+  const runnable = researchTask && researchTask.status !== "done" ? [researchTask]
+    : revision?.state === "active" ? planTasks.filter(task => task.id === revision.designTaskId) : planTasks;
   const review = runnable.find((task) => task.status === "review");
   if (review) {
     const run = (await tx.select().from(runs).where(and(eq(runs.taskId, review.id), eq(runs.organizationId, ctx.organizationId))).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1))[0];
     const result = run?.status === "completed" ? await inspectRunVerification(ctx, tx, run) : { passed: false, reason: "Latest execution did not complete successfully" };
     const [plan] = await tx.select().from(plans).where(eq(plans.id, row.planId));
-    const spec = TaskSpecSchema.parse((plan?.taskSpecs as unknown[] | undefined)?.[Number(review.sourcePlanSpecRef)]);
+    const origin = await resolveResearchRevisionOrigin(ctx, tx, review);
+    const spec = TaskSpecSchema.parse((plan?.taskSpecs as unknown[] | undefined)?.[Number(origin?.specRef ?? review.sourcePlanSpecRef)]);
     const outputs = run ? await tx.select({ type: artifacts.type }).from(artifacts).where(and(eq(artifacts.runId, run.id), eq(artifacts.organizationId, ctx.organizationId))) : [];
     const missing = spec.expected_artifacts.filter((expected) => !outputs.some((actual) => actual.type === expected.type));
     let passed = result.passed && missing.length === 0;
@@ -598,6 +611,9 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
         const continuation = await ensureGoalImportedDesignContinuation(ctx, tx, row, imported.review_id);
         if (continuation.result === null && !continuation.stopRequested) await ctx.onImportedDesignContinuationQueued?.(continuation.id, "start");
         await update(ctx, tx, row, { status: "executing", lastError: "Imported research accepted; its single-use destination design execution is queued." });
+      } else if ("state" in imported && imported.state === "changes_requested" && researchRevisionPoolRequested(row)) {
+        await ensureGoalResearchRevision(ctx, tx, row, imported.review_id);
+        await update(ctx, tx, row, { status: "executing", lastError: "Imported research requires changes; its source revision is queued for fresh verification and independent review." });
       } else await update(ctx, tx, row, { status: "waiting", lastError: imported.reason });
       return;
     }
@@ -622,7 +638,8 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
     let assignee = row.agentInstanceId!;
     if (row.executionMode === "agent_team") {
       const [source] = await tx.select().from(plans).where(eq(plans.id, row.planId));
-      const spec = TaskSpecSchema.parse((source?.taskSpecs as unknown[] | undefined)?.[Number(ready.sourcePlanSpecRef)]);
+      const origin = await resolveResearchRevisionOrigin(ctx, tx, ready);
+      const spec = TaskSpecSchema.parse((source?.taskSpecs as unknown[] | undefined)?.[Number(origin?.specRef ?? ready.sourcePlanSpecRef)]);
       const member = AutonomousTeamSchema.parse(row.team).members.find((entry) => entry.stage === spec.development_stage);
       if (!member) throw AppError.validation("Agent Team task has no stage owner");
       assignee = member.agent_instance_id;

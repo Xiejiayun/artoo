@@ -1,3 +1,5 @@
+import { resolveResearchRevisionOrigin } from "./research-revision-origin-service.js";
+import { assertCurrentResearchHandoff } from "./research-handoff-guard.js";
 import { assertSourceLineageDispatch } from "./source-lineage-fence.js";
 import { agentInstances, agents, approvals, appendEvent, computers, contextPacks, devices, deviceTokens, goals, goalAutomations, plans, runs, tasks,
   goalProductHandoffs, goalImportedProductReviews as reviews, goalImportedDesignContinuations as continuations, goalImportedDesignDeliveries as deliveries } from "@artoo/db";
@@ -64,27 +66,30 @@ async function facts(ctx: ServerContext, tx: DrizzleDb, reviewId: string, own?: 
     || review.requestDigest !== importedProductReviewRequestDigestV1(request, sha)) throw AppError.conflict("Imported design requires its exact accepted independent review");
   await admitProductSourceSemanticTransferInTransaction(ctx, tx, request.operation.intent.request);
   const base = request.operation.intent.request.byte_request, root = base.destination.workspace_root;
+  await assertCurrentResearchHandoff(ctx, tx, request.operation.intent);
   const [goal] = await tx.select().from(goals).where(and(eq(goals.id, review.goalId), eq(goals.organizationId, ctx.organizationId))).for("update");
   const [automation] = await tx.select().from(goalAutomations).where(and(eq(goalAutomations.goalId, review.goalId), eq(goalAutomations.organizationId, ctx.organizationId)));
   const [task] = await tx.select().from(tasks).where(and(eq(tasks.id, review.nextTaskId), eq(tasks.organizationId, ctx.organizationId))).for("update");
   const [plan] = await tx.select().from(plans).where(and(eq(plans.id, review.planId), eq(plans.organizationId, ctx.organizationId)));
   const [source] = await tx.select().from(tasks).where(and(eq(tasks.id, base.source.task_id), eq(tasks.organizationId, ctx.organizationId)));
+  const sourceOrigin = source ? await resolveResearchRevisionOrigin(ctx, tx, source) : undefined;
+  const sourceRef = sourceOrigin?.specRef ?? source?.sourcePlanSpecRef;
   const index = Number(task?.sourcePlanSpecRef), parsed = Array.isArray(plan?.taskSpecs) && Number.isSafeInteger(index) ? TaskSpecSchema.safeParse(plan.taskSpecs[index]) : undefined;
   if (!goal || goal.status !== "running" || goal.currentPlanId !== review.planId || !automation || automation.actorUserId !== review.actorUserId
     || automation.planId !== review.planId || !["executing", "waiting"].includes(automation.status) || automation.executionMode !== "agent_team"
     || automation.consentId !== review.consentId || automation.policyVersion !== review.policyVersion
     || !task || !plan || task.goalId !== goal.id || task.projectId !== base.project_id || task.sourcePlanId !== plan.id || plan.status !== "accepted"
     || task.sourcePlanSpecRef === null || String(index) !== task.sourcePlanSpecRef || task.status !== (own ? "assigned" : "ready")
-    || task.executionPolicyTaskId !== null || task.parentTaskId !== null || !source || source.status !== "done" || source.sourcePlanSpecRef === null
+    || task.executionPolicyTaskId !== null || task.parentTaskId !== null || !source || source.status !== "done" || sourceRef == null
     || !parsed?.success || parsed.data.development_stage !== "design") throw AppError.conflict("Imported design requires the current ready exact design task and accepted plan");
   const spec = parsed.data;
   assertSupportedPlanTaskControls(spec, index);
   const hard = spec.dependencies.filter(edge => edge.type !== "soft_context");
-  if (hard.length !== 1 || hard[0]!.ref !== source.sourcePlanSpecRef || !["blocks", "artifact_required"].includes(hard[0]!.type)
+  if (hard.length !== 1 || hard[0]!.ref !== sourceRef || !["blocks", "artifact_required"].includes(hard[0]!.type)
     || task.title !== spec.title || task.description !== spec.description || canonical(task.acceptanceCriteria) !== canonical(spec.acceptance_criteria)
     || canonical(task.requiredCapabilities) !== canonical(spec.required_capabilities)) throw AppError.conflict("Imported design task differs from its exact accepted specification or research dependency");
   const expectedGoal = { version: 1, goal_id: goal.id, objective: goal.objective, acceptance_criteria: goal.acceptanceCriteria,
-    plan: { id: plan.id, version: plan.version, rationale: plan.rationale ?? "", spec_ref: source.sourcePlanSpecRef } };
+    plan: { id: plan.id, version: plan.version, rationale: plan.rationale ?? "", spec_ref: sourceRef } };
   if (canonical(request.operation.intent.destination_start.context_pack.payload?.goal_context) !== canonical(expectedGoal))
     throw AppError.conflict("Imported design original goal or accepted plan context changed");
   const { budgets } = supportedGoalPolicy(goal.budgets, goal.stopConditions);

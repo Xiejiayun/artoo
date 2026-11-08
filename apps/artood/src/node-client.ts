@@ -6,8 +6,11 @@ import type { FreshLaunchPermit, JournalRun, TerminalSettlement } from "./manage
 import { PRODUCT_SOURCE_TRANSFER_FEATURE_V1, PRODUCT_SOURCE_TRANSFER_FEATURE_V2, PRODUCT_SOURCE_TRANSFER_MEASUREMENT_V2_FEATURE_V1,
   PRODUCT_SOURCE_OPERATIONS_FEATURE_V1, IMPORTED_PRODUCT_REVIEW_FEATURE_V1, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1,
   IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
-  SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1 } from "@artoo/domain";
+  SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1,
+  PRODUCT_RESEARCH_REVISION_FEATURE_V1 } from "@artoo/domain";
 import { readProductSourceRuntimeCapabilities } from "./product-source-runtime.js";
+import { claimProductResearchRevisionRun, closeProductResearchRevisionRun } from "./product-source-runtime.js";
+import { readProductResearchRevision } from "./product-research-revision.js";
 import type {
   AgentInstanceHandle,
   NodeSideTransport,
@@ -802,6 +805,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     try {
       // Detach the entire versioned admission before any await or duplicate ACK.
       const snapshot = snapshotOwnedResultRunAdmission(command.payload), payload = snapshot.request.run_start, runId = payload.run_id;
+      if (payload.context_pack.payload?.product_research_revision) throw new Error("Research revision requires its original source-node execution path");
       if(payload.context_pack.payload?.imported_recovery_validation || payload.context_pack.payload?.imported_recovery_validation_review_subject || payload.context_pack.payload?.imported_validation || payload.context_pack.payload?.imported_validation_review_subject || payload.context_pack.payload?.imported_review_subject || payload.context_pack.payload?.transferred_product_input || payload.context_pack.payload?.imported_design_review_subject || payload.context_pack.payload?.imported_execution || payload.context_pack.payload?.imported_execution_review_subject || payload.context_pack.payload?.imported_execution_repair)throw new Error("Imported research does not support ordinary owned-result execution");
       if (sourceRuntime) {
         assertProductSourceWorkspaceBoundary(sourceRuntime, payload.workspace.root);
@@ -859,6 +863,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         readReleaseCapabilities = releaseExecutor.getCapabilityReader(admitted.verification.release_capability_binding.release_profile_id);
       }
       verificationProfile = selectVerificationProfile(admitted, verificationProfiles, options.managedJournal !== undefined, readReleaseCapabilities, nodeId);
+      if (readProductResearchRevision(admitted.context_pack.payload) && (!sourceRuntime || !verificationProfile)) {
+        throw new Error("Research revision requires its original locally prepared source runtime");
+      }
       readOnlyPlanning = !options.managedJournal && configuredAdapter !== undefined
         && supportsWorkspaceReadOnlyTools(configuredAdapter) && isAutonomousPlanningContext(admitted);
       if (sourceRuntime && !verificationProfile) {
@@ -957,7 +964,10 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         await ackRejected(command.id, "process_start_failed", "Verification workspace already has an active execution"); return;
       }
       if (sourceRuntime) {
-        try { claimProductSourceRun(sourceRuntime, runId, launchCommand.payload.workspace.root); }
+        try {
+          if (readProductResearchRevision(launchCommand.payload.context_pack.payload)) claimProductResearchRevisionRun(sourceRuntime, launchCommand.payload, verificationProfile);
+          else claimProductSourceRun(sourceRuntime, runId, launchCommand.payload.workspace.root);
+        }
         catch (error) { await ackRejected(command.id, "process_start_failed", errorMessage(error)); return; }
       }
       verificationRuns.set(runId, { profile: verificationProfile, runStart: launchCommand.payload, requestId: launchCommand.payload.verification!.request_id,
@@ -978,6 +988,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       if (sourceRuntime && !runs.has(runId) && !finished.has(runId)) {
         const verification = verificationRuns.get(runId);
         if (verification && !verification.adapterInvoked && !verification.workspaceProcessInvoked && !verification.unsafe) {
+          if (readProductResearchRevision(verification.context)) closeProductResearchRevisionRun(sourceRuntime, verification.runStart, verification.profile);
           releaseProductSourceRun(sourceRuntime, runId);
         } else if (verification) verification.unsafe = true; // An invoked producer without a closed handle retains its source claim.
       }
@@ -1407,6 +1418,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
           if (verification) {
             if (!verification.windowsAdmission) throw new VerificationCleanupError("Product source run lost native closure authority");
             assertWindowsVerifiedExecutionClosed(verification.windowsAdmission, handle);
+            if (readProductResearchRevision(verification.context)) closeProductResearchRevisionRun(sourceRuntime, verification.runStart,
+              verification.profile, { admission: verification.windowsAdmission, handle });
             releaseProductSourceRun(sourceRuntime, delivery.runId);
           } else {
             const planning = planningToolRuns.get(delivery.runId);
@@ -1896,12 +1909,13 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         // Hello precedes the real registration/checkpoint handshake. Advertise the
         // protected installed path here; the original checkpoint and controllers
         // created at activation remain mandatory for execution below.
-        return Object.freeze([...features.filter(feature => !["imported-recovery-validation.v1", "imported-recovery-validation-review.v1"].includes(feature)),
+        return Object.freeze([...features.filter(feature => !["imported-recovery-validation.v1", "imported-recovery-validation-review.v1", PRODUCT_RESEARCH_REVISION_FEATURE_V1].includes(feature)),
           ...cleanFeatures]);
       }
       if (!sourceRuntime) return Object.freeze([]);
       const roles = readProductSourceRuntimeCapabilities(sourceRuntime);
       return Object.freeze([PRODUCT_SOURCE_TRANSFER_FEATURE_V1,
+        ...(roles.researchRevision ? [PRODUCT_RESEARCH_REVISION_FEATURE_V1] : []),
         ...(roles.semantic ? [PRODUCT_SOURCE_TRANSFER_FEATURE_V2] : []),
         ...(roles.measurementV2 ? [PRODUCT_SOURCE_TRANSFER_MEASUREMENT_V2_FEATURE_V1] : []),
         ...(sourceOperations && roles.semantic ? [PRODUCT_SOURCE_OPERATIONS_FEATURE_V1] : []),
