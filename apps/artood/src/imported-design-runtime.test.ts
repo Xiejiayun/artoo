@@ -67,7 +67,7 @@ function replaceStrings(value:any,oldRoot:string,newRoot:string):any{
 it("derives destination-only semantic and policy-v2 roles from original prepared runtime state", async () => {
   const f = await fixture();
   expect(productSourceSemanticExportEnabled(f.runtime)).toBe(false);
-  expect(readProductSourceRuntimeCapabilities(f.runtime)).toEqual({ semantic:true, measurementV2:true, importedReview:true, importedDesign:true, importedDesignReview:false, importedExecution:false, importedValidation:false });
+  expect(readProductSourceRuntimeCapabilities(f.runtime)).toEqual({ semantic:true, researchRevision:false, measurementV2:true, importedReview:true, importedDesign:true, importedDesignReview:false, importedExecution:false, importedValidation:false });
   expect(() => readProductSourceRuntimeCapabilities(structuredClone(f.runtime))).toThrow(/original live local runtime/);
   control.release.mockReturnValue({});
   expect(() => readProductSourceRuntimeCapabilities(f.runtime)).toThrow(/release capability changed/);
