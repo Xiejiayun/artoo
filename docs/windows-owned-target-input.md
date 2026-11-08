@@ -20,6 +20,12 @@ this selection retain NUL target stdin and expose no `endInput` method. The
 synchronous Guardian collector input protocol remains separate and cannot select
 this extension.
 
+Binding a locally prepared application verification profile also requires this
+capability from the original backend's pinned manifest, after the full local
+installation audit. An older bundle is rejected before that profile can advertise
+application support. Ordinary and static-web profiles keep their existing binding
+behavior; serialized profile or backend capability claims confer no authority.
+
 After `started`, `endInput(bytes: Uint8Array)` copies exactly one 1–4096-byte
 message. It cannot be called again, after root exit, or after cancellation. Invalid
 local bytes are rejected before consuming the single request. A new UUID binds the

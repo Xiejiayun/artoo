@@ -129,6 +129,13 @@ export function assertWindowsProcessBackend(backend: PreparedWindowsProcessBacke
   if (!state) throw new Error("Windows process backend was not locally prepared");
   validateBundle(state);
 }
+/** Local capability admission only. The caller must also audit the installation;
+ * serialized claims cannot replace this original pinned manifest state. */
+export function assertWindowsProcessTargetInputCapability(backend: PreparedWindowsProcessBackend): void {
+  const state = backends.get(backend);
+  if (!state) throw new Error("Windows process backend was not locally prepared");
+  if (!state.targetInput) throw new Error("Windows process bundle does not advertise target input");
+}
 /** Fixed guardian control only. This does not admit a target or replace a full
  * installation audit when preparing an operation that can execute one. */
 export function assertWindowsProcessBackendImage(backend: PreparedWindowsProcessBackend): void {

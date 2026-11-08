@@ -51,6 +51,7 @@ vi.mock("node:fs", () => ({
 
 import {
   isWindowsOwnedClosureReceipt, isWindowsOwnedTargetInputReceipt, prepareWindowsProcessBackend, startWindowsOwnedProcess,
+  assertWindowsProcessTargetInputCapability,
   WindowsOwnedCleanupError, WindowsOwnedStartupError, type WindowsOwnedClosureReceipt, type WindowsOwnedProcess,
   type WindowsOwnedStart,
 } from "./windows-owned-process.js";
@@ -538,6 +539,19 @@ describe("controlled Windows protocol, not native containment", () => {
 });
 
 describe("controlled target input protocol, not native WriteFile/CloseHandle evidence", () => {
+  it("rejects local target-input admission for an old pinned manifest without spawning", () => {
+    expect(() => assertWindowsProcessTargetInputCapability(prepare())).toThrow(/does not advertise target input/);
+    expect(mocked.spawn).not.toHaveBeenCalled();
+  });
+
+  it("admits only original manifest capability authority, never serialized backend claims", () => {
+    advertiseInput(); const backend = prepare();
+    expect(() => assertWindowsProcessTargetInputCapability(backend)).not.toThrow();
+    const remote = JSON.parse(JSON.stringify({ ...backend, capabilities: [INPUT_CAPABILITY] }));
+    expect(() => assertWindowsProcessTargetInputCapability(remote)).toThrow(/not locally prepared/);
+    expect(mocked.spawn).not.toHaveBeenCalled();
+  });
+
   it("retains legacy NUL selection without exposing endInput even when a new helper advertises the capability", async () => {
     advertiseInput(); const { run, helper } = begin(); helper.ready([INPUT_CAPABILITY]); helper.created(); helper.started();
     expect(run.endInput).toBeUndefined(); expect(helper.launch).not.toHaveProperty("targetInput");

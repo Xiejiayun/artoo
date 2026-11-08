@@ -42,7 +42,8 @@ import { isPreparedCleanValidationRelease, readPreparedCleanValidationRelease, t
   type readImportedCleanValidationVerificationAdmission, type readImportedCleanValidationReviewVerificationAdmission } from "./windows-clean-validation-runtime.js";
 import { OwnedGitError } from "./owned/owned-git.js";
 import { ProtectedCommandError, runProtectedCommand, assertProtectedNativeCommandClosed } from "./protected-command.js";
-import { assertWindowsProcessBackend, assertWindowsProcessBackendImage, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
+import { assertWindowsProcessBackend, assertWindowsProcessBackendImage, assertWindowsProcessTargetInputCapability,
+  type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import { assertWindowsBrowserProcessInstallation, createWindowsBrowserProcessDescriptor } from "./windows-browser-process-authority.js";
 import { writeWindowsBrowserPrivateContext } from "./windows-browser-private-context.js";
 import { VerificationCleanupError } from "./verification-cleanup-error.js";
@@ -159,6 +160,9 @@ export function attachWindowsVerificationBackend(profile: PreparedVerificationPr
     // Installation admission includes the full backend audit and exact write-root scope.
     assertWindowsBrowserProcessInstallation(backend, profile.workspace_root);
   } else assertWindowsProcessBackend(backend);
+  // Only an original local application profile requires the target stdin bridge.
+  // Fail before attaching/advertising it; ordinary and static profiles keep legacy support.
+  if (applicationProfiles.has(profile)) assertWindowsProcessTargetInputCapability(backend);
   const existing = windowsProfileBackends.get(profile);
   if (existing && existing !== backend) fail("Windows backend is already bound to this profile");
   windowsProfileBackends.set(profile, backend);
