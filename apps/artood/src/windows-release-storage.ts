@@ -3,7 +3,7 @@ import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { win32 } from "node:path";
 import { assertCanonicalWindowsPath, assertNativeWindows, collectWindowsAclFacts, MAX_WINDOWS_AUDIT_PATHS,
   physicalWindowsDirectory, TRUSTED_WINDOWS_SYSTEM_SIDS, WINDOWS_ANCESTOR_REPLACEMENT_MASK, WINDOWS_MUTATION_MASK,
-  windowsPathComponents, windowsPathKey, windowsPathsOverlap, type WindowsAclTarget } from "./windows-local-acl.js";
+  windowsPathComponents, windowsPathKey, windowsPathsOverlap, type WindowsAclFact, type WindowsAclTarget } from "./windows-local-acl.js";
 import { markWindowsStorageFailure, type WindowsStorageChangeField, type WindowsStorageFailureCode } from "./windows-storage-diagnostic.js";
 
 declare const storageBrand: unique symbol;
@@ -106,50 +106,102 @@ export function assertWindowsReleaseStorageWorkspace(authority: PreparedWindowsR
 
 /** Execute at preparation and serialized startup/publication/monitor write boundaries, never per HTTP file. */
 export function auditWindowsReleaseStorage(authority: PreparedWindowsReleaseStorage, expectedDirectory: string): void {
-  const saved = state(authority);
-  assertWindowsReleaseStorage(authority, expectedDirectory);
-  const before = inventory(saved), targets = new Map<string, WindowsAclTarget>();
-  const ancestors = new Set(windowsPathComponents(saved.directory).slice(0, -1).map(windowsPathKey));
-  for (const expected of saved.fixed.values()) targets.set(windowsPathKey(expected.path), {
-    path: expected.path, directory: true, readAcl: ancestors.has(windowsPathKey(expected.path)),
+  auditWindowsReleaseStorageBatch([{ storage: authority, directory: expectedDirectory }]);
+}
+
+/** Only this synchronous invocation shares collector facts. Every storage retains its
+ * own complete boundary, policy and before/after inventory; no audit survives return. */
+export function auditWindowsReleaseStorageBatch(entries: readonly {
+  storage: PreparedWindowsReleaseStorage; directory: string;
+}[]): void {
+  if (!Array.isArray(entries)) fail("an explicit local storage batch is required", "storage_binding_rejected");
+  const prepared = entries.map(entry => {
+    if (!entry || typeof entry !== "object" || Object.keys(entry).some(key => key !== "storage" && key !== "directory"))
+      fail("an exact local storage binding is required", "storage_binding_rejected");
+    const { storage, directory } = entry, saved = state(storage);
+    assertWindowsReleaseStorage(storage, directory);
+    const before = inventory(saved), targets = new Map<string, WindowsAclTarget>();
+    const ancestors = new Set(windowsPathComponents(saved.directory).slice(0, -1).map(windowsPathKey));
+    for (const expected of saved.fixed.values()) targets.set(windowsPathKey(expected.path), {
+      path: expected.path, directory: true, readAcl: ancestors.has(windowsPathKey(expected.path)),
+    });
+    for (const item of before.values()) targets.set(windowsPathKey(item.path), { path: item.path, directory: item.directory, readAcl: true });
+    // Keep the original per-storage limit even when the complete batch needs several collectors.
+    if (targets.size > MAX_WINDOWS_AUDIT_PATHS) fail("storage and boundary inventory exceeds the Windows bound");
+    return { saved, before, targets, ancestors };
   });
-  for (const item of before.values()) targets.set(windowsPathKey(item.path), { path: item.path, directory: item.directory, readAcl: true });
-  if (targets.size > MAX_WINDOWS_AUDIT_PATHS) fail("storage and boundary inventory exceeds the Windows bound");
-  const report = collectWindowsAclFacts([...targets.values()]);
-  if (saved.sid !== undefined && saved.sid !== report.currentSid) fail("node Windows identity changed", "storage_acl_rejected");
-  const trusted = new Set([...TRUSTED_WINDOWS_SYSTEM_SIDS, report.currentSid]);
-  for (const node of report.nodes) {
-    const target = targets.get(windowsPathKey(node.path))!;
-    if (!target.readAcl) continue;
-    if (!node.ownerSid || !trusted.has(node.ownerSid)) fail(`untrusted owner: ${node.path}`, "storage_acl_rejected");
-    const ancestor = ancestors.has(windowsPathKey(node.path));
-    for (const ace of node.aces) {
-      if (ace.qualifier !== "AccessAllowed" || trusted.has(ace.sid)) continue;
-      // InheritOnly is bit 3. OI/CI bits 0/1 can authorize future children in mutable storage.
-      const effective = (ace.flags & 8) === 0, inheritedByFutureChild = node.directory && (ace.flags & 3) !== 0;
-      if (effective && (ace.mask & (ancestor ? WINDOWS_ANCESTOR_REPLACEMENT_MASK : WINDOWS_MUTATION_MASK)) !== 0
-        || !ancestor && inheritedByFutureChild && (ace.mask & WINDOWS_MUTATION_MASK) !== 0) {
-        fail(`another principal can modify storage or its future children: ${node.path}`, "storage_acl_rejected");
+  const combined = new Map<string, WindowsAclTarget>();
+  for (const { targets } of prepared) for (const [key, target] of targets) {
+    const previous = combined.get(key);
+    if (previous && (previous.path !== target.path || previous.directory !== target.directory))
+      fail(`shared storage audit target changed: ${target.path}`);
+    combined.set(key, { ...target, readAcl: target.readAcl || previous?.readAcl === true });
+  }
+  const facts = new Map<string, WindowsAclFact>();
+  let sid: string | undefined;
+  // The collector accepts 4096-character paths, 184-character SIDs and 256 ACEs.
+  // At 256 targets, even six-byte JSON escaping of every path character plus a
+  // conservative 320 bytes per ACE stays below 32 MiB (its response bound is 64 MiB).
+  // This also bounds merged responses that individually legal storages could exceed.
+  // Splitting happens before collection, never as a retry after a failed observation.
+  const maximumTargets = Math.min(256, MAX_WINDOWS_AUDIT_PATHS);
+  const maximumRequestBytes = 16 * 1024 * 1024, envelopeBytes = Buffer.byteLength('{"version":1,"paths":[]}');
+  let targets: WindowsAclTarget[] = [], requestBytes = envelopeBytes;
+  const collect = () => {
+    if (!targets.length) return;
+    const report = collectWindowsAclFacts(targets);
+    if (sid !== undefined && sid !== report.currentSid) fail("node Windows identity changed", "storage_acl_rejected");
+    sid = report.currentSid;
+    for (const node of report.nodes) facts.set(windowsPathKey(node.path), node);
+    targets = []; requestBytes = envelopeBytes;
+  };
+  for (const target of combined.values()) {
+    const bytes = Buffer.byteLength(JSON.stringify(target));
+    if (targets.length && (targets.length === maximumTargets || requestBytes + 1 + bytes > maximumRequestBytes)) collect();
+    targets.push(target); requestBytes += bytes + (targets.length > 1 ? 1 : 0);
+  }
+  collect();
+  const trusted = new Set([...TRUSTED_WINDOWS_SYSTEM_SIDS, ...(sid === undefined ? [] : [sid])]);
+  for (const { saved, targets, ancestors } of prepared) {
+    if (saved.sid !== undefined && saved.sid !== sid) fail("node Windows identity changed", "storage_acl_rejected");
+    for (const [key, target] of targets) {
+      const node = facts.get(key);
+      if (!node) fail("storage audit facts are incomplete", "acl_facts_rejected");
+      if (!target.readAcl) continue;
+      if (!node.ownerSid || !trusted.has(node.ownerSid)) fail(`untrusted owner: ${node.path}`, "storage_acl_rejected");
+      // The same path may be an ancestor for one storage and mutable content for another.
+      const ancestor = ancestors.has(key);
+      for (const ace of node.aces) {
+        if (ace.qualifier !== "AccessAllowed" || trusted.has(ace.sid)) continue;
+        // InheritOnly is bit 3. OI/CI bits 0/1 can authorize future children in mutable storage.
+        const effective = (ace.flags & 8) === 0, inheritedByFutureChild = node.directory && (ace.flags & 3) !== 0;
+        if (effective && (ace.mask & (ancestor ? WINDOWS_ANCESTOR_REPLACEMENT_MASK : WINDOWS_MUTATION_MASK)) !== 0
+          || !ancestor && inheritedByFutureChild && (ace.mask & WINDOWS_MUTATION_MASK) !== 0) {
+          fail(`another principal can modify storage or its future children: ${node.path}`, "storage_acl_rejected");
+        }
       }
     }
   }
-  assertFixed(saved);
-  const after = inventory(saved);
-  if (before.size !== after.size || [...before].some(([key, item]) => {
-    const now = after.get(key);
-    return !now || !identityEqual(item, now) || item.ctimeNs !== now.ctimeNs || item.mtimeNs !== now.mtimeNs || item.size !== now.size;
-  })) {
+  const completed = prepared.map(({ saved, before }) => {
+    assertFixed(saved);
+    const after = inventory(saved);
     const change = firstInventoryChange(before, after);
-    fail("storage changed during ACL audit" + inventoryChangeDiagnostic(saved.directory, change), "storage_inventory_changed", change?.fields);
-  }
-  for (const name of LAYOUT) {
-    const path = win32.join(saved.directory, name), entry = after.get(windowsPathKey(path));
-    if (entry) {
-      if (!entry.directory) fail(`invalid release layout directory: ${path}`);
-      saved.layout.set(windowsPathKey(path), entry);
+    if (change) fail("storage changed during ACL audit" + inventoryChangeDiagnostic(saved.directory, change), "storage_inventory_changed", change.fields);
+    const layout = new Map(saved.layout);
+    for (const name of LAYOUT) {
+      const path = win32.join(saved.directory, name), entry = after.get(windowsPathKey(path));
+      if (entry) {
+        if (!entry.directory) fail(`invalid release layout directory: ${path}`);
+        layout.set(windowsPathKey(path), entry);
+      }
     }
+    return { saved, layout };
+  });
+  // A later rejection must not partially admit an earlier storage's SID or new layout.
+  for (const { saved, layout } of completed) {
+    saved.layout = layout;
+    saved.sid = sid;
   }
-  saved.sid = report.currentSid;
 }
 
 /** Trusted-team local admission. No caller-supplied SID, policy or callback can authorize storage. */
