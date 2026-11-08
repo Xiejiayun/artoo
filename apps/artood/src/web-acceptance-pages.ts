@@ -6,6 +6,7 @@ import { BROWSER_V2_ACTIONS, executeBrowserCoreAction, withBrowserActionTimeout 
 import { createMainFrameFocusProbe, type MainFrameFocusProbe } from "./web-acceptance-focus.js";
 import { canonicalWebAcceptance as canonical, webAcceptanceDigest as sha } from "./web-acceptance-identity.js";
 import { createStorageFaultController, createStoragePreconditionController, type StorageFaultController, type StoragePreconditionController } from "./web-acceptance-storage.js";
+import { acceptanceCleanupFailure, withAcceptanceCleanup } from "./web-acceptance-cleanup.js";
 
 interface PageState { page: Page; id: string; closed: boolean; closing: boolean; navigationStarted: boolean; focus?: MainFrameFocusProbe }
 export interface BrowserProgramV3Result {
@@ -117,6 +118,7 @@ export async function executeBrowserProgramV3(context: BrowserContext, origin: s
     if (!state.page.isClosed()) throw new Error("Browser close_page did not confirm actual closure");
     state.closed = true;
   }
+  let programFailed = false, programFailure: unknown;
   try {
     const program = ProductBrowserProgramV3Schema.parse(input);
     const checks = storageChecks === undefined ? undefined : ProductStorageChecksV1Schema.parse(storageChecks);
@@ -162,21 +164,23 @@ export async function executeBrowserProgramV3(context: BrowserContext, origin: s
       const measured = await bounded(storage.finish(), timeout, "Storage measurement finalization");
       storageFault = measured.storage_fault; storagePreconditionTrace = measured.storage_precondition;
     } else if (storage) storageFault = await bounded(storage.finish(), timeout, "Storage measurement finalization");
-  } finally {
+  } catch (error) { programFailed = true; programFailure = error; throw error; }
+  finally {
     cleaningUp = true;
-    // Latch synchronously before any awaited cleanup; delayed seed CDP replies must not resume product code.
-    if (storage && "abortPending" in storage) storage.abortPending();
     try {
-      try {
-        for (const state of states.values()) if (state.focus) await bounded(state.focus.close(), timeout, "Browser focus probe closure");
-      } finally { if (storage) await storage.prepareContextClose(); }
-    } finally {
-      try { await context.close(); }
-      finally {
-        try { if (storage) await storage.close(); }
-        finally { await Promise.all(rejectedClosures.values()); }
-      }
-    }
+      // Keep this latch in the original finally continuation, before any async wrapper or cleanup await.
+      if (storage && "abortPending" in storage) storage.abortPending();
+      await withAcceptanceCleanup("context", async () => {
+        await withAcceptanceCleanup("context", async () => {
+          for (const state of states.values()) if (state.focus) await bounded(state.focus.close(), timeout, "Browser focus probe closure");
+        }, async () => { if (storage) await storage.prepareContextClose(); });
+      }, async () => {
+        await withAcceptanceCleanup("context", () => context.close(), async () => {
+          await withAcceptanceCleanup("context", async () => { if (storage) await storage.close(); },
+            async () => { await Promise.all(rejectedClosures.values()); });
+        });
+      });
+    } catch (error) { throw acceptanceCleanupFailure("context", error, programFailed, programFailure); }
   }
   healthy();
   return { operations, captures: [...states.keys()].map((id) => {

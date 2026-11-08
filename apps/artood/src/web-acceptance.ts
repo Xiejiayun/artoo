@@ -21,6 +21,7 @@ import { deriveWebAcceptanceV3Plan, type ExpectedWebAcceptanceV3 } from "./web-a
 import { STORAGE_FAULT_INITIALIZER_DIGEST } from "./web-acceptance-storage-source.js";
 import { BROWSER_V3_ACTIONS, executeBrowserProgramV3 } from "./web-acceptance-pages.js";
 import { browserTraceV2Filename, browserCaptureV2Filename, browserTraceV3Filename, browserCaptureV3Filename } from "./browser-evidence.js";
+import { AcceptanceCleanupError, withAcceptanceCleanup } from "./web-acceptance-cleanup.js";
 export type { NormalizedWebAcceptanceOptions, StaticWebCapabilitySnapshot, WebAcceptanceOptions } from "./web-acceptance-config.js";
 
 const inside = (path: string, root: string): boolean => { const tail = relative(root, path); return tail === "" || (tail !== ".." && !tail.startsWith(`..${sep}`) && !isAbsolute(tail)); };
@@ -266,17 +267,17 @@ export async function runWebAcceptance(workspace: string, context: ContextPack, 
   readProductFile(root, design.prototype.entrypoint);
   const site = await serveAcceptanceProduct(root);
   const results: { case_id: string; viewport: number; assertions: number; screenshot_digest: string }[] = [];
-  try {
+  await withAcceptanceCleanup("site", async () => {
     const owned = await launchOwnedBrowser({ workspace: root, ...(options.browser_executable ? { executablePath: options.browser_executable } : {}),
       ...(windowsProcessBackend ? { windowsProcessBackend } : {}) });
     const browser = owned.browser;
-    try {
+    await withAcceptanceCleanup("browser", async () => {
       for (const width of viewports) {
         const cases = stage === "design" && !options.design_capture_cases ? [{ id: "prototype", browser_steps: [{ action: "navigate", path: `/${design.prototype.entrypoint.slice("product/".length)}` } as ProductBrowserStep] }] : design.validation_cases;
         for (const test of cases) {
           const isolated = await browser.newContext({ viewport: { width, height: STATIC_WEB_VIEWPORT_HEIGHT }, serviceWorkers: "block", acceptDownloads: false });
           const blocked: string[] = [], errors: string[] = [];
-          try {
+          await withAcceptanceCleanup("context", async () => { try {
             await isolated.route("**/*", (route) => {
               if (new URL(route.request().url()).origin === site.origin) return route.continue();
               blocked.push(route.request().url().slice(0, 300)); return route.abort("blockedbyclient");
@@ -293,12 +294,12 @@ export async function runWebAcceptance(workspace: string, context: ContextPack, 
             const screenshot = await page.screenshot({ fullPage: STATIC_WEB_FULL_PAGE_SCREENSHOT, animations: "disabled", timeout });
             if (evidence) writeFileSync(join(evidence, `${test.id}-${width}.png`), screenshot, { mode: 0o400, flag: "wx" });
             results.push({ case_id: test.id, viewport: width, assertions: test.browser_steps!.filter((step) => step.action.startsWith("assert_")).length, screenshot_digest: sha(screenshot) });
-          } catch (error) { throw new Error(`Browser case ${test.id} at ${width}px: ${error instanceof Error ? error.message : "failed"}`); }
-          finally { await isolated.close(); }
+          } catch (error) { throw new Error(`Browser case ${test.id} at ${width}px: ${error instanceof Error ? error.message : "failed"}`, { cause: error }); }
+          }, () => isolated.close());
         }
       }
-    } finally { await owned.close(); }
-  } finally { await site.close(); }
+    }, () => owned.close());
+  }, () => site.close());
   return finish(results);
 }
 
@@ -322,16 +323,16 @@ async function runWebAcceptanceV2(workspace: string, context: ContextPack, optio
   };
   if (plan.stage === "research") return finish([]);
   const site = await serveAcceptanceProduct(root), results: StaticWebAcceptanceReportV2["cases"] = [];
-  try {
+  await withAcceptanceCleanup("site", async () => {
     const owned = await launchOwnedBrowser({ workspace: root, ...(options.browser_executable ? { executablePath: options.browser_executable } : {}),
       ...(windowsProcessBackend ? { windowsProcessBackend } : {}) });
-    try {
+    await withAcceptanceCleanup("browser", async () => {
       for (const expected of plan.programs) {
         const test = plan.casePrograms.find((item) => item.case_id === expected.case_id)!;
         const isolated = await owned.browser.newContext({ viewport: { width: expected.viewport.width, height: expected.viewport.height },
           deviceScaleFactor: 1, serviceWorkers: "block", acceptDownloads: false });
         const violations: string[] = [];
-        try {
+        await withAcceptanceCleanup("context", async () => { try {
           await isolated.route("**/*", (route) => {
             if (new URL(route.request().url()).origin === site.origin) return route.continue();
             violations.push("external network request"); return route.abort("blockedbyclient");
@@ -364,12 +365,12 @@ async function runWebAcceptanceV2(workspace: string, context: ContextPack, optio
             assertions: operations.filter((operation) => operation.action.startsWith("assert_")).length, operation_count: operations.length,
             trace_digest: sha(traceBytes), trace_size: traceBytes.length, captures: [{ page_id: "main", screenshot_digest: sha(screenshot) }] });
         } catch (error) {
-          throw new Error(`Browser case ${expected.case_id} at ${expected.viewport.id} (${expected.viewport.width}x${expected.viewport.height}): ${error instanceof Error ? error.message : "failed"}`);
-        } finally { await isolated.close(); }
+          throw new Error(`Browser case ${expected.case_id} at ${expected.viewport.id} (${expected.viewport.width}x${expected.viewport.height}): ${error instanceof Error ? error.message : "failed"}`, { cause: error });
+        } }, () => isolated.close());
         if (violations.length) throw new Error(`Browser case ${expected.case_id}: unsupported behavior during context closure: ${[...new Set(violations)].join(", ")}`);
       }
-    } finally { await owned.close(); }
-  } finally { await site.close(); }
+    }, () => owned.close());
+  }, () => site.close());
   return finish(results);
 }
 
@@ -393,10 +394,10 @@ async function runWebAcceptanceV3(workspace: string, context: ContextPack, optio
   };
   if (plan.stage === "research") return finish([]);
   const site = await serveAcceptanceProduct(root), results: StaticWebAcceptanceReportV3["cases"] = [];
-  try {
+  await withAcceptanceCleanup("site", async () => {
     const owned = await launchOwnedBrowser({ workspace: root, ...(options.browser_executable ? { executablePath: options.browser_executable } : {}),
       ...(windowsProcessBackend ? { windowsProcessBackend } : {}) });
-    try {
+    await withAcceptanceCleanup("browser", async () => {
       for (const expected of plan.programs) {
         const test = plan.casePrograms.find((item) => item.case_id === expected.case_id)!;
         const isolated = await owned.browser.newContext({ viewport: { width: expected.viewport.width, height: expected.viewport.height },
@@ -423,10 +424,11 @@ async function runWebAcceptanceV3(workspace: string, context: ContextPack, optio
             ...(trace.storage_fault ? { storage_fault: storageFaultReportFromTraceV1(trace.storage_fault) } : {}),
             ...(trace.storage_precondition ? { storage_precondition: storagePreconditionReportFromTraceV1(trace.storage_precondition) } : {}) });
         } catch (error) {
-          throw new Error(`Browser case ${expected.case_id} at ${expected.viewport.id} (${expected.viewport.width}x${expected.viewport.height}): ${error instanceof Error ? error.message : "failed"}`);
+          if (error instanceof AcceptanceCleanupError) throw error;
+          throw new Error(`Browser case ${expected.case_id} at ${expected.viewport.id} (${expected.viewport.width}x${expected.viewport.height}): ${error instanceof Error ? error.message : "failed"}`, { cause: error });
         }
       }
-    } finally { await owned.close(); }
-  } finally { await site.close(); }
+    }, () => owned.close());
+  }, () => site.close());
   return finish(results);
 }

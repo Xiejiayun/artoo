@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProductBrowserProgramV3, ProductStorageChecksV1, StorageFaultTraceV1 } from "@artoo/domain";
 import type { StorageFaultController } from "./web-acceptance-storage.js";
 import { executeBrowserProgramV3 } from "./web-acceptance-pages.js";
+import { AcceptanceCleanupError } from "./web-acceptance-cleanup.js";
 
 const mocked = vi.hoisted(() => ({ create: vi.fn() }));
 vi.mock("./web-acceptance-storage.js", () => ({ createStorageFaultController: mocked.create }));
@@ -60,18 +61,34 @@ describe("v3 storage-fault executor lifecycle (controlled seam)", () => {
     expect(result.operations).toHaveLength(2); expect(result.captures).toHaveLength(1);
   });
   it("rejects a late controller failure even after screenshots and a complete trace", async () => {
-    const f = fixture(); f.controller.close = async () => { expect(f.closed()).toBe(true); throw new Error("late document violation"); };
-    await expect(f.run(checks)).rejects.toThrow("late document violation");
+    const f = fixture(), failure = new Error("late document violation"); f.controller.close = async () => { expect(f.closed()).toBe(true); throw failure; };
+    const caught = await f.run(checks).catch(error => error);
+    expect(caught).toBeInstanceOf(AcceptanceCleanupError); expect(caught.message).toBe("Browser acceptance context cleanup failed");
+    expect(caught.cause).toBe(failure); expect(() => { throw caught.cause; }).toThrow("late document violation");
     expect(f.log).toEqual(expect.arrayContaining(["capture", "finish", "context-close"]));
   });
   it("still closes the actual context and controller when preparation fails", async () => {
-    const f = fixture(); f.controller.prepareContextClose = async () => { throw new Error("unresolved debugger pause"); };
-    await expect(f.run(checks)).rejects.toThrow("unresolved debugger pause");
+    const f = fixture(), failure = new Error("unresolved debugger pause"); f.controller.prepareContextClose = async () => { throw failure; };
+    const caught = await f.run(checks).catch(error => error);
+    expect(caught).toBeInstanceOf(AcceptanceCleanupError); expect(caught.message).toBe("Browser acceptance context cleanup failed");
+    expect(caught.cause).toBe(failure); expect(() => { throw caught.cause; }).toThrow("unresolved debugger pause");
     expect(f.log.slice(-2)).toEqual(["context-close", "storage-close"]);
   });
   it("does not install a storage controller or add an extension for an ordinary v3 case", async () => {
     const f = fixture();
     const result = await f.run();
     expect(result).not.toHaveProperty("storage_fault"); expect(mocked.create).not.toHaveBeenCalled();
+  });
+  it("retains program, preparation and storage-close failures in actual cleanup order", async () => {
+    const f = fixture(), programFailure = new Error("before-step failed"), preparationFailure = new Error("pause unresolved"), closeFailure = new Error("storage close failed");
+    f.controller.beforeStep = async () => { f.log.push("before-failure"); throw programFailure; };
+    f.controller.prepareContextClose = async () => { f.log.push("prepare-failure"); throw preparationFailure; };
+    f.controller.close = async () => { f.log.push("close-failure"); expect(f.closed()).toBe(true); throw closeFailure; };
+    const caught = await f.run(checks).catch(error => error);
+    const originals = (error: unknown): unknown[] => error instanceof AcceptanceCleanupError ? error.errors.flatMap(originals) : [error];
+    expect(caught).toBeInstanceOf(AcceptanceCleanupError); expect(caught.message).toBe("Browser acceptance context cleanup failed");
+    const errors = originals(caught); expect(errors).toHaveLength(3);
+    expect(errors[0]).toBe(programFailure); expect(errors[1]).toBe(preparationFailure); expect(errors[2]).toBe(closeFailure);
+    expect(f.log).toEqual(["storage-setup", "before-failure", "prepare-failure", "context-close", "close-failure"]);
   });
 });

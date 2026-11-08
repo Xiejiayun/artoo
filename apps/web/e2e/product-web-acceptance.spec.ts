@@ -7,6 +7,7 @@ import { ContextPackSchema, ProductDesignSchema, productDevelopmentContext } fro
 import { runWebAcceptance } from "../../artood/src/web-acceptance.js";
 import { launchOwnedBrowser } from "../../artood/src/owned-browser.js";
 import { readBrowserEvidence, sealBrowserEvidence } from "../../artood/src/browser-evidence.js";
+import { formatBrowserFailure } from "../../artood/src/browser-failure-diagnostic.js";
 
 function fixture(variant: "working" | "broken" | "unlabeled" | "external" = "working") {
   const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-browser-acceptance-"))), workspace = join(directory, "workspace"), evidence = join(directory, "evidence");
@@ -110,9 +111,18 @@ test("Windows browser close stops its owned parent and observed helpers before r
 });
 
 for (const [variant, message] of [["broken", "assert_value failed"], ["unlabeled", "accessible names"], ["external", "external network access"]] as const) {
-  test(`protected browser verifier rejects ${variant} behavior instead of trusting the design's success claim`, async () => {
+  test(`protected browser verifier rejects ${variant} behavior instead of trusting the design's success claim`, async ({}, testInfo) => {
     const item = fixture(variant);
-    try { await expect(runWebAcceptance(item.workspace, item.context)).rejects.toThrow(message); }
-    finally { rmSync(item.directory, { recursive: true, force: true }); }
+    let rejected = false, rejection: unknown, expectedRejectionConfirmed = false;
+    try {
+      await expect(runWebAcceptance(item.workspace, item.context).catch(error => { rejected = true; rejection = error; throw error; })).rejects.toThrow(message);
+      expectedRejectionConfirmed = true;
+    } catch (error) {
+      // Unexpected failures can include unconfirmed process closure. Retain only this test's fixture.
+      const diagnostic = formatBrowserFailure(new Error(`Unexpected ${variant} acceptance failure; fixture retained at ${item.directory}`, { cause: rejected ? rejection : error }));
+      try { await testInfo.attach("browser-acceptance-failure", { body: diagnostic, contentType: "text/plain" }); }
+      catch (attachmentError) { throw new AggregateError([error, attachmentError], "Browser acceptance failure diagnostic attachment failed", { cause: error }); }
+      throw error;
+    } finally { if (expectedRejectionConfirmed) rmSync(item.directory, { recursive: true, force: true }); }
   });
 }

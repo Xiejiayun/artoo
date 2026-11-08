@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProductBrowserProgramV3, ProductStoragePreconditionBindingV1, StoragePreconditionTraceV1 } from "@artoo/domain";
 import type { StoragePreconditionController } from "./web-acceptance-storage.js";
 import { executeBrowserProgramV3 } from "./web-acceptance-pages.js";
+import { AcceptanceCleanupError } from "./web-acceptance-cleanup.js";
 
 const mocks = vi.hoisted(() => ({ seed: vi.fn(), fault: vi.fn() }));
 vi.mock("./web-acceptance-storage.js", () => ({ createStoragePreconditionController: mocks.seed, createStorageFaultController: mocks.fault }));
@@ -70,9 +71,33 @@ describe("precondition cleanup and ownership (controlled lifecycle seam)", () =>
     await other.run(); expect(other.closed()).toBe(true);
   });
   it("still closes the actual case when paused-controller cleanup fails", async () => {
-    const f = fixture(); mocks.seed.mockResolvedValue(f.controller);
-    f.controller.prepareContextClose = async () => { expect(f.aborted()).toBe(true); throw new Error("unresolved seed pause"); };
-    await expect(f.run()).rejects.toThrow("unresolved seed pause"); expect(f.closed()).toBe(true);
+    const f = fixture(), failure = new Error("unresolved seed pause"); mocks.seed.mockResolvedValue(f.controller);
+    f.controller.prepareContextClose = async () => { expect(f.aborted()).toBe(true); throw failure; };
+    const caught = await f.run().catch(error => error);
+    expect(caught).toBeInstanceOf(AcceptanceCleanupError); expect(caught.message).toBe("Browser acceptance context cleanup failed");
+    expect(caught.cause).toBe(failure); expect(() => { throw caught.cause; }).toThrow("unresolved seed pause"); expect(f.closed()).toBe(true);
     expect(f.log.slice(-2)).toEqual(["context-close", "storage-close"]);
+  });
+  it("preserves a synchronous abort-latch failure without attempting cleanup that the latch prevented", async () => {
+    const f = fixture(), programFailure = new Error("before-step failed"), latchFailure = new Error("abort latch failed"); mocks.seed.mockResolvedValue(f.controller);
+    f.controller.beforeStep = async () => { f.log.push("before-failure"); throw programFailure; };
+    f.controller.abortPending = () => { f.log.push("abort-failure"); throw latchFailure; };
+    const caught = await f.run().catch(error => error);
+    expect(caught).toBeInstanceOf(AcceptanceCleanupError); expect(caught.message).toBe("Browser acceptance context cleanup failed");
+    expect(caught.errors[0]).toBe(programFailure); expect(caught.errors[1]).toBe(latchFailure); expect(caught.cause).toBe(latchFailure);
+    expect(f.log).toEqual(["before-failure", "abort-failure"]); expect(f.closed()).toBe(false);
+  });
+  it("sets the abort latch in the failing body's continuation before an already queued microtask", async () => {
+    const f = fixture(), failure = new Error("synchronous before-step failure"); mocks.seed.mockResolvedValue(f.controller);
+    let abortedAtContinuation: boolean | undefined;
+    f.controller.beforeStep = () => {
+      f.log.push("before-failure");
+      queueMicrotask(() => { f.log.push("queued-continuation"); abortedAtContinuation = f.aborted(); });
+      throw failure;
+    };
+    await expect(f.run()).rejects.toBe(failure);
+    expect(abortedAtContinuation).toBe(true);
+    expect(f.log.indexOf("abort")).toBeLessThan(f.log.indexOf("queued-continuation"));
+    expect(f.closed()).toBe(true);
   });
 });
