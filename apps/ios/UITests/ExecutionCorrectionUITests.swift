@@ -112,9 +112,8 @@ final class ExecutionCorrectionUITests: XCTestCase {
         try openStop(fourthRun)
         try screenshot("Native correction exact Stop confirmation")
         _ = try await checkpoint("keep_running_before")
-        let keep = try stopDialogButton(runId: fourthRun.id, confirming: false)
-        try require(keep.exists && keep.isHittable, "The exact confirmation must offer Keep running")
-        keep.tap()
+        try keepRunning(runId: fourthRun.id)
+        // The server fixture separately requires at least 3.1 seconds of stable execution.
         try await Task.sleep(nanoseconds: 3_200_000_000)
         let kept = try await checkpoint("keep_running_after")
         try require(kept.cancellation.attempts.isEmpty && kept.livePids == held.livePids, "Dismissing Stop must issue no cancel command and preserve the same live process")
@@ -498,6 +497,59 @@ final class ExecutionCorrectionUITests: XCTestCase {
         try tapTaskButton("task.run.stop.request.\(run.id)", label: "Stop execution")
         _ = try stopDialogButton(runId: run.id, confirming: true)
         _ = try stopDialogButton(runId: run.id, confirming: false)
+    }
+
+    @MainActor
+    private func keepRunning(runId: String) throws {
+        let title = "Stop this execution?", label = "Keep running", identifier = "task.run.stop.keep.\(runId)"
+        let deadline = ProcessInfo.processInfo.systemUptime + 20
+        var frames: [(bounds: CGRect, dialog: CGRect, button: CGRect)] = []
+        var observations: [String] = []
+        defer {
+            let geometry = XCTAttachment(string: "identifier: \(identifier)\nlabel: \(label)\n" + observations.joined(separator: "\n"))
+            geometry.name = "Native correction Keep running geometry observations"; geometry.lifetime = .keepAlways; add(geometry)
+        }
+        for sample in 1...2 {
+            try requireForeground("observing the captured-run Keep running action")
+            let keep = try stopDialogButton(runId: runId, confirming: false)
+            try require(keep.exists && keep.isHittable, "The exact confirmation must offer Keep running")
+            let dialogs = app.alerts.containing(.staticText, identifier: title).allElementsBoundByIndex
+                + app.sheets.containing(.staticText, identifier: title).allElementsBoundByIndex
+            try require(dialogs.count == 1, "Exactly one captured-run Stop confirmation must remain before Keep running")
+            let bounds = app.frame, dialog = dialogs[0].frame, button = keep.frame
+            let complete = finiteNonempty(bounds) && finiteNonempty(dialog) && finiteNonempty(button)
+                && bounds.contains(dialog) && dialog.contains(button)
+            observations.append("sample \(sample): bounds=\(bounds), dialog=\(dialog), frame=\(button), complete=\(complete)")
+            try require(complete && ProcessInfo.processInfo.systemUptime < deadline,
+                        "The captured-run Keep running button must remain fully visible inside its dialog within the observation budget")
+            frames.append((bounds, dialog, button))
+        }
+        let previous = frames[0], current = frames[1]
+        try require(previous.bounds == current.bounds && previous.dialog == current.dialog && previous.button == current.button,
+                    "Keep running must retain the same visible app, dialog and button bounds across both observations")
+        try requireForeground("touching the captured-run Keep running action")
+        let center = CGPoint(x: current.button.midX, y: current.button.midY)
+        let touch = XCTAttachment(string: "identifier: \(identifier)\nlabel: \(label)\nframe: \(current.button)\ndialog: \(current.dialog)\nbounds: \(current.bounds)\ncenter: \(center)")
+        touch.name = "Native correction Keep running verified touch"; touch.lifetime = .keepAlways; add(touch)
+        // Use the verified visible center once, without retrying the nested system Button.
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: center.x - current.bounds.minX, dy: center.y - current.bounds.minY)).tap()
+
+        var alertPresent = true, sheetPresent = true, actionPresent = true
+        let dismissal = XCTNSPredicateExpectation(predicate: NSPredicate { [self] _, _ in
+            // Re-query the modal and action instead of observing the pre-tap leaf proxy.
+            alertPresent = app.alerts.containing(.staticText, identifier: title).firstMatch.exists
+            sheetPresent = app.sheets.containing(.staticText, identifier: title).firstMatch.exists
+            actionPresent = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label == %@", identifier, label)).firstMatch.exists
+            return !alertPresent && !sheetPresent && !actionPresent && app.state == .runningForeground
+        }, object: app)
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = XCTWaiter.wait(for: [dismissal], timeout: 10)
+        let dismissed = result == .completed, elapsed = ProcessInfo.processInfo.systemUptime - started
+        let outcome = XCTAttachment(string: "identifier: \(identifier)\ndismissed: \(dismissed)\nwait_result: \(result.rawValue)\nelapsed_seconds: \(elapsed)\nalert_present: \(alertPresent)\nsheet_present: \(sheetPresent)\naction_present: \(actionPresent)")
+        outcome.name = "Native correction Keep running dismissal result"; outcome.lifetime = .keepAlways; add(outcome)
+        // Freeze the wait result before the outer failure handler captures a newer UI state.
+        try require(dismissed, "One Keep running touch must dismiss the Stop dialog and its exact action before observing the running task")
     }
 
     @MainActor

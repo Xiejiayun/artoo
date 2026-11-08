@@ -42,6 +42,7 @@ export const ImportedProductReviewRequestV1Schema:z.ZodType<ImportedProductRevie
     ||context.policy.execution_mode!=="discussion"||context.policy.filesystem_write_scope.length!==0||review.policy_snapshot.filesystem_write_scope.length!==0||context.imported_clean_validation || context.imported_clean_validation_review_subject || context.imported_recovery_validation||context.imported_recovery_validation_review_subject||context.product_development||context.imported_validation ||context.imported_validation_review_subject ||context.review_subject||context.imported_execution || context.imported_execution_review_subject || context.imported_execution_repair
     ||!subject||subject.review_id!==value.review_id||subject.author_agent_id!==value.source_author.agent_id
     ||subject.reviewer_agent_id!==value.reviewer.agent_id||subject.reviewer_instance_id!==value.reviewer.instance_id
+    ||subject.measurement_mapping!==undefined&&(value.result.outcome!=="verified"||canonical(subject.measurement_mapping)!==canonical(value.result.admission.mapping))
     ||canonical(context.verification_capabilities)!==canonical({...base.destination.capabilities,profile_id:base.destination.profile_id})
     ||canonical(context.release_capabilities)!==canonical(request.measurement_v2?.destination_release)){
     ctx.addIssue({code:"custom",message:"Imported review must bind distinct read-only review and exact before/after research verification identities"});
@@ -60,7 +61,11 @@ export function importedProductReviewSubjectV1(input:Pick<ImportedProductReviewR
 export function inspectImportedProductReviewRequestV1(input:unknown,researchBytes:Uint8Array,sha:SourceOperationSha):ImportedProductReviewRequestV1 {
   const request=ImportedProductReviewRequestV1Schema.parse(input);
   inspectProductSourceOperationResultV1(request.operation,request.result,researchBytes,sha);
-  if(canonical(request.review_start.context_pack.payload!.imported_review_subject)!==canonical(importedProductReviewSubjectV1(request,sha)))throw Error("Imported review subject differs from its complete transfer result");
+  const subject=request.review_start.context_pack.payload!.imported_review_subject!;
+  const expected=importedProductReviewSubjectV1(request,sha);
+  // Older reviews remain unchanged; an optional projection must be the exact admitted mapping.
+  if(subject.measurement_mapping!==undefined&&request.result.outcome==="verified")expected.measurement_mapping=request.result.admission.mapping;
+  if(canonical(subject)!==canonical(expected))throw Error("Imported review subject differs from its complete transfer result");
   return request;
 }
 export function importedProductReviewRequestDigestV1(input:unknown,sha:SourceOperationSha):string {

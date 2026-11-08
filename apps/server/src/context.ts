@@ -8,6 +8,10 @@ import type { AuthConfig } from "./auth/auth-config.js";
 import type { OidcHttp } from "./auth/oidc-client.js";
 import type { DeviceAuthConfig } from "./config/device-auth.js";
 
+/** Server-local maintenance routing; never an execution command or caller-supplied receipt. */
+export type ImportedSourceReceiptFamily = "design" | "design-review" | "execution" | "execution-review"
+  | "execution-repair" | "validation" | "validation-review";
+
 /**
  * Per-request-independent server dependencies. Single org/tenant for v0.1, so
  * the organization and the acting user are pinned here (bootstrap seeds them).
@@ -67,6 +71,8 @@ export interface ServerContext {
   onImportedExecutionRepairQueued?: (repairId: string, control: "start" | "stop" | "status") => Promise<void>;
   onImportedValidationQueued?: (validationId: string, control: "start" | "stop" | "status") => Promise<void>;
   onImportedValidationReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;
+  /** Re-send a committed original result receipt through its current authenticated binding. */
+  redeliverImportedSourceReceipt?: (computerId: string, family: ImportedSourceReceiptFamily, id: string) => Promise<void>;
   onSourceRecoveryQueued?: (recoveryId: string, control: "start" | "stop" | "status") => Promise<void>;
   onRecoveryValidationQueued?: (validationId: string, control: "start" | "stop" | "status") => Promise<void>;
   onCleanValidationQueued?: (validationId: string, control: "start" | "stop" | "status") => Promise<void>;

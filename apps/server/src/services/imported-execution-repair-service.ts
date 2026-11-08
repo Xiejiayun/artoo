@@ -187,7 +187,55 @@ export function createImportedExecutionRepairBinding(ctx: ServerContext, options
     inspectImportedExecutionRepairRequestV1(request, value.bytes, sha); current();
     await assertSourceLineageDispatch(ctx, tx, row.computerId, row.workspaceRoot);
   }
+  // Shared with ordinary receive: its actual command_id remains the reply ID.
+  async function sendResultReceipt(tx: DrizzleDb, message: ImportedExecutionRepairResult) { await qualify(tx); current(); await options.transport.send({ kind: "command", id: message.command_id, idempotency_key: `receipt:${message.command_id}`,
+    type: "product.source.execution-repair.receipt.v1", payload: { version: 1, repair_id: message.payload.repair_id, request_digest: message.payload.request_digest, run_id: message.payload.run_id }, result_digest: hash(message.payload), status: "accepted" }); current();
+    if (message.payload.outcome === "finished" && message.payload.verified_repair) {
+      const row = await load(tx, message.payload.repair_id);
+      await tx.insert(receipts).values({ repairId: row.id, organizationId: ctx.organizationId, deliveryId: row.resultDeliveryId!,
+        sessionId: options.sessionId, sessionBindings: row.sessionBindings, requestDigest: row.requestDigest,
+        resultDigest: hash(message.payload), sentAt: ctx.clock.nowIso() }).onConflictDoNothing();
+    }
+    current();
+  }
   return {
+    /** Re-send only an immutable result's original same-session receipt; never starts work. */
+    async redeliverCommittedReceipt(id: string): Promise<void> {
+      await ctx.db.transaction(async tx => {
+        await qualify(tx); const row = await load(tx, id);
+        const request = ImportedExecutionRepairRequestV1Schema.parse(row.request), result = ImportedExecutionRepairResultV1Schema.parse(row.result);
+        if (!(result.outcome === "finished" && result.verified_repair)) throw AppError.conflict("Committed execution-repair result has no receipt marker obligation");
+        const bound = row.sessionBindings as { destination?: AuthenticatedTransferNode & { sessionId: string } };
+        if (request.repair_id !== row.id || result.repair_id !== row.id || row.requestDigest !== importedExecutionRepairRequestDigestV1(request, sha)
+          || result.request_digest !== row.requestDigest || row.resultDigest !== hash(result) || !row.resultDeliveryId
+          || row.resultSessionId !== options.sessionId || canonical(bound.destination ?? null) !== canonical({ ...identity, sessionId: options.sessionId })
+          || result.run_id !== row.runId || request.run_start.run_id !== row.runId || request.run_start.task_id !== row.taskId
+          || request.run_start.context_pack.id !== row.contextPackId || request.run_start.workspace.root !== row.workspaceRoot
+          || request.writer.instance_id !== row.writerInstanceId || request.writer.agent_id !== row.writerAgentId)
+          throw AppError.conflict("Committed execution-repair receipt differs from its original result, request or destination session");
+        const [delivery] = await tx.select().from(deliveries).where(and(eq(deliveries.id, row.resultDeliveryId), eq(deliveries.repairId, row.id), eq(deliveries.sessionId, options.sessionId)));
+        const starts = await tx.select().from(deliveries).where(and(eq(deliveries.repairId, row.id), eq(deliveries.control, "start")));
+        if (!delivery || starts.length !== 1 || starts[0]!.sessionId !== options.sessionId)
+          throw AppError.conflict("Committed execution-repair receipt lost its original issuing delivery");
+        const [proof] = await tx.select().from(completions).where(and(eq(completions.repairId, row.id), eq(completions.organizationId, ctx.organizationId)));
+        if (!proof || proof.runId !== row.runId || proof.contextPackId !== row.contextPackId || proof.deliveryId !== row.resultDeliveryId
+          || proof.sessionId !== row.resultSessionId || proof.resultDigest !== row.resultDigest
+          || proof.completedRepairDigest !== hash(result.verified_repair) || canonical(proof.verifiedRepair) !== canonical(result.verified_repair))
+          throw AppError.conflict("Committed execution-repair receipt lost its exact typed completion");
+        const readMarker = async () => {
+          const [marker] = await tx.select().from(receipts).where(and(eq(receipts.repairId, row.id), eq(receipts.organizationId, ctx.organizationId)));
+          if (marker && (marker.deliveryId !== row.resultDeliveryId || marker.sessionId !== row.resultSessionId
+            || marker.requestDigest !== row.requestDigest || marker.resultDigest !== row.resultDigest || canonical(marker.sessionBindings) !== canonical(row.sessionBindings)))
+            throw AppError.conflict("Committed execution-repair receipt marker differs from its original result");
+          return marker;
+        };
+        if (await readMarker()) { current(); return; }
+        // The original result may have arrived under status/stop; do not substitute its start ID.
+        await sendResultReceipt(tx, { kind: "product.source.execution-repair.result.v1", node_id: identity.computerId, command_id: delivery.id, payload: result });
+        if (!await readMarker()) throw AppError.conflict("Committed execution-repair receipt marker was not recorded after send");
+        current();
+      });
+    },
     async requestStop(id: string) { await ctx.db.transaction(async tx => { const row = await load(tx, id);
       await tx.select().from(goals).where(eq(goals.id, row.goalId)).for("update"); await qualify(tx);
       await tx.update(repairs).set({ stopRequested: true }).where(eq(repairs.id, id)); }); },
@@ -251,15 +299,7 @@ export function createImportedExecutionRepairBinding(ctx: ServerContext, options
         }
         await qualify(tx);
       });
-      await ctx.db.transaction(async tx => { await qualify(tx); await options.transport.send({ kind: "command", id: message.command_id, idempotency_key: `receipt:${message.command_id}`,
-        type: "product.source.execution-repair.receipt.v1", payload: { version: 1, repair_id: message.payload.repair_id, request_digest: message.payload.request_digest, run_id: message.payload.run_id }, result_digest: hash(message.payload), status: "accepted" }); current();
-        if (message.payload.outcome === "finished" && message.payload.verified_repair) {
-          const row = await load(tx, message.payload.repair_id);
-          await tx.insert(receipts).values({ repairId: row.id, organizationId: ctx.organizationId, deliveryId: row.resultDeliveryId!,
-            sessionId: options.sessionId, sessionBindings: row.sessionBindings, requestDigest: row.requestDigest,
-            resultDigest: hash(message.payload), sentAt: ctx.clock.nowIso() }).onConflictDoNothing();
-        }
-      });
+      await ctx.db.transaction(tx => sendResultReceipt(tx, message));
     },
   };
 }

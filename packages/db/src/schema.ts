@@ -1117,7 +1117,8 @@ export const goalAutomations = pgTable("goal_automations", {
   check("goal_automations_mode_chk", sql`${t.executionMode} in ('single_agent','agent_team')`),
   check("goal_automations_source_handoff_chk", sql`${t.sourceHandoff} IS NULL OR
     (${t.executionMode} = 'agent_team' AND ${t.releaseProfileId} IS NOT NULL
-      AND ${t.sourceHandoff} = '{"version":1,"mode":"automatic"}'::jsonb) IS TRUE`),
+      AND ${t.sourceHandoff} IN ('{"version":1,"mode":"automatic"}'::jsonb,
+        '{"version":1,"mode":"automatic","research_revision":{"version":1,"strategy":"configured_pool"}}'::jsonb)) IS TRUE`),
   check("goal_automations_planning_capability_snapshot_chk", sql`${t.planningCapabilitySnapshot} IS NULL OR
     (jsonb_typeof(${t.planningCapabilitySnapshot}) = 'object' AND ${t.planningCapabilitySnapshot} -> 'version' = '1'::jsonb) IS TRUE`),
 ]);
@@ -1865,3 +1866,51 @@ export const goalRecoveryValidationPublications = pgTable("goal_recovery_validat
   sourceDigest: text("source_digest").notNull(), origin: jsonb("origin").notNull(), capabilities: jsonb("capabilities").notNull(), createdAt: ts("created_at").notNull(),
 }, t => [index("goal_recovery_validation_publication_goal_idx").on(t.organizationId, t.goalId),
   check("goal_recovery_validation_publication_digest_chk", sql`${t.sourceDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+
+/** Fixed, node-local scopes reserved before the first imported research attempt. */
+export const goalResearchDestinationPools = pgTable("goal_research_destination_pools", {
+  id: text("id").primaryKey(), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  goalId: text("goal_id").notNull().references(() => goals.id), planId: text("plan_id").notNull().references(() => plans.id),
+  nextTaskId: text("next_task_id").notNull().references(() => tasks.id), baseResearchTaskId: text("base_research_task_id").notNull().references(() => tasks.id),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id),
+  policyVersion: text("policy_version").notNull(), sourceComputerId: text("source_computer_id").notNull().references(() => computers.id),
+  sourceWorkspaceRoot: text("source_workspace_root").notNull(), maxRetries: integer("max_retries").notNull(),
+  snapshotDigest: text("snapshot_digest").notNull(), snapshot: jsonb("snapshot").notNull(),
+  currentRevisionId: text("current_revision_id").references((): AnyPgColumn => goalResearchRevisions.id), createdAt: ts("created_at").notNull(),
+}, t => [unique("research_destination_pool_goal_next_uniq").on(t.organizationId, t.goalId, t.planId, t.nextTaskId),
+  check("research_destination_pool_budget_chk", sql`${t.maxRetries} BETWEEN 0 AND 10`),
+  check("research_destination_pool_digest_chk", sql`${t.snapshotDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+
+/** A reservation remains after failure or closure. No ordinary assignment may borrow an unused slot. */
+export const goalResearchDestinationSlots = pgTable("goal_research_destination_slots", {
+  id: text("id").primaryKey(), poolId: text("pool_id").notNull().references(() => goalResearchDestinationPools.id),
+  organizationId: text("organization_id").notNull().references(() => organizations.id), slotIndex: integer("slot_index").notNull(),
+  computerId: text("computer_id").notNull().references(() => computers.id), workspaceRoot: text("workspace_root").notNull(), workspaceKey: text("workspace_key").notNull(),
+  mappingDigest: text("mapping_digest").notNull(), descriptor: jsonb("descriptor").notNull(),
+  writerInstanceId: text("writer_instance_id").notNull().references(() => agentInstances.id), reviewerInstanceId: text("reviewer_instance_id").notNull().references(() => agentInstances.id),
+  status: text("status").notNull().default("reserved"), handoffId: text("handoff_id").references(() => goalProductHandoffs.id),
+  revisionId: text("revision_id").references((): AnyPgColumn => goalResearchRevisions.id), createdAt: ts("created_at").notNull(),
+}, t => [unique("research_destination_slot_index_uniq").on(t.poolId, t.slotIndex),
+  unique("research_destination_slot_root_uniq").on(t.organizationId, t.computerId, t.workspaceKey),
+  unique("research_destination_slot_handoff_uniq").on(t.handoffId), unique("research_destination_slot_revision_uniq").on(t.revisionId),
+  check("research_destination_slot_state_chk", sql`${t.status} IN ('reserved','consumed','uncertain') AND ${t.slotIndex} BETWEEN 0 AND 10`),
+  check("research_destination_slot_digest_chk", sql`${t.mappingDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);
+
+/** Append-only successor authority; original accepted research tasks and capsules are never rewritten. */
+export const goalResearchRevisions = pgTable("goal_research_revisions", {
+  id: text("id").primaryKey(), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  goalId: text("goal_id").notNull().references(() => goals.id), planId: text("plan_id").notNull().references(() => plans.id),
+  nextTaskId: text("next_task_id").notNull().references(() => tasks.id), baseResearchTaskId: text("base_research_task_id").notNull().references(() => tasks.id),
+  auxiliaryTaskId: text("auxiliary_task_id").notNull().references(() => tasks.id), parentReviewId: text("parent_review_id").notNull().references(() => goalImportedProductReviews.id),
+  predecessorRevisionId: text("predecessor_revision_id").references((): AnyPgColumn => goalResearchRevisions.id),
+  poolId: text("pool_id").notNull().references(() => goalResearchDestinationPools.id), slotId: text("slot_id").notNull().references(() => goalResearchDestinationSlots.id),
+  generation: integer("generation").notNull(), attemptIndex: integer("attempt_index").notNull(),
+  actorUserId: text("actor_user_id").notNull().references(() => users.id), consentId: text("consent_id").references(() => aiDataSharingConsents.id),
+  policyVersion: text("policy_version").notNull(), authorizationEventId: text("authorization_event_id").notNull().references(() => eventLog.id),
+  intentDigest: text("intent_digest").notNull(), intent: jsonb("intent").notNull(),
+  handoffId: text("handoff_id").references(() => goalProductHandoffs.id), createdAt: ts("created_at").notNull(),
+}, t => [unique("research_revision_parent_uniq").on(t.parentReviewId), unique("research_revision_auxiliary_uniq").on(t.auxiliaryTaskId),
+  unique("research_revision_slot_uniq").on(t.slotId), unique("research_revision_handoff_uniq").on(t.handoffId),
+  unique("research_revision_attempt_uniq").on(t.organizationId, t.goalId, t.attemptIndex), unique("research_revision_generation_uniq").on(t.poolId, t.generation),
+  check("research_revision_generation_chk", sql`${t.generation} BETWEEN 1 AND 10 AND ${t.attemptIndex} >= ${t.generation}`),
+  check("research_revision_digest_chk", sql`${t.intentDigest} ~ '^sha256:[a-f0-9]{64}$'`)]);

@@ -127,7 +127,7 @@ describe("bounded ordinary source in-flight deliveries", () => {
 
   it("does not inspect scope or intercept controls outside the explicit ordinary start/status allowlist", () => {
     const guard = createSourceCommandInflight(), readScope = vi.fn(() => { throw Error("No scope read expected"); }), work = vi.fn(async () => {});
-    const excluded = ["run.start", "run.stop", "product.release", "product.release.cancel", "node.session.ready", "unknown.type",
+    const excluded = ["run.start", "run.stop", "product.release.cancel", "node.session.ready", "unknown.type",
       "product.source.recovery.register.v1", "product.source.recovery-validation.v1", "product.source.recovery-validation.status.v1",
       "product.source.recovery-validation-review.v1", "product.source.recovery-validation-review.status.v1",
       "product.source.clean-validation.v1", "product.source.clean-validation.status.v1",

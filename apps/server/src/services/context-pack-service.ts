@@ -1,3 +1,6 @@
+import { resolveResearchRevisionOrigin, researchRevisionHash, researchRevisionContext } from "./research-revision-origin-service.js";
+import { goalImportedProductReviews } from "@artoo/db";
+import { ImportedProductReviewResultV1Schema } from "@artoo/domain";
 import { artifacts, assistantTurns, autonomousReviews, contextPacks, discussions, goalAutomations, goals, memories, messages, plans, projects, runs, taskDependencies, tasks } from "@artoo/db";
 import {
   ContextPackSchema,
@@ -114,18 +117,20 @@ async function acceptedProductInputs(ctx: ServerContext, tx: DrizzleDb, task: ty
 }
 
 async function taskHandoff(ctx: ServerContext, tx: DrizzleDb, task: typeof tasks.$inferSelect) {
+  const researchOrigin = await resolveResearchRevisionOrigin(ctx, tx, task);
+  const planId = researchOrigin?.plan.id ?? task.sourcePlanId, specRef = researchOrigin?.specRef ?? task.sourcePlanSpecRef;
   const goal = task.goalId ? (await tx.select().from(goals).where(and(
     eq(goals.id, task.goalId), eq(goals.organizationId, ctx.organizationId), eq(goals.projectId, task.projectId),
   )))[0] : undefined;
-  const plan = goal && task.sourcePlanId ? (await tx.select().from(plans).where(and(
-    eq(plans.id, task.sourcePlanId), eq(plans.goalId, goal.id), eq(plans.organizationId, ctx.organizationId),
+  const plan = goal && planId ? (await tx.select().from(plans).where(and(
+    eq(plans.id, planId), eq(plans.goalId, goal.id), eq(plans.organizationId, ctx.organizationId),
   )))[0] : undefined;
   const specs = plan && Array.isArray(plan.taskSpecs) ? plan.taskSpecs : [];
-  const specIndex = task.sourcePlanSpecRef === null ? -1 : Number(task.sourcePlanSpecRef);
+  const specIndex = specRef === null ? -1 : Number(specRef);
   const spec = Number.isInteger(specIndex) && specIndex >= 0 ? TaskSpecSchema.safeParse(specs[specIndex]) : null;
   const goalContext: ContextPack["goal_context"] = goal ? {
     version: 1, goal_id: goal.id, objective: goal.objective, acceptance_criteria: goal.acceptanceCriteria as string[],
-    plan: plan ? { id: plan.id, version: plan.version, rationale: plan.rationale, spec_ref: task.sourcePlanSpecRef } : null,
+    plan: plan ? { id: plan.id, version: plan.version, rationale: plan.rationale, spec_ref: specRef } : null,
   } : undefined;
   // Scope both sides of an edge. Legacy or corrupt cross-project references
   // must not turn a dependency into a data-sharing shortcut.
@@ -168,7 +173,7 @@ async function taskHandoff(ctx: ServerContext, tx: DrizzleDb, task: typeof tasks
     }
   }
   return { goalContext, dependencyContext: edges.length ? { version: 1 as const, truncated: edges.length > 100, entries } : undefined,
-    productDevelopment, acceptedResearchEvidence, releaseCapabilities,
+    productDevelopment, acceptedResearchEvidence, releaseCapabilities, researchOrigin,
     expected: spec?.success ? spec.data.expected_artifacts.map((item) => `${item.type}: ${item.description}`) : [] };
 }
 
@@ -318,8 +323,22 @@ export async function buildRunContextPack(
     ? { ...handoff.productDevelopment, instructions: productDevelopmentContext(handoff.productDevelopment.stage, verificationCapabilities, releaseCapabilities).instructions }
     : handoff.productDevelopment;
   const designRevision = await buildDesignRevisionContext(ctx, tx, task, params.runId, independentReview);
+  const researchRevision = handoff.researchOrigin ? researchRevisionContext(handoff.researchOrigin.intent,
+    handoff.researchOrigin.revision.intentDigest, independentReview?.subjectRunId ?? params.runId) : undefined;
+  let researchFeedback: string | undefined;
+  if (handoff.researchOrigin) {
+    const [parent] = await tx.select().from(goalImportedProductReviews).where(and(
+      eq(goalImportedProductReviews.id, handoff.researchOrigin.revision.parentReviewId), eq(goalImportedProductReviews.organizationId, ctx.organizationId)));
+    const result = ImportedProductReviewResultV1Schema.parse(parent?.result);
+    if (result.outcome !== "reviewed" || result.verdict.outcome !== "changes_requested"
+      || researchRevisionHash(result) !== handoff.researchOrigin.intent.parent_review.result_digest) {
+      throw AppError.conflict("Research revision feedback differs from its retained independent review");
+    }
+    researchFeedback = `Imported independent research review requested these changes. Address the findings while preserving the original goal; configuration mapping does not resolve substantive defects.\n${JSON.stringify(result.verdict)}`;
+  }
   if (designRevision && productDevelopment) productDevelopment.instructions.push("This is an additive design revision. Follow product_design_revision.request and compare against the exact retained baseline.design.text. Preserve all old validation cases in order and every non-case field, append only requested workspace criterion cases, and preserve the accepted research. The node measures every old and new workspace case; independent review must assess whether the reported defect is covered. Publication remains pending.");
   const payload: ContextPack = ContextPackSchema.parse({
+    ...(researchRevision ? { product_research_revision: researchRevision } : {}),
     ...(designRevision ? { product_design_revision: designRevision } : {}),
     ...(verificationCapabilities ? { verification_capabilities: { ...verificationCapabilities, profile_id: params.verification!.profile_id } } : {}),
     ...(releaseCapabilities ? { release_capabilities: releaseCapabilities } : {}),
@@ -334,7 +353,7 @@ export async function buildRunContextPack(
     task: {
       id: task.id,
       title: task.title,
-      description: task.description,
+      description: researchFeedback ? `${task.description}\n\n${researchFeedback}` : task.description,
       acceptance_criteria: task.acceptanceCriteria,
     },
     project: {

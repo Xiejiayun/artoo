@@ -1,3 +1,4 @@
+import { resolveResearchRevisionOrigin } from "./research-revision-origin-service.js";
 import { contextPacks, eventLog, goals, plans, runEventIngest, runs, tasks } from "@artoo/db";
 import { canonicalProductSourceTransferValueV1, ContextPackSchema, ProductSourceExportV1Schema,
   PRODUCT_SOURCE_EXPORT_EVENT_V1, type ProductSourceExportV1, type ProductSourceTransferRequestV1 } from "@artoo/domain";
@@ -45,9 +46,10 @@ export async function requireProductSourceCompletionFrame(ctx: ServerContext, db
 export async function assertProductSourceExport(ctx: ServerContext, db: DrizzleDb, run: StoredRun, task: StoredTask,
   input: unknown, sequence: number): Promise<ProductSourceExportV1> {
   const proof = ProductSourceExportV1Schema.parse(input);
+  const origin = await resolveResearchRevisionOrigin(ctx, db, task);
   if (run.organizationId !== ctx.organizationId || task.organizationId !== ctx.organizationId || run.taskId !== task.id
     || run.ownedResultAssignment !== null || run.workspaceBranch !== null || proof.node_id !== run.computerId || proof.run_id !== run.id
-    || proof.task_id !== task.id || proof.project_id !== task.projectId || proof.goal_id !== task.goalId || proof.plan_id !== task.sourcePlanId) conflict();
+    || proof.task_id !== task.id || proof.project_id !== task.projectId || proof.goal_id !== task.goalId || proof.plan_id !== (origin?.plan.id ?? task.sourcePlanId)) conflict();
   const [storedContext] = run.contextPackId ? await db.select().from(contextPacks).where(and(eq(contextPacks.id, run.contextPackId),
     eq(contextPacks.organizationId, ctx.organizationId), eq(contextPacks.runId, run.id), eq(contextPacks.taskId, task.id))) : [];
   const parsed = ContextPackSchema.safeParse(storedContext?.payload);

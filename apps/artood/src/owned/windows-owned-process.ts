@@ -11,6 +11,7 @@ import { StringDecoder } from "node:string_decoder";
 import { markWindowsNativeFailure, windowsNativeFailureDetail, windowsProcessDiagnostic, withWindowsProcessDiagnostic, type WindowsNativeFailureCode,
   type WindowsProcessDiagnosticV1 } from "./windows-process-diagnostic.js";
 import { consumeWindowsGuardianSlot, type PreparedWindowsGuardianSlot } from "./windows-runtime-guardian.js";
+import { recordSourceObserverTiming } from "../source-command-diagnostics.js";
 
 declare const backendBrand: unique symbol;
 export interface PreparedWindowsProcessBackend { readonly [backendBrand]: true }
@@ -692,6 +693,8 @@ export function startWindowsGuardianObserverSync(backend: PreparedWindowsProcess
     helperSpawnObserved: Number.isSafeInteger(child.pid) && child.pid > 0, helperExitObserved: helperClosed, helperCloseObserved: helperClosed,
     helperExitCode: child.status, helperSignal: child.signal, cleanupConfirmed: confirmed });
   receipts.add(receipt);
+  recordSourceObserverTiming({ epochId: guardian.epochId, slotId: guardian.slotId,
+    elapsedMs: receipt.elapsedMs, cleanupConfirmed: receipt.cleanupConfirmed });
   if (!confirmed) throw markWindowsNativeFailure(new WindowsOwnedCleanupError(receipt), synchronousNativeFailure(child, protocolFailure),
     windowsNativeFailureDetail("guardian_observer_sync", child.status, child.stderr, receipt));
   return Object.freeze({ stdout: Buffer.concat(output.stdout), stderr: Buffer.concat(output.stderr), receipt });

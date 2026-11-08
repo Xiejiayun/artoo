@@ -2,7 +2,7 @@ import { WINDOWS_BROWSER_NATIVE_OBSERVER_SCRIPT } from "./windows-browser-native
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { closeObservedWindowsProcesses, WINDOWS_BROWSER_OWNED_PROCESS_SNAPSHOT, windowsObservationFailureCode } from "./windows-browser-exit.js";
+import { closeObservedWindowsProcesses, renderWindowsBrowserObservationRequest, WINDOWS_BROWSER_OWNED_PROCESS_SNAPSHOT, windowsObservationFailureCode } from "./windows-browser-exit.js";
 
 describe("protected Windows ancestry and root identity observations", () => {
   it.runIf(process.platform === "win32")("binds the exact CIM root to its held native identity before opening descendants", () => {
@@ -20,7 +20,7 @@ describe("protected Windows ancestry and root identity observations", () => {
       { name: "native root exited during CIM", identity: [identity], exitDuringQuery: true, error: "root_process_exited" },
       { name: "native executable differs", identity: [identity], nativeImage: "C:\\Other\\chrome.exe", error: "root_executable_mismatch", queries: 0 },
     ];
-    const request = Buffer.from(JSON.stringify({ parent_pid: 101, executable: identity.ExecutablePath, profile: "C:\\Profile\\owned" })).toString("base64");
+    const request = renderWindowsBrowserObservationRequest({ parent_pid: 101, executable: identity.ExecutablePath, profile: "C:\\Profile\\owned" });
     // Keep the actual argument parser and root orchestration. The OS-facing
     // functions are explicitly replaced by controlled observations below.
     const production = WINDOWS_BROWSER_OWNED_PROCESS_SNAPSHOT.replace(WINDOWS_BROWSER_NATIVE_OBSERVER_SCRIPT, "").replace("__REQUEST__", request);

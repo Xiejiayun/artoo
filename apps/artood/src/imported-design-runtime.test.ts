@@ -31,7 +31,9 @@ vi.mock("./verification.js",()=>({assertFinalVerificationExportBinding:vi.fn(),a
 vi.mock("./windows-release-storage.js",()=>({prepareWindowsReleaseStorage:vi.fn(()=>({})),assertWindowsReleaseStorage:vi.fn(),auditWindowsReleaseStorage:vi.fn()}));
 vi.mock("./owned/windows-owned-process.js",()=>({assertWindowsProcessBackend:vi.fn()}));
 vi.mock("./protected-command.js",()=>({runProtectedCommand:control.protectedCommand}));
-vi.mock("./product-release.js",()=>({prepareReleaseCapabilityReader:()=>({capabilities:control.release(),readCapabilities:control.release})}));
+vi.mock("./product-release.js",()=>({prepareReleaseCapabilityReader:()=>({capabilities:control.release(),readCapabilities:control.release}),
+  prepareReleaseCapabilityReaders:(profiles:readonly object[])=>profiles.map(()=>({capabilities:control.release(),readCapabilities:control.release})),
+  readReleaseCapabilitiesBatch:(profiles:readonly object[])=>profiles.map(()=>control.release())}));
 vi.mock("./research.js",()=>({prepareResearchOptions:vi.fn(value=>value),readResearchReceipt:vi.fn()}));
 vi.mock("./product-source-semantic-client.js",()=>({readAuthenticatedProductSourceTransferV2:control.authenticated}));
 vi.mock("./product-source-snapshot.js",()=>({captureProductSourceSnapshot:vi.fn(()=>({})),decodeProductSourceSnapshot:vi.fn(),describeProductSourceSnapshot:control.describe,
@@ -67,7 +69,7 @@ function replaceStrings(value:any,oldRoot:string,newRoot:string):any{
 it("derives destination-only semantic and policy-v2 roles from original prepared runtime state", async () => {
   const f = await fixture();
   expect(productSourceSemanticExportEnabled(f.runtime)).toBe(false);
-  expect(readProductSourceRuntimeCapabilities(f.runtime)).toEqual({ semantic:true, measurementV2:true, importedReview:true, importedDesign:true, importedDesignReview:false, importedExecution:false, importedValidation:false });
+  expect(readProductSourceRuntimeCapabilities(f.runtime)).toEqual({ semantic:true, researchRevision:false, measurementV2:true, importedReview:true, importedDesign:true, importedDesignReview:false, importedExecution:false, importedValidation:false });
   expect(() => readProductSourceRuntimeCapabilities(structuredClone(f.runtime))).toThrow(/original live local runtime/);
   control.release.mockReturnValue({});
   expect(() => readProductSourceRuntimeCapabilities(f.runtime)).toThrow(/release capability changed/);

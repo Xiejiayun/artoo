@@ -3,7 +3,7 @@ import { AutonomousTeamSchema, canTransitionTask, CreateAutonomousGoalRequestSch
   type AutonomousTeam, type CreateAutonomousGoalRequest, type GoalAutomation, type TaskStatus } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
 import { and, asc, desc, eq, inArray, isNotNull, notInArray, or, sql } from "drizzle-orm";
-import type { ServerContext } from "../context.js";
+import type { ImportedSourceReceiptFamily, ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { assertPreparedGoalRequest } from "../config/goal-entry.js";
@@ -52,6 +52,9 @@ import { settleRecoveryPublications } from "./product-release-recovery-service.j
 import { ensureGoalRecoveryValidation, ensureGoalRecoveryValidationRepair, advanceGoalRecoveryValidation, stopGoalRecoveryValidations } from "./recovery-validation-service.js";
 import { advanceGoalRecoveryValidationReview, stopGoalRecoveryValidationReviews } from "./recovery-validation-review-service.js";
 import { automaticSourceAvailable, automaticSourceHandoffPlanErrors, ensureAutomaticProductHandoff } from "./automatic-product-handoff-service.js";
+import { researchRevisionPoolRequested } from "./research-destination-pool-service.js";
+import { readCurrentResearchHandoff, resolveResearchRevisionOrigin } from "./research-revision-origin-service.js";
+import { ensureGoalResearchRevision } from "./research-revision-service.js";
 import { goalCleanValidations, goalCleanValidationReviews, sourceCleanStops, sourceCleanGenerations, sourceWorkspaceLineages } from "@artoo/db";
 import { ImportedCleanValidationResultV1Schema, ImportedCleanValidationReviewResultV1Schema, SOURCE_CLEAN_RESTART_FEATURE_V1 } from "@artoo/domain";
 import { settleSourceCleanGeneration } from "./source-clean-lifecycle-service.js";
@@ -59,6 +62,10 @@ import { ensureGoalCleanValidation, ensureGoalCleanValidationRepair, advanceGoal
 import { advanceGoalCleanValidationReview, stopGoalCleanValidationReviews } from "./clean-validation-review-service.js";
 import { settleCleanPublications } from "./product-release-clean-service.js";
 import { hasCleanValidationPublication } from "./clean-validation-release-service.js";
+import { goalImportedDesignCompletions, goalImportedDesignReviewReceipts, goalImportedExecutionCompletions, goalImportedExecutionReceipts,
+  goalImportedExecutionReviewReceipts, goalImportedExecutionRepairCompletions, goalImportedExecutionRepairReceipts,
+  goalImportedValidationCompletions, goalImportedValidationReceipts, goalImportedValidationReviewReceipts } from "@artoo/db";
+import { IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1 } from "@artoo/domain";
 
 type AutomationRow = typeof goalAutomations.$inferSelect;
 type StopProcess = (ctx: ServerContext, runId: string) => Promise<void>;
@@ -550,13 +557,23 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
     await update(ctx, tx, row, { status: uncertain ? "waiting" : "executing", lastError: uncertain ? "Waiting for the previous execution's process exit and workspace release." : null }); return;
   }
   const revision = await latestDesignRevision(ctx, tx, goal.id);
-  const runnable = revision?.state === "active" ? planTasks.filter(task => task.id === revision.designTaskId) : planTasks;
+  const designTask = planTasks.find(task => task.sourcePlanSpecRef === "1");
+  const research = researchRevisionPoolRequested(row) && designTask
+    ? await readCurrentResearchHandoff(ctx, tx, goal.id, row.planId, designTask.id) : undefined;
+  const [researchTask] = research?.revision && research.handoffId === null ? await tx.select().from(tasks).where(and(
+    eq(tasks.id, research.revision.auxiliaryTaskId), eq(tasks.organizationId, ctx.organizationId))) : [];
+  if (researchTask?.status === "cancelled") {
+    await update(ctx, tx, row, { status: "failed", lastError: "The required research revision was cancelled." }); return;
+  }
+  const runnable = researchTask && researchTask.status !== "done" ? [researchTask]
+    : revision?.state === "active" ? planTasks.filter(task => task.id === revision.designTaskId) : planTasks;
   const review = runnable.find((task) => task.status === "review");
   if (review) {
     const run = (await tx.select().from(runs).where(and(eq(runs.taskId, review.id), eq(runs.organizationId, ctx.organizationId))).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1))[0];
     const result = run?.status === "completed" ? await inspectRunVerification(ctx, tx, run) : { passed: false, reason: "Latest execution did not complete successfully" };
     const [plan] = await tx.select().from(plans).where(eq(plans.id, row.planId));
-    const spec = TaskSpecSchema.parse((plan?.taskSpecs as unknown[] | undefined)?.[Number(review.sourcePlanSpecRef)]);
+    const origin = await resolveResearchRevisionOrigin(ctx, tx, review);
+    const spec = TaskSpecSchema.parse((plan?.taskSpecs as unknown[] | undefined)?.[Number(origin?.specRef ?? review.sourcePlanSpecRef)]);
     const outputs = run ? await tx.select({ type: artifacts.type }).from(artifacts).where(and(eq(artifacts.runId, run.id), eq(artifacts.organizationId, ctx.organizationId))) : [];
     const missing = spec.expected_artifacts.filter((expected) => !outputs.some((actual) => actual.type === expected.type));
     let passed = result.passed && missing.length === 0;
@@ -594,6 +611,9 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
         const continuation = await ensureGoalImportedDesignContinuation(ctx, tx, row, imported.review_id);
         if (continuation.result === null && !continuation.stopRequested) await ctx.onImportedDesignContinuationQueued?.(continuation.id, "start");
         await update(ctx, tx, row, { status: "executing", lastError: "Imported research accepted; its single-use destination design execution is queued." });
+      } else if ("state" in imported && imported.state === "changes_requested" && researchRevisionPoolRequested(row)) {
+        await ensureGoalResearchRevision(ctx, tx, row, imported.review_id);
+        await update(ctx, tx, row, { status: "executing", lastError: "Imported research requires changes; its source revision is queued for fresh verification and independent review." });
       } else await update(ctx, tx, row, { status: "waiting", lastError: imported.reason });
       return;
     }
@@ -618,7 +638,8 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
     let assignee = row.agentInstanceId!;
     if (row.executionMode === "agent_team") {
       const [source] = await tx.select().from(plans).where(eq(plans.id, row.planId));
-      const spec = TaskSpecSchema.parse((source?.taskSpecs as unknown[] | undefined)?.[Number(ready.sourcePlanSpecRef)]);
+      const origin = await resolveResearchRevisionOrigin(ctx, tx, ready);
+      const spec = TaskSpecSchema.parse((source?.taskSpecs as unknown[] | undefined)?.[Number(origin?.specRef ?? ready.sourcePlanSpecRef)]);
       const member = AutonomousTeamSchema.parse(row.team).members.find((entry) => entry.stage === spec.development_stage);
       if (!member) throw AppError.validation("Agent Team task has no stage owner");
       assignee = member.agent_instance_id;
@@ -640,7 +661,36 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
 /** One DB-locked step per goal. Recreating or running two dispatchers cannot duplicate committed actions. */
 export function createGoalAutomationDispatcher(ctx: ServerContext, stopProcess: StopProcess, onError: (error: unknown) => void = () => {}) {
   let inFlight: Promise<void> | undefined, timer: ReturnType<typeof setInterval> | undefined, stopped = false;
+  let receiptCursor: string | undefined;
+  type PendingReceipt = { family: ImportedSourceReceiptFamily; id: string; computerId: string; sessionId: string | null; feature: string };
+  async function repairReceiptMarkers(candidates: PendingReceipt[]) {
+    if (!ctx.redeliverImportedSourceReceipt) return;
+    // Delivery debt is independent of goal status and process closure. Use the
+    // existing single pump, with no new timer, execution capacity or start grant.
+    const key = (item: PendingReceipt) => `${item.family}:${item.id}`;
+    candidates.sort((left, right) => key(left).localeCompare(key(right)));
+    const after = receiptCursor === undefined ? 0 : candidates.findIndex(item => key(item).localeCompare(receiptCursor!) > 0);
+    const start = after < 0 ? 0 : after, computers = new Set<string>();
+    let attempts = 0;
+    for (let offset = 0; offset < candidates.length && attempts < 8; offset++) {
+      if (stopped) return;
+      const item = candidates[(start + offset) % candidates.length]!;
+      if (computers.has(item.computerId)) continue;
+      const session = ctx.getPairedNodeSession?.(item.computerId);
+      if (!session || session.computerId !== item.computerId || session.sessionId !== item.sessionId
+        || ctx.supportsExecutionFeature?.(item.computerId, item.feature) !== true) continue;
+      // Advance by the first attempted item. Using the last item can pin the
+      // cursor when one computer has candidates on both sides of another node.
+      if (attempts === 0) receiptCursor = key(item);
+      computers.add(item.computerId); attempts++;
+      // The snapshot only selects an ID. The current binding rechecks its full
+      // credential/session/result provenance and awaits actual send + commit.
+      try { await ctx.redeliverImportedSourceReceipt(item.computerId, item.family, item.id); }
+      catch (error) { onError(error); }
+    }
+  }
   async function drain() {
+    const pendingReceipts: PendingReceipt[] = [];
     const pendingReviews = await ctx.db.db.select({ goalId: autonomousReviews.goalId }).from(autonomousReviews)
       .where(and(eq(autonomousReviews.organizationId, ctx.organizationId), eq(autonomousReviews.status, "pending")));
     const importedReviews = await ctx.db.db.select({ goalId: goalImportedProductReviews.goalId, result: goalImportedProductReviews.result }).from(goalImportedProductReviews)
@@ -649,20 +699,81 @@ export function createGoalAutomationDispatcher(ctx: ServerContext, stopProcess: 
     const sourceOperations = await ctx.db.db.select({ goalId: goalProductHandoffs.goalId, result: goalProductHandoffOperations.result }).from(goalProductHandoffOperations)
       .innerJoin(goalProductHandoffs, eq(goalProductHandoffs.id, goalProductHandoffOperations.handoffId)).where(eq(goalProductHandoffs.organizationId, ctx.organizationId));
     pendingReviews.push(...sourceOperations.filter(row => ProductSourceOperationResultV1Schema.safeParse(row.result).data?.closed !== true).map(row => ({ goalId: row.goalId })));
-    const designs = await ctx.db.db.select().from(goalImportedDesignContinuations).where(eq(goalImportedDesignContinuations.organizationId, ctx.organizationId));
+    const designSnapshot = await ctx.db.db.select({ operation: goalImportedDesignContinuations, completion: goalImportedDesignCompletions }).from(goalImportedDesignContinuations)
+      .leftJoin(goalImportedDesignCompletions, eq(goalImportedDesignCompletions.continuationId, goalImportedDesignContinuations.id))
+      .where(eq(goalImportedDesignContinuations.organizationId, ctx.organizationId));
+    const designs = designSnapshot.map(item => item.operation);
+    for (const { operation: row, completion } of designSnapshot) {
+      const result = ImportedDesignContinuationResultV1Schema.safeParse(row.result).data;
+      if (result?.outcome === "finished" && result.verified_design && completion && completion.receiptSentAt === null)
+        pendingReceipts.push({ family: "design", id: row.id, computerId: row.computerId, sessionId: completion.sessionId, feature: IMPORTED_DESIGN_CONTINUATION_FEATURE_V1 });
+    }
     pendingReviews.push(...designs.filter(row => ImportedDesignContinuationResultV1Schema.safeParse(row.result).data?.closed !== true).map(row => ({ goalId: row.goalId })));
-    const designReviews = await ctx.db.db.select().from(goalImportedDesignReviews).where(eq(goalImportedDesignReviews.organizationId, ctx.organizationId));
+    const designReviewSnapshot = await ctx.db.db.select({ operation: goalImportedDesignReviews, receipt: goalImportedDesignReviewReceipts }).from(goalImportedDesignReviews)
+      .leftJoin(goalImportedDesignReviewReceipts, eq(goalImportedDesignReviewReceipts.reviewId, goalImportedDesignReviews.id))
+      .where(eq(goalImportedDesignReviews.organizationId, ctx.organizationId));
+    const designReviews = designReviewSnapshot.map(item => item.operation);
+    for (const { operation: row, receipt } of designReviewSnapshot) {
+      const result = ImportedDesignReviewResultV1Schema.safeParse(row.result).data;
+      if (result?.outcome === "reviewed" && result.verdict.outcome === "accepted" && !receipt)
+        pendingReceipts.push({ family: "design-review", id: row.id, computerId: row.computerId, sessionId: row.resultSessionId, feature: IMPORTED_DESIGN_REVIEW_FEATURE_V1 });
+    }
     pendingReviews.push(...designReviews.filter(row => ImportedDesignReviewResultV1Schema.safeParse(row.result).data?.closed !== true).map(row => ({ goalId: row.goalId })));
-    const importedExecutions = await ctx.db.db.select().from(goalImportedExecutions).where(eq(goalImportedExecutions.organizationId, ctx.organizationId));
+    const executionSnapshot = await ctx.db.db.select({ operation: goalImportedExecutions, completion: goalImportedExecutionCompletions, receipt: goalImportedExecutionReceipts }).from(goalImportedExecutions)
+      .leftJoin(goalImportedExecutionCompletions, eq(goalImportedExecutionCompletions.executionId, goalImportedExecutions.id))
+      .leftJoin(goalImportedExecutionReceipts, eq(goalImportedExecutionReceipts.executionId, goalImportedExecutions.id))
+      .where(eq(goalImportedExecutions.organizationId, ctx.organizationId));
+    const importedExecutions = executionSnapshot.map(item => item.operation);
+    for (const { operation: row, completion, receipt } of executionSnapshot) {
+      const result = ImportedExecutionResultV1Schema.safeParse(row.result).data;
+      if (result?.outcome === "finished" && result.verified_execution && completion && !receipt)
+        pendingReceipts.push({ family: "execution", id: row.id, computerId: row.computerId, sessionId: row.resultSessionId, feature: IMPORTED_EXECUTION_FEATURE_V1 });
+    }
     pendingReviews.push(...importedExecutions.filter(row => ImportedExecutionResultV1Schema.safeParse(row.result).data?.closed !== true).map(row => ({ goalId: row.goalId })));
-    const executionReviews = await ctx.db.db.select().from(goalImportedExecutionReviews).where(eq(goalImportedExecutionReviews.organizationId, ctx.organizationId));
-    const executionRepairs = await ctx.db.db.select().from(goalImportedExecutionRepairs).where(eq(goalImportedExecutionRepairs.organizationId, ctx.organizationId));
+    const executionReviewSnapshot = await ctx.db.db.select({ operation: goalImportedExecutionReviews, receipt: goalImportedExecutionReviewReceipts }).from(goalImportedExecutionReviews)
+      .leftJoin(goalImportedExecutionReviewReceipts, eq(goalImportedExecutionReviewReceipts.reviewId, goalImportedExecutionReviews.id))
+      .where(eq(goalImportedExecutionReviews.organizationId, ctx.organizationId));
+    const executionReviews = executionReviewSnapshot.map(item => item.operation);
+    for (const { operation: row, receipt } of executionReviewSnapshot) {
+      const result = ImportedExecutionReviewResultV1Schema.safeParse(row.result).data;
+      if (result?.outcome === "reviewed" && !receipt)
+        pendingReceipts.push({ family: "execution-review", id: row.id, computerId: row.computerId, sessionId: row.resultSessionId, feature: IMPORTED_EXECUTION_REVIEW_FEATURE_V1 });
+    }
+    const repairSnapshot = await ctx.db.db.select({ operation: goalImportedExecutionRepairs, completion: goalImportedExecutionRepairCompletions, receipt: goalImportedExecutionRepairReceipts }).from(goalImportedExecutionRepairs)
+      .leftJoin(goalImportedExecutionRepairCompletions, eq(goalImportedExecutionRepairCompletions.repairId, goalImportedExecutionRepairs.id))
+      .leftJoin(goalImportedExecutionRepairReceipts, eq(goalImportedExecutionRepairReceipts.repairId, goalImportedExecutionRepairs.id))
+      .where(eq(goalImportedExecutionRepairs.organizationId, ctx.organizationId));
+    const executionRepairs = repairSnapshot.map(item => item.operation);
+    for (const { operation: row, completion, receipt } of repairSnapshot) {
+      const result = ImportedExecutionRepairResultV1Schema.safeParse(row.result).data;
+      if (result?.outcome === "finished" && result.verified_repair && completion && !receipt)
+        pendingReceipts.push({ family: "execution-repair", id: row.id, computerId: row.computerId, sessionId: row.resultSessionId, feature: IMPORTED_EXECUTION_REVIEW_FEATURE_V1 });
+    }
     pendingReviews.push(...executionReviews.filter(row => ImportedExecutionReviewResultV1Schema.safeParse(row.result).data?.closed !== true).map(row => ({ goalId: row.goalId })));
     pendingReviews.push(...executionRepairs.filter(row => ImportedExecutionRepairResultV1Schema.safeParse(row.result).data?.closed !== true).map(row => ({ goalId: row.goalId })));
-    const validations = await ctx.db.db.select().from(goalImportedValidations).where(eq(goalImportedValidations.organizationId, ctx.organizationId));
-    const validationReviews = await ctx.db.db.select().from(goalImportedValidationReviews).where(eq(goalImportedValidationReviews.organizationId, ctx.organizationId));
+    const validationSnapshot = await ctx.db.db.select({ operation: goalImportedValidations, completion: goalImportedValidationCompletions, receipt: goalImportedValidationReceipts }).from(goalImportedValidations)
+      .leftJoin(goalImportedValidationCompletions, eq(goalImportedValidationCompletions.validationId, goalImportedValidations.id))
+      .leftJoin(goalImportedValidationReceipts, eq(goalImportedValidationReceipts.validationId, goalImportedValidations.id))
+      .where(eq(goalImportedValidations.organizationId, ctx.organizationId));
+    const validations = validationSnapshot.map(item => item.operation);
+    for (const { operation: row, completion, receipt } of validationSnapshot) {
+      const result = ImportedValidationResultV1Schema.safeParse(row.result).data;
+      if ((result?.outcome === "finished" || result?.outcome === "failed" && result.closed_failure) && completion && !receipt)
+        pendingReceipts.push({ family: "validation", id: row.id, computerId: row.computerId, sessionId: row.resultSessionId, feature: IMPORTED_VALIDATION_FEATURE_V1 });
+    }
+    const validationReviewSnapshot = await ctx.db.db.select({ operation: goalImportedValidationReviews, receipt: goalImportedValidationReviewReceipts }).from(goalImportedValidationReviews)
+      .leftJoin(goalImportedValidationReviewReceipts, eq(goalImportedValidationReviewReceipts.reviewId, goalImportedValidationReviews.id))
+      .where(eq(goalImportedValidationReviews.organizationId, ctx.organizationId));
+    const validationReviews = validationReviewSnapshot.map(item => item.operation);
+    for (const { operation: row, receipt } of validationReviewSnapshot) {
+      const result = ImportedValidationReviewResultV1Schema.safeParse(row.result).data;
+      if ((result?.outcome === "reviewed" || result?.outcome === "failed") && !receipt)
+        pendingReceipts.push({ family: "validation-review", id: row.id, computerId: row.computerId, sessionId: row.resultSessionId, feature: IMPORTED_VALIDATION_FEATURE_V1 });
+    }
     pendingReviews.push(...validations.filter(row => ImportedValidationResultV1Schema.safeParse(row.result).data?.closed !== true).map(row => ({ goalId: row.goalId })));
     pendingReviews.push(...validationReviews.filter(row => ImportedValidationReviewResultV1Schema.safeParse(row.result).data?.closed !== true).map(row => ({ goalId: row.goalId })));
+    await repairReceiptMarkers(pendingReceipts);
+    if (stopped) return;
     const recovering = await ctx.db.db.select().from(goalSourceRecoveries).where(eq(goalSourceRecoveries.organizationId, ctx.organizationId));
     const recoveryAuthors = await ctx.db.db.select().from(goalRecoveryValidations).where(eq(goalRecoveryValidations.organizationId, ctx.organizationId));
     const recoveryReviews = await ctx.db.db.select().from(goalRecoveryValidationReviews).where(eq(goalRecoveryValidationReviews.organizationId, ctx.organizationId));

@@ -13,6 +13,7 @@ import { observeMemberClaim } from "./ios-ui-member-claim-observer.mjs";
 import { getE2EReportContext, readXCTestScreenshots, writeE2EReport } from "./e2e-report.mjs";
 import { closeOwnedProcessGroup } from "./owned-process-group.mjs";
 import { nativeUISuiteTimeouts } from "../apps/ios/scripts/ui-suite-contract.mjs";
+import { remainingPeerBudget, waitForNativeThreadReply } from "./ios-ui-peer-boundary.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const selfCheck = process.argv.includes("--self-check");
@@ -172,13 +173,34 @@ async function main() {
 
     // The peer boundaries occur in the fifth and sixth sequential native
     // cases. Allow the full parent build/boot/suite budget to reach them.
+    let peerDeadline;
     const browserFlow = async () => {
       const channelView = page.getByRole("region", { name: "Channel conversation", exact: true });
       const message = channelView.getByRole("listitem").filter({ hasText: fixture.native_message });
-      await expect(message).toBeVisible({ timeout: coreTimeouts.parent });
+      await expect(message).toBeVisible({ timeout: remainingPeerBudget(peerDeadline) });
       await message.hover();
       await message.getByRole("button", { name: "Reply in thread", exact: true }).click();
       const thread = page.getByRole("complementary", { name: "Thread", exact: true });
+      const { messages: roots } = await request(roomPath);
+      const nativeRoots = roots.filter(item => item.body === fixture.native_message);
+      assert.equal(nativeRoots.length, 1, "Native root must be persisted exactly once before observing its reply");
+      assert.equal(nativeRoots[0].thread_root_id, null);
+      const nativeRoot = nativeRoots[0];
+      // XCUITest may still be waiting for UI animation idleness after sending
+      // the root. Give those native actions their existing parent budget, then
+      // independently require the already-open Web thread to receive the reply.
+      // This performs no API write, navigation, reload or synthetic UI update.
+      const nativeReplyId = await waitForNativeThreadReply({ rootId: nativeRoot.id, body: fixture.native_reply,
+        deadline: peerDeadline, signal: interrupted.signal, readMessages: async signal => {
+          const response = await fetch(`${origin}${roomPath}?thread_root_id=${encodeURIComponent(nativeRoot.id)}`, {
+            headers: { Authorization: `Bearer ${owner.raw}` },
+            signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+          });
+          assert.ok(response.ok, `Native thread observation failed (${response.status})`);
+          return response.json();
+        } });
+      report.native_thread_boundary = { root_message_id: nativeRoot.id, native_reply_id: nativeReplyId,
+        observed_at: new Date().toISOString() };
       await expect(thread.getByRole("list", { name: "Messages" })).toContainText(fixture.native_reply, { timeout: 120_000 });
       await thread.getByLabel("Message", { exact: true }).fill(fixture.browser_reply);
       await thread.getByRole("button", { name: "Send message", exact: true }).click();
@@ -193,7 +215,7 @@ async function main() {
         // attribution through the API before identifying or revoking a phone.
         const readyMessage = ownerPage.getByRole("region", { name: "Channel conversation", exact: true })
           .getByText(fixture.member_revocation_ready_message, { exact: true });
-        await expect(readyMessage, "Native member did not reach the revocation boundary").toBeVisible({ timeout: coreTimeouts.parent });
+        await expect(readyMessage, "Native member did not reach the revocation boundary").toBeVisible({ timeout: remainingPeerBudget(peerDeadline) });
         const { messages } = await request(`${roomPath}?limit=100`);
         assert.ok(findMemberMessage(messages, fixture.member_revocation_ready_message, fixture.member_user_id),
           "Native member readiness message is missing from the shared server");
@@ -242,10 +264,11 @@ async function main() {
       child = spawn(process.execPath, [join(root, "apps/ios/scripts/test-macos.mjs"), "--ui", "--suite=core"], {
         cwd: root, env: { ...process.env, ARTOO_IOS_UI_FIXTURE: fixturePath, ARTOO_IOS_UI_OUTPUT_DIR: output, ARTOO_IOS_UI_RESULT_JSON: childResultPath }, stdio: "inherit", windowsHide: true, detached: true,
       });
-      const timeout = setTimeout(() => { stopNative("SIGTERM"); rejectTest(new Error(`Native core build and UI exceeded ${coreTimeouts.parent / 60_000} minutes`)); }, coreTimeouts.parent);
+      const timeout = setTimeout(() => { stopNative("SIGTERM"); rejectTest(new Error(`Native core build and UI exceeded ${coreTimeouts.parent / 60_000} minutes`)); }, remainingPeerBudget(peerDeadline));
       child.once("error", (error) => { clearTimeout(timeout); rejectTest(error); });
       child.once("exit", (code, signal) => { clearTimeout(timeout); code === 0 ? resolveTest() : rejectTest(new Error(`Native UI test failed (${code ?? signal})`)); });
     });
+    peerDeadline = performance.now() + coreTimeouts.parent;
     await Promise.all([browserFlow(), selfCheck ? emulatedNative() : nativeFlow(), ...(selfCheck ? [] : [ownerRevocationFlow()])]);
     if (!selfCheck) {
       const native = JSON.parse(readFileSync(childResultPath, "utf8"));
@@ -324,6 +347,7 @@ async function main() {
     await page?.screenshot({ path: join(output, selfCheck ? "harness-failure.png" : "native-browser-failure.png"), fullPage: true }).catch(() => {});
     throw error;
   } finally {
+    interrupted.abort(new Error("Native UI fixture finished"));
     memberClaimObserver?.stop();
     // A detached group's descendants can outlive its Node leader. Verify the
     // original owned group even when child.exitCode already indicates exit.

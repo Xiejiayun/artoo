@@ -7,21 +7,25 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const suite = args.find((arg) => arg.startsWith("--suite="))?.slice(8) ?? "shared";
-if (args.some((arg) => arg !== "--list" && !/^--suite=(shared|ios|desktop|mac)$/.test(arg))) {
-  throw new Error("Usage: npm run verify:preview -- [--suite=shared|ios|desktop|mac] [--list]");
+if (args.some((arg) => arg !== "--list" && !/^--suite=(shared|shared-checks|ios|desktop|mac)$/.test(arg))) {
+  throw new Error("Usage: npm run verify:preview -- [--suite=shared|shared-checks|ios|desktop|mac] [--list]");
 }
 const npm = [process.env.npm_execpath, resolve(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")].find((path) => path && existsSync(path));
 const runNpm = (name, ...command) => ({ name, command: npm ? process.execPath : "npm", args: npm ? [npm, ...command] : command });
 const runNode = (name, script) => ({ name, command: process.execPath, args: [script] });
-const checks = {
+// CI runs this complete test inventory in two separate two-worker jobs.
+// The default local shared suite still executes it here exactly once.
+const unitAndIntegration = runNpm("unit and integration tests", "test", "--", "--maxWorkers=2");
+const suites = {
   shared: [
     runNpm("typecheck", "run", "typecheck"),
     runNpm("production preview build", "run", "build:preview"),
     // Keep PGlite/WASM concurrency bounded on hosted runners.
-    runNpm("unit and integration tests", "test", "--", "--maxWorkers=2"),
+    unitAndIntegration,
     runNode("E2E report integrity", "scripts/e2e-report.test.mjs"),
     runNode("Native PNG evidence integrity", "scripts/png-evidence.test.mjs"),
     runNode("Exact native UI suite contract", "apps/ios/scripts/ui-suite-contract.test.mjs"),
+    runNode("Native peer boundary deadline", "scripts/ios-ui-peer-boundary.test.mjs"),
     runNode("Native node transition failure diagnostics", "scripts/ios-ui-workflows-fixture.test.mjs"),
     runNode("Native suite evidence isolation", "scripts/ios-ui-suite-evidence.test.mjs"),
     runNode("E2E owned browser cleanup", "scripts/owned-browser.test.mjs"),
@@ -52,6 +56,7 @@ const checks = {
   ios: [
     runNode("Native PNG evidence integrity", "scripts/png-evidence.test.mjs"),
     runNode("Exact native UI suite contract", "apps/ios/scripts/ui-suite-contract.test.mjs"),
+    runNode("Native peer boundary deadline", "scripts/ios-ui-peer-boundary.test.mjs"),
     runNode("Native node transition failure diagnostics", "scripts/ios-ui-workflows-fixture.test.mjs"),
     runNode("Native suite evidence isolation", "scripts/ios-ui-suite-evidence.test.mjs"),
     runNode("Direct-agent subprocess integrity", "scripts/fixtures/assistant-conversation.test.mjs"),
@@ -100,7 +105,10 @@ const checks = {
       "apps/server/src/web-static.test.ts"),
     runNpm("Mac DMG installation smoke", "run", "smoke:mac:dmg", "--workspace", "@artoo/desktop"),
   ],
-}[suite];
+};
+const checks = suite === "shared-checks"
+  ? suites.shared.filter((check) => check !== unitAndIntegration)
+  : suites[suite];
 if (args.includes("--list")) {
   console.log(JSON.stringify({ suite, checks: checks.map(({ name }) => name) }, null, 2));
 } else {

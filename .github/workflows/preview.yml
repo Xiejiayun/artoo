@@ -16,9 +16,41 @@ concurrency:
   cancel-in-progress: true
 jobs:
   shared:
+    if: always()
+    needs: [shared-checks, shared-vitest]
     runs-on: windows-latest
-    # The expanded two-worker integration suite can take 45 minutes by itself;
-    # retain time for the build, evidence checks, browser workflows and audit.
+    timeout-minutes: 75
+    steps:
+      - name: Require every shared partition
+        env:
+          SHARED_CHECKS_RESULT: ${{ needs.shared-checks.result }}
+          SHARED_VITEST_RESULT: ${{ needs.shared-vitest.result }}
+        run: |
+          if ($env:SHARED_CHECKS_RESULT -ne 'success' -or $env:SHARED_VITEST_RESULT -ne 'success') {
+            throw "Shared checks=$env:SHARED_CHECKS_RESULT; Vitest shards=$env:SHARED_VITEST_RESULT"
+          }
+  shared-vitest:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install chromium
+        working-directory: apps/web
+      - run: npm run build:preview
+      # Vitest partitions the complete discovery set; keep PGlite concurrency
+      # bounded per runner without omitting files or changing test timeouts.
+      - run: npm test -- --maxWorkers=2 --shard=${{ matrix.shard }}/2
+  shared-checks:
+    runs-on: windows-latest
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +61,7 @@ jobs:
       - run: npm ci
       - run: npx playwright install chromium
         working-directory: apps/web
-      - run: npm run verify:preview
+      - run: npm run verify:preview -- --suite=shared-checks
       - uses: actions/upload-artifact@v4
         if: always()
         with:

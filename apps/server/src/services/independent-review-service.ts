@@ -1,3 +1,4 @@
+import { resolveResearchRevisionOrigin } from "./research-revision-origin-service.js";
 import { agentInstances, appendEvent, assistantTurns, autonomousReviews, computers, goalAutomations, goals, messages, runs, tasks } from "@artoo/db";
 import { AutonomousTeamSchema, canTransitionTask, GoalBudgetsSchema, ID_PREFIXES, IndependentReviewVerdictSchema, type TaskStatus, type AdditiveDesignRevisionRequestV1 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
@@ -147,8 +148,12 @@ export async function ensureIndependentReview(ctx: ServerContext, tx: DrizzleDb,
   const [writer] = await tx.select().from(agentInstances).where(eq(agentInstances.id, subject.agentInstanceId));
   if (!goal?.roomId || !writer || !evidence.payload.subject_digest) throw AppError.conflict("Independent review needs a room and verified source");
   const choices = await scheduleTask(tx, ctx, ["code.read", "code.review"], { mode: "auto", projectId: task.projectId, branchBacked: false });
+  const researchOrigin = await resolveResearchRevisionOrigin(ctx, tx, task), researchReviewer = researchOrigin?.snapshot.source.reviewer;
   let reviewer: string | undefined;
   for (const candidate of choices.candidates) {
+    if (researchReviewer && (candidate.agent_instance_id !== researchReviewer.instance_id || candidate.agent_id !== researchReviewer.agent_id
+      || candidate.runtime !== researchReviewer.runtime || candidate.model_profile_id !== researchReviewer.model_profile_id
+      || candidate.effort_profile_id !== researchReviewer.effort_profile_id)) continue;
     if (!team.reviewer_instance_ids.includes(candidate.agent_instance_id) || candidate.agent_id === writer.agentId || candidate.runtime === "mock"
       || candidate.computer_id !== subject.computerId) continue;
     const [instance] = await tx.select().from(agentInstances).where(eq(agentInstances.id, candidate.agent_instance_id));
