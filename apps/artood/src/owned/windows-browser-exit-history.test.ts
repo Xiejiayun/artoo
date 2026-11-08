@@ -22,6 +22,37 @@ function initialFailure(pids: readonly number[] = [historicalPid], root = parent
 }
 
 describe("Windows initial exit history ownership (controlled probes, no native acceptance)", () => {
+  it("adds only a bounded diagnostic suffix and preserves the exact original failure probes and termination", async () => {
+    const evidence = { version: 1, attempt: 1, census: "first", root_pid: parentPid, parent_pid: parentPid, child_pid: historicalPid,
+      root_filetime: "134383440000000101", parent_filetime: "134383440000000101", child_filetime: "134383440000000100",
+      root_type: "System.Int64", parent_type: "System.Int64", child_type: "System.Int64", delta_ticks: "-1" };
+    for (const diagnostic of [undefined, evidence]) {
+      const failure = new WindowsBrowserSessionObservationError("descendant_precedes_parent", "ancestry_identities",
+        { parentPid, pids: [historicalPid] }, diagnostic);
+      const { owned, primitives } = fixture(async () => { throw failure; });
+      const result: unknown = await closeObservedWindowsProcesses(owned, primitives).catch(error => error);
+      const base = "Protected Windows browser session failed (descendant_precedes_parent) [last_phase=ancestry_identities]";
+      expect(failure.message).toBe(base + (diagnostic ? ` [ancestry_failure_v1=${JSON.stringify(evidence)}]` : ""));
+      expect((result as AggregateError).errors).toContain(failure);
+      expect((result as Error).message).toContain("profile is retained");
+      if (diagnostic) expect((result as Error).message).toContain(`ancestry_failure_v1=${JSON.stringify(evidence)}`);
+      else expect((result as Error).message).not.toContain("ancestry_failure_v1");
+      expect(primitives.probe.mock.calls).toEqual([[parentPid], [historicalPid], [parentPid], [historicalPid]]);
+      expect(owned.terminateParent).toHaveBeenCalledExactlyOnceWith(90); expect(owned.requestGracefulClose).not.toHaveBeenCalled();
+    }
+    const failure = new WindowsBrowserSessionObservationError("descendant_precedes_parent", "ancestry_identities", { parentPid, pids: [historicalPid] }, evidence);
+    evidence.child_filetime = "1";
+    expect(WindowsBrowserSessionObservationError.negativeEvidence(failure, parentPid)?.child_filetime).toBe("134383440000000100");
+    expect(Object.isFrozen(WindowsBrowserSessionObservationError.negativeEvidence(failure, parentPid))).toBe(true);
+    for (const fake of [JSON.parse(JSON.stringify(failure)), Object.assign(new Error(failure.message), { ancestryFailure: evidence }),
+      Object.assign(Object.create(WindowsBrowserSessionObservationError.prototype), { ancestryFailure: evidence })]) {
+      expect(WindowsBrowserSessionObservationError.negativeEvidence(fake, parentPid)).toBeUndefined();
+      const { owned, primitives } = fixture(async () => { throw fake; });
+      const result: unknown = await closeObservedWindowsProcesses(owned, primitives).catch(error => error);
+      expect((result as Error).message).not.toContain("ancestry_failure_v1");
+      expect(primitives.probe.mock.calls).toEqual([[parentPid], [parentPid]]);
+    }
+  });
   it("copies and freezes trusted history and binds it to the original parent", () => {
     const source = [historicalPid], input = { parentPid, pids: source };
     const failure = new WindowsBrowserSessionObservationError("observer_retry_exhausted", "ancestry_confirmation", input);

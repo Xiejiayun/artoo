@@ -42,6 +42,9 @@ interface ControlledCase {
   closeFailure?: boolean;
   writeFailure?: boolean;
   initialWriteFailure?: boolean;
+  ancestryFailure?: Record<string, unknown>;
+  ancestryError?: boolean;
+  expectedAncestryFailure?: boolean;
 }
 
 describe.runIf(process.platform === "win32")("protected persistent Windows browser script", () => {
@@ -58,8 +61,18 @@ describe.runIf(process.platform === "win32")("protected persistent Windows brows
     const afterInitial: ControlledCase = { name: "EOF before final", frames: [configure, bind, initial],
       expectedOperations: ["ready:ok", "bind:ok", "initial:ok", "final:error"], expectedExit: 1, expectedError: "observer_parent_eof",
       expectedRootCloses: 1, expectedIdentityChecks: 2, expectedSnapshots: 1 };
+    const ancestryFailure = { version: 1, attempt: 1, census: "first", root_pid: 101, parent_pid: 101, child_pid: 202,
+      root_filetime: "134383440000000009", parent_filetime: "134383440000000009", child_filetime: "134383440000000008",
+      root_type: "System.Int64", parent_type: "System.Int64", child_type: "System.Int64", delta_ticks: "-1" };
     const cases: ControlledCase[] = [
       success,
+      { ...afterBind, name: "creation-order rejection includes only its bounded negative evidence", frames: [configure, bind, initial],
+        ancestryFailure, ancestryError: true, historyPids: [202], expectedIdentityChecks: 2, expectedSnapshots: 1,
+        expectedError: "descendant_precedes_parent", expectedInitialErrorHistory: [202], expectedAncestryFailure: true },
+      { ...afterBind, name: "cleanup failure supersedes a recorded creation-order rejection", frames: [configure, bind, initial],
+        ancestryFailure, ancestryError: true, closeFailure: true, historyPids: [202], expectedIdentityChecks: 2, expectedSnapshots: 1,
+        expectedError: "observer_cleanup_failed", expectedInitialErrorHistory: [202] },
+      { ...success, name: "negative evidence cannot appear on successful initial or final frames", ancestryFailure, historyPids: [202] },
       { ...success, name: "history stays separate from current process creation identities", historyPids: [202, 303] },
       { ...success, name: "a nonempty final permits exactly the next final", frames: [configure, bind, initial, final(), final(4)],
         finalPids: [[303], []], expectedOperations: ["ready:ok", "bind:ok", "initial:ok", "final:ok", "final:ok"] },
@@ -136,13 +149,15 @@ function Assert-ArtooSessionRootIdentity([Type]$api, $root, [string]$executable,
 }
 function New-ArtooObservationHistory([uint32]$parentProcessId) {
   $script:historyParent = $parentProcessId
-  return [pscustomobject]@{ ParentPid = $parentProcessId; Pids = [Collections.Generic.List[uint32]]::new() }
+  return [pscustomobject]@{ ParentPid = $parentProcessId; Pids = [Collections.Generic.List[uint32]]::new(); AncestryFailure = $null }
 }
 function Get-ArtooStableOwnedIdentities([Type]$api, $root, $history, [Diagnostics.Stopwatch]$budget) {
   $script:snapshots++
   $script:sharedInitialBudget = [object]::ReferenceEquals($budget, $script:rootRevalidationBudget) -and $budget.IsRunning
   if ($history.ParentPid -ne $root.Pid) { throw 'Unexpected history binding' }
   foreach ($value in $script:active.historyPids) { $history.Pids.Add([uint32]$value) }
+  if ($script:active.ancestryFailure) { $history.AncestryFailure = $script:active.ancestryFailure }
+  if ($script:active.ancestryError) { throw 'ARTOO_BROWSER_OBSERVATION:descendant_precedes_parent' }
   if ($script:active.snapshotFailure) { throw 'ARTOO_BROWSER_OBSERVATION:ancestry_changed' }
   $identities = [Collections.Generic.List[object]]::new()
   foreach ($value in @(101, 202)) { $identities.Add([pscustomobject]@{ pid = $value; created_utc = '2026-11-05T00:00:00.0000000Z' }) }
@@ -185,7 +200,7 @@ foreach ($case in $cases) {
 }
 ConvertTo-Json -Compress -Depth 10 -InputObject @($results.ToArray())
 `;
-    interface Response { frame: { version: number; session: string; seq: number; operation: string; status: string; error_code?: string; parent_pid?: number; processes?: unknown[]; exit_history?: { version: number; pids: number[] } }; closes_at_write: number }
+    interface Response { frame: { version: number; session: string; seq: number; operation: string; status: string; error_code?: string; parent_pid?: number; processes?: unknown[]; exit_history?: { version: number; pids: number[] }; ancestry_failure?: unknown }; closes_at_write: number }
     interface Result { name: string; exit_code: number; close_attempts: number[]; identity_checks: number; snapshots: number; history_parent: number | null; budget_running_at_root_revalidation: boolean; shared_initial_budget: boolean; responses: Response[] }
     const results = powershell(script) as Result[];
     expect(results).toHaveLength(cases.length);
@@ -208,6 +223,9 @@ ConvertTo-Json -Compress -Depth 10 -InputObject @($results.ToArray())
           keys.push("error_code");
           expect(response.frame.error_code, fixture.name).toBe(fixture.expectedError);
           expect(response.closes_at_write, fixture.name).toBe(fixture.expectedRootCloses);
+          if (fixture.expectedAncestryFailure) {
+            keys.push("ancestry_failure"); expect(response.frame.ancestry_failure).toEqual(ancestryFailure);
+          }
           if (fixture.expectedInitialErrorHistory !== undefined) {
             expect(response.frame.operation, fixture.name).toBe("initial");
             keys.push("parent_pid", "exit_history");

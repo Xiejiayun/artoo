@@ -1,4 +1,4 @@
-import { agentRuntimes, projects } from "@artoo/db";
+import { agentRuntimes, agents, projects } from "@artoo/db";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildTestServer, type TestServer } from "./test-support.js";
@@ -36,5 +36,37 @@ describe("preview project and execution resource setup", () => {
     expect(created.json().agent.capabilities).toEqual(["code.modify"]);
     expect((await server.app.inject({ method: "PATCH", url: `/api/v1/agent-instances/${instance.id}`, payload: { enabled: false } })).json().agent_instance.status).toBe("disabled");
     expect((await server.app.inject({ method: "PATCH", url: `/api/v1/agent-instances/${instance.id}`, payload: { enabled: true } })).json().agent_instance.status).toBe("idle");
+  });
+
+  it("keeps the logical agent when configuring another prepared workspace without changing its declarations", async () => {
+    server = await buildTestServer();
+    await server.db.db.update(agentRuntimes).set({ capabilities: ["code.read", "code.review"] }).where(eq(agentRuntimes.id, "runtime_mock"));
+    const url = "/api/v1/computers/computer_local_mock/instances";
+    const first = await server.app.inject({ method: "POST", url, payload: {
+      runtime: "mock", workspace_root: "C:/first", display_name: "Research peer", capabilities: ["code.review"],
+    } });
+    expect(first.statusCode).toBe(201);
+    const agent = first.json().agent;
+    const count = (await server.db.db.select().from(agents)).length;
+    const second = await server.app.inject({ method: "POST", url, payload: {
+      runtime: "mock", workspace_root: "C:/second", agent_id: agent.id,
+    } });
+    expect(second.statusCode).toBe(201);
+    expect(second.json().agent).toEqual(agent);
+    expect(second.json().agent_instance).toMatchObject({ agent_id: agent.id, workspace_root: "C:/second" });
+    expect(second.json().agent_instance.id).not.toBe(first.json().agent_instance.id);
+    expect((await server.db.db.select().from(agents)).length).toBe(count);
+    for (const extra of [{ display_name: "Renamed" }, { capabilities: ["code.read"] }]) {
+      expect((await server.app.inject({ method: "POST", url, payload: {
+        runtime: "mock", workspace_root: "C:/third", agent_id: agent.id, ...extra,
+      } })).statusCode).toBe(400);
+    }
+    expect((await server.app.inject({ method: "POST", url, payload: {
+      runtime: "mock", workspace_root: "C:/third", agent_id: "missing",
+    } })).statusCode).toBe(404);
+    await server.db.db.update(agentRuntimes).set({ capabilities: ["code.read"] }).where(eq(agentRuntimes.id, "runtime_mock"));
+    expect((await server.app.inject({ method: "POST", url, payload: {
+      runtime: "mock", workspace_root: "C:/third", agent_id: agent.id,
+    } })).statusCode).toBe(400);
   });
 });

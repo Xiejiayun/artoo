@@ -140,7 +140,9 @@ export const IndependentReviewVerdictSchema = z.object({
 });
 
 /** New goals opt in explicitly; absence preserves the fixed-computer execution path. */
-export const AutonomousSourceHandoffV1Schema = z.object({ version: z.literal(1), mode: z.literal("automatic") }).strict();
+export const AutonomousSourceHandoffV1Schema = z.object({ version: z.literal(1), mode: z.literal("automatic"),
+  research_revision: z.object({ version: z.literal(1), strategy: z.literal("configured_pool") }).strict().optional(),
+}).strict();
 export const GoalAutomationSchema = z.object({
   goal_id: z.string().min(1),
   organization_id: z.string().min(1),

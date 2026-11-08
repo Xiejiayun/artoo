@@ -1,3 +1,5 @@
+import { resolveResearchRevisionOrigin } from "./research-revision-origin-service.js";
+import { assertCurrentResearchHandoff } from "./research-handoff-guard.js";
 import { assertSourceLineageDispatch } from "./source-lineage-fence.js";
 import { agentInstances, agents, approvals, appendEvent, computers, contextPacks, devices, deviceTokens, goals, goalAutomations, plans, runs, tasks,
   goalProductHandoffs, goalImportedProductReviews as reviews, goalImportedDesignContinuations as continuations, goalImportedDesignDeliveries as deliveries } from "@artoo/db";
@@ -64,27 +66,30 @@ async function facts(ctx: ServerContext, tx: DrizzleDb, reviewId: string, own?: 
     || review.requestDigest !== importedProductReviewRequestDigestV1(request, sha)) throw AppError.conflict("Imported design requires its exact accepted independent review");
   await admitProductSourceSemanticTransferInTransaction(ctx, tx, request.operation.intent.request);
   const base = request.operation.intent.request.byte_request, root = base.destination.workspace_root;
+  await assertCurrentResearchHandoff(ctx, tx, request.operation.intent);
   const [goal] = await tx.select().from(goals).where(and(eq(goals.id, review.goalId), eq(goals.organizationId, ctx.organizationId))).for("update");
   const [automation] = await tx.select().from(goalAutomations).where(and(eq(goalAutomations.goalId, review.goalId), eq(goalAutomations.organizationId, ctx.organizationId)));
   const [task] = await tx.select().from(tasks).where(and(eq(tasks.id, review.nextTaskId), eq(tasks.organizationId, ctx.organizationId))).for("update");
   const [plan] = await tx.select().from(plans).where(and(eq(plans.id, review.planId), eq(plans.organizationId, ctx.organizationId)));
   const [source] = await tx.select().from(tasks).where(and(eq(tasks.id, base.source.task_id), eq(tasks.organizationId, ctx.organizationId)));
+  const sourceOrigin = source ? await resolveResearchRevisionOrigin(ctx, tx, source) : undefined;
+  const sourceRef = sourceOrigin?.specRef ?? source?.sourcePlanSpecRef;
   const index = Number(task?.sourcePlanSpecRef), parsed = Array.isArray(plan?.taskSpecs) && Number.isSafeInteger(index) ? TaskSpecSchema.safeParse(plan.taskSpecs[index]) : undefined;
   if (!goal || goal.status !== "running" || goal.currentPlanId !== review.planId || !automation || automation.actorUserId !== review.actorUserId
     || automation.planId !== review.planId || !["executing", "waiting"].includes(automation.status) || automation.executionMode !== "agent_team"
     || automation.consentId !== review.consentId || automation.policyVersion !== review.policyVersion
     || !task || !plan || task.goalId !== goal.id || task.projectId !== base.project_id || task.sourcePlanId !== plan.id || plan.status !== "accepted"
     || task.sourcePlanSpecRef === null || String(index) !== task.sourcePlanSpecRef || task.status !== (own ? "assigned" : "ready")
-    || task.executionPolicyTaskId !== null || task.parentTaskId !== null || !source || source.status !== "done" || source.sourcePlanSpecRef === null
+    || task.executionPolicyTaskId !== null || task.parentTaskId !== null || !source || source.status !== "done" || sourceRef == null
     || !parsed?.success || parsed.data.development_stage !== "design") throw AppError.conflict("Imported design requires the current ready exact design task and accepted plan");
   const spec = parsed.data;
   assertSupportedPlanTaskControls(spec, index);
   const hard = spec.dependencies.filter(edge => edge.type !== "soft_context");
-  if (hard.length !== 1 || hard[0]!.ref !== source.sourcePlanSpecRef || !["blocks", "artifact_required"].includes(hard[0]!.type)
+  if (hard.length !== 1 || hard[0]!.ref !== sourceRef || !["blocks", "artifact_required"].includes(hard[0]!.type)
     || task.title !== spec.title || task.description !== spec.description || canonical(task.acceptanceCriteria) !== canonical(spec.acceptance_criteria)
     || canonical(task.requiredCapabilities) !== canonical(spec.required_capabilities)) throw AppError.conflict("Imported design task differs from its exact accepted specification or research dependency");
   const expectedGoal = { version: 1, goal_id: goal.id, objective: goal.objective, acceptance_criteria: goal.acceptanceCriteria,
-    plan: { id: plan.id, version: plan.version, rationale: plan.rationale ?? "", spec_ref: source.sourcePlanSpecRef } };
+    plan: { id: plan.id, version: plan.version, rationale: plan.rationale ?? "", spec_ref: sourceRef } };
   if (canonical(request.operation.intent.destination_start.context_pack.payload?.goal_context) !== canonical(expectedGoal))
     throw AppError.conflict("Imported design original goal or accepted plan context changed");
   const { budgets } = supportedGoalPolicy(goal.budgets, goal.stopConditions);
@@ -243,7 +248,45 @@ export function createImportedDesignContinuationBinding(ctx: ServerContext, opti
     await assertSourceLineageDispatch(ctx, tx, row.computerId, row.workspaceRoot);
     current(); return fresh;
   }
+  // Shared with ordinary receive: its actual command_id remains the reply ID.
+  async function sendResultReceipt(tx: DrizzleDb, message: ImportedDesignContinuationResult) {
+    await credential(tx); current(); await options.transport.send({ kind: "command", id: message.command_id, idempotency_key: `receipt:${message.command_id}`, type: "product.source.design.receipt.v1",
+      payload: { version: 1, continuation_id: message.payload.continuation_id, request_digest: message.payload.request_digest, run_id: message.payload.run_id }, result_digest: hash(message.payload), status: "accepted" }); current();
+    // A failed send/transaction leaves this unset; replay may acknowledge only the same original session.
+    await tx.update(goalImportedDesignCompletions).set({ receiptSentAt: ctx.clock.nowIso() }).where(and(
+      eq(goalImportedDesignCompletions.continuationId, message.payload.continuation_id), eq(goalImportedDesignCompletions.organizationId, ctx.organizationId),
+      eq(goalImportedDesignCompletions.sessionId, options.sessionId), eq(goalImportedDesignCompletions.resultDigest, hash(message.payload)), isNull(goalImportedDesignCompletions.receiptSentAt)));
+    current();
+  }
   return {
+    /** Design predates sessionBindings: preserve its original completion/delivery session. */
+    async redeliverCommittedReceipt(id: string): Promise<void> {
+      await ctx.db.transaction(async tx => {
+        await credential(tx); const row = await load(tx, id);
+        const request = ImportedDesignContinuationRequestV1Schema.parse(row.request), result = ImportedDesignContinuationResultV1Schema.parse(row.result);
+        if (result.outcome !== "finished" || !result.verified_design) throw AppError.conflict("Committed design result has no receipt marker obligation");
+        const [proof] = await tx.select().from(goalImportedDesignCompletions).where(and(eq(goalImportedDesignCompletions.continuationId, row.id), eq(goalImportedDesignCompletions.organizationId, ctx.organizationId)));
+        if (!proof || request.continuation_id !== row.id || result.continuation_id !== row.id
+          || row.requestDigest !== importedDesignContinuationRequestDigestV1(request, sha) || result.request_digest !== row.requestDigest
+          || result.run_id !== row.runId || request.run_start.run_id !== row.runId || request.run_start.task_id !== row.taskId
+          || request.run_start.context_pack.id !== row.contextPackId || request.run_start.workspace.root !== row.workspaceRoot
+          || request.writer.instance_id !== row.writerInstanceId || request.writer.agent_id !== row.writerAgentId
+          || request.review_request.operation.intent.request.byte_request.destination.node_id !== identity.computerId
+          || proof.sessionId !== options.sessionId || proof.runId !== row.runId || proof.contextPackId !== row.contextPackId
+          || proof.resultDigest !== hash(result) || proof.completedDesignDigest !== hash(result.verified_design)
+          || canonical(proof.verifiedDesign) !== canonical(result.verified_design))
+          throw AppError.conflict("Committed design receipt differs from its original typed completion");
+        const [delivery] = await tx.select().from(deliveries).where(and(eq(deliveries.id, proof.deliveryId), eq(deliveries.continuationId, row.id), eq(deliveries.sessionId, options.sessionId)));
+        const starts = await tx.select().from(deliveries).where(and(eq(deliveries.continuationId, row.id), eq(deliveries.control, "start")));
+        if (!delivery || starts.length !== 1 || starts[0]!.sessionId !== options.sessionId) throw AppError.conflict("Committed design receipt lost its original issuing delivery");
+        if (proof.receiptSentAt !== null) { current(); return; }
+        await sendResultReceipt(tx, { kind: "product.source.design.result.v1", node_id: identity.computerId, command_id: delivery.id, payload: result });
+        const [recorded] = await tx.select().from(goalImportedDesignCompletions).where(and(eq(goalImportedDesignCompletions.continuationId, row.id), eq(goalImportedDesignCompletions.organizationId, ctx.organizationId)));
+        if (!recorded?.receiptSentAt || canonical({ ...recorded, receiptSentAt: null }) !== canonical({ ...proof, receiptSentAt: null }))
+          throw AppError.conflict("Committed design receipt marker was not recorded for its original completion");
+        current();
+      });
+    },
     async requestStop(id: string) {
       await ctx.db.transaction(async tx => {
         const row = await load(tx, id);
@@ -324,14 +367,7 @@ export function createImportedDesignContinuationBinding(ctx: ServerContext, opti
         } else if (locked!.result === null) await tx.update(continuations).set({ result }).where(eq(continuations.id, row.id));
         await credential(tx);
       });
-      await ctx.db.transaction(async tx => {
-        await credential(tx); await options.transport.send({ kind: "command", id: message.command_id, idempotency_key: `receipt:${message.command_id}`, type: "product.source.design.receipt.v1",
-          payload: { version: 1, continuation_id: message.payload.continuation_id, request_digest: message.payload.request_digest, run_id: message.payload.run_id }, result_digest: hash(message.payload), status: "accepted" }); current();
-        // A failed send/transaction leaves this unset; replay may acknowledge only the same original session.
-        await tx.update(goalImportedDesignCompletions).set({ receiptSentAt: ctx.clock.nowIso() }).where(and(
-          eq(goalImportedDesignCompletions.continuationId, message.payload.continuation_id), eq(goalImportedDesignCompletions.organizationId, ctx.organizationId),
-          eq(goalImportedDesignCompletions.sessionId, options.sessionId), eq(goalImportedDesignCompletions.resultDigest, hash(message.payload)), isNull(goalImportedDesignCompletions.receiptSentAt)));
-      });
+      await ctx.db.transaction(tx => sendResultReceipt(tx, message));
     },
     async inspect(id: string) { return ctx.db.transaction(async tx => { await credential(tx); return importedDesignContinuationView(await load(tx, id)); }); },
   };

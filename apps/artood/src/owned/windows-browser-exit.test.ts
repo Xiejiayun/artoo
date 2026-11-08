@@ -309,6 +309,40 @@ describe("Windows graceful close and final owned-profile audit", () => {
     expect(existsSync(directory)).toBe(false);
   });
 
+  it("identifies a connection-close failure before probes without replacing its actual cause", async () => {
+    const cause = new Error("Controlled client disconnect failure"), primitives = clock(), audit = vi.fn(async () => []);
+    const result: unknown = await closeObservedWindowsProcesses({ parentPid, observe: async () => [parentPid], parentClosed: () => true,
+      terminateParent: async () => {}, requestGracefulClose: async () => {},
+      closeConnection: async remaining => { expect(remaining).toBe(100); throw cause; }, finalAudit: audit }, primitives).catch(error => error);
+    expect((result as AggregateError).errors).toContain(cause);
+    expect((result as Error).message).toContain("failures=connection_close");
+    expect(primitives.probe).not.toHaveBeenCalled(); expect(audit).not.toHaveBeenCalled(); expect(primitives.now()).toBe(0);
+  });
+  it("keeps the original connection timeout inside the original confirmation deadline", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    try {
+      const probe = vi.fn(absent), audit = vi.fn(async () => []);
+      const closing = closeObservedWindowsProcesses({ parentPid, observe: async () => [parentPid], parentClosed: () => true,
+        terminateParent: async () => {}, requestGracefulClose: async () => {},
+        closeConnection: remaining => { expect(remaining).toBe(3000); return new Promise<void>(() => {}); }, finalAudit: audit },
+      { probe, now: () => Date.now(), sleep: async () => {}, connectionTimeoutMs: 3000, confirmationTimeoutMs: 20000, auditTimeoutMs: 5000 }).catch(error => error as AggregateError);
+      await vi.advanceTimersByTimeAsync(3000);
+      const failure = await closing;
+      expect(failure).toBeInstanceOf(AggregateError); expect((failure as Error).message).toContain("failures=connection_close");
+      expect((failure as AggregateError).errors[0].message).toBe("Browser client disconnect timed out");
+      expect(Date.now()).toBe(3000); expect(probe).not.toHaveBeenCalled(); expect(audit).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+  it("returns to exit confirmation after disconnect without renewing its remaining budget", async () => {
+    const primitives = clock(pid => { if (pid === parentPid) absent(); }), audit = vi.fn(async () => []);
+    const result: unknown = await closeObservedWindowsProcesses({ parentPid, observe: async () => [parentPid, helperPid], parentClosed: () => true,
+      terminateParent: async () => {}, requestGracefulClose: async () => {},
+      closeConnection: async () => { await primitives.sleep(75); }, finalAudit: audit }, primitives).catch(error => error);
+    expect((result as Error).message).toContain("failures=exit_confirmation");
+    expect((result as Error).message).not.toContain("connection_close"); expect(primitives.now()).toBe(100);
+    expect(primitives.probe.mock.calls).toEqual([[parentPid], [helperPid]]); expect(audit).not.toHaveBeenCalled();
+  });
+
   it("bounds a nonresponding graceful request and reserves the remaining termination budget", async () => {
     vi.useFakeTimers(); vi.setSystemTime(0);
     try {

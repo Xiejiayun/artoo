@@ -1,7 +1,7 @@
 import { PassThrough, Writable } from "node:stream";
 import { performance } from "node:perf_hooks";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { snapshotOwnedWindowsProcesses, windowsObservationPhase } from "./windows-browser-exit.js";
+import { auditWindowsBrowserProcesses, snapshotOwnedWindowsProcesses, windowsObservationPhase } from "./windows-browser-exit.js";
 
 const control = vi.hoisted(() => ({ execute: vi.fn() }));
 vi.mock("node:child_process", async (original) => {
@@ -28,6 +28,39 @@ function invocation(inputFailure = false) {
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 
 describe("protected Windows observer private input transport", () => {
+  it.each(["owned", "final"] as const)("keeps %s path fields in private base64 stdin without request JSON decoding", async mode => {
+    const executable = "C:\\任务\\it's `chrome` \"test\".exe", profile = "C:\\资料\\😀'; Write-Error 'private'\r\n$profile";
+    const child = invocation();
+    const operation = mode === "owned" ? snapshotOwnedWindowsProcesses(101, executable, profile) : auditWindowsBrowserProcesses(executable, profile, 5000);
+    const source = Buffer.concat(child.bytes).toString("utf8");
+    const [, argv, options] = control.execute.mock.calls[0]!;
+    for (const value of [executable, profile]) {
+      const encoded = Buffer.from(value, "utf8").toString("base64");
+      expect(source).toContain(`FromBase64String('${encoded}')`);
+      expect(source).not.toContain(value);
+      expect((argv as string[]).join(" ")).not.toContain(value);
+      expect((argv as string[]).join(" ")).not.toContain(encoded);
+    }
+    expect(source).not.toContain("ConvertFrom-Json"); expect(source).not.toContain("__REQUEST__");
+    expect(source.slice(source.lastIndexOf("} catch {"))).not.toContain("ConvertTo-Json");
+    expect(options).toMatchObject({ timeout: 5000, windowsHide: true, killSignal: "SIGKILL" });
+    child.complete(); await expect(operation).resolves.toEqual([101]);
+    expect(control.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, -1, 1.5, 0x100000000, NaN, Infinity])("rejects invalid parent PID %s before starting the observer", async pid => {
+    await expect(snapshotOwnedWindowsProcesses(pid, "C:\\Chrome\\chrome.exe", "C:\\profile")).rejects.toThrow("Invalid Windows observation request");
+    expect(control.execute).not.toHaveBeenCalled();
+  });
+
+  it.each(["owned", "final"] as const)("rejects malformed UTF-16 in either %s request path before starting the observer", async mode => {
+    for (const [executable, profile] of [["C:\\Chrome\\\ud800.exe", "C:\\profile"], ["C:\\Chrome\\chrome.exe", "C:\\profile\\\udfff"]]) {
+      const operation = mode === "owned" ? snapshotOwnedWindowsProcesses(101, executable!, profile!) : auditWindowsBrowserProcesses(executable!, profile!, 5000);
+      await expect(operation).rejects.toThrow("Invalid Windows observation request");
+      expect(control.execute).not.toHaveBeenCalled();
+    }
+  });
+
   it("waits for the controlled actual-completion boundary after asynchronous stdin failure", async () => {
     const child = invocation(true), operation = snapshotOwnedWindowsProcesses(101, "C:\\Chrome\\chrome.exe", "C:\\private-profile");
     let settled = false; void operation.then(() => { settled = true; }, () => { settled = true; });

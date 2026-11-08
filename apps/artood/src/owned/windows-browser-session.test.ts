@@ -46,6 +46,9 @@ async function bound(signal?: AbortSignal) {
   return result;
 }
 const processes = [{ pid: 7001, created_utc: "2026-11-05T00:00:00.0000000Z" }];
+const ancestryFailure = () => ({ version: 1, attempt: 2, census: "first", root_pid: 7001, parent_pid: 7002, child_pid: 7003,
+  root_filetime: "134383440000000000", parent_filetime: "134383440000000101", child_filetime: "134383440000000100",
+  root_type: "System.Int64", parent_type: "System.Int64", child_type: "System.Int64", delta_ticks: "-1" });
 async function observed() {
   const result = await bound(); const pending = result.session.observe();
   result.child.frame(result.child.response({ parent_pid: 7001, processes })); await pending;
@@ -61,6 +64,90 @@ afterEach(() => {
 });
 
 describe("persistent Windows observer transport (controlled child events, no native acceptance)", () => {
+  it("captures optional exact negative evidence in the same bound error frame without recovering failure", async () => {
+    const { child, session } = await bound(); const initial = session.observe();
+    child.frame(child.response({ status: "error", error_code: "descendant_precedes_parent", parent_pid: 7001,
+      exit_history: { version: 1, pids: [7002, 7003] }, ancestry_failure: ancestryFailure() }));
+    const failure: unknown = await initial.catch(error => error);
+    expect(WindowsBrowserSessionObservationError.negativeEvidence(failure, 7001)).toEqual(ancestryFailure());
+    expect((failure as Error).message).toContain(`ancestry_failure_v1=${JSON.stringify(ancestryFailure())}`);
+    expect(WindowsBrowserSessionObservationError.cleanupOnlyHistory(failure, 7001)).toEqual([7002, 7003]);
+    expect(WindowsBrowserSessionObservationError.negativeEvidence(failure, 7002)).toBeUndefined();
+    await expect(session.observe()).rejects.toBe(failure); await expect(session.finalAudit(1000)).rejects.toBe(failure);
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+    child.close(1); await session.cleanup(); expect(() => session.assertCompleted()).toThrow("descendant_precedes_parent");
+  });
+  it.each([
+    { name: "unknown version", evidence: { ...ancestryFailure(), version: 2 } },
+    { name: "extra field", evidence: { ...ancestryFailure(), owned: true } },
+    { name: "invalid difference", evidence: { ...ancestryFailure(), delta_ticks: "-2" } },
+    { name: "wrong root", evidence: { ...ancestryFailure(), root_pid: 8001 } },
+    { name: "unobserved child", evidence: { ...ancestryFailure(), child_pid: 8001 } },
+    { name: "null", evidence: null },
+    { name: "wrong error code", evidence: ancestryFailure(), code: "observer_retry_exhausted" },
+  ])("rejects $name evidence while preserving independently validated negative history", async ({ evidence, code }) => {
+    const { child, session } = await bound(); const initial = session.observe();
+    child.frame(child.response({ status: "error", error_code: code ?? "descendant_precedes_parent", parent_pid: 7001,
+      exit_history: { version: 1, pids: [7002, 7003] }, ancestry_failure: evidence }));
+    const failure: unknown = await initial.catch(error => error);
+    expect((failure as Error).message).toContain("observer_protocol_failed");
+    expect((failure as Error).message).not.toContain("ancestry_failure_v1");
+    expect(WindowsBrowserSessionObservationError.negativeEvidence(failure, 7001)).toBeUndefined();
+    expect(WindowsBrowserSessionObservationError.cleanupOnlyHistory(failure, 7001)).toEqual([7002, 7003]);
+    await expect(session.observe()).rejects.toBe(failure);
+  });
+  it.each(["ready", "bind", "final"])("forbids negative evidence on a %s error", async operation => {
+    const { child, session } = operation === "final" ? await observed() : create();
+    const pending = operation === "final" ? session.finalAudit(1000) : session.bind(7001); void pending.catch(() => {});
+    if (operation === "bind") { child.ready(); await tick(); }
+    const fields = { status: "error", error_code: "descendant_precedes_parent", parent_pid: 7001,
+      exit_history: { version: 1, pids: [7002, 7003] }, ancestry_failure: ancestryFailure() };
+    child.frame(operation === "ready" ? { version: 1, session: child.configure().session, seq: 0, operation, ...fields } : child.response(fields));
+    const failure: unknown = await pending.catch(error => error);
+    expect((failure as Error).message).toContain("observer_protocol_failed");
+    expect(WindowsBrowserSessionObservationError.negativeEvidence(failure, 7001)).toBeUndefined();
+    expect(WindowsBrowserSessionObservationError.cleanupOnlyHistory(failure, 7001)).toBeUndefined();
+  });
+  it("keeps original cleanup-only probes after malformed evidence without adding its unobserved PID", async () => {
+    const { child, session } = await bound();
+    const probe = vi.fn((_pid: number) => { throw Object.assign(new Error("Controlled absent PID"), { code: "ESRCH" }); });
+    const terminateParent = vi.fn(async (_remainingMs: number) => {}), requestGracefulClose = vi.fn(async () => {});
+    const closing = closeObservedWindowsProcesses({ parentPid: 7001, parentClosed: () => true,
+      observe: () => session.observe(), terminateParent, requestGracefulClose, finalAudit: remaining => session.finalAudit(remaining) },
+    { probe, now: () => now, sleep: async () => {}, connectionTimeoutMs: 100, confirmationTimeoutMs: 100, auditTimeoutMs: 100 });
+    void closing.catch(() => {});
+    child.frame(child.response({ status: "error", error_code: "descendant_precedes_parent", parent_pid: 7001,
+      exit_history: { version: 1, pids: [7002, 7003] }, ancestry_failure: { ...ancestryFailure(), child_pid: 8001 } }));
+    await expect(closing).rejects.toThrow("initial_observation:observer_protocol_failed");
+    expect(probe.mock.calls).toEqual([[7001], [7002], [7003]]);
+    expect(terminateParent).toHaveBeenCalledExactlyOnceWith(3000); expect(requestGracefulClose).not.toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+    child.close(1); await session.cleanup(); expect(() => session.assertCompleted()).toThrow("observer_protocol_failed");
+  });
+  it.each([{ status: "ok", processes }, { session: "other" }, { seq: 3 }, { parent_pid: 8001 }, { exit_history: undefined }])(
+    "does not accept diagnostic data outside its exact initial failure binding: %j", async extra => {
+      const { child, session } = await bound(); const initial = session.observe();
+      child.frame(child.response({ status: "error", error_code: "descendant_precedes_parent", parent_pid: 7001,
+        exit_history: { version: 1, pids: [7002, 7003] }, ancestry_failure: ancestryFailure(), ...extra }));
+      const failure: unknown = await initial.catch(error => error);
+      expect((failure as Error).message).toContain("observer_protocol_failed");
+      expect(WindowsBrowserSessionObservationError.negativeEvidence(failure, 7001)).toBeUndefined();
+      expect(WindowsBrowserSessionObservationError.cleanupOnlyHistory(failure, 7001)).toBeUndefined();
+    });
+  it("rejects duplicate diagnostic keys before folding and never attaches late evidence", async () => {
+    const first = await bound(); const duplicate = first.session.observe();
+    const line = JSON.stringify(first.child.response({ status: "error", error_code: "descendant_precedes_parent", parent_pid: 7001,
+      exit_history: { version: 1, pids: [7002, 7003] }, ancestry_failure: ancestryFailure() }));
+    first.child.stdout.write(line.replace('"attempt":2', '"attempt":1,"attempt":2') + "\n");
+    await expect(duplicate).rejects.toThrow("observer_protocol_failed");
+    const second = await bound(); const late = second.session.observe(); now += 5000;
+    second.child.frame(second.child.response({ status: "error", error_code: "descendant_precedes_parent", parent_pid: 7001,
+      exit_history: { version: 1, pids: [7002, 7003] }, ancestry_failure: ancestryFailure() }));
+    const failure: unknown = await late.catch(error => error);
+    expect((failure as Error).message).toContain("observer_deadline");
+    expect(WindowsBrowserSessionObservationError.negativeEvidence(failure, 7001)).toBeUndefined();
+    expect(WindowsBrowserSessionObservationError.cleanupOnlyHistory(failure, 7001)).toBeUndefined();
+  });
   it("preserves initial frames without history and unions exit-only history without fabricating process identities", async () => {
     const legacy = await bound(); const first = legacy.session.observe();
     legacy.child.frame(legacy.child.response({ parent_pid: 7001, processes }));

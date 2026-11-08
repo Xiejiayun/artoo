@@ -11,7 +11,7 @@ function New-ArtooObservationHistory([uint32]$rootPid) {
     PendingMissing = [Collections.Generic.HashSet[uint32]]::new()
     Absent = [Collections.Generic.HashSet[uint32]]::new()
     Exited = [Collections.Generic.HashSet[uint32]]::new()
-    Attempts = 0
+    Attempts = 0; AncestryFailure = $null
   }
 }
 function Get-ArtooObservationExitPids($history) {
@@ -98,14 +98,30 @@ function Read-ArtooObservationIdentities([Type]$api, $root, $inventory, $history
     }
   }
 }
-function Assert-ArtooObservationParents($selected, $attempt) {
+function Assert-ArtooObservationParents($selected, $attempt, $history, [int]$diagnosticAttempt, [string]$diagnosticCensus) {
   foreach ($entry in $selected) {
     if ($entry.Pid -eq $attempt.RootPid) { continue }
     if (!$attempt.Identities.ContainsKey($entry.Pid) -or !$attempt.Identities.ContainsKey($entry.Parent)) {
       $attempt.Retry = $true; continue
     }
     if ($attempt.Identities[$entry.Pid].Creation -lt $attempt.Identities[$entry.Parent].Creation) {
-      throw 'ARTOO_BROWSER_OBSERVATION:descendant_precedes_parent'
+      # Optional negative evidence only; even a recording failure preserves the original rejection.
+      try {
+        if ($null -eq $history.AncestryFailure) {
+          $rootIdentity = $attempt.Identities[$attempt.RootPid]
+          $parentIdentity = $attempt.Identities[$entry.Parent]; $childIdentity = $attempt.Identities[$entry.Pid]
+          $culture = [Globalization.CultureInfo]::InvariantCulture
+          [long]$delta = [long]$childIdentity.Creation - [long]$parentIdentity.Creation
+          $history.AncestryFailure = [ordered]@{
+            version = 1; attempt = $diagnosticAttempt; census = $diagnosticCensus
+            root_pid = $attempt.RootPid; parent_pid = $entry.Parent; child_pid = $entry.Pid
+            root_filetime = $rootIdentity.Creation.ToString($culture); parent_filetime = $parentIdentity.Creation.ToString($culture)
+            child_filetime = $childIdentity.Creation.ToString($culture)
+            root_type = $rootIdentity.Creation.GetType().FullName; parent_type = $parentIdentity.Creation.GetType().FullName
+            child_type = $childIdentity.Creation.GetType().FullName; delta_ticks = $delta.ToString($culture)
+          }
+        }
+      } finally { throw 'ARTOO_BROWSER_OBSERVATION:descendant_precedes_parent' }
     }
   }
 }
@@ -141,7 +157,7 @@ function Get-ArtooStableOwnedIdentities([Type]$api, $root, $history, [Diagnostic
       Confirm-ArtooMissingObservation $firstInventory $history $attempt
       Write-ArtooObserverPhase 'ancestry_identities'
       Read-ArtooObservationIdentities $api $root $firstInventory $history $attempt $budget
-      Assert-ArtooObservationParents $first $attempt
+      Assert-ArtooObservationParents $first $attempt $history $number 'first'
 
       Assert-ArtooObservationBudget $budget
       Assert-ArtooProcessLive $api $root 'root_process_exited'
@@ -153,7 +169,7 @@ function Get-ArtooStableOwnedIdentities([Type]$api, $root, $history, [Diagnostic
       Confirm-ArtooMissingObservation $secondInventory $history $attempt
       $missingBeforeSecond = $attempt.Missing.Count
       Read-ArtooObservationIdentities $api $root $secondInventory $history $attempt $budget
-      Assert-ArtooObservationParents $second $attempt
+      Assert-ArtooObservationParents $second $attempt $history $number 'second'
 
       if ($attempt.Missing.Count -gt $missingBeforeSecond) {
         # A newly seen second-snapshot child may also vanish. This extra complete
@@ -164,7 +180,7 @@ function Get-ArtooStableOwnedIdentities([Type]$api, $root, $history, [Diagnostic
         $corroborating = Register-ArtooObservationSnapshot $corroboratingInventory $root $history
         Confirm-ArtooMissingObservation $corroboratingInventory $history $attempt
         Read-ArtooObservationIdentities $api $root $corroboratingInventory $history $attempt $budget
-        Assert-ArtooObservationParents $corroborating $attempt
+        Assert-ArtooObservationParents $corroborating $attempt $history $number 'corroborating'
         # A further 87 stays pending for an already available next attempt.
         # There is no fourth census here, new attempt, or renewed time budget.
         $attempt.Retry = $true

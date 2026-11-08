@@ -204,7 +204,54 @@ export function createImportedValidationBinding(ctx: ServerContext, options: { i
     await assertSourceLineageDispatch(ctx, tx, row.computerId, row.workspaceRoot);
     current(); return value;
   }
+  // Shared with ordinary receive: its actual command_id remains the reply ID.
+  async function sendResultReceipt(tx: DrizzleDb, message: ImportedValidationResult) { await qualify(tx); const row = await load(tx, message.payload.validation_id);
+    current(); await options.transport.send({ kind: "command", id: message.command_id, idempotency_key: `receipt:${message.command_id}`, type: "product.source.validation.receipt.v1",
+      payload: { version: 1, validation_id: row.id, request_digest: row.requestDigest, run_id: row.runId }, result_digest: hash(message.payload), status: "accepted" }); current();
+    if (message.payload.outcome === "finished" || message.payload.outcome === "failed" && message.payload.closed_failure) await tx.insert(receipts).values({ validationId: row.id, organizationId: ctx.organizationId,
+      deliveryId: row.resultDeliveryId!, sessionId: options.sessionId, sessionBindings: row.sessionBindings, requestDigest: row.requestDigest, resultDigest: hash(message.payload), sentAt: ctx.clock.nowIso() }).onConflictDoNothing();
+    current();
+  }
   return {
+    /** Re-send only an immutable result's original same-session receipt; never starts work. */
+    async redeliverCommittedReceipt(id: string): Promise<void> {
+      await ctx.db.transaction(async tx => {
+        await qualify(tx); const row = await load(tx, id);
+        const request = ImportedValidationRequestV1Schema.parse(row.request), result = ImportedValidationResultV1Schema.parse(row.result);
+        if (!(result.outcome === "finished" || result.outcome === "failed" && result.closed_failure)) throw AppError.conflict("Committed validation result has no receipt marker obligation");
+        const bound = row.sessionBindings as { destination?: AuthenticatedTransferNode & { sessionId: string } };
+        if (request.validation_id !== row.id || result.validation_id !== row.id || row.requestDigest !== importedValidationRequestDigestV1(request, sha)
+          || result.request_digest !== row.requestDigest || row.resultDigest !== hash(result) || !row.resultDeliveryId
+          || row.resultSessionId !== options.sessionId || canonical(bound.destination ?? null) !== canonical({ ...identity, sessionId: options.sessionId })
+          || result.run_id !== row.runId || request.run_start.run_id !== row.runId || request.run_start.task_id !== row.taskId
+          || request.run_start.context_pack.id !== row.contextPackId || request.run_start.workspace.root !== row.workspaceRoot
+          || request.writer.instance_id !== row.writerInstanceId || request.writer.agent_id !== row.writerAgentId)
+          throw AppError.conflict("Committed validation receipt differs from its original result, request or destination session");
+        const [delivery] = await tx.select().from(deliveries).where(and(eq(deliveries.id, row.resultDeliveryId), eq(deliveries.validationId, row.id), eq(deliveries.sessionId, options.sessionId)));
+        const starts = await tx.select().from(deliveries).where(and(eq(deliveries.validationId, row.id), eq(deliveries.control, "start")));
+        if (!delivery || starts.length !== 1 || starts[0]!.sessionId !== options.sessionId)
+          throw AppError.conflict("Committed validation receipt lost its original issuing delivery");
+        const completion = result.outcome === "finished" ? result.verified_validation : result.outcome === "failed" ? result.closed_failure : undefined;
+        const [proof] = await tx.select().from(completions).where(and(eq(completions.validationId, row.id), eq(completions.organizationId, ctx.organizationId)));
+        if (!proof || !completion || proof.runId !== row.runId || proof.contextPackId !== row.contextPackId || proof.deliveryId !== row.resultDeliveryId
+          || proof.sessionId !== row.resultSessionId || proof.resultDigest !== row.resultDigest || proof.completionDigest !== hash(completion)
+          || canonical(proof.completion) !== canonical(completion) || proof.sourceDigest !== hash(proof.source)
+          || proof.outcome !== (result.outcome === "finished" ? "verified" : "closed-failure"))
+          throw AppError.conflict("Committed validation receipt lost its exact typed completion");
+        const readMarker = async () => {
+          const [marker] = await tx.select().from(receipts).where(and(eq(receipts.validationId, row.id), eq(receipts.organizationId, ctx.organizationId)));
+          if (marker && (marker.deliveryId !== row.resultDeliveryId || marker.sessionId !== row.resultSessionId
+            || marker.requestDigest !== row.requestDigest || marker.resultDigest !== row.resultDigest || canonical(marker.sessionBindings) !== canonical(row.sessionBindings)))
+            throw AppError.conflict("Committed validation receipt marker differs from its original result");
+          return marker;
+        };
+        if (await readMarker()) { current(); return; }
+        // The original result may have arrived under status/stop; do not substitute its start ID.
+        await sendResultReceipt(tx, { kind: "product.source.validation.result.v1", node_id: identity.computerId, command_id: delivery.id, payload: result });
+        if (!await readMarker()) throw AppError.conflict("Committed validation receipt marker was not recorded after send");
+        current();
+      });
+    },
     async requestStop(id: string) { await ctx.db.transaction(async tx => { const row = await load(tx, id); await qualify(tx); await tx.update(validations).set({ stopRequested: true }).where(eq(validations.id, row.id)); }); },
     async dispatch(id: string, control: Control = "start") {
       const record = await ctx.db.transaction(async tx => {
@@ -270,12 +317,7 @@ export function createImportedValidationBinding(ctx: ServerContext, options: { i
         }
         await qualify(tx);
       });
-      await ctx.db.transaction(async tx => { await qualify(tx); const row = await load(tx, message.payload.validation_id);
-        await options.transport.send({ kind: "command", id: message.command_id, idempotency_key: `receipt:${message.command_id}`, type: "product.source.validation.receipt.v1",
-          payload: { version: 1, validation_id: row.id, request_digest: row.requestDigest, run_id: row.runId }, result_digest: hash(message.payload), status: "accepted" }); current();
-        if (message.payload.outcome === "finished" || message.payload.outcome === "failed" && message.payload.closed_failure) await tx.insert(receipts).values({ validationId: row.id, organizationId: ctx.organizationId,
-          deliveryId: row.resultDeliveryId!, sessionId: options.sessionId, sessionBindings: row.sessionBindings, requestDigest: row.requestDigest, resultDigest: hash(message.payload), sentAt: ctx.clock.nowIso() }).onConflictDoNothing();
-      });
+      await ctx.db.transaction(tx => sendResultReceipt(tx, message));
     },
   };
 }

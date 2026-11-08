@@ -1,4 +1,6 @@
 import { assertSourceLineageDispatch } from "./source-lineage-fence.js";
+import { resolveResearchRevisionOrigin } from "./research-revision-origin-service.js";
+import { assertCurrentResearchHandoff, assertResearchHandoffDestinationOwner } from "./research-handoff-guard.js";
 import { appendEvent, goalProductHandoffs as handoffs, goalProductHandoffOperations as operations, goalProductHandoffDeliveries as deliveries, goals, plans, tasks, devices, deviceTokens, agentInstances, computers, runs } from "@artoo/db";
 import { ProductSourceHandoffIntentV1Schema, ProductSourceOperationV1Schema, ProductSourceOperationResultV1Schema,
   productSourceOperationDigestV1, productSourceTransferRequestDigestV2, canonicalProductSourceTransferValueV1 as canonical,
@@ -26,9 +28,10 @@ function actor(ctx:ServerContext,row:Pick<Row,"actorUserId">) {
 }
 function view(row:Row){return {transfer_id:row.id,qualified_receipt:row.qualifiedReceipt,stop_requested:row.stopRequested,
   state:row.stopRequested?"stopped_or_fenced":row.qualifiedReceipt?"qualified_receipt_waiting_target_review":"pending",execution_authorized:false,automatic_review_authorized:false} as const;}
-async function permitsNextEffect(ctx:ServerContext,tx:DrizzleDb,intent:ReturnType<typeof ProductSourceHandoffIntentV1Schema.parse>,operationId?:string){
+async function permitsNextEffect(ctx:ServerContext,tx:DrizzleDb,intent:ReturnType<typeof ProductSourceHandoffIntentV1Schema.parse>,operationId?:string,admittingUnboundRevision=false){
   const base=intent.request.byte_request,[goal]=await tx.select().from(goals).where(and(eq(goals.id,base.goal_id),eq(goals.organizationId,ctx.organizationId))).for("update");
   if(!goal||goal.status!=="running"||goal.currentPlanId!==base.plan_id)throw AppError.conflict("Handoff requires the current running goal");
+  await assertCurrentResearchHandoff(ctx,tx,intent,{admittingUnboundRevision});
   const {budgets}=supportedGoalPolicy(goal.budgets,goal.stopConditions);
   if(budgets.max_elapsed_ms!==null&&goal.runningSince!==null&&Math.max(0,Date.parse(ctx.clock.nowIso())-Date.parse(goal.runningSince))>=budgets.max_elapsed_ms)throw AppError.conflict("Goal elapsed time budget has been reached");
   if(budgets.max_retries!==null&&goal.retryCount>budgets.max_retries)throw AppError.conflict("Goal retry budget would be exceeded");
@@ -41,11 +44,13 @@ async function permitsNextEffect(ctx:ServerContext,tx:DrizzleDb,intent:ReturnTyp
   }
   const [next]=await tx.select().from(tasks).where(and(eq(tasks.id,intent.next_task_id),eq(tasks.organizationId,ctx.organizationId))).for("update");
   const [source]=await tx.select().from(tasks).where(eq(tasks.id,base.source.task_id)),[plan]=await tx.select().from(plans).where(eq(plans.id,base.plan_id));
-  const specs=Array.isArray(plan?.taskSpecs)?plan.taskSpecs:[],index=Number(next?.sourcePlanSpecRef),sourceIndex=Number(source?.sourcePlanSpecRef);
+  const sourceOrigin=source?await resolveResearchRevisionOrigin(ctx,tx,source):undefined;
+  const sourceRef=sourceOrigin?.specRef??source?.sourcePlanSpecRef;
+  const specs=Array.isArray(plan?.taskSpecs)?plan.taskSpecs:[],index=Number(next?.sourcePlanSpecRef),sourceIndex=Number(sourceRef);
   const spec=Number.isSafeInteger(index)?TaskSpecSchema.safeParse(specs[index]):null;
   if(!next||next.goalId!==base.goal_id||next.sourcePlanId!==base.plan_id||next.projectId!==base.project_id||next.status!=="ready"
-    ||next.sourcePlanSpecRef===null||String(index)!==next.sourcePlanSpecRef||!source||source.sourcePlanSpecRef===null||String(sourceIndex)!==source.sourcePlanSpecRef
-    ||!spec?.success||spec.data.development_stage!=="design"||!spec.data.dependencies.some(dependency=>dependency.ref===source.sourcePlanSpecRef&&["blocks","artifact_required"].includes(dependency.type)))
+    ||next.sourcePlanSpecRef===null||String(index)!==next.sourcePlanSpecRef||!source||sourceRef==null||String(sourceIndex)!==sourceRef
+    ||!spec?.success||spec.data.development_stage!=="design"||!spec.data.dependencies.some(dependency=>dependency.ref===sourceRef&&["blocks","artifact_required"].includes(dependency.type)))
     throw AppError.conflict("Handoff requires its ready dependent design task in the accepted plan");
 }
 /** Opt-in scheduler primitive. It never assigns a next-stage task or changes legacy fixed workspace bindings. */
@@ -56,7 +61,8 @@ export async function ensureGoalProductHandoff(ctx:ServerContext,input:unknown) 
     await admitProductSourceSemanticTransferInTransaction(ctx,tx,request);
     const [existing]=await tx.select().from(handoffs).where(eq(handoffs.id,base.transfer_id)).for("update");
     if(existing){if(existing.organizationId!==ctx.organizationId||existing.intentDigest!==digest||canonical(existing.intent)!==canonical(intent))throw AppError.conflict("Handoff ID is bound to another immutable intent");return view(existing);}
-    await permitsNextEffect(ctx,tx,intent);
+    await permitsNextEffect(ctx,tx,intent,undefined,true);
+    await assertResearchHandoffDestinationOwner(ctx,tx,intent,{admittingUnboundRevision:true});
     const now=ctx.clock.nowIso();
     const [row]=await tx.insert(handoffs).values({id:base.transfer_id,organizationId:ctx.organizationId,goalId:base.goal_id,planId:base.plan_id,nextTaskId:intent.next_task_id,
       sourceRunId:base.source.run_id,actorUserId:base.authorization.actor_user_id,consentId:base.authorization.consent_id,policyVersion:base.authorization.policy_version,
@@ -101,6 +107,7 @@ async function workspaceFence(ctx:ServerContext,tx:DrizzleDb,payload:ProductSour
   if(instance&&instance.computerId!==node.node_id)throw AppError.conflict("Source operation instance belongs to another computer");
   const [computer]=await tx.select().from(computers).where(and(eq(computers.id,node.node_id),eq(computers.organizationId,ctx.organizationId))).for("update");
   if(!computer||computer.status!=="online")throw AppError.conflict("Source operation computer is unavailable");
+  if(payload.kind==="import_verify")await assertResearchHandoffDestinationOwner(ctx,tx,payload.intent);
   await assertSourceLineageDispatch(ctx,tx,node.node_id,node.workspace_root);
   const uncertain=new Set(await unconfirmedDisconnectRunIds(ctx,tx,{computerId:node.node_id}));
   const neighbors=await tx.select().from(runs).where(and(eq(runs.organizationId,ctx.organizationId),eq(runs.computerId,node.node_id)));

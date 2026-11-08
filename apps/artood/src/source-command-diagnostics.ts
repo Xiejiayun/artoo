@@ -15,15 +15,21 @@ const phase = z.enum(["dispatch", "dispatch_admission", "handler", "dispatch_sco
   "after_verification", "persist_result", "emit_result"]);
 export type SourceCommandPhase = z.infer<typeof phase>;
 export const SOURCE_COMMAND_DIAGNOSTIC_LIMITS = Object.freeze({ normalEvents: 2048, failureEvents: 64,
-  normalEventsPerCommand: 64, retainedCommandDigests: 2048 });
+  normalEventsPerCommand: 64, retainedCommandDigests: 2048, observerTimings: 128, observerTimingsPerCommand: 8 });
+const observerTiming = z.object({ version: z.literal(1), scope: z.literal("startWindowsGuardianObserverSync.inclusive.v1"),
+  epoch_id: z.string().uuid(), slot_id: z.string().uuid(), elapsed_ms: z.number().int().min(0).max(86_400_000),
+  cleanup_confirmed: z.boolean() }).strict();
+type ObserverTiming = z.infer<typeof observerTiming>;
 export const SourceCommandDiagnosticSchema = z.object({ version: z.literal(1), command_type: commandType,
-  command_id_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/), phase, status: z.enum(["entered", "completed", "failed"]),
+  command_id_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/), phase, status: z.enum(["entered", "completed", "failed", "observed"]),
   elapsed_ms: z.number().int().min(0).max(86_400_000), phase_elapsed_ms: z.number().int().min(0).max(86_400_000),
+  observer_timing: observerTiming.optional(),
   error_code: z.literal("source_command_stage_failed").optional(),
   native_failure_code: z.enum(WINDOWS_NATIVE_FAILURE_CODES).optional(),
   native_failure_detail: WindowsNativeFailureDetailV1Schema.optional(), storage_failure: WindowsStorageFailureSchema.optional(),
 }).strict().superRefine((value, context) => {
-  if ((value.status === "failed") !== (value.error_code !== undefined)
+  if ((value.status === "observed") !== (value.observer_timing !== undefined)
+    || (value.status === "failed") !== (value.error_code !== undefined)
     || value.status !== "failed" && (value.native_failure_code !== undefined || value.native_failure_detail !== undefined || value.storage_failure !== undefined)
     || value.native_failure_detail !== undefined && value.native_failure_code === undefined)
     context.addIssue({ code: z.ZodIssueCode.custom, message: "Invalid source command diagnostic classification" });
@@ -32,9 +38,9 @@ export type SourceCommandDiagnostic = z.infer<typeof SourceCommandDiagnosticSche
 type Identity = Pick<SourceCommandDiagnostic, "command_type" | "command_id_digest">;
 interface Budget {
   sink(value: SourceCommandDiagnostic): unknown;
-  normal: number; failures: number; seen: Set<string>; failed: Set<string>;
+  normal: number; failures: number; observerTimings: number; seen: Set<string>; failed: Set<string>;
 }
-interface CommandState { budget: Budget; identity: Identity; begun: number; regular: boolean; count: number; ended: boolean; failed: boolean }
+interface CommandState { budget: Budget; identity: Identity; begun: number; regular: boolean; count: number; observerTimings: number; ended: boolean; failed: boolean }
 interface PhaseState { command: CommandState; phase: SourceCommandPhase; begun: number }
 const current = new AsyncLocalStorage<PhaseState>();
 const elapsed = (now: number, begun: number) => Math.min(86_400_000, Math.max(0, Math.floor(now - begun)));
@@ -49,7 +55,7 @@ function identity(command: { type: string; id: string }): Identity | undefined {
   } catch { return; }
 }
 
-function emit(scope: PhaseState, status: SourceCommandDiagnostic["status"], cause?: unknown): void {
+function emit(scope: PhaseState, status: SourceCommandDiagnostic["status"], cause?: unknown, timing?: ObserverTiming): void {
   const command = scope.command, budget = command.budget;
   if (command.ended || command.failed) return;
   if (status === "failed") {
@@ -68,17 +74,19 @@ function emit(scope: PhaseState, status: SourceCommandDiagnostic["status"], caus
     // Never project error text, copied error properties, payloads, argv, paths or environment.
     const value = SourceCommandDiagnosticSchema.parse({ version: 1, ...command.identity, phase: scope.phase, status,
       elapsed_ms: elapsed(now, command.begun), phase_elapsed_ms: elapsed(now, scope.begun),
+      ...(timing ? { observer_timing: timing } : {}),
       ...(status === "failed" ? { error_code: "source_command_stage_failed" } : {}),
       ...(native ? { native_failure_code: native.code, ...(native.detail ? { native_failure_detail: native.detail } : {}) } : {}),
       ...(storage ? { storage_failure: storage } : {}) });
     // Sink failures cannot replace an outcome; an asynchronous sink is never awaited.
+    if (value.observer_timing) Object.freeze(value.observer_timing);
     void Promise.resolve(budget.sink(Object.freeze(value))).catch(() => {});
   } catch { /* Optional diagnostics never replace the original result or rejection. */ }
 }
 
 /** Local observation only. No command validation, admission, deduplication or execution authority is supplied. */
 export function createSourceCommandDiagnostics(sink: (value: SourceCommandDiagnostic) => unknown) {
-  const budget: Budget = { sink, normal: 0, failures: 0, seen: new Set(), failed: new Set() };
+  const budget: Budget = { sink, normal: 0, failures: 0, observerTimings: 0, seen: new Set(), failed: new Set() };
   return {
     async run<T>(command: { type: string; id: string }, work: () => T | Promise<T>): Promise<T> {
       const saved = identity(command);
@@ -89,7 +97,7 @@ export function createSourceCommandDiagnostics(sink: (value: SourceCommandDiagno
       const regular = !budget.seen.has(key) && budget.seen.size < SOURCE_COMMAND_DIAGNOSTIC_LIMITS.retainedCommandDigests
         && budget.normal < SOURCE_COMMAND_DIAGNOSTIC_LIMITS.normalEvents;
       if (regular) budget.seen.add(key);
-      const now = performance.now(), state: CommandState = { budget, identity: saved, begun: now, regular, count: 0, ended: false, failed: false };
+      const now = performance.now(), state: CommandState = { budget, identity: saved, begun: now, regular, count: 0, observerTimings: 0, ended: false, failed: false };
       const scope: PhaseState = { command: state, phase: "dispatch", begun: now };
       return current.run(scope, async () => {
         emit(scope, "entered");
@@ -99,6 +107,28 @@ export function createSourceCommandDiagnostics(sink: (value: SourceCommandDiagno
       });
     },
   };
+}
+
+/** Preserve an existing receipt's inclusive API interval, not reservation or pure target runtime.
+ * Qualification can include another observer; these intervals must not be summed as exclusive work.
+ * This local observation cannot complete a phase, authorize work, or certify process closure. */
+export function recordSourceObserverTiming(input: { epochId: string; slotId: string; elapsedMs: number; cleanupConfirmed: boolean }): void {
+  try {
+    const scope = current.getStore();
+    if (!scope || scope.command.ended || scope.command.failed || !scope.command.regular) return;
+    const { command } = scope, { budget } = command;
+    if (budget.observerTimings >= SOURCE_COMMAND_DIAGNOSTIC_LIMITS.observerTimings
+      || command.observerTimings >= SOURCE_COMMAND_DIAGNOSTIC_LIMITS.observerTimingsPerCommand
+      || budget.normal >= SOURCE_COMMAND_DIAGNOSTIC_LIMITS.normalEvents
+      || command.count >= SOURCE_COMMAND_DIAGNOSTIC_LIMITS.normalEventsPerCommand) return;
+    if (typeof input.elapsedMs !== "number" || !Number.isFinite(input.elapsedMs) || input.elapsedMs < 0 || input.elapsedMs > 86_400_000) return;
+    // Project only fixed fields from the consumed enrollment and the bridge-created receipt.
+    const checked = observerTiming.safeParse({ version: 1, scope: "startWindowsGuardianObserverSync.inclusive.v1",
+      epoch_id: input.epochId, slot_id: input.slotId, elapsed_ms: Math.floor(input.elapsedMs), cleanup_confirmed: input.cleanupConfirmed });
+    if (!checked.success) return;
+    budget.observerTimings++; command.observerTimings++;
+    emit(scope, "observed", undefined, checked.data);
+  } catch { /* Missing or malformed optional timing cannot change the collector's result. */ }
 }
 
 /** Advance a synchronous controller's phase without introducing an await or another work invocation. */

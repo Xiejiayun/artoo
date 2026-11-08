@@ -106,7 +106,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
     MEASUREMENT_PLAN_FEATURE, MEASUREMENT_PLAN_V2_FEATURE, PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE, PRODUCT_RELEASE_RETRY_FEATURE_V1,
       PRODUCT_DESIGN_REVISION_FEATURE_V1,
       "owned-result-run.v1", "product-source-transfer.v1", "product-source-transfer.v2", "product-source-transfer.measurement-v2.v1",
-      "product-source-operations.v1", "imported-product-review.v1", "imported-design-continuation.v1", "imported-design-review.v1", "imported-execution.v1", "imported-execution-review.v1", "imported-validation.v1",
+      "product-source-operations.v1", "product-research-revision.v1", "imported-product-review.v1", "imported-design-continuation.v1", "imported-design-review.v1", "imported-execution.v1", "imported-execution-review.v1", "imported-validation.v1",
       "product.source.recovery.v1", SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1,
       "imported-recovery-validation.v1", "imported-recovery-validation-review.v1"].includes(feature));
   if (advertisedVerificationProfiles.length) {
