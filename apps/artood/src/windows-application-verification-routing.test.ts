@@ -11,6 +11,9 @@ import type { ApplicationCapabilitiesV1 } from "@artoo/domain";
 import { applicationVerificationSupported, attachWindowsVerificationBackend, prepareVerificationProfiles,
   readVerificationCapabilities, readWindowsVerificationBackend, type VerificationProfile } from "./verification.js";
 import { prepareWindowsProcessBackend, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
+import type { ApplicationVerificationConfiguration, ApplicationVerificationFile,
+  readApplicationVerificationProfile } from "./application-verification-profile.js";
+import type { ApplicationRuntimeFilePin } from "./application-runtime-process-protocol.js";
 
 const application = vi.hoisted(() => ({ prepare: vi.fn(), read: vi.fn(), audit: vi.fn() }));
 vi.mock("./application-verification-profile.js", () => ({ prepareApplicationVerificationProfile: application.prepare,
@@ -59,10 +62,40 @@ function fixture(kind: "ordinary" | "static" | "application", targetInput = fals
       timeout_ms: 1000, observation: { format: "static-web-acceptance.v3", evidence_root: evidence, capabilities: { version: 1 } } }];
   }
   if (kind === "application") {
-    const configuration = { path: join(root, "application.json"), bytes: 2, sha256: sha("{}") };
-    writeProtected(configuration.path, "{}"); raw.application = { version: 1, configuration };
-    const prepared = Object.freeze({}), saved = { configuration, files: [{ name: "configuration.json", pin: configuration }],
-      capabilities: { ...capabilities, config_digest: configuration.sha256 } };
+    const toolRoot = join(root, "application-tools"), candidateRoot = join(root, "candidates"),
+      installationRoot = join(root, "installations"), selectionRoot = join(root, "selections");
+    for (const directory of [toolRoot, candidateRoot, installationRoot, selectionRoot]) mkdirSync(directory);
+    const files: ApplicationVerificationFile[] = [];
+    const pin = (name: string, value: string): ApplicationRuntimeFilePin => {
+      const path = join(toolRoot, name); writeProtected(path, value);
+      const result = Object.freeze({ path, bytes: Buffer.byteLength(value), sha256: sha(value) });
+      files.push({ name, pin: result }); return result;
+    };
+    // Complete typed owner state, with inert files outside all write roots. This
+    // keeps the real profile's file and storage boundaries active in this fixture.
+    const node = pin("node.exe", executable), runtime = {
+      helper: pin("runtime-helper.exe", executable), helperManifest: pin("runtime-helper-manifest.json", "{}"),
+      entry: pin("application-runtime.mjs", "// controlled runtime"), vendorManifest: pin("vendor-manifest.json", "{}"),
+      guestBootstrap: pin("application-runtime-guest-bootstrap.js", "// controlled guest"),
+    };
+    const config: ApplicationVerificationConfiguration = { version: 1, format: "artoo.application-verification-profile.v1", node,
+      compiler: { helper: pin("compiler-helper.exe", executable), helperManifest: pin("compiler-helper-manifest.json", "{}"), node,
+        entry: pin("application-compiler.mjs", "// controlled compiler"), configuration: pin("compiler-configuration.json", "{}") },
+      runtime, broker: pin("application-broker.mjs", "// controlled broker"),
+      hostManifest: pin("application-service-host-manifest.json", "{}"), browser: pin("browser.exe", executable),
+      candidate_parent: candidateRoot, installation_parent: installationRoot, selection_parent: selectionRoot,
+      origin: "http://127.0.0.1:18080", timeout_ms: 10_000, operation_timeout_ms: 1000, action_timeout_ms: 500 };
+    const hostEntry = pin("application-service-bootstrap.mjs", "// controlled bootstrap");
+    pin("application-service-host-api.mjs", "// controlled host API");
+    const configuration = pin("configuration.json", JSON.stringify(config)); raw.application = { version: 1, configuration };
+    const prepared = Object.freeze({}), saved: ReturnType<typeof readApplicationVerificationProfile> = {
+      config, configuration, roots: [workspace], files, packageFiles: [
+        { name: "application-runtime.mjs", pin: runtime.entry }, { name: "application-broker.mjs", pin: config.broker },
+        { name: "application-runtime-guest-bootstrap.js", pin: runtime.guestBootstrap },
+        { name: "vendor/manifest.json", pin: runtime.vendorManifest }, { name: "native/runtime-helper.exe", pin: runtime.helper },
+        { name: "native/runtime-helper-manifest.json", pin: runtime.helperManifest },
+      ], toolchainDigest: sha(JSON.stringify(files.map(file => ({ path: file.name, bytes: file.pin.bytes, sha256: file.pin.sha256 })))),
+      hostEntry, capabilities: { ...capabilities, config_digest: configuration.sha256 } };
     application.prepare.mockImplementation((selection, writeRoots) => {
       expect(selection).toEqual(raw.application); expect(writeRoots).toEqual([workspace]); return prepared;
     });
