@@ -8,8 +8,10 @@ import type { GraceWindowManager } from "../ws/grace-window.js";
  * Rebuild interrupted execution state before accepting client/node connections.
  * The durable run, rather than a checkpoint or lease, is the recovery record.
  * Restart gives nodes one bounded reconnect window; expiry records uncertainty,
- * never process exit. Reconnection only probes existing processes (run.resume),
- * and never replays run.start or creates another execution.
+ * never process exit. Reconnection probes existing processes (run.resume).
+ * Only assistant intents durably recorded as never exposed can replay their
+ * exact run.start. Possibly sent/legacy starts retain the process-exit fence;
+ * queued alone does not establish that the node never executed the request.
  *
  * Call exactly once before listen. Tests that deliberately seed an online mock
  * computer may retain that fixture with resetPresence:false.

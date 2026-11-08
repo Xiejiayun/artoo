@@ -4,6 +4,7 @@ import { openLocalJournal } from "./journal.js";
 import type { Journal } from "./journal-types.js";
 import { createManagedNodeRunner, type ManagedNodeRunner, type ManagedNodeRunnerOptions } from "./managed-node-runner.js";
 import { DeliveryCancelled } from "./managed-delivery.js";
+import { loadOwnedResultProfilesFile } from "../owned-result-profiles.js";
 
 /** Saved local profile identity, supplied separately from the live connection. */
 export interface ManagedJournalBinding {
@@ -70,6 +71,8 @@ export function validateManagedJournalBinding(input: unknown, connection: { url:
 export interface ManagedBootstrapOptions extends Omit<ManagedNodeRunnerOptions, "journal" | "mixed"> {
   binding: ManagedJournalBinding;
   allowNewAllocations: boolean;
+  /** Absolute protected local file, read before any hello/socket is created. */
+  ownedResultProfilesFile?: string;
 }
 export interface ManagedBootstrap extends ArtoodNode { readonly failed: Promise<Error> }
 
@@ -77,7 +80,8 @@ export interface ManagedBootstrap extends ArtoodNode { readonly failed: Promise<
 export function createManagedBootstrap(options: ManagedBootstrapOptions): ManagedBootstrap {
   const binding = validateManagedJournalBinding(options.binding, { url: options.url, nodeId: options.hello.node_id });
   if (typeof options.allowNewAllocations !== "boolean") throw new Error("Prepared journal requires an explicit new-allocation choice");
-  const { binding: _binding, allowNewAllocations, ...input } = options;
+  if (options.ownedResultProfilesFile && (options.ownedResultProfiles || !options.allowNewAllocations)) throw new Error("Choose one local owned-result registry source with fresh allocations enabled");
+  const { binding: _binding, allowNewAllocations, ownedResultProfilesFile, ...input } = options;
   const runnerOptions = { ...input, hello: { ...input.hello, machine: { ...input.hello.machine } },
     workspace: input.workspace ? { ...input.workspace, allowedRoots: input.workspace.allowedRoots ? [...input.workspace.allowedRoots] : undefined } : undefined };
   const journalOptions = { directory: binding.directory, controllerScope: binding.controllerScope,
@@ -146,7 +150,11 @@ export function createManagedBootstrap(options: ManagedBootstrapOptions): Manage
         // Observe an already-failed opened resource before constructing its next owner.
         await Promise.resolve();
         if (stopping) return;
-        runner = createManagedNodeRunner({ ...runnerOptions, journal, mixed: { allowNewAllocations } });
+        if (ownedResultProfilesFile && journal.ownedResultFinalizationVersion !== 1) throw new Error("Owned-result profiles require an explicit offline journal upgrade");
+        const ownedResultProfiles = ownedResultProfilesFile
+          ? await loadOwnedResultProfilesFile(ownedResultProfilesFile, binding.nodeId, runnerOptions.workspace?.allowedRoots ?? []) : runnerOptions.ownedResultProfiles;
+        if (stopping) return;
+        runner = createManagedNodeRunner({ ...runnerOptions, ownedResultProfiles, journal, mixed: { allowNewAllocations } });
         watch(runner.failed);
         await Promise.resolve();
         if (stopping) return;

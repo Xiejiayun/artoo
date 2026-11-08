@@ -29,6 +29,28 @@ export const correctionProcessAlive = (pid) => {
   try { process.kill(pid, 0); return true; } catch (error) { if (error.code === "ESRCH") return false; throw error; }
 };
 
+/** An actual process cannot return after ESRCH, but Windows can reuse its PID
+ * for a later Git command or fixture launch. Keep that observed absence bound
+ * to one immutable launch, never to the PID or the logical run alone. A live
+ * process and an unobservable process remain live/unknown; neither is cached
+ * as closed from a server status, receipt, timeout or expected outcome. */
+export function createCorrectionProcessProbe(probe = correctionProcessAlive) {
+  const launches = new Map();
+  return (launch) => {
+    assert.ok(typeof launch?.launch_id === "string" && /^[a-f0-9]{16}$/.test(launch.launch_id), "Correction launch identity is required");
+    assert.ok(Number.isSafeInteger(launch.pid) && launch.pid > 1, "Correction launch PID is required");
+    const identity = JSON.stringify([launch.pid, launch.run_id, launch.task_id, launch.workspace_root, launch.slot]);
+    let observed = launches.get(launch.launch_id);
+    if (observed) assert.equal(observed.identity, identity, "Correction launch identity changed");
+    else { observed = { identity, absent: false }; launches.set(launch.launch_id, observed); }
+    if (observed.absent) return false;
+    const alive = probe(launch.pid);
+    assert.equal(typeof alive, "boolean", "Correction process observation must be definite");
+    if (!alive) observed.absent = true;
+    return alive;
+  };
+}
+
 /** Only disposable, task-owned Git infrastructure and fixture instructions are
  * created here. Tasks, approvals, reviews, assignment and cancellation belong
  * exclusively to the real client driver. Feedback text never enters CLI config. */
@@ -68,7 +90,7 @@ export function createCorrectionWorkspaces({ temporary, projectId, platform, suf
   };
   const configurationPath = join(directory, "process.json");
   writeFileSync(configurationPath, JSON.stringify(configuration), { mode: 0o600, flag: "wx" });
-  return { fields, configuration, configurationPath, baseRepo, workspaceRoots, receiptsDirectory,
+  return { fields, configuration, configurationPath, baseRepo, workspaceRoots, receiptsDirectory, processAlive: createCorrectionProcessProbe(),
     baseHead: git(baseRepo, "rev-parse", "HEAD"), directory };
 }
 
@@ -120,7 +142,7 @@ export async function createCorrectionObserver({ root, setup, server, origin, re
     const names = readdirSync(setup.receiptsDirectory).filter((name) => name.startsWith("run-") && name.endsWith(".json"));
     const receipt = names.map((name) => JSON.parse(readFileSync(join(setup.receiptsDirectory, name), "utf8")))
       .find((item) => item.run_id === runId);
-    return { process_alive_on_response: receipt ? correctionProcessAlive(receipt.pid) : null,
+    return { process_alive_on_response: receipt ? setup.processAlive(receipt) : null,
       exit_receipt_on_response: existsSync(join(setup.receiptsDirectory, `exit-${correctionHash(runId)}.json`)) };
   }), checkpoints = [];
   const fields = { ...setup.fields, user_id: userId, computer_id: computerId, runtime_id: runtimeId,
@@ -191,7 +213,7 @@ export async function createCorrectionObserver({ root, setup, server, origin, re
     }
     return { observed_at: new Date().toISOString(), started_ms: start, finished_ms: performance.now(),
       snapshot, bundle, receipts, launches, exits, contexts, workspaces, artifact_bytes: artifactBytes, leases, usages, run_reads: runReads,
-      live_pids: receipts.filter((receipt) => correctionProcessAlive(receipt.pid)).map((receipt) => receipt.pid),
+      live_pids: receipts.filter((receipt) => setup.processAlive(receipt)).map((receipt) => receipt.pid),
       cancellation: await cancellation.read(),
       base: { head: git(setup.baseRepo, "rev-parse", "HEAD"), branch: git(setup.baseRepo, "branch", "--show-current"),
         status: gitRaw(setup.baseRepo, "status", "--porcelain", "--untracked-files=all", "--ignored"),
@@ -232,7 +254,7 @@ export function exportCorrectionWorkspaceEvidence({ setup, destination }) {
   assert.ok(!existsSync(target), "Use a fresh immutable evidence directory");
   const receipts = readdirSync(setup.receiptsDirectory).filter((name) => name.startsWith("run-") && name.endsWith(".json"))
     .map((name) => JSON.parse(readFileSync(join(setup.receiptsDirectory, name), "utf8")));
-  assert.ok(receipts.every((receipt) => !correctionProcessAlive(receipt.pid)), "Stop owned writers before exporting workspace bytes");
+  assert.ok(receipts.every((receipt) => !setup.processAlive(receipt)), "Stop owned writers before exporting workspace bytes");
   mkdirSync(target, { recursive: true, mode: 0o700 });
   const files = [];
   for (const receipt of receipts.sort((a, b) => a.slot - b.slot)) {

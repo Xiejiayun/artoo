@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { test } from "node:test";
-import { exportCorrectionWorkspaceEvidence, correctionProcessAlive } from "../../../scripts/fixtures/execution-correction-scenario.mjs";
+import { exportCorrectionWorkspaceEvidence, correctionProcessAlive, createCorrectionProcessProbe } from "../../../scripts/fixtures/execution-correction-scenario.mjs";
 import { verifyMacCorrectionWorkspaceExport } from "./installed-mac-correction-evidence.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -17,7 +17,8 @@ function exportedFixture(t) {
   const workspaceRoots = Array.from({ length: 4 }, (_, i) => join(directory, `work-${i + 1}`));
   assert.equal(correctionProcessAlive(2147483647), false);
   for (let i = 0; i < 4; i++) {
-    const receipt = { slot: i + 1, run_id: `run-${i + 1}`, pid: 2147483647, workspace_root: workspaceRoots[i] };
+    const receipt = { launch_id: String(i + 1).padStart(16, "0"), slot: i + 1, run_id: `run-${i + 1}`,
+      pid: 2147483647, workspace_root: workspaceRoots[i] };
     mkdirSync(workspaceRoots[i]);
     for (const [name, field] of [["implementation.txt", "implementation_sha256"], ["unsaved.txt", "unsaved_sha256"],
       ["ignored.bin", "ignored_sha256"], ["context_pack.md", "context_sha256"], ["changes.patch", "artifact_sha256"]]) {
@@ -27,7 +28,7 @@ function exportedFixture(t) {
     }
     writeFileSync(join(receiptsDirectory, `run-${i + 1}.json`), JSON.stringify(receipt));
   }
-  const setup = { directory, receiptsDirectory, workspaceRoots }, destination = join(root, "preserved");
+  const setup = { directory, receiptsDirectory, workspaceRoots, processAlive: createCorrectionProcessProbe() }, destination = join(root, "preserved");
   const manifest = exportCorrectionWorkspaceEvidence({ setup, destination });
   return { setup, manifest, manifestPath: join(destination, "manifest.json"), complete: true, afterCleanup: true };
 }

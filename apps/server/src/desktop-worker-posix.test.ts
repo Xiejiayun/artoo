@@ -52,6 +52,12 @@ describe.skipIf(process.platform === "win32")("POSIX managed worker process owne
         "@artoo/domain": fileURLToPath(new URL("../../../packages/domain/src/index.ts", import.meta.url)),
         "@artoo/protocol": fileURLToPath(new URL("../../../packages/protocol/src/index.ts", import.meta.url)),
       },
+      plugins: [{ name: "installed-playwright-runtime", setup(builder) {
+        // Keep Playwright's native/optional dependencies in its installed package.
+        // The temporary bundle needs an absolute ESM URL; a bare external import
+        // cannot resolve this checkout from /tmp, and a Windows path is not a URL.
+        builder.onResolve({ filter: /^playwright$/ }, () => ({ path: import.meta.resolve("playwright"), external: true }));
+      } }],
       banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
       external: ["bufferutil", "utf-8-validate"] });
   });

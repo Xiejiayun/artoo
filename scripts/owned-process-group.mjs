@@ -23,11 +23,30 @@ export async function closeOwnedProcessGroup(pgid, { termTimeoutMs = 5000, killT
     return fail("validate", "INVALID_TIMEOUT", "Each cleanup grace period must be between 0 and 5000 milliseconds");
   }
 
-  // Node exposes no getpgrp(). This bounded exact-PID query is intentionally
-  // limited to ourselves; querying a target leader would fail once it exits.
-  const own = spawnSync("/bin/ps", ["-o", "pgid=", "-p", String(process.pid)], {
-    encoding: "utf8", timeout: 1000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"],
-  });
+  // Node exposes no getpgrp(). Query only ourselves: a target leader may have exited.
+  // This adds a five-second acceptance/retry budget for a transient query timeout.
+  // spawnSync can return after its timeout, so this is not a wall-clock hard limit:
+  // a late result cannot authorize any target operation, even when it reports success.
+  const queryStarted = performance.now();
+  const query = result.selfGroupQuery = { budgetMs: 5000, maxAttempts: 2, attempts: 0, timeouts: 0, elapsedMs: 0, budgetExhausted: false };
+  const expired = () => {
+    query.budgetExhausted = true;
+    return fail("self-group", "ETIMEDOUT", "Current process-group query exhausted its retry budget; no target was signalled");
+  };
+  let own;
+  while (query.attempts < query.maxAttempts) {
+    query.elapsedMs = Math.max(0, performance.now() - queryStarted);
+    const remaining = Math.floor(query.budgetMs - query.elapsedMs);
+    if (remaining <= 0) return expired();
+    query.attempts++;
+    own = spawnSync("/bin/ps", ["-o", "pgid=", "-p", String(process.pid)], {
+      encoding: "utf8", timeout: Math.min(1000, remaining), maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"],
+    });
+    query.elapsedMs = Math.max(0, performance.now() - queryStarted);
+    if (own.error?.code === "ETIMEDOUT") query.timeouts++;
+    if (query.elapsedMs >= query.budgetMs) return expired();
+    if (own.error?.code !== "ETIMEDOUT") break;
+  }
   const ownText = own.stdout?.trim() ?? "", ownPgid = Number(ownText);
   if (own.error || own.status !== 0 || !/^[1-9]\d*$/.test(ownText) || !Number.isSafeInteger(ownPgid)) {
     return fail("self-group", own.error?.code ?? "SELF_PGID_UNAVAILABLE", "Unable to confirm the current process group; no target was signalled");

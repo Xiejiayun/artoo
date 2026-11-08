@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { CORRECTION_FAILURE_EXIT, CORRECTION_IGNORED_FILE, correctionContextPath, correctionExitPath, correctionIgnoredBytes, correctionReceiptPath, correctionReportPath } from "./execution-correction.mjs";
+import { createCorrectionProcessProbe } from "./execution-correction-scenario.mjs";
 
 // Real CLI subprocess and Git fixture tests. Signals target only children this
 // file starts; user-facing Stop and worktree cleanup remain separate E2E checks.
@@ -17,6 +18,52 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const modes = ["initial", "failed", "corrected", "hold"];
 const baseline = "Initial task-owned implementation.\n";
 const frames = (output) => output.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+
+const observedLaunch = { launch_id: "0123456789abcdef", pid: 1234, run_id: "run_first",
+  task_id: "task_correction", workspace_root: "/owned/work", slot: 1 };
+
+test("an observed absent launch stays closed when Windows reuses its PID, while a new launch remains live", () => {
+  // Controlled OS observations reproduce the CI ordering without relying on
+  // the operating system to recycle a particular PID during this test.
+  let alive = false, calls = 0;
+  const probe = createCorrectionProcessProbe(() => { calls++; return alive; });
+  assert.equal(probe(observedLaunch), false);
+  alive = true;
+  assert.equal(probe({ ...observedLaunch }), false);
+  assert.equal(calls, 1, "A confirmed absent process cannot become the later occupant of its PID");
+  const duplicateRun = { ...observedLaunch, launch_id: "abcdef0123456789" };
+  assert.equal(probe(duplicateRun), true, "Even the same run/PID gets a new observation for a distinct actual launch");
+  assert.equal(probe(duplicateRun), true, "A live writer must continue to be probed");
+  assert.equal(calls, 3);
+  alive = false;
+  assert.equal(probe(duplicateRun), false);
+  assert.equal(calls, 4);
+});
+
+test("PID errors and indeterminate observations cannot certify a correction process as closed", () => {
+  const denied = Object.assign(new Error("Probe denied"), { code: "EPERM" });
+  let observation = denied;
+  const probe = createCorrectionProcessProbe(() => { if (observation instanceof Error) throw observation; return observation; });
+  assert.throws(() => probe(observedLaunch), (error) => error === denied);
+  observation = undefined;
+  assert.throws(() => probe(observedLaunch), /observation must be definite/);
+  observation = true;
+  assert.equal(probe(observedLaunch), true);
+  observation = false;
+  assert.equal(probe(observedLaunch), false);
+});
+
+test("cached absence cannot cross a launch identity or an independent fixture", () => {
+  const probe = createCorrectionProcessProbe(() => false);
+  assert.equal(probe(observedLaunch), false);
+  for (const change of [{ pid: 5678 }, { run_id: "other_run" }, { task_id: "other_task" },
+    { workspace_root: "/other/work" }, { slot: 2 }]) {
+    assert.throws(() => probe({ ...observedLaunch, ...change }), /launch identity changed/);
+  }
+  assert.throws(() => probe({ ...observedLaunch, launch_id: undefined }), /launch identity is required/);
+  assert.throws(() => probe({ ...observedLaunch, pid: 0 }), /launch PID is required/);
+  assert.equal(createCorrectionProcessProbe(() => true)(observedLaunch), true);
+});
 
 function git(directory, args) {
   const ownedRoot = dirname(directory);
@@ -115,6 +162,8 @@ const privateTemps = (state) => readdirSync(state.receipts).filter((name) => /^\
 
 function assertFileEvidence(state, runId, result) {
   const recorded = receipt(state, runId);
+  assert.match(recorded.launch_id, /^[a-f0-9]{16}$/);
+  assert.equal(launches(state).find((item) => item.launch_id === recorded.launch_id)?.pid, result.child.pid);
   assert.equal(recorded.pid, result.child.pid);
   assert.equal(recorded.run_id, runId);
   assert.equal(recorded.task_id, result.pack.task.id);
@@ -224,9 +273,11 @@ test("forced termination exits the held child without an exit receipt and preser
   const paths = [correctionReceiptPath(state.receipts, runId), correctionContextPath(state.receipts, runId),
     join(input.workspace, "implementation.txt"), join(input.workspace, "unsaved.txt"), join(input.workspace, CORRECTION_IGNORED_FILE)];
   const before = paths.map((path) => readFileSync(path));
-  process.kill(owned.child.pid, 0);
+  const processAlive = createCorrectionProcessProbe();
+  assert.equal(processAlive(recorded), true);
   assert.equal(owned.child.kill("SIGKILL"), true);
   const terminal = await owned.closed;
+  assert.equal(processAlive(recorded), false, "Actual child closure must be observed before any absence is cached");
   assert.ok(terminal.signal !== null || terminal.status !== 0, "Forced process termination must not report successful completion");
   assert.equal(owned.child.exitCode === null && owned.child.signalCode === null, false);
   assert.equal(existsSync(correctionExitPath(state.receipts, runId)), false);
@@ -248,6 +299,7 @@ test("a duplicate run remains a counted real launch and cannot overwrite origina
   assert.deepEqual(paths.map((path) => readFileSync(path)), before);
   const observed = launches(state);
   assert.equal(observed.length, 2);
+  assert.equal(new Set(observed.map((item) => item.launch_id)).size, 2);
   assert.deepEqual(new Set(observed.map((item) => item.pid)), new Set([first.child.pid, duplicate.child.pid]));
   assert.ok(observed.every((item) => item.run_id === runId));
   assert.deepEqual(privateTemps(state), []);

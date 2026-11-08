@@ -17,7 +17,9 @@ concurrency:
 jobs:
   shared:
     runs-on: windows-latest
-    timeout-minutes: 45
+    # The expanded two-worker integration suite can take 45 minutes by itself;
+    # retain time for the build, evidence checks, browser workflows and audit.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

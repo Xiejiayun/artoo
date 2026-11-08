@@ -222,8 +222,7 @@ final class SharedServerChatUITests: XCTestCase {
         try reveal(reviewInput)
         try replace(editableField("task.review.comment.\(taskId)"), with: fixture.executionReviewComment)
         try dismissKeyboard(using: "task.detail.keyboard.done")
-        let accept = app.buttons["task.action.accept.\(taskId)"]
-        try reveal(accept); accept.tap()
+        try tapTaskAccept(taskId)
         let accepted = try await waitForExecutionTask(taskId) { $0.task.status == "done" }
         XCTAssertEqual(accepted.runs.map(\.id), [run.id])
         XCTAssertEqual(accepted.artifacts.map(\.id), [artifact.id])
@@ -606,7 +605,7 @@ final class SharedServerChatUITests: XCTestCase {
             try reveal(title, searchTowardTop: step == 0)
             try require(title.label == "Planning instruction · Step \(step + 1)", "Each real coordinator step must display its readable summary title")
             let brief = app.staticTexts["message.planning.summary.\(instruction.id)"]
-            try reveal(brief)
+            try revealText(brief, attempts: 10)
             try require(brief.label == "The agents use the goal and earlier replies to prepare a plan. You review a proposal before accepting it.",
                         "Coordinator instructions must show the human-readable planning brief")
             let toggle = app.buttons["message.planning.original.\(instruction.id)"]
@@ -625,8 +624,8 @@ final class SharedServerChatUITests: XCTestCase {
                 try attachConnectedScreenshot("Native planning instructions summarized before proposal")
                 toggle.tap()
                 try waitForValue(toggle, "Expanded", message: "Show agent instructions must expand the actual coordinator prompt")
-                // Only the expanded original is selectable text. Summary labels
-                // and buttons retain strict hittability checks above.
+                // The brief is plain read-only text; the expanded original is selectable.
+                // Disclosure buttons retain enabled/hittable checks before each tap.
                 try revealText(originalInstruction)
                 try require(Array(originalInstruction.label.utf8) == Array(instruction.body.utf8),
                             "Expanded coordinator instructions must match the exact persisted server body")
@@ -1086,9 +1085,46 @@ final class SharedServerChatUITests: XCTestCase {
         try require(field.waitForExistence(timeout: 10), "Required text field must exist")
         try reveal(field)
         try require(field.isEnabled && field.isHittable, "The exact native input must be editable")
+        let target = diagnosticInputIdentifier(field.identifier)
+        let doneIdentifier: String
+        switch target {
+        case "serverURL", "pairingCode", "pairingDeviceName": doneIdentifier = "pairing.keyboard.done"
+        case "messageComposer": doneIdentifier = "conversation.keyboard.done"
+        case "task.create.title", "task.create.criteria", "task.create.capabilities": doneIdentifier = "task.create.keyboard.done"
+        default: doneIdentifier = "task.detail.keyboard.done"
+        }
+        func observe(_ phase: String) -> [String: Any] {
+            let started = ProcessInfo.processInfo.systemUptime
+            var observation: [String: Any] = ["phase": phase, "started_uptime": started]
+            do {
+                // One snapshot, projected through the existing fixed identifiers,
+                // geometry and focus flags. Never retain input values or AX errors.
+                let measured = keyboardAbsenceSnapshot(try app.snapshot(), doneIdentifier: doneIdentifier)
+                observation["snapshot"] = measured.diagnostic
+                observation["outcome"] = measured.keyboardCount == nil ? "incomplete_snapshot" : "observed"
+            } catch { observation["outcome"] = "snapshot_error" }
+            observation["ended_uptime"] = ProcessInfo.processInfo.systemUptime
+            return observation
+        }
+        let beforeTap = observe("before_tap"), tapStarted = ProcessInfo.processInfo.systemUptime
         field.tap()
+        let tapReturned = ProcessInfo.processInfo.systemUptime
         let keyboard = app.keyboards.firstMatch
-        try require(keyboard.waitForExistence(timeout: 10), "The native keyboard must appear before typing")
+        let keyboardAppeared = keyboard.waitForExistence(timeout: 10)
+        let waitEnded = ProcessInfo.processInfo.systemUptime
+        if !keyboardAppeared {
+            // Observe after the original waiter has decided. Diagnostic queries
+            // must not delay its start, extend its ten seconds or change its result.
+            let afterWait = observe("after_keyboard_wait")
+            retainKeyboardAbsenceDiagnostic([
+                "target_identifier": target, "done_identifier": doneIdentifier, "tap_calls": 1,
+                "tap_started_uptime": tapStarted, "tap_returned_uptime": tapReturned,
+                "tap_seconds": tapReturned - tapStarted, "timeout_seconds": 10,
+                "wait_ended_uptime": waitEnded, "wait_seconds": waitEnded - tapReturned,
+                "observation_count": 2, "observations": [beforeTap, afterWait],
+            ], name: "Native input tap failure observations")
+        }
+        try require(keyboardAppeared, "The native keyboard must appear before typing")
         if let current = field.value as? String, !current.isEmpty, current != field.placeholderValue {
             if field.identifier == "pairingDeviceName" {
                 try require(field.elementType == .textField && current.count <= 128
@@ -1115,22 +1151,140 @@ final class SharedServerChatUITests: XCTestCase {
         let done = app.buttons[identifier]
         try require(done.waitForExistence(timeout: 10) && done.isHittable,
                     "Multiline input must expose a reachable keyboard Done action")
+        let tapStarted = ProcessInfo.processInfo.systemUptime
         done.tap()
-        let dismissed = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
-        try require(XCTWaiter.wait(for: [dismissed], timeout: 10) == .completed,
-                    "Done must dismiss the keyboard before continuing the workflow")
+        let started = ProcessInfo.processInfo.systemUptime, deadline = started + 10
+        var observations: [[String: Any]] = [], observationCount = 0
+        var acceptedAt: TimeInterval?
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate { [self] _, _ in
+            let observationStarted = ProcessInfo.processInfo.systemUptime
+            guard observationStarted <= deadline else { return false }
+            observationCount += 1
+            var observation: [String: Any] = ["start_seconds": observationStarted - started]
+            var keyboardCount: Int?
+            do {
+                let foreground = app.state == .runningForeground
+                observation["foreground"] = foreground
+                if foreground && ProcessInfo.processInfo.systemUptime <= deadline {
+                    let snapshotStarted = ProcessInfo.processInfo.systemUptime
+                    // Resolve the existing app once. Traversal below never asks XCTest
+                    // to find a keyboard element that may already be absent.
+                    let snapshot = try app.snapshot()
+                    observation["snapshot_seconds"] = ProcessInfo.processInfo.systemUptime - snapshotStarted
+                    let measured = keyboardAbsenceSnapshot(snapshot, doneIdentifier: identifier)
+                    keyboardCount = measured.keyboardCount
+                    observation["snapshot"] = measured.diagnostic
+                    observation["outcome"] = keyboardCount == nil ? "incomplete_snapshot" : "observed"
+                } else {
+                    observation["outcome"] = foreground ? "deadline_before_snapshot" : "not_foreground"
+                }
+            } catch {
+                // A failed snapshot is unknown, never an empty keyboard collection.
+                // Do not copy AX error descriptions, input values or labels into this trace.
+                observation["outcome"] = "snapshot_error"
+            }
+            let ended = ProcessInfo.processInfo.systemUptime
+            let inTime = ended <= deadline, absent = keyboardCount == 0
+            observation["end_seconds"] = ended - started
+            observation["observation_seconds"] = ended - observationStarted
+            observation["within_deadline"] = inTime
+            observation["accepted"] = inTime && absent
+            if observations.count == 12 { observations.removeFirst() }
+            observations.append(observation)
+            if inTime && absent { acceptedAt = ended; return true }
+            return false
+        }, object: app)
+        // Synchronous AX calls cannot be cancelled by XCTWaiter. A late zero is
+        // still a failure; the deadline is never restarted after a slow query.
+        let result = XCTWaiter.wait(for: [dismissed], timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime))
+        let passed = result == .completed && acceptedAt != nil
+        retainKeyboardAbsenceDiagnostic([
+            "done_identifier": identifier, "tap_calls": 1, "tap_seconds": started - tapStarted,
+            "timeout_seconds": 10, "tap_started_uptime": tapStarted, "tap_returned_uptime": started,
+            "deadline_uptime": deadline, "wait_seconds": ProcessInfo.processInfo.systemUptime - started,
+            "waiter_result": String(describing: result), "waiter_result_raw": result.rawValue,
+            "accepted_seconds": acceptedAt.map { ($0 - started) as Any } ?? NSNull(),
+            "passed": passed, "observation_count": observationCount,
+            "omitted_observations": max(0, observationCount - observations.count), "observations": observations,
+        ])
+        try require(passed, "Done must dismiss the keyboard before continuing the workflow")
     }
 
     @MainActor
-    private func revealText(_ element: XCUIElement, preferTop: Bool = false) throws {
-        // Selectable SwiftUI text can be visibly rendered yet make XCTest's
-        // activation-point lookup throw. Read-only checks need visible content.
-        // Disclosure callers also require enabled/hittable controls before taps.
+    private func diagnosticInputIdentifier(_ identifier: String) -> String {
+        let fixedInputIDs: Set<String> = ["serverURL", "pairingCode", "pairingDeviceName", "messageComposer",
+                                          "task.create.title", "task.create.criteria", "task.create.capabilities"]
+        if fixedInputIDs.contains(identifier) { return identifier }
+        if identifier.hasPrefix("task.review.comment.") { return "task.review.comment" }
+        if identifier.hasPrefix("task.approval.summary.") { return "task.approval.summary" }
+        if identifier.hasPrefix("task.approval.risk.") { return "task.approval.risk" }
+        return "other_input"
+    }
+
+    @MainActor
+    private func keyboardAbsenceSnapshot(_ root: XCUIElementSnapshot, doneIdentifier: String)
+        -> (keyboardCount: Int?, diagnostic: [String: Any]) {
+        func number(_ value: CGFloat) -> Any { value.isFinite ? Double(value) as Any : NSNull() }
+        var pending: [XCUIElementSnapshot] = [root], visited = 0, keyboards = 0, doneCount = 0, elementCount = 0
+        var elements: [[String: Any]] = []
+        var complete = root.elementType == .application && !root.children.isEmpty
+        while complete, let node = pending.popLast() {
+            visited += 1
+            var fixedID: String?
+            if node.elementType == .keyboard { keyboards += 1; fixedID = "keyboard" }
+            else if node.elementType == .button && node.identifier == doneIdentifier { doneCount += 1; fixedID = doneIdentifier }
+            else if node.elementType == .textField || node.elementType == .secureTextField || node.elementType == .textView {
+                fixedID = diagnosticInputIdentifier(node.identifier)
+            }
+            if let fixedID {
+                elementCount += 1
+                if elements.count < 8 {
+                    let frame = node.frame
+                    elements.append(["identifier": fixedID, "type": node.elementType.rawValue, "focused": node.hasFocus,
+                                     "frame": ["x": number(frame.minX), "y": number(frame.minY),
+                                               "width": number(frame.width), "height": number(frame.height)]])
+                }
+            }
+            let children = node.children
+            // Truncation can limit diagnostics, but cannot prove keyboard absence.
+            if visited + pending.count + children.count > 4096 { complete = false; break }
+            pending.append(contentsOf: children.reversed())
+        }
+        return (complete ? keyboards : nil, ["scan_complete": complete, "nodes_scanned": visited,
+            "keyboard_count": keyboards, "done_count": doneCount, "elements": elements,
+            "omitted_elements": max(0, elementCount - elements.count)])
+    }
+
+    @MainActor
+    private func retainKeyboardAbsenceDiagnostic(_ diagnostic: [String: Any], name: String = "Native keyboard absence observations") {
+        var bounded = diagnostic
+        let text: String
+        do {
+            var data = try JSONSerialization.data(withJSONObject: bounded, options: [.sortedKeys])
+            if data.count > 32_768 {
+                bounded["observations"] = []
+                bounded["diagnostic_truncated"] = true
+                bounded["omitted_observations"] = bounded["observation_count"]
+                data = try JSONSerialization.data(withJSONObject: bounded, options: [.sortedKeys])
+            }
+            text = data.count <= 32_768 ? String(decoding: data, as: UTF8.self) : "{\"diagnostic_limit_exceeded\":true}"
+        } catch { text = "{\"diagnostic_encoding_failed\":true}" }
+        let attachment = XCTAttachment(string: text)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
+    private func revealText(_ element: XCUIElement, preferTop: Bool = false, attempts: Int = 24) throws {
+        // Plain summaries and selectable originals can be visibly rendered yet
+        // make XCTest's activation-point lookup throw. Read-only checks require
+        // visible content; disclosure callers separately check enabled/hittable.
+        try require(attempts > 0 && attempts <= 24, "Read-only text scrolling must stay within its existing attempt limit")
         let list = app.collectionViews.firstMatch
         try require(list.exists, "The displayed text must belong to a visible list")
         try require(!app.keyboards.firstMatch.exists, "Read-only content must not be covered by the keyboard")
-        for attempt in 0..<24 {
+        for attempt in 0..<attempts {
             var viewport = list.frame.intersection(app.frame)
             let navigation = app.navigationBars.firstMatch
             let tabs = app.tabBars.firstMatch
@@ -1143,7 +1297,7 @@ final class SharedServerChatUITests: XCTestCase {
             viewport = CGRect(x: viewport.minX, y: top, width: viewport.width, height: max(0, bottom - top)).insetBy(dx: 2, dy: 2)
             try require(!viewport.isEmpty && !viewport.isNull && !viewport.isInfinite,
                         "The list must have an unobscured content viewport")
-            var scrollUp = preferTop ? attempt >= 12 : attempt < 12
+            var scrollUp = preferTop ? attempt >= attempts / 2 : attempt < attempts / 2
             if element.exists {
                 let frame = element.frame
                 if !frame.isEmpty && !frame.isNull && !frame.isInfinite {
@@ -1189,6 +1343,71 @@ final class SharedServerChatUITests: XCTestCase {
                 .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: viewport.midX, dy: endY)))
         }
         try require(false, "Required text must be visibly rendered in the unobscured list")
+    }
+
+    @MainActor
+    private func tapTaskAccept(_ taskId: String) throws {
+        try require(!taskId.isEmpty, "Acceptance must identify the exact reviewed task")
+        let identifier = "task.action.accept.\(taskId)"
+        let matches = app.buttons.matching(identifier: identifier), button = matches.firstMatch
+        func finiteNonempty(_ frame: CGRect) -> Bool {
+            !frame.isEmpty && !frame.isNull && !frame.isInfinite
+                && [frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite }
+        }
+        func requireTaskSurface() throws {
+            try require(app.state == .runningForeground && app.navigationBars["Task"].exists
+                        && !app.keyboards.firstMatch.exists && !app.alerts.firstMatch.exists && !app.sheets.firstMatch.exists,
+                        "Acceptance must remain on the foreground, unobscured Task detail")
+        }
+        func viewport() throws -> CGRect {
+            let bounds = app.frame, list = app.collectionViews.firstMatch
+            let navigation = app.navigationBars["Task"], tabs = app.tabBars.firstMatch
+            try require(list.exists && navigation.exists && tabs.exists,
+                        "The reviewed task must retain its list and navigation")
+            let rect = list.frame.intersection(bounds)
+            let top = max(rect.minY, navigation.frame.maxY), bottom = min(rect.maxY, tabs.frame.minY)
+            let area = CGRect(x: rect.minX + 6, y: top + 8, width: rect.width - 12, height: bottom - top - 16)
+            try require(finiteNonempty(bounds) && finiteNonempty(area) && bounds.contains(area),
+                        "Acceptance geometry must stay inside the unobscured task viewport")
+            return area
+        }
+        try requireTaskSurface()
+        // Accept precedes the review input. Reveal that exact row toward the top
+        // without asking XCTest to derive an activation point for a virtualized row.
+        try revealText(button, preferTop: true)
+        try require(matches.count == 1 && button.label == "Accept" && button.isEnabled,
+                    "The reviewed task must expose exactly one enabled Accept button")
+        let deadline = ProcessInfo.processInfo.systemUptime + 20
+        var previous: (area: CGRect, frame: CGRect)?, stable: (area: CGRect, frame: CGRect)?
+        var samples: [String] = []
+        while samples.count < 8 && ProcessInfo.processInfo.systemUptime < deadline {
+            let area = try viewport(), frame = button.frame
+            let complete = finiteNonempty(frame) && area.contains(frame)
+            samples.append("sample \(samples.count + 1): viewport=\(area), frame=\(frame), complete=\(complete)")
+            if ProcessInfo.processInfo.systemUptime < deadline, complete,
+               let prior = previous, prior.area == area, prior.frame == frame {
+                stable = (area, frame); break
+            }
+            previous = complete ? (area, frame) : nil
+        }
+        let geometry = XCTAttachment(string: "identifier: \(identifier)\n" + samples.joined(separator: "\n"))
+        geometry.name = "Native task Accept geometry observations"; geometry.lifetime = .keepAlways; add(geometry)
+        try require(stable != nil, "Accept must retain a finite, stable frame fully inside the task viewport")
+        let (area, frame) = stable!
+        try requireTaskSurface()
+        try require(matches.count == 1 && button.label == "Accept" && button.isEnabled,
+                    "The exact Accept button must remain unique and enabled before its one touch")
+        let bounds = app.frame, currentArea = try viewport(), currentFrame = button.frame
+        let center = CGPoint(x: currentFrame.midX, y: currentFrame.midY)
+        try require(ProcessInfo.processInfo.systemUptime < deadline && currentArea == area && currentFrame == frame
+                    && finiteNonempty(bounds) && bounds.contains(area) && area.contains(center),
+                    "The verified Accept frame must remain unchanged and unobscured immediately before its one touch")
+        // Like the correction tests' inline Task actions, this enabled row can
+        // have an invalid XCTest activation point despite stable visible geometry.
+        // Touch it once; the caller still requires the real server's done state
+        // and the unchanged run, artifact and checksum.
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: center.x - bounds.minX, dy: center.y - bounds.minY)).tap()
     }
 
     @MainActor
@@ -1408,7 +1627,8 @@ final class SharedServerChatUITests: XCTestCase {
         let (data, response) = try await session.data(for: request)
         let http = try XCTUnwrap(response as? HTTPURLResponse)
         guard (200..<300).contains(http.statusCode) else {
-            throw NSError(domain: "ArtooUITestPeer", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Authenticated peer request failed with HTTP \(http.statusCode)"])
+            throw NSError(domain: "ArtooUITestPeer", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey:
+                PeerHTTPFailure.description(request: request, status: http.statusCode, data: data)])
         }
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(Response.self, from: data)

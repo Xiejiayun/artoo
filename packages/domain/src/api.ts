@@ -51,7 +51,7 @@ export const ApiErrorSchema = z.object({
   error: z.object({
     code: ApiErrorCodeSchema,
     message: z.string(),
-    details: z.record(z.unknown()).default({}),
+    details: z.record(z.string(), z.unknown()).default({}),
   }),
 });
 export type ApiError = z.infer<typeof ApiErrorSchema>;
@@ -201,7 +201,7 @@ export type ResolveApprovalRequest = z.infer<typeof ResolveApprovalRequestSchema
 export const SendMessageRequestSchema = z.object({
   kind: z.string().default("text"),
   body: z.string().default(""),
-  payload: z.record(z.unknown()).default({}),
+  payload: z.record(z.string(), z.unknown()).default({}),
   thread_root_id: z.string().min(1).optional(),
   client_request_id: z.string().min(8).max(128).regex(/^[A-Za-z0-9_-]+$/).optional(),
   /** Structured @mentions and action assignments (#114). Persisted in the
@@ -226,7 +226,7 @@ export const ProposeMemoryRequestSchema = z
     source_message_id: z.string().nullish(),
     source_artifact_id: z.string().nullish(),
     text: z.string().nullish(),
-    payload: z.record(z.unknown()).nullish(),
+    payload: z.record(z.string(), z.unknown()).nullish(),
     tags: z.array(z.string()).default([]),
     confidence: z.number().min(0).max(1).default(1),
   })

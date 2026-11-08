@@ -6,7 +6,7 @@ import { createSimulatorClipboard } from "./ios-simulator-clipboard.mjs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { createCorrectionObserver, createCorrectionWorkspaces, correctionProcessAlive } from "./fixtures/execution-correction-scenario.mjs";
+import { createCorrectionObserver, createCorrectionWorkspaces } from "./fixtures/execution-correction-scenario.mjs";
 import { correctionCheckpoints } from "./fixtures/execution-correction-results.mjs";
 
 /** Artifact reads use the actual credential and cannot follow an external URI or redirect. */
@@ -101,14 +101,15 @@ export async function createCorrectionControl({ scenario, errors = [], clipboard
 
 function liveOwnedLaunches(setup) {
   return readdirSync(setup.receiptsDirectory).filter((name) => name.startsWith("launch-")).flatMap((name) => {
-    const match = /^launch-([0-9]+)-[a-f0-9]{16}\.json$/.exec(name);
+    const match = /^launch-([0-9]+)-([a-f0-9]{16})\.json$/.exec(name);
     assert.ok(match, "Unexpected correction launch evidence name");
     const path = join(setup.receiptsDirectory, name), stat = lstatSync(path);
     assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size <= 16_384, "Correction launch evidence must be a bounded regular file");
     const launch = JSON.parse(readFileSync(path, "utf8"));
     assert.equal(launch.pid, Number(match[1]));
+    assert.equal(launch.launch_id, match[2]);
     assert.ok(Number.isSafeInteger(launch.pid) && launch.pid > 1 && setup.workspaceRoots.includes(launch.workspace_root));
-    return correctionProcessAlive(launch.pid) ? [launch.pid] : [];
+    return setup.processAlive(launch) ? [launch.pid] : [];
   });
 }
 

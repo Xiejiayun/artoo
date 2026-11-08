@@ -98,12 +98,16 @@ describe("device flow e2e (pairing → claim → enroll → node connect → rev
     // 3. A real node connects with the ISSUED node token and binds its computer.
     transport = createWebSocketTransport({
       url: `ws://127.0.0.1:${port}/api/v1/node?token=${nodeToken}`,
-      hello: hello(computerId),
+      hello: { ...hello(computerId), execution_features: ["run-verification.v1"],
+        verification_profiles: [{ profile_id: "default", project_id: "proj_artoo", workspace_root: "/work/product" }] },
     });
     node = createNodeClient({ nodeId: computerId, transport, adapter: createMockAdapter() });
     node.start();
     await transport.ready;
     await waitFor(() => server?.nodeRegistry.get(computerId) !== undefined, "node bound via issued token");
+    expect(server.ctx.supportsVerificationProfile?.(computerId, "default", "proj_artoo", "/work/product")).toBe(true);
+    expect(server.ctx.supportsVerificationProfile?.("computer_other", "default", "proj_artoo", "/work/product")).toBe(false);
+    expect(server.ctx.supportsVerificationProfile?.(computerId, "default", "another_project", "/work/product")).toBe(false);
     // hello/heartbeat persisted: the enrolled computer is now online.
     await waitFor(async () => (await computerStatus(server!, computerId)) === "online", "computer online");
 
@@ -120,5 +124,6 @@ describe("device flow e2e (pairing → claim → enroll → node connect → rev
     // 5. The same node token is now refused at the node plane (close 1008).
     expect(await closeCodeFor(port, nodeToken, computerId)).toBe(1008);
     expect(server.nodeRegistry.get(computerId)).toBeUndefined();
+    expect(server.ctx.supportsVerificationProfile?.(computerId, "default", "proj_artoo", "/work/product")).toBe(false);
   });
 });

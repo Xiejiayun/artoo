@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
-import { appendEvent, artifacts, assistantTurns, eventLog, messages, runEventIngest, runs, runUsage, tasks } from "@artoo/db";
+import { goalImportedExecutions, goalImportedExecutionRepairs, goalImportedValidations, goalRecoveryValidations, goalCleanValidations } from "@artoo/db";
+import { appendEvent, artifacts, assistantTurns, eventLog, goals, messages, runEventIngest, runs, runUsage, tasks } from "@artoo/db";
 import {
   canTransitionRun,
   canTransitionTask,
@@ -13,6 +14,10 @@ import {
   type RunStatus,
   type RunUsagePayload,
   type RunWorkspaceRetainedPayload,
+  type RunVerificationPayload,
+  type ProductSourceExportV1,
+  type ProductSourceExportV2,
+  type NodeOwnedResultVerificationEvidenceV1,
   type TaskStatus,
 } from "@artoo/domain";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
@@ -31,6 +36,11 @@ import { transitionRun, transitionTask } from "./transition-service.js";
 import { unconfirmedDisconnectRunIds } from "./execution-state.js";
 import { previewForActiveSynthesis } from "./discussion-plan.js";
 import { loadWorkspaceRetentions, projectWorkspaceRetention, WORKSPACE_RETAINED_EVENT } from "./workspace-retention-service.js";
+import { persistRunVerificationEvidence, RUN_VERIFICATION_EVENT } from "./verification-service.js";
+import { assertProductSourceExport } from "./product-source-export-service.js";
+import { assertProductSourceSemanticExport } from "./product-source-semantic-export-service.js";
+import { OWNED_RESULT_EVENT, parseOwnedResultAssignment, persistOwnedResultEvidence, readOwnedResultEvidence,
+  assertOwnedResultCompletionPrefix, type OwnedResultSession } from "./owned-result-service.js";
 
 /** GET /api/v1/runs/:id — run snapshot. */
 export async function getRun(ctx: ServerContext, runId: string): Promise<Run> {
@@ -141,6 +151,10 @@ export type RunIngestEvent =
   | { kind: "answer"; text: string }
   | { kind: "usage"; usage: RunUsagePayload }
   | { kind: "workspace_retained"; retention: RunWorkspaceRetainedPayload }
+  | { kind: "verification"; verification: RunVerificationPayload }
+  | { kind: "product_source_export"; proof: ProductSourceExportV1 }
+  | { kind: "product_source_semantic_export"; proof: ProductSourceExportV2 }
+  | { kind: "owned_result_verification"; verification: NodeOwnedResultVerificationEvidenceV1 }
   | { kind: "artifact"; artifactType: ArtifactType; uri: string; checksum?: string | null };
 
 export interface IngestEnvelope {
@@ -173,19 +187,23 @@ export interface WireIngestResult extends IngestResult {
 }
 
 /** Only this full-frame path may supply a qualified accepted run.event ACK. */
-export async function ingestWireRunEvent(ctx: ServerContext, rawFrame: unknown): Promise<WireIngestResult | null> {
+export async function ingestWireRunEvent(ctx: ServerContext, rawFrame: unknown, ownedResultSession?: OwnedResultSession): Promise<WireIngestResult | null> {
   const qualified = qualifyRunEventMessage(rawFrame);
   const env = mapRunEvent(qualified.message);
   if (env === null) return null;
-  const result = await ingestRunEventInternal(ctx, env, qualified.bodyIdentity);
+  const result = await ingestRunEventInternal(ctx, env, qualified.bodyIdentity, ownedResultSession);
   return { ...result, receiptBodyIdentity: qualified.bodyIdentity };
 }
 
 async function ingestRunEventInternal(
   ctx: ServerContext, env: IngestEnvelope, wireIdentity: string | null,
+  ownedResultSession?: OwnedResultSession,
 ): Promise<IngestResult> {
   if (!Number.isInteger(env.sequence) || env.sequence < 0 || env.sequence > 2147483647) {
     throw AppError.validation("run event sequence must fit a nonnegative int32");
+  }
+  if (["verification", "owned_result_verification", "product_source_export", "product_source_semantic_export"].includes(env.event.kind) && wireIdentity === null) {
+    throw AppError.permissionDenied("verification requires a qualified node event");
   }
   const now = ctx.clock.nowIso();
   // #115 P3a: captured inside the tx; a terminal run event on a goal-linked task
@@ -206,6 +224,15 @@ async function ingestRunEventInternal(
       throw new Error("ingestRunEvent: task missing for run");
     }
     const roomId = taskRow.roomId;
+    const ownedAssignment = parseOwnedResultAssignment(run);
+    const assertOwnedSession = () => {
+      if (ownedAssignment && (wireIdentity === null || !ownedResultSession?.(ownedAssignment.request.requirement.profile))) {
+        throw AppError.permissionDenied("Owned result events require their current qualified managed node session");
+      }
+    };
+    assertOwnedSession();
+    if (env.event.kind === "owned_result_verification" && !ownedAssignment) throw AppError.validation("Run has no owned result assignment");
+    if (env.event.kind === "verification" && ownedAssignment) throw AppError.validation("Ordinary verification cannot fulfill an owned result assignment");
 
     const reported = env.event.kind === "workspace_retained" ? RunWorkspaceRetainedPayloadSchema.safeParse(env.event.retention) : undefined;
     if (reported && (!reported.success || env.nodeId !== run.computerId || run.workspaceRoot === null || run.workspaceBranch === null
@@ -243,6 +270,7 @@ async function ingestRunEventInternal(
           throw AppError.conflict("retention sequence was already used by a different event");
         }
       }
+      assertOwnedSession();
       return {
         deduped: true,
         runStatus: run.status as RunStatus,
@@ -288,7 +316,51 @@ async function ingestRunEventInternal(
 
     let eventId: string;
     const ev = env.event;
-    if (ev.kind === "workspace_retained" && retention) {
+    if (ownedAssignment && (ev.kind === "owned_result_verification"
+      || ev.kind === "lifecycle" && ev.phase === "completed"
+      || ev.kind === "workspace_retained" && retention?.outcome === "completed")) {
+      if (run.status !== "running" || taskRow.status !== "running") throw AppError.conflict("Owned result success requires its active run and task");
+      if (taskRow.goalId) {
+        const [goal] = await tx.select().from(goals).where(and(eq(goals.id, taskRow.goalId), eq(goals.organizationId, ctx.organizationId))).for("share");
+        if (!goal || goal.status !== "running" || taskRow.sourcePlanId !== null && goal.currentPlanId !== taskRow.sourcePlanId) {
+          throw AppError.conflict("Owned result task's goal or plan is no longer active");
+        }
+      }
+    }
+    if (ev.kind === "product_source_export" || ev.kind === "product_source_semantic_export") {
+      if (run.status !== "running" || taskRow.status !== "running") throw AppError.conflict("Product source export requires its active run and task");
+      const proof = ev.kind === "product_source_export"
+        ? await assertProductSourceExport(ctx, tx, run, taskRow, ev.proof, env.sequence)
+        : await assertProductSourceSemanticExport(ctx, tx, run, taskRow, ev.proof, env.sequence);
+      const type = ev.kind === "product_source_export" ? "run.product-source.export.v1" : "run.product-source.export.v2";
+      const prior = await tx.select({ id: eventLog.id }).from(eventLog).where(and(eq(eventLog.organizationId, ctx.organizationId),
+        eq(eventLog.runId, run.id), inArray(eventLog.type, ["run.product-source.export.v1", "run.product-source.export.v2"]))).limit(1);
+      if (prior.length) throw AppError.conflict("Export already exists; replay its original qualified frame");
+      const event = buildEvent(ctx, { type, actorType: "system", actorId: run.computerId,
+        correlationId: run.taskId, projectId: taskRow.projectId, taskId: run.taskId, roomId, runId: env.runId,
+        sequence: env.sequence, payload: proof });
+      await appendEvent(tx, event); eventId = event.id;
+    } else if (ev.kind === "owned_result_verification") {
+      const event = buildEvent(ctx, { type: OWNED_RESULT_EVENT, actorType: "system", actorId: run.computerId,
+        correlationId: run.taskId, projectId: taskRow.projectId, taskId: run.taskId, roomId, runId: env.runId,
+        sequence: env.sequence, payload: ev.verification });
+      await appendEvent(tx, event);
+      await persistOwnedResultEvidence(ctx, tx, { run, task: taskRow, payload: ev.verification, eventId: event.id });
+      eventId = event.id;
+    } else if (ev.kind === "verification") {
+      const event = buildEvent(ctx, { type: RUN_VERIFICATION_EVENT, actorType: "system", actorId: run.computerId,
+        correlationId: run.taskId, projectId: taskRow.projectId, taskId: run.taskId, roomId, runId: env.runId,
+        sequence: env.sequence, payload: ev.verification });
+      await appendEvent(tx, event);
+      await persistRunVerificationEvidence(ctx, tx, { run, payload: ev.verification, eventId: event.id });
+      eventId = event.id;
+    } else if (ev.kind === "workspace_retained" && retention) {
+      if (ownedAssignment && retention.outcome === "completed") {
+        const evidence = await readOwnedResultEvidence(ctx, tx, run);
+        if (!evidence || evidence.payload.verification.payload.outcome !== "passed" || evidence.sequence + 1 !== env.sequence) {
+          throw AppError.conflict("Completed owned result retention must follow its exact passing evidence");
+        }
+      }
       const latest = (await tx.select().from(eventLog).where(and(eq(eventLog.organizationId, ctx.organizationId),
         eq(eventLog.runId, env.runId), eq(eventLog.type, WORKSPACE_RETAINED_EVENT))).orderBy(desc(eventLog.position)).limit(1))[0];
       if (latest) {
@@ -318,9 +390,16 @@ async function ingestRunEventInternal(
         await transitionTask(tx, ctx, { taskId: run.taskId, from: "assigned", trigger: "run_started", now });
         eventId = await emit("run.started", { run_id: env.runId }, { kind: "run_event", body: "Run started" });
       } else if (ev.phase === "completed") {
+        if (ownedAssignment) await assertOwnedResultCompletionPrefix(ctx, tx, run, env.sequence);
         await transitionRun(tx, ctx, { runId: env.runId, from: "running", trigger: "run_completed", patch: { endedAt: now } });
-        await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_completed", now });
-        eventId = await emit("run.completed", { run_id: env.runId }, { kind: "run_event", body: "Run completed; task ready for review" });
+        const [importedExecution] = await tx.select({ id: goalImportedExecutions.id }).from(goalImportedExecutions).where(and(eq(goalImportedExecutions.runId, run.id), eq(goalImportedExecutions.organizationId, ctx.organizationId)));
+        const [importedRepair] = await tx.select({ id: goalImportedExecutionRepairs.id }).from(goalImportedExecutionRepairs).where(and(eq(goalImportedExecutionRepairs.runId, run.id), eq(goalImportedExecutionRepairs.organizationId, ctx.organizationId)));
+        const [importedValidation] = await tx.select({ id: goalImportedValidations.id }).from(goalImportedValidations).where(and(eq(goalImportedValidations.runId, run.id), eq(goalImportedValidations.organizationId, ctx.organizationId)));
+        const [recoveryValidation] = await tx.select({ id: goalRecoveryValidations.id }).from(goalRecoveryValidations).where(and(eq(goalRecoveryValidations.runId, run.id), eq(goalRecoveryValidations.organizationId, ctx.organizationId)));
+        const [cleanValidation] = await tx.select({ id: goalCleanValidations.id }).from(goalCleanValidations).where(and(eq(goalCleanValidations.runId, run.id), eq(goalCleanValidations.organizationId, ctx.organizationId)));
+        // Original author and repairs need separate closed results and committed verification.
+        if (!importedExecution && !importedRepair && !importedValidation && !recoveryValidation && !cleanValidation) await transitionTask(tx, ctx, { taskId: run.taskId, from: "running", trigger: "run_completed", now });
+        eventId = await emit("run.completed", { run_id: env.runId }, { kind: "run_event", body: importedValidation || recoveryValidation || cleanValidation ? "Run completed; awaiting dedicated validation verification and closure" : importedExecution || importedRepair ? "Run completed; awaiting dedicated implementation verification and closure" : "Run completed; task ready for review" });
         await releaseRunLeases(ctx, tx, env.runId);
       } else if (ev.phase === "failed" && (run.status === "queued" || run.status === "starting")) {
         // The node may confirm stop after start-ACK/first-event delivery fails,
@@ -454,6 +533,7 @@ async function ingestRunEventInternal(
 
     const finalRun = (await tx.select().from(runs).where(eq(runs.id, env.runId)))[0];
     const finalTask = (await tx.select().from(tasks).where(eq(tasks.id, run.taskId)))[0];
+    assertOwnedSession();
     return {
       deduped: false,
       runStatus: (finalRun?.status ?? run.status) as RunStatus,
@@ -712,6 +792,14 @@ function mapRunEvent(message: RunEventMessage): IngestEnvelope | null {
     event = { kind: "usage", usage: body.payload };
   } else if (body.type === "run.workspace.retained") {
     event = { kind: "workspace_retained", retention: body.payload };
+  } else if (body.type === "run.verification") {
+    event = { kind: "verification", verification: body.payload };
+  } else if (body.type === "run.product-source.export.v1") {
+    event = { kind: "product_source_export", proof: body.payload };
+  } else if (body.type === "run.product-source.export.v2") {
+    event = { kind: "product_source_semantic_export", proof: body.payload };
+  } else if (body.type === "run.owned-result.verification") {
+    event = { kind: "owned_result_verification", verification: body.payload };
   } else if (body.type === "artifact.created") {
     event = {
       kind: "artifact",

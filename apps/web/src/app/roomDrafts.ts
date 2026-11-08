@@ -1,3 +1,5 @@
+import { clearPreparedGoalDrafts } from "./goalEntryDraft.js";
+
 /** Room drafts contain message text, never credentials. Keep each account and
  * server isolated, and erase drafts when the account session ends. */
 const PREFIX = "artoo:room-draft:v1:";
@@ -36,6 +38,7 @@ export function writeRoomDraft(key: string, draft: RoomDraft): void {
 }
 
 export function clearRoomDrafts(): void {
+  clearPreparedGoalDrafts();
   try {
     for (const key of Object.keys(localStorage)) if (key.startsWith(PREFIX)) localStorage.removeItem(key);
   } catch { /* Storage may be unavailable. */ }

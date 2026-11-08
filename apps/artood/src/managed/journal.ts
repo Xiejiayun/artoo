@@ -1,7 +1,9 @@
 import { Worker } from "node:worker_threads";
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { RunStartPayloadSchema, type RunStartPayload } from "@artoo/domain";
+import { RunStartPayloadSchema, type OwnedResultRunAdmissionV1, type RunStartPayload } from "@artoo/domain";
+import { authenticatePreparedOwnedResultRun, authenticateOwnedResultFinalization, type OwnedResultFinalizationV1 } from "../owned-worktree-verification.js";
+import { snapshotOwnedResultRunAdmission } from "../owned-result-admission.js";
 import { runEventBodySchema, type AgentInstanceHandle, type RuntimeAdapter } from "@artoo/protocol";
 import { allocationStartBinding } from "../node-allocation-identity.js";
 import { createOwnedRunAdmission, getOwnedRunStatusReceipt, getOwnedStopReceipt, getOwnedStartupReceipt, isOwnedRunAdapter,
@@ -11,7 +13,7 @@ import { nonempty } from "./journal-boundary.js";
 import type { AdmissionResult, LiveDeliveryClaim, LiveDeliveryView, ClosedRunDeliveryScope, ClosedRunDeliveryView, ClosedRunDeliveryClaim, FreshLaunchPermit, Journal, JournalLocation, JournalOptions, JournalRun, StoredEvent, TerminalSettlement } from "./journal-types.js";
 export type * from "./journal-types.js";
 
-interface Reply { kind: string; id?: string; value?: unknown; message?: string; namespace?: string;
+interface Reply { kind: string; id?: string; value?: unknown; message?: string; namespace?: string; schemaVersion?: number;
   incarnation?: string; pragmas?: Record<string, string | number> }
 interface Pending { resolve(value: unknown): void; reject(error: Error): void; deadline: number; timer: ReturnType<typeof setTimeout> }
 function snapshotLocation(input: JournalLocation): JournalLocation {
@@ -45,7 +47,7 @@ class JournalWorker {
   private closeWork: Promise<void> | undefined;
   private exitCode: number | undefined;
   private readonly timeout: number;
-  constructor(action: "provision" | "open", location: JournalLocation, expectedNamespace?: string, timeout = 5000) {
+  constructor(action: "provision" | "open" | "upgrade_owned_results", location: JournalLocation, expectedNamespace?: string, timeout = 5000) {
     if (!Number.isFinite(timeout) || timeout < 1 || timeout > 10000) throw new Error("Journal request deadline must be within 1–10000ms");
     this.timeout = timeout;
     this.worker = new Worker(new URL("./journal-worker.js", import.meta.url), {
@@ -54,19 +56,19 @@ class JournalWorker {
     this.exited = new Promise((resolve) => this.worker.once("exit", (code) => {
       this.exitCode = code; resolve(code);
       if (code !== 0) this.fail(new Error(`Journal worker exited with code ${code}; ownership is unknown`));
-      else if (!this.closing && !(action === "provision" && this.provisioned)) this.fail(new Error("Journal worker exited; ownership is unknown"));
+      else if (!this.closing && !(action !== "open" && this.provisioned)) this.fail(new Error("Journal worker exited; ownership is unknown"));
     }));
     const startDeadline = performance.now() + 10000;
     this.ready = new Promise((resolve, reject) => {
       let initialized = false;
       const timer = setTimeout(() => { const error = new Error("Journal initialization deadline expired"); this.fail(error); reject(error); }, 10000);
       this.worker.on("message", (reply: Reply) => {
-        if (reply.kind === "ready" || reply.kind === "provisioned") {
+        if (reply.kind === "ready" || reply.kind === "provisioned" || reply.kind === "upgraded") {
           clearTimeout(timer);
           if (performance.now() > startDeadline || this.unavailable) {
             const error = new Error("Late initialization cannot establish journal availability"); this.fail(error); reject(error);
           }
-          else { initialized = true; this.provisioned = reply.kind === "provisioned"; resolve(reply); }
+          else { initialized = true; this.provisioned = reply.kind !== "ready"; resolve(reply); }
         } else if (reply.kind === "failed") {
           clearTimeout(timer); const error = new Error(reply.message ?? "Journal initialization failed"); this.fail(error); reject(error);
         }
@@ -146,10 +148,29 @@ export async function provisionLocalJournal(input: JournalLocation): Promise<{ r
   }
 }
 
+/** Offline, explicit additive migration only. Stop/join all runners, close their
+ * journals and take a verified backup before calling; never used by startup. */
+export async function upgradeLocalJournalForOwnedResults(options: JournalOptions): Promise<{ readonly namespace: string; readonly schemaVersion: 4 }> {
+  nonempty(options.expectedNamespace, "expected namespace");
+  const worker = new JournalWorker("upgrade_owned_results", snapshotLocation(options), options.expectedNamespace, options.operationTimeoutMs);
+  try {
+    const ready = await worker.ready;
+    if (ready.kind !== "upgraded" || ready.schemaVersion !== 4 || ready.namespace !== options.expectedNamespace) throw new Error("Missing explicit owned-result migration receipt");
+    if (await bounded(worker.exited, 5000) !== 0) throw new Error("Migration worker closure is unconfirmed");
+    return Object.freeze({ namespace: ready.namespace, schemaVersion: 4 });
+  } catch (error) {
+    try { await worker.close(); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], "Journal migration or closure is uncertain; retain all files", { cause: error }); }
+    throw error;
+  }
+}
+
 interface PermitState {
   readonly nonce: string; readonly key: string; readonly runId: string; readonly mode: "per-run" | "legacy";
   readonly identity?: OwnedAdmissionIdentity;
   payload: RunStartPayload | undefined;
+  ownedResultRequest?: OwnedResultRunAdmissionV1;
+  ownedResultDigest?: string; settledOwnedResult?: WeakRef<OwnedResultFinalizationV1>;
   revision: number; phase: JournalRun["phase"]; tail: Promise<void>;
   admission?: OwnedRunAdmission; handle?: AgentInstanceHandle; closedHandle?: WeakRef<AgentInstanceHandle>;
   recordedStarted: boolean; recordedClosed: boolean;
@@ -197,22 +218,25 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     const result = { terminal: terminal as TerminalSettlement["terminal"], retentionOutcome: outcome };
     freeze(result); return result;
   }
-  async function persistSettlement(state: PermitState, proofSource: "returned_handle" | "startup_error", detail: unknown, settlement: TerminalSettlement): Promise<JournalRun> {
+  async function persistSettlement(state: PermitState, proofSource: "returned_handle" | "startup_error", detail: unknown, settlement: TerminalSettlement,
+    finalization?: OwnedResultFinalizationV1): Promise<JournalRun> {
     if (!state.identity) throw new Error("A frozen physical workspace identity is required");
     const retained = runEventBodySchema.parse({ type: "run.workspace.retained", payload: { version: 1,
       workspace_root: state.identity.workspaceRoot, workspace_branch: state.identity.workspaceBranch, outcome: settlement.retentionOutcome } });
-    const outcome = JSON.stringify({ terminal: settlement.terminal, retained });
+    const outcome = JSON.stringify({ terminal: settlement.terminal, retained, ...(finalization ? { ownedResultEvidence: finalization.evidence_event } : {}) });
     if (Buffer.byteLength(outcome) > 1024 * 1024) throw new Error("Settlement exceeds the bounded journal payload size");
     const result = await worker.call<JournalRun>("producer_closed", { ...inputFor(state), proofSource, detail, outcome,
-      eventContents: [JSON.stringify(retained), JSON.stringify(settlement.terminal)] });
+      ...(finalization ? { ownedResultAdmissionDigest: finalization.admission_digest } : {}),
+      eventContents: [...(finalization ? [JSON.stringify(finalization.evidence_event)] : []), JSON.stringify(retained), JSON.stringify(settlement.terminal)] });
     update(state, result); state.recordedClosed = true;
+    if (finalization) state.settledOwnedResult = new WeakRef(finalization);
+    state.ownedResultRequest = undefined;
     if (state.handle) state.closedHandle = new WeakRef(state.handle);
     state.handle = undefined; state.inspect = undefined; state.bridgeAdapter = undefined;
     return result;
   }
-  return Object.freeze({
-    namespace, incarnation: ready.incarnation, pragmas: Object.freeze(ready.pragmas), failed: worker.failed,
-    async admitStart(request): Promise<AdmissionResult> {
+  async function admitStart(request: { expectedNamespace: string; runId: string; idempotencyKey: string; payload: RunStartPayload },
+    resultRequest?: OwnedResultRunAdmissionV1): Promise<AdmissionResult> {
       const runId = query(request);
       if (request.idempotencyKey !== `${runId}:start`) throw new Error("Managed delivery requires the stable run start idempotency key");
       const parsed = RunStartPayloadSchema.parse(request.payload);
@@ -222,16 +246,28 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       const canonical = JSON.stringify(payload), key = binding?.key ?? createHash("sha256").update(canonical).digest("hex");
       if (Buffer.byteLength(canonical) > 1024 * 1024) throw new Error("Launch snapshot exceeds the bounded journal payload size");
       const mode = binding ? "per-run" : "legacy", nonce = randomUUID();
-      const result = await worker.call<{ kind: AdmissionResult["kind"]; run: JournalRun }>("admit", { runId, mode, key, canonical, nonce });
+      const ownedResult = resultRequest && snapshotOwnedResultRunAdmission(resultRequest);
+      if (ownedResult && (ready.schemaVersion !== 4 || mode !== "per-run" || ownedResult.launch.key !== key
+        || ownedResult.request.requirement.profile.node_id !== location.nodeId)) throw new Error("Owned result admission requires this node's explicitly upgraded journal and exact per-run binding");
+      const result = await worker.call<{ kind: AdmissionResult["kind"]; run: JournalRun }>("admit", { runId, mode, key, canonical, nonce,
+        ...(ownedResult ? { ownedResultAdmissionJson: ownedResult.canonical, ownedResultAdmissionDigest: ownedResult.digest } : {}) });
       worker.assertAvailable();
       if (result.kind !== "fresh") return result as Exclude<AdmissionResult, { kind: "fresh" }>;
       const permit = Object.freeze({}) as FreshLaunchPermit;
       const identity = binding ? Object.freeze({ launchKey: key, runId, taskId: payload.task_id,
         agentInstanceId: payload.agent_instance_id, runtime: payload.runtime, workspaceRoot: payload.workspace.root,
         workspaceBranch: payload.workspace.branch! }) : undefined;
-      permits.set(permit, { nonce, key, runId, mode, payload, ...(identity ? { identity } : {}), revision: result.run.revision, phase: result.run.phase,
+      permits.set(permit, { nonce, key, runId, mode, payload, ...(identity ? { identity } : {}), ...(ownedResult ? { ownedResultRequest: ownedResult.request, ownedResultDigest: ownedResult.digest } : {}), revision: result.run.revision, phase: result.run.phase,
         tail: Promise.resolve(), recordedStarted: false, recordedClosed: false, startClaimed: false });
       return Object.freeze({ kind: "fresh", permit, run: result.run, payload });
+  }
+  return Object.freeze({
+    namespace, incarnation: ready.incarnation, pragmas: Object.freeze(ready.pragmas), failed: worker.failed,
+    ...(ready.schemaVersion === 4 ? { ownedResultFinalizationVersion: 1 as const } : {}),
+    admitStart(request) { return admitStart(request); },
+    admitOwnedResultStart(request) {
+      const prepared = authenticatePreparedOwnedResultRun(request.admission);
+      return admitStart({ ...request, payload: prepared.request.run_start }, prepared.request);
     },
     async lookupRun(request) { return worker.call<JournalRun | null>("lookup", { runId: query(request) }); },
     advance(permit, phase) { return serialize(permit, async (state) => {
@@ -284,10 +320,28 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     settleOwnedProcess(permit, handle, value, input) {
       const settlement = snapshotSettlement(input);
       return serialize(permit, async (state) => {
+      if (state.ownedResultDigest && settlement.terminal.payload.phase === "completed") throw new Error("Owned result completion requires an original result finalization bundle");
       if (!state.admission || !state.recordedStarted || (state.handle ?? state.closedHandle?.deref()) !== handle) throw new Error("Physical settlement requires this journal's exact recorded execution");
       const proof = getOwnedStopReceipt(value, state.admission, handle) ?? getOwnedRunStatusReceipt(value, state.admission, handle);
       if (proof?.kind !== "confirmed_closed" || proof.facts?.childSpawned !== true) throw new Error("No authenticated physical child-closure receipt");
       return persistSettlement(state, "returned_handle", { observedAt: proof.observedAt, facts: proof.facts }, settlement);
+    }); },
+    settleOwnedResultProcess(permit, handle, value, input) { return serialize(permit, async (state) => {
+      if (!state.ownedResultDigest || !state.admission || !state.recordedStarted
+        || (state.handle ?? state.closedHandle?.deref()) !== handle) throw new Error("Owned result settlement requires this journal's exact result execution");
+      const proof = getOwnedStopReceipt(value, state.admission, handle) ?? getOwnedRunStatusReceipt(value, state.admission, handle);
+      if (proof?.kind !== "confirmed_closed" || proof.facts?.childSpawned !== true) throw new Error("No authenticated physical child-closure receipt");
+      const current = await worker.call<JournalRun | null>("lookup", { runId: state.runId });
+      if (!current) throw new Error("Admitted owned result run disappeared");
+      let bundle: OwnedResultFinalizationV1;
+      if (state.recordedClosed) {
+        if (current.phase !== "closed" || state.settledOwnedResult?.deref() !== input) throw new Error("Only the original already-committed finalization can replay");
+        bundle = input;
+      } else {
+        if (!state.ownedResultRequest) throw new Error("Owned result admission was lost before settlement");
+        bundle = authenticateOwnedResultFinalization(input, state.ownedResultRequest, { stopRequested: current.stopRequested });
+      }
+      return persistSettlement(state, "returned_handle", { observedAt: proof.observedAt, facts: proof.facts }, snapshotSettlement(bundle), bundle);
     }); },
     settleOwnedStartupFailure(permit, worktree, error) { return serialize(permit, async (state) => {
       if (!state.identity || !state.admission || state.bridgeWorktree?.deref() !== worktree || state.handle || state.recordedStarted
@@ -310,7 +364,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       return serialize(permit, async (state) => {
         const terminal = parsed.type === "run.lifecycle" && ["completed", "failed", "cancelled"].includes(parsed.payload.phase);
         if (parsed.type === "run.lifecycle" && parsed.payload.phase === "started" && !state.recordedStarted) throw new Error("Started events require our authenticated recorded producer handle");
-        if (terminal || parsed.type === "run.workspace.retained") throw new Error("Terminal/retention events must be committed atomically through physical settlement");
+        if (terminal || parsed.type === "run.workspace.retained" || parsed.type === "run.owned-result.verification") throw new Error("Evidence/terminal/retention events must be committed atomically through physical settlement");
         const result = await worker.call<{ kind: string; event?: StoredEvent; revision?: number }>("append", { ...inputFor(state), eventId, content });
         if (result.kind !== "stored" || !result.event || result.revision === undefined) throw new Error(`Journal event ${result.kind}; existing content is retained`);
         state.revision = result.revision; return result.event;

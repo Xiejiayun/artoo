@@ -17,6 +17,7 @@ import {
 } from "@artoo/db";
 import {
   ID_PREFIXES,
+  type PreparedGoalEntryV1,
   type Agent,
   type AgentInstance,
   type Computer,
@@ -30,6 +31,7 @@ import {
 import { and, asc, desc, eq } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
+import { preparedGoalEntrySnapshot } from "../config/goal-entry.js";
 import { effectiveTeamRole } from "../auth/request-auth.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
@@ -49,6 +51,7 @@ import {
 } from "../mappers.js";
 
 export interface BootstrapResponse {
+  goal_entry?: PreparedGoalEntryV1;
   organization: { id: string; name: string };
   user: { id: string; email: string; display_name: string; role: string };
   projects: { id: string; name: string; default_workspace: string | null }[];
@@ -98,7 +101,9 @@ export async function bootstrap(ctx: ServerContext): Promise<BootstrapResponse> 
     .from(effortProfiles)
     .where(eq(effortProfiles.organizationId, ctx.organizationId))
     .orderBy(asc(effortProfiles.name), asc(effortProfiles.id));
+  const goalEntry = await preparedGoalEntrySnapshot(ctx);
   return {
+    ...(goalEntry ? { goal_entry: goalEntry } : {}),
     organization: { id: orgRow.id, name: orgRow.name },
     user: {
       id: userRow.id,

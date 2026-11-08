@@ -12,6 +12,14 @@ const ios = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const root = resolve(ios, "../..");
 const caseName = "ReleaseReadinessUITests/testPublisherPolicyAndSupportBeforePairing()";
 
+export function releaseUIPhaseDiagnostic(entry) {
+  const cleanup = entry.process_cleanup;
+  return { phase: entry.name, passed: entry.passed, exit: entry.exit_code,
+    ...(cleanup ? { process_cleanup: { closed: cleanup.closed, elapsedMs: cleanup.elapsedMs,
+      ...(cleanup.error ? { stage: cleanup.error.stage, code: cleanup.error.code } : {}),
+      ...(cleanup.selfGroupQuery ? { selfGroupQuery: cleanup.selfGroupQuery } : {}) } } : {}) };
+}
+
 export function verifyReleaseUIResult(summary, tests, screenshots) {
   assert.equal(summary.result, "Passed");
   assert.equal(summary.totalTestCount, 1);
@@ -82,7 +90,7 @@ export async function main() {
       entry.timed_out = timedOut; entry.duration_ms = Date.now() - began;
       entry.process_cleanup = pgid ? await closeOwnedProcessGroup(pgid) : { closed: true, not_started: true };
       entry.passed = entry.passed && entry.process_cleanup.closed;
-      console.log(JSON.stringify({ phase: name, passed: entry.passed, exit: entry.exit_code }));
+      console.log(JSON.stringify(releaseUIPhaseDiagnostic(entry)));
       assert.ok(entry.process_cleanup.closed, `${name} process cleanup is incomplete`);
     }
   }

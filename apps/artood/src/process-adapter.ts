@@ -1,12 +1,14 @@
+import { readWindowsGuardianOperation, startWindowsScopedProcess } from "./owned/windows-guardian-scope.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, basename, resolve } from "node:path";
+import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync, mkdtempSync, chmodSync, rmSync } from "node:fs";
+import { dirname, basename, resolve, join, relative, isAbsolute, sep } from "node:path";
+import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import { performance } from "node:perf_hooks";
 
-import type { ArtifactPayload, ArtifactType } from "@artoo/domain";
+import type { ArtifactPayload, ArtifactType, RunStartPayload } from "@artoo/domain";
 import type {
   AgentInstanceConfig,
   AgentInstanceHandle,
@@ -18,9 +20,23 @@ import type {
 import { assertWorkspaceScope } from "@artoo/protocol";
 import { resolveCliCommand } from "./cli-resolver.js";
 import { createStructuredOutput, type ProcessOutputFormat } from "./structured-output.js";
+import { createResearchSession, prepareResearchOptions, type ResearchOptions, type ResearchSession } from "./research.js";
+import { initializeEmptyProductRepository } from "./product-bootstrap.js";
+import { resolveProductBootstrapGit, type PreparedProductBootstrapGit } from "./product-bootstrap-git.js";
+import { validateProductStage } from "./product-stage.js";
+import { createWorkspaceToolSession, takeWorkspaceToolVerifier, takeWorkspaceToolEvidenceReader,
+  takeWorkspaceToolCapabilities, assertWorkspaceToolCapabilities, takeWorkspaceToolReleaseCapabilities, type WorkspaceToolSession } from "./workspace-tools.js";
+import { assertReleaseCapabilityContext } from "./release-capability-authority.js";
+import { assertWorkspacePlanningBinding, takeWorkspaceReadOnlyTools, type WorkspaceReadOnlyGrant } from "./workspace-readonly.js";
+import { VerificationCleanupError, readWindowsVerificationBackend, type PreparedVerificationProfile } from "./verification.js";
+import { startWindowsOwnedProcess, isWindowsOwnedClosureReceipt, type PreparedWindowsProcessBackend,
+  type WindowsOwnedProcess, type WindowsOwnedClosureReceipt } from "./owned/windows-owned-process.js";
+import { withWindowsProcessErrorDiagnostic } from "./owned/windows-process-diagnostic.js";
 import { assertOwnedContextForLaunch, assertOwnedContextLocalBoundary, writeOwnedContextFile } from "./owned/owned-context.js";
 import { assertOwnedMaterializedWorktree, assertOwnedWorktreeLocalBoundary, WorktreeReservationError, type MaterializedWorktree } from "./owned/worktree-reservation.js";
 import { OwnedGitError } from "./owned/owned-git.js";
+import { allocationStartBinding } from "./node-allocation-identity.js";
+import { ownedVerificationDigest } from "./owned/worktree-verification-contract.js";
 import type { OwnedAdmissionIdentity, OwnedPhysicalFacts, OwnedRunAdmission, OwnedRunRuntimeAdapter, OwnedRunStatusReceipt, OwnedStartupReceipt, OwnedStopReceipt } from "./process-adapter-owned-receipts.js";
 export type { OwnedAdmissionIdentity, OwnedPhysicalFacts, OwnedRunAdmission, OwnedRunRuntimeAdapter, OwnedRunStatusReceipt, OwnedStartupReceipt, OwnedStopReceipt } from "./process-adapter-owned-receipts.js";
 
@@ -39,11 +55,17 @@ interface OwnedInvocation extends ReceiptScope {
   genuine: boolean;
   spawnAttempted: boolean;
   helperUncertain: boolean;
+  resultResourcesClosed: boolean;
   control?: OwnedControl;
   closedFacts?: OwnedPhysicalFacts;
   queue?: AsyncEventQueue<RunEvent>;
   workspaceRoot: string;
   discussion: boolean;
+  /** Original actual config snapshot, never a caller's later reconstruction. */
+  startSnapshot?: RunStartPayload;
+  renderedContext?: Readonly<{ digest: string; size: number }>;
+  /** Actual adapter-selected terminal outcome, never an externally supplied event. */
+  terminalPhase?: "completed" | "failed" | "cancelled";
 }
 const ownedAdmissions = new WeakMap<OwnedRunAdmission, AdmissionState>();
 const ownedAdapters = new WeakMap<RuntimeAdapter, Readonly<Record<string, unknown>>>();
@@ -52,6 +74,177 @@ const ownedStopReceipts = new WeakMap<object, PhysicalAuthentication>();
 const ownedStatusReceipts = new WeakMap<object, PhysicalAuthentication>();
 const ownedExecutions = new WeakMap<AgentInstanceHandle, OwnedInvocation>();
 const weakKey = (value: unknown): value is object => (typeof value === "object" && value !== null) || typeof value === "function";
+
+declare const windowsAdmissionBrand: unique symbol;
+export interface WindowsVerifiedExecutionAdmission { readonly [windowsAdmissionBrand]: true }
+interface WindowsVerifiedExecution {
+  readonly adapter: RuntimeAdapter;
+  readonly config: AgentInstanceConfig;
+  readonly payload: RunStartPayload;
+  readonly profile: PreparedVerificationProfile;
+  readonly backend: PreparedWindowsProcessBackend;
+  readonly signal: AbortSignal;
+  readonly assertCurrent: () => void;
+  claimed: boolean;
+  resourcesClosed: boolean;
+  handle?: WeakRef<AgentInstanceHandle>;
+  receipt?: WindowsOwnedClosureReceipt;
+}
+const windowsConfigs = new WeakMap<AgentInstanceConfig, WindowsVerifiedExecution>();
+const windowsAdmissions = new WeakMap<WindowsVerifiedExecutionAdmission, WindowsVerifiedExecution>();
+declare const windowsPlanningAdmissionBrand: unique symbol;
+export interface WindowsPlanningExecutionAdmission { readonly [windowsPlanningAdmissionBrand]: true }
+interface WindowsPlanningExecution extends WindowsVerifiedExecution {
+  readonly planningGrant: WorkspaceReadOnlyGrant;
+  /** True only before resource acquisition or after the actual startup cleanup completed. */
+  startupClosed: boolean;
+}
+type WindowsNativeExecution = WindowsVerifiedExecution | WindowsPlanningExecution;
+const windowsPlanningExecutions = new WeakSet<WindowsNativeExecution>();
+const windowsPlanningConfigs = new WeakMap<AgentInstanceConfig, WindowsPlanningExecution>();
+const windowsPlanningAdmissions = new WeakMap<WindowsPlanningExecutionAdmission, WindowsPlanningExecution>();
+const windowsAdapters = new WeakMap<RuntimeAdapter, Readonly<Record<string, unknown>>>();
+const readOnlyToolAdapters = new WeakMap<RuntimeAdapter, Readonly<Record<string, unknown>>>();
+/** Local preset support only; public runtime metadata cannot enable the broker. */
+export function supportsWorkspaceReadOnlyTools(adapter: RuntimeAdapter): boolean {
+  const methods = readOnlyToolAdapters.get(adapter);
+  return !!methods && Object.entries(methods).every(([name, method]) => Object.getOwnPropertyDescriptor(adapter, name)?.value === method);
+}
+function isWindowsVerifiedAdapter(adapter: RuntimeAdapter): boolean {
+  const methods = windowsAdapters.get(adapter);
+  return !!methods && Object.entries(methods).every(([name, method]) => Object.getOwnPropertyDescriptor(adapter, name)?.value === method);
+}
+function deeplyFrozenStart(value: unknown, seen = new Set<object>()): boolean {
+  if (value === null || typeof value !== "object") return true;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (!Object.isFrozen(value)) return false;
+  const frozen = Object.values(Object.getOwnPropertyDescriptors(value)).every(descriptor => "value" in descriptor && deeplyFrozenStart(descriptor.value, seen));
+  seen.delete(value);
+  return frozen;
+}
+
+/** Node-local authority after exact protected-profile selection, never a wire field. */
+export function bindWindowsVerifiedExecution(adapter: RuntimeAdapter, config: AgentInstanceConfig,
+  profile: PreparedVerificationProfile, signal: AbortSignal, assertCurrent: () => void): WindowsVerifiedExecutionAdmission {
+  const backend = readWindowsVerificationBackend(profile);
+  if (process.platform !== "win32" || !backend || !isWindowsVerifiedAdapter(adapter) || windowsConfigs.has(config) || windowsPlanningConfigs.has(config)
+    || !Object.isFrozen(config) || !deeplyFrozenStart(config.runStart) || !config.runStart.verification
+    || !(signal instanceof AbortSignal) || typeof assertCurrent !== "function") throw new Error("A fresh local Windows verified admission is required");
+  const state: WindowsVerifiedExecution = { adapter, config, payload: config.runStart, profile, backend,
+    signal, assertCurrent, claimed: false, resourcesClosed: false };
+  assertWindowsExecutionIdentity(state, config);
+  const admission = Object.freeze({}) as WindowsVerifiedExecutionAdmission;
+  windowsConfigs.set(config, state); windowsAdmissions.set(admission, state);
+  return admission;
+}
+function assertWindowsExecutionIdentity(state: WindowsVerifiedExecution, config: AgentInstanceConfig): void {
+  state.signal.throwIfAborted();
+  const current: unknown = state.assertCurrent();
+  if (current !== undefined) {
+    void Promise.resolve(current).catch(() => {});
+    throw new Error("Windows execution admission must be checked synchronously");
+  }
+  const payload = state.payload;
+  if (state.config !== config || state.payload !== config.runStart || !isWindowsVerifiedAdapter(state.adapter)
+    || config.runId !== payload.run_id || config.taskId !== payload.task_id || config.agentInstanceId !== payload.agent_instance_id
+    || config.runtime !== payload.runtime || config.runtime !== state.adapter.runtimeId || config.workspaceRoot !== payload.workspace.root
+    || config.workspaceRoot !== state.profile.workspace_root || payload.workspace.branch != null || payload.workspace_allocation
+    || payload.verification?.profile_id !== state.profile.id || payload.context_pack.payload?.project.id !== state.profile.project_id
+    || readWindowsVerificationBackend(state.profile) !== state.backend) throw new Error("Windows verified admission identity changed");
+}
+function takeWindowsVerifiedExecution(adapter: RuntimeAdapter, config: AgentInstanceConfig): WindowsVerifiedExecution | undefined {
+  if (process.platform !== "win32") return undefined;
+  const state = windowsConfigs.get(config);
+  if (!state) {
+    if (config.runStart.verification) throw new Error("Windows verification requires the node's local execution admission");
+    return undefined;
+  }
+  if (state.claimed || state.adapter !== adapter) throw new Error("Windows verified admission was already consumed or changed adapter");
+  assertWindowsExecutionIdentity(state, config); state.claimed = true;
+  return state;
+}
+
+/** Local native process ownership for context-only planning; this never grants verification or source export. */
+export function bindWindowsPlanningExecution(adapter: RuntimeAdapter, config: AgentInstanceConfig,
+  profile: PreparedVerificationProfile, signal: AbortSignal, assertCurrent: () => void): WindowsPlanningExecutionAdmission {
+  const backend = readWindowsVerificationBackend(profile);
+  if (process.platform !== "win32" || !backend || !isWindowsVerifiedAdapter(adapter) || !supportsWorkspaceReadOnlyTools(adapter)
+    || windowsConfigs.has(config) || windowsPlanningConfigs.has(config) || !Object.isFrozen(config) || !deeplyFrozenStart(config.runStart)
+    || !(signal instanceof AbortSignal) || typeof assertCurrent !== "function") throw new Error("A fresh local Windows planning admission is required");
+  const planningGrant = assertWorkspacePlanningBinding(config);
+  const state: WindowsPlanningExecution = { adapter, config, payload: config.runStart, profile, backend,
+    signal, assertCurrent, planningGrant, claimed: false, resourcesClosed: false, startupClosed: true };
+  assertWindowsPlanningIdentity(state, config);
+  const admission = Object.freeze({}) as WindowsPlanningExecutionAdmission;
+  windowsPlanningExecutions.add(state);
+  windowsPlanningConfigs.set(config, state); windowsPlanningAdmissions.set(admission, state);
+  return admission;
+}
+function assertWindowsPlanningIdentity(state: WindowsPlanningExecution, config: AgentInstanceConfig): void {
+  state.signal.throwIfAborted();
+  const current: unknown = state.assertCurrent();
+  if (current !== undefined) {
+    void Promise.resolve(current).catch(() => {});
+    throw new Error("Windows planning admission must be checked synchronously");
+  }
+  const payload = state.payload, context = payload.context_pack.payload;
+  if (state.config !== config || state.payload !== config.runStart || !isWindowsVerifiedAdapter(state.adapter)
+    || !supportsWorkspaceReadOnlyTools(state.adapter) || config.runId !== payload.run_id || config.taskId !== payload.task_id
+    || config.agentInstanceId !== payload.agent_instance_id || config.runtime !== payload.runtime || config.runtime !== state.adapter.runtimeId
+    || config.workspaceRoot !== payload.workspace.root || config.workspaceRoot !== state.profile.workspace_root
+    || context?.project.id !== state.profile.project_id || context.task.id !== payload.task_id || context.workspace.root !== payload.workspace.root
+    || payload.verification !== undefined || readWindowsVerificationBackend(state.profile) !== state.backend) {
+    throw new Error("Windows planning admission identity changed");
+  }
+  assertWorkspacePlanningBinding(config, state.planningGrant);
+  // A guardian-bound backend cannot escape its current authenticated operation.
+  readWindowsGuardianOperation(state.backend);
+}
+function isWindowsPlanningExecution(state: WindowsNativeExecution): state is WindowsPlanningExecution {
+  return windowsPlanningExecutions.has(state);
+}
+function assertWindowsNativeExecutionIdentity(state: WindowsNativeExecution, config: AgentInstanceConfig): void {
+  if (isWindowsPlanningExecution(state)) assertWindowsPlanningIdentity(state, config);
+  else assertWindowsExecutionIdentity(state, config);
+}
+function takeWindowsPlanningExecution(adapter: RuntimeAdapter, config: AgentInstanceConfig): WindowsPlanningExecution | undefined {
+  const state = windowsPlanningConfigs.get(config);
+  if (!state) return undefined;
+  if (process.platform !== "win32" || state.claimed || state.adapter !== adapter) throw new Error("Windows planning admission was already consumed or changed adapter");
+  assertWindowsPlanningIdentity(state, config); state.claimed = true;
+  return state;
+}
+export function assertWindowsPlanningExecutionClosed(admission: WindowsPlanningExecutionAdmission, handle: AgentInstanceHandle): void {
+  const state = windowsPlanningAdmissions.get(admission);
+  if (!state || state.handle?.deref() !== handle || handle.runId !== state.config.runId || !state.claimed || !state.resourcesClosed
+    || !state.receipt || !isWindowsOwnedClosureReceipt(state.receipt) || !state.receipt.cleanupConfirmed) {
+    throw new VerificationCleanupError("Windows planning execution closure remains unconfirmed");
+  }
+}
+/** A rejected start may have no returned handle. Only the original adapter's resource closure can settle it. */
+export function assertWindowsPlanningStartupClosed(admission: WindowsPlanningExecutionAdmission): void {
+  const state = windowsPlanningAdmissions.get(admission);
+  if (!state || !state.claimed || state.handle || !state.startupClosed) {
+    throw new VerificationCleanupError("Windows planning startup closure remains unconfirmed");
+  }
+}
+/** CLI closure and node-owned tool closure are both required before final verification. */
+export function assertWindowsVerifiedExecutionClosed(admission: WindowsVerifiedExecutionAdmission, handle: AgentInstanceHandle): void {
+  const state = windowsAdmissions.get(admission);
+  if (!state || state.handle?.deref() !== handle || handle.runId !== state.config.runId || !state.claimed || !state.resourcesClosed
+    || !state.receipt || !isWindowsOwnedClosureReceipt(state.receipt) || !state.receipt.cleanupConfirmed) {
+    throw new VerificationCleanupError("Windows verified execution closure remains unconfirmed");
+  }
+}
+
+/** Local export additionally binds closure to the exact original run and prepared profile. */
+export function assertWindowsVerifiedExecutionExportBinding(admission: WindowsVerifiedExecutionAdmission, handle: AgentInstanceHandle,
+  profile: PreparedVerificationProfile, payload: RunStartPayload): void {
+  assertWindowsVerifiedExecutionClosed(admission, handle);
+  const state = windowsAdmissions.get(admission)!;
+  if (state.profile !== profile || state.payload !== payload) throw new Error("Source export differs from the actually closed author admission");
+}
 
 export function createOwnedRunAdmission(identity: OwnedAdmissionIdentity): OwnedRunAdmission {
   const value = Object.freeze({ launchKey: identity.launchKey, runId: identity.runId, taskId: identity.taskId,
@@ -85,6 +278,62 @@ export function getOwnedStopReceipt(value: unknown, admission: OwnedRunAdmission
 export function getOwnedRunStatusReceipt(value: unknown, admission: OwnedRunAdmission, handle: AgentInstanceHandle): OwnedRunStatusReceipt | undefined {
   const found = weakKey(value) ? ownedStatusReceipts.get(value) : undefined;
   return found && matchesScope(found, admission, handle) ? found.receipt as OwnedRunStatusReceipt : undefined;
+}
+
+/** Local sealing boundary, not a serializable permission or a successful-run verdict. */
+export function getOwnedWorkspaceClosure(value: unknown, admission: OwnedRunAdmission, handle: AgentInstanceHandle,
+  worktree: MaterializedWorktree): Readonly<{ identity: Readonly<OwnedAdmissionIdentity>; receipt: OwnedStopReceipt | OwnedRunStatusReceipt }> | undefined {
+  const found = weakKey(value) ? ownedStopReceipts.get(value) ?? ownedStatusReceipts.get(value) : undefined;
+  const execution = ownedExecutions.get(handle), admitted = ownedAdmissions.get(admission);
+  if (!found || !admitted || !matchesScope(found, admission, handle) || found.worktree.deref() !== worktree
+    || found.receipt.kind !== "confirmed_closed" || !execution?.genuine || !matchesScope(execution, admission, handle)
+    || execution.worktree.deref() !== worktree || execution.discussion || execution.helperUncertain
+    || !execution.resultResourcesClosed || !execution.closedFacts?.childSpawned
+    || admitted.identity.workspaceRoot !== worktree.root || admitted.identity.workspaceBranch !== worktree.branch) return undefined;
+  // Physical CLI closure can precede tool closure. Only the close continuation
+  // below can establish that no owned tool is still using the result workspace.
+  try { assertOwnedWorktreeLocalBoundary(worktree); } catch { return undefined; }
+  return Object.freeze({ identity: admitted.identity, receipt: found.receipt });
+}
+
+export interface OwnedSourceLaunchProofV1 {
+  readonly version: 1;
+  readonly launch_binding_digest: string;
+  readonly author_context_digest: string;
+  readonly context_pack_id: string;
+  /** Initial context bytes checked immediately before actual process spawn.
+   * This is not the ContextPack canonical digest or proof that the CLI read it. */
+  readonly rendered_context: Readonly<{ digest: string; size: number }>;
+}
+function freezeOwnedStart<T>(value: T): T {
+  if (value && typeof value === "object") { for (const child of Object.values(value)) freezeOwnedStart(child); Object.freeze(value); }
+  return value;
+}
+/** Additional source provenance for the new projector. Older/manual captures
+ * remain valid without it; copied snapshots and receipts cannot create it. */
+export function getOwnedWorkspaceLaunchProof(value: unknown, admission: OwnedRunAdmission, handle: AgentInstanceHandle,
+  worktree: MaterializedWorktree): OwnedSourceLaunchProofV1 | undefined {
+  const closed = getOwnedWorkspaceClosure(value, admission, handle, worktree), invocation = ownedExecutions.get(handle);
+  if (!closed || !invocation?.startSnapshot || !invocation.renderedContext) return undefined;
+  try {
+    // `true` selects the structural committed-allocation contract; this accessor
+    // does not attest a transport connection or a server acknowledgement.
+    const binding = allocationStartBinding(invocation.startSnapshot, process.platform, true);
+    if (!binding || binding.key !== closed.identity.launchKey || !binding.payload.context_pack.payload
+      || ownedVerificationDigest(binding.payload) !== ownedVerificationDigest(invocation.startSnapshot)) return undefined;
+    return freezeOwnedStart({ version: 1 as const, launch_binding_digest: `sha256:${binding.key}`,
+      author_context_digest: ownedVerificationDigest(binding.payload.context_pack.payload),
+      context_pack_id: binding.payload.context_pack.id, rendered_context: { ...invocation.renderedContext } });
+  } catch { return undefined; } // Unsupported legacy launch data grants no projection provenance.
+}
+
+/** Live author outcome, distinct from physical closure and command verification.
+ * It is not reconstructed from serialized events or historical source receipts. */
+export function getOwnedWorkspaceAuthorOutcome(value: unknown, admission: OwnedRunAdmission, handle: AgentInstanceHandle,
+  worktree: MaterializedWorktree): Readonly<{ version: 1; phase: "completed" | "failed" | "cancelled" }> | undefined {
+  if (!getOwnedWorkspaceClosure(value, admission, handle, worktree)) return undefined;
+  const phase = ownedExecutions.get(handle)?.terminalPhase;
+  return phase ? Object.freeze({ version: 1 as const, phase }) : undefined;
 }
 
 function confirmedHelperFailure(error: unknown, signal: AbortSignal): boolean {
@@ -147,6 +396,12 @@ export interface ProcessAdapterOptions {
   command: string[];
   /** Explicit operator-configured read-only command for discussion sessions. */
   discussionCommand?: string[];
+  /** Local preset for verified product authors; requires a node-owned tool binding. */
+  productCommand?: string[];
+  /** Read-only peer command with a node-granted evidence bridge; planning remains unchanged. */
+  reviewCommand?: string[];
+  /** Selected only when the node installed an exact one-use read-only broker grant. */
+  readOnlyCommand?: string[];
   /** Workspace allowlist enforced before spawn. */
   allowedRoots: string[];
   /** Artifacts collected from the workspace after the run completes. */
@@ -154,6 +409,11 @@ export interface ProcessAdapterOptions {
   contextPackFilename?: string;
   /** Recognized CLI JSONL output; overrides/fixtures default to plain logs. */
   outputFormat?: ProcessOutputFormat;
+  /** Administrator opt-in only; requests cannot enable network tools or bootstrap. */
+  research?: ResearchOptions;
+  initializeRepository?: boolean;
+  /** Prepared node-local executable choice; never populated by run.start. */
+  productBootstrapGit?: PreparedProductBootstrapGit;
 }
 
 interface RunState {
@@ -252,6 +512,7 @@ class AsyncEventQueue<T> {
   private readonly items: T[] = [];
   private readonly waiters: Array<(result: IteratorResult<T>) => void> = [];
   private ended = false;
+  private failure?: Error;
 
   push(item: T): void {
     if (this.ended) {
@@ -274,6 +535,11 @@ class AsyncEventQueue<T> {
     }
   }
 
+  fail(error: Error): void {
+    this.failure = error;
+    this.end();
+  }
+
   async *drain(): AsyncIterable<T> {
     while (true) {
       const next = this.items.shift();
@@ -282,12 +548,14 @@ class AsyncEventQueue<T> {
         continue;
       }
       if (this.ended) {
+        if (this.failure) throw this.failure;
         return;
       }
       const result = await new Promise<IteratorResult<T>>((resolve) => {
         this.waiters.push(resolve);
       });
       if (result.done) {
+        if (this.failure) throw this.failure;
         return;
       }
       yield result.value;
@@ -321,6 +589,33 @@ function makeLineEmitter(onLine: (text: string) => void): {
   };
 }
 
+function importedValidationInstructions(config: AgentInstanceConfig): string[] {
+  const context = config.runStart.context_pack.payload;
+  if (context?.imported_clean_validation) return ["", "## Product validation after a clean node restart",
+    "The current restart checkpoint contains unverified workspace bytes. Complete a fresh validation attempt against the original goal, accepted research/design, and every declared acceptance case and viewport.",
+    "Use the protected workspace verification tool. Preserve the accepted research/design. Repair product defects and obtain a new complete final verification; a prior run or checkpoint does not prove this product passed."];
+  if (context?.imported_clean_validation_review_subject) return ["", "## Independent product review after a clean node restart",
+    "Review the entire current product against the original goal and accepted inputs using the pinned source and measured evidence. You have read-only tools.",
+    "Return the required JSON verdict with review_id, validation_id, source_digest and subject_digest from imported_clean_validation_review_subject. Report every blocking finding and reject when one remains."];
+  if (context?.imported_recovery_validation) return ["", "## Product validation after interrupted execution",
+    "The current recovery checkpoint records unverified workspace bytes. Complete a new validation attempt against the original goal, accepted research/design, and every declared acceptance case and viewport.",
+    "Inspect the current product and any supplied predecessor findings. You may repair product files, implementation notes, and the validation report. Preserve the exact accepted research.json and design.json bytes and protected measurement configuration.",
+    "Run the node-owned verification tool and write a truthful .artoo/product/validation.json. Only the new final verifier and a new independent product review can establish completion; an earlier run result or checkpoint is not a passing result."];
+  if (context?.imported_recovery_validation_review_subject) return ["", "## Independent product review after recovery",
+    "Review the complete current product against the original goal, accepted plan, every acceptance criterion, complete new browser evidence, regression risks, and the validation report's accuracy.",
+    "Use the workspace evidence index. The retained baseline files describe the actual workspace before this new validation author. Compare that baseline with current product source and the complete new final measurements.",
+    "Return the required JSON verdict with review_id, validation_id, source_digest and subject_digest from imported_recovery_validation_review_subject. Report every blocking finding and reject when one remains. The checkpoint and prior interrupted run provide history, not proof that this product passed."];
+  if (context?.imported_validation) return ["", "## Imported product validation",
+    "Validate the complete final product against the original goal, accepted research/design, and every declared acceptance case and viewport.",
+    "You may repair product files, implementation notes, and the validation report. Preserve the exact accepted research.json and design.json bytes, requirements, measurement programs, and protected configuration.",
+    "Use the supplied prior review findings or typed failure feedback to guide repairs, and run the node-owned verification tool before completing. The independent final verifier and full product review decide completion.",
+    "Write a truthful .artoo/product/validation.json that describes the actual final product and outcomes. A report alone does not establish a passing product."];
+  if (context?.imported_validation_review_subject) return ["", "## Independent final product review",
+    "Review the complete final product, original goal and accepted plan, all acceptance criteria, measured behavior, regression risks, and validation report truthfulness.",
+    "Use the workspace evidence index. baseline.directories and baseline.files[].reference expose retained actual files from before the validation author; read those references to assess changes alongside current product source and complete final browser evidence.",
+    "Reviewing only validation.json is insufficient. Read-only tools cannot change the product. Return the required JSON verdict with validation_id, source_digest and subject_digest from imported_validation_review_subject; reject when any blocking finding remains."];
+  return [];
+}
 function renderContextPack(config: AgentInstanceConfig): string {
   const pack = config.runStart.context_pack;
   const lines: string[] = [
@@ -369,6 +664,17 @@ function renderContextPack(config: AgentInstanceConfig): string {
       JSON.stringify(pack.payload, null, 2)
     );
   }
+  lines.push(...importedValidationInstructions(config));
+  return `${lines.join("\n")}\n`;
+}
+
+/** MCP pages carry every payload field once; legacy context files keep their original rendering. */
+function renderWorkspaceToolContext(config: AgentInstanceConfig): string {
+  const pack = config.runStart.context_pack;
+  const lines = [`# Context Pack ${pack.id}`, `task: ${config.taskId}`, `run: ${config.runId}`];
+  if (pack.uri) lines.push(`uri: ${pack.uri}`);
+  if (pack.payload) lines.push("", "## Raw Payload", JSON.stringify(pack.payload));
+  lines.push(...importedValidationInstructions(config));
   return `${lines.join("\n")}\n`;
 }
 
@@ -383,6 +689,8 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
   const contextPackFilename = options.contextPackFilename ?? "context_pack.md";
   const artifactSpecs = options.artifacts ?? [];
   const runs = new Map<string, RunState>();
+  const researchOptions = options.research ? prepareResearchOptions(options.research, options.allowedRoots) : undefined;
+  const completedArtifacts = new Map<string, ArtifactDescriptor[]>();
   const ownedOwner = Object.freeze({});
 
   function workspacePath(workspaceRoot: string, relativePath: string): string {
@@ -418,8 +726,26 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
     return descriptors;
   }
 
-  async function startProcess(config: AgentInstanceConfig, worktree?: MaterializedWorktree, startupSignal?: AbortSignal, invocation?: OwnedInvocation): Promise<AgentInstanceHandle> {
+  interface ExternalDiscussionContext { path: string; directory: string; cleanupAllowed: boolean }
+  function cleanupDiscussionContext(context: ExternalDiscussionContext): void {
+    if (context.cleanupAllowed) rmSync(context.directory, { recursive: true, force: true });
+  }
+  async function startProcess(config: AgentInstanceConfig, worktree?: MaterializedWorktree, startupSignal?: AbortSignal, invocation?: OwnedInvocation,
+    externalDiscussion?: ExternalDiscussionContext, windowsExecution?: WindowsNativeExecution): Promise<AgentInstanceHandle> {
       const workspaceRoot = config.workspaceRoot, runId = config.runId;
+      const guardianOperation = readWindowsGuardianOperation();
+      if (guardianOperation && !windowsExecution) throw new Error("Guardian workspace execution requires its locally bound native profile");
+      if (config.runStart.context_pack.payload?.imported_clean_validation || config.runStart.context_pack.payload?.imported_clean_validation_review_subject) {
+        if (!windowsExecution) throw new Error("Clean validation requires its original native execution admission");
+        const { assertWindowsCleanExecutionConfiguration } = await import("./windows-clean-validation-runtime.js");
+        assertWindowsCleanExecutionConfiguration(config, windowsExecution.backend);
+      }
+      if (config.runStart.context_pack.payload?.imported_recovery_validation || config.runStart.context_pack.payload?.imported_recovery_validation_review_subject)
+        {
+        if (!windowsExecution) throw new Error("Recovery requires its original Windows execution admission");
+        const { assertWindowsRecoveryExecutionConfiguration } = await import("./windows-source-recovery.js");
+        assertWindowsRecoveryExecutionConfiguration(config, windowsExecution.backend);
+      }
       if (worktree) {
         if (config.workspaceRoot !== worktree.root || config.runStart.workspace.root !== worktree.root
           || config.runStart.workspace.branch !== worktree.branch || config.runId !== config.runStart.run_id
@@ -431,29 +757,72 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
       assertRealWorkspaceScope(config.workspaceRoot, options.allowedRoots);
 
       const discussion = config.runStart.context_pack.payload?.policy.execution_mode === "discussion";
+      const productTools = !discussion && !!config.runStart.context_pack.payload?.product_development && !!options.productCommand;
+      const readEvidence = takeWorkspaceToolEvidenceReader(config);
+      const readCapabilities = takeWorkspaceToolCapabilities(config);
+      assertWorkspaceToolCapabilities(config.runStart.context_pack.payload, readCapabilities);
+      const readReleaseCapabilities = takeWorkspaceToolReleaseCapabilities(config);
+      assertReleaseCapabilityContext(config.runStart.context_pack.payload, readReleaseCapabilities);
+      const reviewTools = discussion && !!config.runStart.context_pack.payload?.review_subject && !!readEvidence && !!options.reviewCommand;
+      const readOnlyGrant = takeWorkspaceReadOnlyTools(config);
+      if (readOnlyGrant && (!discussion || !options.readOnlyCommand)) throw new Error("Runtime has no configured node-bound read-only command");
+      const verify = productTools ? takeWorkspaceToolVerifier(config) : undefined;
+      if (productTools && !verify) throw new Error("Product tools require the node's local verified-run binding");
       if (discussion && !options.discussionCommand) throw new Error("runtime has no explicitly configured read-only discussion command");
+      if (!discussion && options.initializeRepository && config.runStart.context_pack.payload?.product_development) {
+        if (worktree || config.runStart.workspace.branch != null) throw new Error("Product bootstrap supports ordinary workspaces only");
+        const git = resolveProductBootstrapGit(options.productBootstrapGit);
+        await initializeEmptyProductRepository(config.workspaceRoot, git, startupSignal, windowsExecution?.backend);
+        if (options.productBootstrapGit) resolveProductBootstrapGit(options.productBootstrapGit);
+      }
 
-      const legacyContextPath = worktree ? undefined : workspacePath(config.workspaceRoot, contextPackFilename);
+      const legacyContextPath = worktree || externalDiscussion ? undefined : workspacePath(config.workspaceRoot, contextPackFilename);
       artifactPaths(config.workspaceRoot);
       startupSignal?.throwIfAborted();
       const ownedContext = worktree ? await ownedPreparation(invocation, startupSignal,
         () => writeOwnedContextFile(worktree, contextPackFilename, renderContextPack(config))) : undefined;
       startupSignal?.throwIfAborted();
-      const contextPackPath = ownedContext?.path ?? legacyContextPath!;
-      if (!ownedContext) writeFileSync(contextPackPath, renderContextPack(config));
+      const contextPackPath = ownedContext?.path ?? externalDiscussion?.path ?? legacyContextPath!;
+      if (!ownedContext) writeFileSync(contextPackPath, renderContextPack(config), externalDiscussion ? { mode: 0o400, flag: "wx" } : undefined);
 
-      const argv = (discussion ? options.discussionCommand! : options.command).map((part) =>
+      const template = readOnlyGrant ? options.readOnlyCommand! : reviewTools ? options.reviewCommand! : discussion ? options.discussionCommand! : productTools ? options.productCommand! : options.command;
+      if (!template[0]) throw new Error("process adapter command template is empty");
+      const resolved = resolveCliCommand(template[0]);
+      if (!resolved) throw new Error(`runtime executable is unavailable or has an unsupported shell wrapper: ${template[0]}`);
+      let research: ResearchSession | undefined;
+      if (!discussion && researchOptions) research = await createResearchSession(researchOptions, {
+        runId, taskId: config.taskId, projectId: config.runStart.context_pack.payload?.project.id ?? "",
+        goalId: config.runStart.context_pack.payload?.goal_context?.goal_id ?? null, workspaceRoot: realpathSync.native(workspaceRoot),
+      });
+      let workspaceTools: WorkspaceToolSession | undefined;
+      try {
+        if (windowsExecution && isWindowsPlanningExecution(windowsExecution)) {
+          windowsExecution.startupClosed = false;
+          if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
+        }
+        if (productTools) workspaceTools = await createWorkspaceToolSession({ workspaceRoot,
+          context: config.runStart.context_pack.payload!, contextText: renderWorkspaceToolContext(config), verify: verify!,
+          researchMcpPath: research?.mcpPath, readEvidence, readCapabilities, readReleaseCapabilities });
+        else if (readOnlyGrant) workspaceTools = await createWorkspaceToolSession({ workspaceRoot,
+          context: config.runStart.context_pack.payload!, contextText: renderWorkspaceToolContext(config), readEvidence, readCapabilities, readReleaseCapabilities, readOnlyGrant });
+        else if (reviewTools) workspaceTools = await createWorkspaceToolSession({ workspaceRoot,
+          context: config.runStart.context_pack.payload!, contextText: renderWorkspaceToolContext(config), readEvidence, readCapabilities, readReleaseCapabilities, evidenceOnly: true });
+      } catch (error) { await research?.close(); throw error; }
+      const argv = template.map((part) =>
         part
           .replaceAll("{{workspace_root}}", config.workspaceRoot)
           .replaceAll("{{context_pack_path}}", contextPackPath)
+          .replaceAll("{{research_config_path}}", research?.configPath ?? "")
+          .replaceAll("{{research_config_json}}", JSON.stringify(research?.configPath ?? ""))
+          .replaceAll("{{research_mcp_path}}", research?.mcpPath ?? "")
+          .replaceAll("{{workspace_tools_mcp_path}}", workspaceTools?.mcpPath ?? "")
+          .replaceAll("{{workspace_tools_config_path}}", workspaceTools?.configPath ?? "")
+          .replaceAll("{{workspace_tools_config_json}}", JSON.stringify(workspaceTools?.configPath ?? ""))
       );
-      const [cmd, ...args] = argv;
-      if (cmd === undefined) {
-        throw new Error("process adapter command template is empty");
-      }
-
-      const resolved = resolveCliCommand(cmd);
-      if (!resolved) throw new Error(`runtime executable is unavailable or has an unsupported shell wrapper: ${cmd}`);
+      const [, ...args] = argv;
+      let child: ChildProcess | WindowsOwnedProcess;
+      let nativeProcess: WindowsOwnedProcess | undefined;
+      try {
       if (ownedContext) {
         await ownedPreparation(invocation, startupSignal, () => assertOwnedContextForLaunch(ownedContext));
         // Fresh async Git observations end here. Keep the local boundary and
@@ -461,15 +830,53 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
         if (invocation) invocation.helperUncertain = true;
         assertOwnedContextLocalBoundary(ownedContext);
         if (invocation) invocation.helperUncertain = false;
+        if (invocation?.startSnapshot?.workspace_allocation !== undefined) {
+          try {
+            if (ownedVerificationDigest(config.runStart) === ownedVerificationDigest(invocation.startSnapshot)) {
+              invocation.renderedContext = Object.freeze({ digest: `sha256:${ownedContext.sha256}`, size: ownedContext.bytes });
+            }
+          } catch { invocation.renderedContext = undefined; } // Legacy data never gains the optional projection proof.
+        }
       }
       startupSignal?.throwIfAborted();
       if (invocation) invocation.spawnAttempted = true;
-      const child = spawn(resolved[0]!, [...resolved.slice(1), ...args], { cwd: config.workspaceRoot, detached: process.platform !== "win32", windowsHide: true });
+      if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
+      if (windowsExecution) {
+        assertWindowsNativeExecutionIdentity(windowsExecution, config);
+        child = nativeProcess = await startWindowsScopedProcess(windowsExecution.backend, {
+          executable: resolved[0]!, args: [...resolved.slice(1), ...args], cwd: workspaceRoot, env: process.env,
+          timeoutMs: 43_200_000, maxOutputBytes: 64 * 1024 * 1024, cleanupTimeoutMs: 5000,
+          normalExitPolicy: "terminate-descendants", normalExitGraceMs: 250, signal: windowsExecution.signal,
+        }, isWindowsPlanningExecution(windowsExecution) ? "tool" : "author");
+      } else child = spawn(resolved[0]!, [...resolved.slice(1), ...args], { cwd: config.workspaceRoot, detached: process.platform !== "win32", windowsHide: true });
+      } catch (error) {
+        if (windowsExecution) {
+          if (externalDiscussion) externalDiscussion.cleanupAllowed = false;
+          // The bridge's admittedToCaller gate guarantees that a synchronous
+          // start failure never dispatched a target. Both brokers still close.
+          const closures = await Promise.allSettled([Promise.resolve().then(() => workspaceTools?.close()),
+            Promise.resolve().then(() => research?.close())]);
+          if (closures.some(result => result.status === "rejected")) {
+            throw new VerificationCleanupError("Windows startup tool closure remains unconfirmed; context retained", { cause: error });
+          }
+          if (isWindowsPlanningExecution(windowsExecution)) {
+            // Scoped launch first awaits a guardian reservation helper. Its
+            // rejected promise alone cannot prove that helper's actual closure.
+            if (guardianOperation) throw new VerificationCleanupError("Windows planning guardian startup closure remains unconfirmed; context retained", { cause: error });
+            windowsExecution.startupClosed = true;
+          }
+          if (externalDiscussion) externalDiscussion.cleanupAllowed = true;
+        } else {
+          if (externalDiscussion) externalDiscussion.cleanupAllowed = true;
+          await workspaceTools?.close(); await research?.close();
+        }
+        throw error;
+      }
       // The agent receives its task via the command template + context pack, not
       // stdin. Close stdin so CLIs that read it (e.g. `codex exec` prints
       // "Reading additional input from stdin...") get EOF immediately instead of
       // blocking forever on an open, never-written pipe.
-      child.stdin?.end();
+      if (!nativeProcess) (child as ChildProcess).stdin?.end();
       const queue = new AsyncEventQueue<RunEvent>();
       let finalized = false;
       let spawned = false;
@@ -477,6 +884,8 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
       let resolveClosed!: () => void;
       const closed = new Promise<void>((resolveClose) => { resolveClosed = resolveClose; });
       let termination: Promise<void> | undefined;
+      let workspaceCleanupError: VerificationCleanupError | undefined;
+      let nativeFailureCleanup: Promise<void> | undefined;
       let guardian: ChildProcess | undefined;
       let guardianClosed: Promise<void> | undefined;
       let guardianCloseObserved = false, guardianSpawned = false, guardianSpawnFailed = false;
@@ -534,15 +943,32 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
         workspaceRoot,
         discussion,
         kill: async () => {
+          if (workspaceCleanupError) throw workspaceCleanupError;
           if (finalized) return;
+          if (nativeProcess) {
+            // Stop the Job before disposing tool configurations. Node-owned preview
+            // verification closes independently in the close continuation below.
+            await beginTermination(); await closed;
+            if (workspaceCleanupError) throw workspaceCleanupError;
+            return;
+          }
+          // The verifier runs in its own owned process group. Stopping only the
+          // CLI/MCP process does not confirm that verifier's exit.
+          const toolClosure = workspaceTools?.close();
+          void toolClosure?.catch(() => {});
           await beginTermination();
+          await toolClosure;
           await closed;
+          if (workspaceCleanupError) throw workspaceCleanupError;
         }
       };
 
       function beginTermination(): Promise<void> {
         if (!termination) {
-          termination = child.pid === undefined ? Promise.resolve() : stopProcessTree(child.pid);
+          if (nativeProcess) { nativeProcess.cancel(); termination = nativeProcess.closed.then(() => {}, cause => {
+            throw new VerificationCleanupError(withWindowsProcessErrorDiagnostic("Windows process stop did not confirm closure", cause), { cause });
+          }); }
+          else termination = child.pid === undefined ? Promise.resolve() : stopProcessTree(child.pid);
           void termination.then(() => { groupAbsent = true; }, () => {});
         }
         return termination;
@@ -635,6 +1061,8 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
           return;
         }
         finalized = true;
+        if (invocation && event.type === "run.lifecycle" && (event.payload.phase === "completed"
+          || event.payload.phase === "failed" || event.payload.phase === "cancelled")) invocation.terminalPhase = event.payload.phase;
         stdout.flush();
         stderr.flush();
         for (const measured of structured.finish(false)) emit(measured);
@@ -642,6 +1070,28 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
         queue.end();
         resolveClosed();
         compactOwnedAfterClose();
+      }
+
+      function retainWindowsUncertainty(error: unknown): Promise<void> {
+        workspaceCleanupError ??= error instanceof VerificationCleanupError ? error
+          : new VerificationCleanupError(withWindowsProcessErrorDiagnostic("Windows process closure remains unconfirmed; context and execution retained", error), { cause: error });
+        return nativeFailureCleanup ??= (async () => {
+          // Invoke both closers even if one rejects. Retention becomes sticky
+          // before either asynchronous closure can remove invocation files.
+          await Promise.allSettled([Promise.resolve().then(() => workspaceTools?.close({ retainFiles: true })),
+            Promise.resolve().then(() => research?.close({ retainFiles: true }))]);
+          queue.fail(workspaceCleanupError!); resolveClosed();
+        })();
+      }
+      function acceptNativeClosure(receipt: WindowsOwnedClosureReceipt): void {
+        if (!isWindowsOwnedClosureReceipt(receipt) || !receipt.cleanupConfirmed) throw new VerificationCleanupError("Windows process closure is not authenticated");
+        windowsExecution!.receipt = receipt;
+      }
+      if (nativeProcess) {
+        nativeProcess.once("spawn", () => {
+          spawned = true; queue.push({ type: "run.lifecycle", payload: { phase: "started" } });
+        });
+        void nativeProcess.closed.then(acceptNativeClosure).catch(retainWindowsUncertainty);
       }
 
       child.on("error", (err: Error) => {
@@ -659,8 +1109,9 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
         const closing = beginTermination();
         void closing.catch((error: unknown) => stderr.feed(`CLI cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`));
       });
-      child.on("close", async (code: number | null, signal: NodeJS.Signals | null) => {
+      const onChildClose = async (code: number | null, signal: NodeJS.Signals | null): Promise<void> => {
         childStdioClosed = true;
+        if (nativeProcess) acceptNativeClosure(await nativeProcess.closed);
         if (process.platform !== "win32" && child.pid !== undefined) {
           beginTermination();
           try { await termination; } catch { return; }
@@ -668,6 +1119,32 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
         // Only disarm after the POSIX group has actually disappeared. A leader
         // exiting successfully is not evidence that all workspace writers did.
         guardian?.stdin?.end("disarm");
+        try { await workspaceTools?.close(); }
+        catch (error) {
+          workspaceCleanupError = error instanceof VerificationCleanupError ? error
+            : new VerificationCleanupError("Workspace tool closure remains unconfirmed");
+          try { await research?.close(windowsExecution ? { retainFiles: true } : undefined); }
+          catch { workspaceCleanupError = new VerificationCleanupError("Workspace and research tool closure remain unconfirmed"); }
+          // Surface uncertainty without a terminal lifecycle or released lease.
+          queue.fail(workspaceCleanupError); resolveClosed(); return;
+        }
+        try { await research?.close(); }
+        catch {
+          if (windowsExecution) {
+            workspaceCleanupError = new VerificationCleanupError("Windows research tool closure remains unconfirmed");
+            queue.fail(workspaceCleanupError); resolveClosed(); return;
+          }
+          finishWith({ type: "run.lifecycle", payload: { phase: "failed", reason: "Research session cleanup failed" } }); return;
+        }
+        if (invocation) invocation.resultResourcesClosed = true;
+        if (windowsExecution) windowsExecution.resourcesClosed = true;
+        if (externalDiscussion) {
+          externalDiscussion.cleanupAllowed = true;
+          try { cleanupDiscussionContext(externalDiscussion); }
+          catch (error) {
+            finishWith({ type: "run.lifecycle", payload: { phase: "failed", reason: "External discussion context cleanup failed" } }); return;
+          }
+        }
         if (state.stopReason) {
           // A parent exit alone does not prove its descendants stopped.
           try { await termination; } catch { resolveClosed(); return; }
@@ -675,6 +1152,13 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
             type: "run.lifecycle",
             payload: { phase: "cancelled", reason: state.stopReason }
           });
+          return;
+        }
+
+        if (windowsExecution?.receipt && (windowsExecution.receipt.failureCode
+          || (windowsExecution.receipt.terminationReason !== null && windowsExecution.receipt.terminationReason !== "normal_exit_descendants"))) {
+          finishWith({ type: "run.lifecycle", payload: { phase: "failed",
+            reason: `Windows execution ${windowsExecution.receipt.failureCode ?? windowsExecution.receipt.terminationReason}` } });
           return;
         }
 
@@ -686,7 +1170,11 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
             return;
           }
           let descriptors: ArtifactDescriptor[];
-          try { descriptors = discussion ? [] : collectDescriptors(workspaceRoot); }
+          try {
+            const context = config.runStart.context_pack.payload;
+            descriptors = discussion ? [] : [...collectDescriptors(workspaceRoot), ...(context ? validateProductStage(workspaceRoot, context, researchOptions) : [])];
+            completedArtifacts.set(runId, descriptors);
+          }
           catch (error) {
             finishWith({ type: "run.lifecycle", payload: { phase: "failed", reason: error instanceof Error ? error.message : "artifact collection failed" } });
             return;
@@ -698,6 +1186,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
             queue.push({ type: "artifact.created", payload: descriptor.payload });
           }
           for (const measured of structured.finish(true)) emit(measured);
+          if (invocation) invocation.terminalPhase = "completed";
           queue.push({ type: "run.lifecycle", payload: { phase: "completed", reason: null } });
           queue.end();
           resolveClosed();
@@ -714,7 +1203,13 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
           type: "run.lifecycle",
           payload: { phase: "failed", reason: signal ? `signal ${signal}` : structured.failureReason() ?? `exit ${code ?? "unknown"}` }
         });
+      };
+      // EventEmitter does not await asynchronous listeners. Keep all native
+      // continuation failures inside the sticky ownership/retention boundary.
+      if (nativeProcess) child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+        void onChildClose(code, signal).catch(retainWindowsUncertainty);
       });
+      else child.on("close", onChildClose);
 
       let startupStop: Promise<void> | undefined;
       let startupAbortHandled = false;
@@ -743,14 +1238,25 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
             }
           }
         } catch (error) {
+          if (windowsExecution) throw new VerificationCleanupError("Windows startup cleanup remains unconfirmed; context retained");
           throw new Error("Owned startup cleanup is uncertain; worktree and context retained", { cause: error });
         }
         throw startupSignal!.reason;
       }
+      try {
       startupSignal?.addEventListener("abort", onStartupAbort, { once: true });
       if (startupSignal?.aborted) onStartupAbort();
-      try {
-      await new Promise<void>((resolveSpawn, rejectSpawn) => {
+      if (nativeProcess) {
+        try { await nativeProcess.started; }
+        catch (error) {
+          try { await nativeProcess.closed; await closed; }
+          catch (cause) {
+            throw new VerificationCleanupError(withWindowsProcessErrorDiagnostic("Windows process startup closure remains unconfirmed", cause), { cause });
+          }
+          if (workspaceCleanupError) throw workspaceCleanupError;
+          throw error;
+        }
+      } else await new Promise<void>((resolveSpawn, rejectSpawn) => {
         child.once("spawn", () => {
           spawned = true;
           queue.push({ type: "run.lifecycle", payload: { phase: "started" } });
@@ -764,7 +1270,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
       });
       if (startupSignal?.aborted) await rejectAfterStartupAbort();
 
-      if (!finalized && child.pid !== undefined) {
+      if (!nativeProcess && !finalized && child.pid !== undefined) {
         guardianAttempted = true;
         guardian = spawn(process.execPath, ["-e", PROCESS_GUARDIAN, String(child.pid)], {
           stdio: ["pipe", "ignore", "ignore"], windowsHide: true, detached: process.platform !== "win32",
@@ -810,9 +1316,18 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
         return handle;
       }
       runs.set(runId, state);
-      return { runId };
+      const handle = windowsExecution ? Object.freeze({ runId }) : { runId };
+      if (windowsExecution) windowsExecution.handle = new WeakRef(handle);
+      return handle;
       } catch (error) {
         if (startupSignal?.aborted && !startupAbortHandled) await rejectAfterStartupAbort();
+        if (nativeProcess && !windowsExecution!.resourcesClosed) {
+          try { await state.kill(); }
+          catch (cause) {
+            await retainWindowsUncertainty(cause);
+            throw workspaceCleanupError!;
+          }
+        }
         throw error;
       } finally {
         startupSignal?.removeEventListener("abort", onStartupAbort);
@@ -842,7 +1357,30 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
 
     async start(config: AgentInstanceConfig): Promise<AgentInstanceHandle> {
       if (config.runStart.workspace_allocation !== undefined) throw new Error("Explicit allocation requires an owned worktree start");
-      return startProcess(config);
+      const windowsExecution: WindowsNativeExecution | undefined = takeWindowsVerifiedExecution(adapter, config) ?? takeWindowsPlanningExecution(adapter, config);
+      if (config.runStart.context_pack.payload?.policy.execution_mode === "discussion") {
+        if (!options.discussionCommand) throw new Error("runtime has no explicitly configured read-only discussion command");
+        assertWorkspaceScope(config.workspaceRoot, options.allowedRoots);
+        assertRealWorkspaceScope(config.workspaceRoot, options.allowedRoots);
+        const root = realpathSync.native(config.workspaceRoot), temporary = realpathSync.native(tmpdir());
+        const suffix = relative(root, temporary);
+        if (suffix === "" || (suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix))) {
+          throw new Error("Discussion needs a context directory outside its workspace");
+        }
+        const directory = mkdtempSync(join(temporary, "artoo-discussion-context-"));
+        const external = { directory, path: join(directory, "context_pack.md"), cleanupAllowed: true };
+        try {
+          chmodSync(directory, 0o700);
+          return await startProcess(config, undefined, windowsExecution?.signal, undefined, external, windowsExecution);
+        } catch (error) {
+          if (windowsExecution && isWindowsPlanningExecution(windowsExecution) && windowsExecution.resourcesClosed
+            && windowsExecution.receipt && isWindowsOwnedClosureReceipt(windowsExecution.receipt) && windowsExecution.receipt.cleanupConfirmed) {
+            windowsExecution.startupClosed = true;
+          }
+          cleanupDiscussionContext(external); throw error;
+        }
+      }
+      return startProcess(config, undefined, windowsExecution?.signal, undefined, undefined, windowsExecution);
     },
 
     async startOwnedWorktree(config: AgentInstanceConfig, worktree: MaterializedWorktree, startupSignal?: AbortSignal): Promise<AgentInstanceHandle> {
@@ -859,11 +1397,12 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
       if (!admitted || admitted.claimed) throw new Error("A fresh authenticated owned admission is required");
       admitted.claimed = true;
       const invocation: OwnedInvocation = { admission: new WeakRef(admission), worktree: new WeakRef(worktree),
-        owner: ownedOwner, genuine: false, spawnAttempted: false, helperUncertain: false,
+        owner: ownedOwner, genuine: false, spawnAttempted: false, helperUncertain: false, resultResourcesClosed: false,
         workspaceRoot: admitted.identity.workspaceRoot, discussion: false };
       try {
         // Snapshot before any asynchronous ownership observation.
         const snapshot = structuredClone(config), identity = admitted.identity;
+        if (snapshot.runStart.workspace_allocation !== undefined) invocation.startSnapshot = freezeOwnedStart(structuredClone(snapshot.runStart));
         if (!(signal instanceof AbortSignal)) throw new Error("An actual startup AbortSignal is required");
         assertOwnedWorktreeLocalBoundary(worktree);
         invocation.genuine = true;
@@ -953,6 +1492,8 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
     },
 
     async collectArtifacts(handle: AgentInstanceHandle): Promise<ArtifactDescriptor[]> {
+      const completed = completedArtifacts.get(handle.runId);
+      if (completed) return completed;
       const execution = ownedExecutions.get(handle);
       if (execution?.owner === ownedOwner) return execution.discussion ? [] : collectDescriptors(execution.workspaceRoot);
       const state = runs.get(handle.runId);
@@ -962,5 +1503,9 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
   ownedAdapters.set(adapter, Object.freeze({ runtimeId: adapter.runtimeId, startOwnedRun: adapter.startOwnedRun,
     stopOwnedRun: adapter.stopOwnedRun, inspectOwnedRun: adapter.inspectOwnedRun,
     streamEvents: adapter.streamEvents, collectArtifacts: adapter.collectArtifacts }));
+  windowsAdapters.set(adapter, Object.freeze({ runtimeId: adapter.runtimeId, start: adapter.start, stop: adapter.stop,
+    streamEvents: adapter.streamEvents, collectArtifacts: adapter.collectArtifacts }));
+  if (options.readOnlyCommand?.length && options.discussionCommand?.length) readOnlyToolAdapters.set(adapter,
+    Object.freeze({ runtimeId: adapter.runtimeId, start: adapter.start, stop: adapter.stop, streamEvents: adapter.streamEvents, collectArtifacts: adapter.collectArtifacts }));
   return adapter;
 }

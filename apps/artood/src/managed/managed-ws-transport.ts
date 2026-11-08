@@ -213,7 +213,7 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
   }
   function deliver(g: Generation, message: ServerToNodeMessage): void {
     if (!isCurrent(g) || !g.usable) return;
-    if (message.deadline_at !== undefined && Date.parse(message.deadline_at) <= Date.now()) {
+    if ("deadline_at" in message && message.deadline_at !== undefined && Date.parse(message.deadline_at) <= Date.now()) {
       try { raw(g, { kind: "command.ack", node_id: hello.node_id, command_id: message.id, status: "rejected",
         error_code: "process_start_failed", message: "Command expired before managed session dispatch" }); }
       catch { lose(g, new DeliveryStopped("Managed expired-command response failed")); }

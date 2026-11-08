@@ -21,6 +21,8 @@ export interface FreshWorktreeInput {
   readonly root: string;
   readonly sourceRepo: string;
   readonly allowedRoots: readonly string[];
+  /** Optional node-authorized immutable baseline. Absence preserves HEAD semantics. */
+  readonly sourceCommit?: string;
 }
 
 
@@ -232,9 +234,13 @@ function overlaps(candidate: PhysicalPath, protectedDirectory: PhysicalPath): bo
 export async function preflightFreshWorktree(input: FreshWorktreeInput, options: GitReadOptions = {}): Promise<FreshWorktreeValidation> {
   pathInput(input.root, "root");
   pathInput(input.sourceRepo, "sourceRepo");
+  if (input.sourceCommit !== undefined && (typeof input.sourceCommit !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(input.sourceCommit))) {
+    fail("invalid_input", "A fixed source commit must be a complete lowercase object ID");
+  }
   if (!Array.isArray(input.allowedRoots) || input.allowedRoots.length === 0) fail("invalid_input", "Node allowlist is required");
   for (const root of input.allowedRoots) pathInput(root, "allowedRoots entry");
-  input = Object.freeze({ root: input.root, sourceRepo: input.sourceRepo, allowedRoots: Object.freeze([...input.allowedRoots]) });
+  input = Object.freeze({ root: input.root, sourceRepo: input.sourceRepo, allowedRoots: Object.freeze([...input.allowedRoots]),
+    ...(input.sourceCommit === undefined ? {} : { sourceCommit: input.sourceCommit }) });
   options = snapshotGitOptions(options);
   assertNotAborted(options);
   absentTarget(input.root);
@@ -248,7 +254,8 @@ export async function preflightFreshWorktree(input: FreshWorktreeInput, options:
   authorized(target, allowed, "Target");
   authorized(source, allowed, "Source");
 
-  const read = gitReader(source.canonicalPath, options);
+  const reader = gitReader(source.canonicalPath, options);
+  const read = (args: readonly string[]) => reader(input.sourceCommit === undefined ? args : ["--no-replace-objects", ...args]);
   const bare = singleResult(await read(["rev-parse", "--is-bare-repository"]));
   if (bare === "true") fail("unsupported_repository", "This prototype requires a non-bare source checkout");
   if (bare !== "false") fail("invalid_git_output", "Git did not identify repository type");
@@ -267,14 +274,16 @@ export async function preflightFreshWorktree(input: FreshWorktreeInput, options:
   if ([checkout, gitDirectory, commonDirectory].some((path) => overlaps(target, path))) {
     fail("unsafe_topology", "Target overlaps source or Git metadata");
   }
-  const sourceHead = singleResult(await read(["rev-parse", "--verify", "HEAD^{commit}"]));
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sourceHead)) fail("invalid_git_output", "Source has no unambiguous committed HEAD");
+  const checkoutHead = singleResult(await read(["rev-parse", "--verify", "HEAD^{commit}"]));
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(checkoutHead)) fail("invalid_git_output", "Source has no unambiguous committed HEAD");
+  const sourceHead = input.sourceCommit ?? checkoutHead;
+  if (input.sourceCommit !== undefined) await read(["cat-file", "-e", `${sourceHead}^{commit}`]);
   const worktrees = parseWorktreePorcelain(await read(["worktree", "list", "--porcelain", "-z"]));
   const registered = worktrees.map((record) => ({ record, physical: existingDirectory(record.path) }));
   if (new Set(registered.map((item) => item.physical.ancestor.identity)).size !== registered.length) {
     fail("invalid_git_output", "Registered worktrees alias the same physical directory");
   }
-  if (!registered.some((item) => item.physical.ancestor.identity === checkout.ancestor.identity && item.record.head === sourceHead)) {
+  if (!registered.some((item) => item.physical.ancestor.identity === checkout.ancestor.identity && item.record.head === checkoutHead)) {
     fail("invalid_git_output", "Git worktree inventory does not match the source checkout/HEAD");
   }
   if (registered.some((item) => overlaps(target, item.physical))) {

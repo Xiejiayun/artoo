@@ -17,6 +17,12 @@ import { and, eq, isNull, or } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
+import { unsettledStandaloneExecutions } from "./execution-state.js";
+import { goalImportedDesignContinuations, goalImportedDesignReviews, goalImportedExecutions } from "@artoo/db";
+import { goalImportedExecutionReviews, goalImportedExecutionRepairs } from "@artoo/db";
+import { goalImportedValidations, goalImportedValidationReviews } from "@artoo/db";
+import { goalRecoveryValidations, goalRecoveryValidationReviews } from "@artoo/db";
+import { goalCleanValidations, goalCleanValidationReviews } from "@artoo/db";
 
 /**
  * How long after its last heartbeat a runtime row is considered stale (and its
@@ -53,6 +59,19 @@ export interface SchedulerOutcome {
 }
 
 export interface ScheduleOptions {
+  /** Internal H4 revalidation of its reserved author/reviewer only. */
+  importedDesignReviewId?: string;
+  /** Internal H3 revalidation of its own exact reservation; never populated from assignment requests. */
+  importedDesignRunId?: string;
+  importedExecutionRunId?: string;
+  importedExecutionReviewId?: string;
+  importedExecutionRepairRunId?: string;
+  importedValidationRunId?: string;
+  importedValidationReviewId?: string;
+  recoveryValidationRunId?: string;
+  recoveryValidationReviewId?: string;
+  cleanValidationRunId?: string;
+  cleanValidationReviewId?: string;
   mode: "auto" | "manual";
   projectId: string;
   /** Derived from the validated explicit/generated branch request. */
@@ -110,6 +129,62 @@ export async function scheduleTask(
   required: readonly Capability[],
   opts: ScheduleOptions,
 ): Promise<SchedulerOutcome> {
+  if (opts.cleanValidationRunId) {
+    const [owner] = await tx.select().from(goalCleanValidations).where(and(eq(goalCleanValidations.runId, opts.cleanValidationRunId), eq(goalCleanValidations.organizationId, ctx.organizationId)));
+    if (!owner || owner.stopRequested || opts.mode !== "manual" || opts.agentInstanceId !== owner.writerInstanceId)
+      throw AppError.conflict("Only clean validation can revalidate its exact reserved author");
+  }
+  if (opts.cleanValidationReviewId) {
+    const [owner] = await tx.select().from(goalCleanValidationReviews).where(and(eq(goalCleanValidationReviews.id, opts.cleanValidationReviewId), eq(goalCleanValidationReviews.organizationId, ctx.organizationId)));
+    if (!owner || owner.stopRequested || opts.mode !== "manual" || ![owner.authorInstanceId, owner.reviewerInstanceId].includes(opts.agentInstanceId ?? ""))
+      throw AppError.conflict("Only clean review can revalidate its exact reserved participants");
+  }
+  if (opts.recoveryValidationRunId) {
+    const [owner] = await tx.select().from(goalRecoveryValidations).where(and(eq(goalRecoveryValidations.runId, opts.recoveryValidationRunId), eq(goalRecoveryValidations.organizationId, ctx.organizationId)));
+    if (!owner || owner.stopRequested || opts.mode !== "manual" || opts.agentInstanceId !== owner.writerInstanceId)
+      throw AppError.conflict("Only recovery validation can revalidate its exact reserved author");
+  }
+  if (opts.recoveryValidationReviewId) {
+    const [owner] = await tx.select().from(goalRecoveryValidationReviews).where(and(eq(goalRecoveryValidationReviews.id, opts.recoveryValidationReviewId), eq(goalRecoveryValidationReviews.organizationId, ctx.organizationId)));
+    if (!owner || owner.stopRequested || opts.mode !== "manual" || ![owner.authorInstanceId, owner.reviewerInstanceId].includes(opts.agentInstanceId ?? ""))
+      throw AppError.conflict("Only recovery review can revalidate its exact reserved participants");
+  }
+  if (opts.importedValidationRunId) {
+    const [owner] = await tx.select().from(goalImportedValidations).where(and(eq(goalImportedValidations.runId, opts.importedValidationRunId), eq(goalImportedValidations.organizationId, ctx.organizationId)));
+    if (!owner || owner.stopRequested || opts.mode !== "manual" || opts.agentInstanceId !== owner.writerInstanceId)
+      throw AppError.conflict("Only H7 can revalidate its exact reserved validation author");
+  }
+  if (opts.importedValidationReviewId) {
+    const [owner] = await tx.select().from(goalImportedValidationReviews).where(and(eq(goalImportedValidationReviews.id, opts.importedValidationReviewId), eq(goalImportedValidationReviews.organizationId, ctx.organizationId)));
+    if (!owner || owner.stopRequested || opts.mode !== "manual" || ![owner.authorInstanceId, owner.reviewerInstanceId].includes(opts.agentInstanceId ?? ""))
+      throw AppError.conflict("Only H7 can revalidate its exact final-product review participants");
+  }
+  if (opts.importedExecutionReviewId) {
+    const [owner] = await tx.select().from(goalImportedExecutionReviews).where(and(eq(goalImportedExecutionReviews.id, opts.importedExecutionReviewId), eq(goalImportedExecutionReviews.organizationId, ctx.organizationId)));
+    if (!owner || owner.stopRequested || opts.mode !== "manual" || ![owner.authorInstanceId, owner.reviewerInstanceId].includes(opts.agentInstanceId ?? ""))
+      throw AppError.conflict("Only H6 can revalidate its exact reserved review participants");
+  }
+  if (opts.importedExecutionRepairRunId) {
+    const [owner] = await tx.select().from(goalImportedExecutionRepairs).where(and(eq(goalImportedExecutionRepairs.runId, opts.importedExecutionRepairRunId), eq(goalImportedExecutionRepairs.organizationId, ctx.organizationId)));
+    if (!owner || owner.stopRequested || opts.mode !== "manual" || opts.agentInstanceId !== owner.writerInstanceId)
+      throw AppError.conflict("Only a repair can revalidate its exact reserved author");
+  }
+  if (opts.importedExecutionRunId) {
+    const [owner] = await tx.select().from(goalImportedExecutions).where(and(eq(goalImportedExecutions.organizationId, ctx.organizationId), eq(goalImportedExecutions.runId, opts.importedExecutionRunId)));
+    if (!owner || owner.stopRequested || owner.result !== null || opts.mode !== "manual" || opts.agentInstanceId !== owner.writerInstanceId)
+      throw AppError.conflict("Only an unused H5 can revalidate its reserved implementation run");
+  }
+  if (opts.importedDesignReviewId) {
+    const [owner] = await tx.select().from(goalImportedDesignReviews).where(and(eq(goalImportedDesignReviews.id, opts.importedDesignReviewId), eq(goalImportedDesignReviews.organizationId, ctx.organizationId)));
+    if (!owner || owner.stopRequested || opts.mode !== "manual" || ![owner.authorInstanceId, owner.reviewerInstanceId].includes(opts.agentInstanceId ?? ""))
+      throw AppError.conflict("Only H4 can revalidate its exact reserved participants");
+  }
+  if (opts.importedDesignRunId) {
+    const [owner] = await tx.select().from(goalImportedDesignContinuations).where(and(eq(goalImportedDesignContinuations.organizationId, ctx.organizationId),
+      eq(goalImportedDesignContinuations.runId, opts.importedDesignRunId)));
+    if (!owner || owner.stopRequested || owner.result !== null || opts.mode !== "manual" || opts.agentInstanceId !== owner.writerInstanceId)
+      throw AppError.conflict("Only an unused imported design can revalidate its exact reserved run");
+  }
   const enabledSkillInstalls = await loadEnabledSkillInstallStates(tx, ctx, opts.projectId);
   const rows = await tx
     .select({
@@ -152,14 +227,23 @@ export async function scheduleTask(
 
   // Active (non-terminal) runs per instance, for capacity. One query; counted in JS.
   const activeRunRows = await tx
-    .select({ agentInstanceId: runs.agentInstanceId, status: runs.status })
+    .select({ id: runs.id, agentInstanceId: runs.agentInstanceId, status: runs.status })
     .from(runs)
     .where(eq(runs.organizationId, ctx.organizationId));
   const activeRunsByInstance = new Map<string, number>();
   for (const r of activeRunRows) {
-    if (isActiveRunStatus(r.status)) {
+    if (r.id !== opts.cleanValidationRunId && r.id !== opts.recoveryValidationRunId && r.id !== opts.importedValidationRunId && r.id !== opts.importedDesignRunId && r.id !== opts.importedExecutionRunId && r.id !== opts.importedExecutionRepairRunId && isActiveRunStatus(r.status)) {
       activeRunsByInstance.set(r.agentInstanceId, (activeRunsByInstance.get(r.agentInstanceId) ?? 0) + 1);
     }
+  }
+  for (const operation of await unsettledStandaloneExecutions(ctx, tx)) {
+    if ("runId" in operation && (operation.runId === opts.cleanValidationRunId || operation.runId === opts.recoveryValidationRunId || operation.runId === opts.importedValidationRunId || operation.runId === opts.importedDesignRunId || operation.runId === opts.importedExecutionRunId || operation.runId === opts.importedExecutionRepairRunId || activeRunRows.some(run => run.id === operation.runId && isActiveRunStatus(run.status)))) continue;
+    if (operation.kind === "clean_validation_review" && operation.id === opts.cleanValidationReviewId) continue;
+    if (operation.kind === "recovery_validation_review" && operation.id === opts.recoveryValidationReviewId) continue;
+    if (operation.kind === "validation_review" && operation.id === opts.importedValidationReviewId) continue;
+    if (operation.kind === "execution_review" && operation.id === opts.importedExecutionReviewId) continue;
+    if (operation.kind === "design_review" && operation.id === opts.importedDesignReviewId) continue;
+    for (const instanceId of operation.participantInstanceIds) activeRunsByInstance.set(instanceId, (activeRunsByInstance.get(instanceId) ?? 0) + 1);
   }
 
   // Computers with a bound REVOKED device (exists/aggregate, so multiple device

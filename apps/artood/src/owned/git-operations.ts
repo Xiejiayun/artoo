@@ -8,6 +8,9 @@ export interface GitReadOptions {
   readonly maxOutputBytes?: number;
   readonly terminationTimeoutMs?: number;
   readonly environment?: Readonly<NodeJS.ProcessEnv>;
+  /** Trusted node-local index; this is not a wire-supplied environment override. */
+  readonly indexFile?: string;
+  readonly guardParent?: boolean;
   readonly signal?: AbortSignal;
 }
 
@@ -28,5 +31,7 @@ export async function gitOperation(cwd: string, args: readonly string[], options
     maxOutputBytes: options.maxOutputBytes ?? 1024 * 1024,
     terminationTimeoutMs: options.terminationTimeoutMs ?? 5_000,
     environment: options.environment,
+    indexFile: options.indexFile,
+    guardParent: options.guardParent,
   });
 }

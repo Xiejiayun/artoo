@@ -29,7 +29,8 @@ function fixture(mixed?: { allowNewAllocations: boolean },
   workspace: ManagedNodeRunnerOptions["workspace"] = { worktreeBaseRepo: "/Users/fixture/source", allowedRoots: ["/Users/fixture"] }) {
   const ready = deferred<void>();
   const state = { connected: false };
-  const client = { start: vi.fn(), stop: vi.fn(async (_cancel?: boolean) => {}),
+  const client = { start: vi.fn(), ready: vi.fn(async () => {}), stop: vi.fn(async (_cancel?: boolean) => {}),
+    replayReleaseHealth: vi.fn(async () => {}),
     invalidateManagedStartupSession: vi.fn(), requestManagedRunStop: vi.fn(async () => {}),
     failManagedConnection: vi.fn(async () => {}) };
   const close = vi.fn(async () => { state.connected = false; ready.reject(new DeliveryStopped("intentional link close")); });

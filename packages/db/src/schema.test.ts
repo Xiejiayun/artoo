@@ -1,7 +1,7 @@
 import { PgliteDbClient } from "@artoo/storage";
 import { getTableName, is, sql } from "drizzle-orm";
 import { PgTable } from "drizzle-orm/pg-core";
-import * as schema from "./schema.js";
+import * as schema from "./index.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { loadMigrationStatements } from "./migrations.js";
@@ -24,7 +24,7 @@ describe("db migrations", () => {
     const res = await client.db.execute(
       sql`select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE' order by table_name`,
     );
-    // Compare the exact migrated inventory with the declared domain schema.
+    // Compare the exact migrated inventory with every publicly exported schema module.
     // A fixed count misses renamed/missing tables and becomes stale on additions.
     const expected = Object.values(schema).filter((value) => is(value, PgTable)).map(getTableName).sort();
     expect(res.rows.map((row: { table_name: string }) => row.table_name)).toEqual(expected);

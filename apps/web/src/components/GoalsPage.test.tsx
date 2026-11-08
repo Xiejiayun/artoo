@@ -2,7 +2,9 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { GoalSchema, type Plan } from "@artoo/domain";
+import { GoalSchema, GoalAutomationSchema, ProductReleaseSchema, ReleaseAcceptanceBindingV1Schema,
+  canonicalReleaseAcceptanceBinding, type Plan } from "@artoo/domain";
+import { createHash } from "node:crypto";
 import type { ApiClient } from "../api/client.js";
 import { bootstrapFixture, fakeApi, renderWithProviders } from "../test/utils.js";
 import { GoalsPage } from "./GoalsPage.js";
@@ -13,6 +15,232 @@ function api(overrides: Partial<ApiClient> = {}) {
 }
 
 describe("GoalsPage", () => {
+  const automation = GoalAutomationSchema.parse({ goal_id: goal.id, organization_id: "org_default", actor_user_id: "user_1",
+    consent_id: null, policy_version: "local-v1", status: "planning", discussion_id: null, plan_id: null,
+    agent_instance_id: null, computer_id: null, workspace_root: null, verification_profile_id: "default", last_error: null, created_at: goal.created_at, updated_at: goal.updated_at });
+
+  it("starts autonomous development from one requirement without asking for a title, team or plan", async () => {
+    const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockResolvedValue({ goal, automation });
+    renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal }) });
+    await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
+    const dialog = screen.getByRole("dialog", { name: "New goal" });
+    await userEvent.selectOptions(within(dialog).getByLabelText("Execution mode"), "autonomous");
+    expect(within(dialog).queryByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("Goal title")).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("Goal acceptance criteria")).not.toBeInTheDocument();
+    await userEvent.type(within(dialog).getByLabelText("Objective"), " Build a journal that preserves entries ");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
+    await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledWith({ project_id: "proj_artoo", objective: "Build a journal that preserves entries", verification_profile_id: "default", execution_mode: "agent_team", max_retries: 3 }, expect.any(String)));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("shows resource waiting and planning pause without manual plan controls", async () => {
+    const goalAction = vi.fn<ApiClient["goalAction"]>().mockResolvedValue({});
+    renderWithProviders(<GoalsPage />, { client: api({ goalAction, getGoalAutomation: async () => ({ automation: { ...automation, status: "waiting", last_error: "Waiting for a computer with acceptance checks" } }) }) });
+    const progress = await screen.findByRole("region", { name: "Autonomous progress" });
+    expect(within(progress).queryByLabelText("Cross-computer authorization")).not.toBeInTheDocument();
+    expect(within(progress).getByText("Waiting for a computer with acceptance checks")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Propose plan" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start planning discussion" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Pause goal" }));
+    await waitFor(() => expect(goalAction).toHaveBeenCalledWith(goal.id, "pause", expect.any(String)));
+  });
+
+  it("requests team publication with one objective and the configured destination", async () => {
+    const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockResolvedValue({ goal, automation });
+    renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal }) });
+    await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
+    const dialog = screen.getByRole("dialog", { name: "New goal" });
+    await userEvent.selectOptions(within(dialog).getByLabelText("Execution mode"), "publish");
+    expect(within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeChecked();
+    expect(within(dialog).queryByLabelText("Goal title")).not.toBeInTheDocument();
+    await userEvent.type(within(dialog).getByLabelText("Objective"), "Publish an accessible journal");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
+    await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledWith({ project_id: "proj_artoo", objective: "Publish an accessible journal", verification_profile_id: "default", execution_mode: "agent_team", release_profile_id: "default", max_retries: 3 }, expect.any(String)));
+  });
+
+  it.each([true, false])("sends cross-computer authorization only when the explicit choice remains %s", async (enabled) => {
+    const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockResolvedValue({ goal, automation });
+    renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal }) });
+    await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
+    const dialog = screen.getByRole("dialog", { name: "New goal" });
+    await userEvent.selectOptions(within(dialog).getByLabelText("Execution mode"), "publish");
+    const choice = within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" });
+    expect(choice).not.toBeChecked();
+    await userEvent.click(choice);
+    if (!enabled) await userEvent.click(choice);
+    await userEvent.type(within(dialog).getByLabelText("Objective"), "Publish with a prepared team");
+    expect(createAutonomousGoal).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
+    await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledTimes(1));
+    expect(createAutonomousGoal).toHaveBeenCalledWith({ project_id: "proj_artoo", objective: "Publish with a prepared team",
+      verification_profile_id: "default", execution_mode: "agent_team", release_profile_id: "default", max_retries: 3,
+      ...(enabled ? { source_handoff: { version: 1, mode: "automatic" } } : {}) }, expect.any(String));
+  });
+
+  it.each(["manual", "autonomous"])("clears cross-computer authorization after switching to %s", async (mode) => {
+    const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockResolvedValue({ goal, automation });
+    renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal }) });
+    await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
+    const dialog = screen.getByRole("dialog", { name: "New goal" });
+    const executionMode = within(dialog).getByLabelText("Execution mode");
+    await userEvent.selectOptions(executionMode, "publish");
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" }));
+    await userEvent.selectOptions(executionMode, mode);
+    expect(within(dialog).queryByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeInTheDocument();
+    await userEvent.selectOptions(executionMode, "publish");
+    expect(within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeChecked();
+    expect(createAutonomousGoal).not.toHaveBeenCalled();
+    await userEvent.type(within(dialog).getByLabelText("Objective"), "Publish after changing mode");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
+    await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledWith({ project_id: "proj_artoo", objective: "Publish after changing mode",
+      verification_profile_id: "default", execution_mode: "agent_team", release_profile_id: "default", max_retries: 3 }, expect.any(String)));
+  });
+
+  it.each(["Cancel", "Close"])("clears cross-computer authorization when the dialog is dismissed with %s", async (button) => {
+    const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockResolvedValue({ goal, automation });
+    renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal }) });
+    await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
+    const first = screen.getByRole("dialog", { name: "New goal" });
+    await userEvent.selectOptions(within(first).getByLabelText("Execution mode"), "publish");
+    await userEvent.click(within(first).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" }));
+    await userEvent.click(within(first).getByRole("button", { name: button }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(createAutonomousGoal).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "New goal" }));
+    const next = screen.getByRole("dialog", { name: "New goal" });
+    await userEvent.selectOptions(within(next).getByLabelText("Execution mode"), "publish");
+    expect(within(next).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeChecked();
+    await userEvent.type(within(next).getByLabelText("Objective"), "Publish a new request");
+    await userEvent.click(within(next).getByRole("button", { name: "Start autonomous goal" }));
+    await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledWith({ project_id: "proj_artoo", objective: "Publish a new request",
+      verification_profile_id: "default", execution_mode: "agent_team", release_profile_id: "default", max_retries: 3 }, expect.any(String)));
+  });
+
+  it("keeps the submitted cross-computer choice fixed while the request is pending", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockImplementation(async () => { await pending; return { goal, automation }; });
+    renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal }) });
+    try {
+      await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
+      const dialog = screen.getByRole("dialog", { name: "New goal" });
+      await userEvent.selectOptions(within(dialog).getByLabelText("Execution mode"), "publish");
+      const choice = within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" });
+      await userEvent.click(choice);
+      await userEvent.type(within(dialog).getByLabelText("Objective"), "Keep the submitted choice");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
+      await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledTimes(1));
+      expect(choice).toBeDisabled();
+      expect(within(dialog).getByLabelText("Execution mode")).toBeDisabled();
+      await userEvent.click(choice);
+      expect(choice).toBeChecked();
+      expect(createAutonomousGoal.mock.calls[0]?.[0].source_handoff).toEqual({ version: 1, mode: "automatic" });
+      expect(createAutonomousGoal).toHaveBeenCalledTimes(1);
+    } finally { release(); }
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("shows cross-computer permission without claiming a selected destination or successful publication", async () => {
+    const state = GoalAutomationSchema.parse({ ...automation, execution_mode: "agent_team", release_profile_id: "default",
+      source_handoff: { version: 1, mode: "automatic" } });
+    renderWithProviders(<GoalsPage />, { client: api({ getGoalAutomation: async () => ({ automation: state }), getGoalRelease: async () => ({ release: null }) }) });
+    const permission = await screen.findByLabelText("Cross-computer authorization");
+    expect(permission).toHaveTextContent("Cross-computer work is allowed for this goal. Artoo selects a destination after the required checks pass.");
+    expect(screen.queryByLabelText("Team responsibilities")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open published product" })).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("Product publication")).getByText(/Waiting for implementation/)).toBeInTheDocument();
+  });
+
+  it("shows real stage ownership without asking the user to assign the team", async () => {
+    const team = { version: 1 as const, members: ["research", "design", "implementation", "validation"].map((stage) => ({ stage, agent_instance_id: stage === "implementation" ? "instance_mock_coder" : "instance_designer" })), reviewer_instance_ids: ["instance_mock_coder", "instance_designer"] };
+    const state = GoalAutomationSchema.parse({ ...automation, execution_mode: "agent_team", team });
+    const bootstrap = bootstrapFixture();
+    bootstrap.agents.push({ ...bootstrap.agents[0]!, id: "agent_designer", display_name: "Product specialist" });
+    bootstrap.agent_instances.push({ ...bootstrap.agent_instances[0]!, id: "instance_designer", agent_id: "agent_designer" });
+    renderWithProviders(<GoalsPage />, { client: api({ bootstrap: async () => bootstrap, getGoalAutomation: async () => ({ automation: state }) }) });
+    const roles = await screen.findByLabelText("Team responsibilities");
+    expect(within(roles).getByText(/Implementation/).closest("li")).toHaveTextContent("Mock Coder");
+    expect(within(roles).getByText(/Research/).closest("li")).toHaveTextContent("Product specialist");
+    expect(within(roles).getByText(/reviewed by another team member/)).toBeInTheDocument();
+  });
+
+  it("does not report publication before an actual release receipt arrives", async () => {
+    renderWithProviders(<GoalsPage />, { client: api({ getGoalAutomation: async () => ({ automation: { ...automation, release_profile_id: "default" } }) }) });
+    const publication = await screen.findByLabelText("Product publication");
+    expect(within(publication).getByText(/Waiting for implementation/)).toBeInTheDocument();
+    expect(within(publication).queryByRole("link", { name: "Open published product" })).not.toBeInTheDocument();
+  });
+
+  it.each(["published", "rolled_back"] as const)("shows %s release evidence without confusing rollback with success", async (outcome) => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const request = { version: 1, release_id: "release_1", goal_id: goal.id, project_id: goal.project_id, run_id: "run_1", release_profile_id: "default", verification_request_id: "verify_1", verification_profile_id: "default", verification_profile_digest: digest, subject_digest: digest };
+    const release = ProductReleaseSchema.parse({ id: "release_1", goal_id: goal.id, project_id: goal.project_id, computer_id: "computer_1", run_id: "run_1", evidence_id: "evidence_1", status: outcome, request, created_at: goal.created_at, updated_at: goal.updated_at,
+      receipt: { request, release_profile_digest: digest, artifact_digest: digest, outcome, endpoint: outcome === "published" ? "https://journal.example.com/" : null, previous_release_id: null, health_checks: [{ path: "/", status_code: outcome === "published" ? 200 : 503, body_digest: digest, passed: outcome === "published", checked_at: "2026-11-04T00:00:00Z" }] } });
+    renderWithProviders(<GoalsPage />, { client: api({ getGoalAutomation: async () => ({ automation: { ...automation, release_profile_id: "default" } }), getGoalRelease: async () => ({ release }) }) });
+    const publication = await screen.findByLabelText("Product publication");
+    if (outcome === "published") expect(await within(publication).findByRole("link", { name: "Open published product" })).toHaveAttribute("href", "https://journal.example.com/");
+    else {
+      expect(await within(publication).findByText(/previous release was restored/)).toBeInTheDocument();
+      expect(within(publication).queryByRole("link", { name: "Open published product" })).not.toBeInTheDocument();
+    }
+  });
+
+  it.each(["healthy", "degraded", "rolled_back", "unavailable"] as const)("shows the latest %s observation without reusing the initial publication success", async (state) => {
+    const digest = `sha256:${"a".repeat(64)}`, checkedAt = "2026-11-04T00:01:00Z";
+    const request = { version: 1, release_id: "release_1", goal_id: goal.id, project_id: goal.project_id, run_id: "run_1", release_profile_id: "default", verification_request_id: "verify_1", verification_profile_id: "default", verification_profile_digest: digest, subject_digest: digest };
+    const checks = [{ path: "/", status_code: 200, body_digest: digest, passed: true, checked_at: "2026-11-04T00:00:00Z" }];
+    const release = ProductReleaseSchema.parse({ id: request.release_id, goal_id: goal.id, project_id: goal.project_id, computer_id: "computer_1", run_id: "run_1", evidence_id: "evidence_1", status: "published", request, created_at: goal.created_at, updated_at: goal.updated_at,
+      receipt: { request, release_profile_digest: digest, artifact_digest: digest, outcome: "published", endpoint: "https://journal.example.com/", previous_release_id: "release_previous", health_checks: checks },
+      health: { version: 1, event_id: "health_1", sequence: 1, request, release_profile_digest: digest, artifact_digest: digest, state,
+        active_release_id: state === "unavailable" ? null : state === "rolled_back" ? "release_previous" : request.release_id,
+        active_artifact_digest: state === "unavailable" ? null : digest, consecutive_failures: state === "healthy" ? 0 : 1,
+        health_checks: checks.map((check) => ({ ...check, passed: state === "healthy", status_code: state === "healthy" ? 200 : 503 })),
+        recovery_checks: state === "rolled_back" ? checks : [], checked_at: checkedAt } });
+    renderWithProviders(<GoalsPage />, { client: api({ getGoalAutomation: async () => ({ automation: { ...automation, status: "completed", release_profile_id: "default" } }), getGoalRelease: async () => ({ release }) }) });
+    const publication = await screen.findByLabelText("Product publication");
+    const labels = { healthy: /latest health check passed/, degraded: /latest health check failed/, rolled_back: /previous release was restored and checked/, unavailable: /taken offline/ };
+    expect(await within(publication).findByText(labels[state])).toBeInTheDocument();
+    expect(publication.querySelector("time")).toHaveAttribute("datetime", checkedAt);
+    if (state === "healthy") expect(within(publication).getByRole("link", { name: "Open published product" })).toBeInTheDocument();
+    else {
+      expect(within(publication).queryByRole("link", { name: "Open published product" })).not.toBeInTheDocument();
+      expect(screen.queryByText("The verified product was published and its endpoint passed the configured health checks.")).not.toBeInTheDocument();
+    }
+  });
+
+  it.each(["queued", "published", "failed", "rolled_back"] as const)("keeps publication acceptance distinct for %s requests", async (status) => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const acceptanceBinding = ReleaseAcceptanceBindingV1Schema.parse({ version: 1, plan: { id: "plan_1", version: 1 },
+      research: { path: ".artoo/product/research.json", checksum: digest, size: 100 }, measurement_plan_digest: digest,
+      release_binding: { version: 1, release_profile_id: "default", release_profile_digest: digest, contract_digest: digest,
+        project_id: goal.project_id, workspace_root: "/workspace/product", verification_profile_id: "default", verification_profile_digest: digest },
+      criteria: [{ requirement_id: "publish", criterion_index: 0, criterion_digest: digest, claim_id: "configured-static-publication" }] });
+    const request = { version: 1, release_id: "release_1", goal_id: goal.id, project_id: goal.project_id, run_id: "run_1",
+      release_profile_id: "default", verification_request_id: "verify_1", verification_profile_id: "default",
+      verification_profile_digest: digest, subject_digest: digest, acceptance_binding: acceptanceBinding };
+    const passed = status === "published";
+    const release = ProductReleaseSchema.parse({ id: request.release_id, goal_id: goal.id, project_id: goal.project_id,
+      computer_id: "computer_1", run_id: request.run_id, evidence_id: "evidence_1", status, request,
+      created_at: goal.created_at, updated_at: goal.updated_at, receipt: status === "queued" ? null : {
+        request, release_profile_digest: digest, artifact_digest: digest, outcome: status, endpoint: passed ? "https://journal.example.com/" : null,
+        previous_release_id: null, health_checks: [{ path: "/", status_code: passed ? 200 : 503, body_digest: digest, passed, checked_at: "2026-11-05T00:00:00Z" }],
+        ...(passed ? { acceptance: { version: 1, scope: "node-http-point-in-time", settled_criteria: acceptanceBinding.criteria,
+          binding_digest: `sha256:${createHash("sha256").update(canonicalReleaseAcceptanceBinding(acceptanceBinding)).digest("hex")}` } } : {}),
+      } });
+    renderWithProviders(<GoalsPage />, { client: api({ getGoalAutomation: async () => ({ automation: { ...automation, release_profile_id: "default" } }),
+      getGoalRelease: async () => ({ release }) }) });
+    const description = await screen.findByLabelText("Publication acceptance");
+    expect(description).toHaveTextContent(passed ? "satisfied 1 publication acceptance criterion at publication time"
+      : status === "queued" ? "remains pending" : "remains unsatisfied");
+  });
+
+  it("reports verified workspace completion without claiming publication", async () => {
+    renderWithProviders(<GoalsPage />, { client: api({ listGoals: async () => ({ goals: [{ ...goal, status: "completed" }] }), getGoalAutomation: async () => ({ automation: { ...automation, status: "completed" } }) }) });
+    const progress = await screen.findByRole("region", { name: "Autonomous progress" });
+    expect(within(progress).getByText(/has not been automatically published/)).toBeInTheDocument();
+  });
+
   it("creates an outcome in a focused dialog using the existing goal contract", async () => {
     const createGoal = vi.fn<ApiClient["createGoal"]>().mockResolvedValue({ goal });
     renderWithProviders(<GoalsPage />, { client: api({ createGoal }) });

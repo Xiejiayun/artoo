@@ -11,6 +11,7 @@ import { ingestRunEvent } from "./services/run-service.js";
 import * as runService from "./services/run-service.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 import type { GraceWindowManager } from "./ws/grace-window.js";
+import { parseNodeToServer } from "./ws/ws-node-transport.js";
 
 const NODE_ID = "computer_local_mock";
 
@@ -209,12 +210,14 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
     const first = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=dev`);
     await new Promise<void>((resolve) => {
       first.addEventListener("open", () => {
-        first.send(JSON.stringify(hello(NODE_ID)));
+        first.send(JSON.stringify({ ...hello(NODE_ID), execution_features: ["run-verification.v1"],
+          verification_profiles: [{ profile_id: "default", project_id: "proj_artoo", workspace_root: "/work/product" }] }));
         resolve();
       });
     });
     await waitFor(() => server?.nodeRegistry.get(NODE_ID) !== undefined, "first node registered");
     const firstBinding = server.nodeRegistry.get(NODE_ID);
+    expect(server.ctx.supportsVerificationProfile?.(NODE_ID, "default", "proj_artoo", "/work/product")).toBe(true);
 
     const second = new WebSocket(`ws://127.0.0.1:${port}/api/v1/node?token=dev`);
     await new Promise<void>((resolve) => {
@@ -228,6 +231,8 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
       "second node registered",
     );
     const secondBinding = server.nodeRegistry.get(NODE_ID);
+    expect(firstBinding?.supportsVerificationProfile("default", "proj_artoo", "/work/product")).toBe(false);
+    expect(server.ctx.supportsVerificationProfile?.(NODE_ID, "default", "proj_artoo", "/work/product")).toBe(false);
 
     first.close();
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -456,5 +461,71 @@ describe("node WS auth gate (#28 slice 3a)", () => {
     server = await buildTestServer();
     const port = await listen(server);
     await expect(closeCodeFor(port, "sk_device_deadbeef_unknownsecret")).resolves.toBe(1008);
+  });
+});
+
+describe("H6 server WebSocket envelope routing", () => {
+  // Inert protocol fixtures: these do not establish native closure, receipt possession or review acceptance.
+  const digest = `sha256:${"a".repeat(64)}`;
+  const review = { version: 1, review_id: "h6-review", request_digest: digest } as const;
+  const repair = { version: 1, repair_id: "h6-repair", request_digest: digest, run_id: "repair-run" } as const;
+  const envelopes = [
+    { kind: "product.source.execution-review.ack.v1", node_id: "node-B", command_id: "review-command", payload: review, status: "accepted" },
+    { kind: "product.source.execution-review.result.v1", node_id: "node-B", command_id: "review-command",
+      payload: { ...review, execution_authorized: false, outcome: "cancelled_before_start", closed: true, reason: "Controlled cancellation" } },
+    { kind: "product.source.execution-repair.ack.v1", node_id: "node-B", command_id: "repair-command", payload: repair, status: "accepted" },
+    { kind: "product.source.execution-repair.result.v1", node_id: "node-B", command_id: "repair-command",
+      payload: { ...repair, outcome: "cancelled_before_start", closed: true } },
+  ] as const;
+
+  it.each(envelopes)("parses $kind from actual text and byte wire input", envelope => {
+    const wire = JSON.stringify(envelope);
+    expect(parseNodeToServer(wire)).toEqual(envelope);
+    expect(parseNodeToServer(new TextEncoder().encode(wire))).toEqual(envelope);
+  });
+
+  it.each(envelopes)("keeps strict envelope and nested payload validation for $kind", envelope => {
+    expect(parseNodeToServer(JSON.stringify({ ...envelope, node_id: "" }))).toBeNull();
+    expect(parseNodeToServer(JSON.stringify({ ...envelope, command_id: "" }))).toBeNull();
+    expect(parseNodeToServer(JSON.stringify({ ...envelope, unexpected: true }))).toBeNull();
+    expect(parseNodeToServer(JSON.stringify({ ...envelope, payload: { ...envelope.payload, request_digest: "not-a-digest" } }))).toBeNull();
+    expect(parseNodeToServer(JSON.stringify({ ...envelope, payload: { ...envelope.payload, unexpected: true } }))).toBeNull();
+    const otherKind = envelope.kind.includes("execution-review")
+      ? envelope.kind.replace("execution-review", "execution-repair") : envelope.kind.replace("execution-repair", "execution-review");
+    expect(parseNodeToServer(JSON.stringify({ ...envelope, kind: otherKind }))).toBeNull();
+  });
+
+  it("does not promote transport fields into execution or closure authority", () => {
+    expect(parseNodeToServer(JSON.stringify({ ...envelopes[0], status: "reviewed" }))).toBeNull();
+    expect(parseNodeToServer(JSON.stringify({ ...envelopes[2], status: "finished" }))).toBeNull();
+    expect(parseNodeToServer(JSON.stringify({ ...envelopes[1], payload: { ...envelopes[1].payload, execution_authorized: true } }))).toBeNull();
+    expect(parseNodeToServer(JSON.stringify({ ...envelopes[1], payload: { ...review, execution_authorized: false, outcome: "uncertain", closed: true, reason: "Unknown closure" } }))).toBeNull();
+    expect(parseNodeToServer(JSON.stringify({ ...envelopes[3], payload: { ...repair, outcome: "uncertain", closed: true, reason: "Unknown closure" } }))).toBeNull();
+    expect(parseNodeToServer(JSON.stringify({ ...envelopes[3], payload: { ...envelopes[3].payload, verified_repair: {} } }))).toBeNull();
+  });
+});
+
+describe("H7 server WebSocket envelope routing", () => {
+  const digest = `sha256:${"b".repeat(64)}`;
+  const author = { version: 1, validation_id: "validation", request_digest: digest, run_id: "validation-run" } as const;
+  const review = { version: 1, review_id: "validation-review", request_digest: digest } as const;
+  const envelopes = [
+    { kind: "product.source.validation.ack.v1", node_id: "node-B", command_id: "author-command", payload: author, status: "accepted" },
+    { kind: "product.source.validation.result.v1", node_id: "node-B", command_id: "author-command", payload: { ...author, outcome: "cancelled_before_start", closed: true } },
+    { kind: "product.source.validation-review.ack.v1", node_id: "node-B", command_id: "review-command", payload: review, status: "accepted" },
+    { kind: "product.source.validation-review.result.v1", node_id: "node-B", command_id: "review-command",
+      payload: { ...review, execution_authorized: false, outcome: "cancelled_before_start", closed: true, reason: "Controlled cancellation" } },
+  ] as const;
+  it.each(envelopes)("routes actual text/byte $kind and rejects broken identities", envelope => {
+    const wire = JSON.stringify(envelope);
+    expect(parseNodeToServer(wire)).toEqual(envelope);
+    expect(parseNodeToServer(new TextEncoder().encode(wire))).toEqual(envelope);
+    expect(parseNodeToServer(JSON.stringify({ ...envelope, command_id: "" }))).toBeNull();
+    expect(parseNodeToServer(JSON.stringify({ ...envelope, payload: { ...envelope.payload, request_digest: "unbound" } }))).toBeNull();
+  });
+  it("cannot turn unknown H7 closure or reviewer metadata into execution authority", () => {
+    expect(parseNodeToServer(JSON.stringify({ ...envelopes[1], payload: { ...author, outcome: "uncertain", closed: true, reason: "Unknown native closure" } }))).toBeNull();
+    expect(parseNodeToServer(JSON.stringify({ ...envelopes[3], payload: { ...envelopes[3].payload, execution_authorized: true } }))).toBeNull();
+    expect(parseNodeToServer(JSON.stringify({ ...envelopes[1], payload: { ...envelopes[1].payload, closed_failure: {} } }))).toBeNull();
   });
 });

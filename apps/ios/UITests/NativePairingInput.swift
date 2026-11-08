@@ -43,8 +43,12 @@ enum NativePairingInput {
                 if visible {
                     // Hittability is intentionally live: snapshots expose
                     // standard attributes, not a hit-test result.
+                    let fieldCheckStarted = ProcessInfo.processInfo.systemUptime
                     let fieldHittable = field.isHittable
+                    attempts[index]["field_hittable_seconds"] = ProcessInfo.processInfo.systemUptime - fieldCheckStarted
+                    let doneCheckStarted = ProcessInfo.processInfo.systemUptime
                     let doneHittable = app.buttons["pairing.keyboard.done"].isHittable
+                    attempts[index]["done_hittable_seconds"] = ProcessInfo.processInfo.systemUptime - doneCheckStarted
                     attempts[index]["field_hittable"] = fieldHittable
                     attempts[index]["done_hittable"] = doneHittable
                     visible = fieldHittable && doneHittable
@@ -63,10 +67,24 @@ enum NativePairingInput {
             attempts[index]["observation_seconds"] = ProcessInfo.processInfo.systemUptime - observationStarted
             // Observe the app's automatic layout only. No drag, refocus or
             // corrective tap is allowed to make the visibility assertion pass.
-            RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+            let delay = observationDelay(started: started, stableSince: stable?.since,
+                                         now: ProcessInfo.processInfo.systemUptime)
+            attempts[index]["next_observation_delay_seconds"] = delay
+            if delay > 0 { RunLoop.current.run(until: Date().addingTimeInterval(delay)) }
         }
         throw NSError(domain: "NativePairingInput", code: 1, userInfo: [NSLocalizedDescriptionKey:
             "The complete device name must remain automatically visible and stable for one second \(phase), without corrective gestures"])
+    }
+
+    // A positive candidate cannot qualify until its full stable interval has
+    // elapsed. Avoid redundant remote AX queries before that point; the next
+    // observation still repeats every geometry and live hittability check.
+    // This never resets the original phase deadline or accepts a late result.
+    static func observationDelay(started: TimeInterval, stableSince: TimeInterval?, now: TimeInterval) -> TimeInterval {
+        let remaining = visibilityTimeout - (now - started)
+        guard remaining > 0 else { return 0 }
+        let untilStable = stableSince.map { max(0, stableDuration - (now - $0)) } ?? 0.15
+        return min(untilStable, remaining)
     }
 
     @MainActor

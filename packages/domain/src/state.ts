@@ -57,6 +57,8 @@ export const TASK_TRIGGERS = [
   "retry",
   "accept",
   "request_changes",
+  "design_revision_requested",
+  "recovery_requested",
   "cancel",
 ] as const;
 export type TaskTrigger = (typeof TASK_TRIGGERS)[number];
@@ -97,6 +99,10 @@ export const TASK_TRANSITIONS: readonly TaskTransition[] = [
   { from: "review", to: "done", trigger: "accept", reentrant: false },
   // gap1: changes requested loops back to ready.
   { from: "review", to: "ready", trigger: "request_changes", reentrant: true },
+  // Internal only: the trusted service records a qualified immutable revision before reopening.
+  { from: "done", to: "ready", trigger: "design_revision_requested", reentrant: true },
+  // Only the trusted recovery service may reopen after a settled checkpoint.
+  { from: "done", to: "ready", trigger: "recovery_requested", reentrant: true },
   // cancel from any non-terminal state.
   ...TASK_NON_TERMINAL.map(
     (from): TaskTransition => ({ from, to: "cancelled", trigger: "cancel", reentrant: false }),
@@ -142,6 +148,8 @@ export const ATTEMPT_SCOPED_TASK_TRIGGERS = [
   "assign",
   "retry",
   "request_changes",
+  "design_revision_requested",
+  "recovery_requested",
   "assign_failed_retryable",
 ] as const;
 

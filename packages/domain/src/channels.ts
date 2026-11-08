@@ -15,6 +15,6 @@ export const NotificationSchema = z.object({
 export type Notification = z.infer<typeof NotificationSchema>;
 export const NotificationPageSchema = z.object({
   notifications: z.array(NotificationSchema), next_before: z.string().nullable(),
-  has_more: z.boolean(), unread_count: z.number().int().nonnegative(),
+  has_more: z.boolean(), unread_count: z.number().refine(Number.isInteger, "Expected an integer").nonnegative(),
 });
 export type NotificationPage = z.infer<typeof NotificationPageSchema>;
