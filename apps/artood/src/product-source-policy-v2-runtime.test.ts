@@ -15,14 +15,25 @@ import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-proces
 import * as codeInstallation from "./windows-code-installation.js";
 import * as mutableStorage from "./windows-release-storage.js";
 
-const control = vi.hoisted(() => ({ releases: new Map<object, () => unknown>(), readerFactory: vi.fn(), verify: vi.fn() }));
+const control = vi.hoisted(() => ({ releases: new Map<object, () => unknown>(), readerFactory: vi.fn(), batchPrepare: vi.fn(), batchRead: vi.fn(), verify: vi.fn() }));
 vi.mock("./verification.js", () => ({ assertFinalVerificationExportBinding: vi.fn(), assertLocallyPreparedVerificationProfile: vi.fn(),
   prepareVerificationProfiles: vi.fn(value => value), subjectManifest: vi.fn(), selectVerificationProfile: vi.fn(), runTransferredResearchVerification: control.verify }));
-vi.mock("./product-release.js", () => ({ prepareReleaseCapabilityReader: (profile: object) => {
-  control.readerFactory(profile);
-  const read = control.releases.get(profile); if (!read) throw new Error("Controlled factory requires original prepared release identity");
-  return Object.freeze({ capabilities: read(), readCapabilities: read });
-} }));
+vi.mock("./product-release.js", () => {
+  const prepare = (profile: object) => {
+    control.readerFactory(profile);
+    const read = control.releases.get(profile); if (!read) throw new Error("Controlled factory requires original prepared release identity");
+    return Object.freeze({ capabilities: read(), readCapabilities: read });
+  };
+  return { prepareReleaseCapabilityReader: prepare,
+    prepareReleaseCapabilityReaders: (profiles: readonly object[]) => { control.batchPrepare(profiles); return profiles.map(prepare); },
+    readReleaseCapabilitiesBatch: (profiles: readonly object[]) => {
+      control.batchRead(profiles);
+      return profiles.map(profile => {
+        const read = control.releases.get(profile); if (!read) throw new Error("Controlled batch requires original prepared release identity");
+        return read();
+      });
+    } };
+});
 vi.mock("./windows-release-storage.js", () => ({ prepareWindowsReleaseStorage: vi.fn(() => ({})),
   assertWindowsReleaseStorage: vi.fn(), auditWindowsReleaseStorage: vi.fn() }));
 vi.mock("./owned/windows-owned-process.js", () => ({ assertWindowsProcessBackend: vi.fn() }));
@@ -45,7 +56,7 @@ afterEach(() => {
   }
 });
 
-function fixture(version: 1 | 2 = 2) {
+function fixture(version: 1 | 2 = 2, suffix = "") {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-v2-preparation-"))); roots.push(root);
   const workspace = join(root, "workspace"), store = join(root, "store"), programs = join(root, "programs"), receipts = join(root, "receipts");
   for (const path of [workspace, store, programs, receipts]) mkdirSync(path);
@@ -53,11 +64,11 @@ function fixture(version: 1 | 2 = 2) {
   const policy = version === 1 ? { version: 1 as const, coverage: "every-must-criterion" as const }
     : { version: 2 as const, coverage: "every-must-criterion" as const, methods: ["workspace-check", "configured-static-release"] as ["workspace-check", "configured-static-release"] };
   // Verifier preparation is explicitly mocked; these are local gate inputs only.
-  const profile = { id: "destination-verify", digest: sha("destination verifier"), project_id: "project", workspace_root: workspace,
+  const profile = { id: "destination-verify" + suffix, digest: sha("destination verifier" + suffix), project_id: "project", workspace_root: workspace,
     commands: [], required_files: [], subject_paths: ["product", ".artoo/product"], trustedFiles: [],
-    capabilities: { version: 1, profile_digest: sha("destination verifier"), measurement_plan_policy: policy,
+    capabilities: { version: 1, profile_digest: sha("destination verifier" + suffix), measurement_plan_policy: policy,
       checks: [{ command_id: "destination-browser" }] } } as unknown as PreparedVerificationProfile;
-  const prepared = { id: "destination-release", digest: sha("destination release"), project_id: "project", verifier: profile } as PreparedReleaseProfile;
+  const prepared = { id: "destination-release" + suffix, digest: sha("destination release" + suffix), project_id: "project", verifier: profile } as PreparedReleaseProfile;
   const contract: ReleaseCapabilitiesV1["contract"] = { version: 1, kind: "configured-static-release", claim: "configured",
     execution_phase: "after-stage-acceptance", endpoint_scope: "configured-origin", measurement_scope: "node-http-point-in-time",
     lifecycle: "while-configured-node-service-running", health_checks: [{ path: "/", expected_status: 200, body: "immutable-artifact-equality",
@@ -94,7 +105,8 @@ describe("first-hop measurement v2 explicit local preparation", () => {
     const f = fixture(1), runtime = prepareProductSourceRuntime(f.options);
     expect(productSourceSemanticExportEnabled(runtime)).toBe(true);
     expect(productSourceMeasurementV2ExportEnabled(runtime, f.profile)).toBe(false);
-    expect(control.readerFactory).not.toHaveBeenCalled(); closeProductSourceRuntime(runtime);
+    expect(control.readerFactory).not.toHaveBeenCalled(); expect(control.batchPrepare).not.toHaveBeenCalled();
+    expect(control.batchRead).not.toHaveBeenCalled(); closeProductSourceRuntime(runtime);
   });
   it("requires an explicit release association for source research under v2", () => {
     const f = fixture(); delete f.options.measurementV2;
@@ -148,6 +160,24 @@ describe("first-hop measurement v2 explicit local preparation", () => {
   it("fails closed when the original reader is revoked", () => {
     const f = fixture(), runtime = prepareProductSourceRuntime(f.options); f.revoke();
     expect(() => productSourceSemanticExportEnabled(runtime)).toThrow(/local release revoked/);
+  });
+  it.each(["changed", "revoked"] as const)("re-reads every original release in each state batch and rejects a %s later member", kind => {
+    const first = fixture(), second = fixture(2, "-second");
+    first.options.profiles = [first.profile, second.profile];
+    first.options.allowedRoots = [first.profile.workspace_root, second.profile.workspace_root];
+    first.options.measurementV2!.releaseProfiles = [first.prepared, second.prepared];
+    first.options.measurementV2!.destinationResearchMappings = [first.mapping, second.mapping];
+    const runtime = prepareProductSourceRuntime(first.options); control.batchRead.mockClear();
+    expect(control.batchPrepare).toHaveBeenCalledExactlyOnceWith([first.prepared, second.prepared]);
+    expect(productSourceSemanticExportEnabled(runtime)).toBe(true);
+    expect(productSourceSemanticExportEnabled(runtime)).toBe(true);
+    expect(control.batchRead).toHaveBeenCalledTimes(2);
+    expect(control.batchRead).toHaveBeenNthCalledWith(1, [first.prepared, second.prepared]);
+    expect(control.batchRead).toHaveBeenNthCalledWith(2, [first.prepared, second.prepared]);
+    if (kind === "changed") second.changeCapabilities(value => { value.binding.release_profile_digest = sha("changed second release"); });
+    else second.revoke();
+    expect(() => productSourceSemanticExportEnabled(runtime)).toThrow(kind === "changed" ? /prepared release capability changed/ : /local release revoked/);
+    expect(control.batchRead).toHaveBeenCalledTimes(3);
   });
   it("does not let a copied admission mint a reader or start a verifier", () => {
     const f = fixture();

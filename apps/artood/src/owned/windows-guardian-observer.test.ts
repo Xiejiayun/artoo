@@ -26,6 +26,7 @@ import { invokeWindowsGuardianNativeSync, isWindowsOwnedClosureReceipt, prepareW
   startWindowsGuardianObserverSync, WindowsOwnedCleanupError, type PreparedWindowsProcessBackend } from "./windows-owned-process.js";
 import type { PreparedWindowsGuardianSlot } from "./windows-runtime-guardian.js";
 import { readWindowsNativeFailureCode, readWindowsNativeFailure } from "./windows-process-diagnostic.js";
+import { createSourceCommandDiagnostics, type SourceCommandDiagnostic } from "../source-command-diagnostics.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const sha = (bytes: Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -70,6 +71,54 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); Object.defineProperty(process, "platform", platform); });
 
 describe("registered synchronous collectors (controlled OS boundary)", () => {
+  it("observes the existing closed API receipt once without exposing enrollment tickets or target inputs", async () => {
+    const rows: SourceCommandDiagnostic[] = [], diagnostics = createSourceCommandDiagnostics(row => rows.push(row));
+    const epochId = "00000000-0000-4000-8000-000000000001", slotId = "00000000-0000-4000-8000-000000000002";
+    mock.consume.mockReturnValue({ version: 1, epochId, slotId, ticket: "private-ticket" });
+    const value = await diagnostics.run({ type: "product.source.review.v1", id: "private-command-id" },
+      () => startWindowsGuardianObserverSync(prepare(), input()));
+    expect(rows.filter(row => row.status === "observed")).toHaveLength(1);
+    expect(rows.find(row => row.status === "observed")?.observer_timing).toEqual({ version: 1,
+      scope: "startWindowsGuardianObserverSync.inclusive.v1", epoch_id: epochId, slot_id: slotId,
+      elapsed_ms: Math.floor(value.receipt.elapsedMs), cleanup_confirmed: true });
+    expect(isWindowsOwnedClosureReceipt(value.receipt)).toBe(true);
+    expect(mock.spawnSync).toHaveBeenCalledTimes(1); expect(mock.consume).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(rows)).not.toContain("private-"); expect(JSON.stringify(rows)).not.toContain("C:\\");
+    expect(JSON.stringify(rows)).not.toContain("fixed-controlled-script"); expect(JSON.stringify(rows)).not.toContain(value.receipt.token);
+  });
+
+  it("retains separate nested slot observations without treating inclusive intervals as exclusive durations", async () => {
+    const rows: SourceCommandDiagnostic[] = [], diagnostics = createSourceCommandDiagnostics(row => rows.push(row));
+    const epochId = "00000000-0000-4000-8000-000000000001";
+    const innerSlot = "00000000-0000-4000-8000-000000000002", outerSlot = "00000000-0000-4000-8000-000000000003";
+    mock.consume.mockReturnValueOnce({ version: 1, epochId, slotId: innerSlot }).mockReturnValueOnce({ version: 1, epochId, slotId: outerSlot });
+    let backend: PreparedWindowsProcessBackend | undefined, inner: ReturnType<typeof startWindowsGuardianObserverSync> | undefined;
+    backend = prepare(() => { if (backend) inner = startWindowsGuardianObserverSync(backend, input()); });
+    const outer = await diagnostics.run({ type: "product.source.review.v1", id: "private-nested-command" },
+      () => startWindowsGuardianObserverSync(backend!, input()));
+    const samples = rows.flatMap(row => row.observer_timing ? [row.observer_timing] : []);
+    expect(samples.map(sample => sample.slot_id)).toEqual([innerSlot, outerSlot]);
+    expect(samples.map(sample => sample.elapsed_ms)).toEqual([Math.floor(inner!.receipt.elapsedMs), Math.floor(outer.receipt.elapsedMs)]);
+    expect(samples.every(sample => sample.scope === "startWindowsGuardianObserverSync.inclusive.v1")).toBe(true);
+    expect(mock.spawnSync).toHaveBeenCalledTimes(2); expect(mock.consume).toHaveBeenCalledTimes(2);
+  });
+
+  it("cannot convert unconfirmed closure into success when the optional timing sink fails", async () => {
+    const rows: SourceCommandDiagnostic[] = [], diagnostics = createSourceCommandDiagnostics(row => {
+      rows.push(row); if (row.status === "observed") throw Error("private-sink-failure");
+    });
+    mock.consume.mockReturnValue({ version: 1, epochId: "00000000-0000-4000-8000-000000000001", slotId: "00000000-0000-4000-8000-000000000002" });
+    mock.spawnSync.mockImplementation((_file, _args, options) => success(options, frames => { frames.at(-1)!.payload.jobEmptyObserved = false; }));
+    let caught: unknown;
+    try { await diagnostics.run({ type: "product.source.review.v1", id: "private-failed-command" }, () => startWindowsGuardianObserverSync(prepare(), input())); }
+    catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(WindowsOwnedCleanupError);
+    expect(readWindowsNativeFailureCode(caught)).toBe("native_protocol_failed");
+    expect(rows.find(row => row.status === "observed")?.observer_timing?.cleanup_confirmed).toBe(false);
+    expect(rows.at(-1)).toMatchObject({ status: "failed", native_failure_code: "native_protocol_failed" });
+    expect(mock.spawnSync).toHaveBeenCalledTimes(1); expect(mock.consume).toHaveBeenCalledTimes(1);
+  });
+
   it("binds UTF8 stdin and an observer slot to a fixed helper without leaking control into the target env", () => {
     const backend = prepare(), value = startWindowsGuardianObserverSync(backend, input());
     expect(value.stdout.toString()).toBe("facts"); expect(value.receipt.cleanupConfirmed).toBe(true);

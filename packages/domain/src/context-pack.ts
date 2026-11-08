@@ -16,6 +16,7 @@ import { ReleaseCapabilitiesV1Schema } from "./release-capabilities.js";
 import { ImportedProductReviewSubjectV1Schema } from "./imported-product-review-context.js";
 import { TransferredProductInputV1Schema } from "./transferred-product-input.js";
 import { ProductDesignRevisionContextV1Schema } from "./product-design-revision.js";
+import { ProductResearchRevisionContextV1Schema } from "./research-revision-context.js";
 import { ImportedDesignReviewSubjectV1Schema } from "./imported-design-review-context.js";
 import { ImportedExecutionContextV1Schema } from "./imported-execution-context.js";
 import { ImportedExecutionReviewSubjectV1Schema, ImportedExecutionRepairContextV1Schema } from "./imported-implementation-context.js";
@@ -24,6 +25,7 @@ import { ImportedRecoveryValidationContextV1Schema, ImportedRecoveryValidationRe
 import { ImportedCleanValidationContextV1Schema, ImportedCleanValidationReviewSubjectV1Schema } from "./clean-validation-context.js";
 
 export const ContextPackSchema = z.object({
+  product_research_revision: ProductResearchRevisionContextV1Schema.optional(),
   imported_clean_validation: ImportedCleanValidationContextV1Schema.optional(),
   imported_clean_validation_review_subject: ImportedCleanValidationReviewSubjectV1Schema.optional(),
   imported_recovery_validation: ImportedRecoveryValidationContextV1Schema.optional(),

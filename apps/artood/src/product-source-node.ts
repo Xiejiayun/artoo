@@ -15,7 +15,8 @@ import type { PreparedWindowsDaemonSupervisorAuthority } from "./windows-supervi
 import { PRODUCT_SOURCE_TRANSFER_FEATURE_V1, PRODUCT_SOURCE_TRANSFER_FEATURE_V2, PRODUCT_SOURCE_TRANSFER_MEASUREMENT_V2_FEATURE_V1,
   PRODUCT_SOURCE_OPERATIONS_FEATURE_V1, IMPORTED_PRODUCT_REVIEW_FEATURE_V1, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1,
   IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
-  PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1 } from "@artoo/domain";
+  PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1,
+  PRODUCT_RESEARCH_REVISION_FEATURE_V1 } from "@artoo/domain";
 
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 function freezeRouting<T>(value: T): T {
@@ -142,6 +143,7 @@ export function prepareProductSourceNode(options: { file: string; url: string; n
   const roles = runtime ? readProductSourceRuntimeCapabilities(runtime) : undefined;
   if (config.operations && roles && !roles.semantic) throw new Error("Prepared source runtime has no semantic role");
   const features = Object.freeze([PRODUCT_SOURCE_TRANSFER_FEATURE_V1,
+    ...(config.sourceResearch && config.measurementV2 ? [PRODUCT_RESEARCH_REVISION_FEATURE_V1] : []),
     ...(config.sourceResearch || v1Mappings.length || v2Mappings.length ? [PRODUCT_SOURCE_TRANSFER_FEATURE_V2] : []),
     ...(config.measurementV2 ? [PRODUCT_SOURCE_TRANSFER_MEASUREMENT_V2_FEATURE_V1] : []),
     ...(config.operations ? [PRODUCT_SOURCE_OPERATIONS_FEATURE_V1] : []),

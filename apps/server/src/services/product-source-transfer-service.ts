@@ -1,3 +1,4 @@
+import { resolveResearchRevisionOrigin } from "./research-revision-origin-service.js";
 import { computers, contextPacks, devices, deviceTokens, goalAutomations, goals, plans, productSourceTransfers, productSourceSemanticTransfers, runs, tasks } from "@artoo/db";
 import { canonicalProductSourceTransferValueV1, ContextPackSchema, PRODUCT_SOURCE_TRANSFER_FEATURE_V1,
   ProductSourceTransferRequestV1Schema, ProductSourceTransferReceiptV1Schema, productSourceTransferRequestDigestV1,
@@ -113,7 +114,8 @@ async function qualify(ctx: ServerContext, db: DrizzleDb, request: ProductSource
   const [run] = await db.select().from(runs).where(and(eq(runs.id, source.run_id), eq(runs.organizationId, ctx.organizationId))).for("update");
   const [latest] = await db.select({ id: runs.id }).from(runs).where(and(eq(runs.taskId, source.task_id), eq(runs.organizationId, ctx.organizationId)))
     .orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
-  if (!task || task.status !== "done" || task.projectId !== request.project_id || task.goalId !== request.goal_id || task.sourcePlanId !== request.plan_id
+  const origin = task ? await resolveResearchRevisionOrigin(ctx, db, task) : undefined;
+  if (!task || task.status !== "done" || task.projectId !== request.project_id || task.goalId !== request.goal_id || (origin?.plan.id ?? task.sourcePlanId) !== request.plan_id
     || !run || run.status !== "completed" || run.taskId !== task.id || run.computerId !== source.node_id || run.workspaceRoot !== source.workspace_root
     || latest?.id !== source.run_id || (await unconfirmedDisconnectRunIds(ctx, db, { taskId: source.task_id })).length) {
     throw AppError.conflict("Transfer source is not the latest completed and accepted task in this plan");

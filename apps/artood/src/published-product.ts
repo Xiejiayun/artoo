@@ -44,6 +44,85 @@ function pinnedBytes(pin: PublishedProductFilePin): Buffer {
   return bytes;
 }
 
+interface PublishedWorkspaceSlot {
+  index: number; workspace: string; verification_profile_id: string; release_profile_id: string;
+  storage_root: string; evidence_root: string; browser_config: string; endpoint: string;
+}
+/** Versioned launcher layout, not a general path-prefix grant. Slot zero keeps
+ * the original paths; every additional workspace has its own fixed directories. */
+function workspaceSlots(root: string, role: string, input: unknown): PublishedWorkspaceSlot[] {
+  const layout = record(input), retries = layout.max_retries;
+  if (layout.version !== 1 || !Number.isInteger(retries) || typeof retries !== "number" || retries < 0 || retries > 10
+    || role !== "source" && role !== "destination" || role === "source" && retries !== 0
+    || !isDeepStrictEqual(Object.keys(layout).sort(), ["max_retries", "members", "version"])
+    || !Array.isArray(layout.members) || layout.members.length !== (role === "source" ? 1 : retries + 1)) fail("invalid original workspace slot layout");
+  const endpoints = new Set<string>();
+  return layout.members.map((value, index) => {
+    const member = record(value), directory = index === 0 ? join(root, role) : join(root, role, "slots", String(index));
+    const suffix = index === 0 ? "" : `-slot-${index}`, endpoint = member.endpoint;
+    if (typeof endpoint !== "string") return fail("missing original slot endpoint");
+    const url = new URL(endpoint);
+    if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.origin !== endpoint
+      || url.username || url.password || url.pathname !== "/" || url.search || url.hash || endpoints.has(endpoint)) fail("invalid original slot endpoint");
+    endpoints.add(endpoint);
+    const expected = { index, workspace: join(directory, "workspace"), verification_profile_id: `native-web${suffix}`,
+      release_profile_id: `native-publish${suffix}`, storage_root: join(directory, "release"), evidence_root: join(directory, "evidence"),
+      browser_config: join(directory, "config", "browser.json"), endpoint };
+    if (!isDeepStrictEqual(member, expected)) fail("original workspace slot layout changed");
+    return expected;
+  });
+}
+
+function capturePin(file: string): PublishedProductFilePin {
+  const stat = physical(file, false); if (stat.size > 4n * 1024n * 1024n) fail("configuration exceeds its bound");
+  const bytes = readFileSync(file), pin = { path: file, bytes: bytes.length, sha256: sha(bytes) };
+  pinnedBytes(pin); return pin;
+}
+
+/** All scopes come from matching original RESULT/CONFIG-BINDING records. The
+ * complete pinned file set includes unused slots, so later roots cannot be
+ * substituted or dropped when qualifying the original protected profiles. */
+function originalWorkspaceSlots(root: string, result: Record<string, unknown>, pins: PublishedProductFilePin[]): PublishedWorkspaceSlot[] | undefined {
+  const nodes = (result.nodes as unknown[]).map(record), destination = nodes.find(node => node.role === "destination")!;
+  if (destination.workspace_slots === undefined) {
+    if (nodes.some(node => node.workspace_slots !== undefined)) fail("original workspace slot layout is incomplete");
+    if (readdirSync(root).includes("CONFIG-BINDING.json")) {
+      const pin = capturePin(join(root, "CONFIG-BINDING.json")), binding = record(JSON.parse(pinnedBytes(pin).toString("utf8")));
+      if (!Array.isArray(binding.nodes) || binding.nodes.some(node => record(node).workspace_slots !== undefined)) fail("original workspace slot layout was removed");
+      pins.push(pin);
+    }
+    return undefined;
+  }
+  const bindingPin = capturePin(join(root, "CONFIG-BINDING.json")); pins.push(bindingPin);
+  const binding = record(JSON.parse(pinnedBytes(bindingPin).toString("utf8")));
+  if (binding.version !== 1 || !Array.isArray(binding.nodes) || binding.nodes.length !== 2 || !Array.isArray(binding.files)) fail("missing original configuration binding");
+  const expectedFiles: string[] = [], configuredNodes = binding.nodes.map(record);
+  let destinationSlots: PublishedWorkspaceSlot[] | undefined;
+  for (const node of nodes) {
+    const role = String(node.role), matches = configuredNodes.filter(item => item.role === role);
+    if (matches.length !== 1 || !isDeepStrictEqual(matches[0]!.workspace_slots, node.workspace_slots)
+      || !isDeepStrictEqual(matches[0]!.identity, node.identity) || !isDeepStrictEqual(matches[0]!.registration, node.registration)) fail("original configured node changed");
+    const slots = workspaceSlots(root, role, node.workspace_slots), identity = record(node.identity), registration = record(node.registration);
+    if (identity.workspace !== join(root, role, "workspace") || typeof identity.computer_id !== "string" || !identity.computer_id
+      || typeof identity.project_id !== "string" || !identity.project_id || typeof identity.device_id !== "string" || !identity.device_id
+      || registration.workspace !== identity.workspace || registration.computer_id !== identity.computer_id || registration.device_id !== identity.device_id
+      || registration.generation !== 0 || typeof registration.session_id !== "string" || !registration.session_id
+      || !isDeepStrictEqual(record(node.cli).ready, { kind: "artoo.supervised.ready", generation: 0, node_id: identity.computer_id })) fail("original configured node identity differs");
+    if (role === "destination") destinationSlots = slots;
+    expectedFiles.push(...slots.map(slot => slot.browser_config), ...["verifiers.json", "releases.json", "discovered-capabilities.json", "source.json"]
+      .map(name => join(root, role, "config", name)));
+  }
+  const files = binding.files.map(value => {
+    const pin = record(value);
+    if (!isDeepStrictEqual(Object.keys(pin).sort(), ["bytes", "path", "sha256"]) || typeof pin.path !== "string"
+      || typeof pin.bytes !== "number" || typeof pin.sha256 !== "string") return fail("invalid original configuration file pin");
+    return { path: pin.path, bytes: pin.bytes, sha256: pin.sha256 };
+  });
+  if (!isDeepStrictEqual(files.map(pin => pin.path).sort(), expectedFiles.sort())) fail("original configuration file set differs");
+  for (const pin of files) { pinnedBytes(pin); pins.push(pin); }
+  return destinationSlots;
+}
+
 export interface PublishedProductOwnershipDescriptor {
   readonly version: 1; readonly session_root: string; readonly mode: "daily" | "reopen";
   readonly owner_id: string; readonly acquired_at: string;
@@ -201,13 +280,26 @@ export function createPublishedProduct(options: PublishedProductOptions): Publis
   }
   assertOriginal();
   const consumer = {}; owner.consumers.add(consumer);
+  const slots = originalWorkspaceSlots(root, record(JSON.parse(pinnedBytes(originalPin).toString("utf8"))), configPins);
   for (const [file, name] of [[options.verificationProfilesFile, "verifiers.json"], [options.releaseProfilesFile, "releases.json"]] as const) {
     if (file !== join(root, "destination", "config", name)) fail("profile configuration is outside the original destination");
-    const stat = physical(file, false); if (stat.size > 4n * 1024n * 1024n) fail("profile configuration exceeds its bound");
-    const bytes = readFileSync(file); configPins.push({ path: file, bytes: bytes.length, sha256: sha(bytes) });
+    if (!slots) configPins.push(capturePin(file));
   }
   const roots = [...options.windowsProcessInstallation.writableWorkspaceRoots];
   if (roots.some(path => inside(path, root))) fail("session ownership must be outside agent write roots");
+  if (slots && !isDeepStrictEqual(roots, slots.map(slot => slot.workspace))) fail("reopen requires the complete original workspace roots");
+  const selectedSlot = slots?.find(slot => slot.release_profile_id === request.release_profile_id
+    && slot.verification_profile_id === request.verification_profile_id);
+  if (slots) {
+    if (!selectedSlot || options.releaseProfileId !== selectedSlot.release_profile_id || selectedSlot.endpoint !== selected.url) fail("publication does not select an original configured slot");
+    const discovery = json(join(root, "destination", "config", "discovered-capabilities.json"));
+    if (!Array.isArray(discovery.slots) || discovery.slots.length !== slots.length) fail("original slot discovery differs");
+    const found = discovery.slots.map(record).filter(slot => slot.index === selectedSlot.index);
+    if (found.length !== 1) fail("original slot discovery is ambiguous");
+    const binding = record(record(found[0]!.release).binding), verifier = record(found[0]!.verifier);
+    if (!isDeepStrictEqual(request.acceptance_binding?.release_binding, binding) || binding.workspace_root !== selectedSlot.workspace
+      || binding.release_profile_digest !== receipt.release_profile_digest || verifier.profile_digest !== request.verification_profile_digest) fail("publication differs from its original slot capabilities");
+  }
   // Qualification remains the ordinary Windows installation/storage boundary.
   // These calls are intentionally after shared ownership and original closure.
   const backend = prepareWindowsProcessInstallation({ ...options.windowsProcessInstallation, writableWorkspaceRoots: roots });
@@ -215,8 +307,15 @@ export function createPublishedProduct(options: PublishedProductOptions): Publis
   const verifiers = prepareVerificationProfiles(rawVerifiers, roots);
   for (const verifier of verifiers) attachWindowsVerificationBackend(verifier, backend);
   const rawProfiles = loadReleaseProfilesFile(options.releaseProfilesFile, rawVerifiers, roots);
+  if (slots && (rawVerifiers.length !== slots.length || rawProfiles.length !== slots.length || slots.some(slot => {
+    const verifier = rawVerifiers.filter(item => item.id === slot.verification_profile_id), release = rawProfiles.filter(item => item.id === slot.release_profile_id);
+    return verifier.length !== 1 || verifier[0]!.workspace_root !== slot.workspace || verifier[0]!.project_id !== request.project_id
+      || release.length !== 1 || release[0]!.storage_root !== slot.storage_root || release[0]!.project_id !== request.project_id
+      || release[0]!.verification_profile_id !== slot.verification_profile_id || release[0]!.public_url !== slot.endpoint
+      || release[0]!.listen_host !== "127.0.0.1" || release[0]!.listen_port !== Number(new URL(slot.endpoint).port);
+  }))) fail("original workspace slot profiles differ");
   const raw = rawProfiles.find(profile => profile.id === options.releaseProfileId);
-  if (!raw || raw.storage_root !== join(root, "destination", "release")) fail("release storage is outside the owned product session");
+  if (!raw || raw.storage_root !== (selectedSlot?.storage_root ?? join(root, "destination", "release"))) fail("release storage is outside the owned product session");
   const storage = prepareWindowsReleaseStorage({ directory: raw.storage_root, writableWorkspaceRoots: roots });
   const [profile] = prepareReleaseProfiles([raw], verifiers, { windowsStorage: new Map([[raw.storage_root, storage]]), writableRoots: roots });
   if (!profile || profile.public_url !== selected.url || profile.listen_host !== "127.0.0.1"

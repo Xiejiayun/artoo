@@ -60,6 +60,30 @@ final class NativePairingSnapshotTests: XCTestCase {
         return try NativePairingInput.measurement(f.app, expected: "My iPhone", trace: &trace)
     }
 
+    func testPassiveObservationWaitsForTheRemainingStableInterval() {
+        XCTAssertEqual(NativePairingInput.observationDelay(started: 100, stableSince: nil, now: 100), 0.15, accuracy: 0.000001)
+        // The retained CI trace had a positive candidate followed by another
+        // positive observation only 0.673511 seconds later, too soon to pass.
+        let first = 100.44468591666669
+        XCTAssertEqual(NativePairingInput.observationDelay(started: 100, stableSince: first, now: first), 1, accuracy: 0.000001)
+        XCTAssertEqual(NativePairingInput.observationDelay(started: 100, stableSince: first, now: first + 0.67351145833322),
+                       0.32648854166678, accuracy: 0.000001)
+        XCTAssertEqual(NativePairingInput.observationDelay(started: 100, stableSince: first, now: first + 1), 0, accuracy: 0.000001)
+        // Lost visibility removes the candidate; a new candidate starts its own
+        // stable interval without changing the enclosing phase's start.
+        XCTAssertEqual(NativePairingInput.observationDelay(started: 100, stableSince: nil, now: 102), 0.15, accuracy: 0.000001)
+        XCTAssertEqual(NativePairingInput.observationDelay(started: 100, stableSince: 102, now: 102), 1, accuracy: 0.000001)
+    }
+
+    func testPassiveObservationNeverExtendsTheOriginalPhaseDeadline() {
+        XCTAssertEqual(NativePairingInput.observationDelay(started: 100, stableSince: 109.7, now: 109.7), 0.3, accuracy: 0.000001)
+        XCTAssertEqual(NativePairingInput.observationDelay(started: 100, stableSince: nil, now: 109.95), 0.05, accuracy: 0.000001)
+        for now in [110.0, 114.620] {
+            XCTAssertEqual(NativePairingInput.observationDelay(started: 100, stableSince: 100.44468591666669, now: now), 0)
+            XCTAssertEqual(NativePairingInput.observationDelay(started: 100, stableSince: nil, now: now), 0)
+        }
+    }
+
     func testEditingMenuCannotReplaceTheFormRegardlessOfSiblingOrder() throws {
         for menuFirst in [true, false] {
             let f = fixture(menuFirst: menuFirst)

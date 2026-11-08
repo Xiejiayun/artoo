@@ -309,7 +309,7 @@ final class SharedServerChatUITests: XCTestCase {
         try reveal(goal); goal.tap()
         let visibleStatus = app.descendants(matching: .any).matching(identifier: "goal.status.\(fixture.cancellationGoalId)").firstMatch
         try require(visibleStatus.waitForExistence(timeout: 15), "Goal detail must expose its current server status")
-        try waitForValue(visibleStatus, initial.goal.status, message: "The independent goal must display its initial server status")
+        try waitForGoalStatus(fixture.cancellationGoalId, initial.goal.status, message: "The independent goal must display its initial server status")
         let request = app.buttons["goal.cancel.request.\(fixture.cancellationGoalId)"]
         try reveal(request); request.tap()
         let keep = try cancellationDialogButton("dismiss", label: "Keep goal")
@@ -326,7 +326,7 @@ final class SharedServerChatUITests: XCTestCase {
         XCTAssertEqual(kept.goal.updatedAt, initial.goal.updatedAt)
         XCTAssertEqual(kept.events.map(\.id), initial.events.map(\.id), "Keep goal must leave the real server audit stream unchanged")
         try revealText(visibleStatus, preferTop: true)
-        try waitForValue(visibleStatus, kept.goal.status, message: "Keep goal must preserve the displayed server status")
+        try waitForGoalStatus(fixture.cancellationGoalId, kept.goal.status, message: "Keep goal must preserve the displayed server status")
         try reveal(request)
         attachScreenshot("Native goal preserved after dismissing cancellation")
         request.tap()
@@ -339,7 +339,7 @@ final class SharedServerChatUITests: XCTestCase {
                        initial.events.filter { $0.type == "goal.cancelled" }.count + 1,
                        "One explicit confirmation must persist exactly one cancellation event")
         try revealText(visibleStatus, preferTop: true)
-        try waitForValue(visibleStatus, "cancelled", message: "Goal detail must display the server-confirmed cancelled state")
+        try waitForGoalStatus(fixture.cancellationGoalId, "cancelled", message: "Goal detail must display the server-confirmed cancelled state")
         let actionRemoved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: request)
         try require(XCTWaiter.wait(for: [actionRemoved], timeout: 10) == .completed, "The cancelled goal must no longer offer cancellation")
         attachScreenshot("Native goal cancelled after explicit confirmation")
@@ -468,7 +468,9 @@ final class SharedServerChatUITests: XCTestCase {
         channel.tap()
         try require(app.staticTexts[rootBody].waitForExistence(timeout: 15), "Channel history must survive app relaunch")
         try reveal(thread); thread.tap()
-        try require(app.staticTexts[catchUpBody].waitForExistence(timeout: 15), "Thread history must survive app relaunch")
+        let restoredReply = app.staticTexts["message.\(background.id)"]
+        try revealText(restoredReply)
+        try require(restoredReply.waitForExistence(timeout: 15) && restoredReply.label == catchUpBody, "Thread history must survive app relaunch")
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Native real-server thread after foreground catch-up"
         screenshot.lifetime = .keepAlways
@@ -605,7 +607,7 @@ final class SharedServerChatUITests: XCTestCase {
             try reveal(title, searchTowardTop: step == 0)
             try require(title.label == "Planning instruction · Step \(step + 1)", "Each real coordinator step must display its readable summary title")
             let brief = app.staticTexts["message.planning.summary.\(instruction.id)"]
-            try reveal(brief)
+            try revealText(brief, attempts: 10)
             try require(brief.label == "The agents use the goal and earlier replies to prepare a plan. You review a proposal before accepting it.",
                         "Coordinator instructions must show the human-readable planning brief")
             let toggle = app.buttons["message.planning.original.\(instruction.id)"]
@@ -624,8 +626,8 @@ final class SharedServerChatUITests: XCTestCase {
                 try attachConnectedScreenshot("Native planning instructions summarized before proposal")
                 toggle.tap()
                 try waitForValue(toggle, "Expanded", message: "Show agent instructions must expand the actual coordinator prompt")
-                // Only the expanded original is selectable text. Summary labels
-                // and buttons retain strict hittability checks above.
+                // The brief is plain read-only text; the expanded original is selectable.
+                // Disclosure buttons retain enabled/hittable checks before each tap.
                 try revealText(originalInstruction)
                 try require(Array(originalInstruction.label.utf8) == Array(instruction.body.utf8),
                             "Expanded coordinator instructions must match the exact persisted server body")
@@ -884,7 +886,6 @@ final class SharedServerChatUITests: XCTestCase {
             try reveal(signOut); signOut.tap()
         }
         try await waitForPairingState(allowAuthenticated: false)
-        let code: PairingCode = try await peerPost("api/v1/devices/pairings", body: ["intended_platform": "ios"], token: pairingToken)
         let origin = app.textFields["serverURL"]
         let localHTTP = app.switches["allowLocalHTTP"]
         if fixture.serverURL.scheme == "http" {
@@ -894,7 +895,12 @@ final class SharedServerChatUITests: XCTestCase {
         try dismissKeyboard(using: "pairing.keyboard.done")
         try replace(app.textFields["pairingDeviceName"], with: name)
         try dismissKeyboard(using: "pairing.keyboard.done")
-        try replace(app.textFields["pairingCode"], with: code.code)
+        let codeField = app.textFields["pairingCode"]
+        try prepareReplacement(codeField)
+        // Native focus and keyboard idleness can be slow. Mint the one-use code
+        // only after its real field is ready, without changing its expiry.
+        let code: PairingCode = try await peerPost("api/v1/devices/pairings", body: ["intended_platform": "ios"], token: pairingToken)
+        try typeReplacement(codeField, with: code.code)
         try dismissKeyboard(using: "pairing.keyboard.done")
         let pair = app.buttons["pairDevice"]
         try reveal(pair)
@@ -1057,6 +1063,23 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
+    private func waitForGoalStatus(_ goalId: String, _ value: String, message: String) throws {
+        let identifier = "goal.status.\(goalId)"
+        // Match identity and value in one snapshot query, as for live connection readiness.
+        let matchingStatus = app.descendants(matching: .any).matching(identifier: identifier)
+            .matching(NSPredicate(format: "value == %@", value)).firstMatch
+        let started = ProcessInfo.processInfo.systemUptime
+        let matched = matchingStatus.waitForExistence(timeout: 15)
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
+        if !matched {
+            try attachRecord(["matched": String(matched), "elapsed_seconds": String(elapsed),
+                              "expected": value, "identifier": identifier], name: "Goal status wait failure")
+        }
+        // Later screenshots may observe a newer state; they cannot change this result.
+        try require(matched, message)
+    }
+
+    @MainActor
     private func attachScreenshot(_ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
@@ -1082,12 +1105,55 @@ final class SharedServerChatUITests: XCTestCase {
 
     @MainActor
     private func replace(_ field: XCUIElement, with text: String) throws {
+        try prepareReplacement(field)
+        try typeReplacement(field, with: text)
+    }
+
+    @MainActor
+    private func prepareReplacement(_ field: XCUIElement) throws {
         try require(field.waitForExistence(timeout: 10), "Required text field must exist")
         try reveal(field)
         try require(field.isEnabled && field.isHittable, "The exact native input must be editable")
+        let target = diagnosticInputIdentifier(field.identifier)
+        let doneIdentifier: String
+        switch target {
+        case "serverURL", "pairingCode", "pairingDeviceName": doneIdentifier = "pairing.keyboard.done"
+        case "messageComposer": doneIdentifier = "conversation.keyboard.done"
+        case "task.create.title", "task.create.criteria", "task.create.capabilities": doneIdentifier = "task.create.keyboard.done"
+        default: doneIdentifier = "task.detail.keyboard.done"
+        }
+        func observe(_ phase: String) -> [String: Any] {
+            let started = ProcessInfo.processInfo.systemUptime
+            var observation: [String: Any] = ["phase": phase, "started_uptime": started]
+            do {
+                // One snapshot, projected through the existing fixed identifiers,
+                // geometry and focus flags. Never retain input values or AX errors.
+                let measured = keyboardAbsenceSnapshot(try app.snapshot(), doneIdentifier: doneIdentifier)
+                observation["snapshot"] = measured.diagnostic
+                observation["outcome"] = measured.keyboardCount == nil ? "incomplete_snapshot" : "observed"
+            } catch { observation["outcome"] = "snapshot_error" }
+            observation["ended_uptime"] = ProcessInfo.processInfo.systemUptime
+            return observation
+        }
+        let beforeTap = observe("before_tap"), tapStarted = ProcessInfo.processInfo.systemUptime
         field.tap()
+        let tapReturned = ProcessInfo.processInfo.systemUptime
         let keyboard = app.keyboards.firstMatch
-        try require(keyboard.waitForExistence(timeout: 10), "The native keyboard must appear before typing")
+        let keyboardAppeared = keyboard.waitForExistence(timeout: 10)
+        let waitEnded = ProcessInfo.processInfo.systemUptime
+        if !keyboardAppeared {
+            // Observe after the original waiter has decided. Diagnostic queries
+            // must not delay its start, extend its ten seconds or change its result.
+            let afterWait = observe("after_keyboard_wait")
+            retainKeyboardAbsenceDiagnostic([
+                "target_identifier": target, "done_identifier": doneIdentifier, "tap_calls": 1,
+                "tap_started_uptime": tapStarted, "tap_returned_uptime": tapReturned,
+                "tap_seconds": tapReturned - tapStarted, "timeout_seconds": 10,
+                "wait_ended_uptime": waitEnded, "wait_seconds": waitEnded - tapReturned,
+                "observation_count": 2, "observations": [beforeTap, afterWait],
+            ], name: "Native input tap failure observations")
+        }
+        try require(keyboardAppeared, "The native keyboard must appear before typing")
         if let current = field.value as? String, !current.isEmpty, current != field.placeholderValue {
             if field.identifier == "pairingDeviceName" {
                 try require(field.elementType == .textField && current.count <= 128
@@ -1103,6 +1169,10 @@ final class SharedServerChatUITests: XCTestCase {
             let cleared = field.value as? String
             try require(cleared == "" || cleared == field.placeholderValue, "The native input must be empty before replacement")
         }
+    }
+
+    @MainActor
+    private func typeReplacement(_ field: XCUIElement, with text: String) throws {
         field.typeText(text)
         let enteredInput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", text), object: field)
         try require(XCTWaiter.wait(for: [enteredInput], timeout: 45) == .completed, "The original native typing operation must finish with the exact intended text")
@@ -1174,10 +1244,19 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func keyboardAbsenceSnapshot(_ root: XCUIElementSnapshot, doneIdentifier: String)
-        -> (keyboardCount: Int?, diagnostic: [String: Any]) {
+    private func diagnosticInputIdentifier(_ identifier: String) -> String {
         let fixedInputIDs: Set<String> = ["serverURL", "pairingCode", "pairingDeviceName", "messageComposer",
                                           "task.create.title", "task.create.criteria", "task.create.capabilities"]
+        if fixedInputIDs.contains(identifier) { return identifier }
+        if identifier.hasPrefix("task.review.comment.") { return "task.review.comment" }
+        if identifier.hasPrefix("task.approval.summary.") { return "task.approval.summary" }
+        if identifier.hasPrefix("task.approval.risk.") { return "task.approval.risk" }
+        return "other_input"
+    }
+
+    @MainActor
+    private func keyboardAbsenceSnapshot(_ root: XCUIElementSnapshot, doneIdentifier: String)
+        -> (keyboardCount: Int?, diagnostic: [String: Any]) {
         func number(_ value: CGFloat) -> Any { value.isFinite ? Double(value) as Any : NSNull() }
         var pending: [XCUIElementSnapshot] = [root], visited = 0, keyboards = 0, doneCount = 0, elementCount = 0
         var elements: [[String: Any]] = []
@@ -1188,11 +1267,7 @@ final class SharedServerChatUITests: XCTestCase {
             if node.elementType == .keyboard { keyboards += 1; fixedID = "keyboard" }
             else if node.elementType == .button && node.identifier == doneIdentifier { doneCount += 1; fixedID = doneIdentifier }
             else if node.elementType == .textField || node.elementType == .secureTextField || node.elementType == .textView {
-                if fixedInputIDs.contains(node.identifier) { fixedID = node.identifier }
-                else if node.identifier.hasPrefix("task.review.comment.") { fixedID = "task.review.comment" }
-                else if node.identifier.hasPrefix("task.approval.summary.") { fixedID = "task.approval.summary" }
-                else if node.identifier.hasPrefix("task.approval.risk.") { fixedID = "task.approval.risk" }
-                else { fixedID = "other_input" }
+                fixedID = diagnosticInputIdentifier(node.identifier)
             }
             if let fixedID {
                 elementCount += 1
@@ -1214,7 +1289,7 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func retainKeyboardAbsenceDiagnostic(_ diagnostic: [String: Any]) {
+    private func retainKeyboardAbsenceDiagnostic(_ diagnostic: [String: Any], name: String = "Native keyboard absence observations") {
         var bounded = diagnostic
         let text: String
         do {
@@ -1228,20 +1303,21 @@ final class SharedServerChatUITests: XCTestCase {
             text = data.count <= 32_768 ? String(decoding: data, as: UTF8.self) : "{\"diagnostic_limit_exceeded\":true}"
         } catch { text = "{\"diagnostic_encoding_failed\":true}" }
         let attachment = XCTAttachment(string: text)
-        attachment.name = "Native keyboard absence observations"
+        attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
     }
 
     @MainActor
-    private func revealText(_ element: XCUIElement, preferTop: Bool = false) throws {
-        // Selectable SwiftUI text can be visibly rendered yet make XCTest's
-        // activation-point lookup throw. Read-only checks need visible content.
-        // Disclosure callers also require enabled/hittable controls before taps.
+    private func revealText(_ element: XCUIElement, preferTop: Bool = false, attempts: Int = 24) throws {
+        // Plain summaries and selectable originals can be visibly rendered yet
+        // make XCTest's activation-point lookup throw. Read-only checks require
+        // visible content; disclosure callers separately check enabled/hittable.
+        try require(attempts > 0 && attempts <= 24, "Read-only text scrolling must stay within its existing attempt limit")
         let list = app.collectionViews.firstMatch
         try require(list.exists, "The displayed text must belong to a visible list")
         try require(!app.keyboards.firstMatch.exists, "Read-only content must not be covered by the keyboard")
-        for attempt in 0..<24 {
+        for attempt in 0..<attempts {
             var viewport = list.frame.intersection(app.frame)
             let navigation = app.navigationBars.firstMatch
             let tabs = app.tabBars.firstMatch
@@ -1254,7 +1330,7 @@ final class SharedServerChatUITests: XCTestCase {
             viewport = CGRect(x: viewport.minX, y: top, width: viewport.width, height: max(0, bottom - top)).insetBy(dx: 2, dy: 2)
             try require(!viewport.isEmpty && !viewport.isNull && !viewport.isInfinite,
                         "The list must have an unobscured content viewport")
-            var scrollUp = preferTop ? attempt >= 12 : attempt < 12
+            var scrollUp = preferTop ? attempt >= attempts / 2 : attempt < attempts / 2
             if element.exists {
                 let frame = element.frame
                 if !frame.isEmpty && !frame.isNull && !frame.isInfinite {

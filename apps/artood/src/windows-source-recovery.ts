@@ -181,22 +181,24 @@ export function readWindowsRecoverySourceRuntime(runtime: PreparedWindowsSourceR
  * grants no ordinary workspace admission and cannot construct a source runtime. */
 export function assertWindowsSourceRuntimeConfiguration(runtime: PreparedWindowsSourceRecoveryRuntime, nodeId: string,
   allowedRoots: readonly string[], profiles: readonly PreparedVerificationProfile[]): void {
-  const saved = runtimeState(runtime), clean = readCleanDaemonGuardian(saved.guardian);
-  const local = clean ? readCleanGuardianProductSourceConfiguration(saved.source, saved.guardian, clean)
-    : readGuardianProductSourceConfiguration(saved.source, saved.guardian);
+  // Reuse only this synchronous read; each independent assertion revalidates.
+  const { local } = runtimeStateAndConfiguration(runtime);
   if (local.options.nodeId !== nodeId || canonical([...allowedRoots].sort()) !== canonical([...local.options.allowedRoots].sort())
     || profiles.length !== local.options.profiles.length || profiles.some(profile => !local.options.profiles.includes(profile)))
     fail("Source discovery changed its exact current native configuration or profiles");
 }
 function runtimeState(runtime: PreparedWindowsSourceRecoveryRuntime): RecoveryRuntime {
+  return runtimeStateAndConfiguration(runtime).saved;
+}
+function runtimeStateAndConfiguration(runtime: PreparedWindowsSourceRecoveryRuntime) {
   const saved = runtimes.get(runtime); if (!saved) fail("original current recovery runtime required");
   const live = readWindowsGuardianLocalRuntime(saved.guardian);
   if (live.mode !== "active" || live.epoch.epoch_id !== saved.epochId) fail("recovery runtime belongs to another epoch");
   configuration(saved.configuration);
   const clean = readCleanDaemonGuardian(saved.guardian);
-  if (clean) readCleanGuardianProductSourceConfiguration(saved.source, saved.guardian, clean);
-  else readGuardianProductSourceConfiguration(saved.source, saved.guardian);
-  return saved;
+  const local = clean ? readCleanGuardianProductSourceConfiguration(saved.source, saved.guardian, clean)
+    : readGuardianProductSourceConfiguration(saved.source, saved.guardian);
+  return { saved, local };
 }
 
 /** Uses the genuine live native fence once, then captures current bytes as UNVERIFIED.

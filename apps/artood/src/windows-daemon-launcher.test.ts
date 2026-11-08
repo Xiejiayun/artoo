@@ -88,6 +88,31 @@ describe("current-generation readiness and actual closure", () => {
     expect(() => f.frame("daemon_output", { generation: 0, stream: "stdout", data: Buffer.from("ARTOO_SUPERVISED_V1 " +
       JSON.stringify(event) + "\n").toString("base64") })).toThrow(); expect(sink).not.toHaveBeenCalled();
   });
+  it("forwards a bounded observer timing without granting readiness, command acceptance or process closure", () => {
+    const sink = vi.fn(), f = fixture(undefined, undefined, sink); f.start();
+    const diagnostic = { version: 1, command_type: "product.source.review.v1", command_id_digest: digest,
+      phase: "runtime", status: "observed", elapsed_ms: 20, phase_elapsed_ms: 10, observer_timing: {
+        version: 1, scope: "startWindowsGuardianObserverSync.inclusive.v1", epoch_id: nonce, slot_id: armNonce,
+        elapsed_ms: 7, cleanup_confirmed: true } };
+    const data = Buffer.from("ARTOO_SUPERVISED_V1 " + JSON.stringify({ version: 1, kind: "source_command", nonce, pid: daemon(0).pid, diagnostic }) + "\n");
+    expect(f.frame("daemon_output", { generation: 0, stream: "stdout", data: data.toString("base64") })).toBeUndefined();
+    expect(sink).toHaveBeenCalledExactlyOnceWith(0, diagnostic); expect(f.lifecycle.ready).toBe(false);
+    f.arm(); f.exit(); f.terminal(); expect(() => f.lifecycle.confirm(observed)).toThrow(/closure/);
+  });
+  it.each(["scope", "ticket", "slot", "oversized", "status"])("rejects invalid observer timing before forwarding: %s", variant => {
+    const sink = vi.fn(), f = fixture(undefined, undefined, sink); f.start();
+    const timing: Record<string, unknown> = { version: 1, scope: "startWindowsGuardianObserverSync.inclusive.v1",
+      epoch_id: nonce, slot_id: armNonce, elapsed_ms: 7, cleanup_confirmed: true };
+    const diagnostic = { version: 1, command_type: "product.source.review.v1", command_id_digest: digest,
+      phase: "runtime", status: variant === "status" ? "completed" : "observed", elapsed_ms: 20, phase_elapsed_ms: 10, observer_timing: timing };
+    if (variant === "scope") timing.scope = "pure-powershell-duration";
+    if (variant === "ticket") timing.ticket = "private-ticket";
+    if (variant === "slot") timing.slot_id = "private-path";
+    if (variant === "oversized") timing.elapsed_ms = 86_400_001;
+    const data = Buffer.from("ARTOO_SUPERVISED_V1 " + JSON.stringify({ version: 1, kind: "source_command", nonce, pid: daemon(0).pid, diagnostic }) + "\n");
+    expect(() => f.frame("daemon_output", { generation: 0, stream: "stdout", data: data.toString("base64") })).toThrow();
+    expect(sink).not.toHaveBeenCalled();
+  });
   it("bounds source diagnostic frames independently of startup and stop diagnostics", () => {
     const sink = vi.fn(), f = fixture(undefined, undefined, sink); f.start();
     const emit = () => f.frame("daemon_output", { generation: 0, stream: "stdout", data: Buffer.from("ARTOO_SUPERVISED_V1 " + JSON.stringify({

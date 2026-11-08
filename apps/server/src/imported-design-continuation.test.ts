@@ -127,7 +127,36 @@ import { inspectCleanValidationPublicationDispatch } from "./services/clean-vali
 const sha = (bytes: string | Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const hash = (value: unknown) => sha(canonicalProductSourceTransferValueV1(value));
 describe("imported design continuation (controlled DB/protocol evidence, no native process)", () => {
-  const lifecycle = settledServerFixture<{ server?: TestServer; directory: string }>(() => ({ directory: "" }));
+  const timingCases = new Set([
+    "H9 exact old operation set and unknown closure cannot reopen or publish the workspace",
+    "H7 rejection creates one fresh repair with original retry budget and a complete new review",
+    "H8 rejects H7 retry after the original destination session changes",
+    "H7 failed publication remains one immutable attempt and cannot reopen accepted validation",
+  ]);
+  const fixtureTimingStarts = new WeakMap<object, number>();
+  const lifecycle = settledServerFixture<{ server?: TestServer; directory: string }>(() => ({ directory: "" }), {
+    observe(event, context) {
+      if (!timingCases.has(context.task.name)) return;
+      const now = performance.now(), started = fixtureTimingStarts.get(context) ?? now;
+      fixtureTimingStarts.set(context, started);
+      // Observe existing setup/body/drain/close events without changing fixture ownership or deadlines.
+      console.error("[source-continuation-timing]", JSON.stringify({ case: context.task.name, clock: "fixture", event, elapsed_ms: now - started }));
+    },
+  });
+  function tracePhases() {
+    const name = lifecycle.context().task.name, started = performance.now();
+    return async <T>(phase: string, operation: () => T | PromiseLike<T>): Promise<T> => {
+      const spanStarted = performance.now();
+      console.error("[source-continuation-timing]", JSON.stringify({ case: name, clock: "body", phase, event: "started", elapsed_ms: spanStarted - started }));
+      let outcome: "fulfilled" | "rejected" = "rejected";
+      try { const result = await operation(); outcome = "fulfilled"; return result; }
+      finally {
+        const ended = performance.now();
+        // Emit immediately, including while original work drains after a timeout; never log source/token/error data.
+        console.error("[source-continuation-timing]", JSON.stringify({ case: name, clock: "body", phase, event: "settled", outcome, elapsed_ms: ended - started, duration_ms: ended - spanStarted }));
+      }
+    };
+  }
   const it = lifecycle.it, fixture = () => {
     const state = lifecycle.current();
     if (!state.server) throw new Error("This test's original server setup has not completed");
@@ -1004,19 +1033,24 @@ describe("imported design continuation (controlled DB/protocol evidence, no nati
     return (await fixture().server.db.transaction(tx => advanceGoalRecoveryValidationReview(f.actor, tx, a, author.id))).review;
   }
   it("H9 exact old operation set and unknown closure cannot reopen or publish the workspace", async () => {
-    const f = await prepareH9(), db = fixture().server.db.db;
+    const timed = tracePhases();
+    const f = await timed("prepare-H9", prepareH9), db = fixture().server.db.db;
     if (f.availability.state !== "recoverable") throw Error("Controlled recoverable availability required");
-    await f.advertise({ ...f.availability, previous_epoch: { ...f.availability.previous_epoch, roster_revision: 0, roster_digest: f.registration.epoch.roster_digest }, operations: [] });
-    await expect(f.ensureRecovery()).rejects.toThrow("exact dispatched operation set");
-    await f.advertise(); const row = await f.ensureRecovery(); expect((await f.ensureRecovery()).id).toBe(row.id);
-    const command = await f.recoveryPeer().dispatch(row.id);
-    await f.recoveryPeer().receive({ kind: "product.source.recovery.result.v1", node_id: row.computerId, command_id: command.id,
-      payload: { version: 1, recovery_id: row.id, request_digest: row.requestDigest, outcome: "unknown", closed: false, reason: "Controlled missing original terminal ACK" } });
-    expect((await f.advanceRecovery(row.id)).state).toBe("unknown");
-    await expect(f.freshAuthor(row.id)).rejects.toThrow("checkpoint");
-    expect(await db.select().from(goalSourceRecoveryCheckpoints)).toEqual([]); expect(await db.select().from(goalSourceRecoverySettlements)).toEqual([]);
-    expect(await db.select().from(goalRecoveryValidations)).toEqual([]); expect(await db.select().from(productReleases)).toEqual([]);
-    expect((await unsettledStandaloneExecutions(f.actor, db, { goalId: row.goalId })).some(value => value.kind === "validation" && value.id === f.oldAuthor.id)).toBe(true);
+    const invalidAvailability = { ...f.availability, previous_epoch: { ...f.availability.previous_epoch, roster_revision: 0, roster_digest: f.registration.epoch.roster_digest }, operations: [] };
+    await timed("advertise-invalid-operation-set", () => f.advertise(invalidAvailability));
+    await timed("assert-invalid-operation-set", () => expect(f.ensureRecovery()).rejects.toThrow("exact dispatched operation set"));
+    await timed("advertise-original-operations", () => f.advertise()); const row = await timed("ensure-recovery", () => f.ensureRecovery());
+    await timed("assert-idempotent-recovery", async () => { expect((await f.ensureRecovery()).id).toBe(row.id); });
+    const command = await timed("dispatch-recovery", () => f.recoveryPeer().dispatch(row.id));
+    await timed("receive-unknown-closure", () => f.recoveryPeer().receive({ kind: "product.source.recovery.result.v1", node_id: row.computerId, command_id: command.id,
+      payload: { version: 1, recovery_id: row.id, request_digest: row.requestDigest, outcome: "unknown", closed: false, reason: "Controlled missing original terminal ACK" } }));
+    await timed("assert-advance-unknown", async () => { expect((await f.advanceRecovery(row.id)).state).toBe("unknown"); });
+    await timed("assert-fresh-author-needs-checkpoint", () => expect(f.freshAuthor(row.id)).rejects.toThrow("checkpoint"));
+    await timed("assert-no-new-work-and-old-occupancy", async () => {
+      expect(await db.select().from(goalSourceRecoveryCheckpoints)).toEqual([]); expect(await db.select().from(goalSourceRecoverySettlements)).toEqual([]);
+      expect(await db.select().from(goalRecoveryValidations)).toEqual([]); expect(await db.select().from(productReleases)).toEqual([]);
+      expect((await unsettledStandaloneExecutions(f.actor, db, { goalId: row.goalId })).some(value => value.kind === "validation" && value.id === f.oldAuthor.id)).toBe(true);
+    });
   });
   it("H9 checkpoint needs a sent receipt and separate new epoch registration before one fresh author", async () => {
     const f = await prepareH9(), db = fixture().server.db.db, oldAuthor = (await db.select().from(goalImportedValidations))[0]!;
@@ -1270,17 +1304,20 @@ describe("imported design continuation (controlled DB/protocol evidence, no nati
     expect(acceptance!.payload).not.toMatchObject({ validation_id: author.writerInstanceId });
   });
   it("H7 rejection creates one fresh repair with original retry budget and a complete new review", async () => {
-    const f = await prepareH7(), author = await completedValidation(f), rejected = await settleValidationReview(f, author, "rejected");
+    const timed = tracePhases();
+    const f = await timed("prepare-H7", prepareH7), author = await timed("complete-original-author", () => completedValidation(f)),
+      rejected = await timed("settle-rejected-review", () => settleValidationReview(f, author, "rejected"));
     const oldH6 = await fixture().server.db.db.select().from(goalImportedExecutionReviews), oldContext = ImportedValidationRequestV1Schema.parse(author.request).run_start.context_pack.payload;
-    const [one, two] = await Promise.all([f.repair(rejected.id), f.repair(rejected.id)]);
+    const [one, two] = await timed("concurrent-repair", () => Promise.all([f.repair(rejected.id), f.repair(rejected.id)]));
     expect(one.id).toBe(two.id); expect(one).toMatchObject({ rootValidationId: author.id, parentValidationId: author.id, generation: 1, attemptIndex: author.attemptIndex + 1 });
     const repaired = ImportedValidationRequestV1Schema.parse(one.request);
     expect(repaired.run_start.context_pack.payload.goal_context).toEqual(oldContext.goal_context); expect(repaired.run_start.context_pack.payload.product_development!.accepted_inputs).toEqual(oldContext.product_development!.accepted_inputs);
     expect(repaired.source).not.toHaveProperty("source"); expect(repaired.source).not.toHaveProperty("origin"); expect(repaired.run_start.context_pack.payload.review_feedback!.entries[0]!.comment).toContain("saved entries");
-    await completedValidation(f, one); const next = await f.ensureReview(one.id), request = ImportedValidationReviewRequestV1Schema.parse(next.request);
+    await timed("complete-repaired-author", () => completedValidation(f, one)); const next = await timed("ensure-new-review", () => f.ensureReview(one.id)), request = ImportedValidationReviewRequestV1Schema.parse(next.request);
     expect(next.id).not.toBe(rejected.id); expect(request.review_start.context_pack.payload.task.description).toContain("COMPLETE final product");
     expect(request.review_start.context_pack.payload.task.description).toContain("baseline.files[].reference"); expect(request.review_start.context_pack.payload.task.description).toContain("report truthfulness");
-    await expect(f.reviewPeer().dispatch(rejected.id)).rejects.toThrow(); expect(await fixture().server.db.db.select().from(goalImportedExecutionReviews)).toEqual(oldH6);
+    await timed("assert-old-review-not-dispatchable", () => expect(f.reviewPeer().dispatch(rejected.id)).rejects.toThrow());
+    await timed("assert-original-H6-unchanged", async () => { expect(await fixture().server.db.db.select().from(goalImportedExecutionReviews)).toEqual(oldH6); });
   });
   it.each(["author-failed", "verification-failed"] as const)("H7 retries only the typed and actually closed %s source", async failure => {
     const f = await prepareH7(), author = await f.ensure(), peer = f.authorPeer(), command = await peer.dispatch(author.id), result = await validationEvents(f, author, { failure });
@@ -1346,8 +1383,18 @@ describe("imported design continuation (controlled DB/protocol evidence, no nati
       acceptance: { version: 1, scope: "node-http-point-in-time", binding_digest: releaseAcceptanceBindingDigest(publication.acceptance_binding!), settled_criteria: publication.acceptance_binding!.criteria } });
     return { ...f, originalAutomation: a, author, review, capabilities, release, publication, receipt, create };
   }
-  it("H8 automatically retries an original closed H7 publication failure without rerunning its accepted author", async () => {
-    const f = await prepareH7Publication(), support = f.actor.supportsExecutionFeature;
+  it("H8 automatically retries an original closed H7 publication failure without rerunning its accepted author", async context => {
+    type Phase = "prepare-publication" | "ingest-original-failure" | "retry-pump-and-stop" | "retry-dispatch-binding"
+      | "publication-binding" | "ingest-retry-success" | "replay-original-failure" | "final-pump-and-stop" | "recorded-completion";
+    const started = performance.now(), phases: { phase: Phase; started_ms: number; ended_ms?: number }[] = [];
+    const timed = async <T>(phase: Phase, operation: () => Promise<T>): Promise<T> => {
+      const span: (typeof phases)[number] = { phase, started_ms: performance.now() - started };
+      phases.push(span);
+      try { return await operation(); } finally { span.ended_ms = performance.now() - started; }
+    };
+    // Keep body-relative spans when fixture cleanup drains work after a timeout; report only fixed labels and timings.
+    context.onTestFailed(() => { console.error("H8 publication retry phase timings", JSON.stringify(phases)); });
+    const f = await timed("prepare-publication", prepareH7Publication), support = f.actor.supportsExecutionFeature;
     f.actor.supportsExecutionFeature = (computer, feature) => feature === PRODUCT_RELEASE_RETRY_FEATURE_V1
       ? computer === f.author.computerId : support?.(computer, feature) === true;
     const session = f.actor.getPairedNodeSession!(f.author.computerId)!;
@@ -1356,10 +1403,10 @@ describe("imported design continuation (controlled DB/protocol evidence, no nati
       reason: "Controlled H8 original listener closure", retry_source: { version: 1, source_id: "controlled-H8-H7-source",
         closure: "local-release-settled.v1", recovery: { kind: "listener-closed", active_release_id: null, active_artifact_digest: null } } });
     const originalRuns = await fixture().server.db.db.select().from(runs), [beforeGoal] = await fixture().server.db.db.select().from(goals).where(eq(goals.id, f.author.goalId));
-    await ingestProductReleaseReceipt(f.actor, f.author.computerId, failed, () => true, session);
+    await timed("ingest-original-failure", () => ingestProductReleaseReceipt(f.actor, f.author.computerId, failed, () => true, session));
     expect(await fixture().server.db.db.select().from(productReleaseRetrySources)).toHaveLength(1);
     const errors: unknown[] = [], dispatcher = createGoalAutomationDispatcher(f.actor, async () => {}, error => { errors.push(error); });
-    await dispatcher.pump(); await dispatcher.stop(); expect(errors).toEqual([]);
+    await timed("retry-pump-and-stop", async () => { await dispatcher.pump(); await dispatcher.stop(); }); expect(errors).toEqual([]);
     const releases = await fixture().server.db.db.select().from(productReleases).where(eq(productReleases.goalId, f.author.goalId));
     expect(releases).toHaveLength(2);
     const next = releases.find(item => item.publicationGeneration === 1)!;
@@ -1370,21 +1417,22 @@ describe("imported design continuation (controlled DB/protocol evidence, no nati
     expect(next.runId).toBe(f.release.runId); expect(next.evidenceId).toBe(f.release.evidenceId);
     expect(await fixture().server.db.db.select().from(runs)).toEqual(originalRuns);
     expect(await fixture().server.db.db.select().from(goalImportedValidationPublications)).toHaveLength(2);
-    await fixture().server.db.transaction(tx => assertProductReleaseRetryDispatch(f.actor, tx, next, session));
-    await fixture().server.db.transaction(tx => inspectImportedValidationPublicationDispatch(f.actor, tx, next));
+    await timed("retry-dispatch-binding", () => fixture().server.db.transaction(tx => assertProductReleaseRetryDispatch(f.actor, tx, next, session)));
+    await timed("publication-binding", () => fixture().server.db.transaction(tx => inspectImportedValidationPublicationDispatch(f.actor, tx, next)));
     const retryReceipt = ProductReleaseReceiptSchema.parse({ ...f.receipt, request });
-    await ingestProductReleaseReceipt(f.actor, f.author.computerId, retryReceipt, () => true, session);
+    await timed("ingest-retry-success", () => ingestProductReleaseReceipt(f.actor, f.author.computerId, retryReceipt, () => true, session));
     // An old receipt replay resolves its exact historical H7 publication relation.
-    await ingestProductReleaseReceipt(f.actor, f.author.computerId, failed, () => true, session);
+    await timed("replay-original-failure", () => ingestProductReleaseReceipt(f.actor, f.author.computerId, failed, () => true, session));
     const finalErrors: unknown[] = [], finalDispatcher = createGoalAutomationDispatcher(f.actor, async () => {}, error => { finalErrors.push(error); });
-    await finalDispatcher.pump(); await finalDispatcher.stop(); expect(finalErrors).toEqual([]);
+    await timed("final-pump-and-stop", async () => { await finalDispatcher.pump(); await finalDispatcher.stop(); }); expect(finalErrors).toEqual([]);
     expect((await fixture().server.db.db.select().from(goals).where(eq(goals.id, f.author.goalId)))[0]!.status).toBe("completed");
-    await fixture().server.db.transaction(tx => assertRecordedGoalReleaseCompletion(f.actor, tx, f.originalAutomation));
+    await timed("recorded-completion", () => fixture().server.db.transaction(tx => assertRecordedGoalReleaseCompletion(f.actor, tx, f.originalAutomation)));
     expect((await fixture().server.db.db.select().from(productReleases).where(eq(productReleases.id, f.release.id)))[0]!.receipt).toEqual(failed);
     expect((await f.automation()).computerId).toBe(f.originalAutomation.computerId);
   });
   it("H8 rejects H7 retry after the original destination session changes", async () => {
-    const f = await prepareH7Publication(), support = f.actor.supportsExecutionFeature;
+    const timed = tracePhases();
+    const f = await timed("prepare-publication", prepareH7Publication), support = f.actor.supportsExecutionFeature;
     f.actor.supportsExecutionFeature = (computer, feature) => feature === PRODUCT_RELEASE_RETRY_FEATURE_V1
       ? computer === f.author.computerId : support?.(computer, feature) === true;
     const session = f.actor.getPairedNodeSession!(f.author.computerId)!;
@@ -1392,12 +1440,14 @@ describe("imported design continuation (controlled DB/protocol evidence, no nati
       artifact_digest: null, outcome: "failed", endpoint: null, previous_release_id: null, health_checks: [],
       retry_source: { version: 1, source_id: "controlled-H8-stale-session", closure: "local-release-settled.v1",
         recovery: { kind: "listener-closed", active_release_id: null, active_artifact_digest: null } } });
-    await ingestProductReleaseReceipt(f.actor, f.author.computerId, failed, () => true, session);
+    await timed("ingest-original-failure", () => ingestProductReleaseReceipt(f.actor, f.author.computerId, failed, () => true, session));
     const current = f.actor.getPairedNodeSession!;
     f.actor.getPairedNodeSession = computer => computer === f.author.computerId ? { ...session, sessionId: "replacement" } : current(computer);
-    await expect(f.create()).resolves.toMatchObject({ status: "failed" });
-    expect(await fixture().server.db.db.select().from(productReleases)).toHaveLength(1);
-    expect(await fixture().server.db.db.select().from(goalImportedValidationPublications)).toHaveLength(1);
+    await timed("assert-stale-session-no-retry", () => expect(f.create()).resolves.toMatchObject({ status: "failed" }));
+    await timed("assert-original-publication-only", async () => {
+      expect(await fixture().server.db.db.select().from(productReleases)).toHaveLength(1);
+      expect(await fixture().server.db.db.select().from(goalImportedValidationPublications)).toHaveLength(1);
+    });
   });
   it("H7 publishes its exact accepted B source and settles through the existing publisher without retargeting A", async () => {
     const f = await prepareH7Publication();
@@ -1435,17 +1485,18 @@ describe("imported design continuation (controlled DB/protocol evidence, no nati
     expect(await fixture().server.db.db.select().from(productReleases)).toHaveLength(1);
   });
   it("H7 failed publication remains one immutable attempt and cannot reopen accepted validation", async () => {
-    const f = await prepareH7Publication(), failed = ProductReleaseReceiptSchema.parse({ request: f.publication,
+    const timed = tracePhases();
+    const f = await timed("prepare-publication", prepareH7Publication), failed = ProductReleaseReceiptSchema.parse({ request: f.publication,
       release_profile_digest: f.capabilities.binding.release_profile_digest, artifact_digest: null, outcome: "failed", endpoint: null,
       previous_release_id: null, health_checks: [], reason: "Controlled publisher failure" });
-    await ingestProductReleaseReceipt(f.actor, f.author.computerId, failed);
-    expect((await f.create()).status).toBe("failed");
-    expect(await fixture().server.db.db.select().from(productReleases)).toHaveLength(1);
-    await expect(f.repair(f.review.id)).rejects.toThrow();
-    const [origin] = await fixture().server.db.db.select().from(goalImportedValidationPublications);
-    await expect(fixture().server.db.db.update(goalImportedValidationPublications).set({ sourceDigest: sha("changed publication") }).where(eq(goalImportedValidationPublications.releaseId, f.release.id)))
-      .rejects.toMatchObject({ cause: { code: "P0001", message: "H7 publication origin is immutable" } });
-    expect((await fixture().server.db.db.select().from(goalImportedValidationPublications))[0]).toEqual(origin);
+    await timed("ingest-original-failure", () => ingestProductReleaseReceipt(f.actor, f.author.computerId, failed));
+    await timed("assert-failed-publication-not-retried", async () => { expect((await f.create()).status).toBe("failed"); });
+    await timed("assert-one-publication", async () => { expect(await fixture().server.db.db.select().from(productReleases)).toHaveLength(1); });
+    await timed("assert-accepted-validation-not-repaired", () => expect(f.repair(f.review.id)).rejects.toThrow());
+    const [origin] = await timed("read-publication-origin", () => fixture().server.db.db.select().from(goalImportedValidationPublications));
+    await timed("assert-immutable-publication-origin", () => expect(fixture().server.db.db.update(goalImportedValidationPublications).set({ sourceDigest: sha("changed publication") }).where(eq(goalImportedValidationPublications.releaseId, f.release.id)))
+      .rejects.toMatchObject({ cause: { code: "P0001", message: "H7 publication origin is immutable" } }));
+    await timed("assert-original-origin-unchanged", async () => { expect((await fixture().server.db.db.select().from(goalImportedValidationPublications))[0]).toEqual(origin); });
   });
   it("H7 NodeBinding uses dedicated status/stop and never routes its author through ordinary start", async () => {
     const f = await prepareH7(), author = await f.ensure(), request = ImportedValidationRequestV1Schema.parse(author.request), sent: ServerToNodeMessage[] = [];
@@ -2853,4 +2904,405 @@ describe("imported design continuation (controlled DB/protocol evidence, no nati
     expect(await db.select().from(goalCleanValidationPublications)).toHaveLength(2);
     expect(await db.select().from(goalSourceRecoveries)).toEqual([]);
   }, 90000);
+  // Receipt-recovery regressions use the real migrated PGlite DB and real service
+  // receive/dispatcher code. Only model/verifier results and the recording
+  // transport are controlled. The separate loopback case uses the actual WS path.
+  type RecoveryReceiptFamily = "design" | "design-review" | "execution" | "execution-review" | "execution-repair" | "validation" | "validation-review";
+  type RecoveryReceiptActor = import("./context.js").ServerContext;
+  type RecoveryReceiptBase = Pick<Awaited<ReturnType<typeof prepareDesign>>, "actor" | "destination" | "source" | "base">;
+  const recoveryReceiptFamilies: RecoveryReceiptFamily[] = ["design", "design-review", "execution", "execution-review", "execution-repair", "validation", "validation-review"];
+  const recoveryReceiptTables = {
+    design: { row: "goal_imported_design_continuations", marker: "goal_imported_design_completions", key: "continuation_id", feature: IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, completion: "goal_imported_design_completions" },
+    "design-review": { row: "goal_imported_design_reviews", marker: "goal_imported_design_review_receipts", key: "review_id", feature: IMPORTED_DESIGN_REVIEW_FEATURE_V1, completion: null },
+    execution: { row: "goal_imported_executions", marker: "goal_imported_execution_receipts", key: "execution_id", feature: IMPORTED_EXECUTION_FEATURE_V1, completion: "goal_imported_execution_completions" },
+    "execution-review": { row: "goal_imported_execution_reviews", marker: "goal_imported_execution_review_receipts", key: "review_id", feature: IMPORTED_EXECUTION_REVIEW_FEATURE_V1, completion: null },
+    "execution-repair": { row: "goal_imported_execution_repairs", marker: "goal_imported_execution_repair_receipts", key: "repair_id", feature: IMPORTED_EXECUTION_REVIEW_FEATURE_V1, completion: "goal_imported_execution_repair_completions" },
+    validation: { row: "goal_imported_validations", marker: "goal_imported_validation_receipts", key: "validation_id", feature: IMPORTED_VALIDATION_FEATURE_V1, completion: "goal_imported_validation_completions" },
+    "validation-review": { row: "goal_imported_validation_reviews", marker: "goal_imported_validation_review_receipts", key: "review_id", feature: IMPORTED_VALIDATION_FEATURE_V1, completion: null },
+  } as const;
+  async function recoveryReceiptRows(table: string, key: string, id: string) {
+    // Both identifiers are selected exclusively from the fixed local table map.
+    const result = await fixture().server.db.db.execute(sql`select * from ${sql.identifier(table)} where ${sql.identifier(key)} = ${id}`);
+    expect(Array.isArray(result.rows)).toBe(true);
+    return result.rows as Record<string, unknown>[];
+  }
+  async function recoveryReceiptState(family: RecoveryReceiptFamily, id: string) {
+    const table = recoveryReceiptTables[family];
+    const [row] = await recoveryReceiptRows(table.row, "id", id);
+    const stored = await recoveryReceiptRows(table.marker, table.key, id);
+    const completion = table.completion ? await recoveryReceiptRows(table.completion, table.key, id) : [];
+    return { row, completion, marker: family === "design" ? stored.filter(value => value.receipt_sent_at !== null) : stored };
+  }
+  function recoveryReceiptControl(f: RecoveryReceiptBase, family: RecoveryReceiptFamily) {
+    const server = fixture().server;
+    const identity = { computerId: f.destination.nodeId, deviceId: f.destination.device.id, tokenLookup: parseDeviceToken(f.destination.node_token)!.lookup };
+    const sessionId = "design-session", frames: ServerToNodeMessage[] = [];
+    let current = true, sendHook: ((frame: ServerToNodeMessage) => Promise<void>) | undefined;
+    const priorSession = f.actor.getPairedNodeSession;
+    f.actor.getPairedNodeSession = id => id === identity.computerId ? { ...identity, sessionId } : priorSession?.(id);
+    const support = f.actor.supportsExecutionFeature, feature = recoveryReceiptTables[family].feature;
+    f.actor.supportsExecutionFeature = (id, value) => value === feature && id === identity.computerId || support?.(id, value) === true;
+    const options = { identity, sessionId, isCurrent: () => current, transport: {
+      async send(frame: ServerToNodeMessage) { frames.push(frame); await sendHook?.(frame); },
+      subscribe() { return () => {}; }, async close() {},
+    } };
+    return { server, identity, sessionId, frames, options, invalidate: () => { current = false; },
+      onSend: (hook?: (frame: ServerToNodeMessage) => Promise<void>) => { sendHook = hook; } };
+  }
+  function recoveryReceiptCase(f: RecoveryReceiptBase, family: RecoveryReceiptFamily, id: string,
+    control: ReturnType<typeof recoveryReceiptControl>, peer: object, command: ServerToNodeMessage, result: unknown, receive: () => Promise<void>) {
+    const callbacks: { computerId: string; family: RecoveryReceiptFamily; id: string }[] = [];
+    let beforeRecovery: (() => Promise<void>) | undefined;
+    // The test's entry point is the existing dispatcher.pump. On the old source
+    // this callback is never called, so red is an absent resend/marker, not an
+    // import or missing-export error. No result is replayed to receive after loss.
+    Object.assign(f.actor, { redeliverImportedSourceReceipt: async (computerId: string, candidate: RecoveryReceiptFamily, operationId: string) => {
+      callbacks.push({ computerId, family: candidate, id: operationId });
+      expect({ computerId, family: candidate, id: operationId }).toEqual({ computerId: f.destination.nodeId, family, id });
+      await beforeRecovery?.();
+      const method = (peer as { redeliverCommittedReceipt?: (id: string) => Promise<void> }).redeliverCommittedReceipt;
+      if (!method) throw Error("Dispatcher called an unavailable receipt recovery method");
+      await method.call(peer, operationId);
+    } });
+    const receipts = () => control.frames.filter(frame => frame.type === `product.source.${family}.receipt.v1`);
+    return { ...f, ...control, family, id, command, result, receive, peer, callbacks, receipts,
+      receiveWithCommand: (commandId: string) => (peer as { receive(message: unknown): Promise<void> }).receive({
+        kind: `product.source.${family}.result.v1`, node_id: f.destination.nodeId, command_id: commandId, payload: result }),
+      state: () => recoveryReceiptState(family, id), beforeRecovery: (hook: () => Promise<void>) => { beforeRecovery = hook; } };
+  }
+  type RecoveryReceiptVariant = "normal" | "changes_requested" | "rejected" | "failed" | "closed-failure" | "legacy" | "uncertain" | "cancelled";
+  async function prepareRecoveryReceipt(family: RecoveryReceiptFamily, variant: RecoveryReceiptVariant = "normal") {
+    if (family === "design") {
+      const f = await prepareDesign(), row = await f.ensureDesign(), c = recoveryReceiptControl(f, family);
+      const peer = createImportedDesignContinuationBinding(f.actor, c.options), command = await peer.dispatch(row.id);
+      const request = ImportedDesignContinuationRequestV1Schema.parse(row.request), verification = controlledDesignVerification(request);
+      await ingestWireRunEvent(f.actor, { kind: "run.event", node_id: row.computerId, run_id: row.runId, sequence: 0, event: { type: "run.lifecycle", payload: { phase: "started" } } });
+      await ingestWireRunEvent(f.actor, { kind: "run.event", node_id: row.computerId, run_id: row.runId, sequence: 1, event: { type: "run.verification", payload: verification } });
+      await ingestWireRunEvent(f.actor, { kind: "run.event", node_id: row.computerId, run_id: row.runId, sequence: 2, event: { type: "run.lifecycle", payload: { phase: "completed" } } });
+      const result = importedCompletedDesignResultFixture(request, verification);
+      if (variant === "legacy" && result.outcome === "finished") delete result.verified_design;
+      return recoveryReceiptCase(f, family, row.id, c, peer, command, result, () => peer.receive({ kind: "product.source.design.result.v1", node_id: row.computerId, command_id: command.id, payload: result }));
+    }
+    if (family === "design-review") {
+      const f = await completedDesign(), row = await f.ensureH4(), c = recoveryReceiptControl(f, family);
+      const peer = createImportedDesignReviewBinding(f.actor, c.options), command = await peer.dispatch(row.id), normal = reviewedDesign(row);
+      const result = variant === "changes_requested" && normal.outcome === "reviewed" ? ImportedDesignReviewResultV1Schema.parse({ ...normal,
+        verdict: { ...normal.verdict, outcome: "changes_requested", findings: [{ severity: "blocking", description: "Controlled required design changes", file: "design.md" }] } })
+        : ["failed", "uncertain", "cancelled"].includes(variant) ? ImportedDesignReviewResultV1Schema.parse({ version: 1, review_id: row.id,
+          request_digest: row.requestDigest, execution_authorized: false, outcome: variant === "cancelled" ? "cancelled_before_start" : variant,
+          closed: variant !== "uncertain", reason: "Controlled non-accepting review result" }) : normal;
+      return recoveryReceiptCase(f, family, row.id, c, peer, command, result, () => peer.receive({ kind: "product.source.design-review.result.v1", node_id: row.computerId, command_id: command.id, payload: result }));
+    }
+    if (family === "execution") {
+      const f = await prepareExecution(), row = await f.ensureH5(), c = recoveryReceiptControl(f, family);
+      const peer = createImportedExecutionBinding(f.actor, c.options), command = await peer.dispatch(row.id), result = await executionEvents(f, row);
+      return recoveryReceiptCase(f, family, row.id, c, peer, command, result, () => peer.receive({ kind: "product.source.execution.result.v1", node_id: row.computerId, command_id: command.id, payload: result }));
+    }
+    if (family === "execution-review") {
+      const f = await prepareH6(), row = await f.ensureH6(), c = recoveryReceiptControl(f, family);
+      const peer = createImportedExecutionReviewBinding(f.actor, c.options), command = await peer.dispatch(row.id);
+      const result = variant === "failed" ? ImportedExecutionReviewResultV1Schema.parse({ version: 1, review_id: row.id, request_digest: row.requestDigest,
+        execution_authorized: false, outcome: "failed", closed: true, reason: "Controlled closed implementation review failure" })
+        : reviewedImplementation(row, variant === "rejected" ? "rejected" : "accepted");
+      return recoveryReceiptCase(f, family, row.id, c, peer, command, result, () => peer.receive({ kind: "product.source.execution-review.result.v1", node_id: row.computerId, command_id: command.id, payload: result }));
+    }
+    if (family === "execution-repair") {
+      const f = await prepareH6(), review = await rejectedImplementation(f), row = await f.ensureRepair(review.id), c = recoveryReceiptControl(f, family);
+      const peer = createImportedExecutionRepairBinding(f.actor, c.options), command = await peer.dispatch(row.id), result = await repairEvents(f, row);
+      return recoveryReceiptCase(f, family, row.id, c, peer, command, result, () => peer.receive({ kind: "product.source.execution-repair.result.v1", node_id: row.computerId, command_id: command.id, payload: result }));
+    }
+    const f = await prepareH7();
+    if (family === "validation") {
+      const row = await f.ensure(), c = recoveryReceiptControl(f, family), peer = createImportedValidationBinding(f.actor, c.options), command = await peer.dispatch(row.id);
+      const result = await validationEvents(f, row, variant === "closed-failure" ? { failure: "author-failed" } : {});
+      return recoveryReceiptCase(f, family, row.id, c, peer, command, result, () => peer.receive({ kind: "product.source.validation.result.v1", node_id: row.computerId, command_id: command.id, payload: result }));
+    }
+    const author = await completedValidation(f), row = await f.ensureReview(author.id), c = recoveryReceiptControl(f, family);
+    const peer = createImportedValidationReviewBinding(f.actor, c.options), command = await peer.dispatch(row.id);
+    const result = variant === "failed" ? ImportedValidationReviewResultV1Schema.parse({ version: 1, review_id: row.id, request_digest: row.requestDigest,
+      execution_authorized: false, outcome: "failed", closed: true, reason: "Controlled closed final review failure" }) : validationReviewResult(row);
+    return recoveryReceiptCase(f, family, row.id, c, peer, command, result, () => peer.receive({ kind: "product.source.validation-review.result.v1", node_id: row.computerId, command_id: command.id, payload: result }));
+  }
+  async function installRecoveryMarkerFault(family: RecoveryReceiptFamily, id: string, deferred = false) {
+    const db = fixture().server.db.db, table = recoveryReceiptTables[family], literal = id.replaceAll("'", "''");
+    const functionName = "test_receipt_marker_fault_r1", triggerName = "test_receipt_marker_fault_r1";
+    // No production trigger is disabled or replaced. A deferred constraint
+    // trigger is an actual COMMIT-time fault; unsupported engines must fail this
+    // test, never silently skip it or relabel callback failure as commit failure.
+    await db.execute(sql.raw(`CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'controlled receipt marker rollback: ${family}' USING ERRCODE = 'P0001'; END $$`));
+    const when = `NEW.${table.key} = '${literal}'${family === "design" ? " AND NEW.receipt_sent_at IS NOT NULL AND OLD.receipt_sent_at IS NULL" : ""}`;
+    await db.execute(sql.raw(`CREATE ${deferred ? "CONSTRAINT " : ""}TRIGGER ${triggerName} ${deferred ? "AFTER" : "BEFORE"} ${family === "design" ? "UPDATE" : "INSERT"} ON ${table.marker} ${deferred ? "DEFERRABLE INITIALLY DEFERRED " : ""}FOR EACH ROW WHEN (${when}) EXECUTE FUNCTION ${functionName}()`));
+    let removed = false;
+    return async () => { if (removed) return; await db.execute(sql.raw(`DROP TRIGGER ${triggerName} ON ${table.marker}`));
+      await db.execute(sql.raw(`DROP FUNCTION ${functionName}()`)); removed = true; };
+  }
+  function observeRecoveryTransactions() {
+    const client = fixture().server.db, original = client.transaction.bind(client);
+    const failures: { callbackReturned: boolean; error: unknown }[] = [];
+    const observer = vi.spyOn(client, "transaction").mockImplementation(async function<T>(fn: (tx: import("@artoo/storage").DrizzleDb) => Promise<T>): Promise<T> {
+      let callbackReturned = false;
+      try { return await original(async tx => { const value = await fn(tx); callbackReturned = true; return value; }); }
+      catch (error) { failures.push({ callbackReturned, error }); throw error; }
+    });
+    return { failures, restore: () => observer.mockRestore() };
+  }
+  function recoveryDispatcher(actor: RecoveryReceiptActor, errors: unknown[]) {
+    const worker = createGoalAutomationDispatcher(actor, async () => { throw Error("Receipt maintenance must not stop or start a process"); }, error => { errors.push(error); });
+    lifecycle.own({ close: () => worker.stop() }); return worker;
+  }
+  async function freezeRecoveryProgress(f: Awaited<ReturnType<typeof prepareRecoveryReceipt>>) {
+    const db = fixture().server.db.db;
+    await db.update(goals).set({ status: "paused" }).where(eq(goals.id, f.base.goal_id));
+    // Automation has no "paused" status. A supported terminal status keeps this
+    // fixture outside ACTIVE so the assertions isolate maintenance from advance.
+    await db.update(goalAutomations).set({ status: "failed" }).where(eq(goalAutomations.goalId, f.base.goal_id));
+  }
+  async function recoveryBusinessState(f: RecoveryReceiptBase) {
+    const db = fixture().server.db.db;
+    return { goals: await db.select().from(goals).where(eq(goals.id, f.base.goal_id)),
+      automations: await db.select().from(goalAutomations).where(eq(goalAutomations.goalId, f.base.goal_id)),
+      runs: await db.select().from(runs), tasks: await db.select().from(tasks), reviews: await db.select().from(autonomousReviews),
+      releases: await db.select().from(productReleases),
+      designs: await db.select().from(goalImportedDesignContinuations), designReviews: await db.select().from(goalImportedDesignReviews),
+      executions: await db.select().from(goalImportedExecutions), executionReviews: await db.select().from(goalImportedExecutionReviews),
+      repairs: await db.select().from(goalImportedExecutionRepairs), validations: await db.select().from(goalImportedValidations),
+      validationReviews: await db.select().from(goalImportedValidationReviews),
+      capacity: await unsettledGoalExecutionCount(f.actor, db, f.base.goal_id),
+      unsettled: await unsettledStandaloneExecutions(f.actor, db, { goalId: f.base.goal_id }) };
+  }
+  it.each(recoveryReceiptFamilies.flatMap(family => [false, true].map(deferred => ({ family, deferred }))))(
+    "receipt recovery survives real marker rollback and worker reconstruction: $family deferred=$deferred", async ({ family, deferred }) => {
+      const f = await prepareRecoveryReceipt(family), removeFault = await installRecoveryMarkerFault(family, f.id, deferred), transactions = observeRecoveryTransactions();
+      try {
+        await expect(f.receive()).rejects.toThrow();
+        expect(f.receipts()).toHaveLength(1);
+        expect(transactions.failures).toHaveLength(1);
+        expect(transactions.failures[0]!.callbackReturned).toBe(deferred);
+        expect(String((transactions.failures[0]!.error as { cause?: unknown }).cause ?? transactions.failures[0]!.error)).toContain("controlled receipt marker rollback");
+        const committed = await f.state();
+        expect(committed.row?.result).toEqual(f.result); expect(committed.marker).toEqual([]);
+        if (recoveryReceiptTables[family].completion) expect(committed.completion).toHaveLength(1);
+        await freezeRecoveryProgress(f);
+        const before = await recoveryBusinessState(f), firstErrors: unknown[] = [], first = recoveryDispatcher(f.actor, firstErrors);
+        await first.pump(); await first.stop();
+        expect(f.receipts()).toHaveLength(2); expect(firstErrors).toHaveLength(1); expect((await f.state()).marker).toEqual([]);
+        await removeFault(); transactions.restore();
+        const errors: unknown[] = [], reconstructed = recoveryDispatcher(f.actor, errors);
+        await Promise.all([reconstructed.pump(), reconstructed.pump()]); await reconstructed.pump(); await reconstructed.stop();
+        // Old code's first observable failure is absence of the automatic send.
+        expect(f.receipts()).toHaveLength(3); expect(errors).toEqual([]);
+        expect(f.receipts()[1]).toEqual(f.receipts()[0]); expect(f.receipts()[2]).toEqual(f.receipts()[0]);
+        const recovered = await f.state(); expect(recovered.marker).toHaveLength(1);
+        expect(recovered.marker[0]).toMatchObject({ delivery_id: f.command.id, session_id: f.sessionId, result_digest: hash(f.result) });
+        expect(recovered.row).toEqual(committed.row); expect(await recoveryBusinessState(f)).toEqual(before);
+      } finally { transactions.restore(); await removeFault(); }
+    });
+  it.each([
+    { family: "execution-review", variant: "rejected" }, { family: "validation", variant: "closed-failure" }, { family: "validation-review", variant: "failed" },
+  ] as const)("receipt recovery includes obligated non-success result $family/$variant", async ({ family, variant }) => {
+    const f = await prepareRecoveryReceipt(family, variant), removeFault = await installRecoveryMarkerFault(family, f.id);
+    try { await expect(f.receive()).rejects.toThrow(); expect((await f.state()).row?.result).toEqual(f.result); expect((await f.state()).marker).toEqual([]); }
+    finally { await removeFault(); }
+    await freezeRecoveryProgress(f); const before = await recoveryBusinessState(f), errors: unknown[] = [], worker = recoveryDispatcher(f.actor, errors);
+    await worker.pump(); await worker.stop(); expect(f.receipts()).toHaveLength(2); expect(errors).toEqual([]);
+    expect((await f.state()).marker).toHaveLength(1); expect(await recoveryBusinessState(f)).toEqual(before);
+  });
+  it.each([
+    { family: "design", variant: "legacy" }, { family: "design-review", variant: "changes_requested" }, { family: "design-review", variant: "failed" },
+    { family: "design-review", variant: "cancelled" }, { family: "execution-review", variant: "failed" },
+  ] as const)("receipt recovery excludes no-marker obligation $family/$variant", async ({ family, variant }) => {
+    const f = await prepareRecoveryReceipt(family, variant); await f.receive(); await freezeRecoveryProgress(f);
+    const before = await recoveryBusinessState(f), errors: unknown[] = [], worker = recoveryDispatcher(f.actor, errors);
+    await worker.pump(); await worker.pump(); await worker.stop();
+    expect(f.receipts()).toHaveLength(1); expect(f.callbacks).toEqual([]); expect(errors).toEqual([]);
+    expect((await f.state()).marker).toEqual([]); expect(await recoveryBusinessState(f)).toEqual(before);
+  });
+  it("receipt recovery excludes uncertain review while preserving the existing paused-goal stop path", async () => {
+    const f = await prepareRecoveryReceipt("design-review", "uncertain"); await f.receive(); await freezeRecoveryProgress(f);
+    const errors: unknown[] = [], worker = recoveryDispatcher(f.actor, errors); await worker.pump(); await worker.stop();
+    expect(f.receipts()).toHaveLength(1); expect(f.callbacks).toEqual([]); expect((await f.state()).marker).toEqual([]);
+    expect((await f.state()).row?.result).toEqual(f.result);
+    // The existing pending-review path is allowed to persist/send Stop. It must
+    // not be suppressed to manufacture a no-business-change assertion here.
+    expect((await f.state()).row?.stop_requested).toBe(true); expect(errors).toEqual([]);
+  });
+  it.each((["design", "execution-review"] as const).flatMap(family => (["status", "stop"] as const).map(control => ({ family, control }))))(
+    "receipt recovery retains the first result's $control command identity for $family", async ({ family, control }) => {
+      const f = await prepareRecoveryReceipt(family);
+      const peer = f.peer as { dispatch(id: string, control: "status" | "stop"): Promise<ServerToNodeMessage>; requestStop?(id: string): Promise<void> };
+      if (control === "stop") {
+        if (family === "design") await peer.requestStop!(f.id);
+        else await (await import("./services/imported-execution-review-service.js")).stopGoalImportedExecutionReviews(f.actor, f.base.goal_id);
+      }
+      const command = await peer.dispatch(f.id, control), removeFault = await installRecoveryMarkerFault(family, f.id);
+      expect(command.id).not.toBe(f.command.id);
+      try { await expect(f.receiveWithCommand(command.id)).rejects.toThrow(); } finally { await removeFault(); }
+      await freezeRecoveryProgress(f); const before = await recoveryBusinessState(f), errors: unknown[] = [], worker = recoveryDispatcher(f.actor, errors);
+      await worker.pump(); await worker.stop(); expect(f.receipts()).toHaveLength(2); expect(errors).toEqual([]);
+      expect(f.receipts()[0]).toMatchObject({ id: command.id, idempotency_key: `receipt:${command.id}` }); expect(f.receipts()[1]).toEqual(f.receipts()[0]);
+      expect((await f.state()).marker[0]).toMatchObject({ delivery_id: command.id, session_id: f.sessionId, result_digest: hash(f.result) });
+      if (control === "stop") expect((await f.state()).row?.stop_requested).toBe(true);
+      expect(await recoveryBusinessState(f)).toEqual(before);
+    });
+  it.each(["design", "execution-review"] as const)("receipt recovery does not rewrite a normal status reply to the original result command: %s", async family => {
+    const f = await prepareRecoveryReceipt(family), removeFault = await installRecoveryMarkerFault(family, f.id);
+    try { await expect(f.receive()).rejects.toThrow(); } finally { await removeFault(); }
+    const command = await (f.peer as { dispatch(id: string, control: "status"): Promise<ServerToNodeMessage> }).dispatch(f.id, "status");
+    await f.receiveWithCommand(command.id);
+    expect(f.receipts()).toHaveLength(2); expect(f.receipts()[1]).toMatchObject({ id: command.id, idempotency_key: `receipt:${command.id}` });
+    expect((await f.state()).marker[0]).toMatchObject({ delivery_id: f.command.id, session_id: f.sessionId, result_digest: hash(f.result) });
+  });
+  it("receipt recovery rejects a replacement binding directly even when device and token are unchanged", async () => {
+    const f = await prepareRecoveryReceipt("execution-review"), removeFault = await installRecoveryMarkerFault(f.family, f.id);
+    try { await expect(f.receive()).rejects.toThrow(); } finally { await removeFault(); }
+    const before = await f.state(), frames: ServerToNodeMessage[] = [];
+    const replacement = createImportedExecutionReviewBinding(f.actor, { identity: f.identity, sessionId: "replacement-session", isCurrent: () => true,
+      transport: { async send(frame) { frames.push(frame); } } });
+    // This is an additional trusted-boundary regression. Primary old-code red
+    // comes from the earlier pump tests, never this new-method existence check.
+    const recover = (replacement as { redeliverCommittedReceipt?: (id: string) => Promise<void> }).redeliverCommittedReceipt;
+    expect(typeof recover).toBe("function"); await expect(recover!.call(replacement, f.id)).rejects.toThrow("original");
+    expect(frames).toEqual([]); expect(await f.state()).toEqual(before);
+  });
+  it("receipt recovery retries a failed transport send without a second node result", async () => {
+    const f = await prepareRecoveryReceipt("validation-review");
+    f.onSend(async frame => { if (frame.type === "product.source.validation-review.receipt.v1") throw Error("Controlled receipt transport failure"); });
+    await expect(f.receive()).rejects.toThrow("Controlled receipt transport failure");
+    expect((await f.state()).row?.result).toEqual(f.result); expect((await f.state()).marker).toEqual([]);
+    f.onSend(); await freezeRecoveryProgress(f); const errors: unknown[] = [], worker = recoveryDispatcher(f.actor, errors);
+    await worker.pump(); await worker.stop(); expect(f.receipts()).toHaveLength(2); expect(errors).toEqual([]); expect((await f.state()).marker).toHaveLength(1);
+  });
+  it.each(["device", "expired-token", "member", "replaced-session", "feature", "current-before-send", "current-after-send"] as const)(
+    "receipt recovery refuses a stale authority boundary: %s", async change => {
+      const f = await prepareRecoveryReceipt("execution-review"), removeFault = await installRecoveryMarkerFault(f.family, f.id);
+      try { await expect(f.receive()).rejects.toThrow(); } finally { await removeFault(); }
+      await freezeRecoveryProgress(f); const committed = await f.state(), db = fixture().server.db.db;
+      if (change === "device") f.beforeRecovery(async () => { await revokeDevice(f.actor, f.destination.device.id); });
+      if (change === "expired-token") f.beforeRecovery(async () => { await db.update(deviceTokens).set({ expiresAt: "2000-01-01T00:00:00Z" }).where(eq(deviceTokens.tokenLookup, f.identity.tokenLookup)); });
+      if (change === "member") f.beforeRecovery(async () => { await db.execute(sql`insert into member_suspensions (user_id, organization_id, suspended_by_user_id, reason, suspended_at) values (${f.actor.actorUserId}, ${f.actor.organizationId}, ${f.actor.actorUserId}, 'Controlled receipt recovery revocation', ${f.actor.clock.nowIso()})`); });
+      if (change === "replaced-session") {
+        const prior = f.actor.getPairedNodeSession; f.actor.getPairedNodeSession = id => { const value = prior?.(id); return value && id === f.destination.nodeId ? { ...value, sessionId: "replacement-session" } : value; };
+      }
+      if (change === "feature") f.actor.supportsExecutionFeature = () => false;
+      if (change === "current-before-send") f.beforeRecovery(async () => { f.invalidate(); });
+      if (change === "current-after-send") f.onSend(async frame => { if (frame.type === "product.source.execution-review.receipt.v1") f.invalidate(); });
+      const errors: unknown[] = [], worker = recoveryDispatcher(f.actor, errors); await worker.pump(); await worker.stop();
+      expect(f.receipts()).toHaveLength(change === "current-after-send" ? 2 : 1);
+      if (!["replaced-session", "feature"].includes(change)) expect(errors).toHaveLength(1);
+      expect((await f.state()).marker).toEqual([]); expect((await f.state()).row).toEqual(committed.row);
+    });
+  it("receipt recovery stop waits for the real in-flight send and does not start more maintenance", async () => {
+    const f = await prepareRecoveryReceipt("execution-review"), removeFault = await installRecoveryMarkerFault(f.family, f.id);
+    try { await expect(f.receive()).rejects.toThrow(); } finally { await removeFault(); }
+    await freezeRecoveryProgress(f); let enter!: () => void, release!: () => void, stopped = false;
+    const entered = new Promise<void>(resolve => { enter = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+    f.onSend(async frame => { if (frame.type === "product.source.execution-review.receipt.v1") { enter(); await gate; } });
+    const errors: unknown[] = [], worker = recoveryDispatcher(f.actor, errors), pumping = worker.pump();
+    void pumping.catch(() => {});
+    try {
+      // Observe either entry or actual pump completion; old code must fail here,
+      // without waiting indefinitely for a new implementation's callback.
+      await Promise.race([entered, pumping]); expect(f.receipts()).toHaveLength(2);
+      const stopping = worker.stop().then(() => { stopped = true; }); await Promise.resolve();
+      expect(stopped).toBe(false); release(); await pumping; await stopping;
+      await worker.pump(); expect(f.receipts()).toHaveLength(2); expect((await f.state()).marker).toHaveLength(1); expect(errors).toEqual([]);
+    } finally { release(); await pumping; await worker.stop(); }
+  });
+  it.each(["paused", "stopped", "cancelled", "budget-exhausted"] as const)(
+    "receipt recovery records only committed history while business progression is %s", async status => {
+      const f = await prepareRecoveryReceipt("execution-review"), db = fixture().server.db.db;
+      const stopReview = (await import("./services/imported-execution-review-service.js")).stopGoalImportedExecutionReviews;
+      // Exercise the existing durable stop path before result closure. This
+      // preserves stopRequested while receive commits an already-started result.
+      if (status === "stopped") await stopReview(f.actor, f.base.goal_id);
+      const removeFault = await installRecoveryMarkerFault(f.family, f.id);
+      try { await expect(f.receive()).rejects.toThrow(); } finally { await removeFault(); }
+      if (status === "cancelled") {
+        await cancelGoal(f.actor, f.base.goal_id);
+        await db.update(goalAutomations).set({ status: "cancelled" }).where(eq(goalAutomations.goalId, f.base.goal_id));
+      } else {
+        await freezeRecoveryProgress(f);
+        if (status === "budget-exhausted") {
+          await db.update(goals).set({ runningSince: "2000-01-01T00:00:00Z", budgets: { max_elapsed_ms: 1, max_retries: 0 } }).where(eq(goals.id, f.base.goal_id));
+          await db.update(goalAutomations).set({ status: "failed", lastError: "Controlled previously exhausted budget" }).where(eq(goalAutomations.goalId, f.base.goal_id));
+        }
+      }
+      const before = await recoveryBusinessState(f), state = await f.state(), errors: unknown[] = [], worker = recoveryDispatcher(f.actor, errors);
+      if (status === "stopped") expect(state.row?.stop_requested).toBe(true);
+      await worker.pump(); await worker.pump(); await worker.stop();
+      expect(f.receipts()).toHaveLength(2); expect(errors).toEqual([]); expect((await f.state()).marker).toHaveLength(1);
+      expect((await f.state()).row).toEqual(state.row); expect(await recoveryBusinessState(f)).toEqual(before);
+    });
+  it("receipt recovery scheduler rotates A:a B:b A:z after persistent delivery failures (controlled snapshots)", async () => {
+    // This case isolates the real scheduler with explicit controlled DB snapshots;
+    // the real transaction/credential/send tests above carry the DB evidence.
+    // In particular this test does not claim that fabricated rows passed SQL.
+    const calls: { computerId: string; family: RecoveryReceiptFamily; id: string }[] = [], errors: unknown[] = [];
+    const rows = [{ id: "a", computerId: "A" }, { id: "b", computerId: "B" }, { id: "z", computerId: "A" }].map(value => ({
+      ...value, goalId: "controlled-goal", resultSessionId: `${value.computerId}-session`,
+      result: ImportedValidationReviewResultV1Schema.parse({ version: 1, review_id: value.id, request_digest: sha(value.id),
+        execution_authorized: false, outcome: "failed", closed: true, reason: "Controlled closed review awaiting receipt" }),
+    }));
+    const transaction = vi.fn(async () => { throw Error("No business transaction is expected in scheduler-only evidence"); });
+    const select = (fields?: Record<string, unknown>) => {
+      let tableName = "";
+      const query = { from(table: Parameters<typeof getTableConfig>[0]) { tableName = getTableConfig(table).name; return query; },
+        innerJoin() { return query; }, leftJoin() { return query; },
+        async where() { return tableName === "goal_imported_validation_reviews" ? rows.map(operation => fields && "operation" in fields ? { operation, receipt: null } : operation) : []; } };
+      return query;
+    };
+    const actor = { ...fixture().server.ctx, db: { db: { select }, transaction } as unknown as RecoveryReceiptActor["db"],
+      supportsExecutionFeature: () => true,
+      getPairedNodeSession: (computerId: string) => ({ computerId, deviceId: `${computerId}-device`, tokenLookup: `${computerId}-lookup`, sessionId: `${computerId}-session` }),
+    };
+    Object.assign(actor, { redeliverImportedSourceReceipt: async (computerId: string, family: RecoveryReceiptFamily, id: string) => {
+      calls.push({ computerId, family, id }); throw Error("Controlled persistent receipt transport failure");
+    } });
+    const worker = recoveryDispatcher(actor, errors);
+    for (let round = 0; round < 4; round++) {
+      const before = calls.length; await worker.pump(); const current = calls.slice(before);
+      expect(current).toHaveLength(2); expect(new Set(current.map(value => value.computerId)).size).toBe(current.length);
+    }
+    await worker.stop();
+    for (const id of ["a", "b", "z"]) expect(calls.filter(value => value.id === id).length).toBeGreaterThanOrEqual(2);
+    expect(errors).toHaveLength(calls.length); expect(transaction).not.toHaveBeenCalled();
+    rows.splice(0, rows.length, ...Array.from({ length: 11 }, (_, index) => {
+      const id = `quota-${String(index).padStart(2, "0")}`, computerId = `computer-${index}`;
+      return { id, computerId, goalId: "controlled-goal", resultSessionId: `${computerId}-session`,
+        result: ImportedValidationReviewResultV1Schema.parse({ version: 1, review_id: id, request_digest: sha(id),
+          execution_authorized: false, outcome: "failed", closed: true, reason: "Controlled batch limit" }) };
+    }));
+    const batch = recoveryDispatcher(actor, errors), before = calls.length; await batch.pump(); await batch.stop();
+    const quotaCalls = calls.slice(before); expect(quotaCalls).toHaveLength(8);
+    expect(new Set(quotaCalls.map(value => value.computerId)).size).toBe(8); expect(transaction).not.toHaveBeenCalled();
+  });
+  it("receipt recovery loops back a committed design receipt after an actual marker rollback", async () => {
+    const f = await prepareDesign(), server = fixture().server, row = await f.ensureDesign(), peer = await openOrdinaryDesignSocket(f);
+    await eventually(() => server.nodeRegistry.get(f.destination.nodeId)?.supportsExecutionFeature(IMPORTED_DESIGN_CONTINUATION_FEATURE_V1) === true, "receipt recovery paired readiness");
+    const binding = server.nodeRegistry.get(f.destination.nodeId)!; await binding.dispatchImportedDesignContinuation!(row.id, "start");
+    await eventually(() => peer.frames.some(frame => frame.type === "product.source.design.v1"), "receipt recovery loopback start");
+    const original = peer.frames.find(frame => frame.type === "product.source.design.v1")!;
+    if (original.type !== "product.source.design.v1") throw Error("Expected design command");
+    const request = ImportedDesignContinuationRequestV1Schema.parse(row.request), verification = controlledDesignVerification(request), result = importedCompletedDesignResultFixture(request, verification);
+    await peer.transport.send({ kind: "run.event", node_id: row.computerId, run_id: row.runId, sequence: 0, event: { type: "run.lifecycle", payload: { phase: "started" } } });
+    await peer.transport.send({ kind: "run.event", node_id: row.computerId, run_id: row.runId, sequence: 1, event: { type: "run.verification", payload: verification } });
+    await peer.transport.send({ kind: "run.event", node_id: row.computerId, run_id: row.runId, sequence: 2, event: { type: "run.lifecycle", payload: { phase: "completed" } } });
+    const removeFault = await installRecoveryMarkerFault("design", row.id, true), transactions = observeRecoveryTransactions();
+    try {
+      await peer.transport.send({ kind: "product.source.design.result.v1", node_id: row.computerId, command_id: original.id, payload: result });
+      await eventually(() => peer.frames.filter(frame => frame.type === "product.source.design.receipt.v1").length === 1 && transactions.failures.length === 1, "receipt sent and deferred marker commit rejected");
+      expect(transactions.failures[0]!.callbackReturned).toBe(true);
+      const state = await recoveryReceiptState("design", row.id); expect(state.row?.result).toEqual(result); expect(state.marker).toEqual([]);
+      await removeFault(); transactions.restore();
+      await server.db.db.update(goals).set({ status: "paused" }).where(eq(goals.id, f.base.goal_id));
+      await server.db.db.update(goalAutomations).set({ status: "failed" }).where(eq(goalAutomations.goalId, f.base.goal_id));
+      const before = await recoveryBusinessState(f), errors: unknown[] = [], worker = recoveryDispatcher(server.ctx, errors);
+      await worker.pump(); await worker.stop();
+      await eventually(() => peer.frames.filter(frame => frame.type === "product.source.design.receipt.v1").length === 2, "automatic receipt re-sent over original loopback session");
+      const receipts = peer.frames.filter(frame => frame.type === "product.source.design.receipt.v1");
+      expect(receipts[1]).toEqual(receipts[0]); expect((await recoveryReceiptState("design", row.id)).marker).toHaveLength(1);
+      expect(errors).toEqual([]); expect(await recoveryBusinessState(f)).toEqual(before);
+      expect(peer.frames.filter(frame => frame.type === "product.source.design.v1")).toHaveLength(1);
+    } finally { transactions.restore(); await removeFault(); }
+  });
 });

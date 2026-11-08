@@ -142,7 +142,44 @@ export function createImportedValidationReviewBinding(ctx: ServerContext, option
     if (starts.some(item => item.sessionId !== options.sessionId)) throw AppError.conflict("H7 review cannot restart in another session");
     await assertSourceLineageDispatch(ctx, tx, row.computerId, row.workspaceRoot);
   }
+  // Shared with ordinary receive: its actual command_id remains the reply ID.
+  async function sendResultReceipt(tx: DrizzleDb, message: ImportedValidationReviewResult) { await qualify(tx); const row = await load(tx, message.payload.review_id);
+    current(); await options.transport.send({ kind: "command", id: message.command_id, idempotency_key: `receipt:${message.command_id}`, type: "product.source.validation-review.receipt.v1",
+      payload: { version: 1, review_id: row.id, request_digest: row.requestDigest }, result_digest: hash(message.payload), status: "accepted" }); current();
+    if (message.payload.outcome === "reviewed" || message.payload.outcome === "failed") await tx.insert(receipts).values({ reviewId: row.id, organizationId: ctx.organizationId,
+      deliveryId: row.resultDeliveryId!, sessionId: options.sessionId, sessionBindings: row.sessionBindings, requestDigest: row.requestDigest, resultDigest: hash(message.payload), sentAt: ctx.clock.nowIso() }).onConflictDoNothing();
+    current();
+  }
   return {
+    /** Re-send only an immutable result's original same-session receipt; never starts work. */
+    async redeliverCommittedReceipt(id: string): Promise<void> {
+      await ctx.db.transaction(async tx => {
+        await qualify(tx); const row = await load(tx, id);
+        const request = ImportedValidationReviewRequestV1Schema.parse(row.request), result = ImportedValidationReviewResultV1Schema.parse(row.result);
+        if (!(result.outcome === "reviewed" || result.outcome === "failed")) throw AppError.conflict("Committed validation-review result has no receipt marker obligation");
+        const bound = row.sessionBindings as { destination?: AuthenticatedTransferNode & { sessionId: string } };
+        if (request.review_id !== row.id || result.review_id !== row.id || row.requestDigest !== importedValidationReviewRequestDigestV1(request, sha)
+          || result.request_digest !== row.requestDigest || row.resultDigest !== hash(result) || !row.resultDeliveryId
+          || row.resultSessionId !== options.sessionId || canonical(bound.destination ?? null) !== canonical({ ...identity, sessionId: options.sessionId }))
+          throw AppError.conflict("Committed validation-review receipt differs from its original result, request or destination session");
+        const [delivery] = await tx.select().from(deliveries).where(and(eq(deliveries.id, row.resultDeliveryId), eq(deliveries.reviewId, row.id), eq(deliveries.sessionId, options.sessionId)));
+        const starts = await tx.select().from(deliveries).where(and(eq(deliveries.reviewId, row.id), eq(deliveries.control, "start")));
+        if (!delivery || starts.length !== 1 || starts[0]!.sessionId !== options.sessionId)
+          throw AppError.conflict("Committed validation-review receipt lost its original issuing delivery");
+        const readMarker = async () => {
+          const [marker] = await tx.select().from(receipts).where(and(eq(receipts.reviewId, row.id), eq(receipts.organizationId, ctx.organizationId)));
+          if (marker && (marker.deliveryId !== row.resultDeliveryId || marker.sessionId !== row.resultSessionId
+            || marker.requestDigest !== row.requestDigest || marker.resultDigest !== row.resultDigest || canonical(marker.sessionBindings) !== canonical(row.sessionBindings)))
+            throw AppError.conflict("Committed validation-review receipt marker differs from its original result");
+          return marker;
+        };
+        if (await readMarker()) { current(); return; }
+        // The original result may have arrived under status/stop; do not substitute its start ID.
+        await sendResultReceipt(tx, { kind: "product.source.validation-review.result.v1", node_id: identity.computerId, command_id: delivery.id, payload: result });
+        if (!await readMarker()) throw AppError.conflict("Committed validation-review receipt marker was not recorded after send");
+        current();
+      });
+    },
     async dispatch(id: string, control: Control = "start") {
       const record = await ctx.db.transaction(async tx => { const row = await load(tx, id); if (control === "start") await startFence(tx, row);
         else { await qualify(tx); if (control === "stop" && !row.stopRequested) throw AppError.conflict("Persist H7 review stop before sending"); }
@@ -182,12 +219,7 @@ export function createImportedValidationReviewBinding(ctx: ServerContext, option
         if (locked!.result !== null && canonical(locked!.result) !== canonical(result)) throw AppError.conflict("H7 review result is immutable");
         if (locked!.result === null) await tx.update(reviews).set({ result, resultDigest: hash(result), resultDeliveryId: delivery.id, resultSessionId: options.sessionId }).where(eq(reviews.id, row.id)); await qualify(tx);
       });
-      await ctx.db.transaction(async tx => { await qualify(tx); const row = await load(tx, message.payload.review_id);
-        await options.transport.send({ kind: "command", id: message.command_id, idempotency_key: `receipt:${message.command_id}`, type: "product.source.validation-review.receipt.v1",
-          payload: { version: 1, review_id: row.id, request_digest: row.requestDigest }, result_digest: hash(message.payload), status: "accepted" }); current();
-        if (message.payload.outcome === "reviewed" || message.payload.outcome === "failed") await tx.insert(receipts).values({ reviewId: row.id, organizationId: ctx.organizationId,
-          deliveryId: row.resultDeliveryId!, sessionId: options.sessionId, sessionBindings: row.sessionBindings, requestDigest: row.requestDigest, resultDigest: hash(message.payload), sentAt: ctx.clock.nowIso() }).onConflictDoNothing();
-      });
+      await ctx.db.transaction(tx => sendResultReceipt(tx, message));
     },
   };
 }

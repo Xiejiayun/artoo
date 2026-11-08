@@ -25,7 +25,7 @@ import { prepareWindowsReleaseStorage, assertWindowsReleaseStorage, auditWindows
 import { prepareResearchOptions, readResearchReceipt, type ResearchOptions } from "./research.js";
 import { readProductFile } from "./product-stage.js";
 import { readAuthenticatedProductSourceTransferV2, type AuthenticatedProductSourceTransferV2 } from "./product-source-semantic-client.js";
-import { prepareReleaseCapabilityReader, readPreparedProductReleaseRetry, type PreparedProductReleaseRetry, type PreparedReleaseProfile } from "./product-release.js";
+import { prepareReleaseCapabilityReaders, readReleaseCapabilitiesBatch, readPreparedProductReleaseRetry, type PreparedProductReleaseRetry, type PreparedReleaseProfile } from "./product-release.js";
 import { assertReleaseCapabilityContext, type ReleaseCapabilityReader } from "./release-capability-authority.js";
 import { readWindowsGuardianLocalRuntime, type PreparedWindowsGuardian } from "./owned/windows-runtime-guardian.js";
 import { readRecoveryValidationResearch } from "./windows-source-recovery.js";
@@ -34,6 +34,8 @@ import { readCleanDaemonGuardian, readCleanDaemonQuarantine, type PreparedCleanD
 import { prepareWindowsCodeInstallation, assertWindowsCodeInstallation } from "./windows-code-installation.js";
 import { recordWindowsStartupPhase } from "./windows-startup-diagnostics.js";
 import { recordSourceCommandPhase, recordSourceCommandFailure } from "./source-command-diagnostics.js";
+import { admitProductResearchRevision, assertProductResearchRevisionRun, assertResearchRevisionWorkspaceClosed, assertResearchRevisionWorkspaceBoundary, closeProductResearchRevision,
+  readProductResearchRevision } from "./product-research-revision.js";
 
 const sha = (bytes: string | Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const canonical = canonicalProductSourceTransferValueV1;
@@ -92,6 +94,7 @@ interface Runtime {
 }
 const runtimes = new WeakMap<PreparedProductSourceRuntime, Runtime>();
 const guardianPreparations = new WeakSet<PreparedWindowsGuardian>();
+const revisionExports = new WeakMap<PreparedProductSourceRuntime, Map<string, string>>();
 function state(token: PreparedProductSourceRuntime, clean?: PreparedCleanDaemonConfiguration) {
   const current = runtimes.get(token); if (!current || current.closed) fail("an original live local runtime is required");
   if (current.guardian) {
@@ -113,7 +116,10 @@ function state(token: PreparedProductSourceRuntime, clean?: PreparedCleanDaemonC
   for (const fixed of current.fixed) sameIdentity(fixed);
   sameIdentity(current.ownerIdentity);
   for (const profile of current.options.profiles) assertLocallyPreparedVerificationProfile(profile);
-  for (const release of current.releases) if (!isDeepStrictEqual(release.readCapabilities(), release.capabilities)) fail("prepared release capability changed");
+  if (current.releases.length) {
+    const capabilities = readReleaseCapabilitiesBatch(current.releases.map(release => release.profile));
+    if (current.releases.some((release, index) => !isDeepStrictEqual(capabilities[index], release.capabilities))) fail("prepared release capability changed");
+  }
   retainedDestinations(current); // A crash before claim-file creation still fences an admitted operation.
   return current;
 }
@@ -224,11 +230,15 @@ function prepareSourceRuntime(input: ProductSourceRuntimeOptions, guardian?: Pre
   // Preserve original prepared profile identities. Only this trusted factory can
   // install the node reader; the serialized extension remains descriptive data.
   recordWindowsStartupPhase("source_releases");
-  const releases = Object.freeze((options.measurementV2?.releaseProfiles ?? []).map(profile => {
+  const releaseProfiles = options.measurementV2?.releaseProfiles ?? [];
+  for (const profile of releaseProfiles) {
     if (!options.profiles.includes(profile.verifier) || profile.verifier.capabilities?.measurement_plan_policy?.version !== 2) {
       fail("release association requires an original prepared local v2 verifier");
     }
-    const prepared = prepareReleaseCapabilityReader(profile), readCapabilities = prepared.readCapabilities;
+  }
+  const readers = releaseProfiles.length ? prepareReleaseCapabilityReaders(releaseProfiles) : [];
+  const releases = Object.freeze(releaseProfiles.map((profile, index) => {
+    const prepared = readers[index]!, readCapabilities = prepared.readCapabilities;
     const capabilities = freezeJson(ReleaseCapabilitiesV1Schema.parse(prepared.capabilities));
     const binding = capabilities.binding;
     if (binding.release_profile_id !== profile.id || binding.release_profile_digest !== profile.digest || binding.project_id !== profile.project_id
@@ -334,6 +344,7 @@ export function assertProductSourceRuntimeConfiguration(token: PreparedProductSo
 /** Called at every run/release admission, including before duplicate acknowledgements. */
 export function assertProductSourceWorkspaceBoundary(token: PreparedProductSourceRuntime, workspaceRoot: string): void {
   const current = state(token), root = realpathSync.native(workspaceRoot);
+  assertResearchRevisionWorkspaceBoundary(current.options.storeRoot, root);
   if (overlaps(root, current.options.storeRoot)) fail("ordinary execution overlaps protected source storage");
   if (retainedDestinations(current).some(destination => overlaps(root, destination))) fail("workspace has a retained product source import");
   for (const profile of current.options.profiles) if (overlaps(root, profile.workspace_root) && existsSync(claimPath(current, profile.workspace_root))) {
@@ -385,6 +396,7 @@ export function readProductSourceRuntimeCapabilities(token: PreparedProductSourc
   const current = state(token), v1 = current.options.destinationResearchMappings ?? [],
     v2 = current.options.measurementV2?.destinationResearchMappings ?? [];
   return Object.freeze({ semantic: current.researchStore !== undefined || v1.length > 0 || v2.length > 0,
+    researchRevision: current.researchStore !== undefined && current.releases.length > 0,
     measurementV2: current.researchStore !== undefined && current.releases.length > 0 || v2.length > 0,
     importedReview: v1.length > 0 || v2.length > 0, importedDesign: v2.length > 0,
     importedDesignReview: v2.some(mapping => { const profile = current.options.profiles.find(item => item.id === mapping.destinationProfileId);
@@ -452,7 +464,79 @@ export function captureProductSourceExportV2(token: PreparedProductSourceRuntime
   if (!readProductFile(profile.workspace_root, measured.path).equals(bytes) || subjectManifest(profile).digest !== input.evidence.subject_digest) {
     fail("source changed while sealing original retrieval provenance");
   }
+  if (readProductResearchRevision(context)) {
+    const exports = revisionExports.get(token) ?? new Map<string, string>();
+    exports.set(input.runStart.run_id, input.evidence.subject_digest!); revisionExports.set(token, exports);
+  }
   return freezeJson(proof);
+}
+
+/** Old research is checked against node-private sealed bytes, never a remote reconstructed export. */
+export function claimProductResearchRevisionRun(token: PreparedProductSourceRuntime, start: RunStartPayload,
+  profile: PreparedVerificationProfile): void {
+  const current = state(token), context = start.context_pack.payload!, revision = readProductResearchRevision(context);
+  assertProductResearchRevisionRun(start, current.options.nodeId);
+  if (!revision || !productSourceMeasurementV2ExportEnabled(token, profile) || !current.options.profiles.includes(profile)) fail("revision requires the original prepared source research runtime");
+  const baseline = revision.baseline;
+  if (baseline.computer_id !== current.options.nodeId || baseline.workspace_root !== profile.workspace_root
+    || baseline.profile_id !== profile.id || baseline.profile_digest !== profile.digest) fail("revision source profile changed");
+  auditWindowsReleaseStorage(current.store, current.options.storeRoot);
+  const proof = ProductSourceExportV2Schema.parse(JSON.parse(boundedFile(join(current.options.storeRoot, "attestations",
+    `semantic-export-${baseline.export_digest.slice(7)}.json`)).toString("utf8"))), original = proof.byte_export;
+  if (productSourceExportDigestV2(proof, sha) !== baseline.export_digest || proof.research_provenance_digest !== baseline.provenance_digest
+    || hash(proof.research_provenance) !== baseline.provenance_digest || !isDeepStrictEqual(proof.research_provenance.research, baseline.research)
+    || !isDeepStrictEqual(proof.source_capabilities, profile.capabilities) || !isDeepStrictEqual(proof.measurement_v2?.source_release, localRelease(current, profile).capabilities)
+    || original.node_id !== current.options.nodeId || original.project_id !== context.project.id || original.goal_id !== revision.goal_id
+    || original.plan_id !== revision.plan_id || original.task_id !== baseline.source_task_id || original.run_id !== baseline.source_run_id
+    || original.profile_id !== profile.id || original.profile_digest !== profile.digest || original.subject_digest !== baseline.subject_digest
+    || original.capsule_digest !== baseline.capsule_digest || original.capsule_bytes !== baseline.capsule_bytes
+    || original.export_id !== hash({ run_id: original.run_id, request_id: original.verification_request_id, capsule_digest: original.capsule_digest })) {
+    fail("revision baseline differs from its retained semantic export");
+  }
+  const byteProof = boundedFile(join(current.options.storeRoot, "attestations", `export-${original.export_id.slice(7)}.json`));
+  if (byteProof.toString("utf8") !== canonical(original)) fail("revision byte export differs from its retained author closure");
+  const capsule = boundedFile(join(current.options.storeRoot, "artifacts", `${baseline.capsule_digest.slice(7)}.json`));
+  if (capsule.length !== baseline.capsule_bytes || sha(capsule) !== baseline.capsule_digest) fail("revision retained capsule changed");
+  decodeProductSourceSnapshot(capsule, { capsuleDigest: baseline.capsule_digest, manifestDigest: original.manifest_digest,
+    source: { project_id: context.project.id, profile_id: profile.id, profile_digest: profile.digest, subject_digest: baseline.subject_digest } });
+  const file = (JSON.parse(capsule.toString("utf8")) as { files: { path: string; base64: string }[] }).files.find(item => item.path === baseline.research.path);
+  if (!file) fail("revision capsule lacks its research file");
+  const research = Buffer.from(file.base64, "base64");
+  if (research.length !== baseline.research.size || sha(research) !== baseline.research.checksum) fail("revision research differs from its retained capsule");
+  assertProductResearchProvenanceV2(proof.research_provenance, research, sha);
+  // The ordinary source claim checks all live writers and imported-workspace fences first.
+  claimProductSourceRun(token, start.run_id, profile.workspace_root);
+  try {
+    admitProductResearchRevision({ store: current.options.storeRoot, start, subjectDigest: subjectManifest(profile).digest,
+      assertBaseline() {
+        if (subjectManifest(profile).digest !== baseline.subject_digest || !readProductFile(profile.workspace_root, baseline.research.path).equals(research)) {
+          fail("first revision author must start from the exact retained source subject");
+        }
+      } });
+  } catch (error) {
+    // A partially persisted admission remains fenced; only a proven absent admission can release.
+    assertResearchRevisionWorkspaceClosed(current.options.storeRoot, profile.workspace_root);
+    current.active.delete(start.run_id); throw error;
+  }
+}
+
+/** Unknown native/tool closure never records a retry checkpoint, even if an adapter exited. */
+export function closeProductResearchRevisionRun(token: PreparedProductSourceRuntime, start: RunStartPayload,
+  profile: PreparedVerificationProfile, execution?: { admission: WindowsVerifiedExecutionAdmission; handle: AgentInstanceHandle }): void {
+  if (!readProductResearchRevision(start.context_pack.payload)) return;
+  const current = state(token);
+  if (current.active.get(start.run_id) !== profile.workspace_root || !current.options.profiles.includes(profile)) fail("revision lost its original workspace claim");
+  if (execution) assertWindowsVerifiedExecutionExportBinding(execution.admission, execution.handle, profile, start);
+  const subject = subjectManifest(profile).digest;
+  closeProductResearchRevision({ store: current.options.storeRoot, start, subjectDigest: subject,
+    unstarted: execution === undefined,
+    authorVerified: revisionExports.get(token)?.get(start.run_id) === subject,
+    assertClosed() {
+      if (execution) assertWindowsVerifiedExecutionExportBinding(execution.admission, execution.handle, profile, start);
+      // The absent execution case is called solely before any adapter/workspace producer invocation;
+      // the journal also requires the exact admitted bytes to remain unchanged.
+    } });
+  revisionExports.get(token)?.delete(start.run_id);
 }
 
 export function readProductSourceExportBytesV2(token: PreparedProductSourceRuntime, input: unknown, requestDigest: string): Buffer {

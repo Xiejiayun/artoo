@@ -58,6 +58,7 @@ describe("standard source-node protected configuration", () => {
     Object.assign(release.binding, { release_profile_id: "publish", verification_profile_id: "local", workspace_root: f.profile.workspace_root });
     control.release.mockImplementation(profile => profile === f.release ? release : undefined);
     const prepared = prepareProductSourceNode(f.options), routes = prepared.routing;
+    expect(prepared.features).toContain("product-research-revision.v1");
     expect(routes).toEqual({ version: 1, source_exports: [release], destination_mappings: [] });
     expect(control.release).toHaveBeenCalledWith(f.release); expect(Object.isFrozen(routes.source_exports[0]!.binding)).toBe(true);
     expect(() => routes.source_exports.push(release)).toThrow();
@@ -77,6 +78,7 @@ describe("standard source-node protected configuration", () => {
   });
   it("pins the physical configuration bytes after preparation and detects a changed local mapping", () => {
     const f = fixture(), prepared = prepareProductSourceNode(f.options);
+    expect(prepared.features).not.toContain("product-research-revision.v1");
     writeFileSync(f.file, JSON.stringify({ ...f.value, sourceResearch: true }));
     expect(() => prepared.assertCurrent()).toThrow(/changed after preparation/);
   });
@@ -116,6 +118,7 @@ describe("standard source-node protected configuration", () => {
       operations: { version: 1, importedReview: true, importedDesign: true } });
     const prepared = prepareProductSourceNode(f.options);
     expect(prepared.importedReview).toBe(true); expect(prepared.importedDesign).toBe(true);
+    expect(prepared.features).not.toContain("product-research-revision.v1");
     expect(control.design).toHaveBeenCalledWith(f.profile);
     const call = control.prepare.mock.calls[0] as unknown as [Record<string, unknown>];
     expect(call[0].sourceResearch).toBeUndefined();

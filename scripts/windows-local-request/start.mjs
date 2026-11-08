@@ -9,6 +9,8 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { pathToFileURL } from 'node:url';
 import { capture, recheck, check, copyTree, physical, reference, save, tree, sha } from './inputs.mjs';
+import { initialMaxRetries, researchRevisionFeature, requestSlotLayout, slotProfiles, slotSourceMappings,
+  createSlotInstances, selectPublicationSlot } from './slots.mjs';
 
 const args = process.argv.slice(2), options = {};
 for (let index = 0; index < args.length; index++) {
@@ -33,7 +35,8 @@ if (objective !== undefined) assert.ok(objective.length >= 1 && objective.length
 const inputs = await capture({ objective, submission_owner: submissionOwner, ...(options['--config'] ? { configuration_file: path.resolve(options['--config']) } : {}) }), output = inputs.output;
 const entry = { version: 1, session_id: randomUUID(), request_key: randomUUID(), project_id: 'proj_artoo', actor_user_id: 'user_owner',
   submission_owner: submissionOwner, progress_updates: 'polling', request: { execution_mode: 'agent_team', verification_profile_id: 'native-web',
-    release_profile_id: 'native-publish', max_retries: 3, source_handoff: { version: 1, mode: 'automatic' } },
+    release_profile_id: 'native-publish', max_retries: initialMaxRetries,
+    source_handoff: { version: 1, mode: 'automatic', research_revision: { version: 1, strategy: 'configured_pool' } } },
   ...(submissionOwner === 'console' ? { objective } : {}) };
 const providerKey = process.env[inputs.provider_key_env];
 assert.ok(providerKey === undefined || typeof providerKey === 'string' && providerKey.length > 0 && providerKey.length <= 8192 && !/[\r\n\u0000]/u.test(providerKey),
@@ -46,7 +49,13 @@ const privateBundle = path.join(output, 'bundle'); copyTree(inputs.bundle, priva
 const states = ['source', 'destination'].map(role => {
   make(role); const paths = Object.fromEntries(['workspace', 'source-store', 'recovery-control', 'research', 'evidence', 'release', 'config', 'codex-home', 'temporary']
     .map(name => [name, make(role, name)]));
-  return { role, paths, discovery: null, child: null, closed: null, timer: null, stopWritten: false, emergencyRequested: false, pending: '', decoder: new StringDecoder('utf8'),
+  const slots = requestSlotLayout(output, role, entry.request.max_retries);
+  if (slots.length > 1) make(role, 'slots');
+  for (const slot of slots.slice(1)) {
+    make(role, 'slots', String(slot.index));
+    for (const name of ['workspace', 'release', 'evidence', 'config']) make(role, 'slots', String(slot.index), name);
+  }
+  return { role, paths, slots, discovery: null, child: null, closed: null, timer: null, stopWritten: false, emergencyRequested: false, pending: '', decoder: new StringDecoder('utf8'),
     totalBytes: 0, streams: { stdout: [], stderr: [] }, report: { role, discovery: { started: false, stopped: false, registry_disconnected: false },
       cli: { pid: null, spawned: false, exit: null, close: null, stdout_eof: false, stderr_eof: false, ready: null, stopped: null,
         shutdown_written: false, forced_root_kill: false }, registry_disconnected: false } };
@@ -126,14 +135,14 @@ async function confirmPublication(automation, original) {
   assert.equal(release.status, 'published'); assert.equal(release.computer_id, destination.report.identity.computer_id);
   assert.equal(release.request.goal_id, result.goal_id); assert.equal(release.request.project_id, projectId);
   assert.equal(release.request.release_id, release.id); assert.equal(release.request.run_id, release.run_id);
-  assert.equal(release.request.release_profile_id, 'native-publish'); assert.equal(release.request.verification_profile_id, 'native-web');
-  assert.equal(release.request.verification_profile_digest, destination.verifier.profile_digest);
-  assert.equal(release.receipt.outcome, 'published'); assert.equal(release.receipt.endpoint, destination.endpoint);
+  const slot = selectPublicationSlot(destination.slots, release.request);
+  assert.equal(release.receipt.outcome, 'published'); assert.equal(release.receipt.endpoint, slot.endpoint);
+  assert.equal(release.receipt.release_profile_digest, slot.release.binding.release_profile_digest);
   assert.deepEqual(release.receipt.request, release.request);
   assert.equal(release.receipt.artifact_digest, release.request.subject_digest);
   assert.ok(release.request.acceptance_binding?.criteria?.length > 0 && release.receipt.acceptance,
     'Publication is missing its configured acceptance contract');
-  assert.deepEqual(release.request.acceptance_binding?.release_binding, destination.release.binding);
+  assert.deepEqual(release.request.acceptance_binding?.release_binding, slot.release.binding);
   assert.deepEqual(release.receipt.acceptance?.settled_criteria, release.request.acceptance_binding?.criteria);
   assert.ok(release.receipt.health_checks.length > 0 && release.receipt.health_checks.every(item => item.passed === true),
     'Publication has no passing node-owned endpoint measurements');
@@ -163,17 +172,22 @@ async function confirmPublication(automation, original) {
     assert.ok(review?.acceptedAt && review.acceptanceEventId, 'Missing accepted final validation review');
     assert.equal(review.goalId, result.goal_id); assert.equal(review.validationId, publication.validationId);
     assert.equal(review.computerId, release.computer_id); assert.equal(review.resultSessionId, completion.sessionId);
+    assert.equal(review.workspaceRoot, slot.workspace);
+    const participants = destination.report.agents.filter(instance => instance.slot_index === slot.index);
+    for (const [agentId, instanceId] of [[review.authorAgentId, review.authorInstanceId], [review.reviewerAgentId, review.reviewerInstanceId]])
+      assert.ok(participants.some(instance => instance.agent_id === agentId && instance.instance_id === instanceId),
+        'Final validation contributor is outside the published slot');
     assert.equal(review.result?.outcome, 'reviewed'); assert.equal(review.result?.closed, true);
     assert.equal(review.result?.verdict?.outcome, 'accepted');
     assert.notEqual(review.authorAgentId, review.reviewerAgentId); assert.notEqual(review.authorInstanceId, review.reviewerInstanceId);
   }
-  const response = await fetch(destination.endpoint, { signal: AbortSignal.timeout(10000), redirect: 'error' });
+  const response = await fetch(slot.endpoint, { signal: AbortSignal.timeout(10000), redirect: 'error' });
   try {
     assert.equal(response.status, 200); assert.equal(response.headers.get('x-artoo-release-id'), release.id);
     assert.equal(response.headers.get('x-artoo-artifact-digest'), release.request.subject_digest);
   } finally { await response.body?.cancel(); }
   return { release_id: release.id, run_id: release.run_id, evidence_id: release.evidence_id,
-    artifact_digest: release.request.subject_digest, url: destination.endpoint, observed_at: new Date().toISOString(),
+    artifact_digest: release.request.subject_digest, url: slot.endpoint, observed_at: new Date().toISOString(),
     request_sha256: sha(JSON.stringify(release.request)), receipt_sha256: sha(JSON.stringify(release.receipt)),
     // Keep the accepted values as well as their wire-order digests. A later
     // publisher-only open compares their meaning with the protected journal.
@@ -267,22 +281,18 @@ async function startCli(state, environment) {
   assert.ok(registration.tokenLookup === session.tokenLookup, 'Registration does not match the current paired credential');
   assert.equal(registration.workspaceRoot, state.paths.workspace); assert.equal(registration.generation, 0);
   assert.equal(server.ctx.supportsExecutionFeature(computerId, 'product.source.recovery.v1'), true);
-  assert.deepEqual(server.ctx.getVerificationCapabilities(computerId, 'native-web', projectId, state.paths.workspace), state.verifier);
-  assert.deepEqual(server.ctx.getReleaseCapabilities(computerId, 'native-publish', projectId, state.paths.workspace, 'native-web'), state.release);
+  for (const slot of state.slots) {
+    assert.deepEqual(server.ctx.getVerificationCapabilities(computerId, slot.verification_profile_id, projectId, slot.workspace), slot.verifier);
+    assert.deepEqual(server.ctx.getReleaseCapabilities(computerId, slot.release_profile_id, projectId, slot.workspace, slot.verification_profile_id), slot.release);
+  }
   state.report.registration = { id: registration.id, computer_id: computerId, device_id: deviceId, session_id: session.sessionId,
     epoch_id: registration.epochId, generation: registration.generation, workspace: registration.workspaceRoot,
     registration_digest: registration.registrationDigest, configuration_digest: registration.configurationDigest,
     workspace_identity_digest: registration.workspaceIdentityDigest, store_identity_digest: registration.storeIdentityDigest };
   await waitFor(async () => (await server.ctx.db.db.select().from(schema.agentRuntimes))
     .some(row => row.computerId === computerId && row.runtime === 'codex' && row.status === 'available'), state.role + ' real heartbeat runtime');
-  state.report.agents = [];
-  for (let index = 0; index < 2; index++) {
-    // Omit capabilities: the public API uses only the actual heartbeat advertisement.
-    const created = await request('/api/v1/computers/' + encodeURIComponent(computerId) + '/instances',
-      { runtime: 'codex', workspace_root: state.paths.workspace, display_name: state.role + ' contributor ' + (index + 1) });
-    state.report.agents.push({ agent_id: created.agent.id, instance_id: created.agent_instance.id });
-  }
-  assert.notEqual(state.report.agents[0].agent_id, state.report.agents[1].agent_id);
+  state.report.agents = await createSlotInstances({ role: state.role, computerId, slots: state.slots,
+    createInstance: body => request('/api/v1/computers/' + encodeURIComponent(computerId) + '/instances', body) });
 }
 try {
   checkpoint(); await recheck(inputs); checkpoint();
@@ -353,24 +363,24 @@ try {
     const deviceId = claimed.device.id, enrolled = await request('/api/v1/devices/' + encodeURIComponent(deviceId) + '/enroll', {});
     const computerId = enrolled.computer_id; assert.equal(typeof computerId, 'string');
     state.report.identity = { project_id: projectId, computer_id: computerId, device_id: deviceId, workspace: state.paths.workspace };
-    const browserConfig = path.join(state.paths.config, 'browser.json'), verifierFile = path.join(state.paths.config, 'verifiers.json'), releaseFile = path.join(state.paths.config, 'releases.json');
-    save(browserConfig, { evidence_root: state.paths.evidence, browser_executable: inputs.programs.browser.path, windows_browser_process: { version: 1 },
-      browser_program: { version: 3, viewports: [{ id: 'compact', width: 390, height: 844 }, { id: 'wide', width: 1280, height: 900 }] },
-      design_capture_cases: true, action_timeout_ms: 2000 });
-    save(verifierFile, [{ id: 'native-web', project_id: projectId, workspace_root: state.paths.workspace, subject_paths: ['product', '.artoo/product'], required_files: [],
-      measurement_plan_policy: { version: 2, coverage: 'every-must-criterion', methods: ['workspace-check', 'configured-static-release'] },
-      commands: [{ id: 'browser-acceptance', argv: [inputs.programs.node.path, path.join(privateBundle, 'web-acceptance-cli.js'), browserConfig], timeout_ms: 90000,
-        observation: { format: 'static-web-acceptance.v3', evidence_root: state.paths.evidence, capabilities: { version: 1 } } }] }]);
-    const port = await freePort(); state.endpoint = 'http://127.0.0.1:' + port;
-    save(releaseFile, [{ id: 'native-publish', project_id: projectId, verification_profile_id: 'native-web', storage_root: state.paths.release,
-      output_path: 'product', public_url: state.endpoint, listen_host: '127.0.0.1', listen_port: port, health_checks: [{ path: '/' }], health_timeout_ms: 5000,
-      monitoring: { interval_ms: 3600000, failure_threshold: 1 }, criterion_acceptance: { version: 1 } }]);
+    const verifierFile = path.join(state.paths.config, 'verifiers.json'), releaseFile = path.join(state.paths.config, 'releases.json');
+    const verifiers = [], releases = [];
+    for (const slot of state.slots) {
+      slot.endpoint = 'http://127.0.0.1:' + await freePort();
+      const prepared = slotProfiles({ slot, projectId, nodeExecutable: inputs.programs.node.path,
+        browserExecutable: inputs.programs.browser.path, acceptanceCli: path.join(privateBundle, 'web-acceptance-cli.js') });
+      save(slot.browser_config, prepared.browser); knownConfig.push(reference(slot.browser_config));
+      verifiers.push(prepared.verifier); releases.push(prepared.release);
+    }
+    save(verifierFile, verifiers); save(releaseFile, releases);
+    state.report.workspace_slots = { version: 1, max_retries: state.role === 'source' ? 0 : entry.request.max_retries,
+      members: structuredClone(state.slots) };
     state.nodeEnv = { ...environment, TEMP: state.paths.temporary, TMP: state.paths.temporary, CODEX_HOME: state.paths['codex-home'],
       ARTOO_NODE_URL: origin.replace(/^http/u, 'ws') + '/api/v1/node?token=' + encodeURIComponent(claimed.node_token),
       ARTOO_NODE_ID: computerId, ARTOO_RUNTIMES: 'codex', ARTOO_CODEX_BINARY: inputs.programs.codex.path,
       ARTOO_CODEX_MODEL: inputs.provider.model, ARTOO_CODEX_PROVIDER_URL: inputs.provider.url,
       ...(providerKey === undefined ? {} : { ARTOO_CODEX_PROVIDER_KEY: providerKey }),
-      ARTOO_ALLOWED_ROOTS: state.paths.workspace, ARTOO_HEARTBEAT_INTERVAL_MS: '1000', ARTOO_REPORT_ARTIFACTS: 'none',
+      ARTOO_ALLOWED_ROOTS: state.slots.map(slot => slot.workspace).join(';'), ARTOO_HEARTBEAT_INTERVAL_MS: '1000', ARTOO_REPORT_ARTIFACTS: 'none',
       ARTOO_INITIALIZE_REPOSITORY: '1', ARTOO_RESEARCH_ENABLED: '1', ARTOO_RESEARCH_RECEIPTS_DIR: state.paths.research,
       ARTOO_VERIFICATION_PROFILES_FILE: verifierFile, ARTOO_RELEASE_PROFILES_FILE: releaseFile,
       ARTOO_WINDOWS_PROCESS_BUNDLE: path.join(privateBundle, 'native/windows-process'), ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256: 'sha256:' + nativeManifest.sha256 };
@@ -379,15 +389,20 @@ try {
     await waitFor(() => server.ctx.getPairedNodeSession(computerId)?.deviceId === deviceId, state.role + ' paired discovery');
     state.report.discovery.session_id = server.ctx.getPairedNodeSession(computerId).sessionId;
     await waitFor(() => {
-      state.verifier = server.ctx.getVerificationCapabilities(computerId, 'native-web', projectId, state.paths.workspace);
-      state.release = server.ctx.getReleaseCapabilities(computerId, 'native-publish', projectId, state.paths.workspace, 'native-web');
-      return !!state.verifier && !!state.release;
+      for (const slot of state.slots) {
+        slot.verifier = server.ctx.getVerificationCapabilities(computerId, slot.verification_profile_id, projectId, slot.workspace);
+        slot.release = server.ctx.getReleaseCapabilities(computerId, slot.release_profile_id, projectId, slot.workspace, slot.verification_profile_id);
+      }
+      return state.slots.every(slot => slot.verifier && slot.release);
     }, state.role + ' advertised profiles');
-    assert.equal(state.verifier.measurement_plan_policy.version, 2); assert.equal(state.verifier.checks[0].contract.version, 3);
+    for (const slot of state.slots) {
+      assert.equal(slot.verifier.measurement_plan_policy.version, 2); assert.equal(slot.verifier.checks[0].contract.version, 3);
+    }
     assert.equal((await server.ctx.db.db.select().from(schema.nodeRecoveryRegistrations)).length, 0);
     const capabilities = path.join(state.paths.config, 'discovered-capabilities.json');
-    save(capabilities, { session_id: state.report.discovery.session_id, verifier: state.verifier, release: state.release });
-    knownConfig.push(...[browserConfig, verifierFile, releaseFile, capabilities].map(reference));
+    save(capabilities, { session_id: state.report.discovery.session_id, verifier: state.slots[0].verifier, release: state.slots[0].release,
+      slots: state.slots.map(slot => ({ index: slot.index, verifier: slot.verifier, release: slot.release })) });
+    knownConfig.push(...[verifierFile, releaseFile, capabilities].map(reference));
     await state.discovery.stop(); state.report.discovery.stopped = true;
     await waitFor(() => server.ctx.getPairedNodeSession(computerId) === undefined, state.role + ' discovery disconnect');
     state.report.discovery.registry_disconnected = true; state.discovery = null;
@@ -396,9 +411,7 @@ try {
   for (const state of states) {
     const sourceFile = path.join(state.paths.config, 'source.json'), source = states[0];
     save(sourceFile, { version: 1, storeRoot: state.paths['source-store'], gitExecutable: inputs.programs.git.path, sourceResearch: state.role === 'source',
-      measurementV2: { version: 1, releaseProfileIds: ['native-publish'], destinationResearchMappings: [{ sourceProfileDigest: source.verifier.profile_digest,
-        destinationProfileId: 'native-web', sourceRelease: source.release,
-        commandPairs: [{ source_command_id: 'browser-acceptance', destination_command_id: 'browser-acceptance' }] }] },
+      measurementV2: slotSourceMappings(source.slots[0], state.slots),
       operations: { version: 1, importedReview: true, importedDesign: true, importedDesignReview: true, importedExecution: true, importedExecutionReview: true, importedValidation: true },
       recovery: { version: 1, deviceId: state.report.identity.device_id, workspaceRoot: state.paths.workspace, controlDirectory: state.paths['recovery-control'] } });
     knownConfig.push(reference(sourceFile));
@@ -407,7 +420,12 @@ try {
   }
   save(path.join(output, 'CONFIG-BINDING.json'), { version: 1, files: knownConfig, programs: inputs.programs,
     bundle_manifest: reference(path.join(privateBundle, 'bundle-manifest.json')), native_manifest: nativeManifest, nodes: result.nodes });
-  assert.deepEqual(states.map(state => fs.readdirSync(state.paths.workspace)), [[], []], 'Product workspaces must start empty');
+  for (const state of states) for (const slot of state.slots)
+    assert.deepEqual(fs.readdirSync(slot.workspace), [], 'Every configured product workspace must start empty');
+  // Schema support alone cannot qualify baseline preservation on the real source.
+  // Keep the main-root recovery registration unchanged; it does not cover other slots.
+  assert.equal(server.ctx.supportsExecutionFeature(states[0].report.identity.computer_id, researchRevisionFeature), true,
+    'The source node has no prepared research-revision capability; no product request was submitted');
   checkpoint(); await recheck(inputs); checkpoint();
   result.status = 'ready';
   save(path.join(output, 'READY.json'), { version: 1, server_origin: origin, web_url: result.web_url ?? null,

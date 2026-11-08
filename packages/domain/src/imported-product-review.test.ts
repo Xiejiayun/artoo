@@ -43,6 +43,37 @@ describe("imported research review contracts (recorded source data and controlle
     const f=fixture();expect(inspectImportedProductReviewRequestV1(f.request,f.bytes,sha)).toEqual(f.request);
     expect(inspectImportedProductReviewResultV1(f.request,f.result,f.bytes,sha)).toEqual(f.result);expect(f.result.execution_authorized).toBe(false);
   });
+  it("preserves legacy review subjects and request digests without inventing a mapping",()=>{
+    const f=fixture(),digest=importedProductReviewRequestDigestV1(f.request,sha);
+    const parsed=inspectImportedProductReviewRequestV1(f.request,f.bytes,sha);
+    expect(parsed.review_start.context_pack.payload!.imported_review_subject).not.toHaveProperty("measurement_mapping");
+    expect(importedProductReviewRequestDigestV1(parsed,sha)).toBe(digest);
+  });
+  it("exposes the exact admitted destination mapping without rewriting the research",()=>{
+    const f=fixture(),originalBytes=Buffer.from(f.bytes),oldDigest=importedProductReviewRequestDigestV1(f.request,sha);
+    if(f.request.result.outcome!=="verified")throw Error("Expected controlled transfer");
+    const subject=f.request.review_start.context_pack.payload!.imported_review_subject!;
+    subject.measurement_mapping=structuredClone(f.request.result.admission.mapping);
+    expect(subject.measurement_mapping.source_profile_digest).not.toBe(subject.measurement_mapping.destination_profile_digest);
+    expect(subject.measurement_mapping.verification_passed).toBe(false);
+    expect(subject.measurement_mapping.execution_authorized).toBe(false);
+    expect(sha(canonical(subject.measurement_mapping))).toBe(subject.mapping_digest);
+    expect(inspectImportedProductReviewRequestV1(f.request,f.bytes,sha)).toEqual(f.request);
+    expect(importedProductReviewRequestDigestV1(f.request,sha)).not.toBe(oldDigest);
+    expect(Buffer.from(f.bytes)).toEqual(originalBytes);
+  });
+  for(const field of ["destination-profile","destination-check","release","research","mapping-digest"] as const)
+    it(`rejects a substituted reviewer mapping: ${field}`,()=>{
+      const f=fixture();if(f.request.result.outcome!=="verified")throw Error("Expected controlled transfer");
+      const subject=f.request.review_start.context_pack.payload!.imported_review_subject!;
+      const mapping=subject.measurement_mapping=structuredClone(f.request.result.admission.mapping);
+      if(field==="destination-profile")mapping.destination_profile_digest=sha("another profile");
+      if(field==="destination-check")mapping.checks[0]!.destination.config_digest=sha("another check");
+      if(field==="release")mapping.release!.destination_capabilities_digest=sha("another release");
+      if(field==="research")mapping.research.checksum=sha("rewritten research");
+      if(field==="mapping-digest")subject.mapping_digest=sha("another mapping");
+      expect(()=>inspectImportedProductReviewRequestV1(f.request,f.bytes,sha)).toThrow();
+    });
   for(const change of ["same-agent","changed-before-scope","changed-review-objective","changed-review-plan","same-verifier-run","write-scope","ordinary-subject","wrong-subject","wrong-review-instance"] as const)
     it(`rejects ${change}`,()=>{
       const f=fixture(),request=f.request,context=request.review_start.context_pack.payload!;

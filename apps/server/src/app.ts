@@ -141,6 +141,11 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   ctx.sourceLifecycle = sourceLifecycle;
   app.addHook("onClose", async () => { sourceLifecycle.close(); });
   ctx.getPairedNodeSession = computerId => nodeRegistry.get(computerId)?.getPairedNodeSession?.();
+  ctx.redeliverImportedSourceReceipt = async (computerId, family, id) => {
+    const binding = nodeRegistry.get(computerId);
+    if (!binding?.redeliverCommittedSourceReceipt) throw AppError.conflict("Original source receipt node is unavailable");
+    await binding.redeliverCommittedSourceReceipt(family, id);
+  };
   ctx.getProductSourceRouting = computerId => nodeRegistry.get(computerId)?.getProductSourceRouting?.();
   // Resolve every query through the current binding; never cache by computer.
   ctx.supportsExecutionFeature = (computerId, feature) =>

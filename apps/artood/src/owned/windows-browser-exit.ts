@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import { finished } from "node:stream/promises";
 import { WINDOWS_BROWSER_NATIVE_OBSERVER_SCRIPT } from "./windows-browser-native-snapshot.js";
+import { parseWindowsBrowserAncestryFailure, type WindowsBrowserAncestryFailureV1 } from "./windows-browser-negative-evidence.js";
 
 // This protected parser follows Windows backslash/quote argument rules. Matching an
 // entire argument avoids treating a profile-looking string inside another value as ownership.
@@ -53,7 +54,10 @@ function ConvertTo-ArtooWqlLiteral([string]$value) {
 // Bounded observations, not a Windows Job Object or complete lifetime containment.
 export const WINDOWS_BROWSER_OWNED_PROCESS_SNAPSHOT = WINDOWS_BROWSER_ARGUMENT_PARSER + WINDOWS_BROWSER_NATIVE_OBSERVER_SCRIPT + String.raw`
 $ErrorActionPreference = 'Stop'
-$request = ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__REQUEST__')))
+Write-ArtooObserverPhase 'definitions_ready'
+__REQUEST__
+Write-ArtooObserverPhase 'request_decoded'
+Write-ArtooObserverPhase 'request_parsed'
 $parentId = [uint32]$request.parent_pid
 Write-ArtooObserverPhase 'native_binding'
 $api = New-ArtooBrowserNativeApi
@@ -83,7 +87,7 @@ ConvertTo-Json -Compress -Depth 3 -InputObject $result
 `;
 const FINAL_PROCESS_SNAPSHOT = WINDOWS_BROWSER_ARGUMENT_PARSER + String.raw`
 $ErrorActionPreference = 'Stop'
-$request = ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__REQUEST__')))
+__REQUEST__
 # The root can already be gone. Only exact executable/profile matches leave this read-only inventory.
 # WQL string literals escape backslashes and single quotes. The node supplies the protected physical path.
 Write-ArtooObserverPhase 'final_query'
@@ -119,21 +123,27 @@ export function windowsObservationFailureCode(stdout: unknown): string | undefin
   } catch { /* Raw process output, paths and command lines never become diagnostics. */ }
 }
 
-function safeObservationReason(error: unknown): string {
+function safeObservationReason(error: unknown, parentPid: number): string {
   if (error instanceof WindowsProcessObservationError) return `${error.code}@${error.phase}`;
-  if (error instanceof WindowsBrowserSessionObservationError) return `${error.code}@${error.phase}`;
+  if (error instanceof WindowsBrowserSessionObservationError) {
+    return `${error.code}@${error.phase}${ancestryFailureSuffix(WindowsBrowserSessionObservationError.negativeEvidence(error, parentPid))}`;
+  }
   const message = error instanceof Error ? error.message : "";
   const match = /^Protected Windows process observation failed \(([a-z_]+)\)$/.exec(message);
   return match && (match[1] === "deadline" || observationFailureCodes.has(match[1]!)) ? match[1]! : "unavailable";
 }
 
-const observationPhases = new Set(["process_start", "script_started", "native_binding", "root_handle", "root_query", "root_identity",
+const observationPhases = new Set(["process_start", "script_started", "definitions_ready", "request_decoded", "request_parsed", "native_binding", "root_handle", "root_query", "root_identity",
   "ancestry_snapshot", "ancestry_identities", "ancestry_confirmation", "final_query", "final_identity", "observation_result"]);
+function ancestryFailureSuffix(value: WindowsBrowserAncestryFailureV1 | undefined): string {
+  return value === undefined ? "" : ` [ancestry_failure_v1=${JSON.stringify(value)}]`;
+}
 
 /** Trusted in-process diagnostics; arbitrary error.message strings cannot grant this classification. */
 export class WindowsBrowserSessionObservationError extends Error {
   readonly #initialExitHistory?: Readonly<{ parentPid: number; pids: readonly number[] }>;
-  constructor(readonly code: string, readonly phase: string, initialExitHistory?: { parentPid: number; pids: readonly number[] }) {
+  readonly #ancestryFailure?: Readonly<WindowsBrowserAncestryFailureV1>;
+  constructor(readonly code: string, readonly phase: string, initialExitHistory?: { parentPid: number; pids: readonly number[] }, ancestryFailure?: unknown) {
     if (!observationFailureCodes.has(code) || !observationPhases.has(phase)) throw new Error("Invalid protected observer diagnostic");
     super(`Protected Windows browser session failed (${code}) [last_phase=${phase}]`);
     if (initialExitHistory !== undefined) {
@@ -143,12 +153,23 @@ export class WindowsBrowserSessionObservationError extends Error {
         || new Set(pids).size !== pids.length) throw new Error("Invalid protected observer exit history");
       this.#initialExitHistory = Object.freeze({ parentPid, pids: Object.freeze([...pids]) });
     }
+    if (ancestryFailure !== undefined) {
+      if (code !== "descendant_precedes_parent" || this.#initialExitHistory === undefined) throw new Error("Unexpected protected ancestry failure evidence");
+      this.#ancestryFailure = parseWindowsBrowserAncestryFailure(ancestryFailure, this.#initialExitHistory);
+      this.message += ancestryFailureSuffix(this.#ancestryFailure);
+    }
   }
   /** Negative evidence only. A matching root does not recover the failed observation. */
   static cleanupOnlyHistory(error: unknown, parentPid: number): readonly number[] | undefined {
     if (!(error instanceof WindowsBrowserSessionObservationError) || !(#initialExitHistory in error)) return;
     const history = error.#initialExitHistory;
     return history?.parentPid === parentPid ? history.pids : undefined;
+  }
+  /** Diagnostic facts never supply cleanup history, probe targets or termination authority. */
+  static negativeEvidence(error: unknown, parentPid: number): Readonly<WindowsBrowserAncestryFailureV1> | undefined {
+    if (!(error instanceof WindowsBrowserSessionObservationError) || !(#ancestryFailure in error)) return;
+    const value = error.#ancestryFailure;
+    return value?.root_pid === parentPid ? value : undefined;
   }
 }
 
@@ -160,9 +181,35 @@ export function windowsObservationPhase(line: string): string | undefined {
 }
 
 class WindowsProcessObservationError extends Error {
-  constructor(readonly code: string, readonly phase: string, readonly elapsedMs: number) {
-    super(`Protected Windows process observation failed (${code}) [last_phase=${phase}, elapsed_ms=${elapsedMs}]`);
+  constructor(readonly code: string, readonly phase: string, readonly elapsedMs: number, phaseReceivedMs: ReadonlyMap<string, number>) {
+    super(`Protected Windows process observation failed (${code}) [last_phase=${phase}, elapsed_ms=${elapsedMs}, phase_received_ms=${[...phaseReceivedMs].map(([label, elapsed]) => `${label}:${elapsed}`).join(";") || "none"}]`);
   }
+}
+
+/** Fixed one-shot fields only; path text is data in private stdin, never PowerShell source or argv. */
+export function renderWindowsBrowserObservationRequest(request: unknown): string {
+  const invalid = () => new Error("Invalid Windows observation request");
+  if (typeof request !== "object" || request === null || Object.getPrototypeOf(request) !== Object.prototype) throw invalid();
+  const fields = Object.getOwnPropertyDescriptors(request), keys = Reflect.ownKeys(fields);
+  const hasParent = Object.hasOwn(fields, "parent_pid");
+  const allowed = hasParent ? ["parent_pid", "executable", "profile"] : ["executable", "profile"];
+  if (keys.length !== allowed.length || keys.some(key => typeof key !== "string" || !allowed.includes(key))) throw invalid();
+  const parent: unknown = fields.parent_pid?.value;
+  if (hasParent && (typeof parent !== "number" || !Number.isSafeInteger(parent) || parent < 1 || parent > 0xffffffff)) throw invalid();
+  const encodePath = (value: unknown): string => {
+    if (typeof value !== "string") throw invalid();
+    const bytes = Buffer.from(value, "utf8");
+    // UTF-8 would silently replace an unpaired UTF-16 surrogate and bind a different path.
+    if (bytes.toString("utf8") !== value) throw invalid();
+    return bytes.toString("base64");
+  };
+  // Reading descriptors rejects accessors without invoking user-supplied getters.
+  const executable = encodePath(fields.executable?.value), profile = encodePath(fields.profile?.value);
+  return "$request = [pscustomobject]@{\n"
+    + (hasParent ? `  parent_pid = [uint32]${parent}\n` : "")
+    + `  executable = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${executable}'))\n`
+    + `  profile = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${profile}'))\n`
+    + "}";
 }
 
 async function processSnapshot(script: string, request: object, timeoutMs: number): Promise<{ parent_pid?: unknown; processes?: unknown }> {
@@ -171,13 +218,14 @@ async function processSnapshot(script: string, request: object, timeoutMs: numbe
 function Write-ArtooObserverPhase([string]$phase) { [Console]::Error.WriteLine('ARTOO_BROWSER_PHASE|' + $phase) }
 Write-ArtooObserverPhase 'script_started'
 try {
-` + script.replace("__REQUEST__", Buffer.from(JSON.stringify(request), "utf8").toString("base64")) + String.raw`
+` + script.replace("__REQUEST__", renderWindowsBrowserObservationRequest(request)) + String.raw`
 } catch {
   $code = 'os_query_failed'
   $failure = $_.Exception
   for ($depth = 0; $depth -lt 4 -and $null -ne $failure.InnerException; $depth++) { $failure = $failure.InnerException }
-  if ($failure.Message -cmatch '^ARTOO_BROWSER_OBSERVATION:([a-z_]+)$') { $code = $Matches[1] }
-  ConvertTo-Json -Compress -InputObject ([pscustomobject]@{ error_code = $code })
+  if ($failure.Message -cmatch '\AARTOO_BROWSER_OBSERVATION:(${[...observationFailureCodes].join("|")})\z') { $code = $Matches[1] }
+  # Only the closed vocabulary above reaches this fixed JSON shape, never raw exception text.
+  [Console]::Out.WriteLine('{"error_code":"' + $code + '"}')
   exit 1
 }
 `;
@@ -185,6 +233,9 @@ try {
   // bound. Its private stdin pipe replaces argv transport; no caller supplies script.
   const entrypoint = "[Console]::InputEncoding = [Text.UTF8Encoding]::new($false); & ([scriptblock]::Create([Console]::In.ReadToEnd()))";
   let phase = "process_start", stageBuffer = "", stdout: string;
+  // First receipts of fixed labels keep diagnostics bounded. Pipe delivery and
+  // event-loop scheduling can coalesce receipts; these are not OS/API durations.
+  const phaseReceivedMs = new Map<string, number>();
   const started = performance.now();
   try {
     const pending = execFileAsync(join(process.env.SystemRoot ?? "C:/Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
@@ -195,7 +246,13 @@ try {
       stageBuffer += data.toString("utf8");
       if (stageBuffer.length > 4096) { stageBuffer = ""; return; }
       const lines = stageBuffer.split(/\r?\n/); stageBuffer = lines.pop() ?? "";
-      for (const line of lines) { const observed = windowsObservationPhase(line); if (observed) phase = observed; }
+      for (const line of lines) {
+        const observed = windowsObservationPhase(line);
+        if (observed) {
+          phase = observed;
+          if (!phaseReceivedMs.has(observed)) phaseReceivedMs.set(observed, Math.ceil(performance.now() - started));
+        }
+      }
     });
     const inputClosed = observer.stdin ? finished(observer.stdin, { cleanup: true }) : Promise.reject(new Error("Missing observer input pipe"));
     void inputClosed.catch(() => {});
@@ -207,17 +264,17 @@ try {
     const execution = await pending.then(result => ({ result }), error => ({ error }));
     const input = await inputClosed.then(() => ({ ok: true }), () => ({ ok: false }));
     if ("error" in execution) throw execution.error;
-    if (!input.ok || inputWriteFailed) throw new WindowsProcessObservationError("observer_input_failed", phase, Math.ceil(performance.now() - started));
+    if (!input.ok || inputWriteFailed) throw new WindowsProcessObservationError("observer_input_failed", phase, Math.ceil(performance.now() - started), phaseReceivedMs);
     stdout = execution.result.stdout;
   } catch (error) {
     if (error instanceof WindowsProcessObservationError) throw error;
     // Discard raw argv/stdout/stderr and nested native/PowerShell errors.
     const failure = error as NodeJS.ErrnoException & { killed?: boolean; stdout?: unknown };
     const code = failure.killed ? "deadline" : windowsObservationFailureCode(failure.stdout) ?? "observer_process_failed";
-    throw new WindowsProcessObservationError(code, phase, Math.ceil(performance.now() - started));
+    throw new WindowsProcessObservationError(code, phase, Math.ceil(performance.now() - started), phaseReceivedMs);
   }
   try { return JSON.parse(stdout.trim()) as { parent_pid?: unknown; processes?: unknown }; }
-  catch { throw new WindowsProcessObservationError("observer_output_invalid", phase, Math.ceil(performance.now() - started)); }
+  catch { throw new WindowsProcessObservationError("observer_output_invalid", phase, Math.ceil(performance.now() - started), phaseReceivedMs); }
 }
 
 function processIds(value: unknown, allowEmpty: boolean): number[] {
@@ -332,8 +389,12 @@ export async function closeObservedWindowsProcesses(owned: OwnedWindowsExit, pri
   try {
     const confirmationStarted = primitives.now();
     let deadline = confirmationStarted + primitives.confirmationTimeoutMs, auditStarted = false;
-    if (owned.closeConnection) await bounded(owned.closeConnection,
-      Math.min(primitives.connectionTimeoutMs, deadline - primitives.now()), "Browser client disconnect");
+    if (owned.closeConnection) {
+      confirmationPhase = "connection_close";
+      await bounded(owned.closeConnection,
+        Math.min(primitives.connectionTimeoutMs, deadline - primitives.now()), "Browser client disconnect");
+      confirmationPhase = "exit_confirmation";
+    }
     const probe = () => {
       lastPresent = [];
       // Failed initial history is deliberately separate from successful observations:
@@ -377,7 +438,7 @@ export async function closeObservedWindowsProcesses(owned: OwnedWindowsExit, pri
   } catch (error) { confirmationFailure = { error }; }
   if (!observedIds || observationFailure || confirmationFailure) {
     throw new AggregateError([observationFailure, terminationFailure, confirmationFailure].flatMap((failure) => failure ? [failure.error] : []),
-      `Windows browser process exit remains unconfirmed; its profile is retained (parent=${owned.parentPid}, closed=${owned.parentClosed()}, present=${lastPresent.join(",")}; failures=${[observationFailure ? "initial_observation:" + safeObservationReason(observationFailure.error) : undefined, confirmationFailure ? confirmationPhase : undefined].filter(Boolean).join(",")})`);
+      `Windows browser process exit remains unconfirmed; its profile is retained (parent=${owned.parentPid}, closed=${owned.parentClosed()}, present=${lastPresent.join(",")}; failures=${[observationFailure ? "initial_observation:" + safeObservationReason(observationFailure.error, owned.parentPid) : undefined, confirmationFailure ? confirmationPhase : undefined].filter(Boolean).join(",")})`);
   }
   return { observedProcessCount: observedIds.length, ...(terminationFailure ? { terminationError: terminationFailure.error } : {}),
     ...(gracefulFailure ? { gracefulError: gracefulFailure.error } : {}) };
