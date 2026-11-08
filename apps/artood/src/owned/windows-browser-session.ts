@@ -5,6 +5,7 @@ import { performance } from "node:perf_hooks";
 import { TextDecoder } from "node:util";
 import { WINDOWS_BROWSER_SESSION_SCRIPT } from "./windows-browser-session-script.js";
 import { WindowsBrowserSessionObservationError as ObserverFailure, windowsObservationFailureCode, windowsObservationPhase } from "./windows-browser-exit.js";
+import { parseWindowsBrowserAncestryFailure, type WindowsBrowserAncestryFailureV1 } from "./windows-browser-negative-evidence.js";
 
 const MAX_FRAME_BYTES = 64 * 1024, MAX_OUTPUT_BYTES = 256 * 1024;
 // Read the one protected source frame without letting a TextReader prefetch a
@@ -190,9 +191,9 @@ export class WindowsBrowserObserverSession {
     }
     this.child.stdin.destroy();
   }
-  private fail(code: string, initialExitHistory?: { parentPid: number; pids: readonly number[] }): void {
+  private fail(code: string, initialExitHistory?: { parentPid: number; pids: readonly number[] }, ancestryFailure?: WindowsBrowserAncestryFailureV1): void {
     if (!this.failure) {
-      this.failure = new ObserverFailure(code, this.phase, initialExitHistory); this.state = "failed";
+      this.failure = new ObserverFailure(code, this.phase, initialExitHistory, ancestryFailure); this.state = "failed";
       this.failureCleanupDeadline = performance.now() + 3000;
       clearTimeout(this.launchTimer);
       this.readiness.reject(this.failure);
@@ -254,12 +255,24 @@ export class WindowsBrowserObserverSession {
     if (frame.status === "error") {
       if (typeof frame.error_code !== "string" || (!sessionCodes.has(frame.error_code)
         && !windowsObservationFailureCode(JSON.stringify({ error_code: frame.error_code })))) throw new Error("Unknown failure code");
-      if (keys(frame, [...base, "error_code", "parent_pid", "exit_history"])) {
+      const hasAncestryFailure = Object.hasOwn(frame, "ancestry_failure");
+      if (keys(frame, [...base, "error_code", "parent_pid", "exit_history", ...(hasAncestryFailure ? ["ancestry_failure"] : [])])) {
         if (pending.operation !== "initial" || pending.sequence !== 2 || this.parentPid === undefined
           || frame.parent_pid !== this.parentPid) throw new Error("Invalid initial error binding");
         if (performance.now() >= pending.deadline) { this.fail("observer_deadline"); return; }
         const pids = exitHistoryIds(frame.exit_history, this.parentPid, []);
-        this.fail(frame.error_code, { parentPid: this.parentPid, pids }); return;
+        const history = { parentPid: this.parentPid, pids };
+        let ancestryFailure: WindowsBrowserAncestryFailureV1 | undefined;
+        if (hasAncestryFailure) {
+          try {
+            if (frame.error_code !== "descendant_precedes_parent") throw new Error("Unexpected ancestry failure evidence");
+            ancestryFailure = parseWindowsBrowserAncestryFailure(frame.ancestry_failure, history);
+          } catch {
+            // A malformed optional diagnostic cannot erase already validated negative history.
+            this.fail("observer_protocol_failed", history); return;
+          }
+        }
+        this.fail(frame.error_code, history, ancestryFailure); return;
       }
       if (!keys(frame, [...base, "error_code"])) throw new Error("Invalid error frame");
       this.fail(frame.error_code); return;

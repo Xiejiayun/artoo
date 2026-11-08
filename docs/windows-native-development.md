@@ -18,6 +18,8 @@
 
 新路径由节点保护的浏览器配置显式启用：`"windows_browser_process": { "version": 1 }`。节点要求已通过安装检查的原生后端，私有文件必须在全部 Agent 可写目录之外，并通过 Windows ACL、原始文件身份和独立环境摘要检查；子进程重新检查安装后才启动浏览器。未启用的普通执行保留原行为。旧本机 r2 配置不自动改写。
 
+普通浏览器路径在未来的 `descendant_precedes_parent` 初始观察失败中，可随原私有错误帧记录 `ancestry_failure` v1：原 root／parent／child PID、精确 FILETIME 十进制字符串、Int64 类型、负差值及 attempt／census。该有限负证据只用于诊断，保留原拒绝、退出历史、清理条件和时间预算；连接关闭失败另以 `connection_close` 标记阶段。它不能解释或修复此前未保存失败边的事故，也不授权忽略旧 PPID、终止额外进程或发布产品。无扩展的旧帧继续按原规则处理；脚本与消费者必须同版交付，旧消费者会严格拒绝新扩展。
+
 当前本机入口是 [Windows Job 本地使用说明](../artifacts/windows-local-use-preparation-job-2026-11-06/USE.md)。新环境 `local-team-2026-11-06-job-r1` 已完成唯一一次准备和启动 smoke：server、worker、Web 均成功就绪并正常 exit/close 0，双 EOF、无强制终止；2,125 项启动输入未变。全部目录与旧环境保护检查通过，数据库和 Builder／Reviewer 身份保留，服务目前已停止。后续只使用普通 `start`，不要重复准备或 smoke。该启动检查没有调用模型、提交需求或验收真实设备配对；完整模型流程由文首所链接的独立 Aerial 验收覆盖。
 
 此前主树完整源码回归已通过：**3,474 通过、88 跳过、0 失败，334 个文件通过、11 个文件跳过**。原始进程实际 exit/close 0、stdout/stderr EOF 已确认，949 项已列明输入保持不变，见 [最终源码记录](../artifacts/windows-storage-budget-integration-2026-11-05/final-source-1/source.json) 和 [存储测试预算集成说明](../artifacts/windows-storage-budget-integration-2026-11-05/README.md)。原生 Aerial 完整验收 `native-live-2` 已在原 45 分钟时限到期后失败并关闭，见 [最终失败记录](../artifacts/windows-agent-team-live-2026-11-05/native-live-2/README.md)。只有调研阶段被接受（1/4）；设计多次通过 52 组浏览器用例/视口执行，但三次独立设计审核均因缺少真实 malformed localStorage 恢复测量而拒绝。实现、最终验证和发布未执行。实际 exit/close 为 1，2,045 项已列明输入不变；清理通过、工作目录已删除、测试 TEMP 为空，独立 Codex home 保留。源码回归通过不能替代这次失败的完整产品验收。

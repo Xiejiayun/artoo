@@ -240,6 +240,9 @@ function Invoke-ArtooBrowserObserverSession {
           # it never supplies process identities or changes the failing exit status.
           $frame['parent_pid'] = $boundParentPid
           $frame['exit_history'] = [ordered]@{ version = 1; pids = @(Get-ArtooObservationExitPids $history) }
+          if ($failureCode -ceq 'descendant_precedes_parent' -and $null -ne $history.AncestryFailure) {
+            $frame['ancestry_failure'] = $history.AncestryFailure
+          }
         }
         Write-ArtooSessionFrame $frame
       } catch { }

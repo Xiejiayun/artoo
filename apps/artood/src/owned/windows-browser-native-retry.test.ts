@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { WINDOWS_BROWSER_NATIVE_OBSERVER_SCRIPT } from "./windows-browser-native-snapshot.js";
 import { WINDOWS_BROWSER_NATIVE_RETRY_SCRIPT } from "./windows-browser-native-retry.js";
+import { parseWindowsBrowserAncestryFailure, type WindowsBrowserAncestryFailureV1 } from "./windows-browser-negative-evidence.js";
 
 type Edge = [number, number];
 interface Fixture {
@@ -12,6 +13,8 @@ interface Fixture {
   closeFail?: number; closeThrow?: number; rootExitAt?: number; budgetCalls?: number; seedUnknown?: number;
   snapshotError?: { snapshot: number; error: string };
   pending?: number[];
+  rootCreation?: string; recordingFailure?: boolean;
+  diagnostic?: Partial<WindowsBrowserAncestryFailureV1>;
 }
 const snapshot = (...descendants: Edge[]): Edge[] => [[101, 42], ...descendants];
 const child = [202, 101] as Edge, peer = [303, 101] as Edge, added = [404, 101] as Edge;
@@ -79,7 +82,27 @@ const cases: Fixture[] = [
     opens: [{ attempt: 1, pid: 202, error: "process_open_invalid_parameter" }],
     error: "ancestry_parent_changed", history: [202, 404], pending: [202], attempts: 2 },
   { name: "child cannot predate its selected parent", snapshots: [snapshot(child, [303, 202])],
-    opens: [{ attempt: 1, pid: 303, creation: "134383440000000100" }], error: "descendant_precedes_parent", history: [202, 303], attempts: 1 },
+    opens: [{ attempt: 1, pid: 303, creation: "134383440000000100" }], error: "descendant_precedes_parent", history: [202, 303], attempts: 1,
+    diagnostic: { attempt: 1, census: "first", parent_pid: 202, child_pid: 303, parent_filetime: "134383440000002020", child_filetime: "134383440000000100", delta_ticks: "-1920" } },
+  ...["first", "second", "corroborating"].map(census => ({
+    name: `negative creation evidence preserves ${census} census and 100ns precision`,
+    snapshots: census === "first" ? [snapshot(child)] : census === "second" ? [snapshot(), snapshot(child)] : [snapshot(), snapshot(peer), snapshot(child)],
+    opens: [{ attempt: 1, pid: 202, creation: "134383439999999999" }, ...(census === "corroborating" ? [{ attempt: 1, pid: 303, error: "process_open_invalid_parameter" }] : [])],
+    error: "descendant_precedes_parent", history: census === "corroborating" ? [202, 303] : [202], attempts: 1,
+    diagnostic: { attempt: 1, census: census as WindowsBrowserAncestryFailureV1["census"], parent_pid: 101, child_pid: 202,
+      root_filetime: "134383440000000000", parent_filetime: "134383440000000000", child_filetime: "134383439999999999", delta_ticks: "-1" },
+  })),
+  { name: "negative evidence keeps Int64 maximum precision", rootCreation: "9223372036854775807", snapshots: [snapshot(child)],
+    opens: [{ attempt: 1, pid: 202, creation: "9223372036854775806" }], error: "descendant_precedes_parent", history: [202], attempts: 1,
+    diagnostic: { root_filetime: "9223372036854775807", parent_filetime: "9223372036854775807", child_filetime: "9223372036854775806", delta_ticks: "-1" } },
+  { name: "negative evidence reports the original later attempt", snapshots: [snapshot(child), snapshot(child, peer), snapshot(child, peer, added)],
+    opens: [{ attempt: 2, pid: 404, creation: "134383439999999999" }], error: "descendant_precedes_parent", history: [202, 303, 404], attempts: 2,
+    diagnostic: { attempt: 2, census: "first", parent_pid: 101, child_pid: 404, delta_ticks: "-1" } },
+  { name: "recording failure cannot replace the original creation-order rejection", recordingFailure: true, snapshots: [snapshot(child)],
+    opens: [{ attempt: 1, pid: 202, creation: "134383439999999999" }], error: "descendant_precedes_parent", history: [202], attempts: 1 },
+  { name: "HANDLE close failure still supersedes creation-order rejection", closeFail: 202, snapshots: [snapshot(child)],
+    opens: [{ attempt: 1, pid: 202, creation: "134383439999999999" }], error: "process_handle_close_failed", history: [202], attempts: 1,
+    diagnostic: { census: "first", parent_pid: 101, child_pid: 202, delta_ticks: "-1" } },
   { name: "root exit never renews observation", snapshots: [snapshot(child)], rootExitAt: 1,
     error: "root_process_exited", history: [202], attempts: 1 },
   { name: "root exit while absence is pending forbids further observation",
@@ -192,11 +215,16 @@ foreach ($case in $cases) {
   $script:closedHandles = [Collections.Generic.List[long]]::new(); $script:budgetObjects = [Collections.Generic.HashSet[int]]::new()
   $script:openTrace = [Collections.Generic.List[object]]::new(); $script:snapshotAttempts = [Collections.Generic.List[int]]::new()
   $script:history = New-ArtooObservationHistory 101
+  if ($case.recordingFailure) {
+    $script:history.PSObject.Properties.Remove('AncestryFailure')
+    $script:history | Add-Member -MemberType ScriptProperty -Name AncestryFailure -Value { return $null } -SecondValue { throw 'Controlled diagnostic recording failure' }
+  }
   if ($case.seedUnknown) {
     [void]$script:history.Seen.Add([uint32]$case.seedUnknown); [void]$script:history.Uncertain.Add([uint32]$case.seedUnknown)
     $script:history.FirstAttempt.Add([uint32]$case.seedUnknown, 0)
   }
-  $root = [pscustomobject]@{ Handle = [IntPtr]::new(101); Pid = [uint32]101; Creation = 134383440000000000L }
+  [long]$rootCreated = if ($case.rootCreation) { [long]$case.rootCreation } else { 134383440000000000L }
+  $root = [pscustomobject]@{ Handle = [IntPtr]::new(101); Pid = [uint32]101; Creation = $rootCreated }
   $budget = [Diagnostics.Stopwatch]::StartNew(); $value = $null; $errorCode = $null
   try { $value = Get-ArtooStableOwnedIdentities ([object]) $root $script:history $budget }
   catch { $errorCode = Get-ArtooRetryExceptionCode $_.Exception }
@@ -205,19 +233,24 @@ foreach ($case in $cases) {
     snapshots = $script:snapshotIndex; successful_opens = $script:successfulOpens; closes = @($script:closedHandles.ToArray());
     open_trace = @($script:openTrace.ToArray()); snapshot_attempts = @($script:snapshotAttempts.ToArray());
     pending = @($script:history.PendingMissing); uncertain = @($script:history.Uncertain); absent = @($script:history.Absent);
-    budget_objects = $script:budgetObjects.Count; budget_running = $budget.IsRunning })
+    budget_objects = $script:budgetObjects.Count; budget_running = $budget.IsRunning; ancestry_failure = $script:history.AncestryFailure })
 }
 ConvertTo-Json -Compress -Depth 8 -InputObject @($results.ToArray())
 `;
     const results = JSON.parse(powershell(script)) as Array<{ name: string; error: string | null; attempts: number; pids: number[]; history: number[];
       snapshots: number; successful_opens: number; closes: number[]; budget_objects: number; budget_running: boolean;
       open_trace: Array<{ pid: number; attempt: number; snapshot: number; error: string | null }>;
-      snapshot_attempts: number[]; pending: number[]; uncertain: number[]; absent: number[] }>;
+      snapshot_attempts: number[]; pending: number[]; uncertain: number[]; absent: number[]; ancestry_failure: unknown }>;
     expect(results).toHaveLength(cases.length);
     for (const [index, result] of results.entries()) {
       const fixtureCase = cases[index]!;
       expect(result.name).toBe(fixtureCase.name); expect(result.error, fixtureCase.name).toBe(fixtureCase.error ?? null);
       expect(result.attempts, fixtureCase.name).toBe(fixtureCase.attempts);
+      if (fixtureCase.diagnostic) {
+        const evidence = parseWindowsBrowserAncestryFailure(result.ancestry_failure, { parentPid: 101, pids: result.history });
+        expect(evidence, fixtureCase.name).toMatchObject({ version: 1, root_pid: 101, root_type: "System.Int64",
+          parent_type: "System.Int64", child_type: "System.Int64", ...fixtureCase.diagnostic });
+      } else expect(result.ancestry_failure, fixtureCase.name).toBeNull();
       expect(result.history.sort((a, b) => a - b), fixtureCase.name).toEqual(fixtureCase.history);
       if (fixtureCase.ids) expect(result.pids.sort((a, b) => a - b)).toEqual(fixtureCase.ids);
       else expect(result.pids.filter(value => value !== null)).toEqual([]);

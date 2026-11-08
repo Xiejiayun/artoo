@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import { finished } from "node:stream/promises";
 import { WINDOWS_BROWSER_NATIVE_OBSERVER_SCRIPT } from "./windows-browser-native-snapshot.js";
+import { parseWindowsBrowserAncestryFailure, type WindowsBrowserAncestryFailureV1 } from "./windows-browser-negative-evidence.js";
 
 // This protected parser follows Windows backslash/quote argument rules. Matching an
 // entire argument avoids treating a profile-looking string inside another value as ownership.
@@ -122,9 +123,11 @@ export function windowsObservationFailureCode(stdout: unknown): string | undefin
   } catch { /* Raw process output, paths and command lines never become diagnostics. */ }
 }
 
-function safeObservationReason(error: unknown): string {
+function safeObservationReason(error: unknown, parentPid: number): string {
   if (error instanceof WindowsProcessObservationError) return `${error.code}@${error.phase}`;
-  if (error instanceof WindowsBrowserSessionObservationError) return `${error.code}@${error.phase}`;
+  if (error instanceof WindowsBrowserSessionObservationError) {
+    return `${error.code}@${error.phase}${ancestryFailureSuffix(WindowsBrowserSessionObservationError.negativeEvidence(error, parentPid))}`;
+  }
   const message = error instanceof Error ? error.message : "";
   const match = /^Protected Windows process observation failed \(([a-z_]+)\)$/.exec(message);
   return match && (match[1] === "deadline" || observationFailureCodes.has(match[1]!)) ? match[1]! : "unavailable";
@@ -132,11 +135,15 @@ function safeObservationReason(error: unknown): string {
 
 const observationPhases = new Set(["process_start", "script_started", "definitions_ready", "request_decoded", "request_parsed", "native_binding", "root_handle", "root_query", "root_identity",
   "ancestry_snapshot", "ancestry_identities", "ancestry_confirmation", "final_query", "final_identity", "observation_result"]);
+function ancestryFailureSuffix(value: WindowsBrowserAncestryFailureV1 | undefined): string {
+  return value === undefined ? "" : ` [ancestry_failure_v1=${JSON.stringify(value)}]`;
+}
 
 /** Trusted in-process diagnostics; arbitrary error.message strings cannot grant this classification. */
 export class WindowsBrowserSessionObservationError extends Error {
   readonly #initialExitHistory?: Readonly<{ parentPid: number; pids: readonly number[] }>;
-  constructor(readonly code: string, readonly phase: string, initialExitHistory?: { parentPid: number; pids: readonly number[] }) {
+  readonly #ancestryFailure?: Readonly<WindowsBrowserAncestryFailureV1>;
+  constructor(readonly code: string, readonly phase: string, initialExitHistory?: { parentPid: number; pids: readonly number[] }, ancestryFailure?: unknown) {
     if (!observationFailureCodes.has(code) || !observationPhases.has(phase)) throw new Error("Invalid protected observer diagnostic");
     super(`Protected Windows browser session failed (${code}) [last_phase=${phase}]`);
     if (initialExitHistory !== undefined) {
@@ -146,12 +153,23 @@ export class WindowsBrowserSessionObservationError extends Error {
         || new Set(pids).size !== pids.length) throw new Error("Invalid protected observer exit history");
       this.#initialExitHistory = Object.freeze({ parentPid, pids: Object.freeze([...pids]) });
     }
+    if (ancestryFailure !== undefined) {
+      if (code !== "descendant_precedes_parent" || this.#initialExitHistory === undefined) throw new Error("Unexpected protected ancestry failure evidence");
+      this.#ancestryFailure = parseWindowsBrowserAncestryFailure(ancestryFailure, this.#initialExitHistory);
+      this.message += ancestryFailureSuffix(this.#ancestryFailure);
+    }
   }
   /** Negative evidence only. A matching root does not recover the failed observation. */
   static cleanupOnlyHistory(error: unknown, parentPid: number): readonly number[] | undefined {
     if (!(error instanceof WindowsBrowserSessionObservationError) || !(#initialExitHistory in error)) return;
     const history = error.#initialExitHistory;
     return history?.parentPid === parentPid ? history.pids : undefined;
+  }
+  /** Diagnostic facts never supply cleanup history, probe targets or termination authority. */
+  static negativeEvidence(error: unknown, parentPid: number): Readonly<WindowsBrowserAncestryFailureV1> | undefined {
+    if (!(error instanceof WindowsBrowserSessionObservationError) || !(#ancestryFailure in error)) return;
+    const value = error.#ancestryFailure;
+    return value?.root_pid === parentPid ? value : undefined;
   }
 }
 
@@ -371,8 +389,12 @@ export async function closeObservedWindowsProcesses(owned: OwnedWindowsExit, pri
   try {
     const confirmationStarted = primitives.now();
     let deadline = confirmationStarted + primitives.confirmationTimeoutMs, auditStarted = false;
-    if (owned.closeConnection) await bounded(owned.closeConnection,
-      Math.min(primitives.connectionTimeoutMs, deadline - primitives.now()), "Browser client disconnect");
+    if (owned.closeConnection) {
+      confirmationPhase = "connection_close";
+      await bounded(owned.closeConnection,
+        Math.min(primitives.connectionTimeoutMs, deadline - primitives.now()), "Browser client disconnect");
+      confirmationPhase = "exit_confirmation";
+    }
     const probe = () => {
       lastPresent = [];
       // Failed initial history is deliberately separate from successful observations:
@@ -416,7 +438,7 @@ export async function closeObservedWindowsProcesses(owned: OwnedWindowsExit, pri
   } catch (error) { confirmationFailure = { error }; }
   if (!observedIds || observationFailure || confirmationFailure) {
     throw new AggregateError([observationFailure, terminationFailure, confirmationFailure].flatMap((failure) => failure ? [failure.error] : []),
-      `Windows browser process exit remains unconfirmed; its profile is retained (parent=${owned.parentPid}, closed=${owned.parentClosed()}, present=${lastPresent.join(",")}; failures=${[observationFailure ? "initial_observation:" + safeObservationReason(observationFailure.error) : undefined, confirmationFailure ? confirmationPhase : undefined].filter(Boolean).join(",")})`);
+      `Windows browser process exit remains unconfirmed; its profile is retained (parent=${owned.parentPid}, closed=${owned.parentClosed()}, present=${lastPresent.join(",")}; failures=${[observationFailure ? "initial_observation:" + safeObservationReason(observationFailure.error, owned.parentPid) : undefined, confirmationFailure ? confirmationPhase : undefined].filter(Boolean).join(",")})`);
   }
   return { observedProcessCount: observedIds.length, ...(terminationFailure ? { terminationError: terminationFailure.error } : {}),
     ...(gracefulFailure ? { gracefulError: gracefulFailure.error } : {}) };
