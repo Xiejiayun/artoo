@@ -468,7 +468,9 @@ final class SharedServerChatUITests: XCTestCase {
         channel.tap()
         try require(app.staticTexts[rootBody].waitForExistence(timeout: 15), "Channel history must survive app relaunch")
         try reveal(thread); thread.tap()
-        try require(app.staticTexts[catchUpBody].waitForExistence(timeout: 15), "Thread history must survive app relaunch")
+        let restoredReply = app.staticTexts["message.\(background.id)"]
+        try revealText(restoredReply)
+        try require(restoredReply.waitForExistence(timeout: 15) && restoredReply.label == catchUpBody, "Thread history must survive app relaunch")
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Native real-server thread after foreground catch-up"
         screenshot.lifetime = .keepAlways
@@ -884,7 +886,6 @@ final class SharedServerChatUITests: XCTestCase {
             try reveal(signOut); signOut.tap()
         }
         try await waitForPairingState(allowAuthenticated: false)
-        let code: PairingCode = try await peerPost("api/v1/devices/pairings", body: ["intended_platform": "ios"], token: pairingToken)
         let origin = app.textFields["serverURL"]
         let localHTTP = app.switches["allowLocalHTTP"]
         if fixture.serverURL.scheme == "http" {
@@ -894,7 +895,12 @@ final class SharedServerChatUITests: XCTestCase {
         try dismissKeyboard(using: "pairing.keyboard.done")
         try replace(app.textFields["pairingDeviceName"], with: name)
         try dismissKeyboard(using: "pairing.keyboard.done")
-        try replace(app.textFields["pairingCode"], with: code.code)
+        let codeField = app.textFields["pairingCode"]
+        try prepareReplacement(codeField)
+        // Native focus and keyboard idleness can be slow. Mint the one-use code
+        // only after its real field is ready, without changing its expiry.
+        let code: PairingCode = try await peerPost("api/v1/devices/pairings", body: ["intended_platform": "ios"], token: pairingToken)
+        try typeReplacement(codeField, with: code.code)
         try dismissKeyboard(using: "pairing.keyboard.done")
         let pair = app.buttons["pairDevice"]
         try reveal(pair)
@@ -1099,6 +1105,12 @@ final class SharedServerChatUITests: XCTestCase {
 
     @MainActor
     private func replace(_ field: XCUIElement, with text: String) throws {
+        try prepareReplacement(field)
+        try typeReplacement(field, with: text)
+    }
+
+    @MainActor
+    private func prepareReplacement(_ field: XCUIElement) throws {
         try require(field.waitForExistence(timeout: 10), "Required text field must exist")
         try reveal(field)
         try require(field.isEnabled && field.isHittable, "The exact native input must be editable")
@@ -1157,6 +1169,10 @@ final class SharedServerChatUITests: XCTestCase {
             let cleared = field.value as? String
             try require(cleared == "" || cleared == field.placeholderValue, "The native input must be empty before replacement")
         }
+    }
+
+    @MainActor
+    private func typeReplacement(_ field: XCUIElement, with text: String) throws {
         field.typeText(text)
         let enteredInput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", text), object: field)
         try require(XCTWaiter.wait(for: [enteredInput], timeout: 45) == .completed, "The original native typing operation must finish with the exact intended text")
