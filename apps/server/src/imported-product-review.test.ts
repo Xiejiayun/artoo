@@ -462,6 +462,14 @@ describe("imported destination review orchestration (controlled DB/protocol evid
     expect(request.review_start.context_pack.payload!.policy).toMatchObject({ execution_mode: "discussion", filesystem_write_scope: [] });
     expect(request.review_start.policy_snapshot.filesystem_write_scope).toEqual([]);
     expect(request.review_start.context_pack.payload!.review_subject).toBeUndefined();
+    if(request.result.outcome!=="verified")throw Error("Expected controlled transfer");
+    const subject=request.review_start.context_pack.payload!.imported_review_subject!;
+    expect(subject.measurement_mapping).toEqual(request.result.admission.mapping);
+    expect(hash(subject.measurement_mapping)).toBe(subject.mapping_digest);
+    expect(subject.measurement_mapping!.source_profile_digest).not.toBe(subject.measurement_mapping!.destination_profile_digest);
+    expect(subject.measurement_mapping!.release).toBeDefined();
+    expect(request.review_start.context_pack.payload!.task.description).toContain("keeps its original source-computer measurement plan");
+    expect(request.review_start.context_pack.payload!.task.description).toContain("does not resolve a substantive defect or require an accepted verdict");
     expect(await server.db.db.select().from(runs)).toEqual(beforeRuns); expect(await server.db.db.select().from(autonomousReviews)).toEqual(beforeReviews);
     const binding = f.binding(), command = await binding.dispatch(row.id); expect(await binding.dispatch(row.id)).toEqual(command);
     await binding.acknowledge({ kind: "product.source.review.ack.v1", node_id: f.destination.nodeId, command_id: command.id, status: "accepted",

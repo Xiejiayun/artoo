@@ -3,7 +3,7 @@ import { agentInstances, agents, appendEvent, computers, devices, deviceTokens, 
   goalProductHandoffs as handoffs, goalProductHandoffOperations as operations, goalProductHandoffDeliveries as operationDeliveries,
   goalImportedProductReviews as reviews, goalImportedProductReviewDeliveries as deliveries } from "@artoo/db";
 import { AutonomousTeamSchema, ContextPackSchema, ImportedProductReviewRequestV1Schema, ImportedProductReviewResultV1Schema,
-  IMPORTED_PRODUCT_REVIEW_FEATURE_V1, ProductSourceOperationV1Schema, ProductSourceOperationResultV1Schema,
+  IMPORTED_PRODUCT_REVIEW_FEATURE_V1, IMPORTED_PRODUCT_REVIEW_MAPPING_INSTRUCTION_V1, ProductSourceOperationV1Schema, ProductSourceOperationResultV1Schema,
   RunStartPayloadSchema, TaskSpecSchema, importedProductReviewRequestDigestV1, importedProductReviewSubjectV1, inspectImportedProductReviewResultV1,
   canonicalProductSourceTransferValueV1 as canonical, type ImportedProductReviewRequestV1, type ProductSourceOperationV1 } from "@artoo/domain";
 import { importedProductReviewAckSchema, importedProductReviewResultSchema,
@@ -159,12 +159,13 @@ export async function ensureGoalImportedProductReview(ctx: ServerContext, tx: Dr
   if (!candidate) throw AppError.conflict("Waiting for a distinct team reviewer on the imported research computer");
   const reviewer = { instance_id: candidate.agent_instance_id, agent_id: candidate.agent_id }, review_id = ctx.idGen.generate("imported_review");
   const original = operation.intent.destination_start, reviewRunId = ctx.idGen.generate("imported_review_run"), reviewTaskId = ctx.idGen.generate("imported_review_task");
-  const subject = importedProductReviewSubjectV1({ review_id, operation, result, source_author, reviewer }, sha);
+  const subject = { ...importedProductReviewSubjectV1({ review_id, operation, result, source_author, reviewer }, sha),
+    measurement_mapping: result.admission.mapping };
   const binding = { version: 1, review_id, transfer_id: subject.transfer_id, subject_digest: subject.subject_digest, source_export_digest: subject.source_export_digest };
   const prompt = `Independently review the imported research against the original goal and accepted plan. Read the exact research and source through the protected read-only tools. Check source citations, original requirement coverage, omissions and measurement feasibility; source-node acceptance and a destination verifier receipt are evidence, not a substantive review. Do not modify files, run side-effecting commands or access the network. Only the trusted node verifies the exact subject before and after your execution. This review grants no design write or release authority.\n\nGoal: ${goal.objective}\nResearch task: ${source.title}\n${source.description}\nCriteria:\n${(source.acceptanceCriteria as string[]).map(c => `- ${c}`).join("\n")}\n\nReturn ONLY a JSON object with ${JSON.stringify(binding)}, outcome (accepted or changes_requested), nonempty summary, and findings (severity blocking or nonblocking, description, optional file). Blocking findings require changes_requested. Never claim process execution you did not observe.`;
   const context = ContextPackSchema.parse({ ...original.context_pack.payload, product_development: undefined, review_subject: undefined,
     imported_review_subject: subject, conversation: undefined, review_feedback: undefined,
-    task: { id: reviewTaskId, title: `Imported research review: ${source.title}`, description: prompt, acceptance_criteria: ["Substantively review the exact imported research and return the bound verdict"] },
+    task: { id: reviewTaskId, title: `Imported research review: ${source.title}`, description: `${prompt}\n\n${IMPORTED_PRODUCT_REVIEW_MAPPING_INSTRUCTION_V1}`, acceptance_criteria: ["Substantively review the exact imported research and return the bound verdict"] },
     policy: { execution_mode: "discussion", filesystem_write_scope: [], requires_approval: [] } });
   const review_start = RunStartPayloadSchema.parse({ ...original, run_id: reviewRunId, task_id: reviewTaskId, agent_instance_id: reviewer.instance_id,
     runtime: candidate.runtime, workspace_allocation: undefined, workspace: { root: base.destination.workspace_root, branch: null },
