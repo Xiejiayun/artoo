@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
-  spawnSync: vi.fn(), readFileSync: vi.fn(), sequence: 0n,
+  spawnSync: vi.fn(), readFileSync: vi.fn(), sequence: 0n, auditLimit: 65536,
   nodes: new Map<string, { directory: boolean; ino: bigint; ctimeNs: bigint; mtimeNs?: bigint; size?: bigint; link?: boolean; nlink?: bigint }>(),
   aliases: new Map<string, string>(),
 }));
@@ -21,7 +21,12 @@ vi.mock("node:fs", () => ({
     && !value.slice(path.length + 1).includes("\\")).map(value => value.slice(path.length + 1))),
   realpathSync: { native: vi.fn((path: string) => state.aliases.get(path) ?? path) },
 }));
-import { assertWindowsReleaseStorage, auditWindowsReleaseStorage, prepareWindowsReleaseStorage,
+// Small controlled bounds exercise chunking without constructing 65,536 fake paths.
+vi.mock("./windows-local-acl.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("./windows-local-acl.js")>();
+  return { ...actual, get MAX_WINDOWS_AUDIT_PATHS() { return state.auditLimit; } };
+});
+import { assertWindowsReleaseStorage, auditWindowsReleaseStorage, auditWindowsReleaseStorageBatch, prepareWindowsReleaseStorage,
   type PreparedWindowsReleaseStorage, type WindowsReleaseStorageInput } from "./windows-release-storage.js";
 import { collectWindowsAclFacts, type WindowsAclFact, type WindowsAclReport, type WindowsAclTarget } from "./windows-local-acl.js";
 import { recordWindowsStartupPhase, withWindowsStartupDiagnostics, WindowsStartupDiagnosticSchema,
@@ -68,7 +73,7 @@ beforeEach(() => {
   Object.defineProperty(process, "platform", { ...platform, value: "win32" });
   Object.defineProperty(process, "arch", { ...architecture, value: "x64" });
   vi.stubEnv("SystemRoot", "C:\\Windows");
-  state.nodes.clear(); state.aliases.clear(); state.sequence = 9007199254740991n;
+  state.nodes.clear(); state.aliases.clear(); state.sequence = 9007199254740991n; state.auditLimit = 65536;
   vi.mocked(lstatSync).mockClear(); vi.mocked(readdirSync).mockClear(); vi.mocked(realpathSync.native).mockClear();
   state.readFileSync.mockReset().mockImplementation(() => { throw new Error("Diagnostic must not read file contents"); });
   for (const path of ["C:\\", "C:\\Windows", "C:\\Users", "C:\\Users\\node", "C:\\Users\\node\\.artoo", directory,
@@ -77,6 +82,140 @@ beforeEach(() => {
   state.spawnSync.mockReset().mockImplementation((_exe, _argv, options) => {
     const report = defaultReport(JSON.parse(options.input).paths); change(report);
     return { status: 0, signal: null, stdout: JSON.stringify(report) };
+  });
+});
+
+describe("synchronous Windows release-storage audit batches", () => {
+  const secondDirectory = "C:\\Users\\node\\.artoo\\second", secondWorkspace = "C:\\products\\two";
+  function pair(second = secondDirectory) {
+    add(second); add(secondWorkspace);
+    const first = prepare();
+    const other = prepareWindowsReleaseStorage({ directory: second, writableWorkspaceRoots: [workspace, secondWorkspace] });
+    state.spawnSync.mockClear();
+    return [{ storage: first, directory }, { storage: other, directory: second }] as const;
+  }
+  const collected = (): WindowsAclTarget[][] => state.spawnSync.mock.calls.map(([, , options]) => JSON.parse(options.input).paths);
+
+  it("collects different storages and shared ancestors once while retaining both write scopes", () => {
+    const entries = pair(); auditWindowsReleaseStorageBatch(entries);
+    expect(state.spawnSync).toHaveBeenCalledOnce();
+    const targets = collected()[0]!;
+    expect(targets.filter(target => target.path === "C:\\")).toHaveLength(1);
+    for (const path of [directory, secondDirectory, workspace, secondWorkspace]) expect(targets.some(target => target.path === path)).toBe(true);
+    state.nodes.get(secondWorkspace)!.ino++;
+    expect(() => auditWindowsReleaseStorageBatch(entries)).toThrow(/fixed physical identity changed/);
+    expect(state.spawnSync).toHaveBeenCalledOnce();
+  });
+
+  it("ORs shared readAcl requirements and applies each storage's own ancestor policy", () => {
+    const entries = pair("C:\\products\\second-release");
+    auditWindowsReleaseStorageBatch(entries);
+    expect(collected()[0]!.find(target => target.path === "C:\\products")).toMatchObject({ readAcl: true });
+    change = report => { node(report, "C:\\products").ownerSid = otherSid; };
+    expect(() => auditWindowsReleaseStorageBatch(entries)).toThrow(/untrusted owner/);
+  });
+
+  it("does not borrow ancestor-only acceptance for another storage's mutable root", () => {
+    const entries = pair(`${directory}\\nested`);
+    change = report => node(report, directory).aces.push({ sid: otherSid, qualifier: "AccessAllowed", mask: 0x10000000, flags: 11 });
+    expect(() => auditWindowsReleaseStorageBatch([entries[1], entries[0]])).toThrow(/future children/);
+    expect(state.spawnSync).toHaveBeenCalledOnce();
+  });
+
+  it.each(["directory", "forged", "policy"])("rejects a bad second %s binding before collection", variant => {
+    const entries = pair();
+    const second = variant === "directory" ? { ...entries[1], directory: workspace }
+      : variant === "forged" ? { ...entries[1], storage: {} as PreparedWindowsReleaseStorage }
+      : { ...entries[1], skip: true };
+    expect(() => auditWindowsReleaseStorageBatch([entries[0], second])).toThrow(/another directory|locally prepared|exact local/);
+    expect(state.spawnSync).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 1])("rejects metadata changes in storage %i with the original safe diagnostics", async index => {
+    const entries = pair(), root = entries[index]!.directory, file = `${root}\\existing.json`; add(file, false);
+    change = () => { state.nodes.get(file)!.ctimeNs++; };
+    const { error, failure } = await startupRejection(() => auditWindowsReleaseStorageBatch(entries));
+    expect(failure.storage_failure).toEqual({ code: "storage_inventory_changed", first_change_fields: ["ctime"] });
+    expect(JSON.parse(error.message.slice(changedPrefix.length))).toMatchObject({ root: { value: root },
+      first_change: { relative: { value: "existing.json" }, fields: ["ctime"] } });
+    expect(state.spawnSync).toHaveBeenCalledOnce();
+  });
+
+  it.each(["added", "removed", "identity", "mtime", "size"])("keeps rejecting the second storage's %s inventory change", async field => {
+    const entries = pair(), file = `${secondDirectory}\\existing.json`;
+    if (field !== "added") add(file, false);
+    change = () => {
+      if (field === "added") add(file, false);
+      else if (field === "removed") state.nodes.delete(file);
+      else if (field === "identity") state.nodes.get(file)!.ino++;
+      else if (field === "mtime") state.nodes.get(file)!.mtimeNs = 2n;
+      else state.nodes.get(file)!.size = 1n;
+    };
+    const { error, failure } = await startupRejection(() => auditWindowsReleaseStorageBatch(entries));
+    expect(failure.storage_failure).toEqual({ code: "storage_inventory_changed", first_change_fields: [field] });
+    expect(JSON.parse(error.message.slice(changedPrefix.length))).toMatchObject({ root: { value: secondDirectory },
+      first_change: { relative: { value: "existing.json" }, fields: [field] } });
+  });
+
+  it("keeps all inventories open across every group and detects mutation of an earlier group", () => {
+    const entries = pair(); state.auditLimit = 20;
+    for (const { directory: root } of entries) for (let index = 0; index < 8; index++) add(`${root}\\file-${index}.json`, false);
+    let groups = 0;
+    change = () => { if (++groups === 2) add(`${directory}\\later.json`, false); };
+    expect(() => auditWindowsReleaseStorageBatch(entries)).toThrow(/changed during ACL audit/);
+    expect(groups).toBe(2);
+  });
+
+  it("commits no earlier layout when a later storage fails its final layout check", () => {
+    const entries = pair(), operations = `${directory}\\operations`; add(operations); add(`${secondDirectory}\\operations`, false);
+    expect(() => auditWindowsReleaseStorageBatch(entries)).toThrow(/invalid release layout directory/);
+    state.nodes.get(operations)!.ino++;
+    expect(() => assertWindowsReleaseStorage(entries[0].storage, directory)).not.toThrow();
+    state.nodes.delete(`${secondDirectory}\\operations`); add(`${secondDirectory}\\operations`);
+    auditWindowsReleaseStorageBatch(entries);
+    state.nodes.get(operations)!.ino++;
+    expect(() => assertWindowsReleaseStorage(entries[0].storage, directory)).toThrow(/layout identity changed/);
+  });
+
+  it("deduplicates only current collector targets and re-audits independent calls after await", async () => {
+    const entries = pair();
+    auditWindowsReleaseStorageBatch([entries[0], entries[0], entries[1]]);
+    expect(state.spawnSync).toHaveBeenCalledOnce();
+    expect(new Set(collected()[0]!.map(target => target.path)).size).toBe(collected()[0]!.length);
+    await Promise.resolve();
+    change = report => node(report, secondDirectory).aces.push({ sid: otherSid, qualifier: "AccessAllowed", mask: 2, flags: 0 });
+    expect(() => auditWindowsReleaseStorageBatch(entries)).toThrow(/another principal/);
+    expect(state.spawnSync).toHaveBeenCalledTimes(2);
+  });
+
+  it("splits a combined set above the collector bound without dropping legal per-storage targets", () => {
+    const entries = pair(); state.auditLimit = 20;
+    for (const { directory: root } of entries) for (let index = 0; index < 8; index++) add(`${root}\\file-${index}.json`, false);
+    auditWindowsReleaseStorageBatch(entries);
+    const groups = collected(); expect(groups).toHaveLength(2);
+    expect(groups.every(targets => targets.length <= 20)).toBe(true);
+    const paths = groups.flat().map(target => target.path);
+    expect(paths.length).toBeGreaterThan(20); expect(new Set(paths).size).toBe(paths.length);
+    for (const { directory: root } of entries) for (let index = 0; index < 8; index++) expect(paths).toContain(`${root}\\file-${index}.json`);
+  });
+
+  it("keeps a single storage's original bound and also partitions large legal single-storage responses", () => {
+    const prepared = prepare(); state.spawnSync.mockClear();
+    for (let index = 0; index < 300; index++) add(`${directory}\\file-${index}.json`, false);
+    auditWindowsReleaseStorage(prepared, directory);
+    expect(collected()).toHaveLength(2); expect(collected().every(targets => targets.length <= 256)).toBe(true);
+    state.spawnSync.mockClear(); state.auditLimit = 20;
+    expect(() => auditWindowsReleaseStorage(prepared, directory)).toThrow(/inventory exceeds the Windows bound/);
+    expect(state.spawnSync).not.toHaveBeenCalled();
+  });
+
+  it("rejects identity changes between collector groups without retry or partial admission", () => {
+    const entries = pair(); state.auditLimit = 20;
+    for (const { directory: root } of entries) for (let index = 0; index < 8; index++) add(`${root}\\file-${index}.json`, false);
+    let groups = 0;
+    change = report => { if (++groups === 2) report.currentSid = otherSid; };
+    expect(() => auditWindowsReleaseStorageBatch(entries)).toThrow(/Windows identity changed/);
+    expect(groups).toBe(2);
   });
 });
 afterEach(() => {
