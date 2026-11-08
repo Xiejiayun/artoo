@@ -10,6 +10,17 @@ import { describeApplicationServiceProfile, assertApplicationServiceOpenStore, p
 /** Explicit first creation only. A failed initialization is retained, never
  * deleted, overwritten or adopted by an automatic create/open fallback. */
 export async function initializeApplicationStore(profile: PreparedApplicationServiceProfile, signal?: AbortSignal): Promise<ApplicationBrokerProcessReceipt> {
+  return openAndCloseApplicationStore(profile, "create", "initialization", signal);
+}
+
+/** Validate an existing SQLite store through its original broker, without a
+ * product invocation or listener. Missing/invalid stores never fall back to create. */
+export async function checkExistingApplicationStore(profile: PreparedApplicationServiceProfile, signal?: AbortSignal): Promise<ApplicationBrokerProcessReceipt> {
+  return openAndCloseApplicationStore(profile, "open", "preflight", signal);
+}
+
+async function openAndCloseApplicationStore(profile: PreparedApplicationServiceProfile, mode: "create" | "open",
+  operation: "initialization" | "preflight", signal?: AbortSignal): Promise<ApplicationBrokerProcessReceipt> {
   let broker: ApplicationBrokerProcess | undefined;
   let cancellation: Promise<ApplicationBrokerProcessReceipt> | undefined;
   const cancel = () => {
@@ -20,22 +31,22 @@ export async function initializeApplicationStore(profile: PreparedApplicationSer
     }
   };
   try {
-    if (signal?.aborted) throw Error("Application store initialization cancelled");
-    const prepared = prepareProfileApplicationBroker(profile, "create");
-    if (signal?.aborted) throw Error("Application store initialization cancelled");
+    if (signal?.aborted) throw Error(`Application store ${operation} cancelled`);
+    const prepared = prepareProfileApplicationBroker(profile, mode);
+    if (signal?.aborted) throw Error(`Application store ${operation} cancelled`);
     broker = startApplicationBrokerProcess(prepared);
     signal?.addEventListener("abort", cancel, { once: true }); if (signal?.aborted) cancel();
     await broker.ready;
-    if (signal?.aborted) throw Error("Application store initialization cancelled");
+    if (signal?.aborted) throw Error(`Application store ${operation} cancelled`);
     const receipt = await broker.stop();
-    if (!receipt.normalShutdown || signal?.aborted) throw Error("Application store initialization did not close normally");
+    if (!receipt.normalShutdown || signal?.aborted) throw Error(`Application store ${operation} did not close normally`);
     return receipt;
   } catch (error) {
     if (!broker) throw error;
     cancel();
     const cleanup = await Promise.allSettled([cancellation!, broker.closed]);
     // Keep both exact original observations, including a failed/uncertain receipt.
-    throw Object.assign(Error("Application store initialization failed; store retained", { cause: error }), { cleanup });
+    throw Object.assign(Error(`Application store ${operation} failed; store retained`, { cause: error }), { cleanup });
   } finally { signal?.removeEventListener("abort", cancel); }
 }
 

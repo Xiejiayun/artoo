@@ -16,7 +16,7 @@ const controlled = vi.hoisted(() => ({
   statPatch: (_path: string, _surface: "path" | "handle"): Partial<{ ctimeNs: bigint }> => ({}),
   afterClose: (_path: string, _node: Node, _mode: string) => {}, afterCode: (_directory: string) => {},
   codePrepare: vi.fn(), codeAssert: vi.fn(), codeAudit: vi.fn(), storagePrepare: vi.fn(), storageAssert: vi.fn(), storageAudit: vi.fn(),
-  readerRevoke: vi.fn(), forbidden: vi.fn(),
+  readerRevoke: vi.fn(), forbidden: vi.fn(), sessions: new Set<object>(), sessionAssert: vi.fn(),
 }));
 vi.mock("node:crypto", async importOriginal => ({ ...await importOriginal<typeof import("node:crypto")>(),
   randomUUID: () => controlled.fixedUuid || `10000000-0000-4000-8000-${String(++controlled.uuid).padStart(12, "0")}` }));
@@ -86,8 +86,11 @@ vi.mock("./windows-process-installation.js", () => ({ describeWindowsProcessInst
 } }));
 vi.mock("./application-artifact-admission.js", () => ({ assertApplicationClientReader: (value: object) => {
   if (!controlled.readers.has(value)) throw Error("original reader required"); }, revokeApplicationClientReader: controlled.readerRevoke }));
+vi.mock("./application-session-ownership.js", () => ({ assertApplicationSession: controlled.sessionAssert }));
 import { createApplicationInstallationOwner, describeApplicationInstallation, assertApplicationInstallation,
-  auditApplicationInstallation, invalidateApplicationInstallation, bindApplicationInstallationClientReader } from "./application-installation.js";
+  auditApplicationInstallation, invalidateApplicationInstallation, bindApplicationInstallationClientReader,
+  createApplicationInstallationReopenReference, reopenApplicationInstallation, retireApplicationInstallation, bindApplicationInstallationSession } from "./application-installation.js";
+import type { PreparedApplicationSession } from "./application-session-ownership.js";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import type { ApplicationClientReader } from "./application-artifact-admission.js";
 const sha = (bytes: Uint8Array) => "sha256:" + createHash("sha256").update(bytes).digest("hex");
@@ -131,6 +134,9 @@ beforeEach(() => {
   });
   controlled.storageAudit.mockReset().mockImplementation(controlled.storageAssert);
   controlled.readerRevoke.mockReset().mockImplementation((reader: object) => { controlled.readers.delete(reader); });
+  controlled.sessions.clear(); controlled.sessionAssert.mockReset().mockImplementation((value: object) => {
+    if (!controlled.sessions.has(value)) throw Error("original matching session required");
+  });
 });
 describe("single-generation fixed application installation", () => {
   it("does not open an original read handle when its bounded buffer allocation fails", () => {
@@ -395,5 +401,104 @@ describe("single-generation fixed application installation", () => {
     controlled.afterClose = (file, _node, mode) => { if (mode === "wx" && file.endsWith("entry.js")) controller.abort(); };
     expect(() => target.install(plan(target))).toThrow("cancelled"); expect(target.describeAttempt().phase).toBe("failed");
     expect(controlled.codePrepare).not.toHaveBeenCalled(); expect(() => createApplicationInstallationOwner({ ...options(), backend: {} as PreparedWindowsProcessBackend })).toThrow("original backend");
+  });
+});
+
+// Descriptor/re-admission checks use the same controlled physical filesystem.
+// The database bytes below are deliberately not SQLite; native preflight is a
+// separate boundary tested in the local-service/coordinator suites.
+function restartFixture() {
+  const target = owner(), selected = plan(target), database = target.storageDirectory + "\\product.sqlite";
+  const open = Buffer.from(JSON.stringify({ mode: "open", databasePath: database }));
+  const openPin = { path: target.directory + "\\open.json", bytes: open.length, sha256: sha(open) };
+  const profile = Buffer.from(JSON.stringify({ version: 1, installation: { version: 1, generation_id: target.generationId },
+    broker: { open_configuration: openPin } }));
+  const token = target.install({ ...selected, files: [selected.files[1]!,
+    { path: "open.json", bytes: open.length, sha256: sha(open), content: open },
+    { path: "service.json", bytes: profile.length, sha256: sha(profile), content: profile }],
+    profile: { path: target.directory + "\\service.json", bytes: profile.length, sha256: sha(profile) } });
+  add(database, "controlled mutable database");
+  add("C:\\host"); add("C:\\host\\entry.js", "protected host");
+  const hostCode = controlled.codePrepare({ directory: "C:\\host", writableWorkspaceRoots: ["C:\\work"] });
+  const session = Object.freeze({}) as PreparedApplicationSession; controlled.sessions.add(session);
+  bindApplicationInstallationSession(token, session);
+  return { target, token, database, hostCode, session,
+    options(reference: ReturnType<typeof createApplicationInstallationReopenReference>) {
+      return { reference, nodeId: "node1", allowedRoots: ["C:\\work"], node: pin("C:\\node\\node.exe"),
+        backend: controlled.backend as PreparedWindowsProcessBackend, hostCode, hostDirectory: "C:\\host", session };
+    } };
+}
+describe("persistent expectations and fresh installed application admission", () => {
+  it("cannot publish a restart descriptor without original exclusive session ownership", () => {
+    const target = owner(), token = target.install(plan(target));
+    expect(() => createApplicationInstallationReopenReference(token)).toThrow("exclusive initialization session required");
+    expect([...controlled.nodes.keys()].some(path => path.endsWith("REOPEN.v1.json") || path.endsWith("FAILED.json"))).toBe(false);
+  });
+  it("reopens with fresh authority and no writer preparation, retaining original data and URL profile bytes", () => {
+    const f = restartFixture(), reference = createApplicationInstallationReopenReference(f.token), original = describeApplicationInstallation(f.token);
+    retireApplicationInstallation(f.token); invalidateApplicationInstallation(f.token);
+    expect(() => describeApplicationInstallation(f.token)).toThrow("original admitted");
+    expect(controlled.nodes.has(win32.dirname(reference.path) + "\\FAILED.json")).toBe(false);
+    controlled.backend = Object.freeze({}); controlled.events.length = 0;
+    const token = reopenApplicationInstallation(f.options(reference)), binding = describeApplicationInstallation(token);
+    expect(token).not.toBe(f.token); expect(binding.code).not.toBe(original.code); expect(binding.backend).not.toBe(original.backend);
+    expect(binding.profile).toEqual(original.profile); expect(binding.storageDirectory).toBe(original.storageDirectory);
+    expect(controlled.events.some(value => value.startsWith("open:wx:"))).toBe(false);
+    expect(() => describeApplicationInstallation(JSON.parse(JSON.stringify(token)))).toThrow("original admitted");
+    expect(controlled.forbidden).not.toHaveBeenCalled();
+  });
+  it.each(["CLAIM.json", "PLAN.json", "ADMITTED.json"])("keeps %s bytes and original metadata in the persistent binding", name => {
+    const f = restartFixture(), reference = createApplicationInstallationReopenReference(f.token); retireApplicationInstallation(f.token);
+    controlled.nodes.get(win32.dirname(reference.path) + "\\" + name)!.ctimeNs++;
+    expect(() => reopenApplicationInstallation(f.options(reference))).toThrow("control record changed");
+  });
+  it("rejects control-record drift before descriptor publication rather than pinning current disk", () => {
+    const f = restartFixture(); controlled.nodes.get(win32.dirname(f.target.directory) + "\\control\\PLAN.json")!.ctimeNs++;
+    expect(() => createApplicationInstallationReopenReference(f.token)).toThrow("control record changed");
+    expect([...controlled.nodes.keys()].some(path => path.endsWith("REOPEN.v1.json"))).toBe(false);
+  });
+  it("retains the original descriptor writer baseline through its first read", () => {
+    const f = restartFixture(); controlled.afterOpen = (path, node, mode) => { if (path.endsWith("REOPEN.v1.json") && mode === "r") node.ctimeNs++; };
+    expect(() => createApplicationInstallationReopenReference(f.token)).toThrow("read identity or metadata changed");
+    expect(f.target.describeAttempt().phase).toBe("failed");
+  });
+  it.each(["ctime", "same-bytes-replacement", "extra-file", "node-ctime"])("rejects persisted immutable drift: %s", change => {
+    const f = restartFixture(), reference = createApplicationInstallationReopenReference(f.token); retireApplicationInstallation(f.token);
+    const member = controlled.nodes.get(f.target.directory + "\\runtime\\entry.js")!;
+    if (change === "ctime") member.ctimeNs++;
+    if (change === "same-bytes-replacement") member.ino++;
+    if (change === "extra-file") add(f.target.directory + "\\unexpected.js", "extra");
+    if (change === "node-ctime") controlled.nodes.get("C:\\node\\node.exe")!.ctimeNs++;
+    expect(() => reopenApplicationInstallation(f.options(reference))).toThrow("persisted immutable inventory changed");
+  });
+  it("allows database contents to change but rejects replacement of the original physical file", () => {
+    const f = restartFixture(), reference = createApplicationInstallationReopenReference(f.token); retireApplicationInstallation(f.token);
+    const db = controlled.nodes.get(f.database)!; db.bytes = Buffer.from("later committed rows"); db.ctimeNs++; db.mtimeNs++;
+    const reopened = reopenApplicationInstallation(f.options(reference)); auditApplicationInstallation(reopened);
+    db.ino++; expect(() => auditApplicationInstallation(reopened)).toThrow("database replaced");
+  });
+  it.each(["descriptor-hash", "missing-database", "hardlink-database", "failed-marker", "forged-host", "forged-session", "node-selection", "write-roots"])("fails closed on %s", change => {
+    const f = restartFixture(), reference = createApplicationInstallationReopenReference(f.token); retireApplicationInstallation(f.token);
+    const input = f.options(reference);
+    if (change === "descriptor-hash") input.reference = { ...reference, sha256: "sha256:" + "0".repeat(64) };
+    if (change === "missing-database") controlled.nodes.delete(f.database);
+    if (change === "hardlink-database") controlled.nodes.get(f.database)!.nlink = 2n;
+    if (change === "failed-marker") add(win32.dirname(reference.path) + "\\FAILED.json", "failure retained");
+    if (change === "forged-host") input.hostCode = {};
+    if (change === "forged-session") input.session = {} as PreparedApplicationSession;
+    if (change === "node-selection") input.node = { ...input.node, sha256: "sha256:" + "0".repeat(64) };
+    if (change === "write-roots") { add("C:\\other-work"); input.allowedRoots = ["C:\\other-work"]; }
+    expect(() => reopenApplicationInstallation(input)).toThrow(); expect(controlled.forbidden).not.toHaveBeenCalled();
+  });
+  it("retains the exact fresh host and exclusive session on later runtime admission", () => {
+    const f = restartFixture(), reference = createApplicationInstallationReopenReference(f.token); retireApplicationInstallation(f.token);
+    const reopened = reopenApplicationInstallation(f.options(reference)); controlled.sessions.delete(f.session);
+    expect(() => assertApplicationInstallation(reopened)).toThrow("session required");
+    expect(() => auditApplicationInstallation(reopened)).toThrow("original admitted");
+  });
+  it("does not return another fresh descriptor baseline after later reference metadata changes", () => {
+    const f = restartFixture(), reference = createApplicationInstallationReopenReference(f.token);
+    controlled.nodes.get(reference.path)!.ctimeNs++;
+    expect(() => createApplicationInstallationReopenReference(f.token)).toThrow("reopen reference changed");
   });
 });

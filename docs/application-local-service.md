@@ -99,12 +99,70 @@ are retained and cannot be resumed or automatically retried.
 Its optional profile tag is `installation: { version: 1, generation_id }`.
 File-only CLI preparation rejects tagged profiles; serialized installation
 metadata does not recreate the token. Existing untagged manual profiles retain
-their behavior. This is a same-process host entry, not cross-process installation
-recovery. Invalidating it revokes client readers and blocks new launches; running
+their behavior. This remains a same-process profile handoff. The separate
+installed-session API below adds clean-only process restart; the file-based CLI
+still cannot open a tagged profile. Invalidating it revokes client readers and blocks new launches; running
 owners still require their own actual closure.
 
 This source integration has controlled tests. Real installation/API/SQLite and
 browser acceptance remain separate, and strict ctime rejection is unchanged.
+
+## Installed-session API and normal process restart
+
+`application-installed-session.ts` provides two host-only production APIs:
+
+- `initializeRestartableApplication(installation, signal?)` takes the original
+  admitted installation, acquires exclusive ownership, calls the existing
+  create-only broker initializer and waits for its actual normal closure. It then
+  exclusively publishes `control/REOPEN.v1.json`, retires the current installation
+  authority, releases ownership and returns the descriptor's exact file pin.
+- `reopenInstalledApplicationService(options, signal?)` acquires new exclusive
+  ownership, validates the unchanged installed generation and creates new local
+  authority. Its open-only broker preflight checks actual SQLite schema and scope
+  and closes normally before the listener starts. The returned service retains
+  the fixed origin and existing `close()` / `closed` lifecycle.
+
+Keep the returned `{path, bytes, sha256}` in protected local selection. Options
+also require the independently selected Node pin, node ID, complete write roots,
+fresh protected backend and the original **current-process** `hostCode` plus
+`hostDirectory`. JSON supplies expectations only. The caller must qualify its
+complete canonical host/import graph before its first target import; this API
+does not supply a trusted bootstrap or extend either existing CLI selector.
+
+The strict `artoo.application-installation-reopen.v1` record binds the original
+CLAIM/PLAN/ADMITTED record bytes, writer metadata and plan digest, complete code
+and Node inventories, exact profile and external prerequisites, layout identities
+and the original database identity. Existing files are read with all metadata
+checks, including ctime. Reopening never invokes the new-writer preparation
+transition or reconstructs a writer, host, backend or process receipt from JSON.
+The mutable database is checked by physical identity and actual open schema/scope,
+not by a frozen content hash or timestamp. Missing stores never fall back to create;
+no schema migration or service-generation rotation occurs.
+
+Ownership is an atomically created, protected `control/.application-session`
+directory. A second owner, an interrupted initializer and an uncertain close all
+fail closed. It has no PID-based takeover, retry, timeout expiry or automatic stale
+cleanup. Normal release follows actual listener/transport/invocation settlement,
+final integrity checks and retirement of the current in-memory installation. Old
+profiles remain unusable after retirement without marking the unchanged generation
+failed. A failed initialization, preflight, startup, audit, shutdown or release
+retains uncertain ownership and data; callers must preserve them for diagnosis.
+
+An old generation without the new descriptor is not silently upgraded. Start this
+workflow with the original installation before its one-time store initialization;
+lost original metadata cannot be recreated from current disk. This is normal
+process restart of the same installed version, not crash recovery, migration,
+Windows Service installation or product publication.
+
+Controlled regressions cover persisted-record and inventory drift, same-byte file
+replacement, missing/replaced databases, forged authorities, original session
+continuity, late cancellation, retirement and failed closure. They do not prove
+real Windows process restart. A separate acceptance run must close the original
+CLI/host, observe its actual exit/close/dual EOF, start a different process with
+fresh admissions, and use a real browser at the same URL to read prior data and
+replay an idempotent write. Keep frozen r2's same-process result separate. The
+existing 256-admission normal drain can close a CLI without using Windows
+`child.kill("SIGINT")` as claimed graceful-shutdown evidence.
 
 ## Browser and HTTP policy
 
@@ -186,3 +244,23 @@ manufacture them.
 No application release profile, deployment health contract, recovery/migration
 procedure, signed distribution or live-provider acceptance is introduced here.
 The existing release protocol remains for configured static sites.
+
+## Installed restart source validation (2026-11-09)
+
+The isolated `windows-installed-restart` worktree installed its own locked
+dependencies with `npm ci --ignore-scripts --no-audit --no-fund`. The following
+focused command passed **286 tests across 7 files**, with no skips:
+
+```powershell
+npm test -- apps/artood/src/application-installation.test.ts apps/artood/src/application-installed-session.test.ts apps/artood/src/application-session-ownership.test.ts apps/artood/src/application-local-service.test.ts apps/artood/src/application-service-profile.test.ts apps/artood/src/application-local-service-http.test.ts apps/artood/src/application-service-cli.test.ts --maxWorkers=2
+```
+
+These are controlled filesystem/ACL/native/CLI tests, plus actual loopback HTTP
+tests with controlled native owners. They do not execute the product, native
+helpers or a browser. A source-only TypeScript check of the eight changed
+source/test roots, using this worktree's compiler options with `noEmit` and
+monorepo source aliases, reported zero diagnostics. It produced no build outputs.
+That focused check is separate from the required full workspace typecheck/build,
+full test suite and Web E2E checks, which remain integration work. Real descriptor
+publication, immutable Windows metadata behavior and separate-process restart
+acceptance are still unverified.

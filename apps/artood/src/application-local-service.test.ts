@@ -13,7 +13,7 @@ vi.mock("./application-http-ingress.js", () => ({ APPLICATION_HTTP_LIMITS: { hea
 vi.mock("./application-broker-process.js", () => ({ startApplicationBrokerProcess: state.startBroker }));
 vi.mock("./application-service-profile.js", () => ({ describeApplicationServiceProfile: state.describe,
   assertApplicationServiceOpenStore: state.assertStore, prepareProfileApplicationBroker: state.prepareBroker, prepareProfileApplicationRuntime: state.prepareRuntime }));
-import { initializeApplicationStore, startLocalApplicationService } from "./application-local-service.js";
+import { initializeApplicationStore, checkExistingApplicationStore, startLocalApplicationService } from "./application-local-service.js";
 import type { PreparedApplicationServiceProfile } from "./application-service-profile.js";
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (reason: unknown) => void;
@@ -158,23 +158,48 @@ describe("bounded installed application listener ownership", () => {
     await live.close();
   });
 });
-describe("separate original broker store initialization", () => {
+describe.each([
+  { mode: "create" as const, label: "initialization", operation: initializeApplicationStore },
+  { mode: "open" as const, label: "preflight", operation: checkExistingApplicationStore },
+])("separate original broker store $label", ({ mode, label, operation }) => {
   function broker() {
     const ready = deferred<void>(), closed = deferred<ApplicationBrokerProcessReceipt>();
     const owner = { ready: ready.promise, closed: closed.promise, command: vi.fn(), stop: vi.fn(() => closed.promise), cancel: vi.fn(() => closed.promise) } satisfies ApplicationBrokerProcess;
     state.startBroker.mockReturnValue(owner); return { owner, ready, closed };
   }
-  it("uses create only and waits for the actual normal stop receipt", async () => {
-    const f = broker(), work = initializeApplicationStore(profile); f.ready.resolve(); await Promise.resolve();
-    expect(state.prepareBroker).toHaveBeenCalledWith(profile, "create"); expect(f.owner.stop).toHaveBeenCalledOnce();
-    f.closed.resolve(receipt); await expect(work).resolves.toBe(receipt); expect(state.createServer).not.toHaveBeenCalled();
+  it("uses only its fixed mode and waits for the actual normal stop receipt", async () => {
+    const f = broker(), work = operation(profile); f.ready.resolve(); await Promise.resolve();
+    expect(state.prepareBroker).toHaveBeenCalledExactlyOnceWith(profile, mode); expect(f.owner.stop).toHaveBeenCalledOnce();
+    let done = false; void work.then(() => { done = true; }); await Promise.resolve(); expect(done).toBe(false);
+    f.closed.resolve(receipt); await expect(work).resolves.toBe(receipt);
+    expect(state.createServer).not.toHaveBeenCalled(); expect(state.prepareRuntime).not.toHaveBeenCalled(); expect(f.owner.command).not.toHaveBeenCalled();
   });
   it("creates no work if already cancelled", async () => {
     const controller = new AbortController(); controller.abort();
-    await expect(initializeApplicationStore(profile, controller.signal)).rejects.toThrow("cancelled"); expect(state.prepareBroker).not.toHaveBeenCalled();
+    await expect(operation(profile, controller.signal)).rejects.toThrow(`Application store ${label} cancelled`);
+    expect(state.prepareBroker).not.toHaveBeenCalled(); expect(state.startBroker).not.toHaveBeenCalled();
+  });
+  it("never changes modes after admission rejects a missing or invalid store", async () => {
+    const failure = Error("controlled store admission failure"); state.prepareBroker.mockImplementation(() => { throw failure; });
+    await expect(operation(profile)).rejects.toBe(failure);
+    expect(state.prepareBroker).toHaveBeenCalledExactlyOnceWith(profile, mode); expect(state.startBroker).not.toHaveBeenCalled();
+  });
+  it("does not start a process after cancellation during preparation", async () => {
+    const controller = new AbortController(); state.prepareBroker.mockImplementation(() => { controller.abort(); return Object.freeze({}); });
+    await expect(operation(profile, controller.signal)).rejects.toThrow(`Application store ${label} cancelled`);
+    expect(state.prepareBroker).toHaveBeenCalledExactlyOnceWith(profile, mode); expect(state.startBroker).not.toHaveBeenCalled();
+  });
+  it("rejects a stop receipt without normal closure and retains both original outcomes", async () => {
+    const f = broker(), failed = { normalShutdown: false, failure: "controlled abnormal exit" } as ApplicationBrokerProcessReceipt;
+    const work = operation(profile); f.ready.resolve(); f.closed.resolve(failed);
+    const error = await work.catch(error => error);
+    expect(error.message).toBe(`Application store ${label} failed; store retained`);
+    expect(error.cause.message).toBe(`Application store ${label} did not close normally`);
+    expect(error.cleanup).toEqual([{ status: "fulfilled", value: failed }, { status: "fulfilled", value: failed }]);
+    expect(f.owner.stop).toHaveBeenCalledOnce(); expect(f.owner.cancel).toHaveBeenCalledOnce();
   });
   it("awaits the original closed promise after startup cancellation and preserves exact failed receipts", async () => {
-    const f = broker(), controller = new AbortController(), work = initializeApplicationStore(profile, controller.signal);
+    const f = broker(), controller = new AbortController(), work = operation(profile, controller.signal);
     controller.abort(); f.ready.reject(Error("cancelled startup"));
     let done = false; void work.catch(() => { done = true; }); await new Promise<void>(resolve => setImmediate(resolve));
     expect(done).toBe(false); expect(f.owner.cancel).toHaveBeenCalled();
@@ -185,7 +210,7 @@ describe("separate original broker store initialization", () => {
   it("retains a throwing original cancellation and still awaits the independent closed promise", async () => {
     const f = broker(), failure = Error("controlled cancellation throw");
     f.owner.cancel.mockImplementation(() => { throw failure; });
-    const work = initializeApplicationStore(profile); f.ready.reject(Error("controlled startup failure"));
+    const work = operation(profile); f.ready.reject(Error("controlled startup failure"));
     let done = false; void work.catch(() => { done = true; }); await new Promise<void>(resolve => setImmediate(resolve));
     expect(done).toBe(false); const failed = { normalShutdown: false } as ApplicationBrokerProcessReceipt;
     f.closed.resolve(failed); const error = await work.catch(error => error);

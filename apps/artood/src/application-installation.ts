@@ -9,6 +9,7 @@ import { assertWindowsProcessBackend, type PreparedWindowsProcessBackend } from 
 import { describeWindowsProcessInstallation } from "./windows-process-installation.js";
 import { assertApplicationClientReader, revokeApplicationClientReader, type ApplicationClientReader } from "./application-artifact-admission.js";
 import { ApplicationRuntimeFilePinSchema, APPLICATION_RUNTIME_PROCESS_LIMITS as limits, type ApplicationRuntimeFilePin } from "./application-runtime-process-protocol.js";
+import { assertApplicationSession, type PreparedApplicationSession } from "./application-session-ownership.js";
 
 declare const installedBrand: unique symbol;
 export interface PreparedApplicationInstallation { readonly [installedBrand]: true }
@@ -38,14 +39,22 @@ export interface ApplicationInstallationOwner {
   install(plan: ApplicationInstallationPlan): PreparedApplicationInstallation;
   describeAttempt(): Readonly<{ phase: Phase; failureRecordError: string | null }>;
 }
-type Phase = "claimed" | "writing" | "writers-closed" | "content-verified" | "admitted" | "failed";
+type Phase = "claimed" | "writing" | "writers-closed" | "content-verified" | "admitted" | "retired" | "failed";
 type Member = { path: string; bytes: Buffer; pin: { path: string; bytes: number; sha256: string } };
 interface Saved {
+  origin: "created" | "reopened";
   phase: Phase; failureRecordError: string | null; control: string; generationId: string;
   binding?: ApplicationInstallationBinding; directories: readonly string[]; files: readonly Member[];
   readers: Set<ApplicationClientReader>; written: Map<string, ReturnType<typeof fact>>;
   prepared?: ReadonlyMap<string, { baseline: ReturnType<typeof fact>; preparation: ReadDiagnostic }>;
   layout: Map<string, ReturnType<typeof fact>>;
+  records: Map<string, { pin: ApplicationRuntimeFilePin; facts: ReturnType<typeof fact> }>;
+  reopened?: ReadonlyMap<string, ReturnType<typeof fact>>;
+  reopenReference?: ApplicationRuntimeFilePin;
+  persisted?: ReopenDescriptor;
+  referenceFacts?: ReturnType<typeof fact>;
+  host?: { code: PreparedWindowsCodeInstallation; directory: string };
+  session?: PreparedApplicationSession;
 }
 const installations = new WeakMap<object, Saved>();
 const claimed = new Set<string>();
@@ -139,7 +148,7 @@ function read(pin: ApplicationRuntimeFilePin): Buffer {
 /** Only this owner's original new members reach preparation. Writer facts are
  * retained separately; the first read handle begins the immutable interval. */
 function prepareMembers(saved: Saved, directory: string): void {
-  if (saved.phase !== "writers-closed" || saved.prepared) fail("original preparation phase required");
+  if (saved.origin !== "created" || saved.phase !== "writers-closed" || saved.prepared) fail("original preparation phase required");
   const prepared = new Map<string, { baseline: ReturnType<typeof fact>; preparation: ReadDiagnostic }>();
   for (const member of saved.files) {
     const path = win32.join(directory, ...member.path.split("/")), writer = saved.written.get(member.path);
@@ -217,10 +226,12 @@ function record(saved: Saved, name: string, data: unknown): void {
   // An exclusive mkdir failure must never write a failure marker into somebody
   // else's existing generation, including a previous process's retained claim.
   if (!saved.layout.has(saved.control)) fail("original control directory unavailable");
-  assertLayout(saved); write(win32.join(saved.control, name), Buffer.from(JSON.stringify(data) + "\n"));
+  assertLayout(saved);
+  const path = win32.join(saved.control, name), bytes = Buffer.from(JSON.stringify(data) + "\n"), facts = write(path, bytes);
+  saved.records.set(name, { pin: Object.freeze({ path, bytes: bytes.length, sha256: sha(bytes) }), facts });
 }
 function invalidate(saved: Saved, error?: unknown): void {
-  if (saved.phase === "failed") return;
+  if (saved.phase === "failed" || saved.phase === "retired") return;
   const phase = saved.phase, diagnostic = typeof error === "object" && error !== null ? readFailures.get(error) : undefined;
   saved.phase = "failed";
   for (const reader of saved.readers) { try { revokeApplicationClientReader(reader); } catch { saved.failureRecordError = "client reader revocation failed"; } }
@@ -250,7 +261,8 @@ function verify(saved: Saved, directory: string): void {
   if (JSON.stringify(actualDirectories.sort()) !== JSON.stringify(saved.directories)
     || JSON.stringify(actualFiles.sort()) !== JSON.stringify(wantedFiles)) fail("complete installation set differs from plan");
   for (const file of saved.files) {
-    const path = win32.join(directory, ...file.path.split("/")), baseline = saved.prepared?.get(file.path)?.baseline;
+    const path = win32.join(directory, ...file.path.split("/"));
+    const baseline = saved.origin === "created" ? saved.prepared?.get(file.path)?.baseline : saved.reopened?.get(file.path);
     const check = () => {
       const current = fact(path);
       if (!baseline || !equal(baseline, current)) {
@@ -268,9 +280,22 @@ function guard(saved: Saved, audit: boolean): void {
   try {
     if (saved.phase !== "admitted" || !saved.binding) fail("installation has failed"); const binding = saved.binding;
     assertLayout(saved);
+    if (saved.session) assertApplicationSession(saved.session, saved.control, binding.allowedRoots);
     assertWindowsCodeInstallation(binding.code, binding.directory); assertWindowsCodeInstallation(binding.nodeCode, binding.nodeDirectory);
     assertWindowsReleaseStorage(binding.storage, binding.storageDirectory); assertWindowsProcessBackend(binding.backend);
+    if (saved.host) assertWindowsCodeInstallation(saved.host.code, saved.host.directory);
+    if (saved.reopenReference && saved.persisted) {
+      assertNoFailure(saved.control);
+      if (!saved.referenceFacts || !equal(saved.referenceFacts, fact(saved.reopenReference.path))) fail("original reopen reference changed");
+      read(saved.reopenReference);
+      if (!equal(saved.referenceFacts, fact(saved.reopenReference.path))) fail("original reopen reference changed");
+      compareInventory(binding.directory, saved.persisted.code_inventory);
+      compareInventory(binding.nodeDirectory, saved.persisted.node_inventory);
+      verifyControlRecords(saved.control, saved.persisted);
+      assertStoreIdentity(saved.persisted.store);
+    }
     if (audit) {
+      if (saved.host) auditWindowsCodeInstallation(saved.host.code, saved.host.directory);
       auditWindowsCodeInstallation(binding.code, binding.directory); auditWindowsCodeInstallation(binding.nodeCode, binding.nodeDirectory);
       auditWindowsReleaseStorage(binding.storage, binding.storageDirectory); verify(saved, binding.directory); read(binding.node);
       assertWindowsCodeInstallation(binding.code, binding.directory); assertWindowsCodeInstallation(binding.nodeCode, binding.nodeDirectory);
@@ -283,6 +308,19 @@ export function describeApplicationInstallation(token: PreparedApplicationInstal
 export function assertApplicationInstallation(token: PreparedApplicationInstallation): void { guard(state(token), false); }
 export function auditApplicationInstallation(token: PreparedApplicationInstallation): void { guard(state(token), true); }
 export function invalidateApplicationInstallation(token: PreparedApplicationInstallation): void { const saved = installations.get(token); if (saved) invalidate(saved); }
+/** End only the current in-memory authority after its session has settled. Unlike
+ * an integrity failure this does not condemn the unchanged installed generation. */
+export function retireApplicationInstallation(token: PreparedApplicationInstallation): void {
+  const saved = state(token); guard(saved, true);
+  try { for (const reader of saved.readers) revokeApplicationClientReader(reader); }
+  catch (error) { invalidate(saved, error); throw error; }
+  saved.readers.clear(); saved.phase = "retired";
+}
+export function bindApplicationInstallationSession(token: PreparedApplicationInstallation, session: PreparedApplicationSession): void {
+  const saved = state(token); guard(saved, true);
+  if (saved.session && saved.session !== session) fail("installation already belongs to an original session");
+  assertApplicationSession(session, saved.control, saved.binding!.allowedRoots); saved.session = session;
+}
 export function bindApplicationInstallationClientReader(token: PreparedApplicationInstallation, reader: ApplicationClientReader): void {
   const saved = state(token); guard(saved, false);
   try { assertApplicationClientReader(reader); saved.readers.add(reader); }
@@ -307,7 +345,7 @@ export function createApplicationInstallationOwner(input: ApplicationInstallatio
   const nodeId = input.nodeId, signal = input.signal;
   const generationId = randomUUID(), root = win32.join(parent, generationId), directory = win32.join(root, "code"), storageDirectory = win32.join(root, "store");
   if (claimed.has(root.toLowerCase())) fail("generation already claimed"); claimed.add(root.toLowerCase());
-  const saved: Saved = { phase: "claimed", failureRecordError: null, generationId, control: win32.join(root, "control"), directories: [], files: [], readers: new Set(), written: new Map(), layout: new Map() };
+  const saved: Saved = { origin: "created", phase: "claimed", failureRecordError: null, generationId, control: win32.join(root, "control"), directories: [], files: [], readers: new Set(), written: new Map(), layout: new Map(), records: new Map() };
   const cancelled = () => { if (signal?.aborted) fail("installation cancelled"); assertWindowsReleaseStorage(parentStorage, parent); assertLayout(saved); };
   const createDirectory = (path: string) => { cancelled(); mkdirSync(path); saved.layout.set(path, fact(path, true)); };
   try {
@@ -369,4 +407,207 @@ export function createApplicationInstallationOwner(input: ApplicationInstallatio
       } catch (error) { invalidate(saved, error); throw error; }
     },
   });
+}
+
+const reopenName = "REOPEN.v1.json", reopenLimit = 4_194_304;
+const integerText = z.string().regex(/^(?:0|[1-9][0-9]{0,39})$/u);
+const physicalIdentitySchema = z.object({ path: z.string().min(1).max(4096), dev: integerText, ino: integerText }).strict();
+const immutableIdentitySchema = physicalIdentitySchema.extend({ directory: z.boolean(), nlink: integerText,
+  size: integerText, mtimeNs: integerText, ctimeNs: integerText }).strict();
+const reopenSchema = z.object({ version: z.literal(1), format: z.literal("artoo.application-installation-reopen.v1"),
+  generation_id: z.string().uuid(), node_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u),
+  allowed_roots: z.array(z.string().min(1).max(4096)).min(1).max(128),
+  directory: z.string().min(1).max(4096), storage_directory: z.string().min(1).max(4096),
+  profile: ApplicationRuntimeFilePinSchema, node: ApplicationRuntimeFilePinSchema,
+  backend: z.object({ directory: z.string().min(1).max(4096), manifestSha256: z.string().regex(/^sha256:[a-f0-9]{64}$/u) }).strict(),
+  directories: z.array(relative).max(limits.files), files: z.array(z.object(member).strict()).min(1).max(limits.files),
+  layout: z.array(physicalIdentitySchema).min(4).max(limits.files + 4),
+  code_inventory: z.array(immutableIdentitySchema).min(1).max(limits.files * 2 + 1),
+  node_inventory: z.array(immutableIdentitySchema).min(1).max(16_384),
+  control_records: z.array(z.object({ pin: ApplicationRuntimeFilePinSchema, identity: immutableIdentitySchema }).strict()).length(3),
+  store: physicalIdentitySchema,
+}).strict();
+type ReopenDescriptor = z.infer<typeof reopenSchema>;
+type ImmutableIdentity = z.infer<typeof immutableIdentitySchema>;
+function identity(path: string, value: ReturnType<typeof fact>) {
+  return { path, dev: String(value.dev), ino: String(value.ino) };
+}
+function immutableIdentity(path: string, directory: boolean): ImmutableIdentity {
+  return immutableFacts(path, directory, fact(path, directory));
+}
+function immutableFacts(path: string, directory: boolean, value: ReturnType<typeof fact>): ImmutableIdentity {
+  return { ...identity(path, value), directory, nlink: String(value.nlink), size: String(value.size),
+    mtimeNs: String(value.mtimeNs), ctimeNs: String(value.ctimeNs) };
+}
+function immutableInventory(directory: string): ImmutableIdentity[] {
+  const entries: ImmutableIdentity[] = [];
+  function visit(path: string, depth: number): void {
+    if (depth > 64 || entries.length >= 16_384) fail("reopen inventory exceeds bound");
+    const value = lstatSync(path); entries.push(immutableIdentity(path, value.isDirectory()));
+    if (value.isDirectory()) for (const name of readdirSync(path).sort()) visit(win32.join(path, name), depth + 1);
+  }
+  visit(directory, 0); return entries;
+}
+function compareInventory(directory: string, expected: readonly ImmutableIdentity[]): void {
+  if (JSON.stringify(immutableInventory(directory)) !== JSON.stringify(expected)) fail("persisted immutable inventory changed");
+}
+function assertNoFailure(control: string): void {
+  try { lstatSync(win32.join(control, "FAILED.json")); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  fail("failed installation cannot be reopened");
+}
+function verifyControlRecords(control: string, descriptor: ReopenDescriptor): void {
+  const manifest = { version: 1, generation_id: descriptor.generation_id, node_id: descriptor.node_id, allowed_roots: descriptor.allowed_roots,
+    directories: descriptor.directories, files: descriptor.files, profile: descriptor.profile, external_node: descriptor.node, external_backend: descriptor.backend };
+  const planDigest = sha(JSON.stringify(manifest));
+  const expected = [
+    ["CLAIM.json", { version: 1, generation_id: descriptor.generation_id, qualified_for_product: false }],
+    ["PLAN.json", { ...manifest, plan_digest: planDigest }],
+    ["ADMITTED.json", { version: 1, generation_id: descriptor.generation_id, plan_digest: planDigest, qualified_for_product: false }],
+  ] as const;
+  for (let index = 0; index < expected.length; index++) {
+    const [name, data] = expected[index]!, selected = descriptor.control_records[index]!, path = win32.join(control, name);
+    const bytes = Buffer.from(JSON.stringify(data) + "\n");
+    if (selected.pin.path !== path || selected.pin.bytes !== bytes.length || selected.pin.sha256 !== sha(bytes)
+      || selected.identity.path !== path || selected.identity.directory) fail("original control record binding differs");
+    const check = () => { if (JSON.stringify(immutableIdentity(path, false)) !== JSON.stringify(selected.identity)) fail("original control record changed"); };
+    check(); read(selected.pin); check();
+  }
+}
+function assertStoreIdentity(expected: z.infer<typeof physicalIdentitySchema>): void {
+  const current = fact(expected.path);
+  if (String(current.dev) !== expected.dev || String(current.ino) !== expected.ino) fail("original database replaced");
+}
+/** Read the fixed open configuration from this installation's original complete
+ * plan. This selects a path, not SQLite validity or a previous process receipt. */
+function installedStore(saved: Saved): string {
+  const binding = saved.binding!, profile = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(read(binding.profile))) as unknown;
+  const selected = z.object({ broker: z.object({ open_configuration: ApplicationRuntimeFilePinSchema }).passthrough() }).passthrough().parse(profile);
+  const pin = selected.broker.open_configuration;
+  const member = saved.files.find(file => win32.join(binding.directory, ...file.path.split("/")) === pin.path);
+  if (!member || member.pin.bytes !== pin.bytes || member.pin.sha256 !== pin.sha256 || pin.bytes > 65_536) fail("open configuration is outside original plan");
+  const config = z.object({ mode: z.literal("open"), databasePath: z.string().min(1).max(4096) }).passthrough()
+    .parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(read(pin))));
+  assertCanonicalWindowsPath(config.databasePath);
+  if (win32.dirname(config.databasePath) !== binding.storageDirectory) fail("database must be a direct storage child");
+  return config.databasePath;
+}
+
+/** Export data under an existing original authority. The installed-session API
+ * calls this after actual store initialization/closure, while holding ownership.
+ * This file contains expectations, never an old backend, host or closure token. */
+export function createApplicationInstallationReopenReference(token: PreparedApplicationInstallation): ApplicationRuntimeFilePin {
+  const saved = state(token); guard(saved, true);
+  if (!saved.session) fail("original exclusive initialization session required");
+  if (saved.reopenReference) return Object.freeze({ ...saved.reopenReference });
+  try {
+    const binding = saved.binding!, native = describeWindowsProcessInstallation(binding.backend);
+    assertNoFailure(saved.control);
+    const path = installedStore(saved), store = identity(path, fact(path));
+    const descriptor = reopenSchema.parse({ version: 1, format: "artoo.application-installation-reopen.v1",
+      generation_id: binding.generationId, node_id: binding.nodeId, allowed_roots: binding.allowedRoots,
+      directory: binding.directory, storage_directory: binding.storageDirectory, profile: binding.profile, node: binding.node,
+      backend: { directory: native.directory, manifestSha256: native.manifestSha256 },
+      directories: saved.directories, files: saved.files.map(file => file.pin),
+      layout: [...saved.layout].map(([path, value]) => identity(path, value)),
+      code_inventory: immutableInventory(binding.directory), node_inventory: immutableInventory(binding.nodeDirectory), store,
+      control_records: ["CLAIM.json", "PLAN.json", "ADMITTED.json"].map(name => {
+        const original = saved.records.get(name) ?? fail("original control writer required");
+        return { pin: original.pin, identity: immutableFacts(original.pin.path, false, original.facts) };
+      }) });
+    const bytes = Buffer.from(JSON.stringify(descriptor) + "\n");
+    if (bytes.length > reopenLimit) fail("reopen descriptor exceeds bound");
+    // The snapshots above are checked against the still-original code objects;
+    // observing a new snapshot cannot refresh an earlier failed baseline.
+    guard(saved, true); verifyControlRecords(saved.control, descriptor); compareInventory(binding.directory, descriptor.code_inventory);
+    compareInventory(binding.nodeDirectory, descriptor.node_inventory); assertStoreIdentity(store);
+    const reference = Object.freeze({ path: win32.join(saved.control, reopenName), bytes: bytes.length, sha256: sha(bytes) });
+    const referenceFacts = write(reference.path, bytes);
+    const checkReference = () => { if (!equal(referenceFacts, fact(reference.path))) fail("original reopen reference changed"); };
+    checkReference(); read(reference); checkReference(); guard(saved, true); checkReference();
+    compareInventory(binding.directory, descriptor.code_inventory); compareInventory(binding.nodeDirectory, descriptor.node_inventory);
+    assertStoreIdentity(store); verifyControlRecords(saved.control, descriptor); checkReference();
+    saved.persisted = descriptor; saved.reopenReference = reference; saved.referenceFacts = referenceFacts;
+    return reference;
+  } catch (error) { invalidate(saved, error); throw error; }
+}
+
+export interface ApplicationInstallationReopenOptions {
+  /** Independently retained local descriptor pin, never measured from current disk. */
+  readonly reference: ApplicationRuntimeFilePin;
+  readonly nodeId: string; readonly allowedRoots: readonly string[];
+  readonly node: ApplicationRuntimeFilePin; readonly backend: PreparedWindowsProcessBackend;
+  /** Original current-process host admission, established before target imports. */
+  readonly hostCode: PreparedWindowsCodeInstallation; readonly hostDirectory: string;
+  readonly session: PreparedApplicationSession;
+}
+/** Fresh current-process admission of one unchanged installed generation. This
+ * never runs writer preparation or reconstructs an authority/receipt from JSON.
+ * Call through the installed-session API to own the clean-only lifecycle lock. */
+export function reopenApplicationInstallation(input: ApplicationInstallationReopenOptions): PreparedApplicationInstallation {
+  assertNativeWindows();
+  if (!input || Object.keys(input).some(key => !["reference", "nodeId", "allowedRoots", "node", "backend", "hostCode", "hostDirectory", "session"].includes(key))
+    || !Array.isArray(input.allowedRoots) || input.allowedRoots.length < 1 || input.allowedRoots.length > 128) fail("fixed reopen inputs required");
+  const reference = Object.freeze(ApplicationRuntimeFilePinSchema.parse(input.reference));
+  if (reference.bytes > reopenLimit || win32.basename(reference.path) !== reopenName) fail("fixed reopen descriptor required");
+  const control = physicalWindowsDirectory(win32.dirname(reference.path)), root = physicalWindowsDirectory(win32.dirname(control));
+  if (win32.basename(control) !== "control") fail("fixed generation control directory required");
+  const allowedRoots = Object.freeze(input.allowedRoots.map(physicalWindowsDirectory).sort());
+  if (new Set(allowedRoots.map(value => value.toLowerCase())).size !== allowedRoots.length
+    || allowedRoots.some(value => windowsPathsOverlap(root, value))) fail("complete disjoint write roots required");
+  assertApplicationSession(input.session, control, allowedRoots);
+  const hostDirectory = physicalWindowsDirectory(input.hostDirectory), hostCode = input.hostCode, backend = input.backend;
+  assertWindowsCodeInstallation(hostCode, hostDirectory); auditWindowsCodeInstallation(hostCode, hostDirectory);
+  assertWindowsProcessBackend(backend);
+  const controlStorage = prepareWindowsReleaseStorage({ directory: control, writableWorkspaceRoots: allowedRoots });
+  assertNoFailure(control);
+  const referenceFacts = fact(reference.path);
+  const descriptor = reopenSchema.parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(read(reference))));
+  if (!equal(referenceFacts, fact(reference.path))) fail("reopen reference changed through read");
+  verifyControlRecords(control, descriptor);
+  const directory = win32.join(root, "code"), storageDirectory = win32.join(root, "store"), node = ApplicationRuntimeFilePinSchema.parse(input.node);
+  const native = describeWindowsProcessInstallation(backend), nodeDirectory = physicalWindowsDirectory(win32.dirname(node.path));
+  if (descriptor.generation_id !== win32.basename(root) || descriptor.directory !== directory || descriptor.storage_directory !== storageDirectory
+    || descriptor.node_id !== input.nodeId || JSON.stringify(descriptor.allowed_roots) !== JSON.stringify(allowedRoots)
+    || JSON.stringify([...native.writableWorkspaceRoots].sort()) !== JSON.stringify(allowedRoots)
+    || JSON.stringify(descriptor.node) !== JSON.stringify(node) || descriptor.backend.directory !== native.directory
+    || descriptor.backend.manifestSha256 !== native.manifestSha256
+    || [hostDirectory, nodeDirectory, native.directory].some(value => windowsPathsOverlap(root, value))) fail("reopen differs from independent local selection");
+  const layout = new Map<string, ReturnType<typeof fact>>();
+  const expectedLayout = [root, control, directory, storageDirectory, ...descriptor.directories.map(value => win32.join(directory, ...value.split("/")))].sort();
+  if (JSON.stringify(descriptor.layout.map(value => value.path).sort()) !== JSON.stringify(expectedLayout)) fail("persisted generation layout differs");
+  for (const expected of descriptor.layout) {
+    const current = fact(expected.path, true);
+    if (String(current.dev) !== expected.dev || String(current.ino) !== expected.ino) fail("persisted layout replaced");
+    layout.set(expected.path, current);
+  }
+  compareInventory(directory, descriptor.code_inventory); compareInventory(nodeDirectory, descriptor.node_inventory);
+  if (win32.dirname(descriptor.store.path) !== storageDirectory) fail("persisted database escaped storage");
+  assertStoreIdentity(descriptor.store);
+  const seen = new Set<string>(), baselines = new Map<string, ReturnType<typeof fact>>(); let total = 0;
+  const files = descriptor.files.map(pin => {
+    const path = win32.join(directory, ...pin.path.split("/")), key = pin.path.toLowerCase(); total += pin.bytes;
+    if (seen.has(key) || total > limits.allFileBytes) fail("persisted file set exceeds bound or aliases"); seen.add(key);
+    const before = fact(path), bytes = read({ ...pin, path });
+    if (!equal(before, fact(path))) fail("reopen strict read changed"); baselines.set(pin.path, before);
+    return { path: pin.path, bytes, pin };
+  });
+  const saved: Saved = { origin: "reopened", phase: "claimed", failureRecordError: null, generationId: descriptor.generation_id, control,
+    directories: descriptor.directories, files, readers: new Set(), written: new Map(), layout, reopened: baselines, records: new Map(),
+    reopenReference: reference, referenceFacts, persisted: descriptor, host: { code: hostCode, directory: hostDirectory }, session: input.session };
+  // No failed prefix is published, and no existing code/control file is rewritten.
+  verify(saved, directory); compareInventory(directory, descriptor.code_inventory); compareInventory(nodeDirectory, descriptor.node_inventory); read(node);
+  const code = prepareWindowsCodeInstallation({ directory, writableWorkspaceRoots: allowedRoots });
+  const nodeCode = prepareWindowsCodeInstallation({ directory: nodeDirectory, writableWorkspaceRoots: allowedRoots });
+  const storage = prepareWindowsReleaseStorage({ directory: storageDirectory, writableWorkspaceRoots: allowedRoots });
+  saved.binding = Object.freeze({ generationId: descriptor.generation_id, nodeId: input.nodeId, allowedRoots,
+    profile: Object.freeze({ ...descriptor.profile }), directory, storageDirectory, node: Object.freeze({ ...node }), nodeDirectory,
+    code, nodeCode, storage, backend });
+  if (win32.dirname(descriptor.profile.path) !== directory || !files.some(file => win32.join(directory, ...file.path.split("/")) === descriptor.profile.path
+    && file.pin.bytes === descriptor.profile.bytes && file.pin.sha256 === descriptor.profile.sha256)
+    || installedStore(saved) !== descriptor.store.path) fail("reopen profile or database differs from original plan");
+  assertWindowsReleaseStorage(controlStorage, control); auditWindowsReleaseStorage(controlStorage, control);
+  assertWindowsCodeInstallation(hostCode, hostDirectory); assertWindowsProcessBackend(backend);
+  saved.phase = "admitted"; guard(saved, true);
+  const token = Object.freeze({}) as PreparedApplicationInstallation; installations.set(token, saved); return token;
 }
