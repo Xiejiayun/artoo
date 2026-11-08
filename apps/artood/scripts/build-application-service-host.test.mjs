@@ -5,7 +5,7 @@ import { after, test } from 'node:test';
 import { build, stop } from 'esbuild';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -84,6 +84,28 @@ test('rejects application schema initialization hoisted into the shared bootstra
   f.put(hostName + '.ts', f.original[hostName + '.ts'] + `\nimport {schema} from './${schema}.js'; export const hostBump = schema;`);
   const result = await compile(f);
   assert.throws(() => audit(f, result), /application source in bootstrap static closure: application-runtime-process-protocol.ts/u);
+});
+
+for (const [member, allowed] of [
+  ['packages/domain/src/application-development.ts', true],
+  ['packages/domain/dist/application-development.js', true],
+  ['apps/artood/src/application-development.ts', false],
+  ['packages/domain/src/nested/application-development.ts', false],
+  ['packages/other/src/application-development.ts', false],
+  ['packages/domain/dist/nested/application-development.js', false],
+]) test('early domain contract exact path: ' + member, async () => {
+  const f = fixture(), contract = join(f.directory, member);
+  mkdirSync(dirname(contract), { recursive: true });
+  writeFileSync(contract, 'export const schema = Object.freeze({ qualified_for_product: false });');
+  const imported = '../../../' + member.replace(/\.ts$/u, '.js');
+  f.put(bootstrapName + '.ts', f.original[bootstrapName + '.ts'] + `\nimport {schema} from '${imported}'; export const bootstrapContract = schema;`);
+  f.put(hostName + '.ts', f.original[hostName + '.ts'] + `\nimport {schema} from '${imported}'; export const hostContract = schema;`);
+  const result = await compile(f);
+  assert.ok(Object.values(result.metafile.outputs).some(output => !output.entryPoint
+    && Object.entries(output.inputs).some(([input, contribution]) => resolve(f.directory, input) === contract && contribution.bytesInOutput > 0)),
+  'the real split graph retains the contract in a shared chunk');
+  if (allowed) assert.doesNotThrow(() => audit(f, result));
+  else assert.throws(() => audit(f, result), /application source in bootstrap static closure: application-development\.(?:ts|js)/u);
 });
 
 test('rejects independently bundled authority copies instead of accepting their matching names', async () => {

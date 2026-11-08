@@ -148,12 +148,18 @@ export function auditApplicationServiceHostBuild(result, { repoRoot, outputDirec
   };
   const early = closure(BOOTSTRAP), host = closure(HOST);
   if (early.has(HOST)) fail('host imported before admission');
+  // This reviewed domain wire contract contains only data schemas and fixed
+  // guidance, with no application execution, installation or I/O authority.
+  // Permit its exact source/build locations, never an arbitrary matching name.
+  const earlyContracts = new Set(['packages/domain/src/application-development.ts', 'packages/domain/dist/application-development.js']
+    .map(path => resolve(repoRoot, path)));
   // The trusted broker core imports SQLite without opening a store at module
   // evaluation. It belongs to the delayed application graph, never bootstrap.
   for (const file of early) if (graph.get(file).some(edge => edge.path === 'node:sqlite'))
     moduleFailure('SQLite must remain in the deferred host', file, 'node:sqlite', 'import-statement');
   for (const file of early) for (const [input, contribution] of Object.entries(metadata.get(file).inputs)) {
-    if (contribution.bytesInOutput > 0 && basename(input).startsWith('application-') && !EARLY_APPLICATION.has(basename(input)))
+    if (contribution.bytesInOutput > 0 && basename(input).startsWith('application-') && !EARLY_APPLICATION.has(basename(input))
+      && !earlyContracts.has(resolve(repoRoot, input)))
       fail('application source in bootstrap static closure: ' + basename(input));
   }
   const authority = source('windows-code-installation.ts');

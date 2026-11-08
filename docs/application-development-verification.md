@@ -175,6 +175,11 @@ corrections, has produced these results:
 - The first actual fixed service-host packaging attempt failed its early-module
   guard: the new pure domain application contract was pulled into the bootstrap
   graph. That failure and its staging directory are retained for diagnosis.
+  The packager now permits only this reviewed pure contract's exact source and
+  build paths; application runtime modules, SQLite and host loading remain
+  deferred. The full 31-case real esbuild packaging suite then passed, including
+  six exact-path regressions, and actual service-host packaging passed into a
+  new output directory. Neither check executed the application host.
 
 The full unit suite, Web E2E and real native/provider application acceptance have
 not yet run on this implementation. Controlled owner/HTTP fixtures do not prove
