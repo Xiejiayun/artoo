@@ -59,14 +59,15 @@ export async function executeApplicationVerification(profile: PreparedApplicatio
   run: ApplicationVerificationRun; requestId: string; workspace: string; stage: "implementation" | "validation";
   subject: Subject; assertSubject(): void; backend: PreparedWindowsProcessBackend; signal: AbortSignal;
 }): Promise<ApplicationVerificationObservationV1> {
+  const started = performance.now();
   const configured = readApplicationVerificationProfile(profile), original = input.run.runStart;
   const context = original.context_pack.payload, requirement = original.verification?.application;
   if (!context?.app_delivery || !requirement || original.verification?.request_id !== input.requestId
     || context.task.id !== original.task_id || context.workspace.root !== input.workspace || original.workspace.root !== input.workspace
     || requirement.config_digest !== configured.capabilities.config_digest || requirement.contract_digest !== configured.capabilities.contract_digest) throw Error("Application run/profile binding differs");
   const identity = JSON.stringify(original), controller = new AbortController(), signal = AbortSignal.any([input.signal, controller.signal]);
-  const deadline = performance.now() + configured.config.timeout_ms;
-  const timer = setTimeout(() => controller.abort(), configured.config.timeout_ms);
+  const deadline = started + configured.config.timeout_ms;
+  const timer = setTimeout(() => controller.abort(), Math.max(1, deadline - performance.now()));
   const current = () => { signal.throwIfAborted(); if (performance.now() >= deadline) throw Error("Application verification deadline elapsed");
     if (JSON.stringify(original) !== identity) throw Error("Original application run mutated"); };
   const check = () => { current(); readApplicationVerificationProfile(profile); input.assertSubject(); current(); };

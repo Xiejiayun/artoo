@@ -160,6 +160,13 @@ describe("actual application orchestration over controlled owner boundaries", ()
     try { await expect(f.run()).rejects.toThrow("deadline elapsed"); expect(state.create).not.toHaveBeenCalled(); }
     finally { clock.mockRestore(); }
   });
+  it("includes the first protected profile audit in the original application budget", async () => {
+    const f = await fixture(), originalRead = state.profile.getMockImplementation()!; let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    state.profile.mockImplementationOnce(value => { const result = originalRead(value); now = 10_000; return result; });
+    try { await expect(f.run()).rejects.toThrow("deadline elapsed"); expect(state.create).not.toHaveBeenCalled(); }
+    finally { clock.mockRestore(); }
+  });
   it("does not register or return success when the final store audit crosses the original deadline", async () => {
     const f = await fixture(), originalRead = state.store.getMockImplementation()!; let now = 0;
     const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
