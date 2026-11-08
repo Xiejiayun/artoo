@@ -25,8 +25,22 @@ Use native Windows x64, physical local NTFS directories, a supported Node runtim
 with the SQLite API, the reviewed complete QuickJS native package, complete trusted
 `application-runtime.mjs` and `application-broker.mjs` bundles, the protected broker
 native installation, and pinned vendor/bootstrap/product files. An ordinary loose
-TypeScript emit is not the runtime bundle. Runtime packaging currently has a
-separately reviewed artifact workflow; these commands do not package or install it.
+TypeScript emit is not the runtime bundle. Package the current fixed runtime
+entry from the repository root into a new directory whose parent already exists:
+
+```powershell
+npm run build:application-runtime --workspace @artoo/artood -- --out-dir C:\ArtooBuild\application-runtime-v1
+```
+
+The maintained builder checks the twelve reviewed runtime sources, their fixed
+builtin owners, the pinned packaging tool versions, and the two permitted vendor
+imports. It writes `application-runtime.mjs` and `build.json`, including every
+actual build input's byte count and hash. Existing output directories are rejected;
+failed output is retained. The report remains `qualified_for_product: false`:
+packaging never executes its output, QuickJS, Wasm, a native helper or product.
+It does not establish runtime admission, original process closure, or resolution
+of earlier Windows metadata failures. Those require separate fresh native evidence.
+The standalone service commands do not package or install these inputs.
 
 Installation is a separate trusted operation. Finish and close its writers before
 starting either command. Immutable files must remain unchanged after admission;
