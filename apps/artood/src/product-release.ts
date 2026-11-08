@@ -538,6 +538,29 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
       throw faults[0];
     }
   }
+  function startupFinalAudit(batch: readonly PreparedReleaseProfile[]) {
+    let remaining = batch.length, failure: { error: unknown } | undefined;
+    const waiting = new Set<{ resolve(): void; reject(error: unknown): void }>();
+    const reject = (error: unknown) => {
+      failure ??= { error };
+      for (const waiter of waiting) waiter.reject(failure.error);
+      waiting.clear();
+    };
+    return {
+      reject,
+      arrive: () => new Promise<void>((resolve, rejectWaiter) => {
+        if (failure) { rejectWaiter(failure.error); return; }
+        waiting.add({ resolve, reject: rejectWaiter });
+        if (--remaining > 0) return;
+        // All original listeners finished their asynchronous startup. This is a
+        // fresh synchronous audit; no facts from before those awaits survive.
+        try { auditStartupStorage(batch); }
+        catch (error) { reject(error); return; }
+        for (const waiter of waiting) waiter.resolve();
+        waiting.clear();
+      }),
+    };
+  }
   function capabilityReader(profile: PreparedReleaseProfile): ReleaseCapabilityReader {
     const read = createReleaseCapabilityReader(profile);
     return () => { if (stopping || stopped) fail("release capability lifetime has ended"); return read(); };
@@ -1150,7 +1173,7 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
     auditStorage(profile); initialize(profile); auditStorage(profile);
     return startListener(profile);
   }
-  function startListener(profile: PreparedReleaseProfile): Promise<void> {
+  function startListener(profile: PreparedReleaseProfile, finalAudit?: ReturnType<typeof startupFinalAudit>): Promise<void> {
     const promise = (async () => {
       const monitorRecovery = monitorRecords(profile).filter((record) => record.phase === "recovering" || record.phase === "disabling");
       if (monitorRecovery.length > 1) fail("multiple unfinished monitoring recoveries require intervention before serving");
@@ -1188,14 +1211,20 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
         if (recovery) await finishRollback(profile, recovery);
         if (monitorRecovery[0]) await finishMonitorRecovery(profile, monitorRecovery[0]);
         else await observeHealth(profile);
-        auditStorage(profile);
+        if (finalAudit) await finalAudit.arrive();
+        else auditStorage(profile);
         scheduleMonitor(profile);
       } catch (error) {
+        finalAudit?.reject(error);
         await new Promise<void>((resolveClose) => { server.close(() => resolveClose()); server.closeAllConnections(); });
         servers.delete(profile.id);
         throw error;
       }
-    })().finally(() => { starts.delete(profile.id); });
+    })().catch(error => {
+      // Journal validation and listener construction can fail before the local
+      // close handler exists. They must also release every waiter in this group.
+      finalAudit?.reject(error); throw error;
+    }).finally(() => { starts.delete(profile.id); });
     starts.set(profile.id, promise); return promise;
   }
   async function startAll(): Promise<void> {
@@ -1222,10 +1251,11 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
     // Initialization creates layout directories. Collect their actual ACLs in a
     // separate observation before any listener starts; no first-pass facts carry over.
     auditStartupStorage(fresh);
+    const finalAudit = startupFinalAudit(fresh);
     const pending = profiles.flatMap(profile => {
       const existing = starts.get(profile.id);
       if (existing) return [existing];
-      return servers.has(profile.id) ? [] : [startListener(profile)];
+      return servers.has(profile.id) ? [] : [startListener(profile, finalAudit)];
     });
     await Promise.all(pending);
   }
