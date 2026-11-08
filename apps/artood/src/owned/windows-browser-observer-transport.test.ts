@@ -1,4 +1,5 @@
 import { PassThrough, Writable } from "node:stream";
+import { performance } from "node:perf_hooks";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { snapshotOwnedWindowsProcesses, windowsObservationPhase } from "./windows-browser-exit.js";
 
@@ -71,8 +72,30 @@ describe("protected Windows observer private input transport", () => {
     expect(control.execute).toHaveBeenCalledTimes(1);
   });
 
+  it("retains bounded first receipt times for fragmented fixed phases on failure", async () => {
+    let now = 100;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const child = invocation(), operation = snapshotOwnedWindowsProcesses(101, "C:\\Chrome\\chrome.exe", "C:\\private-profile");
+      now = 4100;
+      child.stderr.write("ARTOO_BROWSER_PHASE|script_");
+      now = 4200;
+      child.stderr.write("started\nARTOO_BROWSER_PHASE|definitions_ready\n");
+      now = 4300;
+      child.stderr.write("ARTOO_BROWSER_PHASE|request_decoded\nARTOO_BROWSER_PHASE|private_path\nprivate raw command text\n");
+      now = 4500;
+      child.stderr.write("ARTOO_BROWSER_PHASE|request_decoded\n");
+      now = 5100;
+      child.fail({ killed: true, stdout: "private raw output", stderr: "private raw command" });
+      const error: unknown = await operation.catch(value => value);
+      expect((error as Error).message).toBe("Protected Windows process observation failed (deadline) [last_phase=request_decoded, elapsed_ms=5000, phase_received_ms=script_started:4100;definitions_ready:4100;request_decoded:4200]");
+      expect(control.execute).toHaveBeenCalledTimes(1);
+      expect(control.execute.mock.calls[0]![2]).toMatchObject({ timeout: 5000, windowsHide: true, killSignal: "SIGKILL" });
+    } finally { clock.mockRestore(); }
+  });
+
   it("accepts only exact fixed phase markers", () => {
-    for (const phase of ["script_started", "native_binding", "root_handle", "root_query", "root_identity", "ancestry_snapshot", "ancestry_confirmation", "final_query", "observation_result"]) {
+    for (const phase of ["script_started", "definitions_ready", "request_decoded", "request_parsed", "native_binding", "root_handle", "root_query", "root_identity", "ancestry_snapshot", "ancestry_confirmation", "final_query", "observation_result"]) {
       expect(windowsObservationPhase(`ARTOO_BROWSER_PHASE|${phase}`)).toBe(phase);
     }
     for (const line of ["ARTOO_BROWSER_PHASE|private", "ARTOO_BROWSER_PHASE|root_query|secret", "ARTOO_BROWSER_PHASE|root_query\n", "x".repeat(101)]) {
