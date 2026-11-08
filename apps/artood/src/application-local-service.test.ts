@@ -32,7 +32,7 @@ class Server extends EventEmitter {
   close = vi.fn((callback: (error?: Error) => void) => { if (this.holdClose) this.closeCallback = callback; else callback(this.closeFailure); });
   closeIdleConnections = vi.fn();
 }
-let server: Server, stopAdmission: ReturnType<typeof deferred<ApplicationHttpAdmissionStop>>, failAdmission: ReturnType<typeof deferred<void>>, ingressClose: ReturnType<typeof vi.fn>;
+let server: Server, stopAdmission: ReturnType<typeof deferred<ApplicationHttpAdmissionStop>>, failAdmission: ReturnType<typeof deferred<void>>, ingressClose: ReturnType<typeof vi.fn>, ingressDrain: ReturnType<typeof vi.fn>;
 let ingressOptions: ApplicationHttpIngressOptions;
 const receipt = { normalShutdown: true } as ApplicationBrokerProcessReceipt;
 beforeEach(() => {
@@ -41,8 +41,9 @@ beforeEach(() => {
   state.assertStore.mockReset(); state.createServer.mockReturnValue(server);
   state.createService.mockReturnValue({ maximumAccess: "write", begin: vi.fn() });
   ingressClose = vi.fn(() => stopAdmission.resolve("closed"));
+  ingressDrain = vi.fn(() => stopAdmission.resolve("draining"));
   state.createIngress.mockImplementation((options: ApplicationHttpIngressOptions) => {
-    ingressOptions = options; return { admissionStopped: stopAdmission.promise, admissionFailed: failAdmission.promise, close: ingressClose, handle: vi.fn(async () => {}) };
+    ingressOptions = options; return { admissionStopped: stopAdmission.promise, admissionFailed: failAdmission.promise, close: ingressClose, drain: ingressDrain, handle: vi.fn(async () => {}) };
   });
   state.prepareBroker.mockReset().mockReturnValue(Object.freeze({})); state.startBroker.mockReset();
 });
@@ -120,6 +121,44 @@ describe("bounded installed application listener ownership", () => {
     addOwner({ response: Promise.resolve("{}"), settled: Promise.resolve(), cancel() {} });
     failAdmission.resolve(); transport.resolve();
     await expect(live.closed).rejects.toThrow("closure failed"); expect(ingressClose).toHaveBeenCalledOnce();
+  });
+  it("explicit drain preserves a late original owner and waits for normal closure after its transport", async () => {
+    const live = await startLocalApplicationService(profile), transport = deferred<void>(), settlement = deferred<void>();
+    state.createIngress.mock.results[0]!.value.handle.mockReturnValueOnce(transport.promise);
+    state.createServer.mock.calls[0]![1]({}, { destroy: vi.fn() });
+    const draining = live.drain(); expect(live.drain()).toBe(draining);
+    expect(ingressDrain).toHaveBeenCalled(); expect(ingressClose).not.toHaveBeenCalled();
+    const rejected = { destroy: vi.fn() }; state.createServer.mock.calls[0]![1]({}, rejected);
+    expect(rejected.destroy).toHaveBeenCalledOnce();
+    const cancel = vi.fn(); addOwner({ response: Promise.resolve("{}"), settled: settlement.promise, cancel });
+    let done = false; void draining.then(() => { done = true; }); transport.resolve();
+    await new Promise<void>(resolve => setImmediate(resolve)); expect(done).toBe(false); expect(cancel).not.toHaveBeenCalled();
+    // Controlled normal-closure observation, never a native receipt.
+    state.createService.mock.calls[0]![0].observeNormalClosure(); settlement.resolve(); await draining; await live.closed;
+    expect(ingressClose).not.toHaveBeenCalled(); expect(server.close).toHaveBeenCalledOnce();
+  });
+  it("keeps close cancellation effective after explicit drain began", async () => {
+    const live = await startLocalApplicationService(profile), settlement = deferred<void>();
+    addOwner({ response: Promise.resolve("{}"), settled: settlement.promise, cancel() {} });
+    const draining = live.drain(), cancelled = expect(draining).rejects.toThrow("normal drain was cancelled");
+    const closing = live.close(); expect(ingressClose).toHaveBeenCalledOnce();
+    expect(live.close()).toBe(closing); settlement.resolve(); await closing; await live.closed; await cancelled;
+    expect(server.close).toHaveBeenCalledOnce();
+  });
+  it("rejects explicit drain if settled work lacks normal native closure evidence", async () => {
+    const live = await startLocalApplicationService(profile);
+    addOwner({ response: Promise.resolve("{}"), settled: Promise.resolve(), cancel() {} });
+    await expect(live.drain()).rejects.toThrow("normal closure is incomplete"); await live.closed;
+  });
+  it("retains a late ingress failure during explicit drain and still waits for original transport", async () => {
+    const live = await startLocalApplicationService(profile), transport = deferred<void>();
+    state.createIngress.mock.results[0]!.value.handle.mockReturnValueOnce(transport.promise);
+    state.createServer.mock.calls[0]![1]({}, { destroy: vi.fn() });
+    const draining = live.drain(); let done = false; void draining.catch(() => { done = true; });
+    failAdmission.resolve(); await new Promise<void>(resolve => setImmediate(resolve));
+    expect(ingressClose).toHaveBeenCalledOnce(); expect(done).toBe(false);
+    transport.resolve(); await expect(draining).rejects.toThrow("closure failed");
+    await expect(live.closed).rejects.toThrow("closure failed");
   });
   it.each([1000, 10_000])("closes incomplete headers at their original limit with a %i ms request budget", async timeoutMs => {
     state.describe.mockReturnValue({ ...state.describe(), timeoutMs });

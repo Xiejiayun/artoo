@@ -73,22 +73,33 @@ export async function reopenInstalledApplicationService(input: InstalledApplicat
   try {
     original = await startLocalApplicationService(profile);
     const owner = original;
-    let installedClosed = false;
-    const closed = owner.closed.then(() => {
+    let installedClosed = false, originalDrain: Promise<void> | undefined;
+    const closed = owner.closed.then(async () => {
+      // An explicitly requested normal drain must confirm its original normal
+      // closures before this installation/session can be relinquished.
+      if (originalDrain) await originalDrain;
       auditApplicationInstallation(installation);
       retireApplicationInstallation(installation);
       releaseApplicationSession(session);
       installedClosed = true;
     }).finally(() => signal?.removeEventListener("abort", stop));
     void closed.catch(() => {});
-    let closing: Promise<void> | undefined;
+    let closing: Promise<void> | undefined, draining: Promise<void> | undefined;
     const close = () => closing ??= (async () => {
       const outcomes = await Promise.allSettled([Promise.resolve().then(() => owner.close()), closed]);
       const errors = outcomes.flatMap(value => value.status === "rejected" ? [value.reason] : []);
       if (errors.length) throw new AggregateError(errors, "Installed application closure failed; ownership retained if unsettled");
     })();
+    const drain = () => draining ??= (async () => {
+      // Stop admission synchronously. A failed drain request still owes the
+      // exact independent installed closure, including final audit and release.
+      try { originalDrain = owner.drain(); } catch (error) { originalDrain = Promise.reject(error); }
+      const outcomes = await Promise.allSettled([originalDrain, closed]);
+      const errors = outcomes.flatMap(value => value.status === "rejected" ? [value.reason] : []);
+      if (errors.length) throw new AggregateError(errors, "Installed application normal drain failed; ownership retained if unsettled");
+    })();
     if (signal?.aborted) { await close(); throw Error("Installed application startup cancelled"); }
-    const result = Object.freeze({ origin: owner.origin, closed, close });
+    const result = Object.freeze({ origin: owner.origin, closed, drain, close });
     closedServices.set(result, () => {
       if (!installedClosed) throw Error("Original installed application has not closed");
       return readApplicationLocalServiceClosure(owner);

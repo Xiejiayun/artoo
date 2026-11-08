@@ -30,7 +30,7 @@ beforeEach(() => {
   vi.spyOn(installation, "prepareWindowsProcessInstallation").mockReturnValue(backend);
   vi.spyOn(profile, "prepareApplicationServiceProfile").mockReturnValue(authority);
   vi.spyOn(local, "initializeApplicationStore").mockResolvedValue({ normalShutdown: true } as broker.ApplicationBrokerProcessReceipt);
-  closed = deferred(); service = { origin: "http://127.0.0.1:31000", closed: closed.promise, close: vi.fn(() => closed.promise) };
+  closed = deferred(); service = { origin: "http://127.0.0.1:31000", closed: closed.promise, close: vi.fn(() => closed.promise), drain: vi.fn(() => closed.promise) };
   vi.spyOn(local, "startLocalApplicationService").mockResolvedValue(service);
   vi.spyOn(runner, "createArtoodNode").mockImplementation(() => { throw Error("No node construction in standalone service routing"); });
   vi.spyOn(adapter, "createProcessAdapter").mockImplementation(() => { throw Error("No adapter construction in standalone service routing"); });

@@ -3,6 +3,7 @@
 import { createServer, Socket } from "node:net";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplicationHttpService } from "./application-http-ingress.js";
+import * as ingressApi from "./application-http-ingress.js";
 import type { PreparedApplicationServiceProfile } from "./application-service-profile.js";
 import { createHash } from "node:crypto";
 import { createApplicationArtifactOwner, readApplicationClientArtifact, type ApplicationClientReader } from "./application-artifact-admission.js";
@@ -99,6 +100,54 @@ beforeEach(() => {
 });
 
 describe("actual local application HTTP listener with controlled native owners", () => {
+  it("drains a real accepted partial body through its original owner settlement before closing", async () => {
+    const admitted = deferred<void>(), createIngress = ingressApi.createApplicationHttpIngress;
+    // Observe the actual ingress call only; its body, deadline and transport code
+    // remain real. The protected native invocation is the controlled boundary.
+    const ingressObserver = vi.spyOn(ingressApi, "createApplicationHttpIngress").mockImplementation(options => {
+      const original = createIngress(options);
+      return Object.freeze({ ...original, handle(...args: Parameters<typeof original.handle>) {
+        const work = original.handle(...args); admitted.resolve(); return work;
+      } });
+    });
+    try {
+      await usingPort({ sameOrigin: true }, async f => {
+        const entered = deferred<void>(), response = deferred<string>(), settled = deferred<void>();
+        const cancel = vi.fn(); let normalClosure: (() => void) | undefined, invocationSignal: AbortSignal | undefined;
+        state.createService.mockImplementation(options => {
+          normalClosure = options.observeNormalClosure; return { maximumAccess: "write", begin };
+        });
+        let invocation: string | undefined;
+        begin.mockImplementation((action, signal) => {
+          invocation = action.invocation; invocationSignal = signal; entered.resolve();
+          return { response: response.promise, settled: settled.promise, cancel };
+        });
+        f.onCleanup(() => { response.resolve(JSON.stringify({ invocation, response: { status: 200, body: { saved: true } } })); settled.resolve(); });
+        const live = await within(f.start(), "partial-body listener"), client = f.connect();
+        await within(client.connected, "partial-body connection");
+        const body = '{"value":7}', split = 4;
+        client.socket.write(`POST /api/items HTTP/1.1\r\nHost: ${new URL(f.origin).host}\r\nOrigin: ${f.origin}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body.slice(0, split)}`);
+        await within(admitted.promise, "actual HTTP admission before complete body"); expect(begin).not.toHaveBeenCalled();
+        let drained = false, clientClosed = false;
+        const draining = live.drain(); void draining.then(() => { drained = true; }, () => { drained = true; });
+        void client.closed.then(() => { clientClosed = true; });
+        expect(() => readApplicationClientArtifact(lastClientReader!, "client/app.js")).not.toThrow();
+        client.socket.write(body.slice(split)); await within(entered.promise, "late original owner after body completion");
+        expect(invocationSignal?.aborted).toBe(false); expect(cancel).not.toHaveBeenCalled();
+        response.resolve(JSON.stringify({ invocation, response: { status: 200, body: { saved: true } } }));
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(drained).toBe(false); expect(clientClosed).toBe(false); expect(client.text()).toBe("");
+        // This is a controlled normal-owner observation, not native evidence.
+        normalClosure!(); settled.resolve();
+        await within(Promise.all([draining, live.closed, client.closed]), "normal owner, transport and listener closure");
+        expect(client.text()).toMatch(/^HTTP\/1\.1 200 /u);
+        expect(client.text().split("\r\n\r\n")[1]).toBe('{"saved":true}');
+        expect(begin).toHaveBeenCalledOnce(); expect(cancel).not.toHaveBeenCalled();
+        expect(() => readApplicationClientArtifact(lastClientReader!, "client/app.js")).toThrow("client-reader-required");
+      });
+    } finally { ingressObserver.mockRestore(); }
+  }, testDeadlineMs);
+
   it("listens on loopback and lowers a GET without Origin to read access", async () => {
     await usingPort({}, async f => {
       const live = await within(f.start(), "local listener startup"); expect(live.origin).toBe(f.origin);

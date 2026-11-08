@@ -311,6 +311,43 @@ describe("fixed application HTTP ingress", () => {
     const f = fixture(); for (let index = 0; index < limits.requests; index++) expect((await exchange(f)).response.statusCode).toBe(200);
     expect((await exchange(f)).response.statusCode).toBe(503); expect(f.begin).toHaveBeenCalledTimes(limits.requests);
   });
+
+  it("drains a previously accepted body and original settlement without admitting or cancelling another request", async () => {
+    let now = 0; vi.spyOn(performance, "now").mockImplementation(() => now);
+    const owner = pending(), f = fixture({}, () => owner.handle), request = new Request(), response = new Response();
+    request.method = "POST"; request.rawHeaders.push("Origin", origin, "Content-Type", "application/json");
+    let done = false; const work = f.ingress.handle(request.http, response.http).then(() => { done = true; });
+    f.ingress.drain(); f.ingress.drain();
+    expect(await f.ingress.admissionStopped).toBe("draining");
+    expect((await exchange(f)).response.statusCode).toBe(503); expect(f.begin).not.toHaveBeenCalled();
+    now = 700; request.finish('{"accepted":true}'); await tick();
+    expect(f.calls[0]!.action.lifetimeMs).toBe(300); expect(f.calls[0]!.signal.aborted).toBe(false);
+    owner.output.resolve('{"status":200,"body":{"accepted":true}}'); await tick();
+    expect(done).toBe(false); expect(response.parts).toHaveLength(0); expect(owner.cancel).not.toHaveBeenCalled();
+    owner.settlement.resolve(); await work;
+    expect(response.statusCode).toBe(200); expect(response.text).toBe('{"accepted":true}');
+    expect((await exchange(f)).response.statusCode).toBe(503); expect(f.begin).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not extend the original upload deadline when admission drains", async () => {
+    let now = 0; vi.spyOn(performance, "now").mockImplementation(() => now);
+    const f = fixture(), request = new Request(), response = new Response();
+    const work = f.ingress.handle(request.http, response.http);
+    now = 900; f.ingress.drain(); now = 1001; request.finish(); await work;
+    expect(response.statusCode).toBe(504); expect(f.begin).not.toHaveBeenCalled();
+    expect(await f.ingress.admissionStopped).toBe("draining");
+  });
+
+  it("still cancels once and reports a late failure after a requested drain", async () => {
+    const owner = pending(), f = fixture({}, () => owner.handle), request = new Request(), response = new Response();
+    owner.cancel.mockImplementation(() => { throw Error("controlled late cancellation failure"); });
+    const work = f.ingress.handle(request.http, response.http); request.finish(); await tick();
+    f.ingress.drain(); expect(await f.ingress.admissionStopped).toBe("draining");
+    expect(owner.cancel).not.toHaveBeenCalled(); f.ingress.close(); f.ingress.close(); await work;
+    await f.ingress.admissionFailed;
+    expect(owner.cancel).toHaveBeenCalledOnce(); expect(f.calls[0]!.signal.aborted).toBe(true);
+    expect(response.statusCode).toBe(503); owner.settlement.resolve(); owner.output.reject(Error("cancelled")); await tick();
+  });
 });
 
 describe("actual loopback HTTP adapter boundary (controlled service only)", () => {

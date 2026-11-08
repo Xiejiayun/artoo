@@ -132,6 +132,36 @@ The browser action whitelist does not make the application's JavaScript
 read-only: a loaded page can itself issue API writes. This is a persistence/UI
 observation, not proof that loading the page performed no writes.
 
+## Explicit normal-drain control
+
+The local HTTP ingress and installed service expose an additive `drain()` path.
+It stops new admission while already accepted bodies, responses and original
+invocation owners retain their existing deadlines. The service waits for the
+listener and transports, then every original owner, including one created after
+drain began while its accepted request body was still arriving. An explicit
+drain also requires the existing normal runtime/broker closure observations.
+Its installed wrapper completes that drain before final installation audit,
+retirement and exclusive session release.
+
+The fixed bootstrap accepts one explicit `{"version":1,"kind":"drain"}` line
+followed by EOF. The existing `shutdown` command and `close()` API retain their
+cancellation behavior. Drain during startup cancels startup and waits for any
+late original owner; after readiness it drains the existing service. Later
+signals, invalid input or output failures can still upgrade drain to failure or
+cancellation. The command keeps the original single-command 4096-byte bound.
+This does not change the verification bootstrap's fixed shutdown message.
+
+No request counter or original process deadline is reset: 256 accepted HTTP
+requests remain the ingress limit, and the original Windows owner retains its
+maximum 12-hour bound. This increment adds neither owner rotation nor publication
+authorization. A same-version reopen must still use the unchanged pinned
+descriptor, fixed origin and a newly admitted owner/session after proven closure.
+It provides no stale-lock takeover, crash recovery or migration rollback.
+
+This drain increment currently has source and regression additions only. Its
+focused checks, real native host shutdown and application acceptance are pending;
+the earlier validation records below do not qualify it.
+
 ## Explicit remaining gaps
 
 Every capability, candidate and observation retains

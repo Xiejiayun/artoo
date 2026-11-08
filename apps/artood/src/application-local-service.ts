@@ -55,6 +55,10 @@ export interface LocalApplicationService {
   /** Listener, transports and every original invocation settlement were awaited.
    * This host lifecycle promise is not a serialized native receipt. */
   readonly closed: Promise<void>;
+  /** Stop admission, preserve accepted requests and await their normal original
+   * closure. A later close/failure can still cancel this same drain. */
+  drain(): Promise<void>;
+  /** Stop admission and cancel outstanding work; still await original closure. */
   close(): Promise<void>;
 }
 export interface ApplicationLocalServiceClosure {
@@ -101,7 +105,7 @@ async function startBoundLocalApplicationService(profile: PreparedApplicationSer
     service: { maximumAccess: service.maximumAccess, begin(action, signal) {
       const handle = service.begin(action, signal); handles.push(handle); return handle;
     } } });
-  let stopping = false, listened = false, cancelled = false, closeWork: Promise<void> | undefined;
+  let stopping = false, listened = false, cancelled = false, closeWork: Promise<void> | undefined, drainWork: Promise<void> | undefined;
   let resolveClosed!: () => void, rejectClosed!: (error: unknown) => void;
   const closed = new Promise<void>((resolve, reject) => { resolveClosed = resolve; rejectClosed = reject; }); void closed.catch(() => {});
   const server = createServer({ maxHeaderSize: APPLICATION_HTTP_LIMITS.headerBytes, insecureHTTPParser: false }, (request, response) => {
@@ -179,7 +183,7 @@ async function startBoundLocalApplicationService(profile: PreparedApplicationSer
   void ingress.admissionStopped.then(reason => {
     // A lifetime-budget stop drains the last admitted request without cancelling
     // it. A later explicit close can still escalate that same shutdown.
-    void stop(reason !== "budget_exhausted").catch(() => {});
+    void stop(reason !== "budget_exhausted" && reason !== "draining").catch(() => {});
   });
   try {
     await new Promise<void>((resolve, reject) => {
@@ -188,12 +192,24 @@ async function startBoundLocalApplicationService(profile: PreparedApplicationSer
       server.once("error", error); server.once("listening", ready);
       server.listen({ host: "127.0.0.1", port: binding.port, exclusive: true });
     });
-    const result = Object.freeze({ origin: binding.origin, closed, close: () => stop(true) });
-    normalClosures.set(result, () => {
+    const readNormalClosure = () => {
       if (!normallyClosed || successfulInvocations !== handles.length) throw Error("Application invocation normal closure is incomplete");
-      return Object.freeze({ version: 1, invocations: handles.length, runtime_normal_closures: successfulInvocations,
-        broker_normal_closures: successfulInvocations, listener_closed: true });
-    });
+      return Object.freeze({ version: 1 as const, invocations: handles.length, runtime_normal_closures: successfulInvocations,
+        broker_normal_closures: successfulInvocations, listener_closed: true as const });
+    };
+    const drain = () => {
+      ingress.drain(); // Synchronous admission stop, before returning to the caller.
+      if (!drainWork) {
+        drainWork = stop(false).then(() => {
+          if (cancelled) throw Error("Application normal drain was cancelled");
+          readNormalClosure();
+        });
+        void drainWork.catch(() => {}); // The original result is still returned to the caller.
+      }
+      return drainWork;
+    };
+    const result = Object.freeze({ origin: binding.origin, closed, drain, close: () => stop(true) });
+    normalClosures.set(result, readNormalClosure);
     return result;
   } catch (error) {
     const cleanup = await Promise.allSettled([stop(true)]);

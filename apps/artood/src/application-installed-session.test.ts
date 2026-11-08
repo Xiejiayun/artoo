@@ -27,14 +27,14 @@ function input(): InstalledApplicationReopenOptions {
     hostDirectory: "C:\\host", hostCode: {} as InstalledApplicationReopenOptions["hostCode"],
     backend: {} as InstalledApplicationReopenOptions["backend"] };
 }
-let closure: ReturnType<typeof deferred<void>>, close: ReturnType<typeof vi.fn>;
+let closure: ReturnType<typeof deferred<void>>, close: ReturnType<typeof vi.fn>, drain: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   for (const mock of Object.values(state)) mock.mockReset();
   state.describe.mockReturnValue({ directory: "C:\\installed\\generation\\code", allowedRoots: ["C:\\work"] });
   state.acquire.mockReturnValue(session); state.profile.mockReturnValue(profile); state.reopen.mockReturnValue(installation);
   state.reference.mockReturnValue(reference); state.initialize.mockResolvedValue({ normalShutdown: true }); state.preflight.mockResolvedValue({ normalShutdown: true });
-  closure = deferred(); close = vi.fn(() => closure.promise);
-  state.start.mockResolvedValue({ origin: "http://127.0.0.1:31000", closed: closure.promise, close });
+  closure = deferred(); close = vi.fn(() => closure.promise); drain = vi.fn(() => closure.promise);
+  state.start.mockResolvedValue({ origin: "http://127.0.0.1:31000", closed: closure.promise, close, drain });
   state.localClosure.mockReturnValue({ version: 1, invocations: 2, runtime_normal_closures: 2, broker_normal_closures: 2, listener_closed: true });
 });
 describe("clean-only installed application coordination", () => {
@@ -91,6 +91,54 @@ describe("clean-only installed application coordination", () => {
     const live = await reopenInstalledApplicationService(input()); closure.resolve(); await live.closed;
     expect(close).not.toHaveBeenCalled(); expect(state.release).toHaveBeenCalledOnce();
   });
+  it("joins the original explicit drain and closed before final audit, retirement and release", async () => {
+    const normalDrain = deferred<void>(); drain.mockReturnValue(normalDrain.promise);
+    const live = await reopenInstalledApplicationService(input());
+    const stopping = live.drain(); expect(live.drain()).toBe(stopping); expect(drain).toHaveBeenCalledOnce();
+    closure.resolve(); await tick();
+    expect(state.audit).not.toHaveBeenCalled(); expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+    normalDrain.resolve(); await stopping; await live.closed;
+    expect(close).not.toHaveBeenCalled(); expect(state.audit).toHaveBeenCalledExactlyOnceWith(installation);
+    expect(state.retire).toHaveBeenCalledExactlyOnceWith(installation); expect(state.release).toHaveBeenCalledExactlyOnceWith(session);
+    expect(state.release.mock.invocationCallOrder[0]).toBeGreaterThan(state.retire.mock.invocationCallOrder[0]!);
+    expect(readInstalledApplicationClosure(live)).toMatchObject({ installation_audited: true, session_released: true });
+  });
+  it("retains ownership when explicit drain lacks normal closure even after original closed", async () => {
+    const normalDrain = deferred<void>(); drain.mockReturnValue(normalDrain.promise);
+    const live = await reopenInstalledApplicationService(input()), failure = Error("normal native closure absent");
+    const stopping = live.drain(); const rejected = expect(stopping).rejects.toThrow("normal drain failed");
+    closure.resolve(); normalDrain.reject(failure); await rejected; await expect(live.closed).rejects.toBe(failure);
+    expect(state.audit).not.toHaveBeenCalled(); expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+    expect(() => readInstalledApplicationClosure(live)).toThrow("has not closed");
+  });
+  it("keeps explicit close effective while a normal drain is pending and joins both original outcomes", async () => {
+    const normalDrain = deferred<void>(); drain.mockReturnValue(normalDrain.promise);
+    const live = await reopenInstalledApplicationService(input()), failure = Error("normal drain cancelled");
+    const draining = live.drain(), drainRejected = expect(draining).rejects.toThrow("normal drain failed");
+    const closing = live.close(), closeRejected = expect(closing).rejects.toThrow("closure failed");
+    await tick(); expect(close).toHaveBeenCalledOnce(); expect(live.close()).toBe(closing);
+    expect(state.release).not.toHaveBeenCalled(); normalDrain.reject(failure); await tick();
+    expect(state.release).not.toHaveBeenCalled(); closure.resolve(); await drainRejected; await closeRejected;
+    await expect(live.closed).rejects.toBe(failure); expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+  });
+  it.each(["audit", "retire", "release"] as const)("does not report explicit drain success when final %s fails", async phase => {
+    const live = await reopenInstalledApplicationService(input()), failure = Error(`controlled ${phase} failure`);
+    state[phase].mockImplementation(() => { throw failure; });
+    const stopping = live.drain(), rejected = expect(stopping).rejects.toThrow("normal drain failed");
+    closure.resolve(); await rejected; await expect(live.closed).rejects.toBe(failure);
+    expect(() => readInstalledApplicationClosure(live)).toThrow("has not closed");
+    if (phase !== "release") expect(state.release).not.toHaveBeenCalled();
+    if (phase === "audit") expect(state.retire).not.toHaveBeenCalled();
+    if (phase === "release") expect(state.release).toHaveBeenCalledOnce();
+  });
+  it("retains a throwing drain request while still awaiting the independent original closed", async () => {
+    const failure = Error("controlled synchronous drain failure"); drain.mockImplementation(() => { throw failure; });
+    const live = await reopenInstalledApplicationService(input()); let done = false;
+    const stopping = live.drain(); void stopping.catch(() => { done = true; }); await tick();
+    expect(done).toBe(false); expect(state.release).not.toHaveBeenCalled();
+    closure.resolve(); await expect(stopping).rejects.toThrow("normal drain failed"); await expect(live.closed).rejects.toBe(failure);
+    expect(state.audit).not.toHaveBeenCalled(); expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+  });
   it.each(["reopen", "preflight", "start"])("retains the lock and existing database on %s failure", async phase => {
     const failure = Error(phase);
     if (phase === "reopen") state.reopen.mockImplementation(() => { throw failure; });
@@ -106,7 +154,7 @@ describe("clean-only installed application coordination", () => {
     const assertAdmission = vi.fn(() => { if (!current) throw failure; });
     state.profile.mockImplementation(token => { expect(token).toBe(installation); assertAdmission(); return profile; });
     state.preflight.mockReturnValue(checked.promise);
-    const listen = vi.fn().mockResolvedValue({ origin: "http://127.0.0.1:31000", closed: closure.promise, close });
+    const listen = vi.fn().mockResolvedValue({ origin: "http://127.0.0.1:31000", closed: closure.promise, close, drain });
     // Coordinator boundary only: the real startLocalApplicationService performs
     // its profile admission checks synchronously before binding any listener.
     // The installation/profile tests verify the actual low-level guard wiring.
@@ -163,10 +211,10 @@ describe("clean-only installed application coordination", () => {
     expect(state.start).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
   });
   it("waits for the exact late listener if cancellation occurs during asynchronous listen", async () => {
-    const controller = new AbortController(), started = deferred<{ origin: string; closed: Promise<void>; close: typeof close }>();
+    const controller = new AbortController(), started = deferred<{ origin: string; closed: Promise<void>; close: typeof close; drain: typeof drain }>();
     state.start.mockReturnValue(started.promise);
     const work = reopenInstalledApplicationService(input(), controller.signal); const result = work.catch(error => error); await tick();
-    controller.abort(); started.resolve({ origin: "http://127.0.0.1:31000", closed: closure.promise, close }); await tick();
+    controller.abort(); started.resolve({ origin: "http://127.0.0.1:31000", closed: closure.promise, close, drain }); await tick();
     expect(close).toHaveBeenCalledOnce(); expect(state.release).not.toHaveBeenCalled();
     closure.resolve(); expect(await result).toBeInstanceOf(Error); expect(state.release).toHaveBeenCalledOnce();
   });

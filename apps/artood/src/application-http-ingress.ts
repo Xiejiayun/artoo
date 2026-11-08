@@ -42,12 +42,15 @@ export interface ApplicationHttpIngressOptions {
    * other targets may serve captured client bytes and never begin a broker. */
   readonly clientReader?: ApplicationClientReader;
 }
-export type ApplicationHttpAdmissionStop = "closed" | "failed" | "budget_exhausted";
+export type ApplicationHttpAdmissionStop = "closed" | "failed" | "budget_exhausted" | "draining";
 export interface ApplicationHttpIngress {
   /** Resolves after HTTP finish/close, not backend/process closure. */
   handle(request: IncomingMessage, response: ServerResponse, signal?: AbortSignal): Promise<void>;
   /** Stops admission and forwards cancellation. The owner separately owes actual closure. */
   close(): void;
+  /** Stops admission only. Existing requests retain their original deadlines and
+   * owners; this returns no transport, owner or native closure observation. */
+  drain(): void;
   /** Admission status only: never a transport or original-owner closure receipt. */
   readonly admissionStopped: Promise<ApplicationHttpAdmissionStop>;
   /** Independent failure upgrade, including a failure after budget exhaustion. */
@@ -222,7 +225,7 @@ export function createApplicationHttpIngress(options: ApplicationHttpIngressOpti
     if (cancelled) return; cancelled = true;
     for (const pending of active) pending.stop(new Rejection(503, "service_closed"));
   };
-  return Object.freeze({ close: () => close(), admissionStopped, admissionFailed, handle(request: IncomingMessage, response: ServerResponse, signal?: AbortSignal): Promise<void> {
+  return Object.freeze({ close: () => close(), drain: () => stopAdmission("draining"), admissionStopped, admissionFailed, handle(request: IncomingMessage, response: ServerResponse, signal?: AbortSignal): Promise<void> {
     if (closed || started >= limits.requests || active.size >= concurrent) {
       return rejectHttp(request, response, timeoutMs);
     }

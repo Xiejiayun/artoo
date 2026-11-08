@@ -11,6 +11,7 @@ class Input extends EventEmitter {
   pause = vi.fn();
 }
 const command = Buffer.from('{"version":1,"kind":"shutdown"}\n');
+const drainCommand = Buffer.from('{"version":1,"kind":"drain"}\n');
 const controls: ApplicationBootstrapControl[] = [];
 function fixture(enabled = true) {
   const input = new Input(), host = new EventEmitter(), control = installApplicationBootstrapControl(input, host);
@@ -35,6 +36,43 @@ describe("fixed application bootstrap shutdown control", () => {
     expect(f.input.listenerCount("data")).toBe(1); expect(f.input.listenerCount("end")).toBe(1); expect(f.input.listenerCount("error")).toBe(1);
     f.input.emit("data", command); f.input.emit("end");
     expect(f.control.signal.aborted).toBe(true); expect(f.control.reason).toBe("stdin"); expect(f.control.failure).toBeUndefined();
+    expect(f.control.drainSignal.aborted).toBe(false);
+  });
+  it("notifies a v1 drain separately without cancelling the active owner", () => {
+    const f = fixture(), requested = vi.fn(); f.control.drainSignal.addEventListener("abort", requested);
+    f.input.emit("data", drainCommand); f.input.emit("end");
+    expect(f.control.reason).toBe("stdin-drain"); expect(f.control.drainSignal.aborted).toBe(true);
+    expect(f.control.signal.aborted).toBe(false); expect(f.control.failure).toBeUndefined(); expect(requested).toHaveBeenCalledOnce();
+  });
+  it("keeps partial drain bytes pending across every boundary with the same fixed framing", () => {
+    for (let split = 1; split < drainCommand.length; split++) {
+      const f = fixture(); f.input.emit("data", drainCommand.subarray(0, split));
+      expect(f.control.drainSignal.aborted).toBe(false); expect(f.control.signal.aborted).toBe(false);
+      f.input.emit("data", drainCommand.subarray(split)); f.input.emit("end");
+      expect(f.control.reason).toBe("stdin-drain"); expect(f.control.drainSignal.aborted).toBe(true);
+      expect(f.control.signal.aborted).toBe(false); expect(f.control.failure).toBeUndefined(); f.control.dispose();
+    }
+  });
+  it("accepts reordered drain fields and counts the same 4096 raw-byte maximum", () => {
+    const accepted = fixture(), ordered = Buffer.from(' { "kind" : "drain", "version" : 1 }\r\n');
+    accepted.input.emit("data", Buffer.alloc(4096 - ordered.length, 32)); accepted.input.emit("data", ordered); accepted.input.emit("end");
+    expect(accepted.control.drainSignal.aborted).toBe(true); expect(accepted.control.signal.aborted).toBe(false);
+    expect(accepted.control.failure).toBeUndefined();
+    const rejected = fixture(); rejected.input.emit("data", Buffer.alloc(4097 - drainCommand.length, 32)); rejected.input.emit("data", drainCommand);
+    expect(rejected.control.failure).toBeInstanceOf(Error); expect(rejected.control.signal.aborted).toBe(true);
+    expect(rejected.control.drainSignal.aborted).toBe(false);
+  });
+  it.each(["SIGINT", "SIGTERM"])("escalates a requested drain on %s without rewriting its first reason", signal => {
+    const f = fixture(); f.input.emit("data", drainCommand); f.host.emit(signal);
+    expect(f.control.reason).toBe("stdin-drain"); expect(f.control.drainSignal.aborted).toBe(true);
+    expect(f.control.signal.aborted).toBe(true); expect(f.control.failure).toBeUndefined();
+  });
+  it.each(["trailing", "shutdown", "drain", "transport"])("escalates drain on later %s input", kind => {
+    const f = fixture(); f.input.emit("data", drainCommand);
+    if (kind === "transport") f.input.emit("error", Error("lost parent control"));
+    else f.input.emit("data", kind === "shutdown" ? command : kind === "drain" ? drainCommand : Buffer.from(" "));
+    expect(f.control.reason).toBe("stdin-drain"); expect(f.control.failure).toBeInstanceOf(Error);
+    expect(f.control.signal.aborted).toBe(true); expect(f.control.drainSignal.aborted).toBe(true);
   });
   it("keeps partial command bytes pending across every possible boundary", () => {
     for (let split = 1; split < command.length; split++) {
@@ -52,6 +90,11 @@ describe("fixed application bootstrap shutdown control", () => {
     Buffer.concat([command, Buffer.from(" ")]),
     Buffer.concat([command, Buffer.from([0xe2])]),
     Buffer.from('{"version":1,"kind":"shutdown","command":"run"}\n'),
+    Buffer.from('{"version":1,"kind":"drain","command":"run"}\n'),
+    Buffer.from('{"version":1,"kind":"drain","kind":"drain"}\n'),
+    Buffer.from('{"version":2,"kind":"drain"}\n'),
+    Buffer.from('{"version":1,"kind":"dr\\u0061in"}\n'),
+    Buffer.concat([drainCommand, command]),
     Buffer.from('{"version":1,"kind":"shutdown","version":1}\n'),
     Buffer.from('{"version":2,"kind":"shutdown"}\n'),
     Buffer.from('{"version":1,"kind":"restart"}\n'),
