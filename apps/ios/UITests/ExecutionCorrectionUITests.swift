@@ -607,10 +607,29 @@ final class ExecutionCorrectionUITests: XCTestCase {
     @MainActor
     private func preparePairingCodeInput(_ input: XCUIElement) throws {
         let started = ProcessInfo.processInfo.systemUptime, deadline = started + 10
-        let matches = app.textFields.matching(identifier: "pairingCode")
-        try require(input.identifier == "pairingCode" && input.elementType == .textField && matches.count == 1,
+        // Attribute queries each obtain a new accessibility snapshot. The CI
+        // failure spent the remaining budget re-reading this same field. Read
+        // identity, uniqueness and value from each bounded observation together;
+        // keep the separate native hittability check and the original deadline.
+        var snapshots = 0
+        func pairingField() throws -> XCUIElementSnapshot {
+            let root = try app.snapshot(); snapshots += 1
+            var pending = [root], visited = 0
+            var matches: [XCUIElementSnapshot] = []
+            while let node = pending.popLast() {
+                visited += 1
+                try require(visited <= 2048, "Pairing-code observation exceeds the native hierarchy bound")
+                if node.elementType == .textField && node.identifier == "pairingCode" { matches.append(node) }
+                pending.append(contentsOf: node.children)
+            }
+            try require(matches.count == 1, "Input preparation must retain one native pairing-code text field")
+            return matches[0]
+        }
+        let target = try input.snapshot(); snapshots += 1
+        let initial = try pairingField()
+        try require(target.identifier == "pairingCode" && target.elementType == .textField,
                     "Input preparation must target the unique native pairing-code text field")
-        guard let originalValue = input.value as? String else {
+        guard let originalValue = target.value as? String, initial.value as? String == originalValue else {
             throw correctionError("The pairing-code input must expose its existing native value before input preparation")
         }
         try requireForeground("preparing the pairing-code input")
@@ -623,7 +642,7 @@ final class ExecutionCorrectionUITests: XCTestCase {
         defer {
             let ended = ProcessInfo.processInfo.systemUptime
             let attachment = XCTAttachment(string:
-                "field=pairingCode; taps=\(taps); observations=\(observations); keyboard_available=\(lastKeyboard); " +
+                "field=pairingCode; taps=\(taps); observations=\(observations); snapshots=\(snapshots); keyboard_available=\(lastKeyboard); " +
                 "keyboard_observed_in_time=\(keyboardObservedInTime); prepared=\(prepared); " +
                 "precheck_seconds=\(actionStarted - started); " +
                 "tap_seconds=\(tapReturned.map { String($0 - actionStarted) } ?? "not_returned"); " +
@@ -651,8 +670,10 @@ final class ExecutionCorrectionUITests: XCTestCase {
         try require(remaining > 0, "The single pairing-code tap exceeded the ten-second preparation budget")
         try require(XCTWaiter.wait(for: [keyboardAvailable], timeout: remaining) == .completed && keyboardObservedInTime,
                     "The single pairing-code tap must leave the native keyboard available within the preparation budget")
-        try require(matches.count == 1 && input.isEnabled && input.isHittable
-                    && input.value as? String == originalValue && app.state == .runningForeground,
+        let hittable = input.isHittable
+        let current = try pairingField()
+        try require(hittable && current.isEnabled
+                    && current.value as? String == originalValue && app.state == .runningForeground,
                     "Input preparation must preserve the same unique editable pairing-code field and its original value")
         try require(ProcessInfo.processInfo.systemUptime <= deadline, "Pairing-code target revalidation exceeded the ten-second preparation budget")
         prepared = true
