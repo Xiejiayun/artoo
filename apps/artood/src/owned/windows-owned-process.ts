@@ -28,9 +28,12 @@ interface BackendState extends WindowsProcessBundleBinding {
   readonly guardian: boolean;
   readonly supervisor: boolean;
   readonly memberObservation: boolean;
+  readonly targetInput: boolean;
 }
 const backends = new WeakMap<object, BackendState>();
 const receipts = new WeakSet<object>();
+const targetInputReceipts = new WeakSet<object>();
+const targetInputCapability = "artoo.windows-target-input.v1";
 // A fixed installation audit may itself need a registered native collector.
 // Only the current synchronous audit can reenter; every entry still verifies
 // the original manifest, inventory and bytes. No state survives the call.
@@ -116,7 +119,8 @@ export function prepareWindowsProcessBackend(binding: WindowsProcessBundleBindin
     executable: join(directory, manifest.executable), helperSystemRoot, assertLocalInstallation: binding.assertLocalInstallation,
     guardian: Array.isArray(manifest.capabilities) && manifest.capabilities.includes("artoo.windows-runtime-guardian.v1"),
     supervisor: Array.isArray(manifest.capabilities) && manifest.capabilities.includes("artoo.windows-daemon-supervisor.v1"),
-    memberObservation: Array.isArray(manifest.capabilities) && manifest.capabilities.includes("artoo.windows-job-member-observation.v1") });
+    memberObservation: Array.isArray(manifest.capabilities) && manifest.capabilities.includes("artoo.windows-job-member-observation.v1"),
+    targetInput: Array.isArray(manifest.capabilities) && manifest.capabilities.includes(targetInputCapability) });
   validateBundle(state);
   const backend = Object.freeze({}) as PreparedWindowsProcessBackend; backends.set(backend, state); return backend;
 }
@@ -139,6 +143,19 @@ export interface WindowsOwnedStart {
   readonly normalExitGraceMs: number; readonly signal?: AbortSignal;
   /** Original single-use native reservation. Never accepted from a remote launch payload. */
   readonly guardianSlot?: PreparedWindowsGuardianSlot;
+  /** Opt-in only. Ordinary targets retain NUL stdin, including on older bundles. */
+  readonly targetInput?: { readonly version: 1; readonly mode: "single-message-eof"; readonly maximumBytes: 4096 };
+}
+export interface WindowsOwnedTargetInputClosure {
+  readonly version: 1; readonly pipeCreated: boolean; readonly writeRequested: boolean;
+  readonly requestId: string | null; readonly bytesWritten: number; readonly inputClosed: boolean;
+}
+export interface OriginalTargetInputReceipt {
+  readonly version: 1; readonly token: string; readonly requestId: string;
+  readonly bytesWritten: number; readonly sha256: string; readonly inputClosed: true;
+}
+export function isWindowsOwnedTargetInputReceipt(value: unknown): value is OriginalTargetInputReceipt {
+  return typeof value === "object" && value !== null && targetInputReceipts.has(value);
 }
 interface NativeClosure {
   rootCreated: boolean; rootStarted: boolean; rootPid: number | null; rootCreationTime: string | null;
@@ -147,6 +164,7 @@ interface NativeClosure {
   jobCreated: boolean; jobEmptyObserved: boolean; noTargetCreated: boolean;
   terminationReason: string | null; failureCode: string | null; nativeError: number | null;
   outputBytesObserved: number; outputBytesCaptured: number; cleanupConfirmed: boolean;
+  targetInput?: WindowsOwnedTargetInputClosure;
 }
 export interface WindowsOwnedClosureReceipt {
   readonly version: 1; readonly token: string; readonly elapsedMs: number;
@@ -160,6 +178,7 @@ export interface WindowsOwnedClosureReceipt {
   readonly helperSpawnObserved: boolean; readonly helperExitObserved: boolean; readonly helperCloseObserved: boolean;
   readonly helperExitCode: number | null; readonly helperSignal: NodeJS.Signals | null;
   readonly cleanupConfirmed: boolean;
+  readonly targetInput?: WindowsOwnedTargetInputClosure;
 }
 export class WindowsOwnedCleanupError extends Error {
   override readonly name = "WindowsOwnedCleanupError";
@@ -191,6 +210,8 @@ export interface WindowsOwnedProcess extends EventEmitter {
   cancel(): void;
   /** Read-only facts from this owner's original Job HANDLE; never execution/recovery authority. */
   observeMembers?(members: readonly WindowsJobMemberIdentity[], timeoutMs?: number): Promise<WindowsJobMemberObservation>;
+  /** One copied bounded message plus EOF to the target, never to the helper's control stdin. */
+  endInput?(bytes: Uint8Array): Promise<OriginalTargetInputReceipt>;
 }
 export interface WindowsJobMemberIdentity { readonly pid: number; readonly creationTime: string }
 export interface WindowsJobMemberObservation {
@@ -218,6 +239,16 @@ function nativeClosure(value: unknown): NativeClosure {
   for (const key of ["outputBytesObserved", "outputBytesCaptured"]) if (!Number.isSafeInteger(v[key]) || (v[key] as number) < 0) throw new Error("Invalid output count");
   for (const key of ["terminationReason", "failureCode"]) if (v[key] !== null && (typeof v[key] !== "string" || !/^[a-z_]{1,64}$/.test(v[key] as string))) throw new Error("Invalid reason");
   if (v.rootCreationTime !== null && (typeof v.rootCreationTime !== "string" || !/^\d{1,20}$/.test(v.rootCreationTime))) throw new Error("Invalid process identity");
+  if (v.targetInput !== undefined) {
+    const fact = v.targetInput as Record<string, unknown>;
+    if (!fact || typeof fact !== "object" || Array.isArray(fact) || Object.keys(fact).length !== 6 || fact.version !== 1
+      || typeof fact.pipeCreated !== "boolean" || typeof fact.writeRequested !== "boolean" || typeof fact.inputClosed !== "boolean"
+      || !Number.isSafeInteger(fact.bytesWritten) || (fact.bytesWritten as number) < 0 || (fact.bytesWritten as number) > 4096
+      || (fact.requestId !== null && (typeof fact.requestId !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(fact.requestId)))
+      || (fact.writeRequested ? !fact.pipeCreated || fact.requestId === null : fact.requestId !== null || fact.bytesWritten !== 0)
+      || (!fact.pipeCreated && fact.inputClosed)) throw new Error("Invalid target input closure");
+    Object.freeze(fact);
+  }
   return v as unknown as NativeClosure;
 }
 export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend, input: WindowsOwnedStart): WindowsOwnedProcess {
@@ -226,6 +257,11 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
   input.signal?.throwIfAborted();
   const args = [...input.args], env = normalizeEnvironment(input.env), signal = input.signal;
   const { executable, cwd, timeoutMs, maxOutputBytes, cleanupTimeoutMs, normalExitPolicy, normalExitGraceMs } = input;
+  const selectedInput = input.targetInput;
+  if (selectedInput !== undefined && (!selectedInput || typeof selectedInput !== "object" || Array.isArray(selectedInput)
+    || Object.keys(selectedInput).length !== 3 || selectedInput.version !== 1 || selectedInput.mode !== "single-message-eof"
+    || selectedInput.maximumBytes !== 4096)) throw new Error("Invalid bounded Windows target input selection");
+  const targetInput = selectedInput === undefined ? undefined : Object.freeze({ version: 1, mode: "single-message-eof", maximumBytes: 4096 } as const);
   if (!isAbsolute(executable) || !executable.toLowerCase().endsWith(".exe") || !isAbsolute(cwd)
     || [executable, cwd, ...args].some(value => typeof value !== "string" || value.includes("\0"))
     || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 43_200_000
@@ -234,6 +270,7 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
     || !Number.isInteger(normalExitGraceMs) || normalExitGraceMs < 0 || normalExitGraceMs > cleanupTimeoutMs
     || !["terminate-descendants", "require-empty"].includes(normalExitPolicy)) throw new Error("Invalid Windows owned process input");
   validateBundle(state); signal?.throwIfAborted();
+  if (targetInput && !state.targetInput) throw new Error("Installed Windows process bundle does not advertise target input v1");
   // Capture validated capability booleans for the later control-frame callback.
   const { guardian: installedGuardian, memberObservation: installedMemberObservation } = state;
   const guardian = consumeWindowsGuardianSlot(backend, input.guardianSlot, cwd);
@@ -241,7 +278,8 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
   if (performance.now() >= deadline) throw new Error("Windows process deadline elapsed before helper launch");
   const token = randomUUID(), stdout = new PassThrough(), stderr = new PassThrough(), emitter = new EventEmitter();
   if (Buffer.byteLength(JSON.stringify({ version: 1, kind: "launch", token, executable, args, cwd, env,
-    timeoutMs, maxOutputBytes, cleanupTimeoutMs, normalExitPolicy, normalExitGraceMs })) >= 1024 * 1024) throw new Error("Windows process launch frame exceeds its fixed bound");
+    timeoutMs, maxOutputBytes, cleanupTimeoutMs, normalExitPolicy, normalExitGraceMs,
+    ...(targetInput ? { targetInput } : {}) })) >= 1024 * 1024) throw new Error("Windows process launch frame exceeds its fixed bound");
   let resolveStarted!: (value: { pid: number; creationTime?: string }) => void, rejectStarted!: (error: Error) => void;
   let resolveClosed!: (value: WindowsOwnedClosureReceipt) => void, rejectClosed!: (error: Error) => void;
   const started = new Promise<{ pid: number; creationTime?: string }>((resolve, reject) => { resolveStarted = resolve; rejectStarted = reject; });
@@ -257,6 +295,14 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
   let terminalTimer: ReturnType<typeof setTimeout> | undefined, terminalDeadline: number | undefined;
   let memberCapability = false, observationCount = 0;
   let hostIdentity: WindowsJobMemberIdentity | undefined;
+  let inputRequest: { requestId: string; bytes: number; digest: string; deadline: number; acknowledged: boolean; settled: boolean;
+    timer: ReturnType<typeof setTimeout>; resolve: (value: OriginalTargetInputReceipt) => void; reject: (error: Error) => void } | undefined;
+  function rejectTargetInput(message: string): void {
+    if (!inputRequest || inputRequest.settled) return;
+    clearTimeout(inputRequest.timer); inputRequest.settled = true; inputRequest.reject(new Error(message));
+    // Keep the original request binding until owner closure: a real late ACK must
+    // still be checked, but can never revoke cancellation or resolve this promise.
+  }
   const pendingObservations = new Map<string, { members: readonly WindowsJobMemberIdentity[]; timer: ReturnType<typeof setTimeout>;
     resolve: (value: WindowsJobMemberObservation) => void; reject: (error: Error) => void }>();
   function rejectObservations(): void {
@@ -280,12 +326,14 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
       nativeTerminationReason: final?.terminationReason ?? null, failureCode: fatal ?? final?.failureCode ?? null, nativeError: final?.nativeError ?? null,
       outputBytesObserved: final?.outputBytesObserved ?? bytes, outputBytesCaptured: final?.outputBytesCaptured ?? bytes,
       helperSpawnObserved: helperSpawn, helperExitObserved: helperExit, helperCloseObserved: helperClose,
-      helperExitCode: helperStatus, helperSignal, cleanupConfirmed: complete });
+      helperExitCode: helperStatus, helperSignal, cleanupConfirmed: complete,
+      ...(final?.targetInput ? { targetInput: final.targetInput } : {}) });
   }
   function settle(): void {
     if (settled) return; settled = true;
     if (terminalDeadline !== undefined && performance.now() >= terminalDeadline) fatal ??= "terminal_closure_deadline";
     rejectObservations();
+    rejectTargetInput("Original Job owner closed before its target input acknowledgement");
     clearTimeout(operationTimer); clearTimeout(startupTimer); clearTimeout(cleanupTimer); clearTimeout(terminalTimer); signal?.removeEventListener("abort", onAbort);
     stdout.end(); stderr.end();
     const value = receipt(); receipts.add(value);
@@ -308,6 +356,7 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
   function stop(reason: string, protocolFailure = false): void {
     if (settled) return;
     requestedStop ??= reason; if (protocolFailure) fatal ??= reason;
+    rejectTargetInput("Original target input was cancelled before acknowledgement");
     if (dispatched && !child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.write(`${JSON.stringify({ version: 1, kind: "cancel", token })}\n`, () => {});
     child.stdin.end();
     // One fixed deadline. Repeated cancel/output cannot renew it.
@@ -329,6 +378,7 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
         hostIdentity = Object.freeze({ pid: identity.pid as number, creationTime: identity.creationTime });
       }
       if (guardian && (!installedGuardian || !Array.isArray(payload.capabilities) || !payload.capabilities.includes("artoo.windows-runtime-guardian.v1"))) throw new Error("Guardian host capability missing");
+      if (targetInput && (!Array.isArray(payload.capabilities) || !payload.capabilities.includes(targetInputCapability))) throw new Error("Target input host capability missing");
       memberCapability = installedMemberObservation && Array.isArray(payload.capabilities) && payload.capabilities.includes("artoo.windows-job-member-observation.v1");
       ready = true;
       if (!admittedToCaller) { stop("launch_abandoned"); return; }
@@ -337,7 +387,7 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
       dispatched = true;
       child.stdin.write(`${JSON.stringify({ version: 1, kind: "launch", token, executable, args, cwd, env,
         timeoutMs: Math.max(1, Math.floor(deadline - performance.now())), cleanupTimeoutMs, maxOutputBytes, normalExitPolicy, normalExitGraceMs,
-        ...(guardian ? { guardian } : {}) })}\n`,
+        ...(guardian ? { guardian } : {}), ...(targetInput ? { targetInput } : {}) })}\n`,
         error => { if (error) stop("control_write", true); });
       return;
     }
@@ -386,8 +436,29 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
       clearTimeout(pending.timer); pendingObservations.delete(payload.requestId as string);
       pending.resolve(Object.freeze({ version: 1, token, requestId: payload.requestId as string,
         observedElapsedMs: payload.observedElapsedMs, members: Object.freeze(members) }));
+    } else if (value.kind === "target_input_closed") {
+      if (!targetInput || !inputRequest || inputRequest.acknowledged || Object.keys(payload).length !== 4
+        || payload.requestId !== inputRequest.requestId || payload.bytesWritten !== inputRequest.bytes
+        || payload.sha256 !== inputRequest.digest || payload.inputClosed !== true) throw new Error("Unbound target input acknowledgement");
+      inputRequest.acknowledged = true; clearTimeout(inputRequest.timer);
+      if (!inputRequest.settled && performance.now() >= inputRequest.deadline) stop("target_input_timeout");
+      if (!inputRequest.settled) {
+        inputRequest.settled = true;
+        const acknowledged = Object.freeze({ version: 1 as const, token, requestId: inputRequest.requestId,
+          bytesWritten: inputRequest.bytes, sha256: inputRequest.digest, inputClosed: true as const });
+        targetInputReceipts.add(acknowledged); inputRequest.resolve(acknowledged);
+      }
     } else if (value.kind === "complete") {
       const result = nativeClosure(payload);
+      const inputFact = result.targetInput;
+      if (Boolean(targetInput && dispatched) !== Boolean(inputFact)
+        || (inputFact && ((result.rootCreated && !inputFact.pipeCreated)
+          || (inputFact.writeRequested && (!rootStarted || !inputRequest || inputFact.requestId !== inputRequest.requestId
+          || inputFact.bytesWritten > inputRequest.bytes))
+          || (result.cleanupConfirmed && inputFact.pipeCreated && !inputFact.inputClosed)
+          || (inputRequest?.acknowledged && (!inputFact.writeRequested || !inputFact.inputClosed || inputFact.bytesWritten !== inputRequest.bytes))
+          || (inputRequest && !inputRequest.acknowledged && result.cleanupConfirmed && result.terminationReason === null && !requestedStop))))
+        throw new Error("Inconsistent target input closure");
       if (neverDispatched && (!result.noTargetCreated || result.rootCreated || result.rootStarted || result.jobCreated
         || result.stdoutCreated || result.stderrCreated)) throw new Error("Unexpected work before dispatch");
       if (result.rootStarted !== rootStarted || (seenPid !== null && result.rootPid !== seenPid)
@@ -406,7 +477,8 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
         || (result.cleanupConfirmed && (!(result.noTargetCreated || result.rootWaitObserved)
           || (result.stdoutCreated && !result.stdoutEof) || (result.stderrCreated && !result.stderrEof)
           || (result.jobCreated && !result.jobEmptyObserved)))) throw new Error("Inconsistent closure");
-      final = result; clearTimeout(startupTimer); beginTerminalWait(2500); child.stdin.end();
+      final = result; rejectTargetInput("Original Job owner completed without its target input acknowledgement");
+      clearTimeout(startupTimer); beginTerminalWait(2500); child.stdin.end();
     } else throw new Error("Unknown frame");
   }
   child.once("spawn", () => { helperSpawn = true; });
@@ -453,8 +525,28 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
       child.stdin.write(line, error => { if (error) { clearTimeout(timer); pendingObservations.delete(requestId); reject(new Error("Original Job member observation input failed")); } });
     });
   }
+  async function endInput(inputBytes: Uint8Array): Promise<OriginalTargetInputReceipt> {
+    if (!targetInput || !rootStarted || settled || final || requestedStop || seenRootExit !== null || inputRequest
+      || helperExit || helperClose || child.stdin.destroyed || child.stdin.writableEnded)
+      throw new Error("Original live target does not accept another input message");
+    if (!(inputBytes instanceof Uint8Array) || inputBytes.byteLength < 1 || inputBytes.byteLength > targetInput.maximumBytes)
+      throw new Error("Target input must contain 1 through 4096 bytes");
+    const copied = Buffer.from(inputBytes), requestId = randomUUID(), digest = sha(copied);
+    if (copied.length < 1 || copied.length > targetInput.maximumBytes) throw new Error("Copied target input exceeds its fixed bound");
+    const inputDeadline = Math.min(deadline, performance.now() + 5000);
+    if (performance.now() >= inputDeadline) { stop("timeout"); throw new Error("Original target input deadline elapsed"); }
+    return await new Promise<OriginalTargetInputReceipt>((resolve, reject) => {
+      const timer = setTimeout(() => stop("target_input_timeout"), Math.max(1, inputDeadline - performance.now()));
+      // Claim the single request before writing, including a synchronous write callback.
+      inputRequest = { requestId, bytes: copied.length, digest, deadline: inputDeadline, acknowledged: false, settled: false, timer, resolve, reject };
+      try {
+        child.stdin.write(`${JSON.stringify({ version: 1, kind: "target_input", token, requestId, dataBase64: copied.toString("base64") })}\n`,
+          error => { if (error) stop("control_write", true); });
+      } catch { stop("control_write", true); }
+    });
+  }
   const result = Object.assign(emitter, { stdout, stderr, started, closed, cancel: () => stop("cancelled"),
-    ...(installedMemberObservation ? { observeMembers } : {}) });
+    ...(installedMemberObservation ? { observeMembers } : {}), ...(targetInput ? { endInput } : {}) });
   Object.defineProperties(result, { pid: { get: () => seenPid ?? undefined }, hostIdentity: { get: () => hostIdentity }, exitCode: { get: () => seenRootExit }, signalCode: { get: () => null } });
   try { signal?.addEventListener("abort", onAbort, { once: true }); if (signal?.aborted) onAbort(); }
   catch { stop("launch_abandoned"); throw new Error("Windows process cancellation observer could not be installed; target was not dispatched"); }

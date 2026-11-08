@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -22,6 +23,8 @@ internal static class Program
     private static long outputBytes;
     private static long capturedBytes;
     private const string MemberCapability = "artoo.windows-job-member-observation.v1";
+    private const string TargetInputCapability = "artoo.windows-target-input.v1";
+    private static TargetInputPump? targetStdin;
     private static readonly BlockingCollection<MemberObservation> observations = new(16);
     private static void Stop(string reason) => Interlocked.CompareExchange(ref stopReason, reason, null);
 
@@ -40,7 +43,7 @@ internal static class Program
         if (!Native.GetProcessTimes(new IntPtr(-1), out long hostCreation, out _, out _, out _)) return 2;
         if (!wire.Send("ready", new { protocol = "artoo.windows-job-process.v1", atomicJobList = true,
             hostIdentity = new { pid = (uint)Environment.ProcessId, creationTime = hostCreation.ToString(CultureInfo.InvariantCulture) },
-            capabilities = synchronous ? new[] { GuardianWire.Capability } : new[] { GuardianWire.Capability, MemberCapability } })) return 2;
+            capabilities = synchronous ? new[] { GuardianWire.Capability } : new[] { GuardianWire.Capability, MemberCapability, TargetInputCapability } })) return 2;
         Launch? request = null;
         string? failureCode = null;
         int? nativeError = null;
@@ -54,6 +57,7 @@ internal static class Program
         Native.PROCESS_INFORMATION process = default;
         PipePump? stdout = null, stderr = null;
         InputPump? stdin = null;
+        bool targetInputPipeCreated = false, untransferredInputClosed = false;
         Stopwatch elapsed = Stopwatch.StartNew();
         double? cleanupStarted = null, normalExitAt = null;
         int cleanupMs = 5000;
@@ -69,7 +73,7 @@ internal static class Program
             Validate(request); cleanupMs = request.CleanupTimeoutMs;
             // Synchronous collectors receive one fixed bounded input. Their original
             // guardian observes daemon death; ordinary stdio retains parent-EOF cancellation.
-            if (synchronous != (request.InputBase64 is not null) || (synchronous && request.Guardian is null))
+            if (synchronous != (request.InputBase64 is not null) || (synchronous && (request.Guardian is null || request.TargetInput is not null)))
                 throw new HostFailure("invalid_sync_request");
             byte[]? inputBytes = synchronous ? Convert.FromBase64String(request.InputBase64!) : null;
             if (inputBytes is not null && (inputBytes.Length > 16 * 1024 * 1024
@@ -93,9 +97,16 @@ internal static class Program
             Check(Native.SetHandleInformation(stdoutRead, 1, 0), "stdout_no_inherit");
             Check(Native.CreatePipe(out stderrRead, out stderrWrite, ref security, 0), "stderr_pipe");
             Check(Native.SetHandleInformation(stderrRead, 1, 0), "stderr_no_inherit");
-            if (synchronous) {
+            if (synchronous || request.TargetInput is not null) {
                 Check(Native.CreatePipe(out input, out inputWrite, ref security, 0), "stdin_pipe");
+                targetInputPipeCreated = request.TargetInput is not null;
                 Check(Native.SetHandleInformation(inputWrite, 1, 0), "stdin_no_inherit");
+                if (request.TargetInput is not null) {
+                    // This owner alone closes the noninheritable writer after transfer.
+                    // Its idle thread cannot send EOF during normal initialization.
+                    var owner = new TargetInputPump(inputWrite); owner.Start(); inputWrite = IntPtr.Zero;
+                    Volatile.Write(ref targetStdin, owner);
+                }
             } else {
                 input = Native.CreateFileW("NUL", 0x80000000, 3, ref security, 3, 0x80, IntPtr.Zero);
                 Check(input != new IntPtr(-1), "null_input");
@@ -150,6 +161,7 @@ internal static class Program
             if (previousSuspendCount != 1) throw new HostFailure(previousSuspendCount == uint.MaxValue ? "resume_failed" : "resume_state",
                 previousSuspendCount == uint.MaxValue ? Marshal.GetLastWin32Error() : null);
             started = true;
+            targetStdin?.Enable();
             wire.Send("started", new { pid = process.dwProcessId, creationTime = creation.ToString(CultureInfo.InvariantCulture) });
             if (synchronous) {
                 // Only the enrolled, resumed target may receive input. The writer owns
@@ -161,7 +173,14 @@ internal static class Program
         catch (Exception) { failureCode = "request_or_setup_failed"; Stop(failureCode); }
         finally
         {
-            Close(ref stdoutWrite); Close(ref stderrWrite); Close(ref input); Close(ref inputWrite);
+            Close(ref stdoutWrite); Close(ref stderrWrite); Close(ref input);
+            // Before transfer, setup still owns the original writer. Record its
+            // actual close result; the general best-effort Close cannot prove EOF.
+            if (request?.TargetInput is not null && inputWrite != IntPtr.Zero) {
+                untransferredInputClosed = Native.CloseHandle(inputWrite); inputWrite = IntPtr.Zero;
+                if (!untransferredInputClosed) Stop("input_close_failed");
+            } else Close(ref inputWrite);
+            if (!started) targetStdin?.AbortWaiting();
             if (attributesInitialized) Native.DeleteProcThreadAttributeList(attributes);
             // Attribute values are deliberately retained through DeleteProcThreadAttributeList.
             if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
@@ -187,6 +206,7 @@ internal static class Program
                     if (wait == 0)
                     {
                         rootWait = true; normalExitAt = now;
+                        targetStdin?.ObserveRootExit();
                         if (Native.GetExitCodeProcess(process.hProcess, out uint status))
                         { rootExit = status; wire.Send("root_exit", new { code = status }); }
                         else { failureCode ??= "exit_status"; nativeError ??= Marshal.GetLastWin32Error(); Stop("exit_status"); }
@@ -216,12 +236,15 @@ internal static class Program
                     // A failed membership query is never evidence that this exact suspended root is covered.
                     if (created && !member && !rootWait && !Native.TerminateProcess(process.hProcess, 0xE0000002))
                     { failureCode ??= "terminate_unconfirmed_root"; nativeError ??= Marshal.GetLastWin32Error(); }
+                    targetStdin?.AbortWaiting();
                 }
                 bool noRoot = !created && (!attemptedCreate || createReturned);
                 bool pipesClosed = (stdout is null || (guardian is null ? stdout.Eof : stdout.ObservedEof))
                     && (stderr is null || (guardian is null ? stderr.Eof : stderr.ObservedEof));
                 bool noJob = job == IntPtr.Zero;
-                if ((noRoot || rootWait) && pipesClosed && (noJob || jobEmpty) && (stdin is null || stdin.Closed)) { cleanupConfirmed = true; break; }
+                bool targetInputClosed = targetStdin is null ? !targetInputPipeCreated || untransferredInputClosed
+                    : targetStdin.Closed && targetStdin.Finished;
+                if ((noRoot || rootWait) && pipesClosed && (noJob || jobEmpty) && (stdin is null || stdin.Closed) && targetInputClosed) { cleanupConfirmed = true; break; }
                 if (cleanupStarted.HasValue && now - cleanupStarted.Value >= cleanupMs) break;
                 Thread.Sleep(10);
             }
@@ -243,6 +266,9 @@ internal static class Program
             } catch (Exception error) { Failed(error); }
             try { guardian?.Dispose(); } catch (Exception error) { Failed(error); }
             finished = true;
+            // An uncertain terminal path must also wake an idle input owner. A
+            // blocked write retains its HANDLE until I/O returns after Job teardown.
+            targetStdin?.AbortWaiting();
             // Job close is a safety fallback, not an observed successful receipt.
             void ReleaseHandle(ref IntPtr handle) {
                 try { Close(ref handle); } catch (Exception error) { Failed(error); }
@@ -255,19 +281,21 @@ internal static class Program
                 first.Throw();
             }
         }
-        bool sent = wire.Send("complete", new
-        {
-            rootCreated = created, rootStarted = started, rootPid = created ? (uint?)process.dwProcessId : null,
-            rootCreationTime = rootCreationTime?.ToString(CultureInfo.InvariantCulture), atomicJobMember = member,
-            rootWaitObserved = rootWait, rootExitCode = rootExit,
-            stdoutEof = stdout?.Eof ?? false, stderrEof = stderr?.Eof ?? false,
-            stdoutCreated = stdout is not null, stderrCreated = stderr is not null,
-            jobCreated = jobWasCreated, jobEmptyObserved = jobEmpty,
-            noTargetCreated = !created && (!attemptedCreate || createReturned),
-            terminationReason = Volatile.Read(ref stopReason) ?? (normalDescendants ? "normal_exit_descendants" : null),
-            failureCode, nativeError, outputBytesObserved = Interlocked.Read(ref outputBytes),
-            outputBytesCaptured = Interlocked.Read(ref capturedBytes), cleanupConfirmed
-        });
+        var completion = new Dictionary<string, object?> {
+            ["rootCreated"] = created, ["rootStarted"] = started, ["rootPid"] = created ? (uint?)process.dwProcessId : null,
+            ["rootCreationTime"] = rootCreationTime?.ToString(CultureInfo.InvariantCulture), ["atomicJobMember"] = member,
+            ["rootWaitObserved"] = rootWait, ["rootExitCode"] = rootExit,
+            ["stdoutEof"] = stdout?.Eof ?? false, ["stderrEof"] = stderr?.Eof ?? false,
+            ["stdoutCreated"] = stdout is not null, ["stderrCreated"] = stderr is not null,
+            ["jobCreated"] = jobWasCreated, ["jobEmptyObserved"] = jobEmpty,
+            ["noTargetCreated"] = !created && (!attemptedCreate || createReturned),
+            ["terminationReason"] = Volatile.Read(ref stopReason) ?? (normalDescendants ? "normal_exit_descendants" : null),
+            ["failureCode"] = failureCode, ["nativeError"] = nativeError, ["outputBytesObserved"] = Interlocked.Read(ref outputBytes),
+            ["outputBytesCaptured"] = Interlocked.Read(ref capturedBytes), ["cleanupConfirmed"] = cleanupConfirmed
+        };
+        if (request?.TargetInput is not null) completion["targetInput"] = targetStdin?.Snapshot()
+            ?? new TargetInputFacts(1, targetInputPipeCreated, false, null, 0, untransferredInputClosed);
+        bool sent = wire.Send("complete", completion);
         bool delivered = sent && wire.Finish(2000);
         if (request?.Guardian is not null) return guardianAcknowledged && cleanupConfirmed ? 0 : 2;
         return delivered ? (cleanupConfirmed ? 0 : 1) : 2;
@@ -289,6 +317,15 @@ internal static class Program
                     var cancel = JsonSerializer.Deserialize<Cancel>(line, Json);
                     if (cancel?.Version != 1 || cancel.Token != token) throw new HostFailure("control_protocol");
                     Stop("cancelled");
+                } else if (frame.RootElement.GetProperty("kind").GetString() == "target_input") {
+                    var request = JsonSerializer.Deserialize<TargetInputRequest>(line, Json);
+                    if (request is null || request.Version != 1 || request.Token != token
+                        || !Guid.TryParseExact(request.RequestId, "D", out _) || request.DataBase64 is null || request.DataBase64.Length > 5464)
+                        throw new HostFailure("control_protocol");
+                    byte[] bytes = Convert.FromBase64String(request.DataBase64);
+                    if (bytes.Length is < 1 or > 4096 || Convert.ToBase64String(bytes) != request.DataBase64
+                        || Volatile.Read(ref targetStdin)?.Submit(new TargetInputMessage(request.RequestId, bytes,
+                            "sha256:" + Convert.ToHexStringLower(SHA256.HashData(bytes)))) != true) throw new HostFailure("control_protocol");
                 } else {
                     var request = JsonSerializer.Deserialize<MemberObservation>(line, Json);
                     if (request is null || request.Version != 1 || request.Kind != "observe_members" || request.Token != token
@@ -345,6 +382,8 @@ internal static class Program
             || (request.NormalExitPolicy != "terminate-descendants" && request.NormalExitPolicy != "require-empty")
             || new[] { request.Executable, request.Cwd }.Concat(request.Args).Any(value => value is null || value.Contains('\0')))
             throw new HostFailure("invalid_request");
+        if (request.TargetInput is not null && (request.TargetInput.Version != 1
+            || request.TargetInput.Mode != "single-message-eof" || request.TargetInput.MaximumBytes != 4096)) throw new HostFailure("invalid_target_input");
         _ = EnvironmentBlock(request.Env);
     }
     private static string EnvironmentBlock(Dictionary<string, string> input)
@@ -384,10 +423,70 @@ internal static class Program
         public string NormalExitPolicy { get; init; } = ""; public int NormalExitGraceMs { get; init; }
         public GuardianEnrollment? Guardian { get; init; }
         public string? InputBase64 { get; init; }
+        public TargetInputSelection? TargetInput { get; init; }
     }
     private sealed class Cancel { public int Version { get; init; } public string Kind { get; init; } = ""; public string Token { get; init; } = ""; }
     private sealed record MemberIdentity(uint Pid, string CreationTime);
     private sealed record MemberObservation(int Version, string Kind, string Token, string RequestId, MemberIdentity[] Members);
+    private sealed record TargetInputSelection(int Version, string Mode, int MaximumBytes);
+    private sealed record TargetInputRequest(int Version, string Kind, string Token, string RequestId, string DataBase64);
+    private sealed record TargetInputMessage(string RequestId, byte[] Bytes, string Digest);
+    private sealed record TargetInputFacts(int Version, bool PipeCreated, bool WriteRequested, string? RequestId, long BytesWritten, bool InputClosed);
+    private sealed class TargetInputPump(IntPtr handle)
+    {
+        private readonly object gate = new();
+        private TargetInputMessage? message;
+        private bool enabled, rootExited, aborted;
+        private long bytesWritten;
+        public volatile bool Closed;
+        public volatile bool Finished;
+        public void Start() => new Thread(Run) { IsBackground = true, Name = "artoo-target-input" }.Start();
+        public void Enable() { lock (gate) enabled = true; }
+        public bool Submit(TargetInputMessage value) {
+            lock (gate) {
+                if (!enabled || message is not null || rootExited || aborted || Finished || Volatile.Read(ref stopReason) is not null) return false;
+                message = value; Monitor.Pulse(gate); return true;
+            }
+        }
+        public void ObserveRootExit() { lock (gate) { rootExited = true; Monitor.Pulse(gate); } }
+        public void AbortWaiting() { lock (gate) { aborted = true; Monitor.Pulse(gate); } }
+        public TargetInputFacts Snapshot() {
+            lock (gate) return new(1, true, message is not null, message?.RequestId, Interlocked.Read(ref bytesWritten), Closed);
+        }
+        private void Run() {
+            TargetInputMessage? request = null; bool write = false, writtenAll = false;
+            try {
+                lock (gate) {
+                    while (message is null && !rootExited && !aborted) Monitor.Wait(gate);
+                    request = message;
+                    write = request is not null && !rootExited && !aborted && Volatile.Read(ref stopReason) is null;
+                }
+                if (request is not null && !write) Stop("input_target_exited");
+                if (write) {
+                    // Do not hold the state gate during kernel I/O. Even a bounded
+                    // write may block: the main owner must still enforce its Job deadline.
+                    bool success = Native.WriteFile(handle, request!.Bytes, (uint)request.Bytes.Length, out uint count, IntPtr.Zero);
+                    Interlocked.Exchange(ref bytesWritten, count);
+                    writtenAll = success && count == request.Bytes.Length;
+                    if (!writtenAll) Stop("input_write_failed");
+                }
+            } catch (Exception) { Stop("input_write_failed"); }
+            finally {
+                try {
+                    if (Native.CloseHandle(handle)) Closed = true;
+                    else Stop("input_close_failed");
+                    if (writtenAll && Closed && !finished) {
+                        wire!.Send("target_input_closed", new { requestId = request!.RequestId, bytesWritten = Interlocked.Read(ref bytesWritten),
+                            sha256 = request.Digest, inputClosed = true });
+                    }
+                } catch (Exception) { Stop(Closed ? "input_ack_failed" : "input_close_failed"); }
+                finally {
+                    // A terminal frame must not race ahead of this owner's ACK attempt.
+                    Finished = true;
+                }
+            }
+        }
+    }
     private sealed class InputPump(IntPtr handle, byte[] input)
     {
         public volatile bool Closed;

@@ -50,7 +50,7 @@ vi.mock("node:fs", () => ({
 }));
 
 import {
-  isWindowsOwnedClosureReceipt, prepareWindowsProcessBackend, startWindowsOwnedProcess,
+  isWindowsOwnedClosureReceipt, isWindowsOwnedTargetInputReceipt, prepareWindowsProcessBackend, startWindowsOwnedProcess,
   WindowsOwnedCleanupError, WindowsOwnedStartupError, type WindowsOwnedClosureReceipt, type WindowsOwnedProcess,
   type WindowsOwnedStart,
 } from "./windows-owned-process.js";
@@ -135,6 +135,30 @@ function begin(overrides: Partial<WindowsOwnedStart> = {}) {
   const run = startWindowsOwnedProcess(prepare(), input(overrides)); runs.push(run);
   const helper = helpers.at(-1)!; helper.emit("spawn");
   return { run, helper };
+}
+const INPUT_CAPABILITY = "artoo.windows-target-input.v1";
+const INPUT_SELECTION = { version: 1, mode: "single-message-eof", maximumBytes: 4096 } as const;
+function advertiseInput(): void {
+  const manifest = JSON.parse(mocked.files.get(`${mocked.bundle}\\manifest.json`)!.toString("utf8"));
+  manifest.capabilities = [INPUT_CAPABILITY]; const bytes = Buffer.from(JSON.stringify(manifest));
+  mocked.files.set(`${mocked.bundle}\\manifest.json`, bytes); manifestSha256 = sha(bytes);
+}
+function beginInput(overrides: Partial<WindowsOwnedStart> = {}) {
+  advertiseInput(); const value = begin({ targetInput: INPUT_SELECTION, ...overrides });
+  value.helper.ready([INPUT_CAPABILITY]); value.helper.created(); value.helper.started(); return value;
+}
+function inputRequest(helper: ControlledHelper): ControlWrite {
+  const request = helper.writes.find(write => write.kind === "target_input");
+  if (!request) throw new Error("Controlled input was not submitted"); return request;
+}
+function acknowledgeInput(helper: ControlledHelper, payload: Record<string, unknown> = {}, frame: Record<string, unknown> = {}): void {
+  const request = inputRequest(helper), bytes = Buffer.from(request.dataBase64 as string, "base64");
+  helper.send("target_input_closed", { requestId: request.requestId, bytesWritten: bytes.length, sha256: sha(bytes), inputClosed: true, ...payload }, frame);
+}
+function inputFinal(helper: ControlledHelper, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const request = helper.writes.find(write => write.kind === "target_input");
+  return { version: 1, pipeCreated: true, writeRequested: !!request, requestId: request?.requestId ?? null,
+    bytesWritten: request ? Buffer.from(request.dataBase64 as string, "base64").length : 0, inputClosed: true, ...overrides };
 }
 async function beginRegisteredGuardian() {
   const capability = "artoo.windows-runtime-guardian.v1", uuid = (index: number) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
@@ -510,5 +534,190 @@ describe("controlled Windows protocol, not native containment", () => {
     const helper = helpers.at(-1)!; helper.emit("spawn"); helper.ready();
     expect(helper.writes).toEqual([]); expect(helper.stdin.writableEnded).toBe(true);
     helper.send("complete", noTargetFinal(), { token: null }); helper.exit(); helper.close();
+  });
+});
+
+describe("controlled target input protocol, not native WriteFile/CloseHandle evidence", () => {
+  it("retains legacy NUL selection without exposing endInput even when a new helper advertises the capability", async () => {
+    advertiseInput(); const { run, helper } = begin(); helper.ready([INPUT_CAPABILITY]); helper.created(); helper.started();
+    expect(run.endInput).toBeUndefined(); expect(helper.launch).not.toHaveProperty("targetInput");
+    completeRoot(helper); helper.exit(); helper.close(); expect((await run.closed).targetInput).toBeUndefined();
+  });
+
+  it("rejects an old manifest before spawning or consuming a launch slot", () => {
+    expect(() => begin({ targetInput: INPUT_SELECTION })).toThrow(/does not advertise target input/);
+    expect(mocked.spawn).not.toHaveBeenCalled();
+  });
+
+  it("requires the ready capability before sending launch to a helper", async () => {
+    advertiseInput(); const { run, helper } = begin({ targetInput: INPUT_SELECTION }); helper.ready();
+    expect(helper.launch).toBeUndefined(); await rejectedClosure(run, helper);
+  });
+
+  it.each([
+    { version: 2, mode: "single-message-eof", maximumBytes: 4096 },
+    { version: 1, mode: "stream", maximumBytes: 4096 },
+    { version: 1, mode: "single-message-eof", maximumBytes: 4097 },
+    { ...INPUT_SELECTION, remoteCommand: "not-allowed" }, null,
+  ])("rejects a malformed local selection before spawning: %j", selection => {
+    advertiseInput(); expect(() => begin({ targetInput: selection as WindowsOwnedStart["targetInput"] })).toThrow(/target input selection/);
+    expect(mocked.spawn).not.toHaveBeenCalled();
+  });
+
+  it("copies the launch selection before the ready callback and admits input only after started", async () => {
+    advertiseInput(); const selection = { ...INPUT_SELECTION }, { run, helper } = begin({ targetInput: selection });
+    await expect(run.endInput!(Buffer.from("x"))).rejects.toThrow(/live target/);
+    Object.assign(selection, { maximumBytes: 100 }); helper.ready([INPUT_CAPABILITY]); helper.created();
+    expect(helper.launch?.targetInput).toEqual(INPUT_SELECTION);
+    await expect(run.endInput!(Buffer.from("x"))).rejects.toThrow(/live target/);
+    helper.started(); const writing = run.endInput!(Buffer.from("x")); acknowledgeInput(helper); await writing;
+  });
+
+  it.each([new Uint8Array(0), new Uint8Array(4097), "x"])("rejects invalid bytes before consuming the single request", async bytes => {
+    const { run, helper } = beginInput(); await expect(run.endInput!(bytes as Uint8Array)).rejects.toThrow(/1 through 4096/);
+    expect(helper.writes.filter(write => write.kind === "target_input")).toHaveLength(0);
+    const writing = run.endInput!(Buffer.from("valid")); acknowledgeInput(helper); await writing;
+  });
+
+  it("copies the exact view, accepts 4096 bytes once, and leaves helper control stdin open after ACK", async () => {
+    const { run, helper } = beginInput(), backing = new Uint8Array(4100).fill(7), view = backing.subarray(2, 4098);
+    const expected = Buffer.from(view), writing = run.endInput!(view); backing.fill(9);
+    await expect(run.endInput!(expected)).rejects.toThrow(/another input/);
+    expect(Buffer.from(inputRequest(helper).dataBase64 as string, "base64")).toEqual(expected);
+    expect(helper.writes.filter(write => write.kind === "target_input")).toHaveLength(1);
+    acknowledgeInput(helper); const receipt = await writing;
+    expect(receipt).toEqual({ version: 1, token: helper.launch!.token, requestId: inputRequest(helper).requestId,
+      bytesWritten: 4096, sha256: sha(expected), inputClosed: true });
+    expect(isWindowsOwnedTargetInputReceipt(receipt)).toBe(true); expect(Object.isFrozen(receipt)).toBe(true);
+    expect(isWindowsOwnedTargetInputReceipt({ ...receipt })).toBe(false); expect(helper.stdin.writableEnded).toBe(false);
+    await expectPending(run);
+    completeRoot(helper, { targetInput: inputFinal(helper) }); await expectPending(run);
+    helper.exit(); await expectPending(run); helper.close();
+    expect(await run.closed).toMatchObject({ cleanupConfirmed: true, terminationReason: null, targetInput: inputFinal(helper) });
+  });
+
+  it("allows natural initialization exit without submitting input and requires the writer close fact", async () => {
+    const { run, helper } = beginInput(); completeRoot(helper, { targetInput: inputFinal(helper) }); helper.exit(); helper.close();
+    const receipt = await run.closed;
+    expect(receipt).toMatchObject({ cleanupConfirmed: true, terminationReason: null,
+      targetInput: { pipeCreated: true, writeRequested: false, requestId: null, bytesWritten: 0, inputClosed: true } });
+    expect(Object.isFrozen(receipt.targetInput)).toBe(true);
+    expect(helper.writes.some(write => write.kind === "target_input")).toBe(false);
+  });
+
+  it("accepts a pending real ACK after root_exit but never admits a new input after that exit", async () => {
+    const { run, helper } = beginInput(), writing = run.endInput!(Buffer.from("shutdown\n"));
+    helper.rootExit(); await expect(run.endInput!(Buffer.from("again"))).rejects.toThrow(/live target/);
+    acknowledgeInput(helper); await writing; helper.eof("stdout"); helper.eof("stderr");
+    helper.send("complete", normalFinal({ targetInput: inputFinal(helper) })); helper.exit(); helper.close();
+    expect(await run.closed).toMatchObject({ cleanupConfirmed: true, terminationReason: null });
+  });
+
+  it.each([
+    ["request ID", { requestId: "00000000-0000-4000-8000-000000000001" }],
+    ["byte count", { bytesWritten: 0 }], ["digest", { sha256: sha("different") }],
+    ["close evidence", { inputClosed: false }], ["extra fields", { extra: true }],
+  ])("rejects an ACK with changed %s", async (_label, payload) => {
+    const { run, helper } = beginInput(), writing = run.endInput!(Buffer.from("x"));
+    const rejected = expect(writing).rejects.toThrow(/cancelled/); acknowledgeInput(helper, payload as Record<string, unknown>);
+    await rejected; await rejectedClosure(run, helper);
+  });
+
+  it.each([{ token: "other-launch" }, { sequence: 999 }])("rejects ACK frame rebinding: %j", async frame => {
+    const { run, helper } = beginInput(), writing = run.endInput!(Buffer.from("x"));
+    const rejected = expect(writing).rejects.toThrow(/cancelled/); acknowledgeInput(helper, {}, frame);
+    await rejected; await rejectedClosure(run, helper);
+  });
+
+  it("rejects unsolicited or replayed ACKs", async () => {
+    const first = beginInput(); first.helper.send("target_input_closed", { requestId: "unrequested", bytesWritten: 1, sha256: sha("x"), inputClosed: true });
+    await rejectedClosure(first.run, first.helper);
+    const second = beginInput(), writing = second.run.endInput!(Buffer.from("x")); acknowledgeInput(second.helper); await writing;
+    acknowledgeInput(second.helper); await rejectedClosure(second.run, second.helper);
+  });
+
+  it("rejects target input facts on an ordinary legacy launch", async () => {
+    const { run, helper } = begin(); establishRoot(helper); completeRoot(helper, { targetInput: inputFinal(helper) });
+    await rejectedClosure(run, helper);
+  });
+
+  it.each([
+    ["absent facts", undefined], ["closed before pipe creation", { pipeCreated: false }],
+    ["missing pipe for a created root", { pipeCreated: false, inputClosed: false }],
+    ["writer not closed", { inputClosed: false }], ["unrequested write", { writeRequested: true }],
+    ["unrequested bytes", { bytesWritten: 1 }], ["unsupported version", { version: 2 }], ["extra facts", { extra: true }],
+  ])("does not accept normal closure with %s", async (_label, changes) => {
+    const { run, helper } = beginInput();
+    completeRoot(helper, { targetInput: changes === undefined ? undefined : inputFinal(helper, changes as Record<string, unknown>) });
+    await rejectedClosure(run, helper);
+  });
+
+  it("does not replace a missing ACK with a successful-looking complete payload", async () => {
+    const { run, helper } = beginInput(), writing = run.endInput!(Buffer.from("x"));
+    const rejected = expect(writing).rejects.toThrow(/cancelled/); completeRoot(helper, { targetInput: inputFinal(helper) });
+    await rejected; await rejectedClosure(run, helper);
+  });
+
+  it("preserves actual partial-write failure while rejecting the input promise", async () => {
+    const { run, helper } = beginInput(), writing = run.endInput!(Buffer.from("partial"));
+    const rejected = expect(writing).rejects.toThrow(/without.*acknowledgement/);
+    completeRoot(helper, { targetInput: inputFinal(helper, { bytesWritten: 2 }), terminationReason: "input_write_failed" });
+    helper.exit(); helper.close(); await rejected;
+    expect(await run.closed).toMatchObject({ cleanupConfirmed: true, terminationReason: "input_write_failed", targetInput: { bytesWritten: 2 } });
+  });
+
+  it("records a setup failure before a pipe existed without fabricating a writer close", async () => {
+    advertiseInput(); const { run, helper } = begin({ targetInput: INPUT_SELECTION }); helper.ready([INPUT_CAPABILITY]);
+    helper.send("complete", noTargetFinal({ terminationReason: "stdin_pipe", failureCode: "stdin_pipe", nativeError: 5,
+      targetInput: inputFinal(helper, { pipeCreated: false, inputClosed: false }) })); helper.exit(); helper.close();
+    expect(await run.closed).toMatchObject({ cleanupConfirmed: true, terminationReason: "stdin_pipe", targetInput: { pipeCreated: false, inputClosed: false } });
+  });
+
+  it.each(["cancel", "input deadline"])("retains the request binding after %s without allowing a late ACK to restore success", async reason => {
+    const { run, helper } = beginInput(), writing = run.endInput!(Buffer.from("x"));
+    const rejected = expect(writing).rejects.toThrow(/cancelled/);
+    if (reason === "cancel") run.cancel(); else vi.advanceTimersByTime(5000);
+    await rejected; acknowledgeInput(helper);
+    const terminationReason = reason === "cancel" ? "cancelled" : "target_input_timeout";
+    completeRoot(helper, { targetInput: inputFinal(helper), terminationReason: "cancelled" }); helper.exit(); helper.close();
+    expect(await run.closed).toMatchObject({ cleanupConfirmed: true, terminationReason, failureCode: null });
+  });
+
+  it("checks the original ACK deadline even before its timer callback executes", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(100);
+    try {
+      const { run, helper } = beginInput(), writing = run.endInput!(Buffer.from("x"));
+      const rejected = expect(writing).rejects.toThrow(/cancelled/); clock.mockReturnValue(5100); acknowledgeInput(helper); await rejected;
+      completeRoot(helper, { targetInput: inputFinal(helper), terminationReason: "cancelled" }); helper.exit(); helper.close();
+      expect(await run.closed).toMatchObject({ terminationReason: "target_input_timeout" });
+    } finally { clock.mockRestore(); }
+  });
+
+  it("never renews the earlier original operation deadline to await input", async () => {
+    const { run, helper } = beginInput({ timeoutMs: 1000 }), writing = run.endInput!(Buffer.from("x"));
+    const rejected = expect(writing).rejects.toThrow(/cancelled/); vi.advanceTimersByTime(1000); await rejected;
+    completeRoot(helper, { targetInput: inputFinal(helper, { bytesWritten: 0 }), terminationReason: "timeout" }); helper.exit(); helper.close();
+    expect(await run.closed).toMatchObject({ terminationReason: "timeout" });
+  });
+
+  it("settles outstanding input on helper loss while keeping closure unconfirmed", async () => {
+    const { run, helper } = beginInput(), writing = run.endInput!(Buffer.from("x"));
+    const rejected = expect(writing).rejects.toThrow(/closed before/);
+    await rejectedClosure(run, helper, "missing_complete"); await rejected;
+  });
+
+  it("rejects new input after the actual helper exit observation", async () => {
+    const { run, helper } = beginInput(); helper.exit();
+    await expect(run.endInput!(Buffer.from("x"))).rejects.toThrow(/live target/);
+    expect(helper.writes.some(write => write.kind === "target_input")).toBe(false);
+    await rejectedClosure(run, helper, "missing_complete");
+  });
+
+  it("rejects outstanding input on the original control stream error", async () => {
+    const { run, helper } = beginInput(), writing = run.endInput!(Buffer.from("x"));
+    const rejected = expect(writing).rejects.toThrow(/cancelled/);
+    helper.stdin.emit("error", new Error("controlled pipe error")); await rejected;
+    expect(helper.writes.some(write => write.kind === "cancel")).toBe(true);
+    await rejectedClosure(run, helper, "control_write");
   });
 });

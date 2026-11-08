@@ -140,13 +140,32 @@ Every capability, candidate and observation retains
 waiting with an explicit unsupported-publication reason. It cannot enter the
 static release executor or substitute a static site's receipt to become complete.
 
-The fixed bootstrap uses its original `ChildProcess`, fixed stdin shutdown,
-original exit/close and both output EOFs. Its trusted internal summary additionally
-requires original runtime/broker normal-closure counts, installed-session release
-and final audits. This is **not atomic outer Windows Job containment**. Compiler,
-runtime and broker retain their original native owners; a complete outer Job
-stdin bridge and its failure qualification remain production requirements.
-Forced or unknown host closure cannot pass.
+The fixed bootstrap now uses the original `WindowsOwnedProcess` in source, with
+`require-empty` and the optional [Windows target input bridge](windows-owned-target-input.md).
+Both initialization and service select its manifest/ready-gated capability.
+Initialization submits no input; the owner keeps the writer open until the original
+root exit. Service shutdown submits the one fixed JSON message and requires the
+original write-and-close ACK, bound to the exact native closure's token, request
+and byte/digest facts. Native owner closure, both original output streams and the
+ACK are joined before the internal closure summary can qualify the operation.
+The summary still requires original runtime/broker normal-closure counts,
+installed-session release and final audits. Forced or unknown host closure cannot
+pass, even if its output reports success.
+
+Guardian-bound launches reserve one verifier slot from the original authenticated
+scope. Its binding includes the fixed launch, protected selection, input mode and
+original absolute deadline. The fixed host uses that scope's workspace as its cwd;
+unregistered launches retain the protected host directory. Every host input path
+remains absolute and protected. Native timeout is calculated after reservation
+and re-audit, while the original deadline also covers the initial profile audit,
+selection preparation, final owner closure and final returned-store pin audit.
+Startup failure and cancellation wait for the original owner's `closed` promise;
+an independent wrapper timer cannot release ownership early. Original failures,
+native termination facts and cancellation/cleanup errors are retained as causes.
+
+This integration and its controlled regression cases have not been compiled or
+run. Exact native input/Job behavior, nested owners and the complete application
+bootstrap sequence still require fresh validation before a qualification claim.
 
 Normal API/browser/reopen checks do not prove crash recovery, migration rollback,
 backup/restore, arbitrary application stacks, all viewport behavior, every
