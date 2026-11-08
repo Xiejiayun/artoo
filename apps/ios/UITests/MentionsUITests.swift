@@ -254,13 +254,25 @@ final class MentionsUITests: XCTestCase {
     }
     @MainActor
     private func openMentions() throws {
-        app.tabBars.buttons["Inbox"].tap()
-        if app.navigationBars["Thread"].exists { try backToMentions(); return }
-        if app.navigationBars["Mentions"].exists { return }
+        let deadline = Date().addingTimeInterval(15)
+        let inbox = app.tabBars.buttons["Inbox"]
+        inbox.tap()
+        let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: inbox)
+        try requireNavigation(selected, before: deadline, "One Inbox tap must select the actual Inbox tab")
+        // First entry and relaunch start at Today. A thread from another tab
+        // must never authorize a back action in the Inbox navigation stack.
+        let today = app.navigationBars["Today"]
         let entry = app.buttons["inbox.mentions"]
-        try require(entry.waitForExistence(timeout: 15) && entry.isHittable, "Inbox must expose its actual Mentions entry")
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            inbox.isSelected && today.exists && entry.exists && entry.isEnabled && entry.isHittable
+        }, object: app)
+        try requireNavigation(ready, before: deadline, "Inbox Today must expose its actual Mentions entry")
         entry.tap()
-        try require(app.navigationBars["Mentions"].waitForExistence(timeout: 15), "Inbox must open the global mentions list")
+        let mentions = app.navigationBars["Mentions"]
+        let opened = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            inbox.isSelected && mentions.exists
+        }, object: app)
+        try requireNavigation(opened, before: deadline, "Inbox must open the global mentions list")
     }
     @MainActor
     private func openNotice(_ id: String) throws {
@@ -270,9 +282,28 @@ final class MentionsUITests: XCTestCase {
     }
     @MainActor
     private func backToMentions() throws {
-        try require(app.navigationBars["Thread"].exists, "Back must leave the actual thread destination")
-        app.navigationBars["Thread"].buttons.firstMatch.tap()
-        try require(app.navigationBars["Mentions"].waitForExistence(timeout: 15), "Back must retain the global mentions list")
+        let deadline = Date().addingTimeInterval(15)
+        let inbox = app.tabBars.buttons["Inbox"]
+        let thread = app.navigationBars["Thread"]
+        let back = thread.buttons["BackButton"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            inbox.isSelected && thread.exists && back.exists && back.label == "Mentions" && back.isEnabled && back.isHittable
+        }, object: app)
+        try requireNavigation(ready, before: deadline, "Back must leave the Inbox thread through its exact Mentions back button")
+        back.tap()
+        let mentions = app.navigationBars["Mentions"]
+        let returned = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            inbox.isSelected && mentions.exists
+        }, object: app)
+        try requireNavigation(returned, before: deadline, "Back must retain the global mentions list")
+    }
+    @MainActor
+    private func requireNavigation(_ expectation: XCTestExpectation, before deadline: Date, _ reason: String) throws {
+        // Every observation in one navigation action shares its original 15s
+        // budget; a failed tab selection cannot gain another wait or tap.
+        let remaining = deadline.timeIntervalSinceNow
+        try require(remaining > 0 && XCTWaiter.wait(for: [expectation], timeout: remaining) == .completed
+                    && Date() < deadline, reason)
     }
     @MainActor
     private func row(_ id: String, value: String) throws {
