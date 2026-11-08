@@ -1,11 +1,11 @@
 # Windows owned target input
 
-Status: source implementation and controlled regression cases only. This increment
-has not been compiled, built, tested or exercised with a native helper. It does not
-enable application publication, qualify a node, or replace application acceptance.
-The application verification bootstrap is integrated with this owner in source;
-its composed native behavior remains untested. Existing product qualification and
-unsupported-publication gates remain.
+Status: TypeScript checks, the full workspace build and a fresh native build have
+passed. The first real native fixture at `3f017a8` passed five of seven cases;
+the remaining two failed an input-identity check described below. This increment
+does not enable application publication, qualify a node, or replace application
+acceptance. The complete application bootstrap sequence still awaits actual
+execution. Existing product qualification and unsupported-publication gates remain.
 
 `startWindowsOwnedProcess` has an optional local selection:
 
@@ -74,10 +74,23 @@ facts are additional to atomic Job enrollment, the original root HANDLE wait,
 both output EOFs, Job-zero and actual helper exit/close. An input ACK alone cannot
 substitute for any of those checks or for internal runtime/broker normal closure.
 
-The controlled TypeScript cases simulate transport events and do not establish
-Win32 handle behavior. The separately gated native fixture sources are documented
-in [their README](../apps/artood/test-fixtures/windows-target-input-README.md).
-After scheduling, run the focused protocol suite, the project checks, a fresh
-native build and the exact installed-bundle fixtures. Native cancellation, setup
-and pipe failure, nested Job behavior and actual application bootstrap execution
-must be qualified before this can support a live product acceptance claim.
+The four complete controlled suites passed 198 tests after correcting an
+incomplete routing fixture; the original 194-pass/four-failure result is retained.
+Typecheck and the full workspace build passed. The official native builder used
+.NET SDK 10.0.403 to produce a fresh win-x64 bundle; that ordinary build result is
+not a dedicated compiler-process ownership qualification.
+
+The first installed-bundle fixture ran on 2026-11-09 (Asia/Shanghai). Ordinary
+NUL input, initialization without premature EOF, the copied 4096-byte message,
+control-pipe use after input ACK, and cancellation passed with original native
+closure receipts. The 30-second timeout case observed timeout and complete native
+cleanup, but failed its final input check because the worker file's ctime changed.
+Its bytes, file ID and mtime remained equal; the cause is unknown. The descendant
+case then failed before launch on the same input mismatch. The outer command
+closed with exit 1 and both output EOFs. This is a failed overall attempt, retained
+without resetting the baseline or weakening checks.
+
+The native fixture and remaining coverage are documented in
+[its README](../apps/artood/test-fixtures/windows-target-input-README.md).
+Blocked I/O, native pipe failure, nested Job behavior and actual application
+bootstrap execution still require qualification for live product acceptance.

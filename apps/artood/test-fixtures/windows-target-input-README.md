@@ -1,6 +1,8 @@
 # Windows target input native fixture
 
-Status: **source only, not compiled or executed**. These files add no readiness or qualification claim. Do not run while another acceptance workload pins the build, source, dependencies, installation or machine. The task owner must schedule an exclusive native validation window first.
+Status: **first native attempt completed with five passes and two failures** at commit `3f017a8` on 2026-11-09 (Asia/Shanghai). Typecheck, the full workspace build and the fresh native build passed beforehand. The timeout case observed the original timeout and full cleanup, but its final input check detected a changed worker ctime; the descendant case failed on that same check before launch. Worker bytes, file ID and mtime remained unchanged. The cause is unknown. The original command exited 1 with both output EOFs; all evidence is retained. This is not a successful complete native matrix or application qualification.
+
+Do not run while another acceptance workload pins the build, source, dependencies, installation or machine. The task owner must schedule an exclusive native validation window first. Do not retry a failed input binding by resetting its baseline.
 
 `windows-target-input-real.test.mjs` uses the real built TypeScript owner and exact installed Windows process helper. It retains the production installation checks, including ACLs, physical paths, full bundle inventory and independently supplied manifest SHA-256. It never substitutes a permissive qualification callback. The target worker uses only Node standard libraries; no WSL is involved.
 
@@ -38,4 +40,4 @@ The outer command still needs the project's normal observer to retain its actual
 
 The 4096-byte case does **not** prove that `WriteFile` blocked. Windows may buffer the complete message. Deliberately blocked I/O, native `WriteFile`/`CloseHandle` failure injection, exact accepted-but-not-yet-writing root-exit ordering, malformed raw native control frames and nested helper Jobs need separate focused native/source-linked regressions. The TypeScript controlled protocol suite covers different wire and acknowledgement faults; it does not provide kernel evidence for them.
 
-This matrix also does not exercise a Guardian/Supervisor lifetime, whole application install/service/reopen, real model providers, two computers, signed packaging or product publication. Those remain separate acceptance gates. Existing native and provider failures must remain retained when this fixture is eventually run.
+This matrix also does not exercise a Guardian/Supervisor lifetime, whole application install/service/reopen, real model providers, two computers, signed packaging or product publication. Those remain separate acceptance gates. Existing native and provider failures must remain retained in subsequent validation.

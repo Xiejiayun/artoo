@@ -163,9 +163,14 @@ Startup failure and cancellation wait for the original owner's `closed` promise;
 an independent wrapper timer cannot release ownership early. Original failures,
 native termination facts and cancellation/cleanup errors are retained as causes.
 
-This integration and its controlled regression cases have not been compiled or
-run. Exact native input/Job behavior, nested owners and the complete application
-bootstrap sequence still require fresh validation before a qualification claim.
+This integration passed typecheck, the full workspace build and all 198 cases in
+its four focused suites. A fresh native bundle was built and installed with the
+unchanged admission checks. The first seven-case native fixture passed five
+cases; a changed worker ctime invalidated the timeout case's final audit and
+prevented the descendant case from launching. The failed attempt is retained;
+see [the input validation record](windows-owned-target-input.md). Nested owners
+and the complete application bootstrap sequence still require actual validation
+before a qualification claim.
 
 Normal API/browser/reopen checks do not prove crash recovery, migration rollback,
 backup/restore, arbitrary application stacks, all viewport behavior, every
@@ -200,7 +205,15 @@ corrections, has produced these results:
   six exact-path regressions, and actual service-host packaging passed into a
   new output directory. Neither check executed the application host.
 
-The full unit suite, Web E2E and real native/provider application acceptance have
-not yet run on this implementation. Controlled owner/HTTP fixtures do not prove
-real Windows process, real browser or live-model acceptance. Do not enable this
-capability in a user's node configuration on the basis of these checks alone.
+The underlying application-verification commit `cb117b3` passed both full CI
+Vitest shards and local Web E2E (27/27 using the existing isolated-port settings).
+Its CI Web run passed 26/27: the unlabeled-control negative case retained the
+expected business failure, but browser ancestry cleanup exceeded its observation
+bound. The initial local Web attempt ran no cases because port 4010 was occupied.
+Those failures remain separate records.
+
+The composed native-input version has not yet run the full unit suite or Web E2E.
+Real native/provider application acceptance remains pending. Controlled
+owner/HTTP fixtures do not prove the complete Windows application, browser or
+live-model path. Do not enable this capability in a user's node configuration on
+the basis of these checks alone.
