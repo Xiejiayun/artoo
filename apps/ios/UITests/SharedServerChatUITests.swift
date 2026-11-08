@@ -309,7 +309,7 @@ final class SharedServerChatUITests: XCTestCase {
         try reveal(goal); goal.tap()
         let visibleStatus = app.descendants(matching: .any).matching(identifier: "goal.status.\(fixture.cancellationGoalId)").firstMatch
         try require(visibleStatus.waitForExistence(timeout: 15), "Goal detail must expose its current server status")
-        try waitForValue(visibleStatus, initial.goal.status, message: "The independent goal must display its initial server status")
+        try waitForGoalStatus(fixture.cancellationGoalId, initial.goal.status, message: "The independent goal must display its initial server status")
         let request = app.buttons["goal.cancel.request.\(fixture.cancellationGoalId)"]
         try reveal(request); request.tap()
         let keep = try cancellationDialogButton("dismiss", label: "Keep goal")
@@ -326,7 +326,7 @@ final class SharedServerChatUITests: XCTestCase {
         XCTAssertEqual(kept.goal.updatedAt, initial.goal.updatedAt)
         XCTAssertEqual(kept.events.map(\.id), initial.events.map(\.id), "Keep goal must leave the real server audit stream unchanged")
         try revealText(visibleStatus, preferTop: true)
-        try waitForValue(visibleStatus, kept.goal.status, message: "Keep goal must preserve the displayed server status")
+        try waitForGoalStatus(fixture.cancellationGoalId, kept.goal.status, message: "Keep goal must preserve the displayed server status")
         try reveal(request)
         attachScreenshot("Native goal preserved after dismissing cancellation")
         request.tap()
@@ -339,7 +339,7 @@ final class SharedServerChatUITests: XCTestCase {
                        initial.events.filter { $0.type == "goal.cancelled" }.count + 1,
                        "One explicit confirmation must persist exactly one cancellation event")
         try revealText(visibleStatus, preferTop: true)
-        try waitForValue(visibleStatus, "cancelled", message: "Goal detail must display the server-confirmed cancelled state")
+        try waitForGoalStatus(fixture.cancellationGoalId, "cancelled", message: "Goal detail must display the server-confirmed cancelled state")
         let actionRemoved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: request)
         try require(XCTWaiter.wait(for: [actionRemoved], timeout: 10) == .completed, "The cancelled goal must no longer offer cancellation")
         attachScreenshot("Native goal cancelled after explicit confirmation")
@@ -1054,6 +1054,23 @@ final class SharedServerChatUITests: XCTestCase {
     private func waitForValue(_ element: XCUIElement, _ value: String, message: String) throws {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: element)
         try require(XCTWaiter.wait(for: [expectation], timeout: 15) == .completed, message)
+    }
+
+    @MainActor
+    private func waitForGoalStatus(_ goalId: String, _ value: String, message: String) throws {
+        let identifier = "goal.status.\(goalId)"
+        // Match identity and value in one snapshot query, as for live connection readiness.
+        let matchingStatus = app.descendants(matching: .any).matching(identifier: identifier)
+            .matching(NSPredicate(format: "value == %@", value)).firstMatch
+        let started = ProcessInfo.processInfo.systemUptime
+        let matched = matchingStatus.waitForExistence(timeout: 15)
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
+        if !matched {
+            try attachRecord(["matched": String(matched), "elapsed_seconds": String(elapsed),
+                              "expected": value, "identifier": identifier], name: "Goal status wait failure")
+        }
+        // Later screenshots may observe a newer state; they cannot change this result.
+        try require(matched, message)
     }
 
     @MainActor
