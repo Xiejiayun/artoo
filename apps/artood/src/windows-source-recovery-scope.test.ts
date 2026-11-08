@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const local = vi.hoisted(() => ({ guardian: {}, backend: {}, source: {}, profile: vi.fn(), audit: vi.fn(),
-  sourceRead: vi.fn(), sourcePrepare: vi.fn(), mode: "active", epoch: "epoch-original", configDigest: "", workspace: "",
+  sourceRead: vi.fn(), cleanSourceRead: vi.fn(), cleanGuardian: vi.fn(), sourcePrepare: vi.fn(),
+  mode: "active", epoch: "epoch-original", configDigest: "", workspace: "",
   bound: false, events: [] as string[] }));
 vi.mock("./owned/windows-runtime-guardian.js", () => ({
   readWindowsGuardianLocalRuntime: (guardian: object) => {
@@ -16,7 +17,8 @@ vi.mock("./owned/windows-runtime-guardian.js", () => ({
   hasPreparedWindowsGuardian: () => local.bound, auditWindowsGuardianRuntime: local.audit,
 }));
 vi.mock("./product-source-runtime.js", () => ({ prepareGuardianProductSourceRuntime: local.sourcePrepare,
-  readGuardianProductSourceConfiguration: local.sourceRead }));
+  readGuardianProductSourceConfiguration: local.sourceRead, readCleanGuardianProductSourceConfiguration: local.cleanSourceRead }));
+vi.mock("./windows-clean-local-configuration.js", () => ({ readCleanDaemonGuardian: local.cleanGuardian }));
 vi.mock("./verification.js", () => ({ assertLocallyPreparedVerificationProfile: local.profile }));
 vi.mock("./windows-release-storage.js", () => ({ prepareWindowsReleaseStorage: vi.fn(() => ({})), assertWindowsReleaseStorage: vi.fn() }));
 vi.mock("./windows-process-installation.js", () => ({ describeWindowsProcessInstallation: () => ({ directory: "controlled installation" }) }));
@@ -24,14 +26,16 @@ vi.mock("./windows-supervisor-authority.js", () => ({ readWindowsDaemonSuperviso
 vi.mock("./windows-local-acl.js", () => ({ physicalWindowsDirectory: (path: string) => path,
   windowsPathsOverlap: (left: string, right: string) => left === right }));
 import { prepareWindowsSourceRecoveryConfiguration, windowsGuardianConfiguration, prepareWindowsSourceRecoveryRuntime,
-  withWindowsSourceRecoveryOperation, readWindowsRecoverySourceRuntime, type PreparedWindowsSourceRecoveryRuntime } from "./windows-source-recovery.js";
-import { readWindowsGuardianOperation } from "./owned/windows-guardian-scope.js";
+  withWindowsSourceRecoveryOperation, readWindowsRecoverySourceRuntime, assertWindowsSourceRuntimeConfiguration,
+  type PreparedWindowsSourceRecoveryRuntime } from "./windows-source-recovery.js";
+import { readWindowsGuardianOperation, withWindowsGuardianOperation, bindWindowsGuardianCallback } from "./owned/windows-guardian-scope.js";
 import type { ProductSourceRuntimeOptions } from "./product-source-runtime.js";
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!, roots: string[] = [];
 const descriptor = { operationId: "activation", bindingDigest: "sha256:" + "b".repeat(64), serverOperation: null };
 beforeEach(() => {
   Object.defineProperty(process, "platform", { ...platform, value: "win32" }); vi.clearAllMocks();
   local.mode = "active"; local.epoch = "epoch-original"; local.bound = false; local.events = [];
+  local.cleanGuardian.mockReset(); local.cleanSourceRead.mockReset();
   local.audit.mockImplementation(() => {
     expect(readWindowsGuardianOperation(local.backend as never)?.guardian).toBe(local.guardian); local.events.push("audit");
   });
@@ -60,7 +64,7 @@ function fixture() {
     controlDirectory: control, deviceId: "device", supervisor: {} as never });
   local.configDigest = windowsGuardianConfiguration(configuration, "session").configurationDigest; local.bound = true;
   const runtime = prepareWindowsSourceRecoveryRuntime(configuration, local.guardian as never);
-  local.events = []; vi.clearAllMocks(); return { runtime, git };
+  local.events = []; vi.clearAllMocks(); return { runtime, git, source };
 }
 describe("original source recovery scope admission order", () => {
   it("establishes the real guardian scope before full source capability checks and then invokes work", () => {
@@ -99,5 +103,69 @@ describe("original source recovery scope admission order", () => {
     });
     expect(() => withWindowsSourceRecoveryOperation(f.runtime, descriptor, work)).toThrow(/capability revoked/); expect(work).not.toHaveBeenCalled();
     expect(() => withWindowsSourceRecoveryOperation(f.runtime, descriptor, () => { throw Error("original callback failure"); })).toThrow(/original callback failure/);
+  });
+});
+
+function configurationAssertion(f: ReturnType<typeof fixture>, branch: "ordinary" | "clean") {
+  const clean = branch === "clean" ? Object.freeze({}) : undefined;
+  local.cleanGuardian.mockReturnValue(clean);
+  const reader = clean ? local.cleanSourceRead : local.sourceRead;
+  reader.mockImplementation((source: unknown, guardian: unknown, configuration?: unknown) => {
+    readWindowsGuardianOperation(local.backend as never);
+    if (source !== local.source || guardian !== local.guardian || configuration !== clean)
+      throw Error("Controlled original source/guardian/configuration required");
+    return { options: f.source };
+  });
+  const assert = () => assertWindowsSourceRuntimeConfiguration(f.runtime, f.source.nodeId, f.source.allowedRoots, f.source.profiles);
+  return { assert, reader, otherReader: clean ? local.sourceRead : local.cleanSourceRead };
+}
+
+describe("source configuration assertion reads remain invocation-local", () => {
+  it.each(["ordinary", "clean"] as const)("reads %s configuration once per assertion and preserves the separate scope-entry check", branch => {
+    const f = fixture(), check = configurationAssertion(f, branch);
+    withWindowsGuardianOperation(local.guardian as never, descriptor, () => {
+      check.assert(); expect(check.reader).toHaveBeenCalledTimes(1);
+      check.assert(); expect(check.reader).toHaveBeenCalledTimes(2);
+    });
+    check.reader.mockClear();
+    withWindowsSourceRecoveryOperation(f.runtime, descriptor, check.assert);
+    expect(check.reader).toHaveBeenCalledTimes(2); // Wrapper admission and assertion are independent reads.
+    expect(check.otherReader).not.toHaveBeenCalled();
+  });
+
+  it.each(["ordinary", "clean"] as const)("rejects %s source revocation on the next independent assertion", branch => {
+    const f = fixture(), check = configurationAssertion(f, branch);
+    withWindowsGuardianOperation(local.guardian as never, descriptor, () => {
+      check.assert();
+      check.reader.mockImplementationOnce(() => { throw Error("Controlled source capability revoked"); });
+      expect(check.assert).toThrow("Controlled source capability revoked");
+    });
+    expect(check.reader).toHaveBeenCalledTimes(2); expect(check.otherReader).not.toHaveBeenCalled();
+  });
+
+  it.each(["git", "profile", "source", "epoch"] as const)("rechecks %s changes when the original bound callback is called again", mutation => {
+    const f = fixture(), check = configurationAssertion(f, "ordinary");
+    const callback = withWindowsGuardianOperation(local.guardian as never, descriptor, () => bindWindowsGuardianCallback(check.assert));
+    callback();
+    let reason: string;
+    if (mutation === "git") { writeFileSync(f.git, "changed protected executable"); reason = "Git program changed"; }
+    else if (mutation === "profile") {
+      local.profile.mockImplementationOnce(() => { throw Error("Controlled profile permission revoked"); });
+      reason = "Controlled profile permission revoked";
+    } else if (mutation === "source") {
+      check.reader.mockImplementationOnce(() => { throw Error("Controlled source capability revoked"); });
+      reason = "Controlled source capability revoked";
+    } else { local.epoch = "replacement"; reason = "another epoch"; }
+    expect(callback).toThrow(reason);
+    expect(() => readWindowsGuardianOperation(local.backend as never)).toThrow(/original authenticated operation scope/);
+  });
+
+  it("does not reuse configuration across an await inside the same Guardian operation", async () => {
+    const f = fixture(), check = configurationAssertion(f, "ordinary");
+    await withWindowsGuardianOperation(local.guardian as never, descriptor, async () => {
+      check.assert(); await Promise.resolve();
+      writeFileSync(f.git, "changed after await");
+      expect(check.assert).toThrow(/Git program changed/);
+    });
   });
 });
