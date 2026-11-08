@@ -42,7 +42,9 @@ vi.mock("./windows-code-installation.js", () => ({ prepareWindowsCodeInstallatio
   assertWindowsCodeInstallation: state.assertCode, auditWindowsCodeInstallation: state.auditCode }));
 vi.mock("./windows-process-installation.js", () => ({ prepareWindowsProcessInstallation: state.prepareBackend }));
 vi.mock("./owned/windows-owned-process.js", () => ({ assertWindowsProcessBackend: state.assertBackend }));
-import { applicationServiceSelection, prepareApplicationServiceHost, assertApplicationBootstrapAdmission } from "./application-bootstrap-admission.js";
+import { applicationServiceSelection, prepareApplicationServiceHost, assertApplicationBootstrapAdmission, prepareApplicationInitializationHost,
+  assertApplicationInitializationAdmission, describeApplicationInitializationPackage, readApplicationInitializationFile,
+  prepareApplicationBootstrap } from "./application-bootstrap-admission.js";
 const originalProcess = process, root = "C:\\host", entry = root + "\\application-service-bootstrap.mjs", file = "C:\\configuration\\application.json";
 const sha = (bytes: Uint8Array) => "sha256:" + createHash("sha256").update(bytes).digest("hex");
 function add(path: string, text?: string) {
@@ -90,6 +92,72 @@ beforeEach(() => {
   for (const [key, value] of Object.entries({ execPath: "C:\\node\\node.exe", execArgv: [], connected: undefined,
     argv: ["C:\\node\\node.exe", entry, "--selection=" + file], env })) Object.defineProperty(runtime, key, { value, writable: true, configurable: true });
   vi.stubGlobal("process", runtime);
+});
+
+const packageRoot = "C:\\package", packageManifest = packageRoot + "\\application-install-package.json";
+function initializeFixture() {
+  add(packageRoot); add("C:\\destinations");
+  for (const path of ["service.json", "runtime.json", "create.json", "open.json"]) add(packageRoot + "\\" + path, "fixed " + path);
+  const manifest = { version: 1, format: "artoo.application-install-package.v1", profile: "service.json",
+    files: ["service.json", "runtime.json", "create.json", "open.json"].map(path => ({ ...pin(packageRoot + "\\" + path), path })) };
+  const { installation_reference: _reference, ...base } = configuration();
+  const write = (value = manifest) => {
+    add(packageManifest, JSON.stringify(value));
+    add(file, JSON.stringify({ ...base, format: "artoo.application-initialize-selection.v1", installation_parent: "C:\\destinations", source_manifest: pin(packageManifest) }));
+  };
+  write(); return { manifest, write };
+}
+describe("independent initialization bootstrap admission", () => {
+  it("admits a complete package before any generation or descriptor exists", () => {
+    initializeFixture(); const selected = prepareApplicationInitializationHost(file, entry);
+    const source = describeApplicationInitializationPackage(selected.options.bootstrap, selected.options);
+    expect(source.directory).toBe(packageRoot); expect(source.profile).toEqual(pin(packageRoot + "\\service.json")); expect(source.files).toHaveLength(4);
+    expect(readApplicationInitializationFile(selected.options.bootstrap, selected.options, source.profile.path).toString()).toBe("fixed service.json");
+    expect(selected.options.parent).toBe("C:\\destinations"); expect(selected.options.backend).toBe(state.backend);
+    expect(state.forbidden).not.toHaveBeenCalled(); expect(prepareApplicationBootstrap(file, entry).operation).toBe("initialize");
+    expect(() => assertApplicationInitializationAdmission(JSON.parse(JSON.stringify(selected.options.bootstrap)), selected.options)).toThrow("original current");
+    expect(() => prepareApplicationServiceHost(file, entry)).toThrow();
+  });
+  it("preserves existing service selection dispatch and rejects an unknown mode", () => {
+    expect(prepareApplicationBootstrap(file, entry).operation).toBe("reopen");
+    add(file, JSON.stringify({ ...configuration(), format: "unknown" })); expect(() => prepareApplicationBootstrap(file, entry)).toThrow("fixed application selection format");
+  });
+  it.each(["extra", "missing", "empty-directory", "same-size", "manifest-ctime", "member-ctime"])("keeps strict package %s checks", change => {
+    initializeFixture();
+    if (change === "extra") add(packageRoot + "\\extra.json", "extra");
+    if (change === "missing") state.files.delete(packageRoot + "\\create.json");
+    if (change === "empty-directory") add(packageRoot + "\\extra");
+    if (change === "same-size") state.files.get(packageRoot + "\\open.json")!.bytes.fill(88);
+    if (change === "manifest-ctime" || change === "member-ctime") state.afterRead = (path, node) => {
+      if (path === (change === "manifest-ctime" ? packageManifest : packageRoot + "\\open.json")) node.ctimeNs++;
+    };
+    expect(() => prepareApplicationInitializationHost(file, entry)).toThrow(); expect(state.forbidden).not.toHaveBeenCalled(); expect(state.handles.size).toBe(0);
+  });
+  it.each(["duplicate", "traversal", "profile", "self", "unknown"])("rejects malformed package manifest: %s", change => {
+    const f = initializeFixture();
+    if (change === "duplicate") f.manifest.files.push({ ...f.manifest.files[0]!, path: "Service.json" });
+    if (change === "traversal") f.manifest.files[0]!.path = "../service.json";
+    if (change === "profile") f.manifest.profile = "unknown.json";
+    if (change === "self") f.manifest.files[0]!.path = "application-install-package.json";
+    if (change === "unknown") Object.assign(f.manifest, { command: "execute" });
+    f.write(); expect(() => prepareApplicationInitializationHost(file, entry)).toThrow();
+  });
+  it.each(["source", "selection", "environment", "parent-binding", "manifest-binding", "host-binding"])("permanently fails changed initialization authority: %s", change => {
+    initializeFixture(); const selected = prepareApplicationInitializationHost(file, entry), target = { ...selected.options };
+    if (change === "source") state.files.get(packageRoot + "\\open.json")!.ctimeNs++;
+    if (change === "selection") state.files.get(file)!.ctimeNs++;
+    if (change === "environment") process.env.SystemRoot = "C:\\other";
+    if (change === "parent-binding") target.parent = "C:\\other";
+    if (change === "manifest-binding") target.sourceManifest = { ...target.sourceManifest, bytes: 1 };
+    if (change === "host-binding") target.hostCode = {} as typeof target.hostCode;
+    expect(() => assertApplicationInitializationAdmission(selected.options.bootstrap, target)).toThrow();
+    expect(() => selected.assertCurrent()).toThrow("original current initialization admission");
+  });
+  it("does not grant arbitrary file reads from a valid initialization token", () => {
+    initializeFixture(); const selected = prepareApplicationInitializationHost(file, entry);
+    expect(() => readApplicationInitializationFile(selected.options.bootstrap, selected.options, "C:\\node\\node.exe")).toThrow("original package member");
+    expect(() => selected.assertCurrent()).toThrow("original current initialization admission");
+  });
 });
 afterEach(() => vi.unstubAllGlobals());
 describe("strict application-only host admission", () => {

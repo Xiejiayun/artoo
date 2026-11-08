@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { installApplicationBootstrapControl } from "./application-bootstrap-control.js";
-import { applicationServiceSelection, prepareApplicationServiceHost } from "./application-bootstrap-admission.js";
+import { applicationServiceSelection, prepareApplicationBootstrap } from "./application-bootstrap-admission.js";
 import type { LocalApplicationService } from "./application-local-service.js";
 
 function output(stream: NodeJS.WriteStream, value: unknown): Promise<void> {
@@ -18,13 +18,26 @@ export async function runApplicationServiceBootstrap(): Promise<void> {
   const outputFailed = (error: Error) => { outputFailure ??= error; failedOutput.abort(); };
   process.stdout.on("error", outputFailed); process.stderr.on("error", outputFailed);
   try {
-    const selected = prepareApplicationServiceHost(applicationServiceSelection(process.argv.slice(2)), fileURLToPath(import.meta.url));
+    const selected = prepareApplicationBootstrap(applicationServiceSelection(process.argv.slice(2)), fileURLToPath(import.meta.url));
     if (selected.shutdown === "stdin") control.enableStdin();
     selected.assertCurrent();
     if (!signal.aborted) {
       const api = await import("./application-service-host-api.js");
       selected.assertCurrent();
-      if (!signal.aborted) service = await api.reopenInstalledApplicationService(selected.options, signal);
+      if (!signal.aborted) {
+        if (selected.operation === "initialize") {
+          const reference = await api.initializeApplicationPackage(selected.options, signal);
+          selected.assertCurrent();
+          if (control.failure || outputFailure) throw control.failure ?? outputFailure;
+          if (signal.aborted) throw Error("Application package initialization cancelled before handoff");
+          await output(process.stdout, { version: 1, kind: "application-service.initialized", reference, qualified_for_product: false });
+          if (control.failure || outputFailure) throw control.failure ?? outputFailure;
+          selected.assertCurrent();
+          if (signal.aborted) throw Error("Application package initialization cancelled before handoff");
+          return;
+        }
+        service = await api.reopenInstalledApplicationService(selected.options, signal);
+      }
     }
     if (service) {
       selected.assertCurrent();

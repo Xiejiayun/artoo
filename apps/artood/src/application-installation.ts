@@ -10,7 +10,8 @@ import { describeWindowsProcessInstallation } from "./windows-process-installati
 import { assertApplicationClientReader, revokeApplicationClientReader, type ApplicationClientReader } from "./application-artifact-admission.js";
 import { ApplicationRuntimeFilePinSchema, APPLICATION_RUNTIME_PROCESS_LIMITS as limits, type ApplicationRuntimeFilePin } from "./application-runtime-process-protocol.js";
 import { assertApplicationSession, type PreparedApplicationSession } from "./application-session-ownership.js";
-import { assertApplicationBootstrapAdmission, type PreparedApplicationBootstrapAdmission } from "./application-bootstrap-admission.js";
+import { assertApplicationBootstrapAdmission, assertApplicationInitializationAdmission, type PreparedApplicationBootstrapAdmission,
+  type PreparedApplicationInitializationAdmission, type ApplicationInitializationTarget } from "./application-bootstrap-admission.js";
 
 declare const installedBrand: unique symbol;
 export interface PreparedApplicationInstallation { readonly [installedBrand]: true }
@@ -26,6 +27,9 @@ export interface ApplicationInstallationOptions {
   /** Independently selected local Node pin and original protected backend. */
   readonly node: ApplicationRuntimeFilePin; readonly backend: PreparedWindowsProcessBackend;
   readonly signal?: AbortSignal;
+  /** Present only for the fixed initialized-package bootstrap; omitted by legacy hosts. */
+  readonly initialization?: Readonly<{ bootstrap: PreparedApplicationInitializationAdmission;
+    sourceManifest: ApplicationRuntimeFilePin; hostCode: PreparedWindowsCodeInstallation; hostDirectory: string }>;
 }
 export interface ApplicationInstallationPlan {
   readonly version: 1;
@@ -38,6 +42,8 @@ export interface ApplicationInstallationPlan {
 export interface ApplicationInstallationOwner {
   readonly generationId: string; readonly directory: string; readonly storageDirectory: string;
   install(plan: ApplicationInstallationPlan): PreparedApplicationInstallation;
+  /** Fail a claimed generation when trusted plan assembly cannot complete. */
+  abandon(): void;
   describeAttempt(): Readonly<{ phase: Phase; failureRecordError: string | null }>;
 }
 type Phase = "claimed" | "writing" | "writers-closed" | "content-verified" | "admitted" | "retired" | "failed";
@@ -57,6 +63,7 @@ interface Saved {
   host?: { code: PreparedWindowsCodeInstallation; directory: string };
   session?: PreparedApplicationSession;
   bootstrap?: PreparedApplicationBootstrapAdmission;
+  initialization?: Readonly<{ bootstrap: PreparedApplicationInitializationAdmission; target: ApplicationInitializationTarget }>;
 }
 const installations = new WeakMap<object, Saved>();
 const claimed = new Set<string>();
@@ -281,6 +288,7 @@ function verify(saved: Saved, directory: string): void {
 function guard(saved: Saved, audit: boolean): void {
   try {
     if (saved.phase !== "admitted" || !saved.binding) fail("installation has failed"); const binding = saved.binding;
+    if (saved.initialization) assertApplicationInitializationAdmission(saved.initialization.bootstrap, saved.initialization.target);
     assertLayout(saved);
     if (saved.session) assertApplicationSession(saved.session, saved.control, binding.allowedRoots);
     assertWindowsCodeInstallation(binding.code, binding.directory); assertWindowsCodeInstallation(binding.nodeCode, binding.nodeDirectory);
@@ -334,7 +342,7 @@ export function bindApplicationInstallationClientReader(token: PreparedApplicati
 /** Local, single-generation installation only. No process, CLI recovery or retry. */
 export function createApplicationInstallationOwner(input: ApplicationInstallationOptions): ApplicationInstallationOwner {
   assertNativeWindows();
-  if (!input || Object.keys(input).some(key => !["parent", "nodeId", "allowedRoots", "node", "backend", "signal"].includes(key))
+  if (!input || Object.keys(input).some(key => !["parent", "nodeId", "allowedRoots", "node", "backend", "signal", "initialization"].includes(key))
     || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(input.nodeId) || !Array.isArray(input.allowedRoots)
     || input.allowedRoots.length < 1 || input.allowedRoots.length > 128) fail("fixed local settings required");
   const parent = physicalWindowsDirectory(input.parent), allowedRoots = Object.freeze(input.allowedRoots.map(physicalWindowsDirectory).sort());
@@ -344,13 +352,29 @@ export function createApplicationInstallationOwner(input: ApplicationInstallatio
   const backend = input.backend, native = describeWindowsProcessInstallation(backend);
   if (JSON.stringify([...native.writableWorkspaceRoots].sort()) !== JSON.stringify(allowedRoots)
     || windowsPathsOverlap(parent, nodeDirectory) || windowsPathsOverlap(parent, native.directory)) fail("external prerequisites differ or overlap");
+  let initialization: Saved["initialization"];
+  if (input.initialization !== undefined) {
+    const selected = input.initialization;
+    if (!selected || Object.keys(selected).length !== 4
+      || Object.keys(selected).some(key => !["bootstrap", "sourceManifest", "hostCode", "hostDirectory"].includes(key))) fail("fixed initialization context required");
+    const target: ApplicationInitializationTarget = Object.freeze({ parent, nodeId: input.nodeId, allowedRoots, node, backend,
+      sourceManifest: Object.freeze(ApplicationRuntimeFilePinSchema.parse(selected.sourceManifest)), hostCode: selected.hostCode,
+      hostDirectory: physicalWindowsDirectory(selected.hostDirectory) });
+    assertApplicationInitializationAdmission(selected.bootstrap, target);
+    initialization = Object.freeze({ bootstrap: selected.bootstrap, target });
+  }
   assertWindowsProcessBackend(backend); read(node);
   const parentStorage = prepareWindowsReleaseStorage({ directory: parent, writableWorkspaceRoots: allowedRoots });
   const nodeId = input.nodeId, signal = input.signal;
   const generationId = randomUUID(), root = win32.join(parent, generationId), directory = win32.join(root, "code"), storageDirectory = win32.join(root, "store");
   if (claimed.has(root.toLowerCase())) fail("generation already claimed"); claimed.add(root.toLowerCase());
-  const saved: Saved = { origin: "created", phase: "claimed", failureRecordError: null, generationId, control: win32.join(root, "control"), directories: [], files: [], readers: new Set(), written: new Map(), layout: new Map(), records: new Map() };
-  const cancelled = () => { if (signal?.aborted) fail("installation cancelled"); assertWindowsReleaseStorage(parentStorage, parent); assertLayout(saved); };
+  const saved: Saved = { origin: "created", phase: "claimed", failureRecordError: null, generationId, control: win32.join(root, "control"),
+    directories: [], files: [], readers: new Set(), written: new Map(), layout: new Map(), records: new Map(), initialization };
+  const cancelled = () => {
+    if (signal?.aborted) fail("installation cancelled");
+    if (saved.initialization) assertApplicationInitializationAdmission(saved.initialization.bootstrap, saved.initialization.target);
+    assertWindowsReleaseStorage(parentStorage, parent); assertLayout(saved);
+  };
   const createDirectory = (path: string) => { cancelled(); mkdirSync(path); saved.layout.set(path, fact(path, true)); };
   try {
     createDirectory(root); createDirectory(saved.control);
@@ -360,6 +384,10 @@ export function createApplicationInstallationOwner(input: ApplicationInstallatio
   let attempted = false;
   return Object.freeze({ generationId, directory, storageDirectory,
     describeAttempt: () => Object.freeze({ phase: saved.phase, failureRecordError: saved.failureRecordError }),
+    abandon() {
+      if (saved.phase === "admitted" || saved.phase === "retired") fail("installation assembly has already completed");
+      attempted = true; invalidate(saved, Error("Installation assembly abandoned; generation retained"));
+    },
     install(raw: ApplicationInstallationPlan): PreparedApplicationInstallation {
       if (attempted) fail("installation attempt already used"); attempted = true;
       try {

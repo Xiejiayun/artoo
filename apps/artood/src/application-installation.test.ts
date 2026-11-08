@@ -2,8 +2,8 @@
 import { createHash } from "node:crypto";
 import { win32 } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ApplicationInstallationPlan, PreparedApplicationInstallation } from "./application-installation.js";
-import type { PreparedApplicationBootstrapAdmission } from "./application-bootstrap-admission.js";
+import type { ApplicationInstallationOptions, ApplicationInstallationPlan, PreparedApplicationInstallation } from "./application-installation.js";
+import type { PreparedApplicationBootstrapAdmission, PreparedApplicationInitializationAdmission } from "./application-bootstrap-admission.js";
 type Node = { directory: boolean; ino: bigint; bytes: Buffer; ctimeNs: bigint; mtimeNs: bigint; nlink: bigint; link?: boolean; dev?: bigint };
 const controlled = vi.hoisted(() => ({
   nodes: new Map<string, Node>(), handles: new Map<number, { path: string; node: Node; mode: string }>(),
@@ -19,6 +19,7 @@ const controlled = vi.hoisted(() => ({
   codePrepare: vi.fn(), codeAssert: vi.fn(), codeAudit: vi.fn(), storagePrepare: vi.fn(), storageAssert: vi.fn(), storageAudit: vi.fn(),
   readerRevoke: vi.fn(), forbidden: vi.fn(), sessions: new Set<object>(), sessionAssert: vi.fn(),
   bootstrap: Object.freeze({}), bootstrapAssert: vi.fn(), bootstrapFailure: null as Error | null,
+  initialization: Object.freeze({}), initializationAssert: vi.fn(), initializationFailure: null as Error | null,
 }));
 vi.mock("node:crypto", async importOriginal => ({ ...await importOriginal<typeof import("node:crypto")>(),
   randomUUID: () => controlled.fixedUuid || `10000000-0000-4000-8000-${String(++controlled.uuid).padStart(12, "0")}` }));
@@ -89,7 +90,8 @@ vi.mock("./windows-process-installation.js", () => ({ describeWindowsProcessInst
 vi.mock("./application-artifact-admission.js", () => ({ assertApplicationClientReader: (value: object) => {
   if (!controlled.readers.has(value)) throw Error("original reader required"); }, revokeApplicationClientReader: controlled.readerRevoke }));
 vi.mock("./application-session-ownership.js", () => ({ assertApplicationSession: controlled.sessionAssert }));
-vi.mock("./application-bootstrap-admission.js", () => ({ assertApplicationBootstrapAdmission: controlled.bootstrapAssert }));
+vi.mock("./application-bootstrap-admission.js", () => ({ assertApplicationBootstrapAdmission: controlled.bootstrapAssert,
+  assertApplicationInitializationAdmission: controlled.initializationAssert }));
 import { createApplicationInstallationOwner, describeApplicationInstallation, assertApplicationInstallation,
   auditApplicationInstallation, invalidateApplicationInstallation, bindApplicationInstallationClientReader,
   createApplicationInstallationReopenReference, reopenApplicationInstallation, retireApplicationInstallation, bindApplicationInstallationSession } from "./application-installation.js";
@@ -119,6 +121,11 @@ beforeEach(() => {
   controlled.closeError = null; controlled.closeErrorSuffix = ""; controlled.codeError = null; controlled.afterClose = () => {}; controlled.afterCode = () => {};
   controlled.readCloseError = null; controlled.afterOpen = () => {}; controlled.afterRead = () => {}; controlled.statPatch = () => ({});
   controlled.bootstrapFailure = null;
+  controlled.initializationFailure = null;
+  controlled.initializationAssert.mockReset().mockImplementation((token: object) => {
+    if (token !== controlled.initialization) throw Error("original initialization admission required");
+    if (controlled.initializationFailure) throw controlled.initializationFailure;
+  });
   controlled.bootstrapAssert.mockReset().mockImplementation((token: object) => {
     if (token !== controlled.bootstrap) throw Error("original bootstrap admission required");
     if (controlled.bootstrapFailure) throw controlled.bootstrapFailure;
@@ -147,6 +154,16 @@ beforeEach(() => {
   });
 });
 describe("single-generation fixed application installation", () => {
+  it("retains failed trusted assembly without permitting another install attempt", () => {
+    const target = owner(); target.abandon(); target.abandon();
+    expect(target.describeAttempt().phase).toBe("failed"); expect(() => target.install(plan(target))).toThrow("attempt already used");
+    expect(controlled.nodes.has(win32.dirname(target.directory) + "\\control\\FAILED.json")).toBe(true);
+    expect(controlled.codePrepare).not.toHaveBeenCalled();
+  });
+  it("cannot abandon an already admitted generation through its old assembly handle", () => {
+    const target = owner(), token = target.install(plan(target));
+    expect(() => target.abandon()).toThrow("assembly has already completed"); assertApplicationInstallation(token);
+  });
   it("does not open an original read handle when its bounded buffer allocation fails", () => {
     const selected = options(), original = Error("controlled allocation failure"), allocate = Buffer.alloc;
     const replacement = vi.spyOn(Buffer, "alloc").mockImplementation(size => {
@@ -415,8 +432,15 @@ describe("single-generation fixed application installation", () => {
 // Descriptor/re-admission checks use the same controlled physical filesystem.
 // The database bytes below are deliberately not SQLite; native preflight is a
 // separate boundary tested in the local-service/coordinator suites.
-function restartFixture() {
-  const target = owner(), selected = plan(target), database = target.storageDirectory + "\\product.sqlite";
+function initializationContext() {
+  if (!controlled.nodes.has("C:\\host")) add("C:\\host");
+  return { bootstrap: controlled.initialization as PreparedApplicationInitializationAdmission,
+    hostCode: {} as NonNullable<ApplicationInstallationOptions["initialization"]>["hostCode"], hostDirectory: "C:\\host",
+    sourceManifest: { path: "C:\\package\\application-install-package.json", bytes: 42, sha256: "sha256:" + "c".repeat(64) } };
+}
+function restartFixture(withInitialization = false) {
+  const target = withInitialization ? createApplicationInstallationOwner({ ...options(), initialization: initializationContext() }) : owner();
+  const selected = plan(target), database = target.storageDirectory + "\\product.sqlite";
   const open = Buffer.from(JSON.stringify({ mode: "open", databasePath: database }));
   const openPin = { path: target.directory + "\\open.json", bytes: open.length, sha256: sha(open) };
   const profile = Buffer.from(JSON.stringify({ version: 1, installation: { version: 1, generation_id: target.generationId },
@@ -437,6 +461,33 @@ function restartFixture() {
     } };
 }
 describe("persistent expectations and fresh installed application admission", () => {
+  it("keeps creation bootstrap authority through descriptor publication and retirement", () => {
+    const f = restartFixture(true), reference = createApplicationInstallationReopenReference(f.token);
+    expect(reference.path).toContain("REOPEN.v1.json");
+    const count = controlled.initializationAssert.mock.calls.length; retireApplicationInstallation(f.token);
+    expect(controlled.initializationAssert.mock.calls.length).toBeGreaterThan(count);
+    expect(controlled.initializationAssert.mock.calls.every(([token]) => token === controlled.initialization)).toBe(true);
+    expect(controlled.initializationAssert).toHaveBeenLastCalledWith(controlled.initialization,
+      expect.objectContaining({ parent: "C:\\protected", nodeId: "node1", backend: controlled.backend, hostDirectory: "C:\\host" }));
+  });
+  it("cannot publish the descriptor when the initialization configuration changes after the broker boundary", () => {
+    const f = restartFixture(true); controlled.initializationFailure = Error("initialization source changed after broker closure");
+    expect(() => createApplicationInstallationReopenReference(f.token)).toThrow(controlled.initializationFailure);
+    expect(controlled.nodes.has(win32.dirname(f.target.directory) + "\\control\\REOPEN.v1.json")).toBe(false);
+    expect(f.target.describeAttempt().phase).toBe("failed"); expect(controlled.sessions.has(f.session)).toBe(true);
+    controlled.initializationFailure = null; expect(() => auditApplicationInstallation(f.token)).toThrow("original admitted");
+  });
+  it("fails a changed initialization token between original code writes before admission", () => {
+    const target = createApplicationInstallationOwner({ ...options(), initialization: initializationContext() });
+    controlled.afterClose = (file, _node, mode) => { if (mode === "wx" && file.endsWith("entry.js")) controlled.initializationFailure = Error("installation input changed"); };
+    expect(() => target.install(plan(target))).toThrow("installation input changed");
+    expect(target.describeAttempt().phase).toBe("failed"); expect(controlled.codePrepare).not.toHaveBeenCalled();
+  });
+  it("rejects forged creation authority before claiming a destination", () => {
+    const selected = initializationContext(), before = controlled.nodes.size;
+    expect(() => createApplicationInstallationOwner({ ...options(), initialization: { ...selected, bootstrap: {} as PreparedApplicationInitializationAdmission } }))
+      .toThrow("original initialization admission"); expect(controlled.nodes.size).toBe(before);
+  });
   it("retains the original optional bootstrap object and its full target on every installation guard", () => {
     const f = restartFixture(), reference = createApplicationInstallationReopenReference(f.token); retireApplicationInstallation(f.token);
     const input = { ...f.options(reference), bootstrap: controlled.bootstrap as PreparedApplicationBootstrapAdmission };

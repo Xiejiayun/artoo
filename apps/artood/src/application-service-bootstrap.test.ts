@@ -4,9 +4,9 @@ import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LocalApplicationService } from "./application-local-service.js";
 
-const state = vi.hoisted(() => ({ selection: vi.fn(), prepare: vi.fn(), current: vi.fn(), reopen: vi.fn(),
+const state = vi.hoisted(() => ({ selection: vi.fn(), prepare: vi.fn(), current: vi.fn(), reopen: vi.fn(), initialize: vi.fn(),
   events: [] as string[], imports: 0 }));
-vi.mock("./application-bootstrap-admission.js", () => ({ applicationServiceSelection: state.selection, prepareApplicationServiceHost: state.prepare }));
+vi.mock("./application-bootstrap-admission.js", () => ({ applicationServiceSelection: state.selection, prepareApplicationBootstrap: state.prepare }));
 const originalProcess = process;
 const shutdown = Buffer.from('{"version":1,"kind":"shutdown"}\n');
 function deferred<T>() {
@@ -38,9 +38,9 @@ class Output extends EventEmitter {
 let last: Awaited<ReturnType<typeof fixture>> | undefined;
 beforeEach(() => {
   vi.resetModules(); state.events.length = 0; state.imports = 0;
-  for (const mock of [state.selection, state.prepare, state.current, state.reopen]) mock.mockReset();
+  for (const mock of [state.selection, state.prepare, state.current, state.reopen, state.initialize]) mock.mockReset();
   vi.doMock("./application-service-host-api.js", () => {
-    state.imports++; state.events.push("host-import"); return { reopenInstalledApplicationService: state.reopen };
+    state.imports++; state.events.push("host-import"); return { reopenInstalledApplicationService: state.reopen, initializeApplicationPackage: state.initialize };
   });
 });
 afterEach(async () => {
@@ -51,7 +51,7 @@ afterEach(async () => {
   }
   vi.unstubAllGlobals(); vi.doUnmock("./application-service-host-api.js");
 });
-async function fixture(mode: "stdin" | "signals" = "stdin") {
+async function fixture(mode: "stdin" | "signals" = "stdin", operation: "reopen" | "initialize" = "reopen") {
   // Import under the genuine process argv so the module's direct-entry guard
   // cannot start a second runner. Only subsequent explicit calls see this host.
   const { runApplicationServiceBootstrap } = await import("./application-service-bootstrap.js");
@@ -67,7 +67,7 @@ async function fixture(mode: "stdin" | "signals" = "stdin") {
   vi.stubGlobal("process", host);
   const options = Object.freeze({ reference: Object.freeze({}), node: Object.freeze({}), backend: Object.freeze({}),
     bootstrap: Object.freeze({}), hostCode: Object.freeze({}), hostDirectory: "C:\\host", nodeId: "node1", allowedRoots: Object.freeze(["C:\\work"]) });
-  const selected = Object.freeze({ shutdown: mode, options, assertCurrent: state.current });
+  const selected = Object.freeze({ operation, shutdown: mode, options, assertCurrent: state.current });
   state.selection.mockImplementation(() => { state.events.push("selection"); return "C:\\config\\application.json"; });
   state.prepare.mockImplementation(() => { state.events.push("prepare"); return selected; });
   state.current.mockImplementation(() => { state.events.push("assert-current"); });
@@ -210,5 +210,46 @@ describe("application-only bootstrap runner with original controlled owners", ()
     f.finish(); await until(() => f.stdout.records.length === 2);
     expect(f.settled).toBe(false); (stream === "stdout" ? f.stdout : f.stderr).emit("error", failure); completeFinal();
     await expect(work).rejects.toBe(failure); expectDetached(f);
+  });
+});
+
+describe("fixed package initialization runner", () => {
+  const reference = Object.freeze({ path: "C:\\installed\\generation\\control\\REOPEN.v1.json", bytes: 42, sha256: "sha256:" + "a".repeat(64) });
+  it("awaits original initialization, hands off only its reference and never starts a service", async () => {
+    const f = await fixture("stdin", "initialize"), initialized = deferred<typeof reference>(); state.initialize.mockReturnValue(initialized.promise);
+    const work = f.run(); await until(() => state.initialize.mock.calls.length === 1);
+    expect(f.stdout.records).toEqual([]); expect(f.settled).toBe(false);
+    expect(state.initialize.mock.calls[0]![0]).toBe(f.options); expect(state.initialize.mock.calls[0]![0].bootstrap).toBe(f.options.bootstrap);
+    initialized.resolve(reference); await work;
+    expect(f.stdout.records).toEqual([{ version: 1, kind: "application-service.initialized", reference, qualified_for_product: false }]);
+    expect(state.reopen).not.toHaveBeenCalled(); expect(f.close).not.toHaveBeenCalled(); expectDetached(f);
+  });
+  it("does not manufacture a reference after an initialization failure", async () => {
+    const f = await fixture("stdin", "initialize"), failure = Error("original broker closure failed"); state.initialize.mockRejectedValue(failure);
+    await expect(f.run()).rejects.toBe(failure); expect(f.stdout.records).toEqual([]); expectDetached(f);
+  });
+  it.each(["stdin", "signal"])("retains %s cancellation while awaiting the original initialization promise", async kind => {
+    const f = await fixture("stdin", "initialize"), initialized = deferred<typeof reference>(); state.initialize.mockReturnValue(initialized.promise);
+    const work = f.run(); await until(() => state.initialize.mock.calls.length === 1);
+    if (kind === "stdin") f.input.emit("data", shutdown); else f.signals.emit("SIGTERM");
+    expect(state.initialize.mock.calls[0]![1].aborted).toBe(true); expect(f.settled).toBe(false);
+    initialized.resolve(reference); await expect(work).rejects.toThrow("cancelled before handoff");
+    expect(f.stdout.records).toEqual([]); expectDetached(f);
+  });
+  it("rejects changed admission before the initialized reference is emitted", async () => {
+    const f = await fixture("stdin", "initialize"), failure = Error("initialization source changed"); state.initialize.mockResolvedValue(reference);
+    state.current.mockImplementationOnce(() => {}).mockImplementationOnce(() => {}).mockImplementationOnce(() => { throw failure; });
+    await expect(f.run()).rejects.toBe(failure); expect(f.stdout.records).toEqual([]); expectDetached(f);
+  });
+  it.each(["stdout", "stdin", "shutdown", "signal"])("does not hide %s failure during initialized-status flush", async kind => {
+    const f = await fixture("stdin", "initialize"), failure = Error("initialized output failed"); let flush!: () => void;
+    state.initialize.mockResolvedValue(reference); f.stdout.onWrite = (_record, complete) => { flush = () => complete(); };
+    const work = f.run(); await until(() => f.stdout.records.length === 1); expect(f.settled).toBe(false);
+    if (kind === "stdout") f.stdout.emit("error", failure);
+    else if (kind === "stdin") f.input.emit("data", Buffer.from("bad\n"));
+    else if (kind === "shutdown") f.input.emit("data", shutdown);
+    else f.signals.emit("SIGTERM");
+    flush(); await expect(work).rejects.toThrow(kind === "stdout" ? failure.message : kind === "stdin" ? "stdin control was invalid" : "cancelled before handoff");
+    expectDetached(f);
   });
 });

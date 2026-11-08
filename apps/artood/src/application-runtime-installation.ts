@@ -44,6 +44,7 @@ const bundleSchema = z.object({
     bytes: z.number().int().min(1).max(limits.fileBytes), sha256: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
   }).strict()).min(1).max(limits.files),
 }).strict();
+export { vendorSchema as ApplicationRuntimeVendorManifestSchema, bundleSchema as ApplicationRuntimeHelperManifestSchema };
 /** Includes every actually published .NET dependency. SingleFile in a csproj
  * is not evidence that the measured native package consists of only its exe. */
 export function loadApplicationRuntimeHelperManifest(helper: ApplicationRuntimeFilePin, manifest: ApplicationRuntimeFilePin): readonly ApplicationRuntimeFilePin[] {

@@ -171,10 +171,11 @@ existing 256-admission normal drain can close a CLI without using Windows
 
 The maintenance entry is `application-service-bootstrap.mjs`; it is separate from
 `main.ts` and does not change `--initialize-application-store` or
-`--serve-application`. It only reopens an unchanged installed generation. The
-trusted installation still initializes the store once and retains the returned
-`REOPEN.v1.json` pin. Automatic installation, a default shortcut, crash recovery
-and production qualification are separate work.
+`--serve-application`. The original service selection reopens an unchanged
+installed generation. A separate initialization selection, described below,
+installs one independently pinned package and initializes its store once. A
+default shortcut, integration with autonomous product publication, crash recovery
+and production qualification remain separate work.
 
 Build the complete host into a **new absolute directory** whose parent already
 exists:
@@ -261,6 +262,89 @@ stderr line. Output failure is a failure, even during the final status flush.
 The new builder and bootstrap are source implementations with controlled tests.
 Their actual Windows host packaging, native execution, separate-process restart
 and browser acceptance must be recorded independently by the integration owner.
+
+## First installation from a pinned package
+
+The same fixed bootstrap and delayed host API accept a second, strict selection
+format: `artoo.application-initialize-selection.v1`, with `version: 1`. It keeps
+the node, write roots, host manifest, native backend, system root and shutdown
+fields above, replaces `installation_reference` with these two fields, and rejects
+fields belonging to the other format:
+
+| Field | Binding |
+| --- | --- |
+| `installation_parent` | Existing protected physical parent for one new generation |
+| `source_manifest` | Independent pin of `application-install-package.json` in the protected source package root |
+
+The selection directory, source package, host, Node, backend and destination
+parent must satisfy the fixed separation rules; none may use an agent write root
+as protected code. The source manifest is strict data:
+
+| Field | Value |
+| --- | --- |
+| `version`, `format` | `1`, `artoo.application-install-package.v1` |
+| `profile` | Relative filename of the service profile directly inside the package root |
+| `files` | Complete array of `{path, bytes, sha256}`, with portable relative paths |
+
+The file list excludes only `application-install-package.json` itself. The actual
+directory must contain exactly those files, the manifest and their inferred parent
+directories. Bounds are 1024 members, 256 MiB per member and 512 MiB total. The
+package uses the existing strict service profile, runtime configuration, broker
+create/open configurations and helper/vendor manifests. The profile's
+`installation_directory` is this source package root; node ID, roots and the
+external Node pin must match the independent selection. Every remaining pin must
+refer to an exact declared package member. Do not include an old database or use
+an existing store as an initialization input.
+
+`materializeApplicationInstallationPlan` only relocates fixed schema fields after
+the original owner selects its new generation ID and `code`/`store` directories.
+It generates exactly the service profile, runtime configuration and the broker's
+create/open configurations, computing their exact serialized bytes and hashes
+before `install()`. It retains the database basename under the new store, preserves
+the configured schema, scope, origin and access, and verifies create/open
+equivalence. Product source, artifacts, toolchain, native helpers and relative
+manifests retain their original bytes and source pins. There is no arbitrary text
+replacement, product evaluation, command, caller callback or data migration.
+
+The initialization admission is a separate original WeakMap object bound to the
+selected package manifest, parent, host, Node, backend and roots. It does not have
+an absent or placeholder REOPEN pin. The created installation preserves it through
+all writes, profile preparation, broker initialization, descriptor publication,
+final audit and retirement. If trusted assembly fails before `install()`, the
+owner's `abandon()` records failure and retains the claimed generation; that owner
+cannot retry. Existing explicit owner callers may omit this bootstrap context.
+
+For acceptance, prepare the complete pinned host and source package, then write
+the initialization selection in its own protected directory. Start the fixed Node
+and bootstrap with only `--selection=<initialize-file>`. With stdin control, keep
+the pipe open while initialization runs; no shutdown command is needed for normal
+successful completion. Success emits one bounded stdout event:
+
+```text
+{version:1, kind:"application-service.initialized", reference:{path,bytes,sha256}, qualified_for_product:false}
+```
+
+The actual wire event is JSON. It follows the original create-only broker's normal
+closure and the installation API's exact descriptor return; it does not announce
+a listener. No reference is emitted on failed initialization or cancellation before
+handoff. Output/control failures remain failures, including during status flush.
+The process then exits naturally. The trusted parent must still observe successful
+actual exit, process close and both output EOFs before using the returned pin.
+
+Only then write a **new, separate** protected service selection using that exact
+returned reference. Keep the initialized profile's origin unchanged and launch a
+different process with the same fixed bootstrap. This creates fresh service,
+backend and installation authorities and runs the existing open-only SQLite
+preflight. A complete acceptance must use a real browser/API to write and read
+data, shut the original service down normally, observe its actual process closure,
+start another process at the same origin, and verify persisted data and an
+idempotent write replay. Never rewrite the already admitted initialization
+selection or scan disk to substitute a newly measured descriptor pin.
+
+The initialization source path and controlled tests do not establish that real
+Windows ctime/ACL admission, native initialization or cross-process restart has
+succeeded. Record each actual run's immutable version and its process evidence;
+retain any failed generation and uncertain ownership without cleanup or retry.
 
 ## Browser and HTTP policy
 
@@ -373,3 +457,14 @@ it is not a full workspace build. The host builder's **16 pure fixtures** passed
 separately. No generated application host, native process, product or browser was
 executed by these candidate checks. Integration must record the final immutable
 version and its actual build/restart evidence separately.
+
+The following initialization candidate passed **478 tests across 12 files** by
+adding `application-install-package.test.ts` and
+`application-initialize-package.test.ts` to those ten suites. Full workspace
+`npm run typecheck` and `npm run build` passed, and the unchanged host builder's
+**25 pure fixtures** passed. Two source reviews checked the initialization
+authority/closure chain and the shared early/deferred module graph. These checks
+did not build or execute the new installed application host, run the native
+initializer, or launch a product/browser. The complete repository test suite and
+Web E2E remain integration checks; real initialization and independent restart
+still require the separate acceptance procedure above.

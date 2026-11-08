@@ -29,6 +29,7 @@ const schema = z.object({ version: z.literal(1), format: z.literal("artoo.applic
     maximum_concurrent: z.literal(1), access: z.enum(["read", "write"]),
     same_origin: z.object({ version: z.literal(1), api_prefix: z.literal("/api") }).strict().optional() }).strict(),
 }).strict();
+export { schema as ApplicationServiceProfileSchema };
 export interface ApplicationServiceProfileOptions {
   readonly file: string; readonly nodeId: string; readonly allowedRoots: readonly string[];
   readonly backend: PreparedWindowsProcessBackend;
