@@ -143,6 +143,9 @@ describe("Windows node activation (controlled backend admission; no native helpe
     vi.spyOn(windowsProcess, "assertWindowsProcessBackend").mockImplementation(value => {
       if (!backends.has(value) || invalidated) throw new Error("Unprepared or changed Windows backend");
     });
+    vi.spyOn(windowsProcess, "assertWindowsProcessBackendImage").mockImplementation(value => {
+      if (!backends.has(value) || invalidated) throw new Error("Unprepared or changed Windows backend image");
+    });
   });
   afterEach(() => {
     vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform);
