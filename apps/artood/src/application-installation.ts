@@ -10,6 +10,7 @@ import { describeWindowsProcessInstallation } from "./windows-process-installati
 import { assertApplicationClientReader, revokeApplicationClientReader, type ApplicationClientReader } from "./application-artifact-admission.js";
 import { ApplicationRuntimeFilePinSchema, APPLICATION_RUNTIME_PROCESS_LIMITS as limits, type ApplicationRuntimeFilePin } from "./application-runtime-process-protocol.js";
 import { assertApplicationSession, type PreparedApplicationSession } from "./application-session-ownership.js";
+import { assertApplicationBootstrapAdmission, type PreparedApplicationBootstrapAdmission } from "./application-bootstrap-admission.js";
 
 declare const installedBrand: unique symbol;
 export interface PreparedApplicationInstallation { readonly [installedBrand]: true }
@@ -55,6 +56,7 @@ interface Saved {
   referenceFacts?: ReturnType<typeof fact>;
   host?: { code: PreparedWindowsCodeInstallation; directory: string };
   session?: PreparedApplicationSession;
+  bootstrap?: PreparedApplicationBootstrapAdmission;
 }
 const installations = new WeakMap<object, Saved>();
 const claimed = new Set<string>();
@@ -284,6 +286,8 @@ function guard(saved: Saved, audit: boolean): void {
     assertWindowsCodeInstallation(binding.code, binding.directory); assertWindowsCodeInstallation(binding.nodeCode, binding.nodeDirectory);
     assertWindowsReleaseStorage(binding.storage, binding.storageDirectory); assertWindowsProcessBackend(binding.backend);
     if (saved.host) assertWindowsCodeInstallation(saved.host.code, saved.host.directory);
+    if (saved.bootstrap) assertApplicationBootstrapAdmission(saved.bootstrap, { reference: saved.reopenReference!, nodeId: binding.nodeId,
+      allowedRoots: binding.allowedRoots, node: binding.node, backend: binding.backend, hostCode: saved.host!.code, hostDirectory: saved.host!.directory });
     if (saved.reopenReference && saved.persisted) {
       assertNoFailure(saved.control);
       if (!saved.referenceFacts || !equal(saved.referenceFacts, fact(saved.reopenReference.path))) fail("original reopen reference changed");
@@ -540,13 +544,14 @@ export interface ApplicationInstallationReopenOptions {
   /** Original current-process host admission, established before target imports. */
   readonly hostCode: PreparedWindowsCodeInstallation; readonly hostDirectory: string;
   readonly session: PreparedApplicationSession;
+  readonly bootstrap?: PreparedApplicationBootstrapAdmission;
 }
 /** Fresh current-process admission of one unchanged installed generation. This
  * never runs writer preparation or reconstructs an authority/receipt from JSON.
  * Call through the installed-session API to own the clean-only lifecycle lock. */
 export function reopenApplicationInstallation(input: ApplicationInstallationReopenOptions): PreparedApplicationInstallation {
   assertNativeWindows();
-  if (!input || Object.keys(input).some(key => !["reference", "nodeId", "allowedRoots", "node", "backend", "hostCode", "hostDirectory", "session"].includes(key))
+  if (!input || Object.keys(input).some(key => !["reference", "nodeId", "allowedRoots", "node", "backend", "hostCode", "hostDirectory", "session", "bootstrap"].includes(key))
     || !Array.isArray(input.allowedRoots) || input.allowedRoots.length < 1 || input.allowedRoots.length > 128) fail("fixed reopen inputs required");
   const reference = Object.freeze(ApplicationRuntimeFilePinSchema.parse(input.reference));
   if (reference.bytes > reopenLimit || win32.basename(reference.path) !== reopenName) fail("fixed reopen descriptor required");
@@ -559,6 +564,7 @@ export function reopenApplicationInstallation(input: ApplicationInstallationReop
   const hostDirectory = physicalWindowsDirectory(input.hostDirectory), hostCode = input.hostCode, backend = input.backend;
   assertWindowsCodeInstallation(hostCode, hostDirectory); auditWindowsCodeInstallation(hostCode, hostDirectory);
   assertWindowsProcessBackend(backend);
+  if (input.bootstrap !== undefined) assertApplicationBootstrapAdmission(input.bootstrap, input);
   const controlStorage = prepareWindowsReleaseStorage({ directory: control, writableWorkspaceRoots: allowedRoots });
   assertNoFailure(control);
   const referenceFacts = fact(reference.path);
@@ -594,7 +600,7 @@ export function reopenApplicationInstallation(input: ApplicationInstallationReop
   });
   const saved: Saved = { origin: "reopened", phase: "claimed", failureRecordError: null, generationId: descriptor.generation_id, control,
     directories: descriptor.directories, files, readers: new Set(), written: new Map(), layout, reopened: baselines, records: new Map(),
-    reopenReference: reference, referenceFacts, persisted: descriptor, host: { code: hostCode, directory: hostDirectory }, session: input.session };
+    reopenReference: reference, referenceFacts, persisted: descriptor, host: { code: hostCode, directory: hostDirectory }, session: input.session, bootstrap: input.bootstrap };
   // No failed prefix is published, and no existing code/control file is rewritten.
   verify(saved, directory); compareInventory(directory, descriptor.code_inventory); compareInventory(nodeDirectory, descriptor.node_inventory); read(node);
   const code = prepareWindowsCodeInstallation({ directory, writableWorkspaceRoots: allowedRoots });

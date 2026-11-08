@@ -30,10 +30,12 @@ export type InstalledApplicationReopenOptions = Omit<ApplicationInstallationReop
 
 /** Open unchanged installed data in a newly admitted host. The caller must have
  * established hostCode before importing the canonical application graph. This
- * API does not provide that bootstrap, a CLI, crash takeover or publication. */
+ * API accepts the original optional bootstrap admission from the separate fixed
+ * application-service-bootstrap entry. It does not provide crash takeover or
+ * publication; existing explicit callers retain their own admission boundary. */
 export async function reopenInstalledApplicationService(input: InstalledApplicationReopenOptions, signal?: AbortSignal): Promise<LocalApplicationService> {
   if (signal?.aborted) throw Error("Installed application startup cancelled");
-  if (!input || Object.keys(input).some(key => !["reference", "nodeId", "allowedRoots", "node", "backend", "hostCode", "hostDirectory"].includes(key)))
+  if (!input || Object.keys(input).some(key => !["reference", "nodeId", "allowedRoots", "node", "backend", "hostCode", "hostDirectory", "bootstrap"].includes(key)))
     throw Error("Fixed installed application reopen inputs required");
   // Capture before the first await. Actual opaque objects remain original;
   // caller mutations cannot switch later preparation or lifecycle ownership.

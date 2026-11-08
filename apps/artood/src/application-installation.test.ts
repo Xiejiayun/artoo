@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { win32 } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplicationInstallationPlan, PreparedApplicationInstallation } from "./application-installation.js";
+import type { PreparedApplicationBootstrapAdmission } from "./application-bootstrap-admission.js";
 type Node = { directory: boolean; ino: bigint; bytes: Buffer; ctimeNs: bigint; mtimeNs: bigint; nlink: bigint; link?: boolean; dev?: bigint };
 const controlled = vi.hoisted(() => ({
   nodes: new Map<string, Node>(), handles: new Map<number, { path: string; node: Node; mode: string }>(),
@@ -17,6 +18,7 @@ const controlled = vi.hoisted(() => ({
   afterClose: (_path: string, _node: Node, _mode: string) => {}, afterCode: (_directory: string) => {},
   codePrepare: vi.fn(), codeAssert: vi.fn(), codeAudit: vi.fn(), storagePrepare: vi.fn(), storageAssert: vi.fn(), storageAudit: vi.fn(),
   readerRevoke: vi.fn(), forbidden: vi.fn(), sessions: new Set<object>(), sessionAssert: vi.fn(),
+  bootstrap: Object.freeze({}), bootstrapAssert: vi.fn(), bootstrapFailure: null as Error | null,
 }));
 vi.mock("node:crypto", async importOriginal => ({ ...await importOriginal<typeof import("node:crypto")>(),
   randomUUID: () => controlled.fixedUuid || `10000000-0000-4000-8000-${String(++controlled.uuid).padStart(12, "0")}` }));
@@ -87,6 +89,7 @@ vi.mock("./windows-process-installation.js", () => ({ describeWindowsProcessInst
 vi.mock("./application-artifact-admission.js", () => ({ assertApplicationClientReader: (value: object) => {
   if (!controlled.readers.has(value)) throw Error("original reader required"); }, revokeApplicationClientReader: controlled.readerRevoke }));
 vi.mock("./application-session-ownership.js", () => ({ assertApplicationSession: controlled.sessionAssert }));
+vi.mock("./application-bootstrap-admission.js", () => ({ assertApplicationBootstrapAdmission: controlled.bootstrapAssert }));
 import { createApplicationInstallationOwner, describeApplicationInstallation, assertApplicationInstallation,
   auditApplicationInstallation, invalidateApplicationInstallation, bindApplicationInstallationClientReader,
   createApplicationInstallationReopenReference, reopenApplicationInstallation, retireApplicationInstallation, bindApplicationInstallationSession } from "./application-installation.js";
@@ -115,6 +118,11 @@ beforeEach(() => {
   controlled.fixedUuid = ""; controlled.backendValid = true; controlled.maxWrite = 65_536; controlled.zeroWrite = false; controlled.writeError = null; controlled.flushError = null;
   controlled.closeError = null; controlled.closeErrorSuffix = ""; controlled.codeError = null; controlled.afterClose = () => {}; controlled.afterCode = () => {};
   controlled.readCloseError = null; controlled.afterOpen = () => {}; controlled.afterRead = () => {}; controlled.statPatch = () => ({});
+  controlled.bootstrapFailure = null;
+  controlled.bootstrapAssert.mockReset().mockImplementation((token: object) => {
+    if (token !== controlled.bootstrap) throw Error("original bootstrap admission required");
+    if (controlled.bootstrapFailure) throw controlled.bootstrapFailure;
+  });
   for (const p of ["C:", "C:\\protected", "C:\\node", "C:\\native", "C:\\work", "C:\\sources"]) add(p);
   add("C:\\node\\node.exe", "fixed-node"); add("C:\\sources\\entry.js", "export const fixed = 1;\n");
   controlled.forbidden.mockReset().mockImplementation(() => { throw Error("real process forbidden"); });
@@ -429,6 +437,41 @@ function restartFixture() {
     } };
 }
 describe("persistent expectations and fresh installed application admission", () => {
+  it("retains the original optional bootstrap object and its full target on every installation guard", () => {
+    const f = restartFixture(), reference = createApplicationInstallationReopenReference(f.token); retireApplicationInstallation(f.token);
+    const input = { ...f.options(reference), bootstrap: controlled.bootstrap as PreparedApplicationBootstrapAdmission };
+    const reopened = reopenApplicationInstallation(input);
+    const target = { reference, nodeId: input.nodeId, allowedRoots: [...input.allowedRoots], node: { ...input.node },
+      backend: input.backend, hostCode: input.hostCode, hostDirectory: input.hostDirectory };
+    input.bootstrap = {} as PreparedApplicationBootstrapAdmission;
+    for (const operation of [assertApplicationInstallation, describeApplicationInstallation, auditApplicationInstallation, retireApplicationInstallation]) {
+      const before = controlled.bootstrapAssert.mock.calls.length; operation(reopened);
+      expect(controlled.bootstrapAssert.mock.calls.length).toBeGreaterThan(before);
+      expect(controlled.bootstrapAssert).toHaveBeenLastCalledWith(controlled.bootstrap, target);
+    }
+    expect(controlled.bootstrapAssert.mock.calls.every(([token]) => token === controlled.bootstrap)).toBe(true);
+    expect(controlled.forbidden).not.toHaveBeenCalled();
+  });
+  it.each([null, false, {}, Object.freeze({})])("rejects an explicitly forged optional bootstrap value: %j", bootstrap => {
+    const f = restartFixture(), reference = createApplicationInstallationReopenReference(f.token); retireApplicationInstallation(f.token);
+    const before = controlled.codePrepare.mock.calls.length;
+    expect(() => reopenApplicationInstallation({ ...f.options(reference), bootstrap: bootstrap as PreparedApplicationBootstrapAdmission }))
+      .toThrow("original bootstrap admission required");
+    expect(controlled.codePrepare.mock.calls.length).toBe(before);
+    expect(controlled.forbidden).not.toHaveBeenCalled();
+  });
+  it.each(["assert", "describe", "audit", "retire"])("permanently invalidates reopened authority when bootstrap admission fails during %s", phase => {
+    const f = restartFixture(), reference = createApplicationInstallationReopenReference(f.token); retireApplicationInstallation(f.token);
+    const reopened = reopenApplicationInstallation({ ...f.options(reference), bootstrap: controlled.bootstrap as PreparedApplicationBootstrapAdmission });
+    controlled.bootstrapFailure = Error("selection metadata changed during service");
+    const operation = { assert: assertApplicationInstallation, describe: describeApplicationInstallation,
+      audit: auditApplicationInstallation, retire: retireApplicationInstallation }[phase as "assert" | "describe" | "audit" | "retire"];
+    expect(() => operation(reopened)).toThrow(controlled.bootstrapFailure);
+    controlled.bootstrapFailure = null;
+    expect(() => assertApplicationInstallation(reopened)).toThrow("original admitted");
+    expect(controlled.nodes.has(win32.dirname(reference.path) + "\\FAILED.json")).toBe(true);
+    expect(controlled.sessions.has(f.session)).toBe(true);
+  });
   it("cannot publish a restart descriptor without original exclusive session ownership", () => {
     const target = owner(), token = target.install(plan(target));
     expect(() => createApplicationInstallationReopenReference(token)).toThrow("exclusive initialization session required");

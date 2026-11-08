@@ -56,9 +56,12 @@ describe("clean-only installed application coordination", () => {
     });
   });
   it("opens under the original fresh objects and waits for database preflight before listening", async () => {
-    const selected = input(), checked = deferred<void>(); state.preflight.mockReturnValue(checked.promise);
+    const bootstrap = Object.freeze({}) as NonNullable<InstalledApplicationReopenOptions["bootstrap"]>;
+    const selected = { ...input(), bootstrap }, checked = deferred<void>(); state.preflight.mockReturnValue(checked.promise);
     const work = reopenInstalledApplicationService(selected); await tick();
     expect(state.reopen).toHaveBeenCalledWith({ ...selected, session }); expect(state.start).not.toHaveBeenCalled(); expect(state.initialize).not.toHaveBeenCalled();
+    expect(state.reopen.mock.calls[0]![0].bootstrap).toBe(bootstrap);
+    expect(state.reopen.mock.calls[0]![0].backend).toBe(selected.backend); expect(state.reopen.mock.calls[0]![0].hostCode).toBe(selected.hostCode);
     checked.resolve(); const live = await work;
     expect(live.origin).toBe("http://127.0.0.1:31000"); expect(state.release).not.toHaveBeenCalled();
     const stopping = live.close(); expect(live.close()).toBe(stopping); await tick(); expect(close).toHaveBeenCalledTimes(1); expect(state.release).not.toHaveBeenCalled();
@@ -78,6 +81,26 @@ describe("clean-only installed application coordination", () => {
     expect(state.initialize).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled(); expect(state.retire).not.toHaveBeenCalled();
     if (phase !== "start") expect(state.start).not.toHaveBeenCalled();
   });
+  it("does not bind a listener when bootstrap admission changes during the awaited preflight", async () => {
+    const bootstrap = Object.freeze({}) as NonNullable<InstalledApplicationReopenOptions["bootstrap"]>;
+    const selected = { ...input(), bootstrap }, checked = deferred<void>(), failure = Error("bootstrap admission changed during preflight");
+    let current = true;
+    const assertAdmission = vi.fn(() => { if (!current) throw failure; });
+    state.profile.mockImplementation(token => { expect(token).toBe(installation); assertAdmission(); return profile; });
+    state.preflight.mockReturnValue(checked.promise);
+    const listen = vi.fn().mockResolvedValue({ origin: "http://127.0.0.1:31000", closed: closure.promise, close });
+    // Coordinator boundary only: the real startLocalApplicationService performs
+    // its profile admission checks synchronously before binding any listener.
+    // The installation/profile tests verify the actual low-level guard wiring.
+    state.start.mockImplementation(token => { expect(token).toBe(profile); assertAdmission(); return listen(token); });
+    const work = reopenInstalledApplicationService(selected); await tick();
+    expect(state.reopen.mock.calls[0]![0].bootstrap).toBe(bootstrap); expect(state.start).not.toHaveBeenCalled();
+    expect(state.preflight).toHaveBeenCalledExactlyOnceWith(profile, undefined);
+    current = false; checked.resolve(); await expect(work).rejects.toBe(failure);
+    expect(state.start).toHaveBeenCalledExactlyOnceWith(profile); expect(assertAdmission).toHaveBeenCalledTimes(2);
+    expect(listen).not.toHaveBeenCalled(); expect(state.initialize).not.toHaveBeenCalled();
+    expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+  });
   it("does not reinterpret an existing lock as a stale session", async () => {
     const failure = Object.assign(Error("busy"), { code: "EEXIST" }); state.acquire.mockImplementation(() => { throw failure; });
     await expect(reopenInstalledApplicationService(input())).rejects.toBe(failure);
@@ -88,9 +111,21 @@ describe("clean-only installed application coordination", () => {
     closure.reject(failure); await expect(live.closed).rejects.toBe(failure);
     expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
   });
-  it("retains failed final integrity admission even after normal listener close", async () => {
-    const live = await reopenInstalledApplicationService(input()), failure = Error("host changed"); state.audit.mockImplementation(() => { throw failure; });
-    closure.resolve(); await expect(live.closed).rejects.toBe(failure); expect(state.release).not.toHaveBeenCalled(); expect(state.retire).not.toHaveBeenCalled();
+  it("retains changed bootstrap admission at the final audit after normal underlying closure", async () => {
+    const bootstrap = Object.freeze({}) as NonNullable<InstalledApplicationReopenOptions["bootstrap"]>;
+    const selected = { ...input(), bootstrap }, failure = Error("bootstrap admission changed before final audit");
+    let current = true;
+    const assertAdmission = vi.fn(() => { if (!current) throw failure; });
+    state.profile.mockImplementation(token => { expect(token).toBe(installation); assertAdmission(); return profile; });
+    // This controlled audit models the coordinator's installation boundary;
+    // it does not claim to execute the real bootstrap or native admission.
+    state.audit.mockImplementation(token => { expect(token).toBe(installation); assertAdmission(); });
+    const live = await reopenInstalledApplicationService(selected);
+    expect(state.reopen.mock.calls[0]![0].bootstrap).toBe(bootstrap); expect(state.audit).not.toHaveBeenCalled();
+    current = false; expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+    closure.resolve(); await expect(live.closed).rejects.toBe(failure);
+    expect(state.audit).toHaveBeenCalledExactlyOnceWith(installation); expect(assertAdmission).toHaveBeenCalledTimes(2);
+    expect(state.release).not.toHaveBeenCalled(); expect(state.retire).not.toHaveBeenCalled(); expect(close).not.toHaveBeenCalled();
   });
   it("retains a failed release as terminal closure failure", async () => {
     const live = await reopenInstalledApplicationService(input()), failure = Error("remove failed"); state.release.mockImplementation(() => { throw failure; });

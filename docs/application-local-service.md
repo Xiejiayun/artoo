@@ -127,7 +127,10 @@ also require the independently selected Node pin, node ID, complete write roots,
 fresh protected backend and the original **current-process** `hostCode` plus
 `hostDirectory`. JSON supplies expectations only. The caller must qualify its
 complete canonical host/import graph before its first target import; this API
-does not supply a trusted bootstrap or extend either existing CLI selector.
+does not extend either existing CLI selector. The separate installed bootstrap
+below supplies this admission for its fixed entry and passes its original opaque
+bootstrap object into the reopen API. Explicit API callers without that object
+retain the existing host-admission contract.
 
 The strict `artoo.application-installation-reopen.v1` record binds the original
 CLAIM/PLAN/ADMITTED record bytes, writer metadata and plan digest, complete code
@@ -163,6 +166,101 @@ fresh admissions, and use a real browser at the same URL to read prior data and
 replay an idempotent write. Keep frozen r2's same-process result separate. The
 existing 256-admission normal drain can close a CLI without using Windows
 `child.kill("SIGINT")` as claimed graceful-shutdown evidence.
+
+## Independent installed bootstrap
+
+The maintenance entry is `application-service-bootstrap.mjs`; it is separate from
+`main.ts` and does not change `--initialize-application-store` or
+`--serve-application`. It only reopens an unchanged installed generation. The
+trusted installation still initializes the store once and retains the returned
+`REOPEN.v1.json` pin. Automatic installation, a default shortcut, crash recovery
+and production qualification are separate work.
+
+Build the complete host into a **new absolute directory** whose parent already
+exists:
+
+```powershell
+npm run build:application-service-host --workspace @artoo/artood -- --out-dir C:\ArtooBuild\application-service-host-v1
+```
+
+The builder creates one ESM splitting graph with fixed bootstrap and delayed
+`application-service-host-api.mjs` entries, shared chunks and
+`application-service-host-manifest.json`. Its graph and emitted-code checks reject
+unlisted/bare imports, runtime module resolvers, computed imports, early
+application implementation imports and duplicated Windows code authority. The
+complete manifest contains version `1`, format
+`artoo.application-service-host.v1`, platform `win32`, arch `x64`, the two fixed
+entry names and every `.mjs` file's relative path, byte count and SHA-256. It lists
+all chunks, excluding only the manifest itself. Only listed files, the manifest
+and their inferred parent directories may exist in the installed host directory.
+The builder's packaging readback is not runtime ACL/ctime admission and does not
+execute the generated application host.
+
+The trusted installer protects the entire host graph, Node and native package,
+then writes one independently selected local JSON file in a **separate immutable
+configuration directory**. It must not overlap the host, Node, backend, installed
+generation or any agent write root. Its strict fields are:
+
+| Field | Required value |
+| --- | --- |
+| `version`, `format` | `1`, `artoo.application-service-selection.v1` |
+| `node_id`, `writable_workspace_roots` | Exact installed node ID and complete write roots |
+| `node` | Independent final `node.exe` file pin |
+| `host_manifest` | Independent final `application-service-host-manifest.json` pin |
+| `installation_reference` | Original returned `control/REOPEN.v1.json` pin |
+| `backend` | `{ directory, manifest_sha256 }` for the reviewed native installation |
+| `system_root` | Canonical physical Windows system directory |
+| `shutdown` | `stdin` for a controlling parent, or `signals` for console use |
+
+Pins have the same `{path, bytes, sha256}` shape described above. They are trusted
+installation inputs; measuring a changed file during startup cannot replace them.
+After installation, an illustrative invocation is:
+
+```powershell
+& 'C:\ArtooRuntime\node\node.exe' 'C:\ArtooRuntime\host\application-service-bootstrap.mjs' '--selection=C:\ArtooRuntime\selection\application.json'
+```
+
+Use the pinned executable with the default Node loader, no Node flags or IPC
+channel, and no `NODE_OPTIONS` or `NODE_PATH` variable, including differently cased
+names or empty values. `SystemRoot` and `WINDIR` must resolve to `system_root`.
+Only the single `--selection=<absolute file>` argument is accepted.
+
+Before importing the application graph, the bootstrap checks original file and
+handle identity, size, timestamps including ctime, complete inventory and hashes,
+Windows ACLs, the executing Node pin, and fresh native backend admission. It
+rechecks those original objects after the delayed import and before announcing
+readiness. The original bootstrap token remains bound to the exact installation
+reference, Node, node ID, roots, host and backend through profile preparation,
+request admission, final audit and retirement. A copied token, changed selection
+or mismatched target fails permanently; a failed final audit retains ownership.
+The installer must establish the trusted bootstrap files before the process starts;
+an in-process check does not authenticate code that has already executed.
+
+With `shutdown: "stdin"`, the parent keeps stdin as raw bytes and sends exactly one
+UTF-8 JSON line, including its terminating LF:
+
+```json
+{"version":1,"kind":"shutdown"}
+```
+
+The two literal fields may be reordered. Duplicate keys, escaped keys, extra
+fields, further commands, trailing bytes, malformed UTF-8, more than 4096 bytes,
+transport errors and EOF without the complete command fail closed. SIGINT and
+SIGTERM are latched before admission. Shutdown cancels admission and waits for
+the original service's `close()` and `closed`; it never force-exits, kills by PID
+or treats cancellation as proof of closure.
+
+Stdout reports bounded JSON lines `application-service.listening` and
+`application-service.closed`, always with `qualified_for_product: false`.
+Listening retains a 256-request lifetime and one concurrent invocation. The
+closed status follows actual service settlement and final checks; a parent must
+still observe the process's actual exit, close and both output EOFs. A failure
+sets a nonzero exit code and attempts a bounded `application-service.failed`
+stderr line. Output failure is a failure, even during the final status flush.
+
+The new builder and bootstrap are source implementations with controlled tests.
+Their actual Windows host packaging, native execution, separate-process restart
+and browser acceptance must be recorded independently by the integration owner.
 
 ## Browser and HTTP policy
 
@@ -264,3 +362,14 @@ That focused check is separate from the required full workspace typecheck/build,
 full test suite and Web E2E checks, which remain integration work. Real descriptor
 publication, immutable Windows metadata behavior and separate-process restart
 acceptance are still unverified.
+
+The subsequent independent-bootstrap candidate passed **386 tests across 10
+files**, adding `application-bootstrap-admission.test.ts`,
+`application-bootstrap-control.test.ts` and
+`application-service-bootstrap.test.ts` to the command above. It also passed
+`npx tsc --noEmit --composite false -p apps/artood/tsconfig.json`. This checks the
+current artood sources and tests against the available workspace declarations;
+it is not a full workspace build. The host builder's **16 pure fixtures** passed
+separately. No generated application host, native process, product or browser was
+executed by these candidate checks. Integration must record the final immutable
+version and its actual build/restart evidence separately.
