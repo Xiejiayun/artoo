@@ -243,7 +243,45 @@ export function createImportedDesignContinuationBinding(ctx: ServerContext, opti
     await assertSourceLineageDispatch(ctx, tx, row.computerId, row.workspaceRoot);
     current(); return fresh;
   }
+  // Shared with ordinary receive: its actual command_id remains the reply ID.
+  async function sendResultReceipt(tx: DrizzleDb, message: ImportedDesignContinuationResult) {
+    await credential(tx); current(); await options.transport.send({ kind: "command", id: message.command_id, idempotency_key: `receipt:${message.command_id}`, type: "product.source.design.receipt.v1",
+      payload: { version: 1, continuation_id: message.payload.continuation_id, request_digest: message.payload.request_digest, run_id: message.payload.run_id }, result_digest: hash(message.payload), status: "accepted" }); current();
+    // A failed send/transaction leaves this unset; replay may acknowledge only the same original session.
+    await tx.update(goalImportedDesignCompletions).set({ receiptSentAt: ctx.clock.nowIso() }).where(and(
+      eq(goalImportedDesignCompletions.continuationId, message.payload.continuation_id), eq(goalImportedDesignCompletions.organizationId, ctx.organizationId),
+      eq(goalImportedDesignCompletions.sessionId, options.sessionId), eq(goalImportedDesignCompletions.resultDigest, hash(message.payload)), isNull(goalImportedDesignCompletions.receiptSentAt)));
+    current();
+  }
   return {
+    /** Design predates sessionBindings: preserve its original completion/delivery session. */
+    async redeliverCommittedReceipt(id: string): Promise<void> {
+      await ctx.db.transaction(async tx => {
+        await credential(tx); const row = await load(tx, id);
+        const request = ImportedDesignContinuationRequestV1Schema.parse(row.request), result = ImportedDesignContinuationResultV1Schema.parse(row.result);
+        if (result.outcome !== "finished" || !result.verified_design) throw AppError.conflict("Committed design result has no receipt marker obligation");
+        const [proof] = await tx.select().from(goalImportedDesignCompletions).where(and(eq(goalImportedDesignCompletions.continuationId, row.id), eq(goalImportedDesignCompletions.organizationId, ctx.organizationId)));
+        if (!proof || request.continuation_id !== row.id || result.continuation_id !== row.id
+          || row.requestDigest !== importedDesignContinuationRequestDigestV1(request, sha) || result.request_digest !== row.requestDigest
+          || result.run_id !== row.runId || request.run_start.run_id !== row.runId || request.run_start.task_id !== row.taskId
+          || request.run_start.context_pack.id !== row.contextPackId || request.run_start.workspace.root !== row.workspaceRoot
+          || request.writer.instance_id !== row.writerInstanceId || request.writer.agent_id !== row.writerAgentId
+          || request.review_request.operation.intent.request.byte_request.destination.node_id !== identity.computerId
+          || proof.sessionId !== options.sessionId || proof.runId !== row.runId || proof.contextPackId !== row.contextPackId
+          || proof.resultDigest !== hash(result) || proof.completedDesignDigest !== hash(result.verified_design)
+          || canonical(proof.verifiedDesign) !== canonical(result.verified_design))
+          throw AppError.conflict("Committed design receipt differs from its original typed completion");
+        const [delivery] = await tx.select().from(deliveries).where(and(eq(deliveries.id, proof.deliveryId), eq(deliveries.continuationId, row.id), eq(deliveries.sessionId, options.sessionId)));
+        const starts = await tx.select().from(deliveries).where(and(eq(deliveries.continuationId, row.id), eq(deliveries.control, "start")));
+        if (!delivery || starts.length !== 1 || starts[0]!.sessionId !== options.sessionId) throw AppError.conflict("Committed design receipt lost its original issuing delivery");
+        if (proof.receiptSentAt !== null) { current(); return; }
+        await sendResultReceipt(tx, { kind: "product.source.design.result.v1", node_id: identity.computerId, command_id: delivery.id, payload: result });
+        const [recorded] = await tx.select().from(goalImportedDesignCompletions).where(and(eq(goalImportedDesignCompletions.continuationId, row.id), eq(goalImportedDesignCompletions.organizationId, ctx.organizationId)));
+        if (!recorded?.receiptSentAt || canonical({ ...recorded, receiptSentAt: null }) !== canonical({ ...proof, receiptSentAt: null }))
+          throw AppError.conflict("Committed design receipt marker was not recorded for its original completion");
+        current();
+      });
+    },
     async requestStop(id: string) {
       await ctx.db.transaction(async tx => {
         const row = await load(tx, id);
@@ -324,14 +362,7 @@ export function createImportedDesignContinuationBinding(ctx: ServerContext, opti
         } else if (locked!.result === null) await tx.update(continuations).set({ result }).where(eq(continuations.id, row.id));
         await credential(tx);
       });
-      await ctx.db.transaction(async tx => {
-        await credential(tx); await options.transport.send({ kind: "command", id: message.command_id, idempotency_key: `receipt:${message.command_id}`, type: "product.source.design.receipt.v1",
-          payload: { version: 1, continuation_id: message.payload.continuation_id, request_digest: message.payload.request_digest, run_id: message.payload.run_id }, result_digest: hash(message.payload), status: "accepted" }); current();
-        // A failed send/transaction leaves this unset; replay may acknowledge only the same original session.
-        await tx.update(goalImportedDesignCompletions).set({ receiptSentAt: ctx.clock.nowIso() }).where(and(
-          eq(goalImportedDesignCompletions.continuationId, message.payload.continuation_id), eq(goalImportedDesignCompletions.organizationId, ctx.organizationId),
-          eq(goalImportedDesignCompletions.sessionId, options.sessionId), eq(goalImportedDesignCompletions.resultDigest, hash(message.payload)), isNull(goalImportedDesignCompletions.receiptSentAt)));
-      });
+      await ctx.db.transaction(tx => sendResultReceipt(tx, message));
     },
     async inspect(id: string) { return ctx.db.transaction(async tx => { await credential(tx); return importedDesignContinuationView(await load(tx, id)); }); },
   };

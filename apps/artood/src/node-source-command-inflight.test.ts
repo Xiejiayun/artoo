@@ -1,11 +1,12 @@
-// Real NodeClient dispatch and H2/H3 controllers; native ownership, upload and transport are controlled.
+// Real NodeClient dispatch and H2/H3 controllers; native ownership, publisher, upload and transport are controlled.
 // These tests do not establish native-process, live-provider or product-publication acceptance.
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProductSourceOperationV1Schema, canonicalProductSourceTransferValueV1 as canonical,
-  productSourceOperationDigestV1, importedDesignContinuationRequestDigestV1, type ProductSourceTransferReceiptV1 } from "@artoo/domain";
-import type { ImportedDesignContinuationCommand, ImportedProductReviewCommand, NodeSideTransport, NodeToServerMessage, ProductSourceOperationCommand, RuntimeAdapter, ServerToNodeMessage } from "@artoo/protocol";
+  productSourceOperationDigestV1, importedDesignContinuationRequestDigestV1, type ProductSourceTransferReceiptV1, type ProductReleaseReceipt } from "@artoo/domain";
+import type { ImportedDesignContinuationCommand, ImportedProductReviewCommand, NodeSideTransport, NodeToServerMessage, ProductSourceOperationCommand,
+  ProductReleaseCommand, RuntimeAdapter, ServerToNodeMessage } from "@artoo/protocol";
 import { createNodeClient } from "./node-client.js";
 import * as recoveryClient from "./source-recovery-client.js";
 import * as recovery from "./windows-source-recovery.js";
@@ -19,6 +20,12 @@ import type { SourceCommandDiagnostic } from "./source-command-diagnostics.js";
 
 const data = JSON.parse(readFileSync(new URL("../../../packages/domain/test-fixtures/product-source-operation.json", import.meta.url), "utf8"));
 const sha = (value: string | Uint8Array) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
+const releaseCommand = (): ProductReleaseCommand => ({ kind: "command", id: "release:release", idempotency_key: "release:release", type: "product.release",
+  payload: { version: 1, release_id: "release", goal_id: "goal", project_id: "project", run_id: "run", release_profile_id: "site",
+    verification_request_id: "verify", verification_profile_id: "default", verification_profile_digest: sha("profile"), subject_digest: sha("subject") } });
+const controlledReleaseReceipt = (request: ProductReleaseCommand["payload"]): ProductReleaseReceipt => ({ request,
+  release_profile_digest: sha("release profile"), artifact_digest: request.subject_digest, outcome: "published", endpoint: "https://fixture.invalid",
+  previous_release_id: null, health_checks: [{ path: "/", status_code: 200, body_digest: sha("controlled bytes"), passed: true, checked_at: "2026-11-04T00:00:00Z" }] });
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const cleanups: (() => Promise<void>)[] = [];
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
@@ -31,10 +38,10 @@ afterEach(async () => {
 });
 
 function fixture(options: { holdAudit?: boolean; holdResult?: boolean; failResultOnce?: boolean; replay?: boolean; clean?: boolean;
-  repeatDuringAck?: number; design?: boolean; review?: boolean } = {}) {
+  repeatDuringAck?: number; design?: boolean; review?: boolean; withoutSourceControllers?: boolean; publication?: boolean } = {}) {
   let session: object | undefined = {};
   const originalSession = session, runtime = {} as recovery.PreparedWindowsSourceRecoveryRuntime, sourceRuntime = {} as source.PreparedProductSourceRuntime;
-  let active = true, receive!: (message: ServerToNodeMessage) => void;
+  let active = true, ordinary = true, receive!: (message: ServerToNodeMessage) => void;
   const audit = deferred(), uploadEntered = deferred(), uploadDone = deferred(), resultEntered = deferred(), resultSend = deferred();
   const designEntered = deferred(), designDone = deferred();
   if (!options.holdAudit) audit.resolve(); if (!options.holdResult) resultSend.resolve();
@@ -48,7 +55,8 @@ function fixture(options: { holdAudit?: boolean; holdResult?: boolean; failResul
     if (message.kind === "product.source.operation.ack.v1" && !injected && options.repeatDuringAck) {
       injected = true; for (let index = 0; index < options.repeatDuringAck; index++) receive(structuredClone(command));
     }
-    if (message.kind === "product.source.operation.result.v1" || message.kind === "product.source.design.result.v1") {
+    if (message.kind === "product.source.operation.result.v1" || message.kind === "product.source.design.result.v1"
+      || options.publication && message.kind === "product.release.receipt") {
       resultEntered.resolve(); await resultSend.promise;
       if (options.failResultOnce && !failedResult) { failedResult = true; throw Error("Controlled original result send failure"); }
     }
@@ -59,7 +67,7 @@ function fixture(options: { holdAudit?: boolean; holdResult?: boolean; failResul
     return false;
   });
   const readRuntime = vi.fn(() => { if (session !== originalSession) throw Error("Controlled original session invalidated"); return runtime; });
-  const controller = { handle, readRuntime, isActive: () => active, allowsOrdinary: () => active,
+  const controller = { handle, readRuntime, isActive: () => active, allowsOrdinary: () => active && ordinary,
     invalidate() { active = false; }, settled: async () => {} };
   const createRecovery = vi.spyOn(recoveryClient, "createProductSourceRecoveryClient")
     .mockReturnValue(controller as unknown as ReturnType<typeof recoveryClient.createProductSourceRecoveryClient>);
@@ -96,7 +104,8 @@ function fixture(options: { holdAudit?: boolean; holdResult?: boolean; failResul
   });
   vi.spyOn(source, "readCompletedVerifiedImportedDesign").mockReturnValue({} as never);
   const publisher = { start: vi.fn(async () => {}), stop: vi.fn(async () => {}), requestStop: vi.fn(), getHealthReports: () => [],
-    assertWorkspaceBoundary: vi.fn() };
+    assertWorkspaceBoundary: vi.fn(), replayReceipt: vi.fn((_request: ProductReleaseCommand["payload"]): ProductReleaseReceipt | undefined => undefined),
+    cancel: vi.fn<(request: ProductReleaseCommand["payload"]) => Promise<ProductReleaseReceipt>>(), release: vi.fn() };
   vi.spyOn(publication, "createProductReleaseExecutor").mockReturnValue(publisher as unknown as ReturnType<typeof publication.createProductReleaseExecutor>);
   const actualOperations = operations.createProductSourceOperationClient, actualDesigns = designs.createImportedDesignContinuationClient;
   const actualReviews = reviews.createImportedProductReviewClient;
@@ -139,14 +148,16 @@ function fixture(options: { holdAudit?: boolean; holdResult?: boolean; failResul
     ?? payload.intent.request.byte_request.source.node_id, adapter, transport, sourceCommandDiagnostic: value => diagnostics.push(value),
     productSourceRecovery: { configuration: {} as never, features: [], isCurrent: () => active && session === originalSession, activate: () => sourceRuntime,
       ...(options.clean ? { cleanLifecycle: {} as never } : {}), ...(options.replay === false ? {} : { replaySession: () => session }) },
-    productSourceOperations: { client: { upload, download: vi.fn() }, isCurrent: () => active && session === originalSession, importedReview: true, importedDesign: true } });
+    ...(options.withoutSourceControllers ? {} : { productSourceOperations: { client: { upload, download: vi.fn() },
+      isCurrent: () => active && session === originalSession, importedReview: true, importedDesign: true } }) });
   client.start(); createRecovery.mock.calls[0]![0].activate(runtime); operation.mockClear();
   cleanups.push(async () => { audit.resolve(); uploadDone.resolve(); designDone.resolve(); resultSend.resolve(); await client.stop(true); });
   const control = { version: 1 as const, operation_id: payload.operation_id, payload_digest: productSourceOperationDigestV1(payload, sha), request_digest: payload.request_digest };
-  return { receive, command, control, handle, readRuntime, operation, upload, reserve, persist, reserveDesign, persistDesign,
+  return { client, publisher, receive, command, control, handle, readRuntime, operation, upload, reserve, persist, reserveDesign, persistDesign,
     sourceController, designController, sent, sendAttempts, diagnostics, audit, uploadEntered, uploadDone, resultEntered, resultSend,
     designCommand, designControl, designResult, runDesign, designEntered, designDone, reviewCommand, reviewController, reserveReview, persistReview, runReview,
     changeSession(next: object | undefined) { session = next; },
+    changeActive(next: boolean) { active = next; }, changeOrdinary(next: boolean) { ordinary = next; },
     get admissionsAtUpload() { return admissionsAtUpload; }, get designSignal() { return designSignal; } };
 }
 
@@ -279,7 +290,7 @@ describe("ordinary source delivery coalescing before NodeClient audit", () => {
     expect(f.reserve).toHaveBeenCalledTimes(1); expect(f.upload).toHaveBeenCalledTimes(1); expect(f.persist).toHaveBeenCalledTimes(1);
   });
 
-  it("coalesces H3 status through the real design controller without caching its completed result", async () => {
+  it("coalesces H3 status and replays the original completed result when its receipt is absent", async () => {
     const f = fixture({ holdResult: true });
     const control = { version: 1 as const, continuation_id: "design", run_id: "design-run", request_digest: `sha256:${"a".repeat(64)}` };
     f.receive({ kind: "command", id: "design-stop", idempotency_key: "stop", type: "product.source.design.stop.v1", payload: control });
@@ -316,9 +327,112 @@ describe("ordinary source delivery coalescing before NodeClient audit", () => {
       payload: f.designControl!, status: "accepted", result_digest: sha(canonical(f.designResult)) });
     await vi.waitFor(() => expect(f.designController.readCompletedVerifiedDesign(f.designControl!.continuation_id, f.designControl!.request_digest)).toBe(f.designResult));
     expect(f.sent.some(message => message.kind === "product.source.design.result.v1")).toBe(false);
-    f.resultSend.resolve(); await tick(); f.receive(f.designCommand!);
-    await waitFor(() => f.sent.filter(message => message.kind === "product.source.design.result.v1").length === 2);
+    f.resultSend.resolve(); await waitFor(() => f.sent.filter(message => message.kind === "product.source.design.result.v1").length === 1); await tick();
+    const admissions = f.readRuntime.mock.calls.length;
+    for (let round = 0; round < 3; round++) {
+      for (let index = 0; index < 128; index++) f.receive(structuredClone(f.designCommand!));
+      await waitFor(() => f.sent.filter(message => message.kind === "product.source.design.result.v1").length === round + 2); await tick();
+      expect(f.readRuntime).toHaveBeenCalledTimes(admissions + round + 1);
+    }
+    // Accepted receipt delivery can precede its server marker transaction commit.
+    // The node must still replay the original result for the same command.
+    expect(f.sent.filter(message => message.kind === "product.source.design.result.v1")).toHaveLength(4);
     expect(f.runDesign).toHaveBeenCalledTimes(1); expect(f.persistDesign).toHaveBeenCalledTimes(1);
+  });
+
+  const receiptFamilies = [
+    ["operation", { version: 1, operation_id: "missing", payload_digest: sha("payload"), request_digest: sha("request") }],
+    ["review", { version: 1, review_id: "missing", request_digest: sha("request") }],
+    ["design", { version: 1, continuation_id: "missing", run_id: "run", request_digest: sha("request") }],
+    ["design-review", { version: 1, review_id: "missing", request_digest: sha("request") }],
+    ["execution", { version: 1, execution_id: "missing", run_id: "run", request_digest: sha("request") }],
+    ["execution-review", { version: 1, review_id: "missing", request_digest: sha("request") }],
+    ["execution-repair", { version: 1, repair_id: "missing", run_id: "run", request_digest: sha("request") }],
+    ["validation", { version: 1, validation_id: "missing", run_id: "run", request_digest: sha("request") }],
+    ["validation-review", { version: 1, review_id: "missing", request_digest: sha("request") }],
+  ] as const;
+  it.each(receiptFamilies)("never confirms a %s receipt when no original controller handles it", async (family, payload) => {
+    const f = fixture({ withoutSourceControllers: true });
+    const status = { kind: "command", id: "missing-owner", idempotency_key: "status", type: `product.source.${family}.status.v1`, payload } as ServerToNodeMessage;
+    f.receive(status);
+    await waitFor(() => f.diagnostics.some(item => item.command_type === status.type && item.status === "completed" && item.phase === "handler"));
+    const receipt = { kind: "command", id: status.id, idempotency_key: "receipt", type: `product.source.${family}.receipt.v1`, payload,
+      status: "accepted", result_digest: sha("no local original result") } as ServerToNodeMessage;
+    f.receive(receipt);
+    await waitFor(() => f.diagnostics.some(item => item.command_type === receipt.type && item.status === "failed"));
+    const admissions = f.readRuntime.mock.calls.length;
+    f.receive(status); await waitFor(() => f.readRuntime.mock.calls.length > admissions);
+    expect(f.sent).toHaveLength(0); expect(f.reserve).not.toHaveBeenCalled(); expect(f.runDesign).not.toHaveBeenCalled();
+  });
+
+  it.each(["recovery-claimed", "recovery-error", "inactive", "ordinary-disabled"] as const)
+    ("does not treat %s as successful original receipt validation", async mode => {
+      const f = fixture({ withoutSourceControllers: true }), payload = receiptFamilies[1]![1];
+      const status = { kind: "command", id: "receipt-early-return", idempotency_key: "status", type: "product.source.review.status.v1", payload } as ServerToNodeMessage;
+      f.receive(status); await waitFor(() => f.diagnostics.some(item => item.command_type === status.type && item.status === "completed" && item.phase === "handler"));
+      f.handle.mockImplementationOnce(async () => {
+        if (mode === "recovery-claimed") return true;
+        if (mode === "recovery-error") throw Error("Controlled recovery receipt error");
+        if (mode === "inactive") f.changeActive(false); else f.changeOrdinary(false);
+        return false;
+      });
+      const receipt = { kind: "command", id: status.id, idempotency_key: "receipt", type: "product.source.review.receipt.v1", payload,
+        status: "accepted", result_digest: sha("no local original result") } as ServerToNodeMessage;
+      f.receive(receipt); await waitFor(() => f.diagnostics.some(item => item.command_type === receipt.type && item.status === "failed"));
+      expect(f.sent).toHaveLength(0);
+      f.changeActive(true); f.changeOrdinary(true); const admissions = f.readRuntime.mock.calls.length;
+      f.receive(status); await waitFor(() => f.readRuntime.mock.calls.length > admissions);
+    });
+
+  it("coalesces publication while its original receipt send is pending and replays again when the server receipt is lost", async () => {
+    const f = fixture({ publication: true, holdResult: true }), release = releaseCommand(), receipt = controlledReleaseReceipt(release.payload);
+    f.publisher.replayReceipt.mockReturnValue(receipt);
+    f.receive(release); await f.resultEntered.promise;
+    for (let index = 0; index < 128; index++) f.receive(structuredClone(release));
+    await tick(); expect(f.readRuntime).toHaveBeenCalledTimes(1); expect(f.publisher.replayReceipt).toHaveBeenCalledTimes(1);
+    f.resultSend.resolve(); await waitFor(() => f.sent.some(message => message.kind === "command.ack" && message.command_id === release.id)); await tick();
+    for (let round = 0; round < 2; round++) {
+      for (let index = 0; index < 128; index++) f.receive(structuredClone(release));
+      await waitFor(() => f.sent.filter(message => message.kind === "product.release.receipt").length === round + 2); await tick();
+      expect(f.publisher.replayReceipt).toHaveBeenCalledTimes(round + 2); expect(f.readRuntime).toHaveBeenCalledTimes(round + 2);
+    }
+    expect(f.sent.filter(message => message.kind === "product.release.receipt")).toEqual(Array.from({ length: 3 }, () => ({ kind: "product.release.receipt", node_id: data.admission.request.byte_request.source.node_id, payload: receipt })));
+    expect(f.publisher.release).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat publication audits for a changed completed envelope", async () => {
+    const f = fixture({ publication: true }), release = releaseCommand(); f.publisher.replayReceipt.mockReturnValue(controlledReleaseReceipt(release.payload));
+    f.receive(release); await waitFor(() => f.sent.some(message => message.kind === "command.ack" && message.command_id === release.id)); await tick();
+    f.receive({ ...release, idempotency_key: "changed" }); await tick();
+    expect(f.readRuntime).toHaveBeenCalledTimes(1); expect(f.publisher.replayReceipt).toHaveBeenCalledTimes(1);
+    expect(f.sent.filter(message => message.kind === "product.release.receipt")).toHaveLength(1);
+  });
+
+  it("delivers publication Cancel to the original owner while a completed start is waiting to replay", async () => {
+    const f = fixture({ publication: true }), release = releaseCommand(), receipt = controlledReleaseReceipt(release.payload);
+    f.publisher.replayReceipt.mockReturnValue(receipt); f.publisher.cancel.mockResolvedValue(receipt);
+    f.receive(release); await waitFor(() => f.sent.some(message => message.kind === "command.ack" && message.command_id === release.id)); await tick();
+    f.receive(release);
+    f.receive({ ...release, id: "release:cancel", idempotency_key: "release:cancel", type: "product.release.cancel" });
+    await waitFor(() => f.publisher.cancel.mock.calls.length === 1);
+    await waitFor(() => f.publisher.replayReceipt.mock.calls.length === 2);
+    expect(f.publisher.cancel).toHaveBeenCalledWith(release.payload); expect(f.publisher.release).not.toHaveBeenCalled();
+  });
+
+  it("fences an already queued publication replay when the original NodeClient stops", async () => {
+    const f = fixture({ publication: true }), release = releaseCommand(); f.publisher.replayReceipt.mockReturnValue(controlledReleaseReceipt(release.payload));
+    f.receive(release); await waitFor(() => f.sent.some(message => message.kind === "command.ack" && message.command_id === release.id)); await tick();
+    f.receive(release); await f.client.stop(true);
+    expect(f.publisher.replayReceipt).toHaveBeenCalledTimes(1); expect(f.readRuntime).toHaveBeenCalledTimes(1);
+    expect(f.publisher.requestStop).toHaveBeenCalled(); expect(f.publisher.stop).toHaveBeenCalled();
+  });
+
+  it.each(["no-replay-session", "clean-lifecycle"] as const)("keeps %s publication on its original dispatch path", async mode => {
+    const f = fixture({ publication: true, replay: mode !== "no-replay-session", clean: mode === "clean-lifecycle" }), release = releaseCommand();
+    f.publisher.replayReceipt.mockReturnValue(controlledReleaseReceipt(release.payload));
+    f.receive(release); f.receive(structuredClone(release));
+    await waitFor(() => f.sent.filter(message => message.kind === "product.release.receipt").length === 2);
+    expect(f.publisher.replayReceipt).toHaveBeenCalledTimes(2); expect(f.readRuntime).toHaveBeenCalledTimes(2);
   });
 
   it.each(["no-session", "clean-lifecycle"])("keeps %s clients on the original dispatch path", async variant => {

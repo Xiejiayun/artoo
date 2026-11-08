@@ -56,7 +56,7 @@ import type {
 } from "@artoo/protocol";
 import { and, eq } from "drizzle-orm";
 
-import type { ServerContext } from "./context.js";
+import type { ImportedSourceReceiptFamily, ServerContext } from "./context.js";
 import { canDispatchAssistantRun } from "./services/assistant-service.js";
 import { AppError } from "./errors.js";
 import { validatePersistedAllocationStart } from "./persisted-allocation-start.js";
@@ -84,6 +84,7 @@ export interface NodeBinding {
   dispatchRecoveryValidationReview?(reviewId: string, control: "start" | "stop" | "status"): Promise<void>;
   dispatchCleanValidationReview?(reviewId: string, control: "start" | "stop" | "status"): Promise<void>;
   getPairedNodeSession?(): NonNullable<ReturnType<NonNullable<ServerContext["getPairedNodeSession"]>>> | undefined;
+  redeliverCommittedSourceReceipt?(family: ImportedSourceReceiptFamily, id: string): Promise<void>;
   dispatchImportedDesignReview?(reviewId: string, control: "start" | "stop" | "status"): Promise<void>;
   dispatchImportedExecution?(executionId: string, control: "start" | "stop" | "status"): Promise<void>;
   dispatchImportedExecutionReview?(reviewId: string, control: "start" | "stop" | "status"): Promise<void>;
@@ -1011,6 +1012,23 @@ export function attachNodeBinding(
     getPairedNodeSession() {
       if (closed || !isCurrentBinding() || !pairedSession) return undefined;
       return { ...pairedSession };
+    },
+    async redeliverCommittedSourceReceipt(family, id): Promise<void> {
+      const owner = {
+        design: { feature: IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, binding: importedDesigns },
+        "design-review": { feature: IMPORTED_DESIGN_REVIEW_FEATURE_V1, binding: importedDesignReviews },
+        execution: { feature: IMPORTED_EXECUTION_FEATURE_V1, binding: importedExecutions },
+        "execution-review": { feature: IMPORTED_EXECUTION_REVIEW_FEATURE_V1, binding: implementationReviews },
+        "execution-repair": { feature: IMPORTED_EXECUTION_REVIEW_FEATURE_V1, binding: implementationRepairs },
+        validation: { feature: IMPORTED_VALIDATION_FEATURE_V1, binding: validations },
+        "validation-review": { feature: IMPORTED_VALIDATION_FEATURE_V1, binding: validationReviews },
+      }[family];
+      if (!owner?.binding || !binding.supportsExecutionFeature(owner.feature)
+        || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true || !binding.getPairedNodeSession?.())
+        throw AppError.permissionDenied("Source receipt recovery requires its original current feature and qualified receipt session");
+      // Return the actual transaction lifetime; the inbound queue intentionally
+      // observes errors without returning its tail and cannot own maintenance.
+      await owner.binding.redeliverCommittedReceipt(id);
     },
     getProductSourceRouting() {
       if (!routingSnapshot || !binding.getPairedNodeSession?.() || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true

@@ -140,7 +140,7 @@ describe("completed H2 replay yields to queued transport receipts", () => {
     expect(f.sent.filter(message => message.kind === "product.source.operation.result.v1")).toHaveLength(2);
   });
 
-  it("leaves first attempts, failed sends and unrelated design work immediate", async () => {
+  it("leaves first attempts, failed sends and excluded clean controls immediate", async () => {
     vi.useFakeTimers();
     const f = fixture(), failure = Error("Controlled original result send failure");
     f.transport.send.mockImplementationOnce(async () => { throw failure; });
@@ -150,10 +150,11 @@ describe("completed H2 replay yields to queued transport receipts", () => {
     await expect(f.dispatch(f.command)).rejects.toBe(failure);
     expect(vi.getTimerCount()).toBe(0);
     await f.dispatch(f.command); expect(vi.getTimerCount()).toBe(0);
-    const design: ServerToNodeMessage = { kind: "command", id: "design-status", type: "product.source.design.status.v1",
-      idempotency_key: "design:status", payload: { version: 1, continuation_id: "design", run_id: "design-run", request_digest: otherDigest } };
-    const work = vi.fn(async () => {});
-    await f.guard.run(design, f.readScope, work); await f.guard.run(design, f.readScope, work);
+    const clean: ServerToNodeMessage = { kind: "command", id: "clean-status", type: "product.source.clean-validation.status.v1",
+      idempotency_key: "clean:status", payload: { version: 1, validation_id: "clean", run_id: "clean-run", request_digest: otherDigest } };
+    const work = vi.fn(async (_input: ServerToNodeMessage) => {});
+    const dispatchClean = () => f.guard.run(clean, f.readScope, work) ?? work(clean);
+    await dispatchClean(); await dispatchClean();
     expect(work).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(0);
   });
 });

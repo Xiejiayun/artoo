@@ -154,7 +154,48 @@ export function createImportedExecutionReviewBinding(ctx: ServerContext, options
     await assertSourceLineageDispatch(ctx, tx, row.computerId, row.workspaceRoot);
     current(); return fresh;
   }
+  // Shared with ordinary receive: its actual command_id remains the reply ID.
+  async function sendResultReceipt(tx: DrizzleDb, message: ImportedExecutionReviewResult) { await qualify(tx); current(); await options.transport.send({ kind: "command", id: message.command_id, idempotency_key: `receipt:${message.command_id}`,
+    type: "product.source.execution-review.receipt.v1", payload: { version: 1, review_id: message.payload.review_id, request_digest: message.payload.request_digest }, result_digest: hash(message.payload), status: "accepted" }); current();
+    if (message.payload.outcome === "reviewed") {
+      const row = await load(tx, message.payload.review_id);
+      // This records transport.send completion, not a remote acknowledgement or H6 plan acceptance.
+      await tx.insert(receipts).values({ reviewId: row.id, organizationId: ctx.organizationId,
+        deliveryId: row.resultDeliveryId!, sessionId: options.sessionId, sessionBindings: row.sessionBindings,
+        requestDigest: row.requestDigest, resultDigest: hash(message.payload), sentAt: ctx.clock.nowIso() }).onConflictDoNothing();
+    }
+    current();
+  }
   return {
+    /** Re-send only an immutable result's original same-session receipt; never starts work. */
+    async redeliverCommittedReceipt(id: string): Promise<void> {
+      await ctx.db.transaction(async tx => {
+        await qualify(tx); const row = await load(tx, id);
+        const request = ImportedExecutionReviewRequestV1Schema.parse(row.request), result = ImportedExecutionReviewResultV1Schema.parse(row.result);
+        if (!(result.outcome === "reviewed")) throw AppError.conflict("Committed execution-review result has no receipt marker obligation");
+        const bound = row.sessionBindings as { destination?: AuthenticatedTransferNode & { sessionId: string } };
+        if (request.review_id !== row.id || result.review_id !== row.id || row.requestDigest !== importedExecutionReviewRequestDigestV1(request, sha)
+          || result.request_digest !== row.requestDigest || row.resultDigest !== hash(result) || !row.resultDeliveryId
+          || row.resultSessionId !== options.sessionId || canonical(bound.destination ?? null) !== canonical({ ...identity, sessionId: options.sessionId }))
+          throw AppError.conflict("Committed execution-review receipt differs from its original result, request or destination session");
+        const [delivery] = await tx.select().from(deliveries).where(and(eq(deliveries.id, row.resultDeliveryId), eq(deliveries.reviewId, row.id), eq(deliveries.sessionId, options.sessionId)));
+        const starts = await tx.select().from(deliveries).where(and(eq(deliveries.reviewId, row.id), eq(deliveries.control, "start")));
+        if (!delivery || starts.length !== 1 || starts[0]!.sessionId !== options.sessionId)
+          throw AppError.conflict("Committed execution-review receipt lost its original issuing delivery");
+        const readMarker = async () => {
+          const [marker] = await tx.select().from(receipts).where(and(eq(receipts.reviewId, row.id), eq(receipts.organizationId, ctx.organizationId)));
+          if (marker && (marker.deliveryId !== row.resultDeliveryId || marker.sessionId !== row.resultSessionId
+            || marker.requestDigest !== row.requestDigest || marker.resultDigest !== row.resultDigest || canonical(marker.sessionBindings) !== canonical(row.sessionBindings)))
+            throw AppError.conflict("Committed execution-review receipt marker differs from its original result");
+          return marker;
+        };
+        if (await readMarker()) { current(); return; }
+        // The original result may have arrived under status/stop; do not substitute its start ID.
+        await sendResultReceipt(tx, { kind: "product.source.execution-review.result.v1", node_id: identity.computerId, command_id: delivery.id, payload: result });
+        if (!await readMarker()) throw AppError.conflict("Committed execution-review receipt marker was not recorded after send");
+        current();
+      });
+    },
     async dispatch(id: string, control: Control = "start") {
       const record = await ctx.db.transaction(async tx => {
         const row = await load(tx, id);
@@ -206,16 +247,7 @@ export function createImportedExecutionReviewBinding(ctx: ServerContext, options
         if (locked!.result === null) await tx.update(reviews).set({ result, resultDigest: hash(result), resultDeliveryId: delivery.id, resultSessionId: options.sessionId }).where(eq(reviews.id, row.id));
         await qualify(tx);
       });
-      await ctx.db.transaction(async tx => { await qualify(tx); await options.transport.send({ kind: "command", id: message.command_id, idempotency_key: `receipt:${message.command_id}`,
-        type: "product.source.execution-review.receipt.v1", payload: { version: 1, review_id: message.payload.review_id, request_digest: message.payload.request_digest }, result_digest: hash(message.payload), status: "accepted" }); current();
-        if (message.payload.outcome === "reviewed") {
-          const row = await load(tx, message.payload.review_id);
-          // This records transport.send completion, not a remote acknowledgement or H6 plan acceptance.
-          await tx.insert(receipts).values({ reviewId: row.id, organizationId: ctx.organizationId,
-            deliveryId: row.resultDeliveryId!, sessionId: options.sessionId, sessionBindings: row.sessionBindings,
-            requestDigest: row.requestDigest, resultDigest: hash(message.payload), sentAt: ctx.clock.nowIso() }).onConflictDoNothing();
-        }
-      });
+      await ctx.db.transaction(tx => sendResultReceipt(tx, message));
     },
   };
 }

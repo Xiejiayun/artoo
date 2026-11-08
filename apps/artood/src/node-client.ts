@@ -47,7 +47,7 @@ import { createProductReleaseExecutor, prepareReleaseProfiles, type ReleaseProfi
 import { bindWorkspaceToolVerifier, bindWorkspaceToolEvidenceReader, bindWorkspaceToolCapabilities, bindWorkspaceToolReleaseCapabilities } from "./workspace-tools.js";
 import { bindWorkspaceReadOnlyTools, isAutonomousPlanningContext } from "./workspace-readonly.js";
 import { createSourceStartReplay, type SourceStartOutcome, type SourceStartScope } from "./source-start-replay.js";
-import { createSourceCommandInflight } from "./source-command-inflight.js";
+import { createSourceCommandInflight, isOrdinarySourceResultReceipt } from "./source-command-inflight.js";
 import { createSourceCommandDiagnostics, recordSourceCommandPhase, type SourceCommandDiagnostic } from "./source-command-diagnostics.js";
 import { createProductSourceOperationClient } from "./product-source-operations.js";
 import { createImportedProductReviewClient } from "./imported-product-review.js";
@@ -1701,9 +1701,13 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   async function dispatchFresh(message: ServerToNodeMessage): Promise<void> {
     if (!sourceRecovery) return dispatchActive(message);
     recordSourceCommandPhase("recovery");
-    try { if (await sourceRecovery.handle(message)) return; }
+    try { if (await sourceRecovery.handle(message)) {
+      if (isOrdinarySourceResultReceipt(message)) throw Error("Source result receipt requires its original ordinary controller");
+      return;
+    } }
     catch (error) {
       options.productSourceRecovery!.onFailure?.(error instanceof Error ? error : new Error("Recovery control failed"));
+      if (isOrdinarySourceResultReceipt(message)) throw error;
       return ackRejected(message.id, "process_start_failed", errorMessage(error));
     }
     if (message.type === "run.event.ack" || message.type === "product.release.health.ack"
@@ -1718,12 +1722,17 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       try { await sourceRecovery.awaitCleanActivation(); }
       catch (error) { return ackRejected(message.id, "process_start_failed", errorMessage(error)); }
     }
-    if (!sourceRecovery.isActive()) return ackRejected(message.id, "process_start_failed", "Guardian registration and accepted recovery checkpoint are not ready");
+    if (!sourceRecovery.isActive()) {
+      if (isOrdinarySourceResultReceipt(message)) throw Error("Source result receipt has no active original source session");
+      return ackRejected(message.id, "process_start_failed", "Guardian registration and accepted recovery checkpoint are not ready");
+    }
     if (recovered && !recoveredValidations) return ackRejected(message.id, "process_start_failed", "Original recovered validation controller is unavailable");
     if (clean && !cleanValidations) return ackRejected(message.id, "process_start_failed", "Original clean validation controller is unavailable");
     if (!sourceRecovery.allowsOrdinary() && !recovered && !clean && !((message.type === "product.release" || message.type === "product.release.cancel")
-      && (message.payload.imported_recovery && recoveredValidations || message.payload.imported_clean && cleanValidations)))
+      && (message.payload.imported_recovery && recoveredValidations || message.payload.imported_clean && cleanValidations))) {
+      if (isOrdinarySourceResultReceipt(message)) throw Error("Source result receipt has no ordinary source authority");
       return ackRejected(message.id, "process_start_failed", "Recovered epoch requires fresh dedicated validation, independent review and publication");
+    }
     const sha = (value: string | Uint8Array) => "sha256:" + createHash("sha256").update(value).digest("hex");
     let operation: RecoveryOperationRefV1 | null = null;
     if (message.type === "product.source.validation.v1") operation = { kind: "validation", operation_id: message.payload.validation_id,
@@ -1761,6 +1770,10 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     if(importedExecutions&&await importedExecutions.handle(message))return;
     if(importedExecutionReviews&&await importedExecutionReviews.handle(message))return;
     if(importedValidations&&await importedValidations.handle(message))return;
+    // A normal return is used by delivery bookkeeping only after the actual
+    // controller validates its original local result. Unknown receipts cannot
+    // acquire that meaning by falling through the command switch.
+    if (isOrdinarySourceResultReceipt(message)) throw Error("Original source result receipt controller is unavailable");
     switch (message.type) {
       case "product.release.cancel": {
         try {
