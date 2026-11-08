@@ -5,12 +5,13 @@ import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readF
   realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const BOOTSTRAP = 'application-service-bootstrap.mjs', HOST = 'application-service-host-api.mjs';
 const MANIFEST = 'application-service-host-manifest.json', FORMAT = 'artoo.application-service-host.v1';
 const BUILTINS = new Set(['node:assert/strict', 'node:async_hooks', 'node:buffer', 'node:child_process', 'node:crypto',
   'node:events', 'node:fs', 'node:fs/promises', 'node:http', 'node:net', 'node:os', 'node:path', 'node:perf_hooks',
-  'node:process', 'node:stream', 'node:stream/promises', 'node:string_decoder', 'node:url', 'node:util', 'node:util/types']);
+  'node:process', 'node:sqlite', 'node:stream', 'node:stream/promises', 'node:string_decoder', 'node:url', 'node:util', 'node:util/types']);
 const EARLY_APPLICATION = new Set(['application-service-bootstrap.ts', 'application-bootstrap-control.ts', 'application-bootstrap-admission.ts']);
 const sha = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 const measure = bytes => ({ bytes: bytes.length, sha256: sha(bytes) });
@@ -32,6 +33,39 @@ function localOutput(path, root, directory) {
 function edgeKey(edge) { return `${edge.kind}:${edge.path}`; }
 function sortedKeys(edges) { return [...new Set(edges.map(edgeKey))].sort(); }
 function same(left, right) { return JSON.stringify(left) === JSON.stringify(right); }
+function moduleFailure(reason, file, name, kind, position = {}) {
+  fail(reason + ' [module_edge.v1 ' + JSON.stringify({ file: String(file).slice(0, 512), module: String(name).slice(0, 256), kind, ...position }) + ']');
+}
+
+// ulid 2.4.0 advertises an ESM entry, but its Node PRNG still calls require.
+// Bind only this reviewed source and replace that one builtin load at build
+// time. The randomBytes/encoding algorithms and default secure PRNG are intact;
+// no runtime resolver, package mutation or generic CommonJS fallback is added.
+function ulidStaticCrypto() {
+  const selected = new Set(), expression = 'const nodeCrypto = require("crypto");';
+  const sourceHash = 'sha256:79b51740a560fcc06921aaa05868434df677c028cdb2b79c880fe8d0165b64b6';
+  return { name: 'fixed-ulid-esm-crypto', setup(api) {
+    api.onResolve({ filter: /^ulid$/ }, args => {
+      if (args.kind !== 'import-statement') moduleFailure('ULID requires a static ESM import', args.importer, args.path, args.kind);
+      const metadataPath = realpathSync.native(createRequire(args.importer).resolve('ulid/package.json'));
+      const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+      if (metadata.name !== 'ulid' || metadata.version !== '2.4.0' || metadata.module !== './dist/index.esm.js')
+        fail('ULID package version or ESM entry changed');
+      const file = join(dirname(metadataPath), 'dist', 'index.esm.js');
+      const stat = lstatSync(file);
+      if (realpathSync.native(file) !== file || !stat.isFile() || stat.isSymbolicLink()) fail('ULID ESM must be the fixed physical member');
+      selected.add(file); return { path: file };
+    });
+    api.onLoad({ filter: /[\\/]index\.esm\.js$/ }, args => {
+      if (!selected.has(args.path)) return;
+      const bytes = readFileSync(args.path), source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      if (source.split(expression).length !== 2) fail('ULID crypto import expression changed');
+      if (sha(bytes) !== sourceHash) fail('ULID ESM source hash changed');
+      return { loader: 'js', contents: 'import * as __artooUlidNodeCrypto from "node:crypto";\n'
+        + source.replace(expression, 'const nodeCrypto = __artooUlidNodeCrypto;') };
+    });
+  } };
+}
 
 // Metafiles omit import(variable) and runtime require. Audit emitted JavaScript,
 // too. This checks the fixed trusted build's module graph, not arbitrary JS safety.
@@ -39,27 +73,38 @@ function emittedImports(file, text, files) {
   const parsed = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS), edges = [];
   if (parsed.parseDiagnostics.length) fail('unparseable emitted module');
   const add = (value, kind) => {
-    if (!value || !ts.isStringLiteral(value)) fail('nonliteral module loading');
+    const position = value ? parsed.getLineAndCharacterOfPosition(value.getStart(parsed)) : undefined;
+    const reject = (reason, name) => moduleFailure(reason, file, name, kind,
+      position ? { line: position.line + 1, column: position.character + 1 } : {});
+    if (!value || !ts.isStringLiteral(value)) reject('nonliteral module loading', '<nonliteral>');
     const name = value.text;
     if (BUILTINS.has(name)) edges.push({ path: name, kind });
     else {
-      if (!name.startsWith('./') && !name.startsWith('../') || /[\\?#%]/u.test(name)) fail('unsupported external module');
+      if (!name.startsWith('./') && !name.startsWith('../') || /[\\?#%]/u.test(name)) reject('unsupported external module', name);
       const target = posix.normalize(posix.join(posix.dirname(file), name));
-      if (!member(target) || !files.has(target)) fail('unlisted module import');
+      if (!member(target) || !files.has(target)) reject('unlisted module import', name);
       edges.push({ path: target, kind });
     }
   };
   const visit = node => {
+    const reject = (reason, name, kind) => {
+      const position = parsed.getLineAndCharacterOfPosition(node.getStart(parsed));
+      moduleFailure(reason, file, name, kind, { line: position.line + 1, column: position.character + 1 });
+    };
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node) && node.moduleSpecifier) add(node.moduleSpecifier, 'import-statement');
     if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-      if (node.arguments.length !== 1) fail('unsupported dynamic module loading');
+      if (node.arguments.length !== 1) reject('unsupported dynamic module loading', '<dynamic-import>', 'dynamic-import');
       add(node.arguments[0], 'dynamic-import');
     }
     // node:module is not in the builtin allowlist. Reject CJS loaders and process
     // loader access as well, including esbuild's runtime require shim and aliases.
     if (ts.isIdentifier(node) && /^(?:require|__require\d*|createRequire|getBuiltinModule|mainModule)$/u.test(node.text)
-      || ts.isStringLiteral(node) && ['getBuiltinModule', 'mainModule'].includes(node.text)) fail('runtime module resolver');
-    if (ts.isPropertyAccessExpression(node) && node.name.text === 'resolve' && ts.isMetaProperty(node.expression)) fail('runtime module resolver');
+      || ts.isStringLiteral(node) && ['getBuiltinModule', 'mainModule'].includes(node.text)) {
+      const argument = ts.isCallExpression(node.parent) && node.parent.expression === node ? node.parent.arguments[0] : undefined;
+      reject('runtime module resolver', argument && ts.isStringLiteral(argument) ? argument.text : '<runtime-resolver>', 'runtime-resolver');
+    }
+    if (ts.isPropertyAccessExpression(node) && node.name.text === 'resolve' && ts.isMetaProperty(node.expression))
+      reject('runtime module resolver', '<import.meta.resolve>', 'runtime-resolver');
     ts.forEachChild(node, visit);
   };
   visit(parsed); return edges;
@@ -80,8 +125,8 @@ export function auditApplicationServiceHostBuild(result, { repoRoot, outputDirec
   for (const [file, bytes] of files) {
     const imports = emittedImports(file, new TextDecoder('utf-8', { fatal: true }).decode(bytes), files);
     const declared = metadata.get(file).imports.map(item => {
-      if (item.external && !BUILTINS.has(item.path)) fail('unsupported external module');
-      if (!['import-statement', 'dynamic-import'].includes(item.kind)) fail('unsupported module edge');
+      if (item.external && !BUILTINS.has(item.path)) moduleFailure('unsupported external module', file, item.path, item.kind);
+      if (!['import-statement', 'dynamic-import'].includes(item.kind)) moduleFailure('unsupported module edge', file, item.path, item.kind);
       return { path: item.external ? item.path : localOutput(item.path, repoRoot, outputDirectory), kind: item.kind };
     });
     if (!same(sortedKeys(imports), sortedKeys(declared))) fail('emitted imports differ from metafile');
@@ -103,6 +148,10 @@ export function auditApplicationServiceHostBuild(result, { repoRoot, outputDirec
   };
   const early = closure(BOOTSTRAP), host = closure(HOST);
   if (early.has(HOST)) fail('host imported before admission');
+  // The trusted broker core imports SQLite without opening a store at module
+  // evaluation. It belongs to the delayed application graph, never bootstrap.
+  for (const file of early) if (graph.get(file).some(edge => edge.path === 'node:sqlite'))
+    moduleFailure('SQLite must remain in the deferred host', file, 'node:sqlite', 'import-statement');
   for (const file of early) for (const [input, contribution] of Object.entries(metadata.get(file).inputs)) {
     if (contribution.bytesInOutput > 0 && basename(input).startsWith('application-') && !EARLY_APPLICATION.has(basename(input)))
       fail('application source in bootstrap static closure: ' + basename(input));
@@ -189,7 +238,7 @@ export async function buildApplicationServiceHost({ repoRoot = fileURLToPath(new
       'application-service-host-api': join(source, 'application-service-host-api.ts'),
     }, outdir: staging, outExtension: { '.js': '.mjs' }, chunkNames: 'chunks/[name]-[hash]', bundle: true, splitting: true,
     platform: 'node', target: 'node24', format: 'esm', write: false, metafile: true, logLevel: 'silent', legalComments: 'inline',
-    tsconfigRaw: { compilerOptions: { useDefineForClassFields: true } } });
+    tsconfigRaw: { compilerOptions: { useDefineForClassFields: true } }, plugins: [ulidStaticCrypto()] });
     const files = auditApplicationServiceHostBuild(result, { repoRoot, outputDirectory: staging });
     const manifestBytes = Buffer.from(JSON.stringify({ version: 1, format: FORMAT, platform: 'win32', arch: 'x64',
       bootstrap: BOOTSTRAP, host_api: HOST, files: [...files].map(([path, bytes]) => ({ path, ...measure(bytes) }))

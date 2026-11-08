@@ -4,15 +4,17 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { build, stop } from 'esbuild';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 import { auditApplicationServiceHostBuild, buildApplicationServiceHost, verifyApplicationServiceHostBundle } from './build-application-service-host.mjs';
 
 const temporaryParent = realpathSync.native(tmpdir()), root = realpathSync.native(mkdtempSync(join(temporaryParent, 'artoo-app-host-build-')));
 const manifestName = 'application-service-host-manifest.json', bootstrapName = 'application-service-bootstrap', hostName = 'application-service-host-api';
 const sha = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
+const requireBuild = createRequire(import.meta.url);
 const pin = path => { const bytes = readFileSync(path); return { path, bytes: bytes.length, sha256: sha(bytes) }; };
 let index = 0;
 function fixture() {
@@ -101,8 +103,61 @@ test('rejects independently bundled authority copies instead of accepting their 
   assert.throws(() => audit(f, mutated), /authority must be one shared module instance/u);
 });
 
+test('allows the fixed SQLite builtin only in the deferred host graph, without executing it', async () => {
+  const f = fixture(), sqlite = "import {DatabaseSync} from 'node:sqlite'; export const sqliteClass = DatabaseSync;";
+  f.put(hostName + '.ts', f.original[hostName + '.ts'] + '\n' + sqlite);
+  const result = await compile(f), files = audit(f, result);
+  assert.match(files.get(hostName + '.mjs').toString('utf8'), /from "node:sqlite"/u);
+  f.put(bootstrapName + '.ts', f.original[bootstrapName + '.ts'] + '\n' + sqlite);
+  const early = await compile(f); assert.throws(() => audit(f, early), /SQLite must remain in the deferred host/u);
+});
+
+function ulidFixture() {
+  const f = fixture(), actual = dirname(requireBuild.resolve('ulid/package.json')), dependency = join(f.directory, 'node_modules/ulid');
+  mkdirSync(join(dependency, 'dist'), { recursive: true });
+  copyFileSync(join(actual, 'package.json'), join(dependency, 'package.json'));
+  copyFileSync(join(actual, 'dist/index.esm.js'), join(dependency, 'dist/index.esm.js'));
+  f.put(bootstrapName + '.ts', f.original[bootstrapName + '.ts'] + `
+    import {ulid, factory, monotonicFactory, decodeTime} from 'ulid';
+    export const nextId = ulid, timestamp = decodeTime;
+    export function knownId(time) { return factory(() => 0)(time); }
+    export function orderedIds(time) { const next = monotonicFactory(() => 0); return [next(time), next(time), next(time - 1)]; }`);
+  return { ...f, dependency };
+}
+test('bundles the locked real ULID ESM with static crypto while preserving ID and secure PRNG semantics', async () => {
+  const f = ulidFixture(), built = await buildApplicationServiceHost({ repoRoot: f.directory, outputDirectory: f.output });
+  verifyApplicationServiceHostBundle(f.output, built.manifest);
+  const random = Math.random;
+  try {
+    Math.random = () => { throw Error('insecure random fallback forbidden'); };
+    // This is the harmless fixture's generated module, not the application host.
+    const api = await import(pathToFileURL(join(f.output, bootstrapName + '.mjs')).href), time = 1234;
+    const id = api.nextId(time);
+    assert.match(id, /^[0-9A-HJKMNP-TV-Z]{26}$/u); assert.equal(api.timestamp(id), time);
+    assert.equal(api.knownId(time), '000000016J0000000000000000');
+    assert.deepEqual(api.orderedIds(time), ['000000016J0000000000000000', '000000016J0000000000000001', '000000016J0000000000000002']);
+    assert.equal(api.loaded(), 0, 'the fixture host is still deferred');
+  } finally { Math.random = random; }
+});
+for (const change of ['hash', 'expression', 'duplicate-expression', 'version', 'module-path']) test('rejects fixed ULID input drift: ' + change, async () => {
+  const f = ulidFixture(), path = join(f.dependency, 'dist/index.esm.js'), metadataPath = join(f.dependency, 'package.json');
+  const original = readFileSync(path, 'utf8');
+  if (change === 'hash') writeFileSync(path, original + '\n// changed dependency\n');
+  if (change === 'expression') writeFileSync(path, original.replace('require("crypto")', 'require("node:crypto")'));
+  if (change === 'duplicate-expression') writeFileSync(path, original + '\nconst nodeCrypto = require("crypto");\n');
+  if (change === 'version' || change === 'module-path') {
+    const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+    if (change === 'version') metadata.version = '2.4.1'; else metadata.module = './dist/other.js';
+    writeFileSync(metadataPath, JSON.stringify(metadata));
+  }
+  await assert.rejects(buildApplicationServiceHost({ repoRoot: f.directory, outputDirectory: f.output }),
+    change === 'hash' ? /ULID ESM source hash changed/u : change.includes('expression') ? /ULID crypto import expression changed/u : /ULID package version or ESM entry changed/u);
+  assert.equal(existsSync(f.output), false);
+});
+
 for (const [name, extraSource, external, expected] of [
   ['bare external package', "export {value} from 'unlisted-package';", ['unlisted-package'], /unsupported external module/u],
+  ['third-party SQLite package', "export {value} from 'sqlite3';", ['sqlite3'], /unsupported external module/u],
   ['unknown Node builtin', "export * from 'node:artoo_missing_builtin';", [], /unsupported external module/u],
   ['unapproved module loader builtin', "import {createRequire as loader} from 'node:module'; export const load = loader(import.meta.url);", [], /unsupported external module/u],
   ['variable dynamic import', 'export const load = name => import(name);', [], /nonliteral module loading/u],
@@ -117,6 +172,18 @@ for (const [name, extraSource, external, expected] of [
     assert.equal(meta.imports.filter(item => item.kind === 'dynamic-import').length, 1, 'metafile omits the additional variable import');
   }
   assert.throws(() => audit(f, result), expected);
+});
+
+test('module rejection identifies a bounded emitted file, literal module and line without source text', async () => {
+  const f = fixture(), name = 'unlisted-' + 'x'.repeat(1024);
+  f.put(bootstrapName + '.ts', f.original[bootstrapName + '.ts'] + `\nexport {value} from '${name}';`);
+  const result = await compile(f, { external: [name] });
+  let error; try { audit(f, result); } catch (caught) { error = caught; }
+  assert.match(error.message, /unsupported external module/u);
+  const context = JSON.parse(error.message.match(/\[module_edge\.v1 (.+)\]$/u)[1]);
+  assert.equal(context.file, bootstrapName + '.mjs'); assert.equal(context.module, name.slice(0, 256));
+  assert.equal(context.kind, 'import-statement'); assert.ok(context.line > 0 && context.column > 0);
+  assert.ok(error.message.length < 1024); assert.equal(error.message.includes('export {value}'), false);
 });
 
 test('published output exactly matches its independent manifest pin and closed file set', async () => {
