@@ -16,7 +16,7 @@ import * as codeInstallation from "./windows-code-installation.js";
 import * as mutableStorage from "./windows-release-storage.js";
 
 const control = vi.hoisted(() => ({ releases: new Map<object, () => unknown>(), readerFactory: vi.fn(), batchPrepare: vi.fn(), batchRead: vi.fn(), verify: vi.fn() }));
-vi.mock("./verification.js", () => ({ assertFinalVerificationExportBinding: vi.fn(), assertLocallyPreparedVerificationProfile: vi.fn(),
+vi.mock("./verification.js", () => ({ assertFinalVerificationExportBinding: vi.fn(), assertLocallyPreparedVerificationProfile: vi.fn(), assertLocallyPreparedVerificationProfiles: vi.fn(),
   prepareVerificationProfiles: vi.fn(value => value), subjectManifest: vi.fn(), selectVerificationProfile: vi.fn(), runTransferredResearchVerification: control.verify }));
 vi.mock("./product-release.js", () => {
   const prepare = (profile: object) => {

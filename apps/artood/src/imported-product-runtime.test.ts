@@ -15,7 +15,7 @@ import type {PreparedReleaseProfile} from "./product-release.js";
 import type {RuntimeAdapter,RunEvent} from "@artoo/protocol";
 const control=vi.hoisted(()=>({verify:vi.fn(),select:vi.fn(),subject:vi.fn(),authenticated:vi.fn(),describe:vi.fn(),release:vi.fn(),
   closure:vi.fn(),protectedCommand:vi.fn(()=>{throw Error("Controlled lifecycle may not spawn a command");})}));
-vi.mock("./verification.js",()=>({assertFinalVerificationExportBinding:vi.fn(),assertLocallyPreparedVerificationProfile:vi.fn(),prepareVerificationProfiles:vi.fn(value=>value),
+vi.mock("./verification.js",()=>({assertFinalVerificationExportBinding:vi.fn(),assertLocallyPreparedVerificationProfile:vi.fn(),assertLocallyPreparedVerificationProfiles:vi.fn(),prepareVerificationProfiles:vi.fn(value=>value),
   selectVerificationProfile:control.select,subjectManifest:control.subject,runTransferredResearchVerification:control.verify}));
 vi.mock("./windows-release-storage.js",()=>({prepareWindowsReleaseStorage:vi.fn(()=>({})),assertWindowsReleaseStorage:vi.fn(),auditWindowsReleaseStorage:vi.fn()}));
 vi.mock("./owned/windows-owned-process.js",()=>({assertWindowsProcessBackend:vi.fn()}));

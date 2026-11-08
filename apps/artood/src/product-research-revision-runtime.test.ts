@@ -14,7 +14,7 @@ import type { AgentInstanceHandle } from "@artoo/protocol";
 const control = vi.hoisted(() => ({ release: undefined as unknown, subject: vi.fn(), closure: vi.fn() }));
 vi.mock("./verification.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./verification.js")>(); control.subject.mockImplementation(actual.subjectManifest);
-  return { ...actual, assertFinalVerificationExportBinding: vi.fn(), assertLocallyPreparedVerificationProfile: vi.fn(),
+  return { ...actual, assertFinalVerificationExportBinding: vi.fn(), assertLocallyPreparedVerificationProfile: vi.fn(), assertLocallyPreparedVerificationProfiles: vi.fn(),
     prepareVerificationProfiles: vi.fn(value => value), subjectManifest: control.subject, selectVerificationProfile: vi.fn(), runTransferredResearchVerification: vi.fn() };
 });
 vi.mock("./product-release.js", () => ({ prepareReleaseCapabilityReader: () => ({ capabilities: control.release, readCapabilities: () => control.release }),

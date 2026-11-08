@@ -14,7 +14,7 @@ import { ProductReleaseRequestSchema, ProductReleaseReceiptSchema, ProductReleas
   productSourceRecoveryCheckpointDigestV1,
   type ReleaseCapabilitiesV1, type ReleaseAcceptanceBindingV1, type ContextPack, type ProductReleaseRequest,
   type ProductReleaseReceipt, type ProductReleaseHealthReport, type ProductReleaseRetrySourceV1, type RunVerificationPayload, type RunStartPayload } from "@artoo/domain";
-import { subjectManifest, verificationSupported, readVerificationCapabilities, readWindowsVerificationBackend, readWindowsVerificationBackends, measureReleaseAcceptancePlan,
+import { subjectManifest, verificationSupported, readVerificationCapabilities, readVerificationCapabilitiesBatch, readWindowsVerificationBackend, readWindowsVerificationBackends, measureReleaseAcceptancePlan,
   type PreparedVerificationProfile, type VerificationProfile } from "./verification.js";
 import { assertAcceptedProductInputs, readProductFile } from "./product-stage.js";
 import { assertReleaseCapabilityContext, type ReleaseCapabilityReader } from "./release-capability-authority.js";
@@ -141,8 +141,7 @@ export function readReleaseCapabilitiesBatch(profiles: readonly PreparedReleaseP
       if (backends[index] !== authority.windows!.backend) fail("Windows release verifier backend changed");
     }
   }
-  return Object.freeze(entries.map(({ profile, authority }) => {
-    if (!authority.capabilities) return undefined;
+  const assertDirectories = ({ profile, authority }: typeof entries[number]): void => {
     assertStorage(profile);
     for (const [path, saved] of [[profile.storage_root, authority.storage], [profile.verifier.workspace_root, authority.workspace]] as const) {
       const now = lstatSync(path);
@@ -150,7 +149,23 @@ export function readReleaseCapabilitiesBatch(profiles: readonly PreparedReleaseP
         fail("release capability physical directory identity changed");
       }
     }
-    const verifier = readVerificationCapabilities(profile.verifier);
+  };
+  let verifiers: ReturnType<typeof readVerificationCapabilitiesBatch> | undefined;
+  if (process.platform === "win32" && capable.length > 1) {
+    for (const entry of capable) assertDirectories(entry);
+    // A separate fresh batch from the backend checks above. No prior successful
+    // check or returned capability authorizes skipping current file validation.
+    verifiers = readVerificationCapabilitiesBatch(capable.map(entry => entry.profile.verifier));
+  }
+  let index = 0;
+  return Object.freeze(entries.map(entry => {
+    const { profile, authority } = entry;
+    if (!authority.capabilities) return undefined;
+    // Recheck after the batch as well: a later release's storage may have
+    // changed while an earlier verifier was being read. Single/POSIX calls
+    // retain the original per-release storage -> verifier ordering.
+    assertDirectories(entry);
+    const verifier = verifiers ? verifiers[index++] : readVerificationCapabilities(profile.verifier);
     if (!verifier || verifier.profile_digest !== authority.capabilities.binding.verification_profile_digest
       || verifier.measurement_plan_policy?.version !== 2) fail("release capability verifier binding changed");
     return authority.capabilities;

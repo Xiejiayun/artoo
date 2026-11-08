@@ -18,7 +18,7 @@ const control=vi.hoisted(()=>({verify:vi.fn(),select:vi.fn(),subject:vi.fn(),aut
   closure:vi.fn(),designVerify:vi.fn(),designPreview:vi.fn(),designReviewVerify:vi.fn(),executionVerify:vi.fn(),executionPreview:vi.fn(),
   implementationReviewVerify:vi.fn(),repairVerify:vi.fn(),repairPreview:vi.fn(),
   finalBinding:vi.fn(),bind:vi.fn((..._args:any[])=>({})),preview:vi.fn(),protectedCommand:vi.fn(()=>{throw Error("Controlled lifecycle may not spawn a command");})}));
-vi.mock("./verification.js",()=>({assertFinalVerificationExportBinding:vi.fn(),assertLocallyPreparedVerificationProfile:vi.fn(),prepareVerificationProfiles:vi.fn(value=>value),
+vi.mock("./verification.js",()=>({assertFinalVerificationExportBinding:vi.fn(),assertLocallyPreparedVerificationProfile:vi.fn(),assertLocallyPreparedVerificationProfiles:vi.fn(),prepareVerificationProfiles:vi.fn(value=>value),
   selectVerificationProfile:control.select,subjectManifest:control.subject,runTransferredResearchVerification:control.verify,runTransferredDesignVerification:control.designVerify,runTransferredDesignVerificationPreview:control.designPreview,assertImportedDesignVerificationProfile:vi.fn(),
   assertImportedFinalVerificationBinding:control.finalBinding,runImportedDesignReviewVerification:control.designReviewVerify,
   runImportedExecutionVerification:control.executionVerify,runImportedExecutionVerificationPreview:control.executionPreview,

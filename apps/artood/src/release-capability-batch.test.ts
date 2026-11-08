@@ -1,12 +1,14 @@
 // Real prepared profile identities and protected files, with controlled native
 // installation/storage boundaries. No process, browser or listener is started.
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as verification from "./verification.js";
-import { attachWindowsVerificationBackend, prepareVerificationProfiles, readWindowsVerificationBackend, readWindowsVerificationBackends,
+import { assertLocallyPreparedVerificationProfiles, attachWindowsVerificationBackend, prepareVerificationProfiles,
+  readVerificationCapabilitiesBatch, readWindowsVerificationBackend, readWindowsVerificationBackends,
   type VerificationProfile } from "./verification.js";
 import { prepareReleaseProfiles, prepareReleaseCapabilityReader, prepareReleaseCapabilityReaders, readReleaseCapabilities, readReleaseCapabilitiesBatch, type ReleaseProfile } from "./product-release.js";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
@@ -14,6 +16,11 @@ import type { PreparedWindowsReleaseStorage } from "./windows-release-storage.js
 
 const native = vi.hoisted(() => ({ backends: new WeakSet<object>(), revoked: new WeakSet<object>(), imagesChanged: new WeakSet<object>(),
   storage: new WeakMap<object, string>(), fullAudit: vi.fn(), imageAudit: vi.fn(), storageAudit: vi.fn() }));
+vi.mock("node:fs", async load => {
+  const actual = await load<typeof import("node:fs")>();
+  return { ...actual, openSync: vi.fn(actual.openSync), closeSync: vi.fn(actual.closeSync), readSync: vi.fn(actual.readSync) };
+});
+const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
 vi.mock("./owned/windows-owned-process.js", () => ({
   assertWindowsProcessBackend: (backend: object) => {
     native.fullAudit(backend);
@@ -32,7 +39,12 @@ vi.mock("./windows-release-storage.js", () => ({
   },
 }));
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!, roots: string[] = [];
-beforeEach(() => { Object.defineProperty(process, "platform", { ...platform, value: "win32" }); vi.clearAllMocks(); });
+beforeEach(() => {
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" }); vi.clearAllMocks();
+  vi.mocked(fs.openSync).mockReset().mockImplementation(actualFs.openSync);
+  vi.mocked(fs.closeSync).mockReset().mockImplementation(actualFs.closeSync);
+  vi.mocked(fs.readSync).mockReset().mockImplementation(actualFs.readSync);
+});
 afterEach(() => {
   Object.defineProperty(process, "platform", platform); vi.restoreAllMocks();
   const prefix = `${realpathSync.native(tmpdir())}${sep}artoo-release-batch-`;
@@ -70,8 +82,48 @@ function fixture(backendIds: readonly number[] = [0, 0], windows = true, capable
   vi.clearAllMocks();
   return { entries, profiles: entries.map(entry => entry.verifier), releases: entries.map(entry => entry.release) };
 }
+function observeTrustedReads(afterRead?: (path: string, count: number, position: number) => void) {
+  const handles = new Map<number, string>(), reads: { path: string; count: number; position: number }[] = [];
+  vi.mocked(fs.openSync).mockImplementation(((...args: unknown[]) => {
+    const fd = Reflect.apply(actualFs.openSync, actualFs, args) as number; handles.set(fd, String(args[0])); return fd;
+  }) as typeof fs.openSync);
+  vi.mocked(fs.closeSync).mockImplementation((fd: number) => { actualFs.closeSync(fd); handles.delete(fd); });
+  vi.mocked(fs.readSync).mockImplementation(((...args: unknown[]) => {
+    const count = Reflect.apply(actualFs.readSync, actualFs, args) as number, path = handles.get(args[0] as number)!;
+    reads.push({ path, count, position: args[4] as number }); afterRead?.(path, count, args[4] as number); return count;
+  }) as typeof fs.readSync);
+  return { reads, handles };
+}
 
 describe("synchronous native capability batches (controlled boundaries)", () => {
+  it("performs independent fresh content reads in all three groups and both release groups", () => {
+    const f = fixture(), unique = new Map(f.profiles.flatMap(profile => profile.trustedFiles.map(file => [file.path, file.size] as const)));
+    const expectedBytes = 2 * [...unique.values()].reduce((sum, size) => sum + size, 0), observed = observeTrustedReads();
+    for (const [read, groups] of [[() => assertLocallyPreparedVerificationProfiles(f.profiles), 1], [() => readWindowsVerificationBackends(f.profiles), 1],
+      [() => readVerificationCapabilitiesBatch(f.profiles), 1], [() => readReleaseCapabilitiesBatch(f.releases), 2]] as const) {
+      observed.reads.length = 0; read();
+      expect(observed.reads.reduce((sum, value) => sum + value.count, 0)).toBe(expectedBytes * groups);
+      for (const path of unique.keys()) expect(observed.reads.filter(value => value.path === path && value.position === 0)).toHaveLength(2 * groups);
+      expect(observed.handles.size).toBe(0);
+    }
+    expect(() => readVerificationCapabilitiesBatch([f.profiles[0]!, structuredClone(f.profiles[1]!)])).toThrow(/locally prepared/);
+  });
+  it("rechecks a later release's physical directory after earlier verifier reads", () => {
+    const f = fixture(), executable = f.profiles[0]!.commands[0]!.argv[0]!; let passes = 0, replaced = false;
+    const observed = observeTrustedReads((path, _count, position) => {
+      // The first two passes belong to the separate backend batch. Replace the
+      // later directory during the next fresh capability batch's first read.
+      if (path === executable && position === 0 && ++passes === 3) {
+        renameSync(f.entries[1]!.storage, `${f.entries[1]!.storage}-old`); mkdirSync(f.entries[1]!.storage); replaced = true;
+      }
+    });
+    expect(() => readReleaseCapabilitiesBatch(f.releases)).toThrow(/physical directory identity changed/);
+    expect(replaced).toBe(true); expect(observed.handles.size).toBe(0);
+  });
+  it("rejects earlier verifier drift during a later native image audit before returning a backend batch", () => {
+    const f = fixture(); native.imageAudit.mockImplementationOnce(() => write(f.entries[0]!.config, `${readFileSync(f.entries[0]!.config, "utf8")} `));
+    expect(() => readWindowsVerificationBackends(f.profiles)).toThrow(/changed during trusted profile batch/);
+  });
   it("revalidates already prepared Windows profiles in one batch before returning their original identities", () => {
     const f = fixture([0, 0, 1]), input = Object.freeze([...f.profiles]), roots = f.profiles.map(profile => profile.workspace_root);
     const prepared = prepareVerificationProfiles(input, roots);

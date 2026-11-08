@@ -14,7 +14,7 @@ import { ProductSourceExportV2Schema, ProductSourceTransferRequestV2Schema, Prod
 import type { AgentInstanceHandle } from "@artoo/protocol";
 import { captureProductSourceSnapshot, decodeProductSourceSnapshot, describeProductSourceSnapshot,
   encodeProductSourceSnapshot, materializeProductSourceSnapshot } from "./product-source-snapshot.js";
-import { assertFinalVerificationExportBinding, assertLocallyPreparedVerificationProfile, prepareVerificationProfiles, subjectManifest,
+import { assertFinalVerificationExportBinding, assertLocallyPreparedVerificationProfile, assertLocallyPreparedVerificationProfiles, prepareVerificationProfiles, subjectManifest,
   selectVerificationProfile, runTransferredResearchVerification, type PreparedVerificationProfile } from "./verification.js";
 import { assertWindowsVerifiedExecutionExportBinding, type WindowsVerifiedExecutionAdmission } from "./process-adapter.js";
 import { assertWindowsProcessBackend, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
@@ -115,7 +115,7 @@ function state(token: PreparedProductSourceRuntime, clean?: PreparedCleanDaemonC
   assertWindowsReleaseStorage(current.store, current.options.storeRoot);
   for (const fixed of current.fixed) sameIdentity(fixed);
   sameIdentity(current.ownerIdentity);
-  for (const profile of current.options.profiles) assertLocallyPreparedVerificationProfile(profile);
+  assertLocallyPreparedVerificationProfiles(current.options.profiles);
   if (current.releases.length) {
     const capabilities = readReleaseCapabilitiesBatch(current.releases.map(release => release.profile));
     if (current.releases.some((release, index) => !isDeepStrictEqual(capabilities[index], release.capabilities))) fail("prepared release capability changed");

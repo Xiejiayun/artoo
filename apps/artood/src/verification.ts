@@ -166,15 +166,18 @@ export function readWindowsVerificationBackend(profile: PreparedVerificationProf
  * subsequent image is still checked; no audit authority survives this call. */
 export function readWindowsVerificationBackends(profiles: readonly PreparedVerificationProfile[]): readonly (PreparedWindowsProcessBackend | undefined)[] {
   const audited = new Set<PreparedWindowsProcessBackend>();
-  return Object.freeze(profiles.map(profile => {
+  const batch = windowsTrustedBatch(profiles);
+  const backends = profiles.map(profile => {
     const backend = windowsProfileBackends.get(profile);
     if (!backend) return undefined;
     if (!locallyPreparedProfiles.has(profile)) fail("Windows backend requires a locally prepared profile");
-    assertTrusted(profile);
+    if (batch) batch.assert(profile); else assertTrusted(profile);
     if (audited.has(backend)) assertWindowsProcessBackendImage(backend);
     else { assertWindowsProcessBackend(backend); audited.add(backend); }
     return backend;
-  }));
+  });
+  batch?.finish();
+  return Object.freeze(backends);
 }
 function profileExecutionSupported(profile: PreparedVerificationProfile | undefined): boolean {
   return verificationSupported() || process.platform === "win32" && !!profile && readWindowsVerificationBackend(profile) !== undefined;
@@ -205,7 +208,8 @@ function scopedPath(root: string, path: string): string {
   }
   return current;
 }
-function fileFact(path: string, label = path, maxSize = MAX_BYTES): FileFact {
+interface FileReadIdentity { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }
+function fileFact(path: string, label = path, maxSize = MAX_BYTES, observation?: { identity?: FileReadIdentity }): FileFact {
   const before = lstatSync(path);
   if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > maxSize) fail("expected a bounded regular file without links");
   const windows = process.platform === "win32";
@@ -215,10 +219,12 @@ function fileFact(path: string, label = path, maxSize = MAX_BYTES): FileFact {
   };
   const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
+    let stable = before;
     const checkIdentity = (expectedCtime?: number): void => {
       const handle = fstatSync(fd), named = lstatSync(path);
       sameFile(handle); sameFile(named);
       if (expectedCtime !== undefined && (handle.ctimeMs !== expectedCtime || named.ctimeMs !== expectedCtime)) fail("file changed while reading");
+      stable = handle;
     };
     checkIdentity();
     // The extra byte detects growth without allowing a concurrently growing file
@@ -245,6 +251,9 @@ function fileFact(path: string, label = path, maxSize = MAX_BYTES): FileFact {
       checkIdentity(secondReadCtime);
       if (readDigest(secondReadCtime) !== checksum) fail("file changed while reading");
     }
+    // Private batch observation only: the serialized fact/digest and ordinary
+    // single-profile read retain their existing fields and read/close sequence.
+    if (observation) observation.identity = { dev: stable.dev, ino: stable.ino, size: stable.size, mtimeMs: stable.mtimeMs, ctimeMs: stable.ctimeMs };
     return { path: label, checksum, size: before.size };
   } finally { closeSync(fd); }
 }
@@ -252,23 +261,93 @@ function assertWorkspace(profile: PreparedVerificationProfile): void {
   const stat = lstatSync(profile.workspace_root);
   if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync.native(profile.workspace_root) !== profile.workspace_root) fail("configured workspace identity changed");
 }
-function assertTrusted(profile: PreparedVerificationProfile): void {
+function assertTrustedRoots(profile: PreparedVerificationProfile): void {
   assertWorkspace(profile);
   for (const command of profile.commands) {
     const root = command.observation?.evidence_root;
     if (root && validateBrowserEvidenceRoot(root, [profile.workspace_root]) !== root) fail("browser evidence root identity changed");
   }
+}
+function assertTrustedPath(saved: FileFact, profile: PreparedVerificationProfile): void {
+  if (realpathSync.native(saved.path) !== saved.path || inside(saved.path, profile.workspace_root)) fail("verifier is no longer outside the workspace");
+}
+function assertTrusted(profile: PreparedVerificationProfile): void {
+  assertTrustedRoots(profile);
   for (const saved of profile.trustedFiles) {
-    if (realpathSync.native(saved.path) !== saved.path || inside(saved.path, profile.workspace_root)) fail("verifier is no longer outside the workspace");
+    assertTrustedPath(saved, profile);
     const now = fileFact(saved.path, saved.path, 256 * 1024 * 1024);
     if (now.checksum !== saved.checksum || now.size !== saved.size) fail("administrator verifier changed; restart with reviewed configuration");
   }
+}
+
+/** A fresh synchronous scope, never an exported permission, cache or callback.
+ * Other processes can mutate files during synchronous work, so each logical
+ * reuse and the end of the batch reopen and check the original stable identity. */
+class TrustedProfileBatch {
+  private readonly files = new Map<string, { fact: FileFact; identity: FileReadIdentity }>();
+  private readonly profiles: PreparedVerificationProfile[] = [];
+  private check(path: string, expected: FileReadIdentity): void {
+    const same = (stat: Stats): void => {
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.dev !== expected.dev || stat.ino !== expected.ino
+        || stat.size !== expected.size || stat.mtimeMs !== expected.mtimeMs || stat.ctimeMs !== expected.ctimeMs) fail("file changed during trusted profile batch");
+    };
+    if (realpathSync.native(path) !== path) fail("verifier physical path changed during trusted profile batch");
+    same(lstatSync(path));
+    const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try { same(fstatSync(fd)); same(lstatSync(path)); }
+    finally { closeSync(fd); }
+    // Closing the final metadata handle is itself a mutation window. Keep the
+    // original snapshot through closure; never refresh its expected identity.
+    if (realpathSync.native(path) !== path) fail("verifier physical path changed during trusted profile batch");
+    same(lstatSync(path));
+  }
+  assert(profile: PreparedVerificationProfile): void {
+    assertTrustedRoots(profile);
+    this.profiles.push(profile);
+    for (const saved of profile.trustedFiles) {
+      assertTrustedPath(saved, profile);
+      const previous = this.files.get(saved.path);
+      if (previous) {
+        if (previous.fact.checksum !== saved.checksum || previous.fact.size !== saved.size) fail("conflicting protected verifier bindings in batch");
+        this.check(saved.path, previous.identity);
+      } else {
+        const observation: { identity?: FileReadIdentity } = {};
+        const fact = fileFact(saved.path, saved.path, 256 * 1024 * 1024, observation);
+        if (fact.checksum !== saved.checksum || fact.size !== saved.size) fail("administrator verifier changed; restart with reviewed configuration");
+        if (!observation.identity) fail("missing stable verifier identity");
+        this.files.set(saved.path, { fact, identity: observation.identity });
+      }
+    }
+  }
+  finish(): void {
+    // Keep every profile's workspace/evidence and outside-workspace binding,
+    // including duplicates. Only file content reads are shared within this call.
+    for (const profile of this.profiles) {
+      assertTrustedRoots(profile);
+      for (const saved of profile.trustedFiles) assertTrustedPath(saved, profile);
+    }
+    for (const [path, saved] of this.files) this.check(path, saved.identity);
+  }
+}
+function windowsTrustedBatch(profiles: readonly PreparedVerificationProfile[]): TrustedProfileBatch | undefined {
+  // Preserve ordinary single-profile/manual reads and POSIX behavior.
+  return process.platform === "win32" && profiles.length > 1 ? new TrustedProfileBatch() : undefined;
 }
 
 /** A source-reader may only derive authority from an actual local preparation, never a JSON clone. */
 export function assertLocallyPreparedVerificationProfile(profile: PreparedVerificationProfile): void {
   if (!locallyPreparedProfiles.has(profile)) fail("source reader requires a locally prepared profile");
   assertTrusted(profile);
+}
+/** Complete current checks only; no batch authority survives the return. */
+export function assertLocallyPreparedVerificationProfiles(profiles: readonly PreparedVerificationProfile[]): void {
+  const batch = windowsTrustedBatch(profiles);
+  for (const profile of profiles) {
+    if (!batch) { assertLocallyPreparedVerificationProfile(profile); continue; }
+    if (!locallyPreparedProfiles.has(profile)) fail("source reader requires a locally prepared profile");
+    batch.assert(profile);
+  }
+  batch?.finish();
 }
 
 /** Local configuration only. No command or file binding is accepted from a run. */
@@ -448,6 +527,20 @@ export function readVerificationCapabilities(profile: PreparedVerificationProfil
   if (!staticWebProfiles.has(profile)) fail("capabilities require a locally prepared profile");
   assertTrusted(profile);
   return Object.freeze({ ...profile.capabilities, profile_id: profile.id });
+}
+/** Each call owns its complete fresh checks; absent capabilities keep their
+ * existing behavior and cannot acquire local authority through this batch. */
+export function readVerificationCapabilitiesBatch(profiles: readonly PreparedVerificationProfile[]): readonly (VerificationCapabilitiesContext | undefined)[] {
+  const batch = windowsTrustedBatch(profiles);
+  const capabilities = profiles.map(profile => {
+    if (!batch) return readVerificationCapabilities(profile);
+    if (!profile.capabilities) return undefined;
+    if (!staticWebProfiles.has(profile)) fail("capabilities require a locally prepared profile");
+    batch.assert(profile);
+    return Object.freeze({ ...profile.capabilities, profile_id: profile.id });
+  });
+  batch?.finish();
+  return Object.freeze(capabilities);
 }
 
 function assertCapabilityContext(profile: PreparedVerificationProfile, context: RunStartPayload["context_pack"]["payload"]): void {

@@ -16,7 +16,7 @@ vi.mock("./windows-code-installation.js", () => ({ prepareWindowsCodeInstallatio
 vi.mock("./windows-release-storage.js", () => ({ prepareWindowsReleaseStorage: vi.fn(() => ({})),
   assertWindowsReleaseStorage: vi.fn(), auditWindowsReleaseStorage: vi.fn() }));
 vi.mock("./owned/windows-owned-process.js", () => ({ assertWindowsProcessBackend: vi.fn() }));
-vi.mock("./verification.js", () => ({ assertFinalVerificationExportBinding: vi.fn(), assertLocallyPreparedVerificationProfile: vi.fn(),
+vi.mock("./verification.js", () => ({ assertFinalVerificationExportBinding: vi.fn(), assertLocallyPreparedVerificationProfile: vi.fn(), assertLocallyPreparedVerificationProfiles: vi.fn(),
   prepareVerificationProfiles: vi.fn(value => value), subjectManifest: control.subject,
   selectVerificationProfile: vi.fn(), runTransferredResearchVerification: vi.fn() }));
 vi.mock("./protected-command.js", () => ({ runProtectedCommand: control.command }));
