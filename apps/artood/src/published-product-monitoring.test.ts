@@ -72,6 +72,9 @@ async function fixture() {
   };
   vi.spyOn(nativeStorage, "assertWindowsReleaseStorage").mockImplementation(checkStorage);
   vi.spyOn(nativeStorage, "auditWindowsReleaseStorage").mockImplementation(checkStorage);
+  vi.spyOn(nativeStorage, "auditWindowsReleaseStorageBatch").mockImplementation(entries => {
+    for (const { storage: value, directory } of entries) checkStorage(value, directory);
+  });
   const rawVerifier = { id: "verify", project_id: "project", workspace_root: workspace, subject_paths: ["product"], required_files: ["product/index.html"],
     commands: [{ id: "controlled-input", argv: [process.execPath, script], timeout_ms: 5000 }] };
   const [verifier] = prepareVerificationProfiles([rawVerifier], [workspace]); attachWindowsVerificationBackend(verifier!, backend);

@@ -18,7 +18,7 @@ import { subjectManifest, verificationSupported, readVerificationCapabilities, r
   type PreparedVerificationProfile, type VerificationProfile } from "./verification.js";
 import { assertAcceptedProductInputs, readProductFile } from "./product-stage.js";
 import { assertReleaseCapabilityContext, type ReleaseCapabilityReader } from "./release-capability-authority.js";
-import { assertWindowsReleaseStorage, auditWindowsReleaseStorage, type PreparedWindowsReleaseStorage } from "./windows-release-storage.js";
+import { assertWindowsReleaseStorage, auditWindowsReleaseStorage, auditWindowsReleaseStorageBatch, type PreparedWindowsReleaseStorage } from "./windows-release-storage.js";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import { fetchReleaseHealthGet } from "./release-health-transport.js";
 import { readPreparedImportedValidationRelease, type PreparedImportedValidationRelease } from "./product-source-runtime.js";
@@ -504,6 +504,15 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
     assertStorage(profile);
     atomicJson(path, value);
   }
+  function storageFault(profile: PreparedReleaseProfile, error: unknown): Error {
+    // Storage failure is a local executor fault, not a fabricated HTTP health observation.
+    const reason = `Release profile ${profile.id}: storage admission failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2000);
+    monitorFaults.set(profile.id, { profile_id: profile.id, failed_at: new Date().toISOString(), reason });
+    const server = servers.get(profile.id); server?.close(); server?.closeAllConnections(); servers.delete(profile.id);
+    monitorControllers.get(profile.id)?.abort(new Error(reason));
+    for (const [id, active] of activeReleases) if (active.request.release_profile_id === profile.id) controllers.get(id)?.abort(new Error(reason));
+    return new Error(reason, { cause: error });
+  }
   function auditStorage(profile: PreparedReleaseProfile): void {
     const authority = preparedReleaseProfiles.get(profile);
     if (verificationSupported() || process.platform !== "win32") return;
@@ -511,13 +520,22 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
       if (!authority?.windows) fail("Windows release requires locally qualified protected storage");
       auditWindowsReleaseStorage(authority.windows.storage, profile.storage_root);
     } catch (error) {
-      // Storage failure is a local executor fault, not a fabricated HTTP health observation.
-      const reason = `Release profile ${profile.id}: storage admission failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2000);
-      monitorFaults.set(profile.id, { profile_id: profile.id, failed_at: new Date().toISOString(), reason });
-      const server = servers.get(profile.id); server?.close(); server?.closeAllConnections(); servers.delete(profile.id);
-      monitorControllers.get(profile.id)?.abort(new Error(reason));
-      for (const [id, active] of activeReleases) if (active.request.release_profile_id === profile.id) controllers.get(id)?.abort(new Error(reason));
-      throw new Error(reason, { cause: error });
+      throw storageFault(profile, error);
+    }
+  }
+  function auditStartupStorage(batch: readonly PreparedReleaseProfile[]): void {
+    if (!batch.length) return;
+    try {
+      auditWindowsReleaseStorageBatch(batch.map(profile => {
+        const authority = preparedReleaseProfiles.get(profile);
+        if (!authority?.windows) fail("Windows release requires locally qualified protected storage");
+        return { storage: authority.windows.storage, directory: profile.storage_root };
+      }));
+    } catch (error) {
+      // The collector admits none of the batch on failure. Fence each affected
+      // publisher; an independent start must not reuse partially initialized state.
+      const faults = batch.map(profile => storageFault(profile, error));
+      throw faults[0];
     }
   }
   function capabilityReader(profile: PreparedReleaseProfile): ReleaseCapabilityReader {
@@ -1118,15 +1136,21 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
       scheduleMonitor(profile);
     }
   }
-  async function start(profile: PreparedReleaseProfile): Promise<void> {
-    if (!releaseProfileExecutionSupported(profile)) fail("product release requires a Linux or macOS worker or a locally qualified Windows verification and storage profile");
+  function assertStartState(profile: PreparedReleaseProfile): void {
     if (stopped || stopping) fail("executor stopped");
     if (monitorFaults.has(profile.id)) fail("monitoring stopped after a journal or executor failure");
     const fence = assertPublicationFence(profile);
     if (fence && !fence.opened) fail("recovered publisher is awaiting fresh verification and independent review");
+  }
+  async function start(profile: PreparedReleaseProfile): Promise<void> {
+    if (!releaseProfileExecutionSupported(profile)) fail("product release requires a Linux or macOS worker or a locally qualified Windows verification and storage profile");
+    assertStartState(profile);
     if (starts.has(profile.id)) return starts.get(profile.id)!;
     if (servers.has(profile.id)) return;
     auditStorage(profile); initialize(profile); auditStorage(profile);
+    return startListener(profile);
+  }
+  function startListener(profile: PreparedReleaseProfile): Promise<void> {
     const promise = (async () => {
       const monitorRecovery = monitorRecords(profile).filter((record) => record.phase === "recovering" || record.phase === "disabling");
       if (monitorRecovery.length > 1) fail("multiple unfinished monitoring recoveries require intervention before serving");
@@ -1173,6 +1197,37 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
       }
     })().finally(() => { starts.delete(profile.id); });
     starts.set(profile.id, promise); return promise;
+  }
+  async function startAll(): Promise<void> {
+    if (verificationSupported() || process.platform !== "win32") { await Promise.all(profiles.map(start)); return; }
+    // Share native collection only inside this synchronous admission. Even an
+    // already listening or pending publisher revalidates its original backend.
+    const entries = profiles.map(profile => {
+      const authority = preparedReleaseProfiles.get(profile);
+      if (!authority) fail("release execution requires a locally prepared profile");
+      if (!authority.windows) fail("product release requires a Linux or macOS worker or a locally qualified Windows verification and storage profile");
+      return { profile, windows: authority.windows };
+    });
+    const backends = readWindowsVerificationBackends(entries.map(({ profile }) => profile.verifier));
+    for (const [index, { profile, windows }] of entries.entries()) {
+      assertWindowsReleaseStorage(windows.storage, profile.storage_root);
+      if (backends[index] !== windows.backend) fail("Windows release verifier backend changed");
+      assertStartState(profile);
+    }
+    const newProfiles = new Map<string, PreparedReleaseProfile>();
+    for (const profile of profiles) if (!starts.has(profile.id) && !servers.has(profile.id) && !newProfiles.has(profile.id)) newProfiles.set(profile.id, profile);
+    const fresh = [...newProfiles.values()];
+    auditStartupStorage(fresh);
+    for (const profile of fresh) initialize(profile);
+    // Initialization creates layout directories. Collect their actual ACLs in a
+    // separate observation before any listener starts; no first-pass facts carry over.
+    auditStartupStorage(fresh);
+    const pending = profiles.flatMap(profile => {
+      const existing = starts.get(profile.id);
+      if (existing) return [existing];
+      return servers.has(profile.id) ? [] : [startListener(profile)];
+    });
+    await Promise.all(pending);
   }
   function snapshot(profile: PreparedReleaseProfile, request: ProductReleaseRequest, attestation: Attestation): string {
     const before = subjectManifest(profile.verifier);
@@ -1370,7 +1425,7 @@ export function createProductReleaseExecutor(profiles: readonly PreparedReleaseP
       if (!profile) fail("release profile unavailable");
       return capabilityReader(profile);
     },
-    async start(): Promise<void> { await Promise.all(profiles.map(start)); },
+    start: startAll,
     /** Node-local observations use only the already validated configuration, never remote URLs or commands. */
     async checkHealth(): Promise<void> { await Promise.all(profiles.map(checkHealth)); },
     /** A local executor fault is not fabricated endpoint-health evidence. It requires operator diagnostics. */
