@@ -104,7 +104,11 @@ describe("product source export stage routing (controlled authority mocks; no na
         run_id: "run", task_id: "task", agent_instance_id: "agent", runtime: "fixture", workspace: { root: workspace }, context_pack: { id: "context", payload: context },
         policy_snapshot: { filesystem_write_scope: [workspace], requires_approval: [] }, artifact_rules: { paths: [] },
         verification: { version: 1, request_id: "verify", profile_id: profile.id,
-          ...(application ? { application: { version: 1, config_digest: digest, contract_digest: digest } } : {}) } } });
+          ...(application ? {
+            capability_binding: { version: 1, profile_digest: profile.digest,
+              checks: profile.capabilities!.checks.map(({ command_id, config_digest, contract_digest }) => ({ command_id, config_digest, contract_digest })) },
+            application: { version: 1, config_digest: digest, contract_digest: digest },
+          } : {}) } } });
       await vi.waitFor(() => {
         expect(messages.some(message => message.kind === "command.ack" && message.status === "rejected")).toBe(false);
         expect(messages.some(message => message.kind === "run.event" && message.event.type === "run.lifecycle" && message.event.payload.phase === "failed")).toBe(false);

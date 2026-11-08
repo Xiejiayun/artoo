@@ -156,15 +156,12 @@ describe("Agent Team execution and independent source-bound review", () => {
       publication: "unsupported", qualified_for_product: false };
     await server.db.db.update(computers).set({ os: "windows" });
     await server.db.db.update(agentInstances).set({ workspaceRoot: root });
-    server.ctx.supportsExecutionFeature = (_node, feature) => ["run-verification.v1", "product-stage-verification.v1", APPLICATION_VERIFICATION_FEATURE_V1].includes(feature);
-    server.ctx.supportsVerificationProfile = (_node, profile, project, workspace) => profile === "default" && project === "proj_artoo" && workspace === root;
-    server.ctx.getVerificationCapabilities = () => structuredClone(capabilities);
-    return { root, capabilities };
-  }
-
-  it("routes an explicitly authorized application through actual planning, four stages and fresh independent review, then waits for unsupported publication", async () => {
-    const { root, capabilities } = await applicationWorker();
-    const goalId = await create(true, 3, true), stageTasks = await plan(goalId);
+    server.ctx.supportsExecutionFeature = (node, feature) => server.nodeRegistry.get(node)?.supportsExecutionFeature(feature) ?? false;
+    server.ctx.supportsVerificationProfile = (node, profile, project, workspace) =>
+      server.nodeRegistry.get(node)?.supportsVerificationProfile(profile, project, workspace) ?? false;
+    server.ctx.onRunQueued = async () => {};
+    // Windows planning must resolve the exact root from the current authenticated
+    // advertisement. Register it before planning; keep the real workspace and capability getters.
     const sent: ServerToNodeMessage[] = [];
     const connect = (application = true) => {
       const transport: NodeTransport = { async send(message) { sent.push(structuredClone(message)); }, subscribe() { return () => {}; }, async close() {} };
@@ -174,7 +171,15 @@ describe("Agent Team execution and independent source-bound review", () => {
         [{ profile_id: "default", project_id: "proj_artoo", workspace_root: root, capabilities }], undefined, undefined, undefined, "windows");
       bindings.push(binding); server.nodeRegistry.register("computer_local_mock", binding); return binding;
     };
-    let binding = connect();
+    const binding = connect();
+    expect(server.ctx.getVerificationWorkspace?.("computer_local_mock", "default", "proj_artoo", root)).toBe(root);
+    return { root, capabilities, sent, connect, binding };
+  }
+
+  it("routes an explicitly authorized application through actual planning, four stages and fresh independent review, then waits for unsupported publication", async () => {
+    const { sent, connect, binding: initialBinding } = await applicationWorker();
+    const goalId = await create(true, 3, true), stageTasks = await plan(goalId);
+    let binding = initialBinding;
     const original = await getGoalAutomation(server.ctx, goalId);
     expect(original?.planning_capability_snapshot?.app_delivery).toEqual({ version: 1, kind: "local-application-development" });
     for (const task of stageTasks) {
