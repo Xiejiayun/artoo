@@ -17,7 +17,9 @@ vi.mock("./verification.js", async importOriginal => {
   return { ...actual, assertFinalVerificationExportBinding: vi.fn(), assertLocallyPreparedVerificationProfile: vi.fn(),
     prepareVerificationProfiles: vi.fn(value => value), subjectManifest: control.subject, selectVerificationProfile: vi.fn(), runTransferredResearchVerification: vi.fn() };
 });
-vi.mock("./product-release.js", () => ({ prepareReleaseCapabilityReader: () => ({ capabilities: control.release, readCapabilities: () => control.release }) }));
+vi.mock("./product-release.js", () => ({ prepareReleaseCapabilityReader: () => ({ capabilities: control.release, readCapabilities: () => control.release }),
+  prepareReleaseCapabilityReaders: (profiles: readonly object[]) => profiles.map(() => ({ capabilities: control.release, readCapabilities: () => control.release })),
+  readReleaseCapabilitiesBatch: (profiles: readonly object[]) => profiles.map(() => control.release) }));
 vi.mock("./windows-code-installation.js", () => ({ prepareWindowsCodeInstallation: vi.fn(() => ({})), assertWindowsCodeInstallation: vi.fn() }));
 vi.mock("./windows-release-storage.js", () => ({ prepareWindowsReleaseStorage: vi.fn(() => ({})), assertWindowsReleaseStorage: vi.fn(), auditWindowsReleaseStorage: vi.fn() }));
 vi.mock("./owned/windows-owned-process.js", () => ({ assertWindowsProcessBackend: vi.fn() }));
