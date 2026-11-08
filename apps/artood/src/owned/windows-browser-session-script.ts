@@ -243,6 +243,9 @@ function Invoke-ArtooBrowserObserverSession {
           if ($failureCode -ceq 'descendant_precedes_parent' -and $null -ne $history.AncestryFailure) {
             $frame['ancestry_failure'] = $history.AncestryFailure
           }
+          if ($failureCode -ceq 'observation_bound_exceeded' -and $null -ne $history.BoundFailure) {
+            $frame['bound_failure'] = $history.BoundFailure
+          }
         }
         Write-ArtooSessionFrame $frame
       } catch { }

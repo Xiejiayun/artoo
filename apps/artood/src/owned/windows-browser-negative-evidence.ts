@@ -51,3 +51,33 @@ export function parseWindowsBrowserAncestryFailure(value: unknown,
   if (Buffer.byteLength(JSON.stringify(result), "utf8") > 768) throw invalid();
   return Object.freeze(result);
 }
+
+/** Count describes an observation collection before adding its next member, never verified ownership. */
+export interface WindowsBrowserBoundFailureV1 {
+  readonly version: 1;
+  readonly source: "current_subtree" | "history_union";
+  readonly count: 128;
+  readonly attempt: number;
+  readonly census: "first" | "second" | "corroborating";
+  readonly root_pid: number;
+}
+const boundFields = ["version", "source", "count", "attempt", "census", "root_pid"] as const;
+export function parseWindowsBrowserBoundFailure(value: unknown,
+  history: Readonly<{ parentPid: number; pids: readonly number[] }>): Readonly<WindowsBrowserBoundFailureV1> {
+  const invalidBound = () => new Error("Invalid protected browser bound failure evidence");
+  if (typeof value !== "object" || value === null || Object.getPrototypeOf(value) !== Object.prototype) throw invalidBound();
+  const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors);
+  if (keys.length !== boundFields.length || keys.some(key => typeof key !== "string" || !boundFields.includes(key as typeof boundFields[number]))
+    || boundFields.some(key => !Object.hasOwn(descriptors[key]!, "value"))) throw invalidBound();
+  const record = Object.fromEntries(boundFields.map(key => [key, descriptors[key]!.value])) as Record<typeof boundFields[number], unknown>;
+  if (!pid(history.parentPid) || !Array.isArray(history.pids) || history.pids.length > 127
+    || history.pids.some(value => !pid(value) || value === history.parentPid) || new Set(history.pids).size !== history.pids.length
+    || record.version !== 1 || !["current_subtree", "history_union"].includes(record.source as string) || record.count !== 128
+    || !Number.isInteger(record.attempt) || (record.attempt as number) < 1 || (record.attempt as number) > 3
+    || !["first", "second", "corroborating"].includes(record.census as string) || record.root_pid !== history.parentPid
+    || record.source === "history_union" && history.pids.length !== 127) throw invalidBound();
+  const result: WindowsBrowserBoundFailureV1 = { version: 1, source: record.source as WindowsBrowserBoundFailureV1["source"],
+    count: 128, attempt: record.attempt as number, census: record.census as WindowsBrowserBoundFailureV1["census"], root_pid: history.parentPid };
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") > 192) throw invalidBound();
+  return Object.freeze(result);
+}

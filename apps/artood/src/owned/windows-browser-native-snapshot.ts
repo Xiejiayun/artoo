@@ -126,7 +126,18 @@ function Assert-ArtooCimCreation($root, [DateTime]$creation) {
   $cimMicros = [Math]::DivRem([long]$cim, [long]10, [ref]$cimRemainder)
   if ($cim -ne $root.Creation -and !($cimRemainder -eq 0 -and $cimMicros -eq $nativeMicros)) { throw 'ARTOO_BROWSER_OBSERVATION:root_creation_changed' }
 }
-function Select-ArtooProcessTree($inventory, [uint32]$rootId) {
+function Stop-ArtooObservationBound($history, [uint32]$rootId, [string]$source, [int]$count, [string]$census) {
+  try {
+    # Count is the observation collection at rejection, not verified process ownership.
+    # Diagnostic recording must never replace the original bound failure.
+    if ($null -ne $history -and $null -eq $history.BoundFailure) {
+      $history.BoundFailure = [ordered]@{
+        version = 1; source = $source; count = $count; attempt = $history.Attempts; census = $census; root_pid = $rootId
+      }
+    }
+  } finally { throw 'ARTOO_BROWSER_OBSERVATION:observation_bound_exceeded' }
+}
+function Select-ArtooProcessTree($inventory, [uint32]$rootId, $history = $null, [string]$diagnosticCensus = '') {
   if (!$inventory.ContainsKey($rootId)) { throw 'ARTOO_BROWSER_OBSERVATION:root_missing_or_duplicate' }
   $selected = [Collections.Generic.List[object]]::new()
   $seen = [Collections.Generic.HashSet[uint32]]::new()
@@ -135,7 +146,7 @@ function Select-ArtooProcessTree($inventory, [uint32]$rootId) {
     foreach ($entry in $inventory.GetEnumerator()) {
       if ($entry.Value -ne $selected[$index].Pid) { continue }
       if ($entry.Key -eq 0 -or !$seen.Add($entry.Key)) { throw 'ARTOO_BROWSER_OBSERVATION:ancestry_cycle' }
-      if ($selected.Count -ge 128) { throw 'ARTOO_BROWSER_OBSERVATION:observation_bound_exceeded' }
+      if ($selected.Count -ge 128) { Stop-ArtooObservationBound $history $rootId 'current_subtree' $selected.Count $diagnosticCensus }
       $selected.Add([pscustomobject]@{ Pid = $entry.Key; Parent = $entry.Value })
     }
   }

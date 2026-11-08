@@ -4,7 +4,8 @@ import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import { finished } from "node:stream/promises";
 import { WINDOWS_BROWSER_NATIVE_OBSERVER_SCRIPT } from "./windows-browser-native-snapshot.js";
-import { parseWindowsBrowserAncestryFailure, type WindowsBrowserAncestryFailureV1 } from "./windows-browser-negative-evidence.js";
+import { parseWindowsBrowserAncestryFailure, parseWindowsBrowserBoundFailure, type WindowsBrowserAncestryFailureV1,
+  type WindowsBrowserBoundFailureV1 } from "./windows-browser-negative-evidence.js";
 
 // This protected parser follows Windows backslash/quote argument rules. Matching an
 // entire argument avoids treating a profile-looking string inside another value as ownership.
@@ -126,7 +127,8 @@ export function windowsObservationFailureCode(stdout: unknown): string | undefin
 function safeObservationReason(error: unknown, parentPid: number): string {
   if (error instanceof WindowsProcessObservationError) return `${error.code}@${error.phase}`;
   if (error instanceof WindowsBrowserSessionObservationError) {
-    return `${error.code}@${error.phase}${ancestryFailureSuffix(WindowsBrowserSessionObservationError.negativeEvidence(error, parentPid))}`;
+    return `${error.code}@${error.phase}${ancestryFailureSuffix(WindowsBrowserSessionObservationError.negativeEvidence(error, parentPid))}`
+      + boundFailureSuffix(WindowsBrowserSessionObservationError.boundFailureEvidence(error, parentPid));
   }
   const message = error instanceof Error ? error.message : "";
   const match = /^Protected Windows process observation failed \(([a-z_]+)\)$/.exec(message);
@@ -138,12 +140,17 @@ const observationPhases = new Set(["process_start", "script_started", "definitio
 function ancestryFailureSuffix(value: WindowsBrowserAncestryFailureV1 | undefined): string {
   return value === undefined ? "" : ` [ancestry_failure_v1=${JSON.stringify(value)}]`;
 }
+function boundFailureSuffix(value: WindowsBrowserBoundFailureV1 | undefined): string {
+  return value === undefined ? "" : ` [bound_failure_v1=${JSON.stringify(value)}]`;
+}
 
 /** Trusted in-process diagnostics; arbitrary error.message strings cannot grant this classification. */
 export class WindowsBrowserSessionObservationError extends Error {
   readonly #initialExitHistory?: Readonly<{ parentPid: number; pids: readonly number[] }>;
   readonly #ancestryFailure?: Readonly<WindowsBrowserAncestryFailureV1>;
-  constructor(readonly code: string, readonly phase: string, initialExitHistory?: { parentPid: number; pids: readonly number[] }, ancestryFailure?: unknown) {
+  readonly #boundFailure?: Readonly<WindowsBrowserBoundFailureV1>;
+  constructor(readonly code: string, readonly phase: string, initialExitHistory?: { parentPid: number; pids: readonly number[] },
+    ancestryFailure?: unknown, boundFailure?: unknown) {
     if (!observationFailureCodes.has(code) || !observationPhases.has(phase)) throw new Error("Invalid protected observer diagnostic");
     super(`Protected Windows browser session failed (${code}) [last_phase=${phase}]`);
     if (initialExitHistory !== undefined) {
@@ -158,6 +165,11 @@ export class WindowsBrowserSessionObservationError extends Error {
       this.#ancestryFailure = parseWindowsBrowserAncestryFailure(ancestryFailure, this.#initialExitHistory);
       this.message += ancestryFailureSuffix(this.#ancestryFailure);
     }
+    if (boundFailure !== undefined) {
+      if (code !== "observation_bound_exceeded" || this.#initialExitHistory === undefined) throw new Error("Unexpected protected bound failure evidence");
+      this.#boundFailure = parseWindowsBrowserBoundFailure(boundFailure, this.#initialExitHistory);
+      this.message += boundFailureSuffix(this.#boundFailure);
+    }
   }
   /** Negative evidence only. A matching root does not recover the failed observation. */
   static cleanupOnlyHistory(error: unknown, parentPid: number): readonly number[] | undefined {
@@ -169,6 +181,12 @@ export class WindowsBrowserSessionObservationError extends Error {
   static negativeEvidence(error: unknown, parentPid: number): Readonly<WindowsBrowserAncestryFailureV1> | undefined {
     if (!(error instanceof WindowsBrowserSessionObservationError) || !(#ancestryFailure in error)) return;
     const value = error.#ancestryFailure;
+    return value?.root_pid === parentPid ? value : undefined;
+  }
+  /** Presentation only. This observation count never supplies a PID, identity or cleanup authority. */
+  static boundFailureEvidence(error: unknown, parentPid: number): Readonly<WindowsBrowserBoundFailureV1> | undefined {
+    if (!(error instanceof WindowsBrowserSessionObservationError) || !(#boundFailure in error)) return;
+    const value = error.#boundFailure;
     return value?.root_pid === parentPid ? value : undefined;
   }
 }

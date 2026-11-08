@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { WINDOWS_BROWSER_NATIVE_OBSERVER_SCRIPT } from "./windows-browser-native-snapshot.js";
 import { WINDOWS_BROWSER_NATIVE_RETRY_SCRIPT } from "./windows-browser-native-retry.js";
-import { parseWindowsBrowserAncestryFailure, type WindowsBrowserAncestryFailureV1 } from "./windows-browser-negative-evidence.js";
+import { parseWindowsBrowserAncestryFailure, parseWindowsBrowserBoundFailure, type WindowsBrowserAncestryFailureV1,
+  type WindowsBrowserBoundFailureV1 } from "./windows-browser-negative-evidence.js";
 
 type Edge = [number, number];
 interface Fixture {
@@ -15,9 +16,11 @@ interface Fixture {
   pending?: number[];
   rootCreation?: string; recordingFailure?: boolean;
   diagnostic?: Partial<WindowsBrowserAncestryFailureV1>;
+  boundDiagnostic?: Partial<WindowsBrowserBoundFailureV1>; boundRecordingFailure?: boolean;
 }
 const snapshot = (...descendants: Edge[]): Edge[] => [[101, 42], ...descendants];
 const child = [202, 101] as Edge, peer = [303, 101] as Edge, added = [404, 101] as Edge;
+const overfullSnapshot = snapshot(...Array.from({ length: 128 }, (_, i): Edge => [1000 + i, 101]));
 const cases: Fixture[] = [
   { name: "complete stable pair", snapshots: [snapshot(child), snapshot(child)], ids: [101, 202], history: [202], attempts: 1 },
   { name: "corroborated disappearance retains its exit-only PID", snapshots: [snapshot(child, peer), snapshot(peer), snapshot(peer), snapshot(peer)],
@@ -147,12 +150,28 @@ const cases: Fixture[] = [
     ids: [101, 303], history: [202, 303], pending: [], attempts: 3 },
   { name: "current plus historical IDs cannot exceed 128", snapshots: [snapshot(...Array.from({ length: 127 }, (_, i): Edge => [1000 + i, 101])),
     snapshot(...Array.from({ length: 127 }, (_, i): Edge => [1001 + i, 101]))], error: "observation_bound_exceeded",
-    history: Array.from({ length: 127 }, (_, i) => 1000 + i), attempts: 1 },
+    history: Array.from({ length: 127 }, (_, i) => 1000 + i), attempts: 1,
+    boundDiagnostic: { source: "history_union", attempt: 1, census: "second" } },
   { name: "pending history cannot evade the 128 PID union bound",
     snapshots: [snapshot(...Array.from({ length: 127 }, (_, i): Edge => [1000 + i, 101])),
       snapshot(...Array.from({ length: 127 }, (_, i): Edge => [1001 + i, 101]))],
     opens: [{ attempt: 1, pid: 1000, error: "process_open_invalid_parameter" }], error: "observation_bound_exceeded",
-    history: Array.from({ length: 127 }, (_, i) => 1000 + i), pending: [1000], attempts: 1 },
+    history: Array.from({ length: 127 }, (_, i) => 1000 + i), pending: [1000], attempts: 1,
+    boundDiagnostic: { source: "history_union", attempt: 1, census: "second" } },
+  { name: "first subtree bound records no new history or verified identities", snapshots: [overfullSnapshot],
+    error: "observation_bound_exceeded", history: [], attempts: 1,
+    boundDiagnostic: { source: "current_subtree", attempt: 1, census: "first" } },
+  { name: "second subtree bound still closes acquired identities", snapshots: [snapshot(child), overfullSnapshot],
+    error: "observation_bound_exceeded", history: [202], attempts: 1,
+    boundDiagnostic: { source: "current_subtree", attempt: 1, census: "second" } },
+  { name: "later subtree bound retains its original attempt", snapshots: [snapshot(child), snapshot(child, peer), overfullSnapshot],
+    error: "observation_bound_exceeded", history: [202, 303], attempts: 2,
+    boundDiagnostic: { source: "current_subtree", attempt: 2, census: "first" } },
+  { name: "corroborating subtree bound retains pending history", snapshots: [snapshot(child), snapshot(child, peer), overfullSnapshot],
+    opens: [{ attempt: 1, pid: 303, error: "process_open_invalid_parameter" }], error: "observation_bound_exceeded", history: [202, 303], pending: [303], attempts: 1,
+    boundDiagnostic: { source: "current_subtree", attempt: 1, census: "corroborating" } },
+  { name: "bound diagnostic recording cannot replace rejection", snapshots: [overfullSnapshot], boundRecordingFailure: true,
+    error: "observation_bound_exceeded", history: [], attempts: 1 },
 ];
 const entrypoint = "[Console]::InputEncoding = [Text.UTF8Encoding]::new($false); & ([scriptblock]::Create([Console]::In.ReadToEnd()))";
 function powershell(script: string): string {
@@ -219,6 +238,10 @@ foreach ($case in $cases) {
     $script:history.PSObject.Properties.Remove('AncestryFailure')
     $script:history | Add-Member -MemberType ScriptProperty -Name AncestryFailure -Value { return $null } -SecondValue { throw 'Controlled diagnostic recording failure' }
   }
+  if ($case.boundRecordingFailure) {
+    $script:history.PSObject.Properties.Remove('BoundFailure')
+    $script:history | Add-Member -MemberType ScriptProperty -Name BoundFailure -Value { return $null } -SecondValue { throw 'Controlled bound diagnostic recording failure' }
+  }
   if ($case.seedUnknown) {
     [void]$script:history.Seen.Add([uint32]$case.seedUnknown); [void]$script:history.Uncertain.Add([uint32]$case.seedUnknown)
     $script:history.FirstAttempt.Add([uint32]$case.seedUnknown, 0)
@@ -233,14 +256,15 @@ foreach ($case in $cases) {
     snapshots = $script:snapshotIndex; successful_opens = $script:successfulOpens; closes = @($script:closedHandles.ToArray());
     open_trace = @($script:openTrace.ToArray()); snapshot_attempts = @($script:snapshotAttempts.ToArray());
     pending = @($script:history.PendingMissing); uncertain = @($script:history.Uncertain); absent = @($script:history.Absent);
-    budget_objects = $script:budgetObjects.Count; budget_running = $budget.IsRunning; ancestry_failure = $script:history.AncestryFailure })
+    budget_objects = $script:budgetObjects.Count; budget_running = $budget.IsRunning; ancestry_failure = $script:history.AncestryFailure;
+    bound_failure = $script:history.BoundFailure })
 }
 ConvertTo-Json -Compress -Depth 8 -InputObject @($results.ToArray())
 `;
     const results = JSON.parse(powershell(script)) as Array<{ name: string; error: string | null; attempts: number; pids: number[]; history: number[];
       snapshots: number; successful_opens: number; closes: number[]; budget_objects: number; budget_running: boolean;
       open_trace: Array<{ pid: number; attempt: number; snapshot: number; error: string | null }>;
-      snapshot_attempts: number[]; pending: number[]; uncertain: number[]; absent: number[]; ancestry_failure: unknown }>;
+      snapshot_attempts: number[]; pending: number[]; uncertain: number[]; absent: number[]; ancestry_failure: unknown; bound_failure: unknown }>;
     expect(results).toHaveLength(cases.length);
     for (const [index, result] of results.entries()) {
       const fixtureCase = cases[index]!;
@@ -251,6 +275,10 @@ ConvertTo-Json -Compress -Depth 8 -InputObject @($results.ToArray())
         expect(evidence, fixtureCase.name).toMatchObject({ version: 1, root_pid: 101, root_type: "System.Int64",
           parent_type: "System.Int64", child_type: "System.Int64", ...fixtureCase.diagnostic });
       } else expect(result.ancestry_failure, fixtureCase.name).toBeNull();
+      if (fixtureCase.boundDiagnostic) {
+        const evidence = parseWindowsBrowserBoundFailure(result.bound_failure, { parentPid: 101, pids: result.history });
+        expect(evidence, fixtureCase.name).toEqual({ version: 1, count: 128, root_pid: 101, ...fixtureCase.boundDiagnostic });
+      } else expect(result.bound_failure, fixtureCase.name).toBeNull();
       expect(result.history.sort((a, b) => a - b), fixtureCase.name).toEqual(fixtureCase.history);
       if (fixtureCase.ids) expect(result.pids.sort((a, b) => a - b)).toEqual(fixtureCase.ids);
       else expect(result.pids.filter(value => value !== null)).toEqual([]);

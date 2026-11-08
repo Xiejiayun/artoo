@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { parseWindowsBrowserAncestryFailure } from "./windows-browser-negative-evidence.js";
+import { parseWindowsBrowserAncestryFailure, parseWindowsBrowserBoundFailure } from "./windows-browser-negative-evidence.js";
 
 const history = { parentPid: 7001, pids: [7002, 7003] };
 const evidence = () => ({ version: 1, attempt: 1, census: "first", root_pid: 7001, parent_pid: 7002, child_pid: 7003,
@@ -53,4 +53,40 @@ describe("bounded browser ancestry negative evidence", () => {
     "cannot supply or repair invalid exit history %j", binding => {
       expect(() => parseWindowsBrowserAncestryFailure(evidence(), binding)).toThrow();
     });
+});
+
+describe("bounded browser observation count evidence", () => {
+  const boundHistory = { parentPid: 7001, pids: Array.from({ length: 127 }, (_, index) => 8000 + index) };
+  const evidence = () => ({ version: 1, source: "current_subtree", count: 128, attempt: 1, census: "first", root_pid: 7001 });
+  it.each(["current_subtree", "history_union"])("copies only the fixed %s failure facts", source => {
+    for (const [attempt, census] of [[1, "first"], [2, "second"], [3, "corroborating"]] as const) {
+      const input = { ...evidence(), source, attempt, census }, result = parseWindowsBrowserBoundFailure(input, boundHistory);
+      expect(result).toEqual(input); expect(Object.isFrozen(result)).toBe(true); expect(result).not.toBe(input);
+      input.root_pid = 8001; expect(result.root_pid).toBe(7001);
+      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(192);
+    }
+  });
+  it.each([{ version: 2 }, { source: "owned" }, { count: 127 }, { count: 129 }, { count: "128" },
+    { attempt: 0 }, { attempt: 4 }, { attempt: 1.5 }, { attempt: "1" }, { census: "final" },
+    { root_pid: 8001 }, { root_pid: "7001" }, { profile: "private" }, { pids: [9001] }])("rejects malformed or unbound fields %j", change => {
+    expect(() => parseWindowsBrowserBoundFailure({ ...evidence(), ...change }, boundHistory)).toThrow("Invalid protected browser bound failure evidence");
+  });
+  it.each(Object.keys(evidence()))("requires field %s", key => {
+    const source: Record<string, unknown> = evidence(); delete source[key];
+    expect(() => parseWindowsBrowserBoundFailure(source, boundHistory)).toThrow();
+  });
+  it("does not use a count to fill missing history or invoke accessors", () => {
+    expect(parseWindowsBrowserBoundFailure(evidence(), { parentPid: 7001, pids: [] }).source).toBe("current_subtree");
+    expect(() => parseWindowsBrowserBoundFailure({ ...evidence(), source: "history_union" }, history)).toThrow();
+    const input = evidence(), getter = vi.fn(() => 128); Object.defineProperty(input, "count", { get: getter });
+    expect(() => parseWindowsBrowserBoundFailure(input, boundHistory)).toThrow(); expect(getter).not.toHaveBeenCalled();
+    expect(() => parseWindowsBrowserBoundFailure({ ...evidence(), [Symbol("extra")]: true }, boundHistory)).toThrow();
+    for (const value of [null, [], "diagnostic", Object.create(null)]) {
+      expect(() => parseWindowsBrowserBoundFailure(value, boundHistory)).toThrow();
+    }
+    for (const binding of [{ parentPid: 0, pids: [] }, { parentPid: 7001, pids: [7001] },
+      { parentPid: 7001, pids: [7002, 7002] }, { parentPid: 7001, pids: Array.from({ length: 128 }, (_, i) => 8000 + i) }]) {
+      expect(() => parseWindowsBrowserBoundFailure(evidence(), binding)).toThrow();
+    }
+  });
 });

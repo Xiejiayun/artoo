@@ -22,6 +22,36 @@ function initialFailure(pids: readonly number[] = [historicalPid], root = parent
 }
 
 describe("Windows initial exit history ownership (controlled probes, no native acceptance)", () => {
+  it("keeps bound counts separate from cleanup probes and never recovers the failed observation", async () => {
+    const evidence = { version: 1, source: "current_subtree", count: 128, attempt: 2, census: "first", root_pid: parentPid };
+    for (const diagnostic of [undefined, evidence]) {
+      const failure = new WindowsBrowserSessionObservationError("observation_bound_exceeded", "ancestry_snapshot",
+        { parentPid, pids: [historicalPid] }, undefined, diagnostic);
+      const { owned, primitives } = fixture(async () => { throw failure; });
+      const result: unknown = await closeObservedWindowsProcesses(owned, primitives).catch(error => error);
+      expect((result as AggregateError).errors).toContain(failure);
+      expect((result as Error).message).toContain("profile is retained");
+      expect((result as Error).message).toContain("initial_observation:observation_bound_exceeded@ancestry_snapshot");
+      if (diagnostic) expect((result as Error).message).toContain(`bound_failure_v1=${JSON.stringify(evidence)}`);
+      else expect((result as Error).message).not.toContain("bound_failure_v1");
+      expect(primitives.probe.mock.calls).toEqual([[parentPid], [historicalPid], [parentPid], [historicalPid]]);
+      expect(owned.terminateParent).toHaveBeenCalledExactlyOnceWith(90); expect(owned.requestGracefulClose).not.toHaveBeenCalled();
+    }
+    const failure = new WindowsBrowserSessionObservationError("observation_bound_exceeded", "ancestry_snapshot",
+      { parentPid, pids: [historicalPid] }, undefined, evidence);
+    evidence.count = 1;
+    expect(WindowsBrowserSessionObservationError.boundFailureEvidence(failure, parentPid)?.count).toBe(128);
+    expect(Object.isFrozen(WindowsBrowserSessionObservationError.boundFailureEvidence(failure, parentPid))).toBe(true);
+    expect(WindowsBrowserSessionObservationError.boundFailureEvidence(failure, 8001)).toBeUndefined();
+    for (const fake of [JSON.parse(JSON.stringify(failure)), Object.assign(new Error(failure.message), { boundFailure: evidence }),
+      Object.assign(Object.create(WindowsBrowserSessionObservationError.prototype), { boundFailure: evidence })]) {
+      expect(WindowsBrowserSessionObservationError.boundFailureEvidence(fake, parentPid)).toBeUndefined();
+      const { owned, primitives } = fixture(async () => { throw fake; });
+      const result: unknown = await closeObservedWindowsProcesses(owned, primitives).catch(error => error);
+      expect((result as Error).message).not.toContain("bound_failure_v1");
+      expect(primitives.probe.mock.calls).toEqual([[parentPid], [parentPid]]);
+    }
+  });
   it("adds only a bounded diagnostic suffix and preserves the exact original failure probes and termination", async () => {
     const evidence = { version: 1, attempt: 1, census: "first", root_pid: parentPid, parent_pid: parentPid, child_pid: historicalPid,
       root_filetime: "134383440000000101", parent_filetime: "134383440000000101", child_filetime: "134383440000000100",

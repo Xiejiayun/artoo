@@ -49,6 +49,7 @@ const processes = [{ pid: 7001, created_utc: "2026-11-05T00:00:00.0000000Z" }];
 const ancestryFailure = () => ({ version: 1, attempt: 2, census: "first", root_pid: 7001, parent_pid: 7002, child_pid: 7003,
   root_filetime: "134383440000000000", parent_filetime: "134383440000000101", child_filetime: "134383440000000100",
   root_type: "System.Int64", parent_type: "System.Int64", child_type: "System.Int64", delta_ticks: "-1" });
+const boundFailure = () => ({ version: 1, source: "current_subtree", count: 128, attempt: 2, census: "first", root_pid: 7001 });
 async function observed() {
   const result = await bound(); const pending = result.session.observe();
   result.child.frame(result.child.response({ parent_pid: 7001, processes })); await pending;
@@ -64,6 +65,76 @@ afterEach(() => {
 });
 
 describe("persistent Windows observer transport (controlled child events, no native acceptance)", () => {
+  it.each([undefined, "current_subtree", "history_union"])("keeps bound failure terminal with optional %s facts", async source => {
+    const { child, session } = await bound(); const initial = session.observe();
+    const pids = Array.from({ length: 127 }, (_, i) => 8000 + i);
+    const evidence = source === undefined ? undefined : { ...boundFailure(), source };
+    child.frame(child.response({ status: "error", error_code: "observation_bound_exceeded", parent_pid: 7001,
+      exit_history: { version: 1, pids }, ...(evidence ? { bound_failure: evidence } : {}) }));
+    const failure: unknown = await initial.catch(error => error);
+    expect(WindowsBrowserSessionObservationError.boundFailureEvidence(failure, 7001)).toEqual(evidence);
+    expect(WindowsBrowserSessionObservationError.boundFailureEvidence(failure, 7002)).toBeUndefined();
+    expect(WindowsBrowserSessionObservationError.cleanupOnlyHistory(failure, 7001)).toEqual(pids);
+    if (evidence) expect((failure as Error).message).toContain(`bound_failure_v1=${JSON.stringify(evidence)}`);
+    else expect((failure as Error).message).not.toContain("bound_failure_v1");
+    await expect(session.observe()).rejects.toBe(failure); await expect(session.finalAudit(1000)).rejects.toBe(failure);
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+    child.close(1); await session.cleanup(); expect(() => session.assertCompleted()).toThrow("observation_bound_exceeded");
+  });
+  it.each([
+    { evidence: { ...boundFailure(), version: 2 } }, { evidence: { ...boundFailure(), count: 129 } },
+    { evidence: { ...boundFailure(), source: "owned" } }, { evidence: { ...boundFailure(), root_pid: 8001 } },
+    { evidence: { ...boundFailure(), pids: [9001] } }, { evidence: { ...boundFailure(), source: "history_union" } },
+    { evidence: null }, { evidence: boundFailure(), code: "observer_retry_exhausted" },
+  ])("rejects malformed or mismatched bound facts without losing existing negative history: %j", async ({ evidence, code }) => {
+    const { child, session } = await bound(); const initial = session.observe();
+    child.frame(child.response({ status: "error", error_code: code ?? "observation_bound_exceeded", parent_pid: 7001,
+      exit_history: { version: 1, pids: [7002] }, bound_failure: evidence }));
+    const failure: unknown = await initial.catch(error => error);
+    expect((failure as Error).message).toContain("observer_protocol_failed");
+    expect((failure as Error).message).not.toContain("bound_failure_v1");
+    expect(WindowsBrowserSessionObservationError.boundFailureEvidence(failure, 7001)).toBeUndefined();
+    expect(WindowsBrowserSessionObservationError.cleanupOnlyHistory(failure, 7001)).toEqual([7002]);
+  });
+  it.each([{ operation: "ready", status: "ok" }, { operation: "bind", status: "ok" }, { operation: "initial", status: "ok" },
+    { operation: "final", status: "ok" }, { operation: "ready", status: "error" }, { operation: "bind", status: "error" },
+    { operation: "final", status: "error" }])("forbids bound diagnostics on $operation:$status", async ({ operation, status }) => {
+    const { child, session } = operation === "final" ? await observed() : operation === "initial" ? await bound() : create();
+    const pending = operation === "final" ? session.finalAudit(1000) : operation === "initial" ? session.observe() : session.bind(7001);
+    void pending.catch(() => {});
+    if (operation === "bind") { child.ready(); await tick(); }
+    const fields = { status, bound_failure: boundFailure(), ...(status === "error" ? { error_code: "observation_bound_exceeded" }
+      : operation === "bind" ? { parent_pid: 7001 } : operation === "initial" ? { parent_pid: 7001, processes } : operation === "final" ? { processes: [] } : {}) };
+    child.frame(operation === "ready" ? { version: 1, session: child.configure().session, seq: 0, operation, ...fields } : child.response(fields));
+    const failure: unknown = await pending.catch(error => error);
+    expect((failure as Error).message).toContain("observer_protocol_failed");
+    expect(WindowsBrowserSessionObservationError.boundFailureEvidence(failure, 7001)).toBeUndefined();
+    expect(WindowsBrowserSessionObservationError.cleanupOnlyHistory(failure, 7001)).toBeUndefined();
+  });
+  it.each([{ session: "other" }, { seq: 3 }, { parent_pid: 8001 }, { exit_history: undefined }])(
+    "rejects bound diagnostics outside the exact initial binding: %j", async extra => {
+      const { child, session } = await bound(); const initial = session.observe();
+      child.frame(child.response({ status: "error", error_code: "observation_bound_exceeded", parent_pid: 7001,
+        exit_history: { version: 1, pids: [] }, bound_failure: boundFailure(), ...extra }));
+      const failure: unknown = await initial.catch(error => error);
+      expect((failure as Error).message).toContain("observer_protocol_failed");
+      expect(WindowsBrowserSessionObservationError.boundFailureEvidence(failure, 7001)).toBeUndefined();
+      expect(WindowsBrowserSessionObservationError.cleanupOnlyHistory(failure, 7001)).toBeUndefined();
+    });
+  it("rejects duplicate bound fields and does not attach facts arriving at the original deadline", async () => {
+    const first = await bound(); const duplicate = first.session.observe();
+    const line = JSON.stringify(first.child.response({ status: "error", error_code: "observation_bound_exceeded", parent_pid: 7001,
+      exit_history: { version: 1, pids: [] }, bound_failure: boundFailure() }));
+    first.child.stdout.write(line.replace('"count":128', '"count":128,"count":128') + "\n");
+    await expect(duplicate).rejects.toThrow("observer_protocol_failed");
+    const second = await bound(); const late = second.session.observe(); now += 5000;
+    second.child.frame(second.child.response({ status: "error", error_code: "observation_bound_exceeded", parent_pid: 7001,
+      exit_history: { version: 1, pids: [] }, bound_failure: boundFailure() }));
+    const failure: unknown = await late.catch(error => error);
+    expect((failure as Error).message).toContain("observer_deadline");
+    expect(WindowsBrowserSessionObservationError.boundFailureEvidence(failure, 7001)).toBeUndefined();
+    expect(WindowsBrowserSessionObservationError.cleanupOnlyHistory(failure, 7001)).toBeUndefined();
+  });
   it("captures optional exact negative evidence in the same bound error frame without recovering failure", async () => {
     const { child, session } = await bound(); const initial = session.observe();
     child.frame(child.response({ status: "error", error_code: "descendant_precedes_parent", parent_pid: 7001,

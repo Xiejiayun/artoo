@@ -11,7 +11,7 @@ function New-ArtooObservationHistory([uint32]$rootPid) {
     PendingMissing = [Collections.Generic.HashSet[uint32]]::new()
     Absent = [Collections.Generic.HashSet[uint32]]::new()
     Exited = [Collections.Generic.HashSet[uint32]]::new()
-    Attempts = 0; AncestryFailure = $null
+    Attempts = 0; AncestryFailure = $null; BoundFailure = $null
   }
 }
 function Get-ArtooObservationExitPids($history) {
@@ -29,13 +29,13 @@ function Get-ArtooRetryExceptionCode($failure) {
   if ($match.Success) { return $match.Groups[1].Value }
   return 'os_query_failed'
 }
-function Register-ArtooObservationSnapshot($inventory, $root, $history) {
-  $selected = Select-ArtooProcessTree $inventory $root.Pid
+function Register-ArtooObservationSnapshot($inventory, $root, $history, [string]$diagnosticCensus) {
+  $selected = Select-ArtooProcessTree $inventory $root.Pid $history $diagnosticCensus
   # Capture the entire selected subtree before interpreting any individual error.
   # This includes the fresh inventory used to corroborate an OpenProcess 87.
   foreach ($entry in $selected) {
     if (!$history.Seen.Contains($entry.Pid)) {
-      if ($history.Seen.Count -ge 128) { throw 'ARTOO_BROWSER_OBSERVATION:observation_bound_exceeded' }
+      if ($history.Seen.Count -ge 128) { Stop-ArtooObservationBound $history $root.Pid 'history_union' $history.Seen.Count $diagnosticCensus }
       [void]$history.Seen.Add($entry.Pid)
       $history.FirstAttempt.Add($entry.Pid, $history.Attempts)
     }
@@ -153,7 +153,7 @@ function Get-ArtooStableOwnedIdentities([Type]$api, $root, $history, [Diagnostic
     try {
       Write-ArtooObserverPhase 'ancestry_snapshot'
       $firstInventory = Get-ArtooProcessSnapshot $api
-      $first = Register-ArtooObservationSnapshot $firstInventory $root $history
+      $first = Register-ArtooObservationSnapshot $firstInventory $root $history 'first'
       Confirm-ArtooMissingObservation $firstInventory $history $attempt
       Write-ArtooObserverPhase 'ancestry_identities'
       Read-ArtooObservationIdentities $api $root $firstInventory $history $attempt $budget
@@ -163,7 +163,7 @@ function Get-ArtooStableOwnedIdentities([Type]$api, $root, $history, [Diagnostic
       Assert-ArtooProcessLive $api $root 'root_process_exited'
       Write-ArtooObserverPhase 'ancestry_confirmation'
       $secondInventory = Get-ArtooProcessSnapshot $api
-      $second = Register-ArtooObservationSnapshot $secondInventory $root $history
+      $second = Register-ArtooObservationSnapshot $secondInventory $root $history 'second'
       # Resolve pending absence from the complete inventory before reading newly
       # selected members. Still-present failures remain pending, never identities.
       Confirm-ArtooMissingObservation $secondInventory $history $attempt
@@ -177,7 +177,7 @@ function Get-ArtooStableOwnedIdentities([Type]$api, $root, $history, [Diagnostic
         Assert-ArtooObservationBudget $budget
         Assert-ArtooProcessLive $api $root 'root_process_exited'
         $corroboratingInventory = Get-ArtooProcessSnapshot $api
-        $corroborating = Register-ArtooObservationSnapshot $corroboratingInventory $root $history
+        $corroborating = Register-ArtooObservationSnapshot $corroboratingInventory $root $history 'corroborating'
         Confirm-ArtooMissingObservation $corroboratingInventory $history $attempt
         Read-ArtooObservationIdentities $api $root $corroboratingInventory $history $attempt $budget
         Assert-ArtooObservationParents $corroborating $attempt $history $number 'corroborating'

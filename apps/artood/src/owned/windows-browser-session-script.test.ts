@@ -45,6 +45,9 @@ interface ControlledCase {
   ancestryFailure?: Record<string, unknown>;
   ancestryError?: boolean;
   expectedAncestryFailure?: boolean;
+  boundFailure?: Record<string, unknown>;
+  boundError?: boolean;
+  expectedBoundFailure?: boolean;
 }
 
 describe.runIf(process.platform === "win32")("protected persistent Windows browser script", () => {
@@ -64,8 +67,21 @@ describe.runIf(process.platform === "win32")("protected persistent Windows brows
     const ancestryFailure = { version: 1, attempt: 1, census: "first", root_pid: 101, parent_pid: 101, child_pid: 202,
       root_filetime: "134383440000000009", parent_filetime: "134383440000000009", child_filetime: "134383440000000008",
       root_type: "System.Int64", parent_type: "System.Int64", child_type: "System.Int64", delta_ticks: "-1" };
+    const boundFailure = { version: 1, source: "current_subtree", count: 128, attempt: 1, census: "first", root_pid: 101 };
     const cases: ControlledCase[] = [
       success,
+      { ...afterBind, name: "bound rejection includes only its bounded observation count", frames: [configure, bind, initial],
+        boundFailure, boundError: true, historyPids: [202], expectedIdentityChecks: 2, expectedSnapshots: 1,
+        expectedError: "observation_bound_exceeded", expectedInitialErrorHistory: [202], expectedBoundFailure: true },
+      { ...afterBind, name: "cleanup failure supersedes a recorded bound rejection", frames: [configure, bind, initial],
+        boundFailure, boundError: true, closeFailure: true, historyPids: [202], expectedIdentityChecks: 2, expectedSnapshots: 1,
+        expectedError: "observer_cleanup_failed", expectedInitialErrorHistory: [202] },
+      { ...afterBind, name: "an unrelated initial error cannot carry old bound facts", frames: [configure, bind, initial],
+        boundFailure, snapshotFailure: true, historyPids: [202], expectedIdentityChecks: 2, expectedSnapshots: 1,
+        expectedError: "ancestry_changed", expectedInitialErrorHistory: [202] },
+      { ...success, name: "bound facts cannot appear on successful initial or final frames", boundFailure, historyPids: [202] },
+      { ...afterInitial, name: "final failure cannot carry old bound facts", frames: [configure, bind, initial, final()],
+        boundFailure, finalFailure: true, historyPids: [202], expectedError: "os_query_failed" },
       { ...afterBind, name: "creation-order rejection includes only its bounded negative evidence", frames: [configure, bind, initial],
         ancestryFailure, ancestryError: true, historyPids: [202], expectedIdentityChecks: 2, expectedSnapshots: 1,
         expectedError: "descendant_precedes_parent", expectedInitialErrorHistory: [202], expectedAncestryFailure: true },
@@ -149,7 +165,7 @@ function Assert-ArtooSessionRootIdentity([Type]$api, $root, [string]$executable,
 }
 function New-ArtooObservationHistory([uint32]$parentProcessId) {
   $script:historyParent = $parentProcessId
-  return [pscustomobject]@{ ParentPid = $parentProcessId; Pids = [Collections.Generic.List[uint32]]::new(); AncestryFailure = $null }
+  return [pscustomobject]@{ ParentPid = $parentProcessId; Pids = [Collections.Generic.List[uint32]]::new(); AncestryFailure = $null; BoundFailure = $null }
 }
 function Get-ArtooStableOwnedIdentities([Type]$api, $root, $history, [Diagnostics.Stopwatch]$budget) {
   $script:snapshots++
@@ -157,6 +173,8 @@ function Get-ArtooStableOwnedIdentities([Type]$api, $root, $history, [Diagnostic
   if ($history.ParentPid -ne $root.Pid) { throw 'Unexpected history binding' }
   foreach ($value in $script:active.historyPids) { $history.Pids.Add([uint32]$value) }
   if ($script:active.ancestryFailure) { $history.AncestryFailure = $script:active.ancestryFailure }
+  if ($script:active.boundFailure) { $history.BoundFailure = $script:active.boundFailure }
+  if ($script:active.boundError) { throw 'ARTOO_BROWSER_OBSERVATION:observation_bound_exceeded' }
   if ($script:active.ancestryError) { throw 'ARTOO_BROWSER_OBSERVATION:descendant_precedes_parent' }
   if ($script:active.snapshotFailure) { throw 'ARTOO_BROWSER_OBSERVATION:ancestry_changed' }
   $identities = [Collections.Generic.List[object]]::new()
@@ -200,7 +218,7 @@ foreach ($case in $cases) {
 }
 ConvertTo-Json -Compress -Depth 10 -InputObject @($results.ToArray())
 `;
-    interface Response { frame: { version: number; session: string; seq: number; operation: string; status: string; error_code?: string; parent_pid?: number; processes?: unknown[]; exit_history?: { version: number; pids: number[] }; ancestry_failure?: unknown }; closes_at_write: number }
+    interface Response { frame: { version: number; session: string; seq: number; operation: string; status: string; error_code?: string; parent_pid?: number; processes?: unknown[]; exit_history?: { version: number; pids: number[] }; ancestry_failure?: unknown; bound_failure?: unknown }; closes_at_write: number }
     interface Result { name: string; exit_code: number; close_attempts: number[]; identity_checks: number; snapshots: number; history_parent: number | null; budget_running_at_root_revalidation: boolean; shared_initial_budget: boolean; responses: Response[] }
     const results = powershell(script) as Result[];
     expect(results).toHaveLength(cases.length);
@@ -225,6 +243,9 @@ ConvertTo-Json -Compress -Depth 10 -InputObject @($results.ToArray())
           expect(response.closes_at_write, fixture.name).toBe(fixture.expectedRootCloses);
           if (fixture.expectedAncestryFailure) {
             keys.push("ancestry_failure"); expect(response.frame.ancestry_failure).toEqual(ancestryFailure);
+          }
+          if (fixture.expectedBoundFailure) {
+            keys.push("bound_failure"); expect(response.frame.bound_failure).toEqual(boundFailure);
           }
           if (fixture.expectedInitialErrorHistory !== undefined) {
             expect(response.frame.operation, fixture.name).toBe("initial");
