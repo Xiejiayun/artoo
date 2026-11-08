@@ -556,6 +556,25 @@ export async function provisionManagedJournal(env: NodeJS.ProcessEnv, host: Shut
 /** Dispatch provisioning before normal config, registry, provider or WebSocket construction. */
 export async function runDaemonEntrypoint(env: NodeJS.ProcessEnv = process.env, host: ShutdownHost = process): Promise<ArtoodNode | void> {
   const args = (host.argv ?? []).slice(2);
+  const brokerCheck = "--check-application-broker-profile";
+  if (args.some(arg => arg === brokerCheck || arg.startsWith(`${brokerCheck}=`))) {
+    if (host.connected !== undefined || args.length !== 1 || args[0] !== brokerCheck
+      || env.ARTOO_WORKER_LAUNCH_ID || env.ARTOO_WORKTREE_BASE_REPO || env.ARTOO_OWNED_RESULT_PROFILES_FILE
+      || Object.keys(env).some(key => /^(ARTOO_MANAGED_|ARTOO_JOURNAL_)/i.test(key) && env[key])) {
+      throw Error("Broker profile inspection requires one standalone offline selector and ordinary local node settings");
+    }
+    const file = env.ARTOO_APPLICATION_BROKER_PROFILE_FILE, nodeId = env.ARTOO_NODE_ID?.trim(), roots = splitList(env.ARTOO_ALLOWED_ROOTS);
+    if (!file || !isAbsolute(file) || /[\u0000-\u001f\u007f]/.test(file) || !nodeId || !roots.length)
+      throw Error("Broker profile inspection requires an absolute local profile file, node ID and declared write roots");
+    const backend = windowsProcessBackendFromEnv(env, roots, false);
+    if (!backend) throw Error("Broker profile inspection requires the protected native Windows process installation");
+    const { checkApplicationBrokerProfileFile } = await import("./application-broker-profile.js");
+    checkApplicationBrokerProfileFile({ file, nodeId, allowedRoots: roots, backend });
+    console.log(JSON.stringify({ version: 1, kind: "application-broker-profile.checked", qualified_for_product: false,
+      broker_started: false, database_opened: false, declared_local_bindings_checked: true,
+      unqualified: ["compiler-source-artifact-binding", "generated-process-lpac", "effective-agent-write-scope"] }));
+    return;
+  }
   const supervised = supervisedSelection(args, host.connected !== undefined);
   if (supervised === "parent") return launchWindowsSupervisedCli(env, loadConfigFromEnv(env), fileURLToPath(import.meta.url));
   if (supervised === "daemon") return runWindowsSupervisedDaemon(env, host, (controlled, ready) => main(env, controlled, ready));
