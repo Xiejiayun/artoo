@@ -123,7 +123,14 @@ npm run verify:desktop
   desktop and `ARTOO_DESKTOP_INTERACTIVE=1`. It is an explicit local/operator
   gate; a headless hosted runner is not claimed to verify installation/UI.
 
-The unified script also accepts `--suite=shared|ios|desktop` and `--list`.
+Windows CI runs the complete Vitest inventory in two shards, each with two
+workers and the existing 75-minute job limit. `shared-checks` runs the other
+preview checks, including both browser suites and the production audit. The
+required `shared` check succeeds only when both Vitest shards and
+`shared-checks` succeed; a failed, cancelled or skipped partition fails the
+aggregate. Local `npm run verify:preview` still runs the complete suite once.
+
+The unified script also accepts `--suite=shared|shared-checks|ios|desktop|mac` and `--list`.
 It writes the selected suite's pass/fail record to `artifacts/preview-gate`;
 native runs retain `.xcresult` bundles and UI evidence under `artifacts/ios`. A passed suite
 does not imply that another suite ran. `.github/workflows/preview.yml` runs the
