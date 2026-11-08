@@ -13,7 +13,8 @@ if (args.some((arg) => arg !== "--list" && !/^--suite=(shared|shared-checks|ios|
 const npm = [process.env.npm_execpath, resolve(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")].find((path) => path && existsSync(path));
 const runNpm = (name, ...command) => ({ name, command: npm ? process.execPath : "npm", args: npm ? [npm, ...command] : command });
 const runNode = (name, script) => ({ name, command: process.execPath, args: [script] });
-// CI runs this complete test inventory in two separate two-worker jobs.
+// CI partitions this inventory into two two-worker jobs and one serial
+// Windows process job; its aggregate checks actual reporter file coverage.
 // The default local shared suite still executes it here exactly once.
 const unitAndIntegration = runNpm("unit and integration tests", "test", "--", "--maxWorkers=2");
 const suites = {
@@ -22,6 +23,7 @@ const suites = {
     runNpm("production preview build", "run", "build:preview"),
     // Keep PGlite/WASM concurrency bounded on hosted runners.
     unitAndIntegration,
+    runNode("CI Vitest partition coverage", "scripts/ci-vitest-coverage.test.mjs"),
     runNode("E2E report integrity", "scripts/e2e-report.test.mjs"),
     runNode("Native PNG evidence integrity", "scripts/png-evidence.test.mjs"),
     runNode("Exact native UI suite contract", "apps/ios/scripts/ui-suite-contract.test.mjs"),
