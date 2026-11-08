@@ -88,6 +88,130 @@ function begin() {
 }
 async function poll(owner: ApplicationBrokerProcess) { return await owner.command({ kind: "poll" }); }
 describe("original native broker owner control", () => {
+  it("does not spawn when original revalidation consumes the remaining host deadline", () => {
+    let now = 100, rechecking = false;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const config = installation(), token = prepareApplicationBrokerProcess({ ...config,
+        assertLocalAdmission: () => { if (rechecking) now = 201; } });
+      rechecking = true;
+      expect(() => startApplicationBrokerProcess(token, 200)).toThrow("original deadline elapsed");
+      expect(mocked.spawn).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
+  });
+  it("rejects non-finite trusted host deadlines before creating an owner", () => {
+    const token = prepareApplicationBrokerProcess(installation());
+    for (const deadline of [NaN, Infinity, -Infinity])
+      expect(() => startApplicationBrokerProcess(token, deadline)).toThrow("deadline must be finite");
+    expect(mocked.spawn).not.toHaveBeenCalled();
+  });
+  it("charges revalidation against readiness without restarting its remaining budget", async () => {
+    let now = 100, rechecking = false;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const config = installation(), token = prepareApplicationBrokerProcess({ ...config,
+        assertLocalAdmission: () => { if (rechecking) now = 125; } });
+      rechecking = true;
+      const owner = startApplicationBrokerProcess(token, 200), helper = helpers.at(-1)!;
+      const rejected = expect(owner.ready).rejects.toThrow("request-deadline");
+      now = 199; await vi.advanceTimersByTimeAsync(74);
+      expect(helper.writes.some(command => command.kind === "stop")).toBe(false);
+      now = 200; await vi.advanceTimersByTimeAsync(1); await rejected;
+      expect(helper.writes.filter(command => command.kind === "stop")).toHaveLength(1);
+      let closed = false; void owner.closed.then(() => { closed = true; }); await tick(); expect(closed).toBe(false);
+      await helper.finish(); expect((await owner.closed).normalShutdown).toBe(false);
+    } finally { vi.useRealTimers(); clock.mockRestore(); }
+  });
+  it("rejects a ready frame delivered after the deadline before its timer runs", async () => {
+    let now = 100;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const config = installation(), owner = startApplicationBrokerProcess(prepareApplicationBrokerProcess(config), 200);
+      const helper = helpers.at(-1)!; helper.nodeImage = config.node.path;
+      now = 201; helper.ready();
+      await expect(owner.ready).rejects.toThrow("request-deadline");
+      expect(helper.writes.filter(command => command.kind === "stop")).toHaveLength(1);
+      helper.terminal(); await helper.finish(); expect((await owner.closed).normalShutdown).toBe(false);
+    } finally { clock.mockRestore(); }
+  });
+  it("keeps the original host deadline after readiness instead of the default owner lifetime", async () => {
+    let now = 100;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const config = installation(), owner = startApplicationBrokerProcess(prepareApplicationBrokerProcess(config), 200);
+      const helper = helpers.at(-1)!; helper.nodeImage = config.node.path; helper.ready(); await owner.ready;
+      now = 200; await vi.advanceTimersByTimeAsync(100);
+      expect(helper.writes.filter(command => command.kind === "stop")).toHaveLength(1);
+      helper.terminal(); await helper.finish(); expect((await owner.closed).failure).toBe("request-deadline");
+    } finally { vi.useRealTimers(); clock.mockRestore(); }
+  });
+  it("preserves the default startup and native lifetime when no host deadline is supplied", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { owner, helper } = begin();
+      expect(helper.writes[0]).toMatchObject({ kind: "launch", lifetimeMs: 180_000,
+        lifetimeOwnership: { cleanupTimeoutMs: 15_000, gracefulStopMs: 15_000 } });
+      const rejected = expect(owner.ready).rejects.toThrow("startup-deadline");
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(helper.writes.some(command => command.kind === "stop")).toBe(false);
+      await vi.advanceTimersByTimeAsync(1); await rejected;
+      await helper.finish(); expect((await owner.closed).failure).toBe("startup-deadline");
+    } finally { vi.useRealTimers(); }
+  });
+  it("rejects new work after readiness when the original deadline beats its timer callback", async () => {
+    let now = 100;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const config = installation(), owner = startApplicationBrokerProcess(prepareApplicationBrokerProcess(config), 500);
+      const helper = helpers.at(-1)!; helper.nodeImage = config.node.path; helper.ready(); await owner.ready;
+      now = 500; await expect(poll(owner)).rejects.toThrow("original deadline elapsed");
+      expect(helper.writes.some(command => command.kind === "daemon-input")).toBe(false);
+      helper.terminal(); await helper.finish(); expect((await owner.closed).failure).toBe("request-deadline");
+    } finally { clock.mockRestore(); }
+  });
+  it("does not write another native chunk after the first original write exhausts the deadline", async () => {
+    let now = 100;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const config = installation(), owner = startApplicationBrokerProcess(prepareApplicationBrokerProcess(config), 500);
+      const helper = helpers.at(-1)!; helper.nodeImage = config.node.path; helper.ready(); await owner.ready;
+      const pending = owner.command({ kind: "begin", invocation: "large-input", requestJson: "x".repeat(20_000),
+        purpose: "application", access: "read", lifetimeMs: 100 });
+      await tick(); const first = helper.writes.at(-1)!; expect(first.kind).toBe("daemon-input");
+      now = 500; helper.ack(first); helper.written(first);
+      await expect(pending).rejects.toThrow("original deadline elapsed");
+      expect(helper.writes.filter(command => command.kind === "daemon-input")).toHaveLength(1);
+      helper.terminal(); await helper.finish(); expect((await owner.closed).normalShutdown).toBe(false);
+    } finally { clock.mockRestore(); }
+  });
+  it("withholds a late broker reply even before the overdue timer callback runs", async () => {
+    let now = 100;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const config = installation(), owner = startApplicationBrokerProcess(prepareApplicationBrokerProcess(config), 500);
+      const helper = helpers.at(-1)!; helper.nodeImage = config.node.path; helper.ready(); await owner.ready;
+      const pending = poll(owner); await tick(); helper.ack(); helper.written(); await tick();
+      now = 500; helper.result(); await expect(pending).rejects.toThrow("request-deadline");
+      helper.terminal(); await helper.finish(); expect((await owner.closed).failure).toBe("request-deadline");
+    } finally { clock.mockRestore(); }
+  });
+  it("does not promote a normal native receipt when final revalidation crosses the host deadline", async () => {
+    let now = 100, finalRecheck = false;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const config = installation(), prepared = prepareApplicationBrokerProcess({ ...config,
+        assertLocalAdmission: () => { if (finalRecheck) now = 500; } });
+      const owner = startApplicationBrokerProcess(prepared, 500), helper = helpers.at(-1)!;
+      helper.nodeImage = config.node.path; helper.ready(); await owner.ready;
+      const stopped = owner.stop(); await tick(); helper.ack(); await tick(); const command = helper.writes.at(-1)!;
+      helper.written(command); helper.ack(command); helper.result(0, true); helper.terminal(true);
+      finalRecheck = true; await helper.finish(0);
+      expect(await stopped).toMatchObject({ inputsUnchanged: true, normalShutdown: false, failure: "request-deadline",
+        helper: { exited: true, closed: true, stdoutEof: true, stderrEof: true, exitCode: 0, closeCode: 0 } });
+    } finally { clock.mockRestore(); }
+  });
   it("captures the original admission callback instead of a mutable caller property", () => {
     const config = installation(); let reject = false; const original = vi.fn(() => { if (reject) throw Error("original-admission"); });
     const mutable = { ...config, assertLocalAdmission: original as () => void }, prepared = prepareApplicationBrokerProcess(mutable);

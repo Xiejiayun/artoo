@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "scope": "Fixed developer-authored source text; emitted JavaScript is never executed",
+  "base_source": [
+    { "path": "product/client/index.html", "text": "<!doctype html><title>库存 😀</title>" },
+    { "path": "product/client/main.ts", "text": "document.title = '库存 😀'; export {};" },
+    { "path": "product/client/style.css", "text": "body::before { content: '中文 👩‍💻'; }" },
+    { "path": "product/server/handler.ts", "text": "import type { ApplicationHandler } from '@artoo/application'; import { title } from './nested/title.js'; export const handle: ApplicationHandler = async () => ({ status: 200, body: { title } });" },
+    { "path": "product/server/nested/title.ts", "text": "export const title: string = '库存 😀';" }
+  ],
+  "cases": [
+    { "id": "positive-unicode", "replace": [] },
+    { "id": "bad-type", "replace": [{ "path": "product/server/nested/title.ts", "text": "export const title: number = 'wrong';" }] },
+    { "id": "bad-handler", "replace": [{ "path": "product/server/handler.ts", "text": "export const handle = async () => ({ status: 'bad', body: null });" }] },
+    { "id": "invalid-surrogate", "replace": [{ "path": "product/client/index.html", "text": "\ud800" }] }
+  ]
+}

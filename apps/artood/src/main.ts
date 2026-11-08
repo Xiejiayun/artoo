@@ -556,6 +556,54 @@ export async function provisionManagedJournal(env: NodeJS.ProcessEnv, host: Shut
 /** Dispatch provisioning before normal config, registry, provider or WebSocket construction. */
 export async function runDaemonEntrypoint(env: NodeJS.ProcessEnv = process.env, host: ShutdownHost = process): Promise<ArtoodNode | void> {
   const args = (host.argv ?? []).slice(2);
+  const applicationSelectors = ["--initialize-application-store", "--serve-application"];
+  if (args.some(arg => applicationSelectors.some(selector => arg === selector || arg.startsWith(`${selector}=`)))) {
+    if (host.connected !== undefined || args.length !== 1 || !applicationSelectors.includes(args[0]!)
+      || env.ARTOO_WORKER_LAUNCH_ID || env.ARTOO_WORKTREE_BASE_REPO || env.ARTOO_OWNED_RESULT_PROFILES_FILE
+      || Object.keys(env).some(key => /^(ARTOO_MANAGED_|ARTOO_JOURNAL_)/i.test(key) && env[key])) {
+      throw Error("Application service requires one standalone selector and ordinary local node settings");
+    }
+    const file = env.ARTOO_APPLICATION_SERVICE_PROFILE_FILE, nodeId = env.ARTOO_NODE_ID?.trim(), roots = splitList(env.ARTOO_ALLOWED_ROOTS);
+    if (!file || !isAbsolute(file) || /[\u0000-\u001f\u007f]/.test(file) || !nodeId || !roots.length)
+      throw Error("Application service requires an absolute local profile file, node ID and declared write roots");
+    const backend = windowsProcessBackendFromEnv(env, roots, false);
+    if (!backend) throw Error("Application service requires the protected native Windows process installation");
+    const { prepareApplicationServiceProfile } = await import("./application-service-profile.js");
+    const { initializeApplicationStore, startLocalApplicationService } = await import("./application-local-service.js");
+    const controller = new AbortController();
+    let service: Awaited<ReturnType<typeof startLocalApplicationService>> | undefined;
+    const stop = () => { controller.abort(); if (service) void service.close().catch(() => {}); };
+    host.on("SIGINT", stop); host.on("SIGTERM", stop);
+    try {
+      const profile = prepareApplicationServiceProfile({ file, nodeId, allowedRoots: roots, backend });
+      if (controller.signal.aborted) throw Error("Application startup cancelled");
+      if (args[0] === "--initialize-application-store") {
+        const receipt = await initializeApplicationStore(profile, controller.signal);
+        console.log(JSON.stringify({ version: 1, kind: "application-store.initialized", qualified_for_product: false, receipt }));
+      } else {
+        service = await startLocalApplicationService(profile);
+        // A signal during asynchronous listen startup is retained; the original
+        // listener is closed before reporting startup or returning to the caller.
+        if (controller.signal.aborted) await service.close();
+        else console.log(JSON.stringify({ version: 1, kind: "application-service.listening", origin: service.origin,
+          qualified_for_product: false, maximum_requests: 256, maximum_concurrent: 1, get_access: "read" }));
+        await service.closed;
+        console.log(JSON.stringify({ version: 1, kind: "application-service.closed", qualified_for_product: false }));
+      }
+    } catch (error) {
+      // An error after listen (including readiness reporting) still owns that
+      // listener. Await its original shutdown before propagating the failure.
+      const owner = service;
+      const serviceCleanup = owner ? await Promise.allSettled([Promise.resolve().then(() => owner.close()), owner.closed]) : undefined;
+      console.error(JSON.stringify({ version: 1, kind: "application-service.failed", qualified_for_product: false,
+        error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof Error && "cleanup" in error ? { cleanup: error.cleanup } : {}),
+        ...(serviceCleanup ? { service_cleanup: serviceCleanup } : {}) },
+      (_key, value: unknown) => value instanceof Error ? { name: value.name, message: value.message } : value));
+      throw error;
+    } finally { host.off("SIGINT", stop); host.off("SIGTERM", stop); }
+    return;
+  }
   const brokerCheck = "--check-application-broker-profile";
   if (args.some(arg => arg === brokerCheck || arg.startsWith(`${brokerCheck}=`))) {
     if (host.connected !== undefined || args.length !== 1 || args[0] !== brokerCheck

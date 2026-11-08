@@ -26,7 +26,8 @@ const compiler = requireBuild.resolve('typescript'), compilerDirectory = dirname
 const zod = requireBuild.resolve('zod'), zodPackage = requireBuild.resolve('zod/package.json'), zodRoot = dirname(zodPackage);
 const binaryPackage = requireBuild.resolve(`@esbuild/win32-${process.arch}/package.json`);
 const binary = join(dirname(binaryPackage), 'esbuild.exe');
-const allowedSource = ['application-compiler-entry.ts', 'application-compiler-protocol.ts', 'application-build-core.ts', 'application-sdk-v1.ts']
+const allowedSource = ['application-compiler-entry.ts', 'application-compiler-protocol.ts', 'application-compiler-contract.ts',
+  'application-build-core.ts', 'application-build-kernel.ts', 'application-sdk-v1.ts']
   .map(name => resolve(scripts, '../src', name));
 const sourceSet = new Set(allowedSource);
 const allowedBuiltins = new Set(['fs', 'path', 'os', 'crypto', 'perf_hooks', 'util'].flatMap(name => [name, `node:${name}`]));

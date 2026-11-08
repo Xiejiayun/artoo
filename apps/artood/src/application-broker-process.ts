@@ -101,10 +101,15 @@ export interface ApplicationBrokerProcess {
   cancel(): Promise<ApplicationBrokerProcessReceipt>;
 }
 
-/** Creates the original helper itself. It cannot adopt a PID or serialized closure. */
-export function startApplicationBrokerProcess(prepared: PreparedApplicationBrokerProcess): ApplicationBrokerProcess {
+/** Creates the original helper itself. It cannot adopt a PID or serialized closure.
+ * An optional trusted host performance.now() deadline includes revalidation and
+ * startup; the native containment/cleanup bounds remain independent. */
+export function startApplicationBrokerProcess(prepared: PreparedApplicationBrokerProcess, deadline?: number): ApplicationBrokerProcess {
   const saved = preparations.get(prepared); if (!saved || saved.used) throw Error("Original unused broker preparation required");
-  saved.recheck(); saved.used = true;
+  if (deadline !== undefined && !Number.isFinite(deadline)) throw Error("Broker original deadline must be finite");
+  const expired = () => deadline !== undefined && Math.floor(deadline - performance.now()) < 1;
+  const checkDeadline = () => { if (expired()) throw Error("Broker original deadline elapsed before launch"); };
+  checkDeadline(); saved.recheck(); checkDeadline(); saved.used = true;
   const { fixed, nativeImage, systemRoot, config } = saved;
   const environment = { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: join(systemRoot, "System32") };
   const launch = { version: 1, kind: "launch", node: fixed.node, entry: fixed.entry, configuration: fixed.configuration,
@@ -116,6 +121,7 @@ export function startApplicationBrokerProcess(prepared: PreparedApplicationBroke
   // Reserve cancellation correlation before any process exists. Later RNG failure
   // cannot prevent this original owner from requesting native containment.
   const cancellationNonce = randomUUID();
+  checkDeadline(); // Revalidation and launch preparation cannot extend the request.
   const child = spawn(nativeImage, ["--daemon-supervisor-v1"], { cwd: dirname(nativeImage), windowsHide: true,
     shell: false, detached: false, stdio: ["pipe", "pipe", "pipe"], env: environment });
   const observed: ApplicationBrokerProcessReceipt["helper"] extends Readonly<infer T> ? T : never = {
@@ -133,8 +139,10 @@ export function startApplicationBrokerProcess(prepared: PreparedApplicationBroke
   let pendingReply: { sequence: number; resolve: (value: ApplicationBrokerReply) => void; reject: (error: Error) => void } | undefined;
   let work: Promise<ApplicationBrokerReply> | undefined, stopWork: Promise<ApplicationBrokerProcessReceipt> | undefined;
   let emergency: ReturnType<typeof setTimeout> | undefined;
-  const startup = setTimeout(() => fail("startup-deadline"), 30_000);
-  const duration = setTimeout(() => fail("lifetime-deadline"), 180_000);
+  const remaining = (maximum: number) => deadline === undefined ? maximum
+    : Math.max(1, Math.min(maximum, Math.floor(deadline - performance.now())));
+  const startup = setTimeout(() => fail(expired() ? "request-deadline" : "startup-deadline"), remaining(30_000));
+  const duration = setTimeout(() => fail(expired() ? "request-deadline" : "lifetime-deadline"), remaining(180_000));
   function fail(code: string): void {
     failure ??= code; rejectReady(Error(failure));
     input?.reject(Error(failure)); input = undefined; pendingReply?.reject(Error(failure)); pendingReply = undefined;
@@ -147,13 +155,21 @@ export function startApplicationBrokerProcess(prepared: PreparedApplicationBroke
     // Killing the original helper remains failure/uncertain closure; no PID is reopened.
     emergency ??= setTimeout(() => { failure ??= "closure-deadline"; child.kill(); }, 40_000);
   }
-  function maybeReady(): void { if (nativeReady && daemon && brokerReady && !failure) { clearTimeout(startup); resolveReady(); } }
+  function maybeReady(): void {
+    if (nativeReady && daemon && brokerReady && !failure) {
+      // A late ready frame can run before an overdue timer callback.
+      if (expired()) { fail("request-deadline"); return; }
+      clearTimeout(startup); resolveReady();
+    }
+  }
   function nativeControl(kind: "daemon-input" | "arm-graceful-stop", bytes?: Buffer): Promise<void> {
+    if (expired()) { fail("request-deadline"); return Promise.reject(Error("Broker original deadline elapsed")); }
     if (failure || observed.closed || input || !daemon || stopNonce) return Promise.reject(Error("Broker control unavailable"));
     if (bytes && (++chunks > limits.nativeChunks || bytes.length < 1 || bytes.length > limits.nativeChunkBytes)) return Promise.reject(Error("Broker input bound"));
     return new Promise<void>((resolve, reject) => {
       const nonce = randomUUID(); input = { nonce, kind, bytes: bytes?.length ?? 0, ack: false, written: !bytes, resolve, reject };
       const line = JSON.stringify({ version: 1, kind, nonce, generation: 0, ...(bytes ? { data: bytes.toString("base64") } : {}) }) + "\n";
+      if (expired()) { fail("request-deadline"); return; }
       child.stdin.write(line, error => { if (error) fail("control-write"); });
     });
   }
@@ -172,6 +188,7 @@ export function startApplicationBrokerProcess(prepared: PreparedApplicationBroke
     const reply = replySchema.parse(value);
     if (!pendingReply || reply.sequence !== pendingReply.sequence || (reply.stopped && !stopping)) throw Error("broker-reply-binding");
     for (const encoded of reply.frames) decodeBrokerBytes(encoded, 1_048_580);
+    if (expired()) { fail("request-deadline"); return; }
     if (reply.stopped) stoppedReply = true;
     const current = pendingReply; pendingReply = undefined; current.resolve(reply);
   }
@@ -251,6 +268,9 @@ export function startApplicationBrokerProcess(prepared: PreparedApplicationBroke
     rejectReady(Error("Original broker owner closed")); input?.reject(Error("Original broker owner closed")); input = undefined;
     pendingReply?.reject(Error("Original broker owner closed")); pendingReply = undefined;
     let unchanged = false; try { saved.recheck(); unchanged = true; } catch { failure ??= "installation-changed"; }
+    // EOF/close can beat an overdue timer, and final revalidation also consumes
+    // the same host budget. Preserve the actual receipt without late success.
+    if (expired()) failure ??= "request-deadline";
     const facts = terminal?.facts, target = facts?.incarnations[0], closure = facts?.lifetimeClosure;
     const normal = !failure && observed.spawned && observed.exited && observed.stdoutEof && observed.stderrEof
       && code === 0 && observed.exitCode === 0 && signal === null && observed.signal === null
@@ -266,6 +286,7 @@ export function startApplicationBrokerProcess(prepared: PreparedApplicationBroke
       normalShutdown: normal, inputChunksWritten: writtenChunks, inputBytesWritten: writtenBytes }));
   }));
   function dispatch(action: ApplicationBrokerAction): Promise<ApplicationBrokerReply> {
+    if (expired()) { fail("request-deadline"); return Promise.reject(Error("Broker original deadline elapsed")); }
     if (work || failure || observed.closed || (stopping && action.kind !== "shutdown")) return Promise.reject(Error("Broker command unavailable"));
     let bytes: Buffer, current: number;
     try {
@@ -281,8 +302,10 @@ export function startApplicationBrokerProcess(prepared: PreparedApplicationBroke
         const reply = new Promise<ApplicationBrokerReply>((resolve, reject) => { pendingReply = { sequence: current, resolve, reject }; });
         void reply.catch(() => {});
         for (let offset = 0; offset < bytes.length; offset += limits.nativeChunkBytes) await nativeControl("daemon-input", bytes.subarray(offset, offset + limits.nativeChunkBytes));
+        if (expired()) fail("request-deadline");
         if (failure || stopNonce || observed.closed) throw Error("Broker delivery no longer current");
         const value = await reply;
+        if (expired()) fail("request-deadline");
         if (failure || stopNonce || observed.closed) throw Error("Broker delivery no longer current");
         return value;
       } catch (error) { fail("broker-command-failed"); throw error; }
@@ -301,7 +324,8 @@ export function startApplicationBrokerProcess(prepared: PreparedApplicationBroke
       return await closed;
     })();
   }
-  child.stdin.write(launchLine, error => { if (error) fail("launch-write"); });
+  if (expired()) fail("request-deadline");
+  else child.stdin.write(launchLine, error => { if (error) fail("launch-write"); });
   return Object.freeze({ ready, closed, command: (action: Exclude<ApplicationBrokerAction, { kind: "shutdown" }>) => dispatch(action),
     stop, cancel: () => { fail("cancelled"); return closed; } });
 }
