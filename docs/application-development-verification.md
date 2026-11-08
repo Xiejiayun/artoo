@@ -156,9 +156,27 @@ increment does not publish an application screenshot artifact browser.
 
 ## Validation record
 
-Source review and controlled regression tests are being added in this increment.
-Dependency installation, typecheck, build, source suites, Web E2E and real native
-provider acceptance have **not yet been run on this implementation**. Controlled
-owner/HTTP fixtures are not real Windows process, real browser or live-model
-acceptance evidence. Record actual commands and results before merging or
-enabling this capability in a user's node configuration.
+Validation on native Windows at `ca6028e`, including the subsequent fixture
+corrections, has produced these results:
+
+- `npm ci`: passed. Its existing dependency audit reported 16 vulnerabilities;
+  this increment did not update dependencies.
+- `npm run typecheck`: passed after correcting the ordinary-workspace fixture's
+  request/evidence projection. The original type error is retained.
+- `npm run build`: passed.
+- The first 27-suite focused run closed with 488 passed, 6 failed and 5 skipped.
+  The failures exposed missing authenticated Windows workspace advertisement in
+  the two new server cases and missing capability binding in the four application
+  routing cases. Both fixture corrections preserve the production checks and all
+  assertions. Running the two complete affected suites afterward passed all
+  66 tests; typecheck also passed again.
+- All three fixed compiler packagers assembled their fresh outputs successfully.
+  This is packaging evidence, not native compiler execution.
+- The first actual fixed service-host packaging attempt failed its early-module
+  guard: the new pure domain application contract was pulled into the bootstrap
+  graph. That failure and its staging directory are retained for diagnosis.
+
+The full unit suite, Web E2E and real native/provider application acceptance have
+not yet run on this implementation. Controlled owner/HTTP fixtures do not prove
+real Windows process, real browser or live-model acceptance. Do not enable this
+capability in a user's node configuration on the basis of these checks alone.

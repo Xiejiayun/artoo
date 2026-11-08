@@ -94,7 +94,9 @@ describe("autonomous verified-workspace orchestration", () => {
     await ingestWireRunEvent(server.ctx, { kind: "run.event", node_id: run.computerId, run_id: run.id, sequence: 0, event: { type: "run.lifecycle", payload: { phase: "started" } } });
     if (outcome !== "missing") {
       const requirement = run.verificationRequirement as VerificationRequirement;
-      const payload: RunVerificationPayload = { ...requirement, profile_digest: digest, subject_digest: digest, outcome,
+      expect(requirement.application).toBeUndefined(); // This fixture owns ordinary workspace evidence only.
+      const payload: RunVerificationPayload = { version: 1, request_id: requirement.request_id, profile_id: requirement.profile_id,
+        profile_digest: digest, subject_digest: digest, outcome,
         checks: [{ id: "behavior", exit_code: outcome === "passed" ? 0 : 1, duration_ms: 10, output_digest: digest }], required_files: [],
         ...(outcome === "failed" ? { reason: "Behavior check rejected the implementation" } : {}) };
       await ingestWireRunEvent(server.ctx, { kind: "run.event", node_id: run.computerId, run_id: run.id, sequence: 1, event: { type: "run.verification", payload } });
