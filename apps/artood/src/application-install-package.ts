@@ -20,13 +20,74 @@ const portable = (value: string): boolean => value.length > 0 && value.length <=
   && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(part));
 function fail(reason: string): never { throw Error(`Application install package: ${reason}`); }
 
+type Destination = Pick<ApplicationInstallationOwner, "generationId" | "directory" | "storageDirectory">;
+type MemberPin = Readonly<{ path: string; bytes: number; sha256: string }>;
+type ConfigurationRole = "runtime" | "broker-create" | "broker-open" | "service-profile";
+export interface ApplicationInstallationRelocationProvenanceV1 {
+  readonly version: 1;
+  readonly format: "artoo.application-installation-relocation.v1";
+  readonly scope: "fixed-configuration-plan-only";
+  readonly source: Readonly<{ manifest: Readonly<ApplicationRuntimeFilePin>; directory: string; storage_directory: string;
+    profile: Readonly<ApplicationRuntimeFilePin>; plan_digest: string }>;
+  readonly target: Readonly<{ generation_id: string; directory: string; storage_directory: string;
+    profile: Readonly<ApplicationRuntimeFilePin>; plan_digest: string }>;
+  readonly rewritten: readonly Readonly<{ role: ConfigurationRole; path: string;
+    source: Readonly<{ bytes: number; sha256: string }>; target: Readonly<{ bytes: number; sha256: string }> }>[];
+  readonly retained: readonly MemberPin[];
+  readonly preserved: Readonly<{
+    source_members_digest: string; artifact_members_digest: string; toolchain_members_digest: string;
+    runtime_expectation_digest: string; schema_json_digest: string; http_digest: string;
+    http_origin: string; maximum_access: "read" | "write";
+    candidate_scope: Readonly<{ product_id: string; data_generation: string; service_generation: number; artifact_digest: string }>;
+  }>;
+}
+const valueDigest = (value: unknown): string => digest(Buffer.from(JSON.stringify(value)));
+function freezeData<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value)) freezeData(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 /** Fixed-schema data relocation only. No filesystem reads, product evaluation,
  * native launch or authority reconstruction occurs here. The original package
  * reader checks admission; install() later reads unchanged members by source pin. */
 export function materializeApplicationInstallationPlan(token: PreparedApplicationInitializationAdmission,
-  target: ApplicationInitializationTarget,
-  owner: Pick<ApplicationInstallationOwner, "generationId" | "directory" | "storageDirectory">): ApplicationInstallationPlan {
+  target: ApplicationInitializationTarget, owner: Destination): ApplicationInstallationPlan {
+  return materialize(token, target, owner, false).plan;
+}
+
+/** Data provenance from this same materialization, not a publication permit or
+ * proof of installation, database creation/identity, or a running service. The
+ * source manifest is already bound by the original initialization admission.
+ * Plan digests cover version/directories/logical member pins/absolute profile;
+ * they describe intended bytes, not a subsequent scan of an installed tree. */
+export function materializeApplicationInstallationPlanWithProvenance(token: PreparedApplicationInitializationAdmission,
+  target: ApplicationInitializationTarget, owner: Destination): Readonly<{
+    plan: ApplicationInstallationPlan; provenance: ApplicationInstallationRelocationProvenanceV1;
+  }> {
+  // Capture data before admission, then use these same values for every original
+  // audit/read and for the plan/proof. An accessor cannot swap a claimed manifest
+  // between the admission comparison and provenance capture. Opaque authorities
+  // remain the original objects; this data copy cannot manufacture admission.
+  const pin = (value: ApplicationRuntimeFilePin) => Object.freeze({ path: value.path, bytes: value.bytes, sha256: value.sha256 });
+  const selected: ApplicationInitializationTarget = Object.freeze({ parent: target.parent, sourceManifest: pin(target.sourceManifest),
+    nodeId: target.nodeId, allowedRoots: Object.freeze([...target.allowedRoots]), node: pin(target.node),
+    backend: target.backend, hostCode: target.hostCode, hostDirectory: target.hostDirectory });
+  const destination = Object.freeze({ generationId: owner.generationId, directory: owner.directory, storageDirectory: owner.storageDirectory });
+  const result = materialize(token, selected, destination, true);
+  return Object.freeze({ plan: result.plan, provenance: result.provenance! });
+}
+
+function materialize(token: PreparedApplicationInitializationAdmission, target: ApplicationInitializationTarget,
+  owner: Destination, withProvenance: boolean): {
+    plan: ApplicationInstallationPlan; provenance?: ApplicationInstallationRelocationProvenanceV1;
+  } {
   const pkg = describeApplicationInitializationPackage(token, target);
+  // describe() checks this exact pin against the original admission and audits
+  // it; no caller-supplied digest can independently establish candidate lineage.
+  const sourceManifest = withProvenance ? { ...target.sourceManifest } : undefined;
   assertCanonicalWindowsPath(pkg.directory); assertCanonicalWindowsPath(target.parent);
   assertCanonicalWindowsPath(owner.directory); assertCanonicalWindowsPath(owner.storageDirectory);
   if (!portable(owner.generationId) || owner.generationId.includes("/")
@@ -143,8 +204,55 @@ export function materializeApplicationInstallationPlan(token: PreparedApplicatio
     return Object.freeze(result ? { path, ...result } : { path, bytes: source.bytes, sha256: source.sha256, source });
   });
   if (total > limits.allFileBytes) fail("generated plan exceeds byte bound");
+  const plan: ApplicationInstallationPlan = Object.freeze({ version: 1, directories: Object.freeze([...directories].sort()),
+    files: Object.freeze(planFiles), profile: profilePin });
+  let provenance: ApplicationInstallationRelocationProvenanceV1 | undefined;
+  if (withProvenance) {
+    const member = (pin: { bytes: number; sha256: string }) => ({ bytes: pin.bytes, sha256: pin.sha256 });
+    const sourceMembers = [...files].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+      .map(([path, pin]) => ({ path, ...member(pin) }));
+    const targetMembers = plan.files.map(file => ({ path: file.path, ...member(file) }));
+    const targetFiles = new Map(plan.files.map(file => [file.path, file]));
+    const planDigest = (members: readonly MemberPin[], profile: ApplicationRuntimeFilePin) =>
+      valueDigest({ version: 1, directories: plan.directories, files: members, profile: { ...profile } });
+    const configurations: readonly [ConfigurationRole, ApplicationRuntimeFilePin][] = [
+      ["runtime", profile.runtime.configuration], ["broker-create", profile.broker.create_configuration],
+      ["broker-open", profile.broker.open_configuration], ["service-profile", pkg.profile],
+    ];
+    const rewrittenMembers = configurations.map(([role, pin]) => {
+      const path = local(pin), output = rewritten.get(path);
+      if (!output) fail("relocation omitted a fixed configuration");
+      return { role, path, source: member(pin), target: member(output) };
+    });
+    if (rewritten.size !== 4 || rewrittenMembers.some(file => !generated.has(file.path))) fail("relocation configuration set differs");
+    const retainedMembers = sourceMembers.filter(file => !generated.has(file.path));
+    for (const original of retainedMembers) {
+      const output = targetFiles.get(original.path);
+      if (!output || !("source" in output) || output.bytes !== original.bytes || output.sha256 !== original.sha256
+        || !samePin(output.source, files.get(original.path)!)) fail("relocation changed a retained package member");
+    }
+    // Logical paths and exact member pins remain unchanged even though their
+    // absolute installation paths move. Expectation/schema/scope/HTTP data is
+    // copied unchanged by the four fixed generators above, never reinterpreted.
+    const runtimeMembers = (members: typeof runtime.source) => members.map(item => ({
+      logicalPath: item.logicalPath, file: { path: local(item.file), ...member(item.file) },
+    }));
+    provenance = freezeData<ApplicationInstallationRelocationProvenanceV1>({ version: 1,
+      format: "artoo.application-installation-relocation.v1", scope: "fixed-configuration-plan-only",
+      source: { manifest: sourceManifest!, directory: pkg.directory, storage_directory: profile.storage_directory,
+        profile: { ...pkg.profile }, plan_digest: planDigest(sourceMembers, pkg.profile) },
+      target: { generation_id: owner.generationId, directory: owner.directory, storage_directory: owner.storageDirectory,
+        profile: { ...plan.profile }, plan_digest: planDigest(targetMembers, plan.profile) },
+      rewritten: rewrittenMembers, retained: retainedMembers,
+      preserved: { source_members_digest: valueDigest(runtimeMembers(runtime.source)),
+        artifact_members_digest: valueDigest(runtimeMembers(runtime.artifacts)), toolchain_members_digest: valueDigest(runtimeMembers(runtime.toolchain)),
+        runtime_expectation_digest: valueDigest(runtime.expectation), schema_json_digest: digest(Buffer.from(open.schemaJson)),
+        http_digest: valueDigest(profile.http), http_origin: profile.http.origin, maximum_access: open.maximumAccess,
+        candidate_scope: { ...open.scope } },
+    });
+  }
   // The final read-side admission is still the original object, never a package
   // snapshot minted from the materialized output or the current disk contents.
   describeApplicationInitializationPackage(token, target);
-  return Object.freeze({ version: 1, directories: Object.freeze([...directories].sort()), files: Object.freeze(planFiles), profile: profilePin });
+  return { plan, ...(provenance ? { provenance } : {}) };
 }

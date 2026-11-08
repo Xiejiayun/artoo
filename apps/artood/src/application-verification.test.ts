@@ -19,7 +19,7 @@ vi.mock("./application-verification-bootstrap-process.js", () => ({ initializeAp
 vi.mock("./owned-browser.js", () => ({ launchOwnedBrowser: state.browser }));
 vi.mock("./web-acceptance-pages.js", () => ({ executeBrowserProgramV3: state.program }));
 vi.mock("./web-acceptance.js", () => ({ inspectPage: vi.fn() }));
-import { executeApplicationVerification } from "./application-verification.js";
+import { executeApplicationVerification, readOriginalApplicationMeasurement } from "./application-verification.js";
 import { VerificationCleanupError } from "./verification-cleanup-error.js";
 const digest = "sha256:" + "a".repeat(64), workspace = "C:\\work";
 const servers: Server[] = [];
@@ -101,6 +101,32 @@ async function fixture() {
     corruptReopen: () => { corruptReopen = true; }, corruptReplay: () => { corruptReplay = true; } };
 }
 describe("actual application orchestration over controlled owner boundaries", () => {
+  it("retains candidate lineage only for the original successful observation and unchanged original run", async () => {
+    const f = await fixture(), payload = f.makeRun(), original = { nodeId: "node", runStart: payload };
+    const observation = await f.run(payload);
+    const measured = readOriginalApplicationMeasurement(f.profile, observation, original);
+    expect(measured.candidate).toBe(f.candidate);
+    expect(measured.runStart).toBe(payload);
+    expect(measured.definition.persistence.read.path).toBe("/api/items");
+    expect(() => readOriginalApplicationMeasurement(f.profile, structuredClone(observation), original)).toThrow("Original unchanged");
+    expect(() => readOriginalApplicationMeasurement(f.profile, observation, { ...original, runStart: structuredClone(payload) })).toThrow("Original unchanged");
+    expect(() => readOriginalApplicationMeasurement(f.profile, observation, { ...original, nodeId: "other" })).toThrow("Original unchanged");
+    expect(() => readOriginalApplicationMeasurement(Object.freeze({}) as PreparedApplicationVerificationProfile, observation, original)).toThrow("Original unchanged");
+    payload.task_id = "different-task";
+    expect(() => readOriginalApplicationMeasurement(f.profile, observation, original)).toThrow("Original unchanged");
+  });
+  it("rejects mutated original evidence and changed protected candidate on later composition", async () => {
+    const f = await fixture(), payload = f.makeRun(), original = { nodeId: "node", runStart: payload };
+    const observation = await f.run(payload), before = observation.acceptance.test_store_id;
+    observation.acceptance.test_store_id = randomUUID();
+    expect(() => readOriginalApplicationMeasurement(f.profile, observation, original)).toThrow("Original unchanged");
+    observation.acceptance.test_store_id = before;
+    state.candidate.mockReturnValue({ identity: { ...f.identity, package_digest: "sha256:" + "b".repeat(64) },
+      originRunId: "author", originRequestId: "author-request" });
+    expect(() => readOriginalApplicationMeasurement(f.profile, observation, original)).toThrow("candidate changed");
+    state.candidate.mockImplementation(() => { throw Error("original protected package audit failed"); });
+    expect(() => readOriginalApplicationMeasurement(f.profile, observation, original)).toThrow("package audit failed");
+  });
   it("performs business requests across distinct original services and withholds success until all owners close", async () => {
     const f = await fixture(), result = await f.run();
     expect(f.events).toEqual(["compile", "initialize", "service:1", "browser-program", "api:1:POST", "api:1:GET", "close:1",

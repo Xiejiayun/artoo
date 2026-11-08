@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplicationCapabilitiesV1 } from "@artoo/domain";
 import { applicationVerificationSupported, attachWindowsVerificationBackend, prepareVerificationProfiles,
-  readVerificationCapabilities, readWindowsVerificationBackend, type VerificationProfile } from "./verification.js";
+  readVerificationCapabilities, readWindowsVerificationBackend, readPreparedApplicationVerificationProfile,
+  readFinalApplicationVerificationBinding, type VerificationProfile } from "./verification.js";
 import { prepareWindowsProcessBackend, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import type { ApplicationVerificationConfiguration, ApplicationVerificationFile,
   readApplicationVerificationProfile } from "./application-verification-profile.js";
@@ -125,6 +126,11 @@ describe("Windows application advertisement admission (controlled toolchain, not
     expect(applicationVerificationSupported(f.profile)).toBe(true);
     expect(readWindowsVerificationBackend(f.profile)).toBe(f.backend);
     expect(() => attachWindowsVerificationBackend(f.profile, f.backend)).not.toThrow();
+    const original = readPreparedApplicationVerificationProfile(f.profile);
+    expect(original).toBe(application.prepare.mock.results[0]!.value);
+    expect(application.audit).toHaveBeenLastCalledWith(original);
+    expect(() => readPreparedApplicationVerificationProfile(JSON.parse(JSON.stringify(f.profile)))).toThrow(/locally prepared profile/);
+    expect(() => readFinalApplicationVerificationBinding(f.profile, {} as never, {} as never)).toThrow(/original completed application verification/);
   });
 
   it.each(["ordinary", "static"] as const)("keeps old bundles usable for a %s profile", kind => {
@@ -133,6 +139,7 @@ describe("Windows application advertisement admission (controlled toolchain, not
     expect(readWindowsVerificationBackend(f.profile)).toBe(f.backend);
     expect(applicationVerificationSupported(f.profile)).toBe(false);
     expect(f.profile.capabilities?.application).toBeUndefined();
+    expect(readPreparedApplicationVerificationProfile(f.profile)).toBeUndefined();
   });
 
   it("rejects JSON-cloned local profile and backend capability claims", () => {

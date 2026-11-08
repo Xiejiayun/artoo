@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { ApplicationVerificationObservationV1Schema, type ApplicationVerificationObservationV1, type RunStartPayload } from "@artoo/domain";
 import { readApplicationRuntimePin } from "./application-runtime-installation.js";
 import { readApplicationVerificationProfile, type PreparedApplicationVerificationProfile } from "./application-verification-profile.js";
-import { readApplicationVerificationDefinition } from "./application-verification-definition.js";
+import { readApplicationVerificationDefinition, type ApplicationVerificationDefinition } from "./application-verification-definition.js";
 import { createApplicationVerificationCandidate, readApplicationVerificationCandidate, type PreparedApplicationVerificationCandidate } from "./application-verification-candidate.js";
 import { initializeApplicationVerificationStore, readApplicationVerificationStore, startApplicationVerificationService } from "./application-verification-bootstrap-process.js";
 import { type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
@@ -17,6 +17,37 @@ import { VerificationCleanupError } from "./verification-cleanup-error.js";
 const candidates = new WeakMap<PreparedApplicationVerificationProfile, Map<string, PreparedApplicationVerificationCandidate>>();
 type Subject = { digest: string; files: ReadonlyMap<string, { checksum: string; size: number }> };
 export interface ApplicationVerificationRun { readonly nodeId: string; readonly runStart: RunStartPayload }
+interface OriginalApplicationMeasurement {
+  readonly profile: PreparedApplicationVerificationProfile;
+  readonly candidate: PreparedApplicationVerificationCandidate;
+  readonly backend: PreparedWindowsProcessBackend;
+  readonly nodeId: string;
+  readonly runStart: RunStartPayload;
+  readonly runSnapshot: string;
+  readonly observationSnapshot: string;
+  readonly definition: ApplicationVerificationDefinition;
+  readonly deadline: number;
+}
+// An observation is serializable evidence; only the original object returned by
+// this verifier retains its local candidate/owner lineage. This map conveys no
+// publication authorization or confirmation that the coding run was accepted.
+const originalMeasurements = new WeakMap<ApplicationVerificationObservationV1, OriginalApplicationMeasurement>();
+
+export function readOriginalApplicationMeasurement(profile: PreparedApplicationVerificationProfile,
+  observation: ApplicationVerificationObservationV1, run: ApplicationVerificationRun): Readonly<OriginalApplicationMeasurement> {
+  const saved = originalMeasurements.get(observation);
+  if (!saved || saved.profile !== profile || saved.nodeId !== run.nodeId || saved.runStart !== run.runStart
+    || saved.runSnapshot !== JSON.stringify(run.runStart) || saved.observationSnapshot !== JSON.stringify(observation)) {
+    throw Error("Original unchanged application measurement and run required");
+  }
+  readApplicationVerificationProfile(profile);
+  const candidate = readApplicationVerificationCandidate(saved.candidate);
+  if (!isDeepStrictEqual(candidate.identity, observation.candidate)
+    || candidate.originRunId !== observation.origin_run_id || candidate.originRequestId !== observation.origin_request_id) {
+    throw Error("Original application measurement candidate changed");
+  }
+  return saved;
+}
 
 /** Fixed same-origin API request. No redirects, pool, forwarded credentials or
  * body-selected method; response end and the original request close are awaited. */
@@ -79,6 +110,7 @@ export async function executeApplicationVerification(profile: PreparedApplicatio
   let owned: OwnedBrowser | undefined, service: Awaited<ReturnType<typeof startApplicationVerificationService>> | undefined;
   let failed = false, originalFailure: unknown;
   let completed: ApplicationVerificationObservationV1 | undefined, register: (() => void) | undefined;
+  let measurement: OriginalApplicationMeasurement | undefined;
   try {
     check();
     const definition = readApplicationVerificationDefinition(read(".artoo/product/application.json"), read(".artoo/product/design.json"), configured.capabilities.contract_digest);
@@ -146,6 +178,8 @@ export async function executeApplicationVerification(profile: PreparedApplicatio
         browser_trace_digest: sha(canonical(reopened.operations)) }, closures: { compiler: true, initialize: true, services: 2, browser: true },
         test_store_id: readApplicationVerificationStore(store).testStoreId }, qualified_for_product: false });
     current();
+    measurement = Object.freeze({ profile, candidate, backend: input.backend, nodeId: input.run.nodeId, runStart: original,
+      runSnapshot: identity, observationSnapshot: JSON.stringify(completed), definition, deadline });
     if (!requirement.expected_candidate) register = () => { known.set(key, candidate); };
   } catch (error) { failed = true; originalFailure = error; throw error; }
   finally {
@@ -157,5 +191,5 @@ export async function executeApplicationVerification(profile: PreparedApplicatio
       cause: new AggregateError([...(failed ? [originalFailure] : []), ...errors], "Application verification cleanup failed") });
     if (!failed) current();
   }
-  current(); register?.(); return completed!;
+  current(); register?.(); originalMeasurements.set(completed!, measurement!); return completed!;
 }

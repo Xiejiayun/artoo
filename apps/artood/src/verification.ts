@@ -56,7 +56,7 @@ import { deriveExpectedWebAcceptanceV2, deriveExpectedWebAcceptanceV3, prepareSt
 import { isV2WebAcceptanceOptions, isV3WebAcceptanceOptions, normalizeWebAcceptanceOptions, STATIC_WEB_MAX_CONFIG_BYTES } from "./web-acceptance-config.js";
 import { prepareApplicationVerificationProfile, readApplicationVerificationProfile, assertApplicationVerificationProfile,
   type ApplicationVerificationProfileSelection, type PreparedApplicationVerificationProfile } from "./application-verification-profile.js";
-import { executeApplicationVerification, type ApplicationVerificationRun } from "./application-verification.js";
+import { executeApplicationVerification, readOriginalApplicationMeasurement, type ApplicationVerificationRun } from "./application-verification.js";
 
 export const VERIFICATION_FEATURE = "run-verification.v1";
 export const PRODUCT_STAGE_VERIFICATION_FEATURE = "product-stage-verification.v1";
@@ -87,6 +87,8 @@ const measurementPlanPolicies = new WeakMap<PreparedVerificationProfile, Measure
 const locallyPreparedProfiles = new WeakSet<PreparedVerificationProfile>();
 const windowsProfileBackends = new WeakMap<PreparedVerificationProfile, PreparedWindowsProcessBackend>();
 const applicationProfiles = new WeakMap<PreparedVerificationProfile, PreparedApplicationVerificationProfile>();
+const finalApplicationVerifications = new WeakMap<RunVerificationPayload, { profile: PreparedVerificationProfile;
+  application: PreparedApplicationVerificationProfile; run: ApplicationVerificationRun; runSnapshot: string; payload: string }>();
 const exportableFinalVerifications = new WeakMap<RunVerificationPayload, { profile: PreparedVerificationProfile; requestId: string; context: string; payload: string }>();
 type ImportedVerifierPermit = PreparedImportedDesignContinuation | PreparedImportedDesignReview | PreparedImportedExecution | PreparedImportedExecutionReview
   | PreparedImportedExecutionRepair | PreparedImportedValidation | PreparedImportedValidationReview
@@ -791,6 +793,16 @@ export async function runVerification(profile: PreparedVerificationProfile, requ
           stage, subject, assertSubject: () => assertVerificationSubject(profile, subject.digest), backend, signal });
       }
       if (JSON.stringify(context) !== originalContext || !RunVerificationPayloadSchema.safeParse(result).success) fail("application evidence or original context differs");
+      if (result.application) {
+        signal.throwIfAborted();
+        const measured = readOriginalApplicationMeasurement(selected, result.application, applicationRun);
+        assertVerificationSubject(profile, result.subject_digest!);
+        signal.throwIfAborted();
+        if (performance.now() >= measured.deadline) fail("application verification original deadline elapsed during final audit");
+        if (JSON.stringify(context) !== originalContext) fail("application context changed during final audit");
+        finalApplicationVerifications.set(result, { profile, application: selected, run: applicationRun,
+          runSnapshot: JSON.stringify(applicationRun.runStart), payload: JSON.stringify(result) });
+      }
     } catch (error) {
       if (error instanceof VerificationCleanupError) throw error;
       result.outcome = signal.aborted ? "cancelled" : "failed"; result.reason = (error instanceof Error ? error.message : "Application verification failed").slice(0, 2000);
@@ -801,6 +813,30 @@ export async function runVerification(profile: PreparedVerificationProfile, requ
     exportableFinalVerifications.set(result, { profile, requestId, context: originalContext, payload: JSON.stringify(result) });
   }
   return result;
+}
+
+/** Local composition only. Equal JSON cannot recover a prepared application profile. */
+export function readPreparedApplicationVerificationProfile(profile: PreparedVerificationProfile): PreparedApplicationVerificationProfile | undefined {
+  assertLocallyPreparedVerificationProfile(profile);
+  const application = applicationProfiles.get(profile);
+  if (application) assertApplicationVerificationProfile(application);
+  return application;
+}
+
+/** Final verification provenance is separate from original writer closure,
+ * accepted independent review and the user's publication grant. A publisher must
+ * additionally establish those facts before it can create an execution permit. */
+export function readFinalApplicationVerificationBinding(profile: PreparedVerificationProfile,
+  evidence: RunVerificationPayload, run: ApplicationVerificationRun): ReturnType<typeof readOriginalApplicationMeasurement> {
+  assertLocallyPreparedVerificationProfile(profile);
+  const binding = finalApplicationVerifications.get(evidence);
+  if (!binding || binding.profile !== profile || binding.run.nodeId !== run.nodeId || binding.run.runStart !== run.runStart
+    || binding.runSnapshot !== JSON.stringify(run.runStart) || binding.payload !== JSON.stringify(evidence)
+    || evidence.outcome !== "passed" || !evidence.application || !evidence.subject_digest) {
+    fail("original completed application verification and exact run required");
+  }
+  assertVerificationSubject(profile, evidence.subject_digest);
+  return readOriginalApplicationMeasurement(binding.application, evidence.application, run);
 }
 
 /** A distinct entry point prevents mapped foreign results from minting local export provenance. */

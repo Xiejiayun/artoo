@@ -22,7 +22,7 @@ vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs
 vi.mock("./application-data-broker.js", () => ({ ApplicationDataBroker: state.forbidden }));
 vi.mock("./application-installation.js", () => ({ describeApplicationInstallation: state.forbidden, assertApplicationInstallation: state.forbidden,
   auditApplicationInstallation: state.forbidden, invalidateApplicationInstallation: state.forbidden, bindApplicationInstallationClientReader: state.forbidden }));
-import { materializeApplicationInstallationPlan } from "./application-install-package.js";
+import { materializeApplicationInstallationPlan, materializeApplicationInstallationPlanWithProvenance } from "./application-install-package.js";
 
 const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const root = "C:\\package", storage = "C:\\template-store", absolute = (name: string) => win32.join(root, ...name.split("/"));
@@ -51,6 +51,7 @@ function fixture(parent = "C:\\installed") {
   const target: ApplicationInitializationTarget = Object.freeze({ parent, sourceManifest: { path: absolute("application-install-package.json"), bytes: 99,
     sha256: "sha256:" + "b".repeat(64) }, nodeId: "node1", allowedRoots: Object.freeze(["C:\\work"]), node,
     backend: Object.freeze({}) as ApplicationInitializationTarget["backend"], hostCode: Object.freeze({}) as ApplicationInitializationTarget["hostCode"], hostDirectory: "C:\\host" });
+  const targetSnapshot = JSON.stringify(target);
   const token = Object.freeze({}) as PreparedApplicationInitializationAdmission;
   const owner = (generationId = randomUUID()) => ({ generationId, directory: win32.join(target.parent, generationId, "code"), storageDirectory: win32.join(target.parent, generationId, "store") });
   const helper = { version: 1, format: "artoo.quickjs-native-host.v1", platform: "win32", arch: "x64", entry: "artoo-quickjs-process-host.exe",
@@ -85,7 +86,7 @@ function fixture(parent = "C:\\installed") {
     profile.broker.create_configuration = pin(path.create); profile.broker.open_configuration = pin(path.open); saveProfile();
   };
   const assert = (original: unknown, selected: ApplicationInitializationTarget) => {
-    if (original !== token || selected.backend !== target.backend || selected.hostCode !== target.hostCode || JSON.stringify(selected) !== JSON.stringify(target))
+    if (original !== token || selected.backend !== target.backend || selected.hostCode !== target.hostCode || JSON.stringify(selected) !== targetSnapshot)
       throw Error("Original initialization authority required");
   };
   state.describe.mockImplementation((original, selected) => { assert(original, selected); return pkg; });
@@ -102,6 +103,146 @@ function generated(plan: ApplicationInstallationPlan, name: string) {
 }
 
 describe("fixed initialization package data materializer", () => {
+  it("returns the compatible plan and bound provenance from one original materialization", () => {
+    const f = fixture(), owner = f.owner(), legacy = f.run(owner);
+    state.describe.mockClear(); state.read.mockClear();
+    const result = materializeApplicationInstallationPlanWithProvenance(f.token, f.target, owner), proof = result.provenance;
+    expect(result.plan).toEqual(legacy);
+    expect(Object.keys(result)).toEqual(["plan", "provenance"]);
+    expect(state.describe).toHaveBeenCalledTimes(2);
+    expect(state.read.mock.calls.map(call => call[2]).sort()).toEqual([path.profile, path.configuration, path.create, path.open, path.helperManifest, path.vendorManifest].sort());
+    const selected = state.describe.mock.calls[0]![1];
+    expect(selected).toEqual(f.target); expect(selected).not.toBe(f.target);
+    expect(selected.backend).toBe(f.target.backend); expect(selected.hostCode).toBe(f.target.hostCode);
+    expect(selected.node).not.toBe(f.target.node); expect(selected.allowedRoots).not.toBe(f.target.allowedRoots);
+    expect(Object.isFrozen(selected)).toBe(true); expect(Object.isFrozen(selected.node)).toBe(true);
+    expect(Object.isFrozen(selected.allowedRoots)).toBe(true); expect(Object.isFrozen(selected.sourceManifest)).toBe(true);
+    expect(state.describe.mock.calls[1]![1]).toBe(selected);
+    for (const call of state.read.mock.calls) { expect(call[0]).toBe(f.token); expect(call[1]).toBe(selected); }
+    expect(proof.source.manifest).toEqual(f.target.sourceManifest);
+    expect(proof.source.manifest).not.toBe(f.target.sourceManifest);
+    expect(proof.source.profile).toEqual(f.pkg.profile);
+    expect(proof.target.profile).toEqual(result.plan.profile);
+    const sortedSource = [...f.pkg.files].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    const targetFiles = result.plan.files.map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 }));
+    const planDigest = (files: unknown, profile: ApplicationRuntimeFilePin) => digest(Buffer.from(JSON.stringify({
+      version: 1, directories: result.plan.directories, files, profile,
+    })));
+    expect(proof.source.plan_digest).toBe(planDigest(sortedSource, f.pkg.profile));
+    expect(proof.target.plan_digest).toBe(planDigest(targetFiles, result.plan.profile));
+    expect(proof.source.plan_digest).not.toBe(proof.target.plan_digest);
+    expect(proof.source.manifest.sha256).not.toBe(proof.target.plan_digest);
+    expect(proof.scope).toBe("fixed-configuration-plan-only");
+    expect(proof).not.toHaveProperty("installed"); expect(proof).not.toHaveProperty("database_identity");
+  });
+  it("records exactly four rewritten configurations and every retained logical member without semantic relocation", () => {
+    const f = fixture(), owner = f.owner(), { plan, provenance } = materializeApplicationInstallationPlanWithProvenance(f.token, f.target, owner);
+    expect(provenance.rewritten.map(file => [file.role, file.path])).toEqual([
+      ["runtime", "runtime/application-runtime.json"], ["broker-create", "settings/create.json"],
+      ["broker-open", "settings/open.json"], ["service-profile", "service.json"],
+    ]);
+    const generatedNames = new Set(provenance.rewritten.map(file => file.path));
+    expect(provenance.retained).toEqual(f.pkg.files.filter(file => !generatedNames.has(file.path)).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    for (const file of provenance.rewritten) {
+      const source = f.pin(absolute(file.path)), target = plan.files.find(member => member.path === file.path)!;
+      expect(file.source).toEqual({ bytes: source.bytes, sha256: source.sha256 });
+      expect(file.target).toEqual({ bytes: target.bytes, sha256: target.sha256 });
+      expect(target).toHaveProperty("content");
+    }
+    for (const file of provenance.retained) {
+      const target = plan.files.find(member => member.path === file.path)!;
+      expect(target).toEqual({ ...file, source: f.pin(absolute(file.path)) });
+    }
+    const runtime = generated(plan, "runtime/application-runtime.json"), service = generated(plan, "service.json");
+    const membersDigest = (members: typeof f.runtime.source, directory: string) => digest(Buffer.from(JSON.stringify(members.map(item => ({
+      logicalPath: item.logicalPath, file: { path: win32.relative(directory, item.file.path).split(win32.sep).join("/"), bytes: item.file.bytes, sha256: item.file.sha256 },
+    })))));
+    for (const [group, field] of [["source", "source_members_digest"], ["artifacts", "artifact_members_digest"], ["toolchain", "toolchain_members_digest"] as const) {
+      expect(provenance.preserved[field]).toBe(membersDigest(f.runtime[group], root));
+      expect(provenance.preserved[field]).toBe(membersDigest(runtime[group], owner.directory));
+    }
+    expect(provenance.preserved.runtime_expectation_digest).toBe(digest(Buffer.from(JSON.stringify(runtime.expectation))));
+    expect(runtime.expectation).toEqual(f.runtime.expectation);
+    expect(provenance.preserved.http_digest).toBe(digest(Buffer.from(JSON.stringify(service.http))));
+    expect(service.http).toEqual(f.profile.http);
+    expect(provenance.preserved.http_origin).toBe(f.profile.http.origin);
+    for (const name of ["settings/create.json", "settings/open.json"]) {
+      const broker = generated(plan, name);
+      expect(provenance.preserved.schema_json_digest).toBe(digest(Buffer.from(broker.schemaJson)));
+      expect(broker.schemaJson).toBe(f.open.schemaJson);
+      expect(provenance.preserved.candidate_scope).toEqual(broker.scope);
+      expect(broker.scope).toEqual(f.open.scope);
+      expect(provenance.preserved.maximum_access).toBe(broker.maximumAccess);
+    }
+  });
+  it("keeps candidate scope and source identity stable across distinct deployment generations", () => {
+    const f = fixture(), a = materializeApplicationInstallationPlanWithProvenance(f.token, f.target, f.owner()),
+      b = materializeApplicationInstallationPlanWithProvenance(f.token, f.target, f.owner());
+    expect(a.provenance.source).toEqual(b.provenance.source);
+    expect(a.provenance.retained).toEqual(b.provenance.retained);
+    expect(a.provenance.preserved).toEqual(b.provenance.preserved);
+    expect(a.provenance.target.generation_id).not.toBe(b.provenance.target.generation_id);
+    expect(a.provenance.target.plan_digest).not.toBe(b.provenance.target.plan_digest);
+    expect(a.provenance.target.profile.sha256).not.toBe(b.provenance.target.profile.sha256);
+    expect(a.provenance.preserved.candidate_scope.data_generation).toBe("d1");
+    expect(a.provenance.preserved.candidate_scope.service_generation).toBe(1);
+    expect(a.provenance.target.generation_id).not.toBe(a.provenance.preserved.candidate_scope.data_generation);
+  });
+  it("returns deeply immutable provenance detached from source pins and mutable plan content", () => {
+    const f = fixture(), result = materializeApplicationInstallationPlanWithProvenance(f.token, f.target, f.owner()), before = JSON.stringify(result.provenance);
+    const assertFrozen = (value: unknown): void => {
+      if (value !== null && typeof value === "object") { expect(Object.isFrozen(value)).toBe(true); Object.values(value).forEach(assertFrozen); }
+    };
+    expect(Object.isFrozen(result)).toBe(true); assertFrozen(result.provenance);
+    expect(Reflect.set(result.provenance.source.manifest, "sha256", "sha256:" + "0".repeat(64))).toBe(false);
+    expect(Reflect.set(result.provenance.preserved.candidate_scope, "data_generation", "forged")).toBe(false);
+    f.target.sourceManifest.sha256 = "sha256:" + "e".repeat(64);
+    f.pkg.profile.sha256 = "sha256:" + "f".repeat(64);
+    const file = result.plan.files.find(file => "content" in file)!;
+    if (!("content" in file)) throw Error("Generated member absent");
+    file.content[0] = 0;
+    expect(JSON.stringify(result.provenance)).toBe(before);
+    expect(digest(file.content)).not.toBe(file.sha256); // The plan's original content pin still detects this later mutation.
+  });
+  it("does not create provenance from a copied authority, substituted source manifest or failed final admission", () => {
+    const f = fixture();
+    expect(() => materializeApplicationInstallationPlanWithProvenance({ ...f.token }, f.target, f.owner())).toThrow("Original initialization authority required");
+    expect(() => materializeApplicationInstallationPlanWithProvenance(f.token, { ...f.target,
+      sourceManifest: { ...f.target.sourceManifest, sha256: "sha256:" + "e".repeat(64) } }, f.owner())).toThrow("Original initialization authority required");
+    expect(state.read).not.toHaveBeenCalled();
+    const failure = Error("original final admission failed");
+    state.describe.mockImplementationOnce(() => f.pkg).mockImplementationOnce(() => { throw failure; });
+    expect(() => materializeApplicationInstallationPlanWithProvenance(f.token, f.target, f.owner())).toThrow(failure);
+  });
+  it("uses one admitted data snapshot when caller getters change the manifest, node, roots and destination", () => {
+    const f = fixture(), owner = f.owner(), reads = { manifest: 0, node: 0, roots: 0, generation: 0, directory: 0, storage: 0 };
+    const selected: ApplicationInitializationTarget = { ...f.target,
+      get sourceManifest() { return ++reads.manifest === 1 ? f.target.sourceManifest : { ...f.target.sourceManifest, sha256: "sha256:" + "e".repeat(64) }; },
+      get node() { return ++reads.node === 1 ? f.target.node : { ...f.target.node, path: "C:\\other-node\\node.exe" }; },
+      get allowedRoots() { return ++reads.roots === 1 ? f.target.allowedRoots : ["C:\\other-workspace"]; },
+    };
+    const destination = {
+      get generationId() { return ++reads.generation === 1 ? owner.generationId : "false-generation"; },
+      get directory() { return ++reads.directory === 1 ? owner.directory : "C:\\false\\code"; },
+      get storageDirectory() { return ++reads.storage === 1 ? owner.storageDirectory : "C:\\false\\store"; },
+    };
+    const result = materializeApplicationInstallationPlanWithProvenance(f.token, selected, destination);
+    expect(reads).toEqual({ manifest: 1, node: 1, roots: 1, generation: 1, directory: 1, storage: 1 });
+    expect(state.describe).toHaveBeenCalledTimes(2); expect(state.read).toHaveBeenCalledTimes(6);
+    expect(result.provenance.source.manifest).toEqual(f.target.sourceManifest);
+    expect(result.provenance.target).toMatchObject({ generation_id: owner.generationId, directory: owner.directory, storage_directory: owner.storageDirectory });
+    expect(generated(result.plan, "service.json")).toMatchObject({ installation: { generation_id: owner.generationId },
+      installation_directory: owner.directory, storage_directory: owner.storageDirectory, writable_workspace_roots: f.target.allowedRoots,
+      runtime: { node: f.target.node }, broker: { node: f.target.node } });
+  });
+  it("rejects a getter's first substituted manifest instead of accepting its later authentic value", () => {
+    const f = fixture(); let reads = 0;
+    const selected: ApplicationInitializationTarget = { ...f.target,
+      get sourceManifest() { return ++reads === 1 ? { ...f.target.sourceManifest, sha256: "sha256:" + "e".repeat(64) } : f.target.sourceManifest; },
+    };
+    expect(() => materializeApplicationInstallationPlanWithProvenance(f.token, selected, f.owner())).toThrow("Original initialization authority required");
+    expect(reads).toBe(1); expect(state.describe).toHaveBeenCalledOnce(); expect(state.read).not.toHaveBeenCalled();
+  });
   it("generates four bounded configurations for a fresh owner and retains every other source pin", () => {
     const f = fixture(), owner = f.owner(), before = new Map([...f.contents].map(([file, bytes]) => [file, Buffer.from(bytes)])), plan = f.run(owner);
     const service = generated(plan, "service.json"), runtime = generated(plan, "runtime/application-runtime.json");
