@@ -25,7 +25,7 @@ import { prepareWindowsReleaseStorage, assertWindowsReleaseStorage, auditWindows
 import { prepareResearchOptions, readResearchReceipt, type ResearchOptions } from "./research.js";
 import { readProductFile } from "./product-stage.js";
 import { readAuthenticatedProductSourceTransferV2, type AuthenticatedProductSourceTransferV2 } from "./product-source-semantic-client.js";
-import { prepareReleaseCapabilityReader, readPreparedProductReleaseRetry, type PreparedProductReleaseRetry, type PreparedReleaseProfile } from "./product-release.js";
+import { prepareReleaseCapabilityReaders, readReleaseCapabilitiesBatch, readPreparedProductReleaseRetry, type PreparedProductReleaseRetry, type PreparedReleaseProfile } from "./product-release.js";
 import { assertReleaseCapabilityContext, type ReleaseCapabilityReader } from "./release-capability-authority.js";
 import { readWindowsGuardianLocalRuntime, type PreparedWindowsGuardian } from "./owned/windows-runtime-guardian.js";
 import { readRecoveryValidationResearch } from "./windows-source-recovery.js";
@@ -116,7 +116,10 @@ function state(token: PreparedProductSourceRuntime, clean?: PreparedCleanDaemonC
   for (const fixed of current.fixed) sameIdentity(fixed);
   sameIdentity(current.ownerIdentity);
   for (const profile of current.options.profiles) assertLocallyPreparedVerificationProfile(profile);
-  for (const release of current.releases) if (!isDeepStrictEqual(release.readCapabilities(), release.capabilities)) fail("prepared release capability changed");
+  if (current.releases.length) {
+    const capabilities = readReleaseCapabilitiesBatch(current.releases.map(release => release.profile));
+    if (current.releases.some((release, index) => !isDeepStrictEqual(capabilities[index], release.capabilities))) fail("prepared release capability changed");
+  }
   retainedDestinations(current); // A crash before claim-file creation still fences an admitted operation.
   return current;
 }
@@ -227,11 +230,15 @@ function prepareSourceRuntime(input: ProductSourceRuntimeOptions, guardian?: Pre
   // Preserve original prepared profile identities. Only this trusted factory can
   // install the node reader; the serialized extension remains descriptive data.
   recordWindowsStartupPhase("source_releases");
-  const releases = Object.freeze((options.measurementV2?.releaseProfiles ?? []).map(profile => {
+  const releaseProfiles = options.measurementV2?.releaseProfiles ?? [];
+  for (const profile of releaseProfiles) {
     if (!options.profiles.includes(profile.verifier) || profile.verifier.capabilities?.measurement_plan_policy?.version !== 2) {
       fail("release association requires an original prepared local v2 verifier");
     }
-    const prepared = prepareReleaseCapabilityReader(profile), readCapabilities = prepared.readCapabilities;
+  }
+  const readers = releaseProfiles.length ? prepareReleaseCapabilityReaders(releaseProfiles) : [];
+  const releases = Object.freeze(releaseProfiles.map((profile, index) => {
+    const prepared = readers[index]!, readCapabilities = prepared.readCapabilities;
     const capabilities = freezeJson(ReleaseCapabilitiesV1Schema.parse(prepared.capabilities));
     const binding = capabilities.binding;
     if (binding.release_profile_id !== profile.id || binding.release_profile_digest !== profile.digest || binding.project_id !== profile.project_id

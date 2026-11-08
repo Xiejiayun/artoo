@@ -42,7 +42,7 @@ import { isPreparedCleanValidationRelease, readPreparedCleanValidationRelease, t
   type readImportedCleanValidationVerificationAdmission, type readImportedCleanValidationReviewVerificationAdmission } from "./windows-clean-validation-runtime.js";
 import { OwnedGitError } from "./owned/owned-git.js";
 import { ProtectedCommandError, runProtectedCommand, assertProtectedNativeCommandClosed } from "./protected-command.js";
-import { assertWindowsProcessBackend, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
+import { assertWindowsProcessBackend, assertWindowsProcessBackendImage, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import { assertWindowsBrowserProcessInstallation, createWindowsBrowserProcessDescriptor } from "./windows-browser-process-authority.js";
 import { writeWindowsBrowserPrivateContext } from "./windows-browser-private-context.js";
 import { VerificationCleanupError } from "./verification-cleanup-error.js";
@@ -160,12 +160,21 @@ export function attachWindowsVerificationBackend(profile: PreparedVerificationPr
 }
 /** The node uses this exact local object when binding an adapter permit. */
 export function readWindowsVerificationBackend(profile: PreparedVerificationProfile): PreparedWindowsProcessBackend | undefined {
-  const backend = windowsProfileBackends.get(profile);
-  if (!backend) return undefined;
-  if (!locallyPreparedProfiles.has(profile)) fail("Windows backend requires a locally prepared profile");
-  assertTrusted(profile);
-  assertWindowsProcessBackend(backend);
-  return backend;
+  return readWindowsVerificationBackends([profile])[0];
+}
+/** One synchronous read can audit a shared installation once. Every profile and
+ * subsequent image is still checked; no audit authority survives this call. */
+export function readWindowsVerificationBackends(profiles: readonly PreparedVerificationProfile[]): readonly (PreparedWindowsProcessBackend | undefined)[] {
+  const audited = new Set<PreparedWindowsProcessBackend>();
+  return Object.freeze(profiles.map(profile => {
+    const backend = windowsProfileBackends.get(profile);
+    if (!backend) return undefined;
+    if (!locallyPreparedProfiles.has(profile)) fail("Windows backend requires a locally prepared profile");
+    assertTrusted(profile);
+    if (audited.has(backend)) assertWindowsProcessBackendImage(backend);
+    else { assertWindowsProcessBackend(backend); audited.add(backend); }
+    return backend;
+  }));
 }
 function profileExecutionSupported(profile: PreparedVerificationProfile | undefined): boolean {
   return verificationSupported() || process.platform === "win32" && !!profile && readWindowsVerificationBackend(profile) !== undefined;
@@ -268,6 +277,7 @@ export function prepareVerificationProfiles(input: readonly VerificationProfile[
   if (input === undefined) return Object.freeze([]);
   if (!Array.isArray(input) || input.length > 64) fail("invalid profile list");
   const ids = new Set<string>();
+  const reusedWindowsProfiles: PreparedVerificationProfile[] = [];
   const prepared = input.map((raw: VerificationProfile) => {
     if (!raw || typeof raw !== "object") fail("invalid profile");
     text(raw.id, "profile id"); text(raw.project_id, "project id"); text(raw.workspace_root, "workspace root");
@@ -276,7 +286,7 @@ export function prepareVerificationProfiles(input: readonly VerificationProfile[
     // The runner passes these exact objects to its client. Reuse the protected
     // snapshot rather than reading a second configuration after advertising it.
     if (staticWebProfiles.has(raw as PreparedVerificationProfile) || windowsProfileBackends.has(raw as PreparedVerificationProfile)) {
-      if (windowsProfileBackends.has(raw as PreparedVerificationProfile)) readWindowsVerificationBackend(raw as PreparedVerificationProfile);
+      if (windowsProfileBackends.has(raw as PreparedVerificationProfile)) reusedWindowsProfiles.push(raw as PreparedVerificationProfile);
       else assertTrusted(raw as PreparedVerificationProfile);
       return raw as PreparedVerificationProfile;
     }
@@ -407,6 +417,9 @@ export function prepareVerificationProfiles(input: readonly VerificationProfile[
   if (prepared.length && writableRoots !== undefined) {
     for (const root of physicalWritableRoots(writableRoots)) for (const profile of prepared) assertVerificationAssetBoundary(profile, root);
   }
+  // No prepared object escapes before this fresh synchronous batch has checked
+  // every reused Windows profile and each distinct native installation.
+  if (reusedWindowsProfiles.length) readWindowsVerificationBackends(reusedWindowsProfiles);
   return Object.freeze(prepared);
 }
 

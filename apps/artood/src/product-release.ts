@@ -14,7 +14,7 @@ import { ProductReleaseRequestSchema, ProductReleaseReceiptSchema, ProductReleas
   productSourceRecoveryCheckpointDigestV1,
   type ReleaseCapabilitiesV1, type ReleaseAcceptanceBindingV1, type ContextPack, type ProductReleaseRequest,
   type ProductReleaseReceipt, type ProductReleaseHealthReport, type ProductReleaseRetrySourceV1, type RunVerificationPayload, type RunStartPayload } from "@artoo/domain";
-import { subjectManifest, verificationSupported, readVerificationCapabilities, readWindowsVerificationBackend, measureReleaseAcceptancePlan,
+import { subjectManifest, verificationSupported, readVerificationCapabilities, readWindowsVerificationBackend, readWindowsVerificationBackends, measureReleaseAcceptancePlan,
   type PreparedVerificationProfile, type VerificationProfile } from "./verification.js";
 import { assertAcceptedProductInputs, readProductFile } from "./product-stage.js";
 import { assertReleaseCapabilityContext, type ReleaseCapabilityReader } from "./release-capability-authority.js";
@@ -120,30 +120,60 @@ export function releaseProfileExecutionSupported(profile: PreparedReleaseProfile
 }
 /** Repeated reads keep physical directories and protected verifier inputs bound to preparation. */
 export function readReleaseCapabilities(profile: PreparedReleaseProfile): ReleaseCapabilitiesV1 | undefined {
-  const authority = preparedReleaseProfiles.get(profile);
-  if (!authority) fail("release capabilities require a locally prepared profile");
-  if (!authority.capabilities) return undefined;
-  if (!releaseProfileExecutionSupported(profile)) fail("release acceptance requires a locally qualified execution and storage profile");
-  assertStorage(profile);
-  for (const [path, saved] of [[profile.storage_root, authority.storage], [profile.verifier.workspace_root, authority.workspace]] as const) {
-    const now = lstatSync(path);
-    if (!now.isDirectory() || now.isSymbolicLink() || realpathSync.native(path) !== path || now.dev !== saved.dev || now.ino !== saved.ino) {
-      fail("release capability physical directory identity changed");
+  return readReleaseCapabilitiesBatch([profile])[0];
+}
+/** Only this synchronous batch shares a native installation audit. Each original
+ * release keeps its own storage, verifier and capability checks on every call. */
+export function readReleaseCapabilitiesBatch(profiles: readonly PreparedReleaseProfile[]): readonly (ReleaseCapabilitiesV1 | undefined)[] {
+  const entries = profiles.map(profile => {
+    const authority = preparedReleaseProfiles.get(profile);
+    if (!authority) fail("release capabilities require a locally prepared profile");
+    return { profile, authority };
+  });
+  const capable = entries.filter(entry => entry.authority.capabilities);
+  if (capable.length && !verificationSupported()) {
+    if (process.platform !== "win32" || capable.some(entry => !entry.authority.windows)) {
+      fail("release acceptance requires a locally qualified execution and storage profile");
+    }
+    const backends = readWindowsVerificationBackends(capable.map(entry => entry.profile.verifier));
+    for (const [index, { profile, authority }] of capable.entries()) {
+      assertWindowsReleaseStorage(authority.windows!.storage, profile.storage_root);
+      if (backends[index] !== authority.windows!.backend) fail("Windows release verifier backend changed");
     }
   }
-  const verifier = readVerificationCapabilities(profile.verifier);
-  if (!verifier || verifier.profile_digest !== authority.capabilities.binding.verification_profile_digest
-    || verifier.measurement_plan_policy?.version !== 2) fail("release capability verifier binding changed");
-  return authority.capabilities;
+  return Object.freeze(entries.map(({ profile, authority }) => {
+    if (!authority.capabilities) return undefined;
+    assertStorage(profile);
+    for (const [path, saved] of [[profile.storage_root, authority.storage], [profile.verifier.workspace_root, authority.workspace]] as const) {
+      const now = lstatSync(path);
+      if (!now.isDirectory() || now.isSymbolicLink() || realpathSync.native(path) !== path || now.dev !== saved.dev || now.ino !== saved.ino) {
+        fail("release capability physical directory identity changed");
+      }
+    }
+    const verifier = readVerificationCapabilities(profile.verifier);
+    if (!verifier || verifier.profile_digest !== authority.capabilities.binding.verification_profile_digest
+      || verifier.measurement_plan_policy?.version !== 2) fail("release capability verifier binding changed");
+    return authority.capabilities;
+  }));
 }
 /** Return the current checked value with its reader in one synchronous preparation.
  * Every later read performs the complete audit; the initial value is never cached for a future read. */
 export function prepareReleaseCapabilityReader(profile: PreparedReleaseProfile): Readonly<{
   capabilities: ReleaseCapabilitiesV1; readCapabilities: ReleaseCapabilityReader;
 }> {
-  const capabilities = readReleaseCapabilities(profile);
-  if (!capabilities) fail("release profile does not opt in to criterion acceptance");
-  return Object.freeze({ capabilities, readCapabilities: () => readReleaseCapabilities(profile)! });
+  return prepareReleaseCapabilityReaders([profile])[0]!;
+}
+/** Batch only the current checked values. Returned readers retain no batch
+ * audit state and perform a complete independent read on every invocation. */
+export function prepareReleaseCapabilityReaders(profiles: readonly PreparedReleaseProfile[]): readonly Readonly<{
+  capabilities: ReleaseCapabilitiesV1; readCapabilities: ReleaseCapabilityReader;
+}>[] {
+  const originals = [...profiles], capabilities = readReleaseCapabilitiesBatch(originals);
+  return Object.freeze(originals.map((profile, index) => {
+    const current = capabilities[index];
+    if (!current) fail("release profile does not opt in to criterion acceptance");
+    return Object.freeze({ capabilities: current, readCapabilities: () => readReleaseCapabilities(profile)! });
+  }));
 }
 export function createReleaseCapabilityReader(profile: PreparedReleaseProfile): ReleaseCapabilityReader {
   return prepareReleaseCapabilityReader(profile).readCapabilities;
