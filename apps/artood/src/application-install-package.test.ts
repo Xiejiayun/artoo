@@ -157,7 +157,7 @@ describe("fixed initialization package data materializer", () => {
     const membersDigest = (members: typeof f.runtime.source, directory: string) => digest(Buffer.from(JSON.stringify(members.map(item => ({
       logicalPath: item.logicalPath, file: { path: win32.relative(directory, item.file.path).split(win32.sep).join("/"), bytes: item.file.bytes, sha256: item.file.sha256 },
     })))));
-    for (const [group, field] of [["source", "source_members_digest"], ["artifacts", "artifact_members_digest"], ["toolchain", "toolchain_members_digest"] as const) {
+    for (const [group, field] of [["source", "source_members_digest"], ["artifacts", "artifact_members_digest"], ["toolchain", "toolchain_members_digest"]] as const) {
       expect(provenance.preserved[field]).toBe(membersDigest(f.runtime[group], root));
       expect(provenance.preserved[field]).toBe(membersDigest(runtime[group], owner.directory));
     }
