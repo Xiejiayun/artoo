@@ -84,7 +84,9 @@ final class AssistantConversationUITests: XCTestCase {
         let firstText = app.staticTexts["message.\(firstAnswer.id)"], secondText = app.staticTexts["message.\(secondAnswer.id)"]
         // Real run events remain between the answers in this feed. Verify and
         // capture each complete answer without requiring both to fit one screen.
-        try revealText(firstText)
+        // The Retry card follows the message history; a lazy List may omit
+        // the older answer until the test scrolls toward earlier messages.
+        try revealText(firstText, searchEarlierFirst: true)
         try require(firstText.label == firstAnswer.body, "The first answer must render its exact persisted content")
         try screenshot("Native assistant first completed answer")
         try revealText(secondText)
@@ -495,9 +497,9 @@ final class AssistantConversationUITests: XCTestCase {
             .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: view.midX, dy: view.minY + view.height * (upward ? 0.3 : 0.7))))
     }
     @MainActor
-    private func revealText(_ element: XCUIElement) throws {
+    private func revealText(_ element: XCUIElement, searchEarlierFirst: Bool = false) throws {
         for attempt in 0..<24 {
-            let view = try viewport(); var upward = attempt < 12
+            let view = try viewport(); var upward = searchEarlierFirst ? attempt >= 12 : attempt < 12
             if element.exists {
                 let rect = element.frame
                 if !rect.isEmpty && !rect.isNull && !rect.isInfinite {
