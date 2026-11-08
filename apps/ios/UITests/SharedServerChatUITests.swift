@@ -620,14 +620,13 @@ final class SharedServerChatUITests: XCTestCase {
             if instruction.id == finalInstruction.id {
                 try require(reply.id == synthesis.id, "The final instruction must belong to the validated plan synthesis")
                 // Move the entire disclosure above the fixed composer before
-                // asking XCTest for its activation point.
+                // recording it and verifying its one native touch.
                 try revealText(toggle)
-                try require(toggle.isEnabled && toggle.isHittable, "Show agent instructions must be reachable")
                 try attachConnectedScreenshot("Native planning instructions summarized before proposal")
-                toggle.tap()
+                try tapPlanningDisclosure(toggle, label: "Show agent instructions", state: "Collapsed")
                 try waitForValue(toggle, "Expanded", message: "Show agent instructions must expand the actual coordinator prompt")
                 // The brief is plain read-only text; the expanded original is selectable.
-                // Disclosure buttons retain enabled/hittable checks before each tap.
+                // Disclosure touches require stable, fully visible enabled controls.
                 try revealText(originalInstruction)
                 try require(Array(originalInstruction.label.utf8) == Array(instruction.body.utf8),
                             "Expanded coordinator instructions must match the exact persisted server body")
@@ -635,9 +634,8 @@ final class SharedServerChatUITests: XCTestCase {
                 try require(displayedHash == instructionHash, "The full displayed instruction must retain its server-body hash")
                 try attachConnectedScreenshot("Native original coordinator instruction expanded")
                 try revealText(toggle, preferTop: true)
-                try require(toggle.isEnabled && toggle.isHittable, "Hide agent instructions must be reachable")
                 try require(toggle.value as? String == "Expanded", "The coordinator prompt must remain expanded before testing Hide")
-                toggle.tap()
+                try tapPlanningDisclosure(toggle, label: "Hide agent instructions", state: "Expanded")
                 try waitForValue(toggle, "Collapsed", message: "Hide agent instructions must collapse the prompt again")
                 let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: originalInstruction)
                 try require(XCTWaiter.wait(for: [hidden], timeout: 5) == .completed, "Collapsing coordinator instructions must remove the original text")
@@ -687,16 +685,14 @@ final class SharedServerChatUITests: XCTestCase {
         planHierarchy.lifetime = .keepAlways; add(planHierarchy)
         let originalToggle = app.buttons["message.plan.original.\(synthesis.id)"]
         try revealText(originalToggle)
-        try require(originalToggle.isEnabled && originalToggle.isHittable, "Show original reply must be reachable")
         try waitForValue(originalToggle, "Collapsed", message: "The original-reply button must expose its collapsed state")
-        originalToggle.tap()
+        try tapPlanningDisclosure(originalToggle, label: "Show original reply", state: "Collapsed")
         try waitForValue(originalToggle, "Expanded", message: "Tapping the original-reply button must expand the exact reply")
         try revealText(originalBody); XCTAssertEqual(originalBody.label, synthesis.body, "Expanding the original must preserve the exact server reply")
         attachScreenshot("Native suggested plan with original reply expanded")
         try revealText(originalToggle, preferTop: true)
-        try require(originalToggle.isEnabled && originalToggle.isHittable, "Hide original reply must be reachable")
         try require(originalToggle.value as? String == "Expanded", "The original reply must remain expanded before testing Hide")
-        originalToggle.tap()
+        try tapPlanningDisclosure(originalToggle, label: "Hide original reply", state: "Expanded")
         try waitForValue(originalToggle, "Collapsed", message: "Tapping the original-reply button again must collapse the reply")
         let collapsed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: originalBody)
         try require(XCTWaiter.wait(for: [collapsed], timeout: 5) == .completed, "The original reply must collapse without changing the suggested plan")
@@ -1312,7 +1308,7 @@ final class SharedServerChatUITests: XCTestCase {
     private func revealText(_ element: XCUIElement, preferTop: Bool = false, attempts: Int = 24) throws {
         // Plain summaries and selectable originals can be visibly rendered yet
         // make XCTest's activation-point lookup throw. Read-only checks require
-        // visible content; disclosure callers separately check enabled/hittable.
+        // visible content; disclosure callers separately verify touch geometry.
         try require(attempts > 0 && attempts <= 24, "Read-only text scrolling must stay within its existing attempt limit")
         let list = app.collectionViews.firstMatch
         try require(list.exists, "The displayed text must belong to a visible list")
@@ -1376,6 +1372,57 @@ final class SharedServerChatUITests: XCTestCase {
                 .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: viewport.midX, dy: endY)))
         }
         try require(false, "Required text must be visibly rendered in the unobscured list")
+    }
+
+    @MainActor
+    private func tapPlanningDisclosure(_ button: XCUIElement, label: String, state: String) throws {
+        let identifier = button.identifier
+        try require(identifier.hasPrefix("message.planning.original.") || identifier.hasPrefix("message.plan.original."),
+                    "A disclosure touch must identify its exact planning message")
+        let matches = app.buttons.matching(identifier: identifier)
+        func finiteNonempty(_ frame: CGRect) -> Bool {
+            !frame.isEmpty && !frame.isNull && !frame.isInfinite
+                && [frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite }
+        }
+        func geometry() throws -> (bounds: CGRect, area: CGRect, frame: CGRect) {
+            try require(app.state == .runningForeground && app.navigationBars["Thread"].exists
+                        && !app.keyboards.firstMatch.exists && !app.alerts.firstMatch.exists && !app.sheets.firstMatch.exists,
+                        "The planning disclosure must remain in the foreground, unobscured Thread")
+            try require(matches.count == 1 && button.isEnabled && button.label == label && button.value as? String == state,
+                        "The exact planning disclosure must be unique, enabled and in its expected state")
+            let bounds = app.frame, list = app.collectionViews.firstMatch
+            let navigation = app.navigationBars["Thread"], tabs = app.tabBars.firstMatch
+            let connection = app.descendants(matching: .any).matching(identifier: "realtimeStatus").firstMatch
+            let composer = app.descendants(matching: .any).matching(identifier: "conversation.composer").firstMatch
+            try require(list.exists && tabs.exists && connection.exists && composer.exists,
+                        "The planning thread must retain its list, connection status and composer")
+            let listFrame = list.frame, navigationFrame = navigation.frame, tabsFrame = tabs.frame
+            let connectionFrame = connection.frame, composerFrame = composer.frame
+            try require([bounds, listFrame, navigationFrame, tabsFrame, connectionFrame, composerFrame].allSatisfy(finiteNonempty),
+                        "Every planning viewport boundary must have finite, nonempty geometry")
+            let rect = listFrame.intersection(bounds)
+            let top = max(rect.minY, max(navigationFrame.maxY, connectionFrame.maxY + 4))
+            let bottom = min(rect.maxY, min(tabsFrame.minY, composerFrame.minY - 4))
+            let area = CGRect(x: rect.minX + 2, y: top + 2, width: rect.width - 4, height: bottom - top - 4)
+            let frame = button.frame
+            try require(finiteNonempty(area) && bounds.contains(area) && finiteNonempty(frame) && area.contains(frame),
+                        "The whole planning disclosure must be reachable above the composer and below navigation")
+            return (bounds, area, frame)
+        }
+        let first = try geometry(), current = try geometry()
+        let diagnostic = XCTAttachment(string: "identifier: \(identifier)\nlabel: \(label)\nstate: \(state)\nfirst: \(first)\ncurrent: \(current)")
+        diagnostic.name = "Native planning disclosure geometry observations"
+        diagnostic.lifetime = .keepAlways; add(diagnostic)
+        try require(first.bounds == current.bounds && first.area == current.area && first.frame == current.frame,
+                    "The planning disclosure and its unobscured viewport must stay stable before the one touch")
+        // CI's failure screenshot and accessibility hierarchy show this complete
+        // 44-point button above the composer, while isHittable throws an invalid
+        // activation-point error. Use its verified frame, as for task Accept.
+        // Never retry the toggle: callers require the real state transition and
+        // exact original server body, then independently verify collapse.
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: current.frame.midX - current.bounds.minX,
+                                 dy: current.frame.midY - current.bounds.minY)).tap()
     }
 
     @MainActor
