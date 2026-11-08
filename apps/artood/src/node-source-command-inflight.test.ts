@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProductSourceOperationV1Schema, canonicalProductSourceTransferValueV1 as canonical,
   productSourceOperationDigestV1, importedDesignContinuationRequestDigestV1, type ProductSourceTransferReceiptV1 } from "@artoo/domain";
-import type { ImportedDesignContinuationCommand, NodeSideTransport, NodeToServerMessage, ProductSourceOperationCommand, RuntimeAdapter, ServerToNodeMessage } from "@artoo/protocol";
+import type { ImportedDesignContinuationCommand, ImportedProductReviewCommand, NodeSideTransport, NodeToServerMessage, ProductSourceOperationCommand, RuntimeAdapter, ServerToNodeMessage } from "@artoo/protocol";
 import { createNodeClient } from "./node-client.js";
 import * as recoveryClient from "./source-recovery-client.js";
 import * as recovery from "./windows-source-recovery.js";
@@ -31,7 +31,7 @@ afterEach(async () => {
 });
 
 function fixture(options: { holdAudit?: boolean; holdResult?: boolean; failResultOnce?: boolean; replay?: boolean; clean?: boolean;
-  repeatDuringAck?: number; design?: boolean } = {}) {
+  repeatDuringAck?: number; design?: boolean; review?: boolean } = {}) {
   let session: object | undefined = {};
   const originalSession = session, runtime = {} as recovery.PreparedWindowsSourceRecoveryRuntime, sourceRuntime = {} as source.PreparedProductSourceRuntime;
   let active = true, receive!: (message: ServerToNodeMessage) => void;
@@ -70,7 +70,17 @@ function fixture(options: { holdAudit?: boolean; holdResult?: boolean; failResul
   const persist = vi.spyOn(source, "persistProductSourceOperationResult").mockImplementation(() => {});
   const reserveDesign = vi.spyOn(source, "reserveImportedDesignContinuation").mockReturnValue({} as never);
   const persistDesign = vi.spyOn(source, "persistImportedDesignContinuationResult").mockImplementation(() => {});
-  const designRequest = options.design ? importedDesignRequestFixture().request : undefined;
+  const designRequest = options.design || options.review ? importedDesignRequestFixture().request : undefined;
+  const reviewCommand: ImportedProductReviewCommand | undefined = options.review && designRequest ? { kind: "command", id: "review-start",
+    type: "product.source.review.v1", idempotency_key: "review:start", payload: designRequest.review_request } : undefined;
+  const reserveReview = vi.spyOn(source, "reserveImportedProductReview").mockReturnValue({} as never);
+  const persistReview = vi.spyOn(source, "persistImportedProductReviewResult").mockImplementation(() => {});
+  const runReview = vi.spyOn(source, "runImportedProductReview").mockImplementation(async () => {
+    if (!designRequest) throw Error("Missing controlled review fixture"); return designRequest.review_result;
+  });
+  vi.spyOn(source, "readCompletedImportedProductReview").mockImplementation(() => {
+    if (!designRequest) throw Error("Missing controlled review fixture"); return designRequest.review_request;
+  });
   const designControl = designRequest ? { version: 1 as const, continuation_id: designRequest.continuation_id,
     request_digest: importedDesignContinuationRequestDigestV1(designRequest, sha), run_id: designRequest.run_start.run_id } : undefined;
   const designCommand: ImportedDesignContinuationCommand | undefined = designRequest ? { kind: "command", id: "design-start",
@@ -90,17 +100,23 @@ function fixture(options: { holdAudit?: boolean; holdResult?: boolean; failResul
   vi.spyOn(publication, "createProductReleaseExecutor").mockReturnValue(publisher as unknown as ReturnType<typeof publication.createProductReleaseExecutor>);
   const actualOperations = operations.createProductSourceOperationClient, actualDesigns = designs.createImportedDesignContinuationClient;
   const actualReviews = reviews.createImportedProductReviewClient;
-  let sourceController!: ReturnType<typeof actualOperations>, designController!: ReturnType<typeof actualDesigns>;
+  let sourceController!: ReturnType<typeof actualOperations>, designController!: ReturnType<typeof actualDesigns>, reviewController!: ReturnType<typeof actualReviews>;
   vi.spyOn(operations, "createProductSourceOperationClient").mockImplementation(args => {
-    sourceController = actualOperations(args); vi.spyOn(sourceController, "handle"); return sourceController;
+    sourceController = actualOperations(args); vi.spyOn(sourceController, "handle");
+    if (options.review && designRequest) {
+      const verified = designRequest.review_request.result;
+      if (verified.outcome !== "verified") throw Error("Review fixture requires the original verified source result");
+      vi.spyOn(sourceController, "readCompletedVerified").mockReturnValue(verified);
+    }
+    return sourceController;
   });
   vi.spyOn(designs, "createImportedDesignContinuationClient").mockImplementation(args => {
     designController = actualDesigns(args); vi.spyOn(designController, "handle"); return designController;
   });
   vi.spyOn(reviews, "createImportedProductReviewClient").mockImplementation(args => {
-    const original = actualReviews(args);
+    const original = reviewController = actualReviews(args); vi.spyOn(original, "handle");
     // H3's preceding accepted-review authority is a controlled boundary; the H3 controller remains real.
-    if (designRequest) vi.spyOn(original, "readCompletedAccepted").mockReturnValue(designRequest.review_result);
+    if (designRequest && !options.review) vi.spyOn(original, "readCompletedAccepted").mockReturnValue(designRequest.review_result);
     return original;
   });
   const payload = ProductSourceOperationV1Schema.parse({ version: 1, operation_id: "source-operation", kind: "upload",
@@ -129,7 +145,7 @@ function fixture(options: { holdAudit?: boolean; holdResult?: boolean; failResul
   const control = { version: 1 as const, operation_id: payload.operation_id, payload_digest: productSourceOperationDigestV1(payload, sha), request_digest: payload.request_digest };
   return { receive, command, control, handle, readRuntime, operation, upload, reserve, persist, reserveDesign, persistDesign,
     sourceController, designController, sent, sendAttempts, diagnostics, audit, uploadEntered, uploadDone, resultEntered, resultSend,
-    designCommand, designControl, designResult, runDesign, designEntered, designDone,
+    designCommand, designControl, designResult, runDesign, designEntered, designDone, reviewCommand, reviewController, reserveReview, persistReview, runReview,
     changeSession(next: object | undefined) { session = next; },
     get admissionsAtUpload() { return admissionsAtUpload; }, get designSignal() { return designSignal; } };
 }
@@ -221,6 +237,37 @@ describe("ordinary source delivery coalescing before NodeClient audit", () => {
     await waitFor(() => f.sent.some(message => message.kind === "product.source.operation.ack.v1" && message.command_id === "stop"));
     await tick(); f.receive(f.command); await waitFor(() => f.readRuntime.mock.calls.length === 5);
     expect(f.upload).toHaveBeenCalledTimes(1);
+  });
+
+  it("drains old H3 starts and receipts before native audits while the real design and Stop handlers still advance", async () => {
+    const f = fixture({ review: true }); f.receive(f.reviewCommand!);
+    await waitFor(() => f.sent.some(message => message.kind === "product.source.review.result.v1")); await tick();
+    const result = f.sent.find(message => message.kind === "product.source.review.result.v1");
+    if (result?.kind !== "product.source.review.result.v1") throw Error("Missing original controlled review result");
+    const control = { version: 1 as const, review_id: result.payload.review_id, request_digest: result.payload.request_digest };
+    const receipt: ServerToNodeMessage = { kind: "command", id: f.reviewCommand!.id, type: "product.source.review.receipt.v1",
+      idempotency_key: `receipt:${f.reviewCommand!.id}`, payload: control, status: "accepted", result_digest: sha(canonical(result.payload)) };
+    f.receive(receipt);
+    await waitFor(() => vi.mocked(f.reviewController.handle).mock.calls.some(([message]) => message.type === "product.source.review.receipt.v1"));
+    await expect(vi.mocked(f.reviewController.handle).mock.results.at(-1)!.value).resolves.toBe(true); await tick();
+    const audits = f.readRuntime.mock.calls.length, frames = f.sent.length;
+    for (let index = 0; index < 32; index++) {
+      f.receive(structuredClone(f.reviewCommand!)); await tick(); f.receive(structuredClone(receipt)); await tick();
+    }
+    expect(f.readRuntime).toHaveBeenCalledTimes(audits); expect(f.sent).toHaveLength(frames);
+    expect(f.runReview).toHaveBeenCalledTimes(1); expect(f.reserveReview).toHaveBeenCalledTimes(1); expect(f.persistReview).toHaveBeenCalledTimes(1);
+    f.receive(f.designCommand!); await f.designEntered.promise;
+    expect(f.runDesign).toHaveBeenCalledTimes(1); expect(f.readRuntime).toHaveBeenCalledTimes(audits + 1);
+    for (let index = 0; index < 64; index++) f.receive(structuredClone(f.reviewCommand!));
+    f.receive({ kind: "command", id: "design-stop", type: "product.source.design.stop.v1", idempotency_key: "design:stop", payload: f.designControl! });
+    await waitFor(() => f.designSignal?.aborted === true);
+    await waitFor(() => f.sent.some(message => message.kind === "product.source.design.result.v1" && message.command_id === "design-stop"));
+    expect(f.readRuntime).toHaveBeenCalledTimes(audits + 2); expect(f.runReview).toHaveBeenCalledTimes(1);
+    f.receive({ kind: "command", id: "review-stop", type: "product.source.review.stop.v1", idempotency_key: "review:stop", payload: control });
+    await waitFor(() => f.sent.some(message => message.kind === "product.source.review.result.v1" && message.command_id === "review-stop"));
+    expect(f.readRuntime).toHaveBeenCalledTimes(audits + 3);
+    f.receive(f.reviewCommand!); await waitFor(() => f.readRuntime.mock.calls.length === audits + 4);
+    expect(f.runReview).toHaveBeenCalledTimes(1);
   });
 
   it("lets the real controller replay a persisted result after the original send rejects without uploading again", async () => {
