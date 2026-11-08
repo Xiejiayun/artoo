@@ -124,8 +124,10 @@ npm run verify:desktop
   gate; a headless hosted runner is not claimed to verify installation/UI.
 
 Windows CI runs the complete Vitest inventory in two shards, each with two
-workers and the existing 75-minute job limit. `shared-checks` runs the other
-preview checks, including both browser suites and the production audit. The
+workers and the existing 75-minute job limit. The local shared suite has 35
+checks; `shared-checks` runs the 34 checks outside Vitest, including the fixed
+application host/runtime packaging fixtures, both browser suites and the
+production audit. Packaging fixtures do not qualify native runtime execution. The
 aggregate `shared` check succeeds only when both Vitest shards and
 `shared-checks` succeed; a failed, cancelled or skipped partition fails the
 aggregate. Local `npm run verify:preview` still runs the complete suite once.

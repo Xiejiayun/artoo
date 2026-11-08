@@ -22,6 +22,8 @@ const suites = {
     runNpm("production preview build", "run", "build:preview"),
     // Keep PGlite/WASM concurrency bounded on hosted runners.
     unitAndIntegration,
+    runNode("Fixed application service host packaging", "apps/artood/scripts/build-application-service-host.test.mjs"),
+    runNode("Fixed application runtime packaging", "apps/artood/scripts/build-application-runtime.test.mjs"),
     runNode("E2E report integrity", "scripts/e2e-report.test.mjs"),
     runNode("Native PNG evidence integrity", "scripts/png-evidence.test.mjs"),
     runNode("Exact native UI suite contract", "apps/ios/scripts/ui-suite-contract.test.mjs"),
