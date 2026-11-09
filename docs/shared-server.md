@@ -7,6 +7,10 @@ replicas, shared network storage and rolling concurrent instances are unsupporte
 The repository supplies configuration; it does not provision a host, register
 accounts, configure DNS, deploy credentials or prove a live deployment.
 
+For Azure control-plane hosting with multiple Windows execution computers, see
+[the Azure deployment guide](azure-deployment.md) and its Bicep resource template.
+It preserves this single-process storage and same-origin proxy model.
+
 ## Prepare the host
 
 Use an unprivileged `artoo` system user and group. Put the checked-out release
