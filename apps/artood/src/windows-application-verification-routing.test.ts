@@ -10,7 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplicationCapabilitiesV1 } from "@artoo/domain";
 import { applicationVerificationSupported, attachWindowsVerificationBackend, prepareVerificationProfiles,
   readVerificationCapabilities, readWindowsVerificationBackend, readPreparedApplicationVerificationProfile,
-  readFinalApplicationVerificationBinding, type VerificationProfile } from "./verification.js";
+  readFinalApplicationVerificationBinding, readWindowsApplicationVerificationBinding, assertLocallyPreparedVerificationProfile,
+  type VerificationProfile } from "./verification.js";
 import { prepareWindowsProcessBackend, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import type { ApplicationVerificationConfiguration, ApplicationVerificationFile,
   readApplicationVerificationProfile } from "./application-verification-profile.js";
@@ -39,7 +40,8 @@ afterEach(() => {
 function writeProtected(path: string, value: string): void {
   writeFileSync(path, value); readFileSync(path);
 }
-function fixture(kind: "ordinary" | "static" | "application", targetInput = false, remoteCapabilities?: unknown) {
+function fixture(kind: "ordinary" | "static" | "application", targetInput = false, remoteCapabilities?: unknown,
+  afterApplicationRead?: (saved: ReturnType<typeof readApplicationVerificationProfile>) => void) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-application-routing-"))); roots.push(root);
   const workspace = join(root, "workspace"), bundle = join(root, "bundle"), evidence = join(root, "evidence");
   for (const directory of [workspace, bundle, evidence]) mkdirSync(directory);
@@ -100,7 +102,16 @@ function fixture(kind: "ordinary" | "static" | "application", targetInput = fals
     application.prepare.mockImplementation((selection, writeRoots) => {
       expect(selection).toEqual(raw.application); expect(writeRoots).toEqual([workspace]); return prepared;
     });
-    application.read.mockImplementation(value => { expect(value).toBe(prepared); return saved; });
+    application.read.mockImplementation(value => {
+      expect(value).toBe(prepared);
+      // Controlled application admission still checks the fixture's real pinned
+      // bytes on every read, including the independent final asset-boundary read.
+      for (const file of files) {
+        const bytes = readFileSync(file.pin.path);
+        if (bytes.length !== file.pin.bytes || sha(bytes) !== file.pin.sha256) throw Error("Controlled application pin changed");
+      }
+      afterApplicationRead?.(saved); return saved;
+    });
     application.audit.mockImplementation(value => { expect(value).toBe(prepared); });
   }
   if (remoteCapabilities !== undefined) Object.assign(raw, { capabilities: remoteCapabilities });
@@ -110,6 +121,73 @@ function fixture(kind: "ordinary" | "static" | "application", targetInput = fals
 }
 
 describe("Windows application advertisement admission (controlled toolchain, not native qualification)", () => {
+  it("projects one audited application read into files, configuration and capabilities before the final asset audit", () => {
+    const f = fixture("application", true), facts = application.read.mock.results[0]!.value;
+    expect(application.read).toHaveBeenCalledTimes(2);
+    expect(f.profile.application?.configuration).toBe(facts.configuration);
+    expect(f.profile.capabilities?.application).toBe(facts.capabilities);
+    for (const file of facts.files) expect(f.profile.trustedFiles).toContainEqual({ path: file.pin.path, checksum: file.pin.sha256, size: file.pin.bytes });
+    expect(application.read).toHaveBeenLastCalledWith(application.prepare.mock.results[0]!.value);
+  });
+
+  it("still rejects a projected application pin changed before the final asset-boundary audit", () => {
+    expect(() => fixture("application", true, undefined, facts => writeProtected(facts.configuration.path, "changed after projection")))
+      .toThrow(/Controlled application pin changed/);
+    expect(application.read).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads only the three original identities with one full trusted and native audit", () => {
+    const f = fixture("application", true); attachWindowsVerificationBackend(f.profile, f.backend);
+    application.audit.mockClear(); application.read.mockClear(); f.installationAudit.mockClear();
+    const binding = readWindowsApplicationVerificationBinding(f.profile);
+    expect(binding).toEqual({ verifier: f.profile, application: application.prepare.mock.results[0]!.value, backend: f.backend });
+    expect(binding.verifier).toBe(f.profile); expect(binding.application).toBe(application.prepare.mock.results[0]!.value);
+    expect(binding.backend).toBe(f.backend); expect(Object.isFrozen(binding)).toBe(true);
+    expect(Object.keys(binding).sort()).toEqual(["application", "backend", "verifier"]);
+    expect(application.audit).toHaveBeenCalledOnce(); expect(f.installationAudit).toHaveBeenCalledOnce();
+    expect(application.read).not.toHaveBeenCalled();
+    expect(() => readWindowsApplicationVerificationBinding(binding as never)).toThrow(/locally prepared profile/);
+    expect(() => readWindowsApplicationVerificationBinding(JSON.parse(JSON.stringify(f.profile)))).toThrow(/locally prepared profile/);
+  });
+
+  it.each(["ordinary", "static", "application"] as const)("requires both private application and backend bindings for %s", kind => {
+    const f = fixture(kind, true);
+    if (kind !== "application") attachWindowsVerificationBackend(f.profile, f.backend);
+    expect(() => readWindowsApplicationVerificationBinding(f.profile)).toThrow(/original application verifier and native backend/);
+  });
+
+  it("preserves every existing public reader's separate audits", () => {
+    const f = fixture("application", true); attachWindowsVerificationBackend(f.profile, f.backend);
+    application.audit.mockClear(); f.installationAudit.mockClear();
+    assertLocallyPreparedVerificationProfile(f.profile);
+    expect(application.audit).toHaveBeenCalledTimes(1); expect(f.installationAudit).not.toHaveBeenCalled();
+    application.audit.mockClear(); readPreparedApplicationVerificationProfile(f.profile);
+    expect(application.audit).toHaveBeenCalledTimes(2); expect(f.installationAudit).not.toHaveBeenCalled();
+    application.audit.mockClear(); readWindowsVerificationBackend(f.profile);
+    expect(application.audit).toHaveBeenCalledTimes(1); expect(f.installationAudit).toHaveBeenCalledOnce();
+  });
+
+  it("stops before native admission if the full application audit rejects", () => {
+    const f = fixture("application", true); attachWindowsVerificationBackend(f.profile, f.backend);
+    f.installationAudit.mockClear(); application.audit.mockImplementation(() => { throw Error("Controlled application ACL rejection"); });
+    expect(() => readWindowsApplicationVerificationBinding(f.profile)).toThrow(/application ACL rejection/);
+    expect(f.installationAudit).not.toHaveBeenCalled();
+  });
+
+  it.each(["trusted-file", "application", "native-manifest", "native-member", "native-installation"] as const)
+    ("does not reuse a binding after an await and a changed %s", async changed => {
+      const f = fixture("application", true); attachWindowsVerificationBackend(f.profile, f.backend);
+      readWindowsApplicationVerificationBinding(f.profile); await Promise.resolve();
+      if (changed === "trusted-file") {
+        const selected = f.profile.trustedFiles.find(file => file.path.startsWith(f.root));
+        expect(selected).toBeDefined(); writeProtected(selected!.path, "changed trusted file");
+      } else if (changed === "application") application.audit.mockImplementation(() => { throw Error("Controlled application ACL rejection"); });
+      else if (changed === "native-manifest") writeProtected(join(f.bundle, "manifest.json"), "{}");
+      else if (changed === "native-member") writeProtected(join(f.bundle, "Artoo.WindowsProcessHost.exe"), "changed helper");
+      else f.installationAudit.mockImplementation(() => { throw Error("Controlled native installation ACL rejection"); });
+      expect(() => readWindowsApplicationVerificationBinding(f.profile)).toThrow();
+    });
+
   it("rejects an old pinned bundle before attaching or advertising an application profile", () => {
     const f = fixture("application");
     expect(f.profile.capabilities?.application).toBeDefined();

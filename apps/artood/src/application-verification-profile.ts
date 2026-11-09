@@ -6,8 +6,8 @@ import { ApplicationCapabilitiesV1Schema, type ApplicationCapabilitiesV1 } from 
 import { ApplicationRuntimeFilePinSchema, type ApplicationRuntimeFilePin } from "./application-runtime-process-protocol.js";
 import { readApplicationRuntimePin, loadApplicationRuntimeHelperManifest, ApplicationRuntimeVendorManifestSchema } from "./application-runtime-installation.js";
 import { loadApplicationCompilerConfiguration } from "./application-compiler-installation.js";
-import { prepareWindowsCodeInstallation, auditWindowsCodeInstallation, type PreparedWindowsCodeInstallation } from "./windows-code-installation.js";
-import { prepareWindowsReleaseStorage, auditWindowsReleaseStorage, type PreparedWindowsReleaseStorage } from "./windows-release-storage.js";
+import { prepareWindowsCodeInstallation, auditWindowsCodeInstallationBatch, type PreparedWindowsCodeInstallation } from "./windows-code-installation.js";
+import { prepareWindowsReleaseStorage, auditWindowsReleaseStorageBatch, type PreparedWindowsReleaseStorage } from "./windows-release-storage.js";
 import { assertCanonicalWindowsPath, assertNativeWindows, physicalWindowsDirectory, windowsPathsOverlap } from "./windows-local-acl.js";
 
 const pin = ApplicationRuntimeFilePinSchema;
@@ -152,8 +152,8 @@ export function prepareApplicationVerificationProfile(selection: ApplicationVeri
 /** Every operation boundary checks the original content, metadata and local ACL authority again. */
 export function assertApplicationVerificationProfile(token: PreparedApplicationVerificationProfile): void {
   const saved = profiles.get(token); if (!saved) fail("original local profile required");
-  for (const [directory, code] of saved.codes) auditWindowsCodeInstallation(code, directory);
-  for (const [directory, storage] of saved.storage) auditWindowsReleaseStorage(storage, directory);
+  auditWindowsCodeInstallationBatch([...saved.codes].map(([directory, code]) => ({ code, directory })));
+  auditWindowsReleaseStorageBatch([...saved.storage].map(([directory, storage]) => ({ storage, directory })));
   for (const file of saved.files) readApplicationRuntimePin(file.pin);
 }
 export function readApplicationVerificationProfile(token: PreparedApplicationVerificationProfile): Readonly<Omit<Saved, "codes" | "storage">> {

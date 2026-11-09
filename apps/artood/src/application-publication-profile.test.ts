@@ -13,7 +13,7 @@ type File = { bytes: Buffer; ino: bigint; ctime: bigint; links: bigint; symlink:
 const controlled = vi.hoisted(() => ({ files: new Map<string, File>(), directories: new Map<string, number>(),
   code: new Map<object, { directory: string; snapshot: string }>(), storage: new Map<object, { directory: string; identity: number }>(),
   backend: Object.freeze({}), application: Object.freeze({}), native: true, unsafe: "", afterRead: (_path: string) => {},
-  verifierAssert: vi.fn(), applicationRead: vi.fn(), applicationForVerifier: vi.fn(), backendForVerifier: vi.fn(),
+  verifierAssert: vi.fn(), applicationRead: vi.fn(), applicationForVerifier: vi.fn(), backendForVerifier: vi.fn(), bindingRead: vi.fn(),
   backendAssert: vi.fn(), inputCapability: vi.fn(), nativeDescribe: vi.fn(), codePrepare: vi.fn(), codeAudit: vi.fn(),
   storagePrepare: vi.fn(), storageAudit: vi.fn(), forbidden: vi.fn(),
 }));
@@ -27,8 +27,7 @@ vi.mock("node:fs", () => ({ lstatSync: (path: string) => {
   const file = controlled.files.get(path); if (!file) throw Error("Missing controlled file");
   return { size: BigInt(file.bytes.length), nlink: file.links, isFile: () => true, isSymbolicLink: () => file.symlink };
 } }));
-vi.mock("./verification.js", () => ({ assertLocallyPreparedVerificationProfile: controlled.verifierAssert,
-  readPreparedApplicationVerificationProfile: controlled.applicationForVerifier, readWindowsVerificationBackend: controlled.backendForVerifier }));
+vi.mock("./verification.js", () => ({ readWindowsApplicationVerificationBinding: controlled.bindingRead }));
 vi.mock("./application-verification-profile.js", () => ({ readApplicationVerificationProfile: controlled.applicationRead }));
 vi.mock("./windows-process-installation.js", () => ({ describeWindowsProcessInstallation: controlled.nativeDescribe }));
 vi.mock("./owned/windows-owned-process.js", () => ({ assertWindowsProcessBackend: controlled.backendAssert,
@@ -115,6 +114,16 @@ beforeEach(() => {
   controlled.backendForVerifier.mockImplementation((actual: unknown) => { controlled.verifierAssert(actual); return controlled.backend; });
   controlled.applicationRead.mockImplementation((actual: unknown) => { if (actual !== controlled.application) throw Error("Original application profile required"); return application; });
   controlled.backendAssert.mockImplementation((actual: unknown) => { if (actual !== controlled.backend) throw Error("Original native backend required"); });
+  controlled.bindingRead.mockImplementation((actual: unknown) => {
+    controlled.verifierAssert(actual);
+    const application = controlled.applicationForVerifier(actual), backend = controlled.backendForVerifier(actual);
+    if (!application || !backend) throw Error("original application verifier and native backend required");
+    // The real reader's private registrations/native admission are exercised in
+    // windows-application-verification-routing.test.ts. This stand-in retains the
+    // original backend audit while allowing explicit caller-side identity faults.
+    controlled.backendAssert(controlled.backend);
+    return Object.freeze({ verifier: actual, application, backend });
+  });
   controlled.inputCapability.mockImplementation(controlled.backendAssert);
   controlled.nativeDescribe.mockImplementation((actual: unknown) => { controlled.backendAssert(actual);
     return { directory: win32.dirname(manifestPath), manifestSha256: pin(manifestPath).sha256, writableWorkspaceRoots: roots }; });
@@ -148,6 +157,53 @@ beforeEach(() => {
 afterEach(() => { Object.defineProperty(process, "arch", architecture); expect(controlled.forbidden).not.toHaveBeenCalled(); });
 
 describe("protected local application publication profile", () => {
+  it("keeps the application read immediately after a preparation binding's native audit", () => {
+    let changed = false;
+    const originalRead = controlled.applicationRead.getMockImplementation()!;
+    controlled.applicationRead.mockImplementation(value => {
+      if (changed) throw Error("Controlled application changed during native audit"); return originalRead(value);
+    });
+    controlled.backendAssert.mockImplementationOnce(actual => { expect(actual).toBe(controlled.backend); changed = true; });
+    expect(() => prepare()).toThrow(/application changed during native audit/);
+    expect(controlled.codePrepare).not.toHaveBeenCalled(); expect(controlled.storagePrepare).not.toHaveBeenCalled();
+  });
+
+  it("keeps the application read after a later binding and latches its integrity rejection", () => {
+    const token = prepare(); let changed = false;
+    const originalRead = controlled.applicationRead.getMockImplementation()!;
+    controlled.applicationRead.mockImplementation(value => {
+      if (changed) throw Error("Controlled application changed during native audit"); return originalRead(value);
+    });
+    controlled.backendAssert.mockImplementationOnce(actual => { expect(actual).toBe(controlled.backend); changed = true; });
+    expect(() => assertApplicationPublicationProfile(token)).toThrow(/application changed during native audit/);
+    changed = false;
+    expect(() => assertApplicationPublicationProfile(token)).toThrow(/original current/);
+  });
+
+  it.each(["code", "storage", "configuration"])("keeps the final application audit after the %s boundary", stage => {
+    const token = prepare(); let changed = false;
+    const originalRead = controlled.applicationRead.getMockImplementation()!;
+    controlled.applicationRead.mockImplementation(value => {
+      if (changed) throw Error("Controlled application changed after binding"); return originalRead(value);
+    });
+    if (stage === "configuration") controlled.afterRead = path => { if (path === configurationPath) changed = true; };
+    else {
+      const audit = stage === "code" ? controlled.codeAudit : controlled.storageAudit, original = audit.getMockImplementation()!;
+      audit.mockImplementationOnce((...args) => { original(...args); changed = true; });
+    }
+    expect(() => assertApplicationPublicationProfile(token)).toThrow(/application changed after binding/);
+    changed = false; controlled.afterRead = () => {};
+    expect(() => assertApplicationPublicationProfile(token)).toThrow(/original current/);
+  });
+
+  it("keeps the second code audit after native manifest reads", () => {
+    const token = prepare();
+    controlled.afterRead = path => { if (path === manifestPath) controlled.files.get(configurationPath)!.ino++; };
+    expect(() => assertApplicationPublicationProfile(token)).toThrow(/inventory or ACL/);
+    controlled.afterRead = () => {}; controlled.files.get(configurationPath)!.ino--;
+    expect(() => assertApplicationPublicationProfile(token)).toThrow(/original current/);
+  });
+
   it("rejects an active owner before auditing without poisoning the original integrity token", () => {
     const token = prepare(), reservation = claimApplicationPublicationResources(token), owner = {};
     withApplicationPublicationAuditScope(reservation, () => beginApplicationPublicationOwner(reservation, owner));

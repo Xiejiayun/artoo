@@ -7,7 +7,7 @@ import { ApplicationPublicationCapabilitiesV1Schema, ApplicationPublicationLimit
 import { ApplicationRuntimeFilePinSchema, APPLICATION_RUNTIME_PROCESS_LIMITS, type ApplicationRuntimeFilePin } from "./application-runtime-process-protocol.js";
 import { readApplicationRuntimePin } from "./application-runtime-installation.js";
 import { readApplicationVerificationProfile, type PreparedApplicationVerificationProfile } from "./application-verification-profile.js";
-import { assertLocallyPreparedVerificationProfile, readPreparedApplicationVerificationProfile, readWindowsVerificationBackend,
+import { readWindowsApplicationVerificationBinding,
   type PreparedVerificationProfile } from "./verification.js";
 import { describeWindowsProcessInstallation } from "./windows-process-installation.js";
 import { assertWindowsProcessBackend, assertWindowsProcessTargetInputCapability, assertWindowsProcessTargetControlCapability,
@@ -81,9 +81,8 @@ export function prepareApplicationPublicationProfile(selection: ApplicationPubli
   if (!input || Object.keys(input).some(key => !["nodeId", "verifier", "backend"].includes(key))) fail("fixed original local inputs required");
   id.parse(input.nodeId);
   const verifier = input.verifier, backend = input.backend;
-  assertLocallyPreparedVerificationProfile(verifier);
-  const application = readPreparedApplicationVerificationProfile(verifier);
-  if (!application || readWindowsVerificationBackend(verifier) !== backend) fail("original application verifier and native backend required");
+  const binding = readWindowsApplicationVerificationBinding(verifier), application = binding.application;
+  if (binding.verifier !== verifier || binding.backend !== backend) fail("original application verifier and native backend required");
   const original = readApplicationVerificationProfile(application), roots = rootsOf(original.roots);
   const workspace = physicalWindowsDirectory(verifier.workspace_root);
   if (!roots.some(root => { const relative = win32.relative(root, workspace);
@@ -161,9 +160,9 @@ export function assertApplicationPublicationProfile(token: PreparedApplicationPu
   const saved = profiles.get(token); if (!saved || saved.failed) fail("original current local publication profile required");
   assertApplicationPublicationAuditAvailable(token);
   try {
-    assertNative(); assertLocallyPreparedVerificationProfile(saved.verifier);
-    if (readPreparedApplicationVerificationProfile(saved.verifier) !== saved.application
-      || readWindowsVerificationBackend(saved.verifier) !== saved.backend) fail("original verifier authority changed");
+    assertNative(); const binding = readWindowsApplicationVerificationBinding(saved.verifier);
+    if (binding.verifier !== saved.verifier || binding.application !== saved.application
+      || binding.backend !== saved.backend) fail("original verifier authority changed");
     const application = readApplicationVerificationProfile(saved.application), native = describeWindowsProcessInstallation(saved.backend);
     if (!samePin(application.configuration, saved.config.application_configuration)
       || application.capabilities.contract_digest !== saved.config.application_contract_digest

@@ -188,6 +188,24 @@ export function readWindowsVerificationBackends(profiles: readonly PreparedVerif
     return backend;
   }));
 }
+/** One synchronous composition of original local identities, not an audit permit.
+ * Publication still reads the application after the backend audit and repeats its
+ * complete checks at the later operation boundaries. Nothing is cached or accepted
+ * back from this tuple; the ordinary public readers retain their separate audits. */
+export function readWindowsApplicationVerificationBinding(profile: PreparedVerificationProfile): Readonly<{
+  verifier: PreparedVerificationProfile;
+  application: PreparedApplicationVerificationProfile;
+  backend: PreparedWindowsProcessBackend;
+}> {
+  if (!locallyPreparedProfiles.has(profile)) fail("application binding requires a locally prepared profile");
+  const application = applicationProfiles.get(profile), backend = windowsProfileBackends.get(profile);
+  if (!application || !backend) fail("original application verifier and native backend required");
+  assertTrusted(profile);
+  assertWindowsProcessBackend(backend);
+  if (applicationProfiles.get(profile) !== application || windowsProfileBackends.get(profile) !== backend)
+    fail("original application verification binding changed");
+  return Object.freeze({ verifier: profile, application, backend });
+}
 function profileExecutionSupported(profile: PreparedVerificationProfile | undefined): boolean {
   return verificationSupported() || process.platform === "win32" && !!profile && readWindowsVerificationBackend(profile) !== undefined;
 }
@@ -396,15 +414,19 @@ export function prepareVerificationProfiles(input: readonly VerificationProfile[
       fail("v2 measurement-plan policy requires installed v3 browser checks");
     }
     let application: PreparedApplicationVerificationProfile | undefined;
+    let applicationFacts: ReturnType<typeof readApplicationVerificationProfile> | undefined;
     if (raw.application !== undefined) {
       if (!writableRoots?.length || measurementPolicy || !staticWeb.size || [...staticWeb.values()].some(check => check.contract.version !== 3)
         || !subjects.includes("product") || !subjects.some(path => path === ".artoo" || path === ".artoo/product")) {
         fail("application verification requires complete local write roots, v3 prototype checks and full product subjects without measurement policy");
       }
       application = prepareApplicationVerificationProfile(raw.application, [...new Set([...writableRoots, ...input.map(item => realpathSync.native(item.workspace_root))])]);
-      for (const file of readApplicationVerificationProfile(application).files) files.set(file.pin.path, { path: file.pin.path, checksum: file.pin.sha256, size: file.pin.bytes });
+      // This synchronous projection only builds owned maps, JSON and digests.
+      // Preparation's own final audit and the asset-boundary audit below remain.
+      applicationFacts = readApplicationVerificationProfile(application);
+      for (const file of applicationFacts.files) files.set(file.pin.path, { path: file.pin.path, checksum: file.pin.sha256, size: file.pin.bytes });
     }
-    const applicationSelection = application ? Object.freeze({ version: 1 as const, configuration: readApplicationVerificationProfile(application).configuration }) : undefined;
+    const applicationSelection = applicationFacts ? Object.freeze({ version: 1 as const, configuration: applicationFacts.configuration }) : undefined;
     const value: VerificationProfile = { id: raw.id, project_id: raw.project_id, workspace_root: root,
       commands, required_files: Object.freeze(required) as unknown as string[], subject_paths: Object.freeze(subjects) as unknown as string[],
       ...(applicationSelection ? { application: applicationSelection } : {}),
@@ -417,7 +439,7 @@ export function prepareVerificationProfiles(input: readonly VerificationProfile[
       checks: Object.freeze([...staticWeb].map(([command_id, prepared]) => Object.freeze({ command_id,
         config_digest: prepared.config_digest, contract_digest: prepared.contract_digest, contract: prepared.contract }))) as unknown as VerificationCapabilities["checks"],
       ...(measurementPolicy ? { measurement_plan_policy: measurementPolicy } : {}),
-      ...(application ? { application: readApplicationVerificationProfile(application).capabilities } : {}) }) : undefined;
+      ...(applicationFacts ? { application: applicationFacts.capabilities } : {}) }) : undefined;
     const profile = Object.freeze({ ...value, commands: Object.freeze(commands) as unknown as typeof commands,
       trustedFiles, digest, ...(capabilities ? { capabilities } : {}) });
     const configurationFile = profileConfigurationFiles.get(raw);
