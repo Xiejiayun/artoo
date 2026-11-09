@@ -15,6 +15,13 @@ are covered by [the preview operations guide](docs/preview-operations.md).
 Historical milestone records below are not evidence that the current preview
 has passed its release gates.
 
+For the Web and Windows daemon delivery, see the
+[current feature and validation record](docs/release-convergence-2026-11-09.md),
+[Windows npm daemon](scripts/npm-daemon/README.md), and
+[Web deployment plan](docs/web-deployment-plan.zh-CN.md). The npm candidate is
+`@jiayunxie/artood@0.1.0-rc.1`; its publication status is recorded separately from
+local installation checks and experimental autonomous application publication.
+
 Mac and iOS verification commands and screenshot-report locations are in
 [the Apple client E2E guide](docs/apple-client-e2e.md). Remaining commercial
 distribution and deployment requirements are tracked in

@@ -207,16 +207,16 @@ curl --silent --output /dev/null --write-out '%{http_code}\n' https://artoo.exam
 
 ## 7. 每台 Windows 电脑接入与不同 Agent
 
-所有电脑输入同一 origin：`https://artoo.example.com`。重复以下步骤，每台电脑保留自己的身份、工作目录和模型凭证：
+所有电脑输入同一 origin：`https://artoo.example.com`。npm daemon 的安装、无桌面配对和启动步骤见 [Web 与 Windows daemon 部署方案](web-deployment-plan.zh-CN.md#5-windows-daemon-接入)。每台电脑选择 npm CLI 或桌面 worker 其中一个作为同一设备的执行入口，不同时启动两个 daemon。重复以下步骤，每台电脑保留自己的身份、工作目录和模型凭证：
 
-1. 安装经过本地验证的同版 Windows Artoo 包，核对 SHA-256/签名状态。当前内部包是否签名以实际发行记录为准；不要把源码检查说成安装版验收。首次只能使用控制界面也不影响 Azure server。
-2. **该设备的实际使用者以本人受信账号在 Web 登录**，在 Settings → Connect a device 选择 Windows，生成自己的单次配对码，再在该电脑输入 origin、设备名和配对码。配对码携带生成者身份/权限，不让 owner 为其他成员代生成；同一人可以为自己的多台电脑分别配对。不要复制其他电脑的凭证或把配对码发到日志。
-3. 若该设备尚无 computer 绑定，owner/admin 在 Settings → Devices 选择 **Enroll computer** 并确认。配对与登记执行电脑是两个步骤；未登记不能启动 worker。
-4. Windows Settings → This computer 配置本机 CLI 的绝对路径、允许工作目录和运行时，再启动 worker。Windows 凭证由该账户的 Electron `safeStorage` 保护。每个工作根必须实际存在；`C:\Products` 是该电脑的路径，不是 Azure VM 的共享盘。
+1. npm 路径使用 Node 24+、npm 11+。本次候选为 `@jiayunxie/artood@0.1.0-rc.1`，**尚未发布**；待实际发布并验证后使用该固定版本安装。桌面路径仍安装经过本地验证的同版 Windows Artoo 包，核对 SHA-256/签名状态。npm 发布不等于 Windows 安装程序签名；首次只能使用控制界面也不影响 Azure server。
+2. **该设备的实际使用者以本人受信账号在 Web 登录**，在 Settings → Connect a device 选择 Windows，生成自己的单次配对码。桌面端输入 origin、设备名和配对码；npm CLI 当前没有 `pair` 子命令，按部署方案调用现有 `/api/v1/devices/claim` 接口领取自己的设备凭证。配对码携带生成者身份/权限，不让 owner 为其他成员代生成；同一人可以为自己的多台电脑分别配对。不要复制其他电脑的凭证或把配对码、返回 token 发到日志。
+3. 若该设备尚无 computer 绑定，owner/admin 在 Settings → Devices 选择 **Enroll computer** 并确认。配对与登记执行电脑是两个步骤；未登记不能启动 worker。npm 配置中的 `ARTOO_NODE_ID` 使用登记后的 `computer_id`，不能使用 `device.id`。
+4. npm 路径把节点凭证和 `ARTOO_*` 设置放在工作目录之外、仅本机账户和管理员可读的环境文件中，通过 Node 的 `--env-file` 启动 `artood start`。桌面路径在 Settings → This computer 配置本机 CLI 的绝对路径、允许工作目录和运行时，再启动 worker；只有桌面保存的凭证使用 Electron `safeStorage`，npm 环境文件没有自动加密。每个工作根必须实际存在；`C:\Products` 是该电脑的路径，不是 Azure VM 的共享盘。
 5. **owner/admin** 在 **Computers** 页面确认 computer、runtime 的当前状态，打开 **Register agent workspace**，选择该电脑的 runtime 和本地 workspace，点击 **Register agent**，再在 Agents 查看实例。普通成员没有注册入口，需由 owner/admin 完成这一步。实例绑定 **computer + runtime + workspace**；多个 Agent 可以在同一电脑，也可以分布不同电脑。名称建议包含电脑/职责，例如 `pc-a-builder`、`pc-b-reviewer`。独立审核需要不同 Agent 身份，不能以相同身份换一个显示名称代替。
 6. 各电脑独立配置模型。例如 A 使用本机 Aerial `http://127.0.0.1:18181/v1` 与其实际可用 Codex 模型；B 可使用自己的 Aerial/另一模型，或配置并登录 Claude CLI。模型名以该电脑供应方目录和实际调用为准。`127.0.0.1` 永远指当前执行电脑，Azure 和 B 不能通过 A 的 loopback 地址使用 Aerial。
 7. 在每台电脑完成一次受限小任务，记录实际选择的电脑/Agent/runtime、模型可用性、产物归属及正常取消。CLI 文件存在只证明程序被发现，不证明模型鉴权或模型名称有效。
-8. 自治开发另需每个执行/审核节点的受保护验证 profile、原生 helper、浏览器、源码交接与发布配置；按 [Windows 原生说明](windows-native-development.md) 和 [来源节点配置](windows-native-source-nodes.md) 准备。普通节点上线不等于具备全部自治阶段资格。配置、helper、验证器和制品证据应在 Agent 可写根之外。
+8. 自治开发另需每个执行/审核节点的受保护验证 profile、原生 helper、浏览器、源码交接与发布配置；按 [Windows 原生说明](windows-native-development.md) 和 [来源节点配置](windows-native-source-nodes.md) 准备。npm CLI 的 `artood start --windows-supervised` 复用这些准入检查；安装包带有 helper 不会自动创建本机 profile 或授予全部自治能力。配置、helper、验证器和制品证据应在 Agent 可写根之外。
 
 **网络：**执行电脑仅需要出站 DNS 和 TCP 443 到 Artoo 域名，以及模型供应方所需出站连接。控制/节点 WebSocket、源码传输与制品上传通过同一 HTTPS origin。无需给执行电脑做公网 NAT/入站端口映射，也不开放 18181。默认方案 Caddy 与 server 同机，`ARTOO_TRUSTED_PROXIES=127.0.0.1`；不可用 `*` 或某个宽 CIDR 替代。
 

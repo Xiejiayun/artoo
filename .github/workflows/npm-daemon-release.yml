@@ -1,0 +1,193 @@
+name: Stage Windows daemon on npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Draft release containing the validated Windows npm tarball
+        required: true
+        type: string
+      version:
+        description: Exact package version, for example 0.1.0-rc.1
+        required: true
+        type: string
+      sha256:
+        description: SHA-256 of the exact validated tgz, without a prefix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-daemon-staging
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      PACKAGE_VERSION: ${{ inputs.version }}
+      PACKAGE_SHA256: ${{ inputs.sha256 }}
+      STAGING_ROOT: ${{ runner.temp }}/artoo-npm-stage-${{ github.run_id }}-${{ github.run_attempt }}
+      NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/artoo-npm-stage-${{ github.run_id }}-${{ github.run_attempt }}/user.npmrc
+      NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/artoo-npm-stage-${{ github.run_id }}-${{ github.run_attempt }}/global.npmrc
+      NPM_CONFIG_CACHE: ${{ runner.temp }}/artoo-npm-stage-${{ github.run_id }}-${{ github.run_attempt }}/npm-cache
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+      NPM_CONFIG_LOGS_MAX: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Validate inputs and create isolated npm configuration
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { appendFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          assert.match(process.env.RELEASE_TAG, /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
+          assert.match(process.env.PACKAGE_VERSION, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/);
+          assert.match(process.env.PACKAGE_SHA256, /^[0-9a-fA-F]{64}$/);
+          const asset = `jiayunxie-artood-${process.env.PACKAGE_VERSION}.tgz`;
+          appendFileSync(process.env.GITHUB_ENV, `PACKAGE_ASSET=${asset}\nPACKAGE_TARBALL=${join(process.env.STAGING_ROOT, asset)}\n`);
+          NODE
+          umask 077
+          mkdir -m 700 -- "$STAGING_ROOT"
+          touch -- "$NPM_CONFIG_USERCONFIG" "$NPM_CONFIG_GLOBALCONFIG"
+          npm install --global npm@11.20.0 --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/
+          npm --version
+
+      - name: Download the exact asset from this repository's draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,targetCommitish,assets > "$STAGING_ROOT/release.json"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { appendFileSync, readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const release = JSON.parse(readFileSync(join(process.env.STAGING_ROOT, 'release.json'), 'utf8'));
+          assert.equal(release.isDraft, true, 'Source release must still be a draft');
+          assert.equal(release.tagName, process.env.RELEASE_TAG);
+          assert.equal(release.assets.filter(asset => asset.name === process.env.PACKAGE_ASSET).length, 1);
+          assert.match(release.targetCommitish, /^[A-Za-z0-9._/-]+$/);
+          appendFileSync(process.env.GITHUB_ENV, `RELEASE_TARGET=${release.targetCommitish}\n`);
+          NODE
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$PACKAGE_ASSET" --dir "$STAGING_ROOT"
+
+      - name: Bind the draft release to main history and verify package bytes
+        run: |
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}" > "$STAGING_ROOT/source-commit.txt"
+          else
+            [[ "$RELEASE_TARGET" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'A draft without an existing tag must target an immutable commit SHA.' >&2; exit 1; }
+            printf '%s\n' "$RELEASE_TARGET" > "$STAGING_ROOT/source-commit.txt"
+          fi
+          read -r source_commit < "$STAGING_ROOT/source-commit.txt"
+          git merge-base --is-ancestor "$source_commit" "$GITHUB_SHA"
+          printf 'SOURCE_COMMIT=%s\n' "$source_commit" >> "$GITHUB_ENV"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { readFileSync } from 'node:fs';
+          const actual = createHash('sha256').update(readFileSync(process.env.PACKAGE_TARBALL)).digest('hex');
+          assert.equal(actual, process.env.PACKAGE_SHA256.toLowerCase(), 'Tarball differs from validated SHA-256');
+          NODE
+          tar -tzf "$PACKAGE_TARBALL" > "$STAGING_ROOT/tar-members.txt"
+          test "$(grep -Fxc 'package/package.json' "$STAGING_ROOT/tar-members.txt")" -eq 1
+          tar -xOzf "$PACKAGE_TARBALL" package/package.json > "$STAGING_ROOT/package.json"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const pkg = JSON.parse(readFileSync(join(process.env.STAGING_ROOT, 'package.json'), 'utf8'));
+          assert.equal(pkg.name, '@jiayunxie/artood');
+          assert.equal(pkg.version, process.env.PACKAGE_VERSION);
+          assert.notEqual(pkg.private, true);
+          assert.equal(pkg.type, 'module');
+          assert.deepEqual(pkg.bin, { artood: 'bin/artood.mjs' });
+          assert.deepEqual(pkg.os, ['win32']);
+          assert.deepEqual(pkg.cpu, ['x64']);
+          assert.deepEqual(pkg.publishConfig, { access: 'public', registry: 'https://registry.npmjs.org/' });
+          for (const key of ['scripts', 'dependencies', 'devDependencies', 'optionalDependencies', 'workspaces']) assert.equal(pkg[key], undefined, `Unexpected ${key}`);
+          assert.equal(pkg.artoo?.format, 'artoo.npm-daemon.v1');
+          assert.match(pkg.artoo.runtimeManifestSha256, /^sha256:[a-f0-9]{64}$/);
+          console.log(`Verified ${pkg.name}@${pkg.version}; no candidate code has been executed.`);
+          NODE
+
+      - name: Log in through the official npm website (open the printed URL in Edge)
+        timeout-minutes: 16
+        working-directory: ${{ runner.temp }}
+        run: |
+          timeout --signal=INT --kill-after=10s 15m npm login --auth-type=web --browser=false --registry=https://registry.npmjs.org/
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const config = readFileSync(process.env.NPM_CONFIG_USERCONFIG, 'utf8');
+          const token = /^\/\/registry\.npmjs\.org\/:_authToken\s*=\s*(\S+)\s*$/m.exec(config)?.[1];
+          assert.ok(token, 'The official login did not save its temporary session');
+          console.log(`::add-mask::${token}`);
+          NODE
+          npm whoami --registry=https://registry.npmjs.org/ > "$STAGING_ROOT/account.txt"
+          read -r account < "$STAGING_ROOT/account.txt"
+          [[ "$account" == 'jiayunxie' ]] || { echo 'This workflow only stages packages for npm account jiayunxie.' >&2; exit 1; }
+
+      - name: Stage the validated tarball for separate browser approval
+        timeout-minutes: 5
+        working-directory: ${{ runner.temp }}
+        run: |
+          npm stage publish "$PACKAGE_TARBALL" --tag next --access public --ignore-scripts --registry=https://registry.npmjs.org/ --json > "$STAGING_ROOT/staged.json"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { appendFileSync, readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const output = JSON.parse(readFileSync(join(process.env.STAGING_ROOT, 'staged.json'), 'utf8'));
+          assert.deepEqual(Object.keys(output), ['@jiayunxie/artood']);
+          const result = output['@jiayunxie/artood'];
+          assert.equal(result.name, '@jiayunxie/artood');
+          assert.equal(result.version, process.env.PACKAGE_VERSION);
+          assert.match(result.stageId, /^[A-Za-z0-9._:-]{1,256}$/);
+          const summary = `Staged **${result.name}@${result.version}** with tag **next**.\n\nStage ID: \`${result.stageId}\`\n\nSource commit: \`${process.env.SOURCE_COMMIT}\`\n\nTarball SHA-256: \`${process.env.PACKAGE_SHA256.toLowerCase()}\`\n\nFinal publication is pending separate approval and 2FA in npm's Staged Packages page. This workflow does not approve it.\n`;
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+          console.log(`Staged ${result.name}@${result.version}, stage ID ${result.stageId}. Browser approval is still required.`);
+          NODE
+
+      - name: Revoke this npm session and remove its temporary configuration
+        if: always()
+        timeout-minutes: 2
+        working-directory: ${{ runner.temp }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { existsSync, lstatSync, realpathSync } from 'node:fs';
+          import { join, resolve } from 'node:path';
+          const expected = join(process.env.RUNNER_TEMP, `artoo-npm-stage-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`);
+          assert.equal(resolve(process.env.STAGING_ROOT), resolve(expected));
+          if (existsSync(expected)) {
+            assert.equal(lstatSync(expected).isSymbolicLink(), false);
+            assert.equal(realpathSync(expected), join(realpathSync(process.env.RUNNER_TEMP), `artoo-npm-stage-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`));
+          }
+          NODE
+          cleanup_status=0
+          if [[ -f "$NPM_CONFIG_USERCONFIG" ]] && grep -q '^//registry\.npmjs\.org/:_authToken' "$NPM_CONFIG_USERCONFIG"; then
+            if timeout --signal=INT --kill-after=5s 90s npm logout --registry=https://registry.npmjs.org/ > "$STAGING_ROOT/logout.log" 2>&1; then
+              echo 'The temporary npm CLI session was revoked.'
+            else
+              echo '::error::npm logout failed. Revoke this CLI session in npm account settings; local configuration will still be removed.'
+              printf '\nTemporary npm session revocation failed; revoke it in npm account settings.\n' >> "$GITHUB_STEP_SUMMARY"
+              cleanup_status=1
+            fi
+          fi
+          if [[ -d "$STAGING_ROOT" ]]; then rm -rf -- "$STAGING_ROOT"; fi
+          exit "$cleanup_status"
