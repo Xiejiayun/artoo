@@ -73,8 +73,8 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Build the server, daemon and referenced packages once
         run: npm run build --workspace @artoo/server
-      - name: Check CLI contracts and controlled fixture isolation
-        run: node --test scripts/npm-daemon/cli.test.mjs scripts/npm-daemon/controlled-cli-smoke.test.mjs
+      - name: Check CLI contracts, controlled fixture isolation and registry pins
+        run: node --test scripts/npm-daemon/cli.test.mjs scripts/npm-daemon/controlled-cli-smoke.test.mjs scripts/npm-daemon/registry-platform-smoke.test.mjs
       - name: Build a fresh Windows host and one universal tarball
         id: pack
         run: |

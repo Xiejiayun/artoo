@@ -15,7 +15,8 @@ const versionPattern = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A
 
 export function parseSmokeArguments(args) {
   const keys = { "--tarball": "tarball", "--sha256": "sha256", "--name": "name", "--version": "version",
-    "--platform": "platform", "--source-commit": "sourceCommit", "--evidence-directory": "evidenceDirectory" };
+    "--platform": "platform", "--source-commit": "sourceCommit", "--evidence-directory": "evidenceDirectory",
+    "--install-source": "installSource", "--integrity": "integrity" };
   const values = {};
   for (let index = 0; index < args.length; index += 2) {
     const key = keys[args[index]], value = args[index + 1];
@@ -29,6 +30,11 @@ export function parseSmokeArguments(args) {
   assert.match(values.version ?? "", versionPattern);
   assert.ok(platforms.includes(values.platform), "An explicit supported --platform tuple is required");
   assert.match(values.sourceCommit ?? "", /^[a-f0-9]{40}$/);
+  values.installSource ??= "tarball";
+  assert.ok(["tarball", "registry"].includes(values.installSource), "Unknown installation source");
+  if (values.installSource === "registry") {
+    assert.match(values.integrity ?? "", /^sha512-[A-Za-z0-9+/]{86}==$/, "Registry installation requires an explicit SHA-512 pin");
+  } else assert.equal(values.integrity, undefined, "An integrity argument is only used for registry installation");
   return values;
 }
 
@@ -113,7 +119,9 @@ function validateConnection(result, options) {
 export async function packageSmoke(options) {
   options = parseSmokeArguments(["--tarball", options.tarball, "--sha256", options.sha256, "--name", options.name,
     "--version", options.version, "--platform", options.platform, "--source-commit", options.sourceCommit,
-    "--evidence-directory", options.evidenceDirectory]);
+    "--evidence-directory", options.evidenceDirectory,
+    ...(options.installSource === undefined ? [] : ["--install-source", options.installSource]),
+    ...(options.integrity === undefined ? [] : ["--integrity", options.integrity])]);
   const actualPlatform = process.platform + "-" + process.arch;
   assert.equal(actualPlatform, options.platform, "Use a real runner for the expected platform; never simulate process.platform");
   assert.equal(Number(process.versions.node.split(".")[0]), 24, "This qualification uses Node.js 24");
@@ -129,11 +137,12 @@ export async function packageSmoke(options) {
   }
   Object.assign(env, { NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/", NPM_CONFIG_LOGS_MAX: "0",
     NPM_CONFIG_CACHE: join(root, "package-cache") });
-  const report = { scope: "same-tarball-platform-install-and-controlled-cli-tasks", status: "running",
+  const report = { scope: options.installSource === "registry" ? "official-registry-install-of-pinned-tarball-and-controlled-cli-tasks"
+    : "same-tarball-platform-install-and-controlled-cli-tasks", status: "running",
     platform: actualPlatform, node: process.version, sourceCommit: options.sourceCommit,
     runId: process.env.GITHUB_RUN_ID ?? null, runAttempt: process.env.GITHUB_RUN_ATTEMPT ?? null,
     package: { name: options.name, version: options.version, sha256: options.sha256 },
-    installation: { force: false, ignoreScripts: false }, liveProviderInvoked: false,
+    installation: { source: options.installSource, force: false, ignoreScripts: false }, liveProviderInvoked: false,
     nativeSupervisorQualified: false, commands: [] };
   const save = (file, value) => writeFileSync(join(evidence, file), safe(JSON.stringify(value, null, 2)) + "\n");
   function run(label, executable, args, { cwd = root, timeout = 60_000, verbatim = false } = {}) {
@@ -160,6 +169,7 @@ export async function packageSmoke(options) {
     const bytes = readFileSync(tarball);
     assert.equal(createHash("sha256").update(bytes).digest("hex"), options.sha256, "Downloaded tarball hash mismatch");
     const integrity = "sha512-" + createHash("sha512").update(bytes).digest("base64");
+    if (options.installSource === "registry") assert.equal(integrity, options.integrity, "Validated tarball SHA-512 mismatch");
     Object.assign(report.package, { integrity, bytes: bytes.length });
     // Git Bash's GNU tar treats a Windows drive colon as a remote archive.
     // Keep both reads local by passing only the filename from its directory.
@@ -181,11 +191,16 @@ export async function packageSmoke(options) {
     assert.ok(Number(report.npm.split(".")[0]) >= 11);
     assert.equal(npm("npm-ignore-scripts", ["config", "get", "ignore-scripts"]).trim(), "false");
     assert.equal(npm("npm-force", ["config", "get", "force"]).trim(), "false");
-    npm("package-install", ["install", "--prefix", prefix, "--save-exact", "--no-audit", "--no-fund", tarball], { timeout: 180_000 });
+    if (options.installSource === "registry")
+      assert.equal(npm("npm-registry", ["config", "get", "registry"]).trim(), "https://registry.npmjs.org/");
+    const installTarget = options.installSource === "registry" ? `${options.name}@${options.version}` : tarball;
+    npm("package-install", ["install", "--prefix", prefix, "--save-exact", "--no-audit", "--no-fund", installTarget], { timeout: 180_000 });
     const lock = JSON.parse(readFileSync(join(prefix, "package-lock.json"), "utf8"));
     const locked = lock.packages["node_modules/" + options.name];
     assert.equal(locked?.version, options.version); assert.equal(locked.integrity, integrity);
-    save("installed-lock-entry.json", { version: locked.version, integrity: locked.integrity });
+    if (options.installSource === "registry") assert.equal(locked.resolved,
+      `https://registry.npmjs.org/${options.name}/-/${options.name.split("/").at(-1)}-${options.version}.tgz`);
+    save("installed-lock-entry.json", { version: locked.version, integrity: locked.integrity, resolved: locked.resolved });
     const installed = join(prefix, "node_modules", options.name);
     assert.deepEqual(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")), metadata);
     report.verification = JSON.parse(run("installed-verify", process.execPath,
@@ -229,7 +244,7 @@ export async function packageSmoke(options) {
       "Universal npm package verification: **" + report.status + "** on **" + actualPlatform + "**.\n\n"
       + "Package: " + options.name + "@" + options.version + "; SHA-256: " + options.sha256
       + "; source checkout: " + options.sourceCommit + ".\n\n"
-      + "Scope: same-tarball normal npm installation, installed CLI/manifest and fixture-authenticated "
+      + "Install source: " + options.installSource + ". Scope: pinned-tarball normal npm installation, installed CLI/manifest and fixture-authenticated "
       + "pairing/enrollment/WebSocket, controlled Codex/Claude success/failure tasks, and normal daemon stop. "
       + "No real provider, native-supervisor admission or deployed-product health claim.\n");
     console.log(JSON.stringify({ status: report.status, platform: actualPlatform, evidence }));

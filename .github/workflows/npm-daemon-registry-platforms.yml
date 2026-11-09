@@ -1,0 +1,146 @@
+name: Verify published npm daemon on Windows and Linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact validated rc.2 source commit already in main history
+        required: true
+        type: string
+      sha256:
+        description: SHA-256 of the validated and published rc.2 tarball
+        required: true
+        type: string
+      integrity:
+        description: SHA-512 integrity of the same validated rc.2 tarball
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  registry:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: win32-x64
+          - runner: ubuntu-24.04
+            platform: linux-x64
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_SOURCE_COMMIT: ${{ inputs.source_commit }}
+      RELEASE_SHA256: ${{ inputs.sha256 }}
+      RELEASE_INTEGRITY: ${{ inputs.integrity }}
+      EXPECTED_PLATFORM: ${{ matrix.platform }}
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+      NPM_CONFIG_LOGS_MAX: '0'
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Validate immutable inputs before checkout
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          assert.match(process.env.RELEASE_SOURCE_COMMIT, /^[a-f0-9]{40}$/);
+          assert.match(process.env.RELEASE_SHA256, /^[a-f0-9]{64}$/);
+          assert.match(process.env.RELEASE_INTEGRITY, /^sha512-[A-Za-z0-9+/]{86}==$/);
+          NODE
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind exact checkout to main history
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SOURCE_COMMIT"
+          git merge-base --is-ancestor "$RELEASE_SOURCE_COMMIT" refs/remotes/origin/main
+      - name: Install fixture dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Build fixture server and referenced packages
+        run: npm run build --workspace @artoo/server
+      - name: Check fixed release pin contracts without network
+        run: node --test scripts/npm-daemon/registry-platform-smoke.test.mjs
+      - name: Install the exact public rc.2 version and validate actual platform behavior
+        env:
+          EVIDENCE_DIRECTORY: ${{ runner.temp }}/artoo-published-registry-evidence
+        run: |
+          node scripts/npm-daemon/registry-platform-smoke.mjs \
+            --source-commit "$RELEASE_SOURCE_COMMIT" --sha256 "$RELEASE_SHA256" \
+            --integrity "$RELEASE_INTEGRITY" --platform "$EXPECTED_PLATFORM" \
+            --evidence-directory "$EVIDENCE_DIRECTORY"
+      - name: Upload safe post-publication evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-daemon-registry-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/artoo-published-registry-evidence/**/*.json
+            ${{ runner.temp }}/artoo-published-registry-evidence/**/*.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  verified:
+    if: always() && github.ref == 'refs/heads/main'
+    needs: registry
+    runs-on: ubuntu-24.04
+    env:
+      MATRIX_RESULT: ${{ needs.registry.result }}
+      RELEASE_SOURCE_COMMIT: ${{ inputs.source_commit }}
+      RELEASE_SHA256: ${{ inputs.sha256 }}
+      RELEASE_INTEGRITY: ${{ inputs.integrity }}
+    steps:
+      - name: Require all three actual platforms
+        run: test "$MATRIX_RESULT" = success
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: npm-daemon-registry-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/artoo-registry-reports
+      - name: Verify the same exact release on every platform
+        env:
+          REPORTS_ROOT: ${{ runner.temp }}/artoo-registry-reports
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { appendFileSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const root = process.env.REPORTS_ROOT;
+          const reports = readdirSync(root, { withFileTypes: true }).filter(e => e.isDirectory())
+            .map(e => JSON.parse(readFileSync(join(root, e.name, 'result.json'), 'utf8')));
+          assert.equal(reports.length, 3);
+          assert.deepEqual(reports.map(r => r.platform).sort(), ['linux-arm64', 'linux-x64', 'win32-x64']);
+          for (const r of reports) {
+            assert.equal(r.status, 'passed'); assert.equal(r.name, '@jiayunxie/artood'); assert.equal(r.version, '0.1.0-rc.2');
+            assert.equal(r.sourceCommit, process.env.RELEASE_SOURCE_COMMIT); assert.equal(r.checkoutCommit, r.sourceCommit);
+            assert.equal(r.registry.sha256, process.env.RELEASE_SHA256); assert.equal(r.registry.integrity, process.env.RELEASE_INTEGRITY);
+            assert.equal(r.registry.tarballUrl, 'https://registry.npmjs.org/@jiayunxie/artood/-/artood-0.1.0-rc.2.tgz');
+            assert.equal(r.packageSmoke.status, 'passed'); assert.equal(r.packageSmoke.checkoutCommit, r.sourceCommit);
+            assert.equal(r.packageSmoke.installation.source, 'registry');
+            assert.equal(r.packageSmoke.installation.force, false); assert.equal(r.packageSmoke.installation.ignoreScripts, false);
+          }
+          const summary = { status: 'passed', name: '@jiayunxie/artood', version: '0.1.0-rc.2',
+            sourceCommit: process.env.RELEASE_SOURCE_COMMIT, sha256: process.env.RELEASE_SHA256, integrity: process.env.RELEASE_INTEGRITY,
+            platforms: reports.map(r => r.platform).sort(),
+            scope: 'Fresh normal installation from the official public npm registry; installed CLI, manifest, paired transport, controlled Codex/Claude tasks and normal stop. No local mirror, live provider, production OAuth or native-supervisor qualification.' };
+          writeFileSync(join(root, 'registry-summary.json'), JSON.stringify(summary, null, 2) + '\n');
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, JSON.stringify(summary, null, 2) + '\n');
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-daemon-registry-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/artoo-registry-reports/registry-summary.json
+          if-no-files-found: error
+          retention-days: 30
