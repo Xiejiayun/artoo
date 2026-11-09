@@ -1384,6 +1384,15 @@ final class SharedServerChatUITests: XCTestCase {
             !frame.isEmpty && !frame.isNull && !frame.isInfinite
                 && [frame.minX, frame.minY, frame.width, frame.height].allSatisfy { $0.isFinite }
         }
+        var samples: [String] = []
+        defer {
+            // At most two geometry reads occur before the one touch. Preserve
+            // their original values even if a guard throws before that touch;
+            // a failure screenshot observes the UI again and may differ.
+            let diagnostic = XCTAttachment(string: "identifier: \(identifier)\nlabel: \(label)\nstate: \(state)\n" + samples.joined(separator: "\n"))
+            diagnostic.name = "Native planning disclosure geometry observations"
+            diagnostic.lifetime = .keepAlways; add(diagnostic)
+        }
         func geometry() throws -> (bounds: CGRect, area: CGRect, frame: CGRect) {
             try require(app.state == .runningForeground && app.navigationBars["Thread"].exists
                         && !app.keyboards.firstMatch.exists && !app.alerts.firstMatch.exists && !app.sheets.firstMatch.exists,
@@ -1398,6 +1407,7 @@ final class SharedServerChatUITests: XCTestCase {
                         "The planning thread must retain its list, connection status and composer")
             let listFrame = list.frame, navigationFrame = navigation.frame, tabsFrame = tabs.frame
             let connectionFrame = connection.frame, composerFrame = composer.frame
+            samples.append("boundaries: bounds=\(bounds), list=\(listFrame), navigation=\(navigationFrame), tabs=\(tabsFrame), connection=\(connectionFrame), composer=\(composerFrame), finite=\([bounds, listFrame, navigationFrame, tabsFrame, connectionFrame, composerFrame].map(finiteNonempty))")
             try require([bounds, listFrame, navigationFrame, tabsFrame, connectionFrame, composerFrame].allSatisfy(finiteNonempty),
                         "Every planning viewport boundary must have finite, nonempty geometry")
             let rect = listFrame.intersection(bounds)
@@ -1405,14 +1415,12 @@ final class SharedServerChatUITests: XCTestCase {
             let bottom = min(rect.maxY, min(tabsFrame.minY, composerFrame.minY - 4))
             let area = CGRect(x: rect.minX + 2, y: top + 2, width: rect.width - 4, height: bottom - top - 4)
             let frame = button.frame
+            samples.append("containment: area=\(area), frame=\(frame), areaFinite=\(finiteNonempty(area)), areaInsideBounds=\(bounds.contains(area)), frameFinite=\(finiteNonempty(frame)), frameInsideArea=\(area.contains(frame))")
             try require(finiteNonempty(area) && bounds.contains(area) && finiteNonempty(frame) && area.contains(frame),
                         "The whole planning disclosure must be reachable above the composer and below navigation")
             return (bounds, area, frame)
         }
         let first = try geometry(), current = try geometry()
-        let diagnostic = XCTAttachment(string: "identifier: \(identifier)\nlabel: \(label)\nstate: \(state)\nfirst: \(first)\ncurrent: \(current)")
-        diagnostic.name = "Native planning disclosure geometry observations"
-        diagnostic.lifetime = .keepAlways; add(diagnostic)
         try require(first.bounds == current.bounds && first.area == current.area && first.frame == current.frame,
                     "The planning disclosure and its unobscured viewport must stay stable before the one touch")
         // CI's failure screenshot and accessibility hierarchy show this complete
