@@ -144,6 +144,35 @@ test("project management, device pairing/revocation and reviewed skill installat
   await expect(page.getByRole("article", { name: skillName })).toBeVisible();
 });
 
+test("Linux pairing, computer enrollment and revocation persist through Settings", async ({ page, request }) => {
+  await page.goto("/settings");
+  await page.getByLabel("Device platform").selectOption("linux");
+  await page.getByRole("button", { name: "Generate pairing code" }).click();
+  const code = await page.getByRole("region", { name: "Device pairing" }).getByLabel("Pairing code", { exact: true }).textContent();
+  const deviceName = unique("Preview Linux");
+  const claim = await request.post("/api/v1/devices/claim", { data: { code, platform: "linux", display_name: deviceName, app_version: "e2e" } });
+  expect(claim.status()).toBe(201);
+  const claimed = await claim.json();
+  expect(claimed.device.platform).toBe("linux");
+  await page.reload();
+  const row = page.getByRole("article").filter({ hasText: deviceName });
+  await row.getByRole("button", { name: "Enroll computer", exact: true }).click();
+  await row.getByRole("button", { name: "Confirm enrollment" }).click();
+  await expect(row).toContainText("Computer:");
+  await expect(row.getByRole("button", { name: "Enroll computer", exact: true })).toHaveCount(0);
+  const { devices } = await (await request.get("/api/v1/devices")).json();
+  const registered = devices.find((device: { id: string }) => device.id === claimed.device.id);
+  expect(registered.computer_id).toBeTruthy();
+  const { computers } = await (await request.get("/api/v1/bootstrap")).json();
+  expect(computers.find((computer: { id: string }) => computer.id === registered.computer_id)?.os).toBe("linux");
+  await page.reload();
+  await expect(row).toContainText("Computer:");
+  await row.getByRole("button", { name: "Revoke device", exact: true }).click();
+  await row.getByRole("button", { name: "Confirm revoke" }).click();
+  await expect(row).toContainText("revoked");
+  expect((await request.get("/auth/session", { headers: { Authorization: `Bearer ${claimed.control_token}` } })).status()).toBe(401);
+});
+
 test("review controls remain usable at desktop, tablet and phone widths", async ({ page, request }, testInfo) => {
   // Earlier tests deliberately disconnect their node. Own this fixture's
   // connection instead of relying on the seed computer remaining online.

@@ -26,6 +26,7 @@ describe("device record schemas", () => {
       revoked_at: null,
     };
     expect(DeviceSchema.parse(device).platform).toBe("windows");
+    expect(DeviceSchema.parse({ ...device, platform: "linux" }).platform).toBe("linux");
     expect(DeviceSchema.safeParse({ ...device, platform: "blackberry" }).success).toBe(false);
     // control-only (mobile) device: computer_id null is allowed.
     expect(DeviceSchema.safeParse({ ...device, computer_id: null }).success).toBe(true);
@@ -62,6 +63,7 @@ describe("device record schemas", () => {
       claimed_at: null,
     };
     expect(PairingCodeSchema.parse(code).status).toBe("pending");
+    expect(PairingCodeSchema.parse({ ...code, intended_platform: "linux" }).intended_platform).toBe("linux");
     expect(PairingCodeSchema.safeParse({ ...code, status: "burned" }).success).toBe(false);
   });
 });

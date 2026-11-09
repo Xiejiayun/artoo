@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { disableOptionalWebSocketAddons, readRelease } from "./verify.mjs";
+import { assertSupportedPlatform } from "./platforms.mjs";
 
 export function parseArguments(args) {
   if (args.length === 1 && ["--help", "-h"].includes(args[0])) return "help";
@@ -43,23 +44,29 @@ export function safeError(error, env = process.env) {
 
 export async function runCli({ args = process.argv.slice(2), env = process.env,
   packageDirectory = dirname(dirname(fileURLToPath(import.meta.url))), output = value => process.stdout.write(value) } = {}) {
-  const mode = parseArguments(args), metadata = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8"));
+  const mode = parseArguments(args);
+  if (mode !== "help" && mode !== "version") {
+    if (Number(process.versions.node.split(".")[0]) < 24) throw Error("Artoo requires Node.js 24 or later.");
+    // Reject unsupported execution before reading local configuration, release
+    // files or importing the runtime, especially the Windows-only supervisor.
+    assertSupportedPlatform(mode);
+  }
+  const metadata = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8"));
   if (mode === "version") { output(`${metadata.version}\n`); return; }
   if (mode === "help") {
-    output(`${metadata.name} ${metadata.version} — Artoo Windows agent daemon\n\n`
+    output(`${metadata.name} ${metadata.version} — Artoo agent daemon\n\n`
       + "Usage: artood [start] [--windows-supervised]\n       artood --help\n       artood --version\n\n"
-      + "Requires Node.js 24 or later on Windows x64. No repository checkout or .NET installation is needed.\n"
+      + "Requires Node.js 24 or later on Windows x64, macOS x64/arm64, or Linux x64/arm64.\n"
+      + "Windows arm64 is not supported. No repository checkout or .NET installation is needed.\n"
       + "Configure ARTOO_NODE_URL, ARTOO_NODE_ID and ARTOO_ALLOWED_ROOTS before start.\n"
       + "Select ARTOO_RUNTIMES and install/login to the corresponding Codex or Claude CLI.\n"
       + "Pair and enroll the computer in the Web platform; NODE_ID is its computer ID.\n"
       + "Keep the node token in your local environment. Never pass it in command arguments.\n\n"
-      + "--windows-supervised uses the packaged native host and requires protected local\n"
+      + "--windows-supervised is Windows x64 only, uses the packaged native host and requires protected local\n"
       + "source/verifier/release profiles. npm installation alone does not provision them.\n"
       + "Ctrl+C requests the existing daemon's graceful shutdown.\n");
     return;
   }
-  if (Number(process.versions.node.split(".")[0]) < 24) throw Error("Artoo requires Node.js 24 or later.");
-  if (process.platform !== "win32" || process.arch !== "x64") throw Error("This package supports Windows x64.");
   const release = readRelease(packageDirectory), configured = prepareEnvironment(env, release, mode);
   disableOptionalWebSocketAddons();
   const runtime = await import(pathToFileURL(join(release.runtime, "artood.mjs")).href);

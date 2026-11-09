@@ -1,0 +1,286 @@
+name: Build and verify cross-platform npm daemon
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/npm-daemon-cross-platform.yml
+      - scripts/npm-daemon/**
+      - apps/artood/**
+      - apps/server/**
+      - apps/desktop/scripts/bundle-daemon.mjs
+      - apps/desktop/package.json
+      - packages/**
+      - package.json
+      - package-lock.json
+      - tsconfig.base.json
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/npm-daemon-cross-platform.yml
+      - scripts/npm-daemon/**
+      - apps/artood/**
+      - apps/server/**
+      - apps/desktop/scripts/bundle-daemon.mjs
+      - apps/desktop/package.json
+      - packages/**
+      - package.json
+      - package-lock.json
+      - tsconfig.base.json
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact universal candidate version to build on main
+        required: true
+        default: 0.1.0-rc.2
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-daemon-cross-platform-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PACKAGE_NAME: '@jiayunxie/artood'
+      PACKAGE_VERSION: ${{ inputs.version || '0.1.0-rc.2' }}
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+      NPM_CONFIG_LOGS_MAX: '0'
+    outputs:
+      version: ${{ steps.pack.outputs.version }}
+      tarball: ${{ steps.pack.outputs.tarball }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+      source_commit: ${{ steps.pack.outputs.source_commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install source dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Build the server, daemon and referenced packages once
+        run: npm run build --workspace @artoo/server
+      - name: Check CLI contracts and controlled fixture isolation
+        run: node --test scripts/npm-daemon/cli.test.mjs scripts/npm-daemon/controlled-cli-smoke.test.mjs
+      - name: Build a fresh Windows host and one universal tarball
+        id: pack
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PACKAGE_VERSION -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') {
+            throw 'Invalid explicit package version'
+          }
+          $candidateRoot = Join-Path $env:RUNNER_TEMP ("artoo-npm-candidate-" + $env:GITHUB_RUN_ID + "-" + $env:GITHUB_RUN_ATTEMPT)
+          if (Test-Path -LiteralPath $candidateRoot) { throw 'Candidate root must be fresh' }
+          New-Item -ItemType Directory -Path $candidateRoot | Out-Null
+          $nativeRoot = Join-Path $candidateRoot 'native'
+          $packageRoot = Join-Path $candidateRoot 'package'
+          $artifactRoot = Join-Path $candidateRoot 'artifact'
+          New-Item -ItemType Directory -Path $artifactRoot | Out-Null
+          node apps/artood/scripts/build-windows-process-host.mjs --out-dir $nativeRoot
+          if ($LASTEXITCODE -ne 0) { throw 'Fresh native host build failed' }
+          $nativeManifestSha = 'sha256:' + (Get-FileHash -LiteralPath (Join-Path $nativeRoot 'manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+          node scripts/npm-daemon/build.mjs --name $env:PACKAGE_NAME --version $env:PACKAGE_VERSION --output-directory $packageRoot --windows-process-bundle $nativeRoot --windows-process-manifest-sha256 $nativeManifestSha
+          if ($LASTEXITCODE -ne 0) { throw 'Universal package build failed' }
+          $packJson = Join-Path $candidateRoot 'pack.json'
+          npm pack $packageRoot --pack-destination $artifactRoot --json > $packJson
+          if ($LASTEXITCODE -ne 0) { throw 'npm pack failed' }
+          $pack = @(Get-Content -LiteralPath $packJson -Raw | ConvertFrom-Json)
+          $expectedFilename = 'jiayunxie-artood-' + $env:PACKAGE_VERSION + '.tgz'
+          if ($pack.Count -ne 1 -or $pack[0].name -ne $env:PACKAGE_NAME -or $pack[0].version -ne $env:PACKAGE_VERSION -or $pack[0].filename -ne $expectedFilename) {
+            throw 'npm pack returned unexpected package metadata'
+          }
+          $tarball = Join-Path $artifactRoot $expectedFilename
+          $sha256 = (Get-FileHash -LiteralPath $tarball -Algorithm SHA256).Hash.ToLowerInvariant()
+          $integrity = 'sha512-' + [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($tarball)))
+          if ($pack[0].integrity -ne $integrity) { throw 'Packed SHA-512 does not match the output tarball' }
+          $sourceCommit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[a-f0-9]{40}$' -or $sourceCommit -ne $env:GITHUB_SHA) {
+            throw 'Source checkout identity mismatch'
+          }
+          $metadata = Get-Content -LiteralPath (Join-Path $packageRoot 'package.json') -Raw | ConvertFrom-Json
+          [ordered]@{
+            format = 'artoo.npm-candidate.v1'
+            name = $env:PACKAGE_NAME
+            version = $env:PACKAGE_VERSION
+            sourceCommit = $sourceCommit
+            sourceRef = $env:GITHUB_REF
+            eventName = $env:GITHUB_EVENT_NAME
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            buildPlatform = 'win32-x64'
+            tarball = $expectedFilename
+            sha256 = $sha256
+            integrity = $integrity
+            nativeManifestSha256 = $nativeManifestSha
+            runtimeManifestSha256 = $metadata.artoo.runtimeManifestSha256
+            platforms = $metadata.artoo.platforms
+          } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $artifactRoot 'release-metadata.json') -Encoding utf8
+          "CANDIDATE_ARTIFACT=$artifactRoot" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          @(
+            "version=$($env:PACKAGE_VERSION)"
+            "tarball=$expectedFilename"
+            "sha256=$sha256"
+            "source_commit=$sourceCommit"
+          ) | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+      - name: Upload the single candidate and source/hash receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-daemon-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CANDIDATE_ARTIFACT }}/*
+          if-no-files-found: error
+          retention-days: 30
+
+  platforms:
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: win32-x64
+          - runner: macos-15-intel
+            platform: darwin-x64
+          - runner: macos-15
+            platform: darwin-arm64
+          - runner: ubuntu-24.04
+            platform: linux-x64
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+    defaults:
+      run:
+        shell: bash
+    env:
+      PACKAGE_NAME: '@jiayunxie/artood'
+      PACKAGE_VERSION: ${{ needs.build.outputs.version }}
+      PACKAGE_TARBALL: ${{ needs.build.outputs.tarball }}
+      PACKAGE_SHA256: ${{ needs.build.outputs.sha256 }}
+      PACKAGE_SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
+      EXPECTED_PLATFORM: ${{ matrix.platform }}
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+      NPM_CONFIG_LOGS_MAX: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-daemon-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/artoo-npm-candidate
+      - name: Install fixture dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Build the server, daemon and referenced packages once
+        run: npm run build --workspace @artoo/server
+      - name: Install identical tarball and verify actual platform behavior
+        id: smoke
+        env:
+          CANDIDATE_DIRECTORY: ${{ runner.temp }}/artoo-npm-candidate
+          EVIDENCE_DIRECTORY: ${{ runner.temp }}/artoo-npm-package-evidence
+        run: |
+          node scripts/npm-daemon/package-smoke.mjs \
+            --tarball "$CANDIDATE_DIRECTORY/$PACKAGE_TARBALL" \
+            --sha256 "$PACKAGE_SHA256" --name "$PACKAGE_NAME" \
+            --version "$PACKAGE_VERSION" --platform "$EXPECTED_PLATFORM" \
+            --source-commit "$PACKAGE_SOURCE_COMMIT" \
+            --evidence-directory "$EVIDENCE_DIRECTORY"
+      - name: Verify POSIX process behavior separately against built source
+        if: runner.os != 'Windows'
+        timeout-minutes: 15
+        run: node --test --test-concurrency=1 apps/artood/test-fixtures/verification-real.test.mjs > "$RUNNER_TEMP/posix-verification.log" 2>&1
+      - name: Upload safe package evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-daemon-smoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/artoo-npm-package-evidence/*.json
+            ${{ runner.temp }}/artoo-npm-package-evidence/*.log
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload separate POSIX fixture log
+        if: always() && runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-daemon-posix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.platform }}
+          path: ${{ runner.temp }}/posix-verification.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  cross-platform:
+    if: always()
+    needs: [build, platforms]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      BUILD_RESULT: ${{ needs.build.result }}
+      PLATFORM_RESULT: ${{ needs.platforms.result }}
+      PACKAGE_VERSION: ${{ needs.build.outputs.version }}
+      PACKAGE_SHA256: ${{ needs.build.outputs.sha256 }}
+      PACKAGE_SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
+    steps:
+      - name: Require build and every matrix leg
+        run: test "$BUILD_RESULT" = success && test "$PLATFORM_RESULT" = success
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: npm-daemon-smoke-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/artoo-npm-platform-reports
+      - name: Match all five reports to the same candidate
+        env:
+          REPORTS_ROOT: ${{ runner.temp }}/artoo-npm-platform-reports
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { appendFileSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const expected = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-x64'];
+          const reports = readdirSync(process.env.REPORTS_ROOT, { withFileTypes: true })
+            .filter(entry => entry.isDirectory())
+            .map(entry => JSON.parse(readFileSync(join(process.env.REPORTS_ROOT, entry.name, 'result.json'), 'utf8')));
+          assert.equal(reports.length, 5);
+          assert.deepEqual(reports.map(report => report.platform).sort(), expected);
+          for (const report of reports) {
+            assert.equal(report.status, 'passed');
+            assert.equal(report.package.name, '@jiayunxie/artood');
+            assert.equal(report.package.version, process.env.PACKAGE_VERSION);
+            assert.equal(report.package.sha256, process.env.PACKAGE_SHA256);
+            assert.equal(report.sourceCommit, process.env.PACKAGE_SOURCE_COMMIT);
+            assert.equal(report.checkoutCommit, process.env.PACKAGE_SOURCE_COMMIT);
+            assert.equal(report.installation.force, false);
+            assert.equal(report.installation.ignoreScripts, false);
+          }
+          const summary = { status: 'passed', sourceCommit: process.env.PACKAGE_SOURCE_COMMIT,
+            sourceRef: process.env.GITHUB_REF, eventName: process.env.GITHUB_EVENT_NAME,
+            name: '@jiayunxie/artood', version: process.env.PACKAGE_VERSION,
+            sha256: process.env.PACKAGE_SHA256, platforms: expected,
+            scope: 'One tarball installed without force or ignored scripts on five real OS/architecture pairs; controlled CLI tasks and separate POSIX source fixtures. No publication or live-provider qualification.' };
+          writeFileSync(join(process.env.REPORTS_ROOT, 'cross-platform-summary.json'), JSON.stringify(summary, null, 2) + '\n');
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'All five platforms passed for the same tarball.\n\n'
+            + JSON.stringify(summary, null, 2) + '\n\nPR merge-ref artifacts are validation only; deliver candidates built and validated from main.\n');
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-daemon-cross-platform-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/artoo-npm-platform-reports/cross-platform-summary.json
+          if-no-files-found: error
+          retention-days: 30

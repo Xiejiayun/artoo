@@ -429,7 +429,7 @@ export async function revokeDevice(ctx: ServerContext, deviceId: string): Promis
 /** Desktop platforms that may host a local `artood` compute node. Mobile
  *  clients are remote control surfaces only (v2 roadmap), so they never enroll a
  *  local computer. */
-const NODE_HOST_PLATFORMS: ReadonlySet<DevicePlatform> = new Set<DevicePlatform>(["windows", "macos"]);
+const NODE_HOST_PLATFORMS: ReadonlySet<DevicePlatform> = new Set<DevicePlatform>(["windows", "macos", "linux"]);
 
 export interface EnrollDeviceComputerInput {
   deviceId: string;

@@ -1,4 +1,4 @@
-import { computers, devices, deviceTokens, pairingCodes } from "@artoo/db";
+import { computers, devices, deviceTokens, organizations, pairingCodes, users } from "@artoo/db";
 import { parseDeviceToken } from "@artoo/domain";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -291,6 +291,33 @@ describe("device-service", () => {
       displayName: "Pixel",
     });
     await expect(enrollDeviceComputer(ctx, { deviceId: device.id })).rejects.toThrow(/cannot host a local node/);
+  });
+
+  it("requires a same-organization administrator to enroll a Linux device", async () => {
+    const { ctx, db } = server;
+    const now = ctx.clock.nowIso();
+    await db.db.insert(organizations).values({ id: "org_other", name: "Other team", createdAt: now });
+    await db.db.insert(users).values([
+      { id: "user_member", organizationId: ctx.organizationId, email: "member@example.com", displayName: "Member", role: "member", createdAt: now },
+      { id: "user_other_owner", organizationId: "org_other", email: "other-owner@example.com", displayName: "Other owner", role: "owner", createdAt: now },
+    ]);
+    const { code } = await createPairing(ctx, config, { createdByUserId: "user_owner", intendedPlatform: "linux" });
+    const { device, nodeToken } = await claimPairing(ctx, config, {
+      code, platform: "linux", appVersion: "1.0.0", displayName: "Linux host",
+    });
+    const before = await db.db.select().from(computers);
+    await expect(enrollDeviceComputer({ ...ctx, actorUserId: "user_member" }, { deviceId: device.id }))
+      .rejects.toMatchObject({ code: "permission_denied", httpStatus: 403 });
+    await expect(enrollDeviceComputer({ ...ctx, organizationId: "org_other", actorUserId: "user_other_owner" }, { deviceId: device.id }))
+      .rejects.toMatchObject({ code: "not_found", httpStatus: 404 });
+    expect(await db.db.select().from(computers)).toEqual(before);
+    expect(await resolveNodeToken(ctx, nodeToken)).toMatchObject({ computerId: null });
+
+    const result = await enrollDeviceComputer(ctx, { deviceId: device.id });
+    expect(result.created).toBe(true);
+    expect((await db.db.select().from(computers).where(eq(computers.id, result.computerId)))[0])
+      .toMatchObject({ organizationId: ctx.organizationId, os: "linux", status: "enrolling" });
+    expect(await resolveNodeToken(ctx, nodeToken)).toMatchObject({ deviceId: device.id, computerId: result.computerId });
   });
 
   it("rejects a revoked device", async () => {

@@ -13,7 +13,7 @@
     "typecheck": "tsc -b",
     "build:preview": "node scripts/build-preview.mjs",
     "build:daemon:npm": "node scripts/npm-daemon/build.mjs",
-    "test:daemon:npm": "node --test scripts/npm-daemon/cli.test.mjs",
+    "test:daemon:npm": "node --test scripts/npm-daemon/cli.test.mjs scripts/npm-daemon/controlled-cli-smoke.test.mjs",
     "start:preview": "node scripts/start-preview.mjs",
     "storage": "node scripts/storage.mjs",
     "demo:v1": "node scripts/v1-demo.mjs",

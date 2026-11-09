@@ -21,7 +21,7 @@ import { z } from "zod";
 // Vocabularies
 // ---------------------------------------------------------------------------
 
-export const DevicePlatformSchema = z.enum(["windows", "macos", "android", "ios"]);
+export const DevicePlatformSchema = z.enum(["windows", "macos", "linux", "android", "ios"]);
 export const DEVICE_PLATFORMS = DevicePlatformSchema.options;
 export type DevicePlatform = z.infer<typeof DevicePlatformSchema>;
 

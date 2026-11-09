@@ -3,6 +3,7 @@ import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { SUPPORTED_PLATFORMS } from "./platforms.mjs";
 
 const digest = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const hashPattern = /^sha256:[a-f0-9]{64}$/;
@@ -22,6 +23,11 @@ export function readRelease(packageDirectory) {
   const root = resolve(packageDirectory), metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   if (metadata.artoo?.format !== "artoo.npm-daemon.v1" || !hashPattern.test(metadata.artoo.runtimeManifestSha256 ?? ""))
     fail("missing release manifest pin");
+  // The earlier Windows-only release has no tuple field. Keep its independent
+  // installed verification working while checking new universal declarations.
+  const platforms = metadata.artoo.platforms;
+  if (platforms !== undefined && (!Array.isArray(platforms) || platforms.length !== SUPPORTED_PLATFORMS.length
+    || platforms.some((platform, index) => platform !== SUPPORTED_PLATFORMS[index]))) fail("unsupported package platform tuples");
   const runtime = join(root, "runtime"), path = join(runtime, "bundle-manifest.json");
   const bytes = readFileSync(path);
   if (digest(bytes) !== metadata.artoo.runtimeManifestSha256) fail("runtime manifest differs from the release pin");

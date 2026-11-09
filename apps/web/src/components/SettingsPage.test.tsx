@@ -52,8 +52,17 @@ describe("device enrollment in Settings", () => {
     }
   });
 
-  it.each(["owner", "admin"] as const)("lets an %s confirm enrollment and refreshes the registered computer", async (role) => {
-    const current = device();
+  it("creates a Linux pairing code from the selected platform", async () => {
+    const createPairing = vi.fn(async () => ({ code: "LINU-X123", pairing: { expires_at: "2099-01-01T00:00:00Z" } }));
+    renderWithProviders(<SettingsPage />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), listDevices: async () => ({ devices: [] }), createPairing }) });
+    await userEvent.selectOptions(screen.getByLabelText("Device platform"), "linux");
+    await userEvent.click(screen.getByRole("button", { name: "Generate pairing code" }));
+    expect(await screen.findByLabelText("Pairing code")).toHaveTextContent("LINU-X123");
+    expect(createPairing).toHaveBeenCalledWith("linux", expect.any(String));
+  });
+
+  it.each([["owner", "macos"], ["admin", "macos"], ["owner", "linux"], ["admin", "linux"]] as const)("lets an %s confirm %s enrollment and refreshes the registered computer", async (role, platform) => {
+    const current = device({ id: `device_${platform}`, display_name: `Member ${platform}`, platform });
     const enrollDevice = vi.fn(async () => {
       current.computer_id = "computer_new";
       return { device_id: current.id, computer_id: current.computer_id, created: true };
@@ -63,12 +72,12 @@ describe("device enrollment in Settings", () => {
     renderWithProviders(<SettingsPage />, { client: fakeApi({ bootstrap, listDevices, enrollDevice }) });
     await userEvent.click(await screen.findByRole("button", { name: "Enroll computer" }));
     expect(enrollDevice).not.toHaveBeenCalled();
-    expect(screen.getByText(/Enroll Member Mac as an execution computer/)).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(`Enroll Member ${platform} as an execution computer`))).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Cancel enrollment" }));
     expect(enrollDevice).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "Enroll computer" }));
     await userEvent.click(screen.getByRole("button", { name: "Confirm enrollment" }));
-    expect(enrollDevice).toHaveBeenCalledWith("device_mac", expect.any(String));
+    expect(enrollDevice).toHaveBeenCalledWith(current.id, expect.any(String));
     expect(await screen.findByText("Computer: computer_new")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Enroll computer" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Confirm enrollment" })).toBeNull();
@@ -77,22 +86,22 @@ describe("device enrollment in Settings", () => {
   });
 
   it("offers enrollment only for active, unregistered desktop devices", async () => {
-    const devices = [device(), device({ id: "win", display_name: "Member Windows", platform: "windows" }),
+    const devices = [device(), device({ id: "win", display_name: "Member Windows", platform: "windows" }), device({ id: "linux", display_name: "Member Linux", platform: "linux" }),
       device({ id: "phone", display_name: "Phone", platform: "ios" }), device({ id: "android", display_name: "Android", platform: "android" }),
       device({ id: "revoked", display_name: "Revoked Mac", trust: "revoked" }), device({ id: "registered", display_name: "Registered Mac", computer_id: "computer_existing" })];
     renderWithProviders(<SettingsPage />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), listDevices: async () => ({ devices }) }) });
     await screen.findByRole("button", { name: "New project" });
     await screen.findByRole("heading", { name: "Registered Mac" });
-    expect(screen.getAllByRole("button", { name: "Enroll computer" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Enroll computer" })).toHaveLength(3);
     for (const name of ["Phone", "Android", "Revoked Mac", "Registered Mac"]) {
       const row = screen.getByRole("heading", { name }).closest("article")!;
       expect(within(row).queryByRole("button", { name: "Enroll computer" })).toBeNull();
     }
   });
 
-  it("explains the administrator requirement to members without exposing enrollment controls", async () => {
+  it.each(["macos", "linux"] as const)("explains the administrator requirement for %s to members without exposing enrollment controls", async (platform) => {
     const base = bootstrapFixture();
-    renderWithProviders(<SettingsPage />, { client: fakeApi({ bootstrap: async () => ({ ...base, user: { ...base.user, role: "member" } }), listDevices: async () => ({ devices: [device()] }) }) });
+    renderWithProviders(<SettingsPage />, { client: fakeApi({ bootstrap: async () => ({ ...base, user: { ...base.user, role: "member" } }), listDevices: async () => ({ devices: [device({ platform })] }) }) });
     expect(await screen.findByText(/An owner or admin must enroll this computer/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Enroll computer" })).toBeNull();
   });
