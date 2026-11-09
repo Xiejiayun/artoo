@@ -8,6 +8,7 @@ import { AppError } from "../errors.js";
 import { verificationReceiptMatchesCapabilities } from "./verification-capabilities.js";
 import { measurementPlanQualificationError } from "./measurement-plan-qualification.js";
 import { designRevisionEvidenceError } from "./product-design-revision-guard.js";
+import { applicationVerificationQualificationError } from "./application-verification.js";
 
 export const RUN_VERIFICATION_EVENT = "run.verification";
 export type RunVerificationEvidence = Omit<typeof runEvidence.$inferSelect, "payload"> & { payload: RunVerificationPayload };
@@ -36,6 +37,8 @@ export async function persistRunVerificationEvidence(ctx: ServerContext, tx: Dri
     throw AppError.validation("verification evidence does not match the run's persisted requirement");
   }
   const storedContext = await persistedVerificationContext(ctx, tx, run.id);
+  const applicationError = await applicationVerificationQualificationError(ctx, tx, run.id, parsed.data, requirement.data, storedContext);
+  if (applicationError) throw AppError.validation(applicationError);
   const qualificationError = measurementPlanQualificationError(parsed.data, requirement.data, storedContext);
   if (qualificationError) throw AppError.validation(qualificationError);
   const revisionError = await designRevisionEvidenceError(ctx, tx, run.id, parsed.data, storedContext === undefined ? undefined : ContextPackSchema.parse(storedContext));
@@ -68,6 +71,7 @@ export async function readRunVerificationEvidence(ctx: ServerContext, db: Drizzl
     || payload.data.checks.some((check) => check.observation?.scope === "preview")
     || !verificationReceiptMatchesCapabilities(payload.data, requirement.data)) return null;
   const storedContext = await persistedVerificationContext(ctx, db, run.id);
+  if (await applicationVerificationQualificationError(ctx, db, run.id, payload.data, requirement.data, storedContext)) return null;
   if (measurementPlanQualificationError(payload.data, requirement.data, storedContext)) return null;
   if (await designRevisionEvidenceError(ctx, db, run.id, payload.data, storedContext === undefined ? undefined : ContextPackSchema.parse(storedContext))) return null;
   return { ...result.evidence, payload: payload.data };

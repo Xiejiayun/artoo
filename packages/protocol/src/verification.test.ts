@@ -43,4 +43,9 @@ it("preserves a verification requirement on run.start while older requests remai
   const requirement = { version: 1, request_id: "verify_1", profile_id: "default" };
   expect(runStartCommandSchema.parse({ ...command, payload: { ...command.payload, verification: requirement } }).payload.verification).toEqual(requirement);
   expect(runStartCommandSchema.safeParse({ ...command, payload: { ...command.payload, verification: { ...requirement, version: 2 } } }).success).toBe(false);
+  const application = { version: 1, config_digest: hash, contract_digest: hash };
+  const bound = { ...requirement, capability_binding: { version: 1, profile_digest: hash,
+    checks: [{ command_id: "browser", config_digest: hash, contract_digest: hash }] }, application };
+  // An old URI-only path must not silently strip the application extension and execute an ordinary run.
+  expect(runStartCommandSchema.safeParse({ ...command, payload: { ...command.payload, verification: bound } }).success).toBe(false);
 });

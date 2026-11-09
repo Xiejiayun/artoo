@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { ProductReleaseRequest, RunVerificationPayload } from "@artoo/domain";
+import { ContextPackSchema, type ProductReleaseRequest, type RunVerificationPayload } from "@artoo/domain";
 import { createProductReleaseExecutor, prepareReleaseProfiles, loadReleaseProfilesFile, type ReleaseProfile } from "./product-release.js";
 import { prepareVerificationProfiles, subjectManifest, verificationSupported } from "./verification.js";
 
@@ -50,6 +50,22 @@ async function fixture() {
 }
 
 describe("target-product static publication", () => {
+  it("rejects application grant/evidence before creating any static publication attestation", async () => {
+    const executor = createProductReleaseExecutor([]), digest = "sha256:" + "a".repeat(64);
+    const evidence: RunVerificationPayload = { version: 1, request_id: "application", profile_id: "profile", profile_digest: digest,
+      subject_digest: digest, outcome: "passed", checks: [], required_files: [] };
+    const context = ContextPackSchema.parse({ app_delivery: { version: 1, kind: "local-application-development" },
+      task: { id: "task", title: "Application", description: "Controlled boundary", acceptance_criteria: [] },
+      project: { id: "project", name: "Fixture", default_workspace: "/workspace" }, workspace: { root: "/workspace", file_scope: [] },
+      policy: { filesystem_write_scope: ["/workspace"], requires_approval: [] }, memory: { task_summary: null, project_notes: [] }, artifacts: { expected: [] } });
+    try {
+      // Research/design do not yet have application execution observations; the
+      // original grant independently prevents registering their static receipts.
+      expect(() => executor.recordVerification("run", "project", "/workspace", evidence, { context, readCapabilities: () => { throw Error("Static capability reader must not run"); } })).toThrow("Application development");
+      const application = { version: 1 } as NonNullable<RunVerificationPayload["application"]>;
+      expect(() => executor.recordVerification("run", "project", "/workspace", { ...evidence, application })).toThrow("Application development");
+    } finally { await executor.stop(); }
+  });
   it.runIf(verificationSupported())("publishes a measured immutable snapshot, serves actual bytes and replays after restart", async () => {
     const f = await fixture();
     try {

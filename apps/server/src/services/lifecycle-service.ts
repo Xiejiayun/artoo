@@ -38,6 +38,7 @@ import {
   type VerificationRequirement,
   AssignRequestSchema, ContextPackSchema, canonicalOwnedResultAuthorContextV1,
   type NodeOwnedResultProfileDescriptorV1,
+  APPLICATION_VERIFICATION_FEATURE_V1,
 } from "@artoo/domain";
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { DrizzleDb } from "@artoo/storage";
@@ -477,6 +478,11 @@ export async function assignTask(
     // for this context and record source_memory_ids for audit; the run links it.
     let verificationSnapshot: contextPackService.BuildContextPackParams["verification"];
     if (executionAutomation && verificationRequirement) {
+      if ((executionAutomation.appDelivery != null || executionAutomation.appPublication != null) && (workspaceBranch != null || workspaceAllocation
+        || !["windows", "win32"].includes(computer.os)
+        || ctx.supportsExecutionFeature?.(instance.computerId, APPLICATION_VERIFICATION_FEATURE_V1) !== true)) {
+        throw AppError.conflict("Application development requires a supporting native Windows node and ordinary workspace");
+      }
       // Recheck synchronously beside the single snapshot read: a disconnect during
       // the preceding database work must not turn a configured profile into legacy unknown scope.
       if (ctx.supportsVerificationProfile?.(instance.computerId, verificationRequirement.profile_id, row.projectId, workspaceRoot!) !== true) {
@@ -493,6 +499,7 @@ export async function assignTask(
       workspaceRoot: workspaceRoot!, assistantTurnId, capabilities: verificationSnapshot?.capabilities });
     const contextPack = await contextPackService.buildRunContextPack(ctx, tx, {
       runId,
+      agentInstanceId: instance.id,
       task: row,
       workspaceRoot,
       writePaths,
@@ -509,8 +516,17 @@ export async function assignTask(
       throw AppError.conflict("Verification request does not match the fixed release capability snapshot");
     }
     const boundVerificationRequirement = verificationRequirement ? { ...verificationRequirement,
+      ...(contextPack.applicationRequirement ? { application: contextPack.applicationRequirement } : {}),
+      ...(contextPack.applicationPublicationRequirement ? { application_publication: contextPack.applicationPublicationRequirement } : {}),
       ...(contextPack.releaseCapabilityBinding ? { release_capability_binding: contextPack.releaseCapabilityBinding } : {}),
       ...(contextPack.verificationCapabilityBinding ? { capability_binding: contextPack.verificationCapabilityBinding } : {}) } : undefined;
+    if (verificationRequirement?.application && !isDeepStrictEqual(verificationRequirement.application, contextPack.applicationRequirement)) {
+      throw AppError.conflict("Application request differs from the original goal and current verified candidate");
+    }
+    if (verificationRequirement?.application_publication
+      && !isDeepStrictEqual(verificationRequirement.application_publication, contextPack.applicationPublicationRequirement)) {
+      throw AppError.conflict("Application publication request differs from its original authorization or paired connection");
+    }
 
     let ownedResultAssignment: OwnedResultAssignment | null = null;
     if (ownedSelection && ownedProfile) {
@@ -828,7 +844,7 @@ async function completeGoalIfAllTasksDone(
   if (await currentImportedDesignBoundary(ctx, tx, goalId)) return;
   const [automation] = await tx.select().from(goalAutomations).where(and(eq(goalAutomations.goalId, goalId), eq(goalAutomations.organizationId, ctx.organizationId)));
   // Publication has its own immutable artifact and health gate, after all task reviews.
-  if (automation?.releaseProfileId) return;
+  if (automation?.releaseProfileId || automation?.appDelivery != null || automation?.appPublication != null) return;
   const childTasks = await tx
     .select({ status: tasks.status })
     .from(tasks)

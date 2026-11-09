@@ -2,9 +2,11 @@ import { recordWindowsStartupPhase, recordWindowsStartupFailure, completeWindows
 import { observeWindowsStopStage, type WindowsStopDiagnostics, type WindowsStopPhase } from "./windows-stop-diagnostics.js";
 import type { SourceCommandDiagnostic } from "./source-command-diagnostics.js";
 export { acquirePublishedProductOwnership, createPublishedProduct } from "./published-product.js";
+export { describeWindowsApplicationEntryVerifier } from "./windows-application-entry.js";
 import { arch as osArch, hostname, platform } from "node:os";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { lstatSync } from "node:fs";
 
 import type { NodeHello } from "@artoo/protocol";
 
@@ -12,14 +14,14 @@ import { createAdapterRegistry, type AdapterRegistry, type RuntimeRegistration }
 import { createArtifactUploader } from "./artifact-upload.js";
 import { runtimeAvailable } from "./cli-resolver.js";
 import { createRegistryHeartbeat } from "./heartbeat.js";
-import { createArtoodNode, type ArtoodNode } from "./node-runner.js";
+import { createArtoodNode, type ArtoodNode, type ArtoodNodeOptions } from "./node-runner.js";
 import { claudeCodeRuntime, codexRuntime, type CodexSettings, type RuntimePresetOptions } from "./runtimes.js";
 import { createManagedBootstrap, validateManagedJournalBinding, validateManagedJournalPreparation,
   type ManagedJournalBinding } from "./managed/managed-bootstrap.js";
 import { provisionLocalJournal, upgradeLocalJournalForOwnedResults } from "./managed/journal.js";
 import { initializeOwnedResultProfilesFile } from "./owned-result-profiles.js";
 import { DeliveryCancelled } from "./managed/managed-delivery.js";
-import { loadVerificationProfilesFile, type VerificationProfile } from "./verification.js";
+import { loadPreparedVerificationProfilesFile, loadVerificationProfilesFile, type VerificationProfile } from "./verification.js";
 import { loadReleaseProfilesFile, type ReleaseProfile } from "./product-release.js";
 import { prepareWindowsProcessInstallation } from "./windows-process-installation.js";
 import { prepareWindowsReleaseStorage, type PreparedWindowsReleaseStorage } from "./windows-release-storage.js";
@@ -89,6 +91,7 @@ export interface ArtoodConfig {
   /** Opaque authority returned by protected local Windows installation qualification. */
   windowsProcessBackend?: PreparedWindowsProcessBackend;
   releaseProfiles?: readonly ReleaseProfile[];
+  applicationPublicationProfiles?: ArtoodNodeOptions["applicationPublicationProfiles"];
   windowsReleaseStorage?: ReadonlyMap<string, PreparedWindowsReleaseStorage>;
   ownedResultProfilesFile?: string;
   research?: ResearchOptions;
@@ -180,6 +183,18 @@ function windowsProcessBackendFromEnv(env: NodeJS.ProcessEnv, allowedRoots: read
 
 /** Parse the artood config from environment variables, throwing on missing required keys. */
 export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
+  return configFromEnv(env, loadVerificationProfilesFile);
+}
+
+/** Preserve prepared verifier identities inside this process and module instance.
+ * Consumers still recheck them at their existing boundaries. Do not serialize
+ * this configuration or transfer its local authorities to another daemon. */
+export function loadPreparedConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
+  return configFromEnv(env, loadPreparedVerificationProfilesFile);
+}
+
+function configFromEnv(env: NodeJS.ProcessEnv,
+  loadProfiles: (path: string, writableRoots?: readonly string[]) => readonly VerificationProfile[]): ArtoodConfig {
   const url = env.ARTOO_NODE_URL?.trim();
   const nodeId = env.ARTOO_NODE_ID?.trim();
   const allowedRoots = splitList(env.ARTOO_ALLOWED_ROOTS);
@@ -206,8 +221,24 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
     || /[\u0000-\u001f\u007f]/.test(productSourceConfigFile) || !windowsProcessBackend)) {
     throw new Error("ARTOO_PRODUCT_SOURCE_CONFIG_FILE requires an absolute protected file and native Windows backend");
   }
-  const verificationProfiles = env.ARTOO_VERIFICATION_PROFILES_FILE ? loadVerificationProfilesFile(env.ARTOO_VERIFICATION_PROFILES_FILE, allowedRoots) : undefined;
+  const verificationProfiles = env.ARTOO_VERIFICATION_PROFILES_FILE ? loadProfiles(env.ARTOO_VERIFICATION_PROFILES_FILE, allowedRoots) : undefined;
   const releaseProfiles = env.ARTOO_RELEASE_PROFILES_FILE ? loadReleaseProfilesFile(env.ARTOO_RELEASE_PROFILES_FILE, verificationProfiles, allowedRoots) : undefined;
+  const publicationFile = env.ARTOO_APPLICATION_PUBLICATION_PROFILE_FILE, publicationHash = env.ARTOO_APPLICATION_PUBLICATION_PROFILE_SHA256,
+    publicationVerifier = env.ARTOO_APPLICATION_PUBLICATION_VERIFIER;
+  let applicationPublicationProfiles: ArtoodNodeOptions["applicationPublicationProfiles"];
+  if ([publicationFile, publicationHash, publicationVerifier].some(value => value !== undefined)) {
+    if (!windowsProcessBackend || managed.managedJournal || !publicationFile || !isAbsolute(publicationFile)
+      || /[\u0000-\u001f\u007f]/u.test(publicationFile) || !publicationHash || !/^sha256:[a-f0-9]{64}$/u.test(publicationHash)
+      || !publicationVerifier || !verificationProfiles?.some(profile => profile.id === publicationVerifier))
+      throw Error("ARTOO_APPLICATION_PUBLICATION_PROFILE_FILE, PROFILE_SHA256 and VERIFIER require a protected native Windows ordinary verifier configuration");
+    const stat = lstatSync(publicationFile, { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || stat.size < 1n || stat.size > 65_536n)
+      throw Error("Application publication profile file exceeds its fixed size or link bound");
+    // This is a local selection only. Node construction performs protected ACL,
+    // inventory, content-pin, original verifier/backend and storage admission.
+    applicationPublicationProfiles = Object.freeze([{ verificationProfileId: publicationVerifier,
+      selection: { version: 1 as const, configuration: Object.freeze({ path: publicationFile, bytes: Number(stat.size), sha256: publicationHash }) } }]);
+  }
   const windowsReleaseStorage = windowsProcessBackend && releaseProfiles?.length ? new Map(releaseProfiles.map(profile => [profile.storage_root,
     prepareWindowsReleaseStorage({ directory: profile.storage_root, writableWorkspaceRoots: allowedRoots })])) : undefined;
   return {
@@ -226,6 +257,7 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
     ...(productSourceConfigFile ? { productSourceConfigFile } : {}),
     ...(env.ARTOO_OWNED_RESULT_PROFILES_FILE ? { ownedResultProfilesFile: env.ARTOO_OWNED_RESULT_PROFILES_FILE } : {}),
     ...(releaseProfiles ? { releaseProfiles } : {}),
+    ...(applicationPublicationProfiles ? { applicationPublicationProfiles } : {}),
     ...(windowsReleaseStorage ? { windowsReleaseStorage } : {}),
     ...(env.ARTOO_RESEARCH_ENABLED === "1" ? { research: { receiptDirectory: env.ARTOO_RESEARCH_RECEIPTS_DIR!,
       ...(env.ARTOO_RESEARCH_BRAVE_KEY ? { braveApiKeyEnv: "ARTOO_RESEARCH_BRAVE_KEY" } : {}) } } : {}),
@@ -295,6 +327,7 @@ export function createNodeFromConfig(config: ArtoodConfig, sourceCommandDiagnost
     verificationProfiles: config.verificationProfiles,
     windowsProcessBackend: config.windowsProcessBackend,
     releaseProfiles: config.releaseProfiles,
+    applicationPublicationProfiles: config.applicationPublicationProfiles,
     windowsReleaseStorage: config.windowsReleaseStorage,
     productSourceConfigFile: config.productSourceConfigFile,
     requireSupervisorLifetime: config.requireSupervisorLifetime,
@@ -313,7 +346,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env, host: ShutdownH
   let node: ArtoodNode, launchId: string | undefined;
   try {
     recordWindowsStartupPhase("load_configuration");
-    const config = loadConfigFromEnv(env);
+    const config = process.platform === "win32" ? loadPreparedConfigFromEnv(env) : loadConfigFromEnv(env);
     if (supervisedReady) {
       config.requireSupervisorLifetime = true;
       if (env.ARTOO_SOURCE_CLEAN_CONFIG_FILE !== undefined) {
@@ -556,8 +589,75 @@ export async function provisionManagedJournal(env: NodeJS.ProcessEnv, host: Shut
 /** Dispatch provisioning before normal config, registry, provider or WebSocket construction. */
 export async function runDaemonEntrypoint(env: NodeJS.ProcessEnv = process.env, host: ShutdownHost = process): Promise<ArtoodNode | void> {
   const args = (host.argv ?? []).slice(2);
+  const applicationSelectors = ["--initialize-application-store", "--serve-application"];
+  if (args.some(arg => applicationSelectors.some(selector => arg === selector || arg.startsWith(`${selector}=`)))) {
+    if (host.connected !== undefined || args.length !== 1 || !applicationSelectors.includes(args[0]!)
+      || env.ARTOO_WORKER_LAUNCH_ID || env.ARTOO_WORKTREE_BASE_REPO || env.ARTOO_OWNED_RESULT_PROFILES_FILE
+      || Object.keys(env).some(key => /^(ARTOO_MANAGED_|ARTOO_JOURNAL_)/i.test(key) && env[key])) {
+      throw Error("Application service requires one standalone selector and ordinary local node settings");
+    }
+    const file = env.ARTOO_APPLICATION_SERVICE_PROFILE_FILE, nodeId = env.ARTOO_NODE_ID?.trim(), roots = splitList(env.ARTOO_ALLOWED_ROOTS);
+    if (!file || !isAbsolute(file) || /[\u0000-\u001f\u007f]/.test(file) || !nodeId || !roots.length)
+      throw Error("Application service requires an absolute local profile file, node ID and declared write roots");
+    const backend = windowsProcessBackendFromEnv(env, roots, false);
+    if (!backend) throw Error("Application service requires the protected native Windows process installation");
+    const { prepareApplicationServiceProfile } = await import("./application-service-profile.js");
+    const { initializeApplicationStore, startLocalApplicationService } = await import("./application-local-service.js");
+    const controller = new AbortController();
+    let service: Awaited<ReturnType<typeof startLocalApplicationService>> | undefined;
+    const stop = () => { controller.abort(); if (service) void service.close().catch(() => {}); };
+    host.on("SIGINT", stop); host.on("SIGTERM", stop);
+    try {
+      const profile = prepareApplicationServiceProfile({ file, nodeId, allowedRoots: roots, backend });
+      if (controller.signal.aborted) throw Error("Application startup cancelled");
+      if (args[0] === "--initialize-application-store") {
+        const receipt = await initializeApplicationStore(profile, controller.signal);
+        console.log(JSON.stringify({ version: 1, kind: "application-store.initialized", qualified_for_product: false, receipt }));
+      } else {
+        service = await startLocalApplicationService(profile);
+        // A signal during asynchronous listen startup is retained; the original
+        // listener is closed before reporting startup or returning to the caller.
+        if (controller.signal.aborted) await service.close();
+        else console.log(JSON.stringify({ version: 1, kind: "application-service.listening", origin: service.origin,
+          qualified_for_product: false, maximum_requests: 256, maximum_concurrent: 1, get_access: "read" }));
+        await service.closed;
+        console.log(JSON.stringify({ version: 1, kind: "application-service.closed", qualified_for_product: false }));
+      }
+    } catch (error) {
+      // An error after listen (including readiness reporting) still owns that
+      // listener. Await its original shutdown before propagating the failure.
+      const owner = service;
+      const serviceCleanup = owner ? await Promise.allSettled([Promise.resolve().then(() => owner.close()), owner.closed]) : undefined;
+      console.error(JSON.stringify({ version: 1, kind: "application-service.failed", qualified_for_product: false,
+        error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof Error && "cleanup" in error ? { cleanup: error.cleanup } : {}),
+        ...(serviceCleanup ? { service_cleanup: serviceCleanup } : {}) },
+      (_key, value: unknown) => value instanceof Error ? { name: value.name, message: value.message } : value));
+      throw error;
+    } finally { host.off("SIGINT", stop); host.off("SIGTERM", stop); }
+    return;
+  }
+  const brokerCheck = "--check-application-broker-profile";
+  if (args.some(arg => arg === brokerCheck || arg.startsWith(`${brokerCheck}=`))) {
+    if (host.connected !== undefined || args.length !== 1 || args[0] !== brokerCheck
+      || env.ARTOO_WORKER_LAUNCH_ID || env.ARTOO_WORKTREE_BASE_REPO || env.ARTOO_OWNED_RESULT_PROFILES_FILE
+      || Object.keys(env).some(key => /^(ARTOO_MANAGED_|ARTOO_JOURNAL_)/i.test(key) && env[key])) {
+      throw Error("Broker profile inspection requires one standalone offline selector and ordinary local node settings");
+    }
+    const file = env.ARTOO_APPLICATION_BROKER_PROFILE_FILE, nodeId = env.ARTOO_NODE_ID?.trim(), roots = splitList(env.ARTOO_ALLOWED_ROOTS);
+    if (!file || !isAbsolute(file) || /[\u0000-\u001f\u007f]/.test(file) || !nodeId || !roots.length)
+      throw Error("Broker profile inspection requires an absolute local profile file, node ID and declared write roots");
+    const backend = windowsProcessBackendFromEnv(env, roots, false);
+    if (!backend) throw Error("Broker profile inspection requires the protected native Windows process installation");
+    const { checkApplicationBrokerProfileFile } = await import("./application-broker-profile.js");
+    checkApplicationBrokerProfileFile({ file, nodeId, allowedRoots: roots, backend });
+    console.log(JSON.stringify({ version: 1, kind: "application-broker-profile.checked", qualified_for_product: false,
+      broker_started: false, database_opened: false, declared_local_bindings_checked: true,
+      unqualified: ["compiler-source-artifact-binding", "generated-process-lpac", "effective-agent-write-scope"] }));
+    return;
+  }
   const supervised = supervisedSelection(args, host.connected !== undefined);
-  if (supervised === "parent") return launchWindowsSupervisedCli(env, loadConfigFromEnv(env), fileURLToPath(import.meta.url));
+  if (supervised === "parent") return launchWindowsSupervisedCli(env, loadPreparedConfigFromEnv(env), fileURLToPath(import.meta.url));
   if (supervised === "daemon") return runWindowsSupervisedDaemon(env, host, (controlled, ready) => main(env, controlled, ready));
   const initializeResults = args.includes("--initialize-owned-result-profiles"), upgradeResults = args.includes("--upgrade-owned-result-journal");
   if (initializeResults || upgradeResults) {

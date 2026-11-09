@@ -7,18 +7,26 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const suite = args.find((arg) => arg.startsWith("--suite="))?.slice(8) ?? "shared";
-if (args.some((arg) => arg !== "--list" && !/^--suite=(shared|ios|desktop|mac)$/.test(arg))) {
-  throw new Error("Usage: npm run verify:preview -- [--suite=shared|ios|desktop|mac] [--list]");
+if (args.some((arg) => arg !== "--list" && !/^--suite=(shared|shared-checks|ios|desktop|mac)$/.test(arg))) {
+  throw new Error("Usage: npm run verify:preview -- [--suite=shared|shared-checks|ios|desktop|mac] [--list]");
 }
 const npm = [process.env.npm_execpath, resolve(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")].find((path) => path && existsSync(path));
 const runNpm = (name, ...command) => ({ name, command: npm ? process.execPath : "npm", args: npm ? [npm, ...command] : command });
 const runNode = (name, script) => ({ name, command: process.execPath, args: [script] });
-const checks = {
+// CI partitions this inventory into two two-worker jobs and one serial
+// Windows process job; its aggregate checks actual reporter file coverage.
+// The default local shared suite still executes it here exactly once.
+const unitAndIntegration = runNpm("unit and integration tests", "test", "--", "--maxWorkers=2");
+const suites = {
   shared: [
     runNpm("typecheck", "run", "typecheck"),
     runNpm("production preview build", "run", "build:preview"),
     // Keep PGlite/WASM concurrency bounded on hosted runners.
-    runNpm("unit and integration tests", "test", "--", "--maxWorkers=2"),
+    unitAndIntegration,
+    runNode("CI Vitest partition coverage", "scripts/ci-vitest-coverage.test.mjs"),
+    runNode("npm daemon CLI and release contract", "scripts/npm-daemon/cli.test.mjs"),
+    runNode("Fixed application service host packaging", "apps/artood/scripts/build-application-service-host.test.mjs"),
+    runNode("Fixed application runtime packaging", "apps/artood/scripts/build-application-runtime.test.mjs"),
     runNode("E2E report integrity", "scripts/e2e-report.test.mjs"),
     runNode("Native PNG evidence integrity", "scripts/png-evidence.test.mjs"),
     runNode("Exact native UI suite contract", "apps/ios/scripts/ui-suite-contract.test.mjs"),
@@ -102,7 +110,10 @@ const checks = {
       "apps/server/src/web-static.test.ts"),
     runNpm("Mac DMG installation smoke", "run", "smoke:mac:dmg", "--workspace", "@artoo/desktop"),
   ],
-}[suite];
+};
+const checks = suite === "shared-checks"
+  ? suites.shared.filter((check) => check !== unitAndIntegration)
+  : suites[suite];
 if (args.includes("--list")) {
   console.log(JSON.stringify({ suite, checks: checks.map(({ name }) => name) }, null, 2));
 } else {

@@ -1,7 +1,7 @@
 import { resolveResearchRevisionOrigin, researchRevisionHash, researchRevisionContext } from "./research-revision-origin-service.js";
 import { goalImportedProductReviews } from "@artoo/db";
 import { ImportedProductReviewResultV1Schema } from "@artoo/domain";
-import { artifacts, assistantTurns, autonomousReviews, contextPacks, discussions, goalAutomations, goals, memories, messages, plans, projects, runs, taskDependencies, tasks } from "@artoo/db";
+import { agentInstances, artifacts, assistantTurns, autonomousReviews, contextPacks, discussions, goalAutomations, goals, memories, messages, plans, projects, runs, taskDependencies, tasks } from "@artoo/db";
 import {
   ContextPackSchema,
   ID_PREFIXES,
@@ -17,6 +17,8 @@ import {
   type RunVerificationPayload,
   type ReleaseCapabilityBindingV1,
   releaseCapabilityBinding,
+  ApplicationDeliveryV1Schema, applicationDevelopmentInstructions, applicationPublicationDevelopmentInstructions,
+  ApplicationPublicationGrantV1Schema, type ApplicationRequirementV1, type ApplicationPublicationVerificationBindingV1,
 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
 import { and, asc, desc, eq, isNull, lte, ne, or } from "drizzle-orm";
@@ -30,9 +32,12 @@ import { inspectRunVerification, readRunVerificationEvidence, type RunVerificati
 import { receiptCapabilityBinding, verificationCapabilityBinding } from "./verification-capabilities.js";
 import { persistedPlanningSnapshot, planningRequest } from "./planning-capabilities.js";
 import { buildDesignRevisionContext } from "./product-design-revision-guard.js";
+import { applicationRequirement, applicationPublicationRequirement, originalApplicationPublication, assertCurrentApplicationPublication } from "./application-verification.js";
 
 export interface BuildContextPackParams {
   runId: string;
+  /** Assignment's selected original instance, before the run row is inserted. */
+  agentInstanceId?: string;
   assistantTurnId?: string;
   task: typeof tasks.$inferSelect;
   /** The run's bound workspace root (#20), else falls back to project default. */
@@ -48,6 +53,8 @@ export interface BuiltContextPack {
   sourceMemoryIds: string[];
   verificationCapabilityBinding?: VerificationCapabilityBinding;
   releaseCapabilityBinding?: ReleaseCapabilityBindingV1;
+  applicationRequirement?: ApplicationRequirementV1;
+  applicationPublicationRequirement?: ApplicationPublicationVerificationBindingV1;
 }
 
 /** Render a memory's injectable content (text, else its structured payload). */
@@ -173,7 +180,9 @@ async function taskHandoff(ctx: ServerContext, tx: DrizzleDb, task: typeof tasks
     }
   }
   return { goalContext, dependencyContext: edges.length ? { version: 1 as const, truncated: edges.length > 100, entries } : undefined,
-    productDevelopment, acceptedResearchEvidence, releaseCapabilities, researchOrigin,
+    productDevelopment, acceptedResearchEvidence, releaseCapabilities, researchOrigin, automation,
+    appDelivery: automation?.appDelivery == null ? undefined : ApplicationDeliveryV1Schema.parse(automation.appDelivery),
+    appPublication: automation?.appPublication == null ? undefined : ApplicationPublicationGrantV1Schema.parse(automation.appPublication),
     expected: spec?.success ? spec.data.expected_artifacts.map((item) => `${item.type}: ${item.description}`) : [] };
 }
 
@@ -309,10 +318,14 @@ export async function buildRunContextPack(
     reviewVerification = { version: 1, request_id: evidence.payload.request_id, profile_id: evidence.payload.profile_id,
       profile_digest: evidence.payload.profile_digest, checks: evidence.payload.checks.map((check) => ({
         id: check.id, output_digest: check.output_digest, ...(check.observation ? { observation: check.observation } : {}),
-      })), ...(evidence.payload.measurement_plan ? { measurement_plan: evidence.payload.measurement_plan } : {}) };
+      })), ...(evidence.payload.measurement_plan ? { measurement_plan: evidence.payload.measurement_plan } : {}),
+      ...(evidence.payload.application ? { application: evidence.payload.application } : {}) };
     acceptedReceipt = evidence.payload;
   }
   const verificationCapabilities = bindVerificationCapabilities(params.verification, acceptedReceipt);
+  if ((handoff.appDelivery || handoff.appPublication) && (!verificationCapabilities?.application || handoff.releaseCapabilities)) {
+    throw AppError.conflict("Application development requires its fixed configured verifier without static publication");
+  }
   const releaseCapabilities = handoff.releaseCapabilities;
   if (releaseCapabilities && (releaseCapabilities.binding.verification_profile_id !== params.verification?.profile_id
     || releaseCapabilities.binding.verification_profile_digest !== verificationCapabilities?.profile_digest)) {
@@ -322,6 +335,22 @@ export async function buildRunContextPack(
   const productDevelopment = handoff.productDevelopment && verificationCapabilities
     ? { ...handoff.productDevelopment, instructions: productDevelopmentContext(handoff.productDevelopment.stage, verificationCapabilities, releaseCapabilities).instructions }
     : handoff.productDevelopment;
+  if (handoff.appDelivery && productDevelopment) productDevelopment.instructions.push(...applicationDevelopmentInstructions());
+  if (handoff.appPublication && productDevelopment) productDevelopment.instructions.push(...applicationPublicationDevelopmentInstructions());
+  let applicationPublication: ContextPack["application_publication"];
+  if (handoff.appPublication) {
+    const original = await originalApplicationPublication(ctx, tx, handoff.automation!, task.projectId);
+    const snapshot = persistedPlanningSnapshot(handoff.automation!, task.projectId);
+    const [instance] = params.agentInstanceId ? await tx.select().from(agentInstances).where(and(
+      eq(agentInstances.id, params.agentInstanceId), eq(agentInstances.organizationId, ctx.organizationId))) : [];
+    if (!instance || instance.computerId !== original.capabilities.binding.computer_id
+      || !isDeepStrictEqual(snapshot?.application_publication?.capabilities, original.capabilities)
+      || !isDeepStrictEqual(snapshot?.capabilities, verificationCapabilities)) {
+      throw AppError.conflict("Application publication context differs from its fixed original agent or planning capability");
+    }
+    assertCurrentApplicationPublication(ctx, original);
+    applicationPublication = { ...original, agent_id: instance.agentId, agent_instance_id: instance.id };
+  }
   const designRevision = await buildDesignRevisionContext(ctx, tx, task, params.runId, independentReview);
   const researchRevision = handoff.researchOrigin ? researchRevisionContext(handoff.researchOrigin.intent,
     handoff.researchOrigin.revision.intentDigest, independentReview?.subjectRunId ?? params.runId) : undefined;
@@ -338,6 +367,8 @@ export async function buildRunContextPack(
   }
   if (designRevision && productDevelopment) productDevelopment.instructions.push("This is an additive design revision. Follow product_design_revision.request and compare against the exact retained baseline.design.text. Preserve all old validation cases in order and every non-case field, append only requested workspace criterion cases, and preserve the accepted research. The node measures every old and new workspace case; independent review must assess whether the reported defect is covered. Publication remains pending.");
   const payload: ContextPack = ContextPackSchema.parse({
+    ...(handoff.appDelivery ? { app_delivery: handoff.appDelivery } : {}),
+    ...(handoff.appPublication ? { app_publication: handoff.appPublication, application_publication: applicationPublication } : {}),
     ...(researchRevision ? { product_research_revision: researchRevision } : {}),
     ...(designRevision ? { product_design_revision: designRevision } : {}),
     ...(verificationCapabilities ? { verification_capabilities: { ...verificationCapabilities, profile_id: params.verification!.profile_id } } : {}),
@@ -386,6 +417,8 @@ export async function buildRunContextPack(
   });
 
   return { contextPackId, sourceMemoryIds: selection.source_memory_ids,
+    ...(handoff.appDelivery || handoff.appPublication ? { applicationRequirement: applicationRequirement(verificationCapabilities!.application!, reviewVerification?.application) } : {}),
+    ...(applicationPublication ? { applicationPublicationRequirement: applicationPublicationRequirement(applicationPublication) } : {}),
     ...(releaseCapabilities ? { releaseCapabilityBinding: releaseCapabilityBinding(releaseCapabilities) } : {}),
     ...(verificationCapabilities ? { verificationCapabilityBinding: verificationCapabilityBinding(verificationCapabilities) } : {}) };
 }

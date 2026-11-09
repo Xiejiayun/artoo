@@ -49,7 +49,9 @@ describe.skipIf(process.platform === "win32")("POSIX managed worker process owne
       // source. Package exports point at dist, which is absent after npm ci and
       // can otherwise silently test stale shared code from an earlier build.
       alias: {
+        "@artoo/domain/dist/application-publication.js": fileURLToPath(new URL("../../../packages/domain/src/application-publication.ts", import.meta.url)),
         "@artoo/domain": fileURLToPath(new URL("../../../packages/domain/src/index.ts", import.meta.url)),
+        "@artoo/protocol/dist/source-recovery.js": fileURLToPath(new URL("../../../packages/protocol/src/source-recovery.ts", import.meta.url)),
         "@artoo/protocol": fileURLToPath(new URL("../../../packages/protocol/src/index.ts", import.meta.url)),
       },
       plugins: [{ name: "installed-playwright-runtime", setup(builder) {

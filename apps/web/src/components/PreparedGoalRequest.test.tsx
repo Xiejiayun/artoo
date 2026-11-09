@@ -40,6 +40,28 @@ describe("prepared product request page", () => {
     expect(createAutonomousGoal).toHaveBeenCalledWith(preparedGoalBody(entry, goal.objective), entry.request_key);
     await waitFor(() => expect(screen.getByRole("button", { name: "Retry submission" })).toBeDisabled());
   });
+  it("submits the prepared local application publication grant with one objective and no extra confirmation", async () => {
+    const local: BrowserGoalEntry = { ...entry, request: { execution_mode: "agent_team", verification_profile_id: "application-verify", max_retries: 3,
+      app_publication: { version: 1, kind: "same-computer-local-application-publication", publication_profile_id: "local-application" } } };
+    const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockResolvedValue({ goal, automation });
+    renderWithProviders(<GoalsPage />, { client: client(local, { createAutonomousGoal }) });
+    const input = await screen.findByLabelText("Objective");
+    expect(screen.getByText(/application runs within the configured time and request limits/)).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument(); expect(screen.queryByLabelText("Execution mode")).not.toBeInTheDocument();
+    await userEvent.type(input, goal.objective); await userEvent.click(screen.getByRole("button", { name: "Start product" }));
+    await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledOnce());
+    expect(createAutonomousGoal).toHaveBeenCalledWith(preparedGoalBody(local, goal.objective), local.request_key);
+    expect(createAutonomousGoal.mock.calls[0]![0]).toMatchObject({ app_publication: local.request.app_publication });
+    for (const field of ["app_delivery", "release_profile_id", "source_handoff"])
+      expect(createAutonomousGoal.mock.calls[0]![0]).not.toHaveProperty(field);
+  });
+  it("describes a development-only prepared application without promising publication", async () => {
+    const local: BrowserGoalEntry = { ...entry, request: { execution_mode: "agent_team", verification_profile_id: "application-verify", max_retries: 3,
+      app_delivery: { version: 1, kind: "local-application-development" } } };
+    renderWithProviders(<GoalsPage />, { client: client(local) });
+    expect(await screen.findByText(/This session delivers a verified application workspace/)).toBeInTheDocument();
+    expect(screen.queryByText(/publication to the configured destination/)).not.toBeInTheDocument();
+  });
 
   it("makes the console-owned session a monitor without another input form", async () => {
     const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>();

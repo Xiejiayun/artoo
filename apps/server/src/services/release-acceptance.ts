@@ -19,7 +19,7 @@ import { inspectRecoveryFinalReleaseAcceptance, inspectRecoveryReleaseAcceptance
 import { inspectCleanFinalReleaseAcceptance, inspectCleanReleaseAcceptanceRun, cleanReleaseSourceOrigin } from "./clean-validation-release-service.js";
 
 export type ReleaseAcceptanceAutomation = Pick<typeof goalAutomations.$inferSelect,
-  "goalId" | "releaseProfileId" | "computerId" | "workspaceRoot" | "planId" | "verificationProfileId" | "executionMode" | "planningCapabilitySnapshot">;
+  "goalId" | "releaseProfileId" | "computerId" | "workspaceRoot" | "planId" | "verificationProfileId" | "executionMode" | "planningCapabilitySnapshot"> & { appDelivery?: unknown };
 export interface AcceptedReleaseSource {
   run: typeof runs.$inferSelect;
   evidence: RunVerificationEvidence;

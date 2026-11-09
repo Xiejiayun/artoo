@@ -51,3 +51,51 @@ export function parseWindowsBrowserAncestryFailure(value: unknown,
   if (Buffer.byteLength(JSON.stringify(result), "utf8") > 768) throw invalid();
   return Object.freeze(result);
 }
+
+/** Count-bound rejection facts only; the original root HANDLE is queried without granting authority. */
+export interface WindowsBrowserObservationBoundFailureV1 {
+  readonly version: 1;
+  readonly boundary: "current_subtree" | "history_union";
+  readonly limit: 128;
+  readonly attempt: number;
+  readonly census: "first" | "second" | "corroborating";
+  readonly root_pid: number;
+  readonly root_handle_state: "live" | "exited" | "unavailable";
+  readonly current_count: number;
+  readonly current_count_is_lower_bound: boolean;
+  readonly history_count: number;
+}
+const boundFields = ["version", "boundary", "limit", "attempt", "census", "root_pid", "root_handle_state",
+  "current_count", "current_count_is_lower_bound", "history_count"] as const;
+const invalidBound = () => new Error("Invalid protected browser observation bound failure evidence");
+
+/** The count guard stops at the 129th candidate; a full subtree size is deliberately not inferred. */
+export function parseWindowsBrowserObservationBoundFailure(value: unknown,
+  history: Readonly<{ parentPid: number; pids: readonly number[] }>): Readonly<WindowsBrowserObservationBoundFailureV1> {
+  if (typeof value !== "object" || value === null || Object.getPrototypeOf(value) !== Object.prototype) throw invalidBound();
+  const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors);
+  if (keys.length !== boundFields.length || keys.some(key => typeof key !== "string" || !boundFields.includes(key as typeof boundFields[number]))
+    || boundFields.some(key => !Object.hasOwn(descriptors[key]!, "value"))) throw invalidBound();
+  const record = Object.fromEntries(boundFields.map(key => [key, descriptors[key]!.value])) as Record<typeof boundFields[number], unknown>;
+  if (!pid(history.parentPid) || !Array.isArray(history.pids) || history.pids.length > 127
+    || history.pids.some(value => !pid(value) || value === history.parentPid) || new Set(history.pids).size !== history.pids.length
+    || record.version !== 1 || record.limit !== 128 || record.root_pid !== history.parentPid
+    || !Number.isInteger(record.attempt) || (record.attempt as number) < 1 || (record.attempt as number) > 3
+    || !["first", "second", "corroborating"].includes(record.census as string)
+    || !["live", "exited", "unavailable"].includes(record.root_handle_state as string)
+    || record.history_count !== history.pids.length + 1) throw invalidBound();
+  if (record.boundary === "current_subtree") {
+    if (record.current_count !== 129 || record.current_count_is_lower_bound !== true) throw invalidBound();
+  } else if (record.boundary === "history_union") {
+    if (record.history_count !== 128 || !Number.isInteger(record.current_count) || (record.current_count as number) < 2
+      || (record.current_count as number) > 128 || record.current_count_is_lower_bound !== false) throw invalidBound();
+  } else throw invalidBound();
+  const result: WindowsBrowserObservationBoundFailureV1 = { version: 1,
+    boundary: record.boundary, limit: 128, attempt: record.attempt as number,
+    census: record.census as WindowsBrowserObservationBoundFailureV1["census"], root_pid: history.parentPid,
+    root_handle_state: record.root_handle_state as WindowsBrowserObservationBoundFailureV1["root_handle_state"],
+    current_count: record.current_count as number, current_count_is_lower_bound: record.current_count_is_lower_bound as boolean,
+    history_count: record.history_count as number };
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") > 384) throw invalidBound();
+  return Object.freeze(result);
+}

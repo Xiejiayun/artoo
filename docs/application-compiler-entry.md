@@ -1,0 +1,32 @@
+# Fixed application compiler package
+
+This development component accepts one complete source snapshot and returns compilation data. It does not execute emitted JavaScript, create a product candidate, qualify a workspace, connect to Server, or publish a product. Its response and package manifest explicitly retain `qualified_for_product: false` and unavailable execution status. An ordinary subprocess fixture is not Windows LPAC/Job isolation evidence.
+
+Build on native Windows from locked installed dependencies, using a fresh output directory:
+
+```powershell
+node apps/artood/scripts/build-application-compiler.mjs --out-dir C:/absolute/new-compiler-package
+node apps/artood/test-fixtures/application-compiler-process-real.test.mjs C:/absolute/new-compiler-package C:/absolute/new-fixture-evidence
+```
+
+The fixed child command is `node <package>/application-compiler.cjs --application-compiler-v1`, with no Node flags and a trusted parent's explicit environment. Feed one UTF-8 JSON request on stdin and close stdin. The request has exactly `version: 1`, `kind: "compile"`, a 1–64 character ASCII alphanumeric/underscore/hyphen `request_id`, and `source: [{path,text}]`. The existing core validates portable paths, file counts, source sizes, module imports and the handler contract. Caller libraries, compiler options, plugins, paths and environment settings are unsupported. Output is one JSON response plus newline, with `kind: "compile-result"`, the request ID, `qualified_for_product: false`, and the core's unchanged draft or rejection under `result`. Protocol failures emit only `application_compiler_failed` on stderr and exit 1. A valid compilation rejection is data and exits 0.
+
+Input is capped at **52 MiB of actual UTF-8 bytes**, counted before retaining each chunk. This accommodates the core's 8 MiB decoded source limit even when each source byte and each ASCII path character is encoded as six-byte JSON escapes. Output is capped at **100 MiB of actual encoded UTF-8**, measured after JSON serialization and before writing; 16 MiB of emitted text can expand to 96 MiB. These are transport bounds, not process memory or CPU limits. Parsing, serialization, buffers and compiler allocations consume additional memory. The trusted fixture runs serially; run the large protocol tests with `--maxWorkers=1`.
+
+The input reader retains one fixed 52 MiB buffer, including when input arrives in empty or one-byte fragments. It does not retain an object per chunk. Stdin/stdout/stderr error events and write callbacks enter a sticky failure state, set a nonzero exit code and attempt at most one fixed stderr message.
+
+The entry initializes TypeScript only after fixed startup and request checks. It asserts the original draft with the core's private WeakMap inside that child before serialization. A serialized response does not retain this identity or acquire execution authority. The draft's sorted-pin `JSON.stringify` digest algorithm and SDK bytes are unchanged.
+
+## Runtime and build closure
+
+The single CJS file embeds actual TypeScript 5.9.3, the compilation core, SDK declaration text, bundled Zod implementation, and all 99 captured TypeScript declaration libraries. It needs no runtime npm installation or declaration directory. `build.json` records actual bytes and SHA-256 for every compiler/library/bundle input, bootstrap, package manifests, lockfile, build script, esbuild JavaScript and Windows binary, and the Node executable used for packaging. All captured inputs are reread before output is written. These content measurements are not protected physical identity, installation ACL, signature, or native owner admission.
+
+The reviewed TypeScript implementation hash is fixed in the packager; upgrading it requires a new resolver review. A measured bootstrap runs before bundle initializers and replaces the CJS wrapper's `require` with a frozen builtin-only function. The original resolver is held only inside its private closure, called with fixed `node:` builtin names. The guard exposes no `require.resolve`. TypeScript's dormant `source-map-support`, `inspector` and `require(modulePath)` paths cannot resolve packages or files through it. The AST packaging audit checks every free `require` use, rejects unreviewed aliases, `require.resolve`, `createRequire` and surviving dynamic import, and checks esbuild's internal CommonJS cache helper against its exact reviewed body. TypeScript's included language-service `host.require` references are not Node resolver aliases; this core constructs only a fixed virtual CompilerHost and supplies no plugin host or language service. No application callback or generated code runs during compilation.
+
+The bundle is trusted developer code; these checks do not make a JavaScript sandbox. Startup rejects `NODE_OPTIONS`, `NODE_PATH`, `TSC_*` and inspector-related variables, but cannot undo a Node preload that already ran. The fixture therefore creates a small explicit environment **before** spawning Node. Production must separately establish the node-local profile, immutable source capture, protected staging, original process ownership/closure and qualified native isolation. There is no ordinary-process fallback for those missing capabilities.
+
+## Evidence scope
+
+The fixture retains input/entry pins, stdin/stdout/stderr, original PID, process `exit` and `close`, and stdout/stderr EOF and close observations for every child. It checks pins before and after each run and never deletes its evidence. Fixed resolver decoys test that compilation does not use workspace packages/configuration/declarations; a separate developer-authored bootstrap probe checks denial without adding a debugging mode to the product entry. Source containing a top-level throw is compiled and inspected as text only. Type errors, invalid protocol, bad UTF-8, multiple requests, caller options/libraries, Node/environment arguments, real transport limits and JSON expansion are exercised.
+
+Broken-pipe cases deliberately close one observer handle before providing input. That stream is recorded as observer-closed, not a naturally observed child EOF. The other stream must reach actual EOF, the original process must emit exit/close with a nonzero status, and a broken stdout must yield only the fixed stderr message. These are fault observations with a limited output view, not complete normal-channel closure evidence. Product isolation, a running application, live provider acceptance, publication and deployment remain unverified by this component.

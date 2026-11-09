@@ -1,6 +1,7 @@
 import { importedCleanValidationAckSchema, importedCleanValidationResultSchema, importedCleanValidationReviewAckSchema, importedCleanValidationReviewResultSchema } from "@artoo/protocol";
 import {productSourceOperationAckSchema,productSourceOperationResultSchema} from "@artoo/protocol";
 import { sourceLifecycleRegisterSchema, sourceCleanCheckpointSchema } from "@artoo/protocol";
+import { applicationPublicationReceiptMessageSchema, applicationPublicationObservationMessageSchema } from "@artoo/protocol";
 import { importedProductReviewAckSchema, importedProductReviewResultSchema } from "@artoo/protocol";
 import { importedDesignContinuationAckSchema, importedDesignContinuationResultSchema } from "@artoo/protocol";
 import { importedDesignReviewAckSchema, importedDesignReviewResultSchema } from "@artoo/protocol";
@@ -161,6 +162,8 @@ export function parseNodeToServer(data: unknown): NodeToServerMessage | null {
     case "product.source.operation.result.v1": return ok(productSourceOperationResultSchema.safeParse(raw));
     case "product.release.receipt":
       return ok(productReleaseReceiptMessageSchema.safeParse(raw));
+    case "application.publication.receipt": return ok(applicationPublicationReceiptMessageSchema.safeParse(raw));
+    case "application.publication.observation": return ok(applicationPublicationObservationMessageSchema.safeParse(raw));
     case "product.release.health":
       return ok(productReleaseHealthMessageSchema.safeParse(raw));
     default:

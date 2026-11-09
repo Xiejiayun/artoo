@@ -53,6 +53,25 @@ describe("supervised CLI selection", () => {
     expect(() => supervisedEnvironment({ ARTOO_RUNTIMES: "codex,claude-code", ARTOO_CODEX_BINARY: process.execPath }, nonce)).toThrow(/ARTOO_RUNTIMES/);
     expect(() => supervisedEnvironment({ ARTOO_RUNTIMES: "codex", ARTOO_CODEX_BINARY: process.execPath, ARTOO_JOURNAL_VERSION: "1" }, nonce)).toThrow(/ordinary fixed/);
   });
+  it("preserves the exact local application publication selection without admitting sibling settings", () => {
+    const ordinary = { ARTOO_RUNTIMES: "codex", ARTOO_CODEX_BINARY: join(process.cwd(), "codex.exe") };
+    const publication = {
+      ARTOO_APPLICATION_PUBLICATION_PROFILE_FILE: join(process.cwd(), "protected", "publication.json"),
+      ARTOO_APPLICATION_PUBLICATION_PROFILE_SHA256: digest,
+      ARTOO_APPLICATION_PUBLICATION_VERIFIER: "native-application",
+    };
+    const unrecognized = {
+      ARTOO_APPLICATION_PUBLICATION_EXECUTABLE: "untrusted.exe",
+      ARTOO_APPLICATION_PUBLICATION_ARGS: "--untrusted",
+      ARTOO_APPLICATION_PUBLICATION_PROFILE_JSON: "{}",
+      ARTOO_APPLICATION_PUBLICATION_VERIFIER_OVERRIDE: "untrusted-verifier",
+    };
+    const selected = supervisedEnvironment({ ...ordinary, ...publication, ...unrecognized }, nonce);
+    for (const [key, value] of Object.entries(publication)) expect(selected[key]).toBe(value);
+    for (const key of Object.keys(unrecognized)) expect(selected[key]).toBeUndefined();
+    const withoutPublication = supervisedEnvironment(ordinary, nonce);
+    for (const key of Object.keys(publication)) expect(withoutPublication[key]).toBeUndefined();
+  });
   it.each(["untrusted", JSON.stringify({ version: 1, path: "C:\\untrusted\\git.exe", bytes: 42, sha256: digest })])
   ("never inherits a bootstrap executable projection even when initialization is enabled", injected => {
     const env = supervisedEnvironment({ ARTOO_RUNTIMES: "codex", ARTOO_CODEX_BINARY: join(process.cwd(), "codex.exe"),

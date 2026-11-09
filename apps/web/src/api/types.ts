@@ -8,6 +8,7 @@
  */
 import type {
   PreparedGoalEntryV1,
+  ApplicationPublicationRequestV1, ApplicationPublicationReceiptV1, ApplicationPublicationObservationV1,
   Agent,
   AgentInstance,
   AgentRuntime,
@@ -27,6 +28,21 @@ import type {
   AuditBundleExport,
   TaskAuditBundle,
 } from "@artoo/domain";
+
+/** Historical publication and the server's current availability projection are distinct. */
+export interface ApplicationPublicationView {
+  id: string;
+  goal_id: string;
+  status: "queued" | "published" | "failed";
+  scope: "bounded-local-application-publication";
+  request: ApplicationPublicationRequestV1;
+  receipt: ApplicationPublicationReceiptV1 | null;
+  latest_observation: ApplicationPublicationObservationV1 | null;
+  current_state: ApplicationPublicationObservationV1["state"] | "pending";
+  endpoint: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface BootstrapResponse {
   goal_entry?: PreparedGoalEntryV1;

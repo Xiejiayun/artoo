@@ -60,27 +60,85 @@ export function assertWindowsCodeInstallation(token: PreparedWindowsCodeInstalla
  * does not apply to this object, and each existing descendant is audited independently.
  * This policy must never be used for mutable release storage or future state files. */
 export function auditWindowsCodeInstallation(token: PreparedWindowsCodeInstallation, directory: string): void {
-  const saved = state(token, directory); assertWindowsCodeInstallation(token, directory);
-  const before = inventory(directory), targets = new Map<string, WindowsAclTarget>();
-  const ancestors = new Set(windowsPathComponents(directory).slice(0, -1).map(windowsPathKey));
-  for (const expected of saved.fixed.values()) targets.set(windowsPathKey(expected.path), {
-    path: expected.path, directory: true, readAcl: ancestors.has(windowsPathKey(expected.path)),
+  auditWindowsCodeInstallationBatch([{ code: token, directory }]);
+}
+/** Shares facts only within this synchronous boundary. Each original installation
+ * retains its complete before/after inventory, fixed identities and own ACL policy. */
+export function auditWindowsCodeInstallationBatch(entries: readonly {
+  code: PreparedWindowsCodeInstallation; directory: string;
+}[]): void {
+  if (!Array.isArray(entries) || entries.length === 0) fail("an explicit nonempty local code batch is required");
+  const prepared = entries.map(entry => {
+    if (!entry || typeof entry !== "object" || Object.keys(entry).some(key => key !== "code" && key !== "directory"))
+      fail("an exact local code binding is required");
+    const { code, directory } = entry, saved = state(code, directory);
+    assertFixed(saved);
+    // The same complete inventory binds both the admitted baseline and the
+    // closing observation; no intervening inventory can become a new baseline.
+    const before = inventory(directory);
+    if (!sameInventory(saved.installed, before)) fail("installation inventory or metadata changed");
+    const targets = new Map<string, WindowsAclTarget>();
+    const ancestors = new Set(windowsPathComponents(directory).slice(0, -1).map(windowsPathKey));
+    for (const expected of saved.fixed.values()) targets.set(windowsPathKey(expected.path), {
+      path: expected.path, directory: true, readAcl: ancestors.has(windowsPathKey(expected.path)),
+    });
+    for (const item of before.values()) targets.set(windowsPathKey(item.path), { path: item.path, directory: item.directory, readAcl: true });
+    if (targets.size > MAX_WINDOWS_AUDIT_PATHS) fail("installation and boundary inventory exceeds its bound");
+    return { saved, before, targets, ancestors };
   });
-  for (const item of before.values()) targets.set(windowsPathKey(item.path), { path: item.path, directory: item.directory, readAcl: true });
-  if (targets.size > MAX_WINDOWS_AUDIT_PATHS) fail("installation and boundary inventory exceeds its bound");
-  const report = collectWindowsAclFacts([...targets.values()]);
-  if (saved.sid !== undefined && saved.sid !== report.currentSid) fail("node Windows identity changed");
-  const trusted = new Set([...TRUSTED_WINDOWS_SYSTEM_SIDS, report.currentSid]);
-  for (const node of report.nodes) {
-    if (!targets.get(windowsPathKey(node.path))!.readAcl) continue;
-    if (!node.ownerSid || !trusted.has(node.ownerSid)) fail("untrusted owner");
-    const mask = ancestors.has(windowsPathKey(node.path)) ? WINDOWS_ANCESTOR_REPLACEMENT_MASK : WINDOWS_MUTATION_MASK;
-    for (const ace of node.aces) if (ace.qualifier === "AccessAllowed" && (ace.flags & 8) === 0
-      && !trusted.has(ace.sid) && (ace.mask & mask) !== 0) fail("another principal can modify or replace the installation");
+  type Group = { targets: Map<string, WindowsAclTarget>; installations: typeof prepared };
+  const groups: Group[] = []; let shared: Group | undefined;
+  // Only small unsealed requests are combined. Per node, reserve 24 KiB for a
+  // 4096-character fully escaped path, 80 KiB for 256 ACEs (320 bytes each with
+  // 184-character SIDs), and 4 KiB for all other fixed fields. At 512 targets,
+  // 54 MiB plus the envelope stays below the collector's 64 MiB response limit.
+  // A larger legal original request stays intact in its own collector: no new
+  // single-installation limit, retry, timeout extension or fallback after failure.
+  const maximumSharedTargets = Math.min(512, MAX_WINDOWS_AUDIT_PATHS);
+  const shareable = (targets: ReadonlyMap<string, WindowsAclTarget>): boolean =>
+    targets.size <= maximumSharedTargets
+      && Buffer.byteLength(JSON.stringify({ version: 1, paths: [...targets.values()] })) <= 16 * 1024 * 1024;
+  for (const installation of prepared) {
+    if (!shareable(installation.targets)) {
+      groups.push({ targets: installation.targets, installations: [installation] }); continue;
+    }
+    const combined = new Map(shared?.targets);
+    for (const [key, target] of installation.targets) {
+      const previous = combined.get(key);
+      if (previous && (previous.path !== target.path || previous.directory !== target.directory)) fail("shared code audit target changed");
+      combined.set(key, { ...target, readAcl: target.readAcl || previous?.readAcl === true });
+    }
+    if (!shared || !shareable(combined)) {
+      shared = { targets: new Map(installation.targets), installations: [installation] }; groups.push(shared);
+    } else { shared.targets = combined; shared.installations.push(installation); }
   }
-  assertFixed(saved);
-  if (!sameInventory(before, inventory(directory))) fail("installation changed during ACL audit");
-  saved.sid = report.currentSid;
+  let sid: string | undefined;
+  for (const group of groups) {
+    const report = collectWindowsAclFacts([...group.targets.values()]);
+    if (sid !== undefined && sid !== report.currentSid) fail("node Windows identity changed");
+    sid = report.currentSid;
+    const facts = new Map(report.nodes.map(node => [windowsPathKey(node.path), node]));
+    const trusted = new Set([...TRUSTED_WINDOWS_SYSTEM_SIDS, sid]);
+    for (const { saved, targets, ancestors } of group.installations) {
+      if (saved.sid !== undefined && saved.sid !== sid) fail("node Windows identity changed");
+      for (const [key, target] of targets) {
+        const node = facts.get(key); if (!node) fail("code audit facts are incomplete");
+        if (!target.readAcl) continue;
+        if (!node.ownerSid || !trusted.has(node.ownerSid)) fail("untrusted owner");
+        // A shared path can be an ancestor for one token and code for another.
+        const mask = ancestors.has(key) ? WINDOWS_ANCESTOR_REPLACEMENT_MASK : WINDOWS_MUTATION_MASK;
+        for (const ace of node.aces) if (ace.qualifier === "AccessAllowed" && (ace.flags & 8) === 0
+          && !trusted.has(ace.sid) && (ace.mask & mask) !== 0) fail("another principal can modify or replace the installation");
+      }
+    }
+  }
+  for (const { saved, before } of prepared) {
+    assertFixed(saved);
+    if (!sameInventory(before, inventory(saved.directory))) fail("installation changed during ACL audit");
+  }
+  // Do not partially update any token when another group or final inventory fails.
+  if (sid === undefined) fail("code audit facts are incomplete");
+  for (const { saved } of prepared) saved.sid = sid;
 }
 /** Fixed local admission; callers cannot select an ACL policy, SID or bypass callback. */
 export function prepareWindowsCodeInstallation(input: WindowsCodeInstallationInput): PreparedWindowsCodeInstallation {

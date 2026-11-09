@@ -1,0 +1,251 @@
+// Controlled boundaries only: no actual native process, SQLite, socket or host.
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import type { PreparedApplicationInstallation } from "./application-installation.js";
+import type { InstalledApplicationReopenOptions } from "./application-installed-session.js";
+const state = vi.hoisted(() => ({ describe: vi.fn(), bind: vi.fn(), audit: vi.fn(), reference: vi.fn(), reopen: vi.fn(), retire: vi.fn(),
+  acquire: vi.fn(), release: vi.fn(), profile: vi.fn(), initialize: vi.fn(), preflight: vi.fn(), start: vi.fn(), host: vi.fn(), backend: vi.fn(), localClosure: vi.fn(),
+  facts: vi.fn(), publication: vi.fn(), counters: vi.fn(), subscribe: vi.fn() }));
+vi.mock("./application-installation.js", () => ({ describeApplicationInstallation: state.describe, bindApplicationInstallationSession: state.bind,
+  auditApplicationInstallation: state.audit, createApplicationInstallationReopenReference: state.reference,
+  reopenApplicationInstallation: state.reopen, retireApplicationInstallation: state.retire, readApplicationInstallationReopenFacts: state.facts }));
+vi.mock("./application-bootstrap-admission.js", () => ({ readApplicationBootstrapPublication: state.publication }));
+vi.mock("./application-session-ownership.js", () => ({ acquireApplicationSession: state.acquire, releaseApplicationSession: state.release }));
+vi.mock("./application-service-profile.js", () => ({ prepareInstalledApplicationServiceProfile: state.profile }));
+vi.mock("./application-local-service.js", () => ({ initializeApplicationStore: state.initialize, checkExistingApplicationStore: state.preflight,
+  startLocalApplicationService: state.start, readApplicationLocalServiceClosure: state.localClosure,
+  readApplicationLocalServiceCounters: state.counters, subscribeApplicationLocalServiceCounters: state.subscribe }));
+vi.mock("./windows-code-installation.js", () => ({ assertWindowsCodeInstallation: state.host }));
+vi.mock("./owned/windows-owned-process.js", () => ({ assertWindowsProcessBackend: state.backend }));
+import { initializeRestartableApplication, reopenInstalledApplicationService, readInitializedApplicationClosure, readInstalledApplicationClosure,
+  readInitializedApplicationInstallation, reopenInstalledApplicationPublicationService, readInstalledApplicationPublication } from "./application-installed-session.js";
+const installation = Object.freeze({}) as PreparedApplicationInstallation, session = Object.freeze({}), profile = Object.freeze({});
+const reference = { path: "C:\\installed\\generation\\control\\REOPEN.v1.json", bytes: 42, sha256: "sha256:" + "a".repeat(64) };
+function deferred<T>() {
+  let resolve!: (value: T) => void, reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject };
+}
+const tick = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+function input(): InstalledApplicationReopenOptions {
+  return { reference: { ...reference }, nodeId: "node1", allowedRoots: ["C:\\work"],
+    node: { path: "C:\\node\\node.exe", bytes: 9, sha256: "sha256:" + "b".repeat(64) },
+    hostDirectory: "C:\\host", hostCode: {} as InstalledApplicationReopenOptions["hostCode"],
+    backend: {} as InstalledApplicationReopenOptions["backend"] };
+}
+let closure: ReturnType<typeof deferred<void>>, close: ReturnType<typeof vi.fn>, drain: ReturnType<typeof vi.fn>;
+beforeEach(() => {
+  for (const mock of Object.values(state)) mock.mockReset();
+  state.describe.mockReturnValue({ directory: "C:\\installed\\generation\\code", allowedRoots: ["C:\\work"] });
+  state.acquire.mockReturnValue(session); state.profile.mockReturnValue(profile); state.reopen.mockReturnValue(installation);
+  state.reference.mockReturnValue(reference); state.initialize.mockResolvedValue({ normalShutdown: true }); state.preflight.mockResolvedValue({ normalShutdown: true });
+  closure = deferred(); close = vi.fn(() => closure.promise); drain = vi.fn(() => closure.promise);
+  state.start.mockResolvedValue({ origin: "http://127.0.0.1:31000", closed: closure.promise, close, drain });
+  state.localClosure.mockReturnValue({ version: 1, invocations: 2, runtime_normal_closures: 2, broker_normal_closures: 2, listener_closed: true });
+});
+describe("clean-only installed application coordination", () => {
+  it("captures original publication installation facts before retirement and exposes them only on the returned reference", async () => {
+    const facts = Object.freeze({ reference, generation_id: "original-generation" }); state.facts.mockReturnValue(facts);
+    const initialized = deferred<void>(); state.initialize.mockReturnValue(initialized.promise);
+    const work = initializeRestartableApplication(installation, undefined, true); await tick(); expect(state.facts).not.toHaveBeenCalled();
+    initialized.resolve(); const actual = await work;
+    expect(readInitializedApplicationInstallation(actual)).toBe(facts);
+    expect(state.facts.mock.invocationCallOrder[0]).toBeLessThan(state.retire.mock.invocationCallOrder[0]!);
+    expect(() => readInitializedApplicationInstallation({ ...actual })).toThrow("Original");
+  });
+  it("binds publication markers to original descriptor/database/scope and waits for real preflight closure", async () => {
+    const scope = { product_id: "project1", data_generation: "data1", service_generation: 1, artifact_digest: "sha256:" + "c".repeat(64) };
+    const facts = { generation_id: "generation1", reference, database: { dev: "1", ino: "77" }, scope,
+      schema_digest: "sha256:" + "d".repeat(64), origin: "http://127.0.0.1:31000" };
+    const publication = { identity: { deployment_generation: facts.generation_id, reopen_pin_digest: reference.sha256,
+      database_identity: { device: "1", inode: "77" }, schema_digest: facts.schema_digest, origin: facts.origin,
+      artifact_digest: scope.artifact_digest, scope_digest: `sha256:${createHash("sha256").update(JSON.stringify(scope)).digest("hex")}` } };
+    state.publication.mockReturnValue(publication); state.facts.mockReturnValue(facts); state.counters.mockReturnValue({ requests_used: 0 });
+    const selected = { ...input(), bootstrap: Object.freeze({}) as NonNullable<InstalledApplicationReopenOptions["bootstrap"]> };
+    const preflight = deferred<void>(); state.preflight.mockReturnValue(preflight.promise);
+    const work = reopenInstalledApplicationPublicationService(selected); await tick(); expect(state.start).not.toHaveBeenCalled();
+    preflight.resolve(); const service = await work;
+    expect(state.start).toHaveBeenCalledExactlyOnceWith(profile, selected.bootstrap);
+    expect(readInstalledApplicationPublication(service)).toMatchObject({ preflight: { existing_database: true, process_exit_confirmed: true } });
+    expect(() => readInstalledApplicationPublication({ ...service })).toThrow("Original"); closure.resolve(); await service.closed;
+  });
+  it("exposes closure only for the original initialized reference and fully closed installed service", async () => {
+    const unique = Object.freeze({ ...reference }); state.reference.mockReturnValue(unique);
+    expect(() => readInitializedApplicationClosure(unique)).toThrow("Original");
+    const actual = await initializeRestartableApplication(installation);
+    expect(readInitializedApplicationClosure(actual)).toMatchObject({ create_broker_normal: true, session_released: true });
+    expect(() => readInitializedApplicationClosure({ ...actual })).toThrow("Original");
+    const service = await reopenInstalledApplicationService(input());
+    expect(() => readInstalledApplicationClosure(service)).toThrow("has not closed");
+    closure.resolve(); await service.closed;
+    expect(readInstalledApplicationClosure(service)).toMatchObject({ invocations: 2, preflight_normal: true, session_released: true });
+    expect(() => readInstalledApplicationClosure({ ...service })).toThrow("Original");
+  });
+  it("refuses an installed closure observation if the inner listener lacks normal native evidence", async () => {
+    const service = await reopenInstalledApplicationService(input()); closure.resolve(); await service.closed;
+    state.localClosure.mockImplementation(() => { throw Error("normal native closure absent"); });
+    expect(() => readInstalledApplicationClosure(service)).toThrow("normal native closure absent");
+  });
+  it("publishes the pinned descriptor only after the actual initializer resolves, then retires before releasing", async () => {
+    const initialized = deferred<void>(); state.initialize.mockReturnValue(initialized.promise);
+    const work = initializeRestartableApplication(installation); await tick();
+    expect(state.bind).toHaveBeenCalledWith(installation, session); expect(state.reference).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+    initialized.resolve(); expect(await work).toBe(reference);
+    expect(state.retire).toHaveBeenCalledExactlyOnceWith(installation); expect(state.release).toHaveBeenCalledExactlyOnceWith(session);
+    expect(state.reference.mock.invocationCallOrder[0]).toBeGreaterThan(state.initialize.mock.invocationCallOrder[0]!);
+    expect(state.release.mock.invocationCallOrder[0]).toBeGreaterThan(state.retire.mock.invocationCallOrder[0]!);
+    expect(state.preflight).not.toHaveBeenCalled(); expect(state.start).not.toHaveBeenCalled();
+  });
+  it.each(["initialize", "reference", "audit", "retire"])("retains original ownership when initial %s fails", phase => {
+    const failure = Error(phase);
+    if (phase === "initialize") state.initialize.mockRejectedValue(failure);
+    else state[phase as "reference" | "audit" | "retire"].mockImplementation(() => { throw failure; });
+    return expect(initializeRestartableApplication(installation)).rejects.toBe(failure).then(() => {
+      expect(state.release).not.toHaveBeenCalled(); if (phase === "initialize") expect(state.reference).not.toHaveBeenCalled();
+    });
+  });
+  it("opens under the original fresh objects and waits for database preflight before listening", async () => {
+    const bootstrap = Object.freeze({}) as NonNullable<InstalledApplicationReopenOptions["bootstrap"]>;
+    const selected = { ...input(), bootstrap }, checked = deferred<void>(); state.preflight.mockReturnValue(checked.promise);
+    const work = reopenInstalledApplicationService(selected); await tick();
+    expect(state.reopen).toHaveBeenCalledWith({ ...selected, session }); expect(state.start).not.toHaveBeenCalled(); expect(state.initialize).not.toHaveBeenCalled();
+    expect(state.reopen.mock.calls[0]![0].bootstrap).toBe(bootstrap);
+    expect(state.reopen.mock.calls[0]![0].backend).toBe(selected.backend); expect(state.reopen.mock.calls[0]![0].hostCode).toBe(selected.hostCode);
+    checked.resolve(); const live = await work;
+    expect(live.origin).toBe("http://127.0.0.1:31000"); expect(state.release).not.toHaveBeenCalled();
+    const stopping = live.close(); expect(live.close()).toBe(stopping); await tick(); expect(close).toHaveBeenCalledTimes(1); expect(state.release).not.toHaveBeenCalled();
+    closure.resolve(); await stopping; await live.closed;
+    expect(state.audit).toHaveBeenCalledExactlyOnceWith(installation); expect(state.retire).toHaveBeenCalledExactlyOnceWith(installation);
+    expect(state.release).toHaveBeenCalledExactlyOnceWith(session);
+  });
+  it("releases a normal automatic listener drain only after original closed settles", async () => {
+    const live = await reopenInstalledApplicationService(input()); closure.resolve(); await live.closed;
+    expect(close).not.toHaveBeenCalled(); expect(state.release).toHaveBeenCalledOnce();
+  });
+  it("joins the original explicit drain and closed before final audit, retirement and release", async () => {
+    const normalDrain = deferred<void>(); drain.mockReturnValue(normalDrain.promise);
+    const live = await reopenInstalledApplicationService(input());
+    const stopping = live.drain(); expect(live.drain()).toBe(stopping); expect(drain).toHaveBeenCalledOnce();
+    closure.resolve(); await tick();
+    expect(state.audit).not.toHaveBeenCalled(); expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+    normalDrain.resolve(); await stopping; await live.closed;
+    expect(close).not.toHaveBeenCalled(); expect(state.audit).toHaveBeenCalledExactlyOnceWith(installation);
+    expect(state.retire).toHaveBeenCalledExactlyOnceWith(installation); expect(state.release).toHaveBeenCalledExactlyOnceWith(session);
+    expect(state.release.mock.invocationCallOrder[0]).toBeGreaterThan(state.retire.mock.invocationCallOrder[0]!);
+    expect(readInstalledApplicationClosure(live)).toMatchObject({ installation_audited: true, session_released: true });
+  });
+  it("retains ownership when explicit drain lacks normal closure even after original closed", async () => {
+    const normalDrain = deferred<void>(); drain.mockReturnValue(normalDrain.promise);
+    const live = await reopenInstalledApplicationService(input()), failure = Error("normal native closure absent");
+    const stopping = live.drain(); const rejected = expect(stopping).rejects.toThrow("normal drain failed");
+    closure.resolve(); normalDrain.reject(failure); await rejected; await expect(live.closed).rejects.toBe(failure);
+    expect(state.audit).not.toHaveBeenCalled(); expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+    expect(() => readInstalledApplicationClosure(live)).toThrow("has not closed");
+  });
+  it("keeps explicit close effective while a normal drain is pending and joins both original outcomes", async () => {
+    const normalDrain = deferred<void>(); drain.mockReturnValue(normalDrain.promise);
+    const live = await reopenInstalledApplicationService(input()), failure = Error("normal drain cancelled");
+    const draining = live.drain(), drainRejected = expect(draining).rejects.toThrow("normal drain failed");
+    const closing = live.close(), closeRejected = expect(closing).rejects.toThrow("closure failed");
+    await tick(); expect(close).toHaveBeenCalledOnce(); expect(live.close()).toBe(closing);
+    expect(state.release).not.toHaveBeenCalled(); normalDrain.reject(failure); await tick();
+    expect(state.release).not.toHaveBeenCalled(); closure.resolve(); await drainRejected; await closeRejected;
+    await expect(live.closed).rejects.toBe(failure); expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+  });
+  it.each(["audit", "retire", "release"] as const)("does not report explicit drain success when final %s fails", async phase => {
+    const live = await reopenInstalledApplicationService(input()), failure = Error(`controlled ${phase} failure`);
+    state[phase].mockImplementation(() => { throw failure; });
+    const stopping = live.drain(), rejected = expect(stopping).rejects.toThrow("normal drain failed");
+    closure.resolve(); await rejected; await expect(live.closed).rejects.toBe(failure);
+    expect(() => readInstalledApplicationClosure(live)).toThrow("has not closed");
+    if (phase !== "release") expect(state.release).not.toHaveBeenCalled();
+    if (phase === "audit") expect(state.retire).not.toHaveBeenCalled();
+    if (phase === "release") expect(state.release).toHaveBeenCalledOnce();
+  });
+  it("retains a throwing drain request while still awaiting the independent original closed", async () => {
+    const failure = Error("controlled synchronous drain failure"); drain.mockImplementation(() => { throw failure; });
+    const live = await reopenInstalledApplicationService(input()); let done = false;
+    const stopping = live.drain(); void stopping.catch(() => { done = true; }); await tick();
+    expect(done).toBe(false); expect(state.release).not.toHaveBeenCalled();
+    closure.resolve(); await expect(stopping).rejects.toThrow("normal drain failed"); await expect(live.closed).rejects.toBe(failure);
+    expect(state.audit).not.toHaveBeenCalled(); expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+  });
+  it.each(["reopen", "preflight", "start"])("retains the lock and existing database on %s failure", async phase => {
+    const failure = Error(phase);
+    if (phase === "reopen") state.reopen.mockImplementation(() => { throw failure; });
+    else (phase === "preflight" ? state.preflight : state.start).mockRejectedValue(failure);
+    await expect(reopenInstalledApplicationService(input())).rejects.toBe(failure);
+    expect(state.initialize).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled(); expect(state.retire).not.toHaveBeenCalled();
+    if (phase !== "start") expect(state.start).not.toHaveBeenCalled();
+  });
+  it("does not bind a listener when bootstrap admission changes during the awaited preflight", async () => {
+    const bootstrap = Object.freeze({}) as NonNullable<InstalledApplicationReopenOptions["bootstrap"]>;
+    const selected = { ...input(), bootstrap }, checked = deferred<void>(), failure = Error("bootstrap admission changed during preflight");
+    let current = true;
+    const assertAdmission = vi.fn(() => { if (!current) throw failure; });
+    state.profile.mockImplementation(token => { expect(token).toBe(installation); assertAdmission(); return profile; });
+    state.preflight.mockReturnValue(checked.promise);
+    const listen = vi.fn().mockResolvedValue({ origin: "http://127.0.0.1:31000", closed: closure.promise, close, drain });
+    // Coordinator boundary only: the real startLocalApplicationService performs
+    // its profile admission checks synchronously before binding any listener.
+    // The installation/profile tests verify the actual low-level guard wiring.
+    state.start.mockImplementation(token => { expect(token).toBe(profile); assertAdmission(); return listen(token); });
+    const work = reopenInstalledApplicationService(selected); await tick();
+    expect(state.reopen.mock.calls[0]![0].bootstrap).toBe(bootstrap); expect(state.start).not.toHaveBeenCalled();
+    expect(state.preflight).toHaveBeenCalledExactlyOnceWith(profile, undefined);
+    current = false; checked.resolve(); await expect(work).rejects.toBe(failure);
+    expect(state.start).toHaveBeenCalledExactlyOnceWith(profile); expect(assertAdmission).toHaveBeenCalledTimes(2);
+    expect(listen).not.toHaveBeenCalled(); expect(state.initialize).not.toHaveBeenCalled();
+    expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+  });
+  it("does not reinterpret an existing lock as a stale session", async () => {
+    const failure = Object.assign(Error("busy"), { code: "EEXIST" }); state.acquire.mockImplementation(() => { throw failure; });
+    await expect(reopenInstalledApplicationService(input())).rejects.toBe(failure);
+    expect(state.reopen).not.toHaveBeenCalled(); expect(state.preflight).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+  });
+  it("does not release on failed actual listener/owner settlement", async () => {
+    const live = await reopenInstalledApplicationService(input()), failure = Error("uncertain owner");
+    closure.reject(failure); await expect(live.closed).rejects.toBe(failure);
+    expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+  });
+  it("retains changed bootstrap admission at the final audit after normal underlying closure", async () => {
+    const bootstrap = Object.freeze({}) as NonNullable<InstalledApplicationReopenOptions["bootstrap"]>;
+    const selected = { ...input(), bootstrap }, failure = Error("bootstrap admission changed before final audit");
+    let current = true;
+    const assertAdmission = vi.fn(() => { if (!current) throw failure; });
+    state.profile.mockImplementation(token => { expect(token).toBe(installation); assertAdmission(); return profile; });
+    // This controlled audit models the coordinator's installation boundary;
+    // it does not claim to execute the real bootstrap or native admission.
+    state.audit.mockImplementation(token => { expect(token).toBe(installation); assertAdmission(); });
+    const live = await reopenInstalledApplicationService(selected);
+    expect(state.reopen.mock.calls[0]![0].bootstrap).toBe(bootstrap); expect(state.audit).not.toHaveBeenCalled();
+    current = false; expect(state.retire).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+    closure.resolve(); await expect(live.closed).rejects.toBe(failure);
+    expect(state.audit).toHaveBeenCalledExactlyOnceWith(installation); expect(assertAdmission).toHaveBeenCalledTimes(2);
+    expect(state.release).not.toHaveBeenCalled(); expect(state.retire).not.toHaveBeenCalled(); expect(close).not.toHaveBeenCalled();
+  });
+  it("retains a failed release as terminal closure failure", async () => {
+    const live = await reopenInstalledApplicationService(input()), failure = Error("remove failed"); state.release.mockImplementation(() => { throw failure; });
+    closure.resolve(); await expect(live.closed).rejects.toBe(failure); await expect(live.close()).rejects.toThrow("closure failed");
+    expect(state.release).toHaveBeenCalledOnce();
+  });
+  it("does not acquire ownership for already cancelled or malformed selections", async () => {
+    const controller = new AbortController(); controller.abort();
+    await expect(reopenInstalledApplicationService(input(), controller.signal)).rejects.toThrow("cancelled");
+    await expect(initializeRestartableApplication(installation, controller.signal)).rejects.toThrow("cancelled");
+    const selected = { ...input(), reference: { ...reference, path: "C:\\installed\\generation\\control\\other.json" } };
+    await expect(reopenInstalledApplicationService(selected)).rejects.toThrow("descriptor required"); expect(state.acquire).not.toHaveBeenCalled();
+  });
+  it("retains cancellation during preflight without starting a listener", async () => {
+    const controller = new AbortController(); state.preflight.mockImplementation(async () => { controller.abort(); });
+    await expect(reopenInstalledApplicationService(input(), controller.signal)).rejects.toThrow("cancelled");
+    expect(state.start).not.toHaveBeenCalled(); expect(state.release).not.toHaveBeenCalled();
+  });
+  it("waits for the exact late listener if cancellation occurs during asynchronous listen", async () => {
+    const controller = new AbortController(), started = deferred<{ origin: string; closed: Promise<void>; close: typeof close; drain: typeof drain }>();
+    state.start.mockReturnValue(started.promise);
+    const work = reopenInstalledApplicationService(input(), controller.signal); const result = work.catch(error => error); await tick();
+    controller.abort(); started.resolve({ origin: "http://127.0.0.1:31000", closed: closure.promise, close, drain }); await tick();
+    expect(close).toHaveBeenCalledOnce(); expect(state.release).not.toHaveBeenCalled();
+    closure.resolve(); expect(await result).toBeInstanceOf(Error); expect(state.release).toHaveBeenCalledOnce();
+  });
+});

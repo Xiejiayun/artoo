@@ -21,7 +21,7 @@ import { assertWindowsProcessBackend, type PreparedWindowsProcessBackend } from 
 import { runProtectedCommand } from "./protected-command.js";
 // Reuse the exact shared mutable-directory qualifier. This grants physical storage facts,
 // not publication authority; no release profile/executor is created by this module.
-import { prepareWindowsReleaseStorage, assertWindowsReleaseStorage, auditWindowsReleaseStorage } from "./windows-release-storage.js";
+import { prepareWindowsReleaseStorage, assertWindowsReleaseStorage, auditWindowsReleaseStorage, writeWindowsReleaseDispatch } from "./windows-release-storage.js";
 import { prepareResearchOptions, readResearchReceipt, type ResearchOptions } from "./research.js";
 import { readProductFile } from "./product-stage.js";
 import { readAuthenticatedProductSourceTransferV2, type AuthenticatedProductSourceTransferV2 } from "./product-source-semantic-client.js";
@@ -360,6 +360,37 @@ export function claimProductSourceRun(token: PreparedProductSourceRuntime, runId
 }
 /** Node may call only after existing actual process/tool closure checks; uncertain runs keep this fence. */
 export function releaseProductSourceRun(token: PreparedProductSourceRuntime, runId: string): void { state(token).active.delete(runId); }
+
+export interface ProductSourcePublicationWorkspaceReservation { readonly release: () => void }
+/** Shares the original source controller's writer fence. This returns neither
+ * execution permission nor a source result. The publisher must keep it until
+ * every original publication owner has actually closed; uncertain closure keeps
+ * the fence. Releasing that captured claim requires no new execution authority. */
+export function reserveProductSourcePublicationWorkspace(token: PreparedProductSourceRuntime, workspaceRoot: string,
+  publicationDirectories: readonly string[]): ProductSourcePublicationWorkspaceReservation {
+  const current = state(token);
+  if (!Array.isArray(publicationDirectories) || !publicationDirectories.length || publicationDirectories.length > 32)
+    fail("bounded publication storage routing required");
+  for (const directory of publicationDirectories) {
+    const physical = identity(directory);
+    if (!physical.directory || overlaps(physical.path, current.options.storeRoot))
+      fail("publication storage overlaps protected source storage");
+  }
+  const claimId = `publication-owner-${randomUUID()}`;
+  claimProductSourceRun(token, claimId, workspaceRoot);
+  const root = current.active.get(claimId);
+  if (!root || runtimes.get(token) !== current) fail("original publication source claim is unavailable");
+  let released = false;
+  return Object.freeze({ release() {
+    if (released) return;
+    // A revoked runtime can still release this exact existing fence after owner
+    // closure. Never delete a replacement claim or re-run configuration audits
+    // while cleaning up already-created owners.
+    if (runtimes.get(token) !== current || current.active.get(claimId) !== root)
+      fail("original publication source claim changed before closure");
+    current.active.delete(claimId); released = true;
+  } });
+}
 
 export function captureProductSourceExport(token: PreparedProductSourceRuntime, input: { runStart: RunStartPayload; profile: PreparedVerificationProfile;
   evidence: RunVerificationPayload; admission: WindowsVerifiedExecutionAdmission; handle: AgentInstanceHandle }): ProductSourceExportV1 {
@@ -806,7 +837,7 @@ export interface PreparedProductSourceOperation {readonly [sourceOperationBrand]
 const sourceOperationOwners=new WeakMap<PreparedProductSourceOperation,{runtime:PreparedProductSourceRuntime;operationId:string;digest:string;action:"start"|"stop";settled:boolean}>();
 export function reserveProductSourceOperation(runtime:PreparedProductSourceRuntime,operationId:string,digest:string,action:"start"|"stop"):PreparedProductSourceOperation {
   const current=state(runtime);if(!operationId||operationId.length>128||!/^sha256:[a-f0-9]{64}$/.test(digest))fail("Invalid operation ownership binding");
-  writeExclusive(join(current.options.storeRoot,"attestations","dispatch-"+key(operationId)+".json"),canonical({version:1,operation_id:operationId,payload_digest:digest,action}));
+  writeWindowsReleaseDispatch(current.store,current.options.storeRoot,operationId,digest,action);
   const permit=Object.freeze({}) as PreparedProductSourceOperation;sourceOperationOwners.set(permit,{runtime,operationId,digest,action,settled:false});return permit;
 }
 export function persistProductSourceOperationResult(runtime:PreparedProductSourceRuntime,permit:PreparedProductSourceOperation,input:ProductSourceOperationResultV1):void {

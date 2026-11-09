@@ -1,0 +1,16 @@
+# Stage the Windows daemon with browser approval
+
+Use the manually dispatched **Stage Windows daemon on npm** workflow when the Windows build machine cannot reach the npm registry. It runs only from `main`, uses npm 11.20.0 and the official registry, and uploads an already validated tarball. It does not rebuild the package or claim GitHub build provenance.
+
+1. Complete Windows packaging, independent installation, manifest/CLI checks and the connection/normal-stop smoke. Record the exact tarball SHA-256 and source commit.
+2. Create a **draft release in this repository** and attach `jiayunxie-artood-<version>.tgz`. If its tag does not yet exist, set the draft's target to the full 40-character validated source commit. If the tag exists, it must resolve to that source commit. The resolved source must already belong to `main` history; do not attach a different build to a convenient main tag.
+3. Dispatch `.github/workflows/npm-daemon-release.yml` on **main**, supplying `release_tag`, exact `version` and the recorded SHA-256. No npm token secret is required. The workflow checks the draft/source relationship, file digest, fixed package name `@jiayunxie/artood` and publication metadata before authentication.
+4. Open the **Log in through the official npm website** step's live log. Use Edge to open the official URL printed by `npm login --auth-type=web --browser=false` and authorize the CLI as **jiayunxie**. The login command has a 15-minute limit. Do not copy tokens or browser cookies into Actions.
+5. After the run reports a stage ID, review that exact package/version under **Staged Packages** on the npm website. Complete the website's approval and 2FA step separately. A successful Actions run means **staged**, not published. New package staging may create the npm `0.0.0-stage` placeholder; this is not the final version.
+6. Confirm the final version and `next` dist-tag on npm, then install from the registry on Windows and repeat the installed package check. Do not describe staging or a placeholder as an available final release.
+
+The job has read-only GitHub contents permission and no OIDC permission. Inputs enter scripts through environment variables. Candidate metadata is read from the tarball without extracting or running its scripts. The official npm CLI uses a fresh user config/cache under this run's `RUNNER_TEMP`; there are no long-lived npm credentials, proxies, TLS overrides or automatic stage approval.
+
+An `always()` step attempts `npm logout`, which revokes this CLI session, and then removes only this run's temporary directory. If logout fails, the job reports an error even if staging succeeded; revoke that session in npm account settings. A forcibly terminated runner can prevent cleanup, so an interrupted login should also be checked in npm account settings. The workflow does not upload credential files or npm logs as artifacts.
+
+Reference: [npm staged publishing](https://docs.npmjs.com/staged-publishing). npm 11.20's `StagePublish` inherits the normal publish command's tarball handling and options, selects the staging API, and defers proof of presence to approval. This workflow intentionally uses `npm stage publish <exact-tgz> --tag next --access public --ignore-scripts`, followed by logout; it never invokes `npm stage approve`.

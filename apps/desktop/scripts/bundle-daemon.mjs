@@ -173,7 +173,8 @@ export function verifyBundledModules(directory, version) {
     assert.equal(playwrightRequire.resolve('playwright-core'), local.resolve('playwright-core'));
     assert.ok(JSON.parse(fs.readFileSync(path.join(root, 'node_modules/playwright-core/browsers.json'), 'utf8')).browsers.length);
     import(pathToFileURL(path.join(root, 'artood.mjs')).href).then(module => {
-      assert.equal(typeof module.loadConfigFromEnv, 'function'); process.stdout.write('packaged-runtime-ok\n');
+      assert.equal(typeof module.loadConfigFromEnv, 'function');
+      assert.equal(typeof module.loadPreparedConfigFromEnv, 'function'); process.stdout.write('packaged-runtime-ok\n');
     }).catch(error => { console.error(error); process.exitCode = 1; });
   `;
   const env = { ...process.env }; for (const key of Object.keys(env)) if (key.startsWith("ARTOO_")) delete env[key];

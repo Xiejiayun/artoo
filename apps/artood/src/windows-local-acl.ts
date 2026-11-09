@@ -10,14 +10,21 @@ import { readWindowsGuardianOperation } from "./owned/windows-guardian-scope.js"
 import { reserveWindowsGuardianSlotSync } from "./owned/windows-runtime-guardian.js";
 import { startWindowsGuardianObserverSync } from "./owned/windows-owned-process.js";
 import { markWindowsStorageFailure, type WindowsStorageFailureCode } from "./windows-storage-diagnostic.js";
+import { isWindowsSealedRecordAudit, isWindowsSealedRecordBinding, WINDOWS_SEALED_RECORD_OBSERVER_SCRIPT,
+  type WindowsSealedRecordAuditV1, type WindowsSealedRecordBindingV1 } from "./windows-sealed-record-observer.js";
 
 export const MAX_WINDOWS_AUDIT_PATHS = 65536;
 const MAX_INPUT_BYTES = 16 * 1024 * 1024, MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
-export interface WindowsAclTarget { readonly path: string; readonly directory: boolean; readonly readAcl: boolean }
+export interface WindowsAclTarget {
+  readonly path: string; readonly directory: boolean; readonly readAcl: boolean;
+  /** Fixed local writer binding; facts alone do not enable a storage exception. */
+  readonly sealed?: WindowsSealedRecordBindingV1;
+}
 export interface WindowsAclAce { sid: string; qualifier: "AccessAllowed" | "AccessDenied"; mask: number; flags: number }
 export interface WindowsAclFact {
   path: string; directory: boolean; attributes: number; volumeRoot: string; driveType: string; fileSystem: string;
   ownerSid: string | null; daclPresent: boolean; canonical: boolean; aces: WindowsAclAce[];
+  sealed?: WindowsSealedRecordAuditV1;
 }
 export interface WindowsAclReport { version: 1; currentSid: string; nodes: WindowsAclFact[] }
 export const TRUSTED_WINDOWS_SYSTEM_SIDS = Object.freeze([
@@ -36,6 +43,7 @@ Set-StrictMode -Version Latest
 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false, $true)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false, $true)
 $script:failureCode = 'system_audit_failed'; $script:failurePath = ''
+$sealedPins = @{}
 function Reject([string]$Code, [string]$Path) {
   $script:failureCode = $Code; $script:failurePath = $Path
   throw [System.InvalidOperationException]::new($Code)
@@ -48,9 +56,17 @@ try {
   if ($request.paths.Count -eq 0 -or $request.paths.Count -gt 65536) { Reject 'audit_path_limit' '' }
   $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
   try { $currentSid = $identity.User.Value } finally { $identity.Dispose() }
+  foreach ($target in $request.paths) {
+    $targetKeys = @($target.PSObject.Properties.Name | Sort-Object) -join ','
+    if ($targetKeys -ne 'directory,path,readAcl' -and $targetKeys -ne 'directory,path,readAcl,sealed') { Reject 'invalid_audit_target' '' }
+    if ($targetKeys -eq 'directory,path,readAcl,sealed') {
+      if ($target.directory -or -not $target.readAcl -or $sealedPins.Count -ge 256) { Reject 'invalid_sealed_target' $target.path }
+      $script:failurePath = [string]$target.path
+      $sealedPins.Add([string]$target.path, [ArtooSealedRecordV1.Observer]::new([string]$target.path, [string]$target.sealed.sha256))
+    }
+  }
   $nodes = [System.Collections.Generic.List[object]]::new()
   foreach ($target in $request.paths) {
-    if ((@($target.PSObject.Properties.Name | Sort-Object) -join ',') -ne 'directory,path,readAcl') { Reject 'invalid_audit_target' '' }
     $path = [string]$target.path; $script:failurePath = $path
     $attributes = [System.IO.File]::GetAttributes($path)
     if (([int]$attributes -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0) { Reject 'reparse_component' $path }
@@ -61,11 +77,18 @@ try {
     $owner = $null; $present = $false; $canonical = $false
     $aces = [System.Collections.Generic.List[object]]::new()
     if ($target.readAcl) {
-      try { $acl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $path }
-      catch { Reject 'acl_read_failed' $path }
+      if ($sealedPins.ContainsKey($path)) {
+        $security = $sealedPins[$path].InitialSecurity()
+        $acl = [System.Security.AccessControl.FileSecurity]::new()
+        $acl.SetSecurityDescriptorBinaryForm($security)
+      } else {
+        try { $acl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $path }
+        catch { Reject 'acl_read_failed' $path }
+        $security = $acl.GetSecurityDescriptorBinaryForm()
+      }
       $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
       $canonical = $acl.AreAccessRulesCanonical
-      $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+      $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new($security, 0)
       $present = (([int]$raw.ControlFlags -band [int][System.Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -ne 0) -and ($null -ne $raw.DiscretionaryAcl)
       if (-not $present) { Reject 'null_dacl' $path }
       foreach ($ace in $raw.DiscretionaryAcl) {
@@ -81,11 +104,18 @@ try {
       volumeRoot = $drive.RootDirectory.FullName; driveType = $drive.DriveType.ToString(); fileSystem = $drive.DriveFormat;
       ownerSid = $owner; daclPresent = $present; canonical = $canonical; aces = $aces.ToArray() })
   }
+  foreach ($node in $nodes) {
+    if ($sealedPins.ContainsKey($node.path)) { $node['sealed'] = $sealedPins[$node.path].Complete() }
+  }
+  foreach ($pin in $sealedPins.Values) { $pin.Dispose() }
+  $sealedPins.Clear()
   [Console]::Out.WriteLine((Microsoft.PowerShell.Utility\ConvertTo-Json -InputObject @{ version = 1; currentSid = $currentSid; nodes = $nodes.ToArray() } -Depth 8 -Compress))
   exit 0
 } catch {
   [Console]::Out.WriteLine((Microsoft.PowerShell.Utility\ConvertTo-Json -InputObject @{ version = 1; errorCode = $script:failureCode; path = $script:failurePath } -Compress))
   exit 1
+} finally {
+  foreach ($pin in $sealedPins.Values) { $pin.Dispose() }
 }
 `;
 
@@ -142,8 +172,12 @@ export function collectWindowsAclFacts(targets: readonly WindowsAclTarget[], tim
   for (const target of targets) {
     assertCanonicalWindowsPath(target.path);
     if (typeof target.directory !== "boolean" || typeof target.readAcl !== "boolean" || expected.has(windowsPathKey(target.path))) fail("invalid or duplicate audit target");
+    if (target.sealed !== undefined && (target.directory || !target.readAcl || !isWindowsSealedRecordBinding(target.sealed))) fail("invalid local sealed binding");
     expected.set(windowsPathKey(target.path), target);
   }
+  const sealedTargets = targets.filter(target => target.sealed !== undefined);
+  if (sealedTargets.length > 256) fail("sealed audit target limit");
+  const script = sealedTargets.length ? WINDOWS_SEALED_RECORD_OBSERVER_SCRIPT + SCRIPT : SCRIPT;
   const configured = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!configured || !win32.isAbsolute(configured)) fail("the node lacks its local Windows system root");
   let systemRoot: string;
@@ -155,13 +189,13 @@ export function collectWindowsAclFacts(targets: readonly WindowsAclTarget[], tim
   const scope = readWindowsGuardianOperation();
   const result = scope ? (() => {
     const bindingDigest = `sha256:${createHash("sha256").update(JSON.stringify({ version: 1, operation: scope.bindingDigest,
-      collector: "windows-local-acl", executable, script: SCRIPT, input })).digest("hex")}`;
+      collector: "windows-local-acl", executable, script, input })).digest("hex")}`;
     const slot = reserveWindowsGuardianSlotSync(scope.guardian, { operationKind: "observer", operationId: scope.operationId,
       bindingDigest, serverOperation: scope.serverOperation });
     const remaining = Math.floor(timeoutMs - (performance.now() - begun));
     if (remaining < 1) fail("audit deadline elapsed before collector launch", "acl_collector_failed");
     const observed = startWindowsGuardianObserverSync(scope.backend, { executable,
-      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT], cwd: scope.workspaceRoot,
+      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], cwd: scope.workspaceRoot,
       timeoutMs: remaining, cleanupTimeoutMs: 5000, maxOutputBytes: MAX_OUTPUT_BYTES,
       normalExitPolicy: "require-empty", normalExitGraceMs: 250, guardianSlot: slot, inputBytes: Buffer.from(input, "utf8"),
       env: { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: win32.join(systemRoot, "System32"),
@@ -169,7 +203,7 @@ export function collectWindowsAclFacts(targets: readonly WindowsAclTarget[], tim
     return { stdout: observed.stdout.toString("utf8"), status: observed.receipt.rootExitCode, signal: null,
       error: observed.receipt.terminationReason !== null || observed.receipt.failureCode !== null ? new Error("Owned collector failed") : undefined };
   })() : spawnSync(executable,
-    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT], {
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
       cwd: systemRoot, shell: false, windowsHide: true, input, encoding: "utf8", timeout: timeoutMs,
       maxBuffer: MAX_OUTPUT_BYTES, env: { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: win32.join(systemRoot, "System32"),
         PSModulePath: win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules") },
@@ -194,6 +228,7 @@ export function collectWindowsAclFacts(targets: readonly WindowsAclTarget[], tim
       || ((node.attributes & 0x10) !== 0) !== node.directory || node.driveType !== "Fixed" || node.fileSystem !== "NTFS"
       || typeof node.volumeRoot !== "string" || windowsPathKey(node.volumeRoot) !== windowsPathKey(win32.parse(node.path).root)) fail("physical NTFS facts are invalid", "acl_facts_rejected");
     seen.add(identity);
+    if (target.sealed ? !isWindowsSealedRecordAudit(node.sealed, target.sealed) : node.sealed !== undefined) fail("unbound sealed audit facts", "acl_facts_rejected");
     if (!target.readAcl) continue;
     if (!isSid(node.ownerSid) || node.daclPresent !== true || node.canonical !== true || !Array.isArray(node.aces) || node.aces.length > 256) fail(`unsupported owner or DACL: ${node.path}`, "acl_facts_rejected");
     for (const ace of node.aces) {

@@ -2,6 +2,7 @@ import type { PreparedGoalEntryConfigV1 } from "./config/goal-entry.js";
 import type { AiDataSharingPolicy } from "./config/ai-data-sharing.js";
 import type { SourceLifecycleRegistry } from "./services/source-clean-lifecycle-service.js";
 import type { Clock, IdGen, VerificationCapabilities, ReleaseCapabilitiesV1, NodeOwnedResultProfileDescriptorV1, ProductSourceRoutingV1 } from "@artoo/domain";
+import type { ApplicationPublicationCapabilitiesV1 } from "@artoo/domain";
 import type { DbClient } from "@artoo/storage";
 
 import type { AuthConfig } from "./auth/auth-config.js";
@@ -59,6 +60,8 @@ export interface ServerContext {
   getReleaseCapabilities?: (computerId: string, profileId: string, projectId: string, workspaceRoot: string, verificationProfileId: string) => ReleaseCapabilitiesV1 | undefined;
   onProductReleaseQueued?: (releaseId: string) => Promise<void>;
   onProductReleaseCancel?: (releaseId: string) => Promise<void>;
+  getApplicationPublicationCapabilities?: (computerId: string, profileId: string, projectId: string) => ApplicationPublicationCapabilitiesV1 | undefined;
+  onApplicationPublicationQueued?: (publicationId: string, control: "start" | "stop" | "status") => Promise<void>;
   /** Dedicated imported-subject controller; never routes through ordinary run.start. */
   onImportedProductReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;
   onProductSourceOperationQueued?: (operationId: string, control: "start" | "stop" | "status" | "qualify") => Promise<void>;

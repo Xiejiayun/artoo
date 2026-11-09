@@ -5,7 +5,7 @@ import { createSourceLifecycleRegistry } from "./services/source-clean-lifecycle
 import { registerSourceLifecycleWsRoute } from "./ws/source-lifecycle-ws.js";
 import { registerAiDataSharingRoutes } from "./ai-data-sharing-routes.js";
 import { AssignOwnedResultRequestSchema } from "./services/owned-result-service.js";
-import { productReleases, runs } from "@artoo/db";
+import { applicationPublications, productReleases, runs } from "@artoo/db";
 import {
   AcquireLeaseRequestSchema,
   apiError,
@@ -53,6 +53,7 @@ import { registerChannelRoutes } from "./channel-routes.js";
 import { registerDiscussionRoutes } from "./discussion-routes.js";
 import { registerGoalAutomationRoutes } from "./goal-automation-routes.js";
 import { registerProductReleaseRoutes } from "./product-release-routes.js";
+import { registerApplicationPublicationRoutes } from "./application-publication-routes.js";
 import { stopAutonomousGoalPlanning } from "./services/goal-automation-service.js";
 import { listDaemons } from "./services/daemon-service.js";
 import { registerApiAuthGuard, registerAuthRoutes, requestContext } from "./auth/auth-routes.js";
@@ -141,6 +142,15 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   ctx.sourceLifecycle = sourceLifecycle;
   app.addHook("onClose", async () => { sourceLifecycle.close(); });
   ctx.getPairedNodeSession = computerId => nodeRegistry.get(computerId)?.getPairedNodeSession?.();
+  ctx.getApplicationPublicationCapabilities = (computerId, profileId, projectId) =>
+    nodeRegistry.get(computerId)?.getApplicationPublicationCapabilities?.(profileId, projectId);
+  ctx.onApplicationPublicationQueued ??= async (publicationId, control) => {
+    const [publication] = await ctx.db.db.select().from(applicationPublications).where(and(eq(applicationPublications.id, publicationId),
+      eq(applicationPublications.organizationId, ctx.organizationId)));
+    const binding = publication && nodeRegistry.get(publication.computerId);
+    if (!binding?.dispatchApplicationPublication) throw AppError.conflict("Original application publication node is unavailable");
+    await binding.dispatchApplicationPublication(publicationId, control);
+  };
   ctx.redeliverImportedSourceReceipt = async (computerId, family, id) => {
     const binding = nodeRegistry.get(computerId);
     if (!binding?.redeliverCommittedSourceReceipt) throw AppError.conflict("Original source receipt node is unavailable");
@@ -260,6 +270,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     await binding.dispatchProductSourceOperation(operationId, control);
   };
   registerProductReleaseRoutes(app, ctx, options.assistantDispatcher !== false);
+  registerApplicationPublicationRoutes(app, ctx);
   // Recover from durable run rows before accepting new client/node connections.
   const graceWindow =
     options.graceWindow ??

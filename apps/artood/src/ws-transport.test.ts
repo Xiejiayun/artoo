@@ -128,6 +128,60 @@ class FakeClientWebSocket {
 }
 
 describe("createWebSocketTransport", () => {
+  it("binds an ordinary publication session to its original socket and revokes it on close", async () => {
+    const harness = await startServer(); activeServer = harness.wss;
+    let ended = 0;
+    const transport = createWebSocketTransport({ url: harness.url, hello, reconnect: false, onPublicationSessionEnded: () => { ended++; } });
+    try {
+      await transport.ready; const socket = await harness.connection;
+      expect(transport.currentPublicationSession()).toBeUndefined();
+      const session = { kind: "command", id: "session", idempotency_key: "session", type: "application.publication.session.v1",
+        payload: { version: 1, node_id: hello.node_id, session_id: "550e8400-e29b-41d4-a716-446655440000" } };
+      socket.send(JSON.stringify({ ...session, payload: { ...session.payload, node_id: "different_node" } }));
+      await new Promise(resolve => setTimeout(resolve, 20)); expect(transport.currentPublicationSession()).toBeUndefined();
+      socket.send(JSON.stringify(session)); await waitUntil(() => !!transport.currentPublicationSession());
+      const original = transport.currentPublicationSession()!;
+      expect(original.id).toBe(session.payload.session_id); expect(original.identity).toBe(transport.currentSessionIdentity());
+      socket.send(JSON.stringify(session)); await new Promise(resolve => setTimeout(resolve, 20));
+      expect(transport.currentPublicationSession()).toBe(original);
+      socket.close(1012); await waitUntil(() => !transport.connected);
+      expect(transport.currentPublicationSession()).toBeUndefined(); expect(ended).toBe(1);
+    } finally { await transport.close(); }
+  });
+
+  it("does not replace an original ordinary publication session with a conflicting announcement", async () => {
+    const harness = await startServer(); activeServer = harness.wss;
+    const transport = createWebSocketTransport({ url: harness.url, hello, reconnect: false });
+    try {
+      await transport.ready; const socket = await harness.connection;
+      const session = { kind: "command", id: "session", idempotency_key: "session", type: "application.publication.session.v1",
+        payload: { version: 1, node_id: hello.node_id, session_id: "550e8400-e29b-41d4-a716-446655440000" } };
+      socket.send(JSON.stringify(session)); await waitUntil(() => !!transport.currentPublicationSession());
+      socket.send(JSON.stringify({ ...session, payload: { ...session.payload, session_id: "550e8400-e29b-41d4-a716-446655440001" } }));
+      await waitUntil(() => !transport.connected); expect(transport.currentPublicationSession()).toBeUndefined();
+    } finally { await transport.close(); }
+  });
+
+  it("forwards a run-event ACK only for the original pending sequence and before send resolves", async () => {
+    const harness = await startServer(); activeServer = harness.wss;
+    const transport = createWebSocketTransport({ url: harness.url, hello, acknowledgeRunEvents: true });
+    try {
+      await transport.ready; const socket = await harness.connection;
+      let settled = false; const observed: { sequence: number; settled: boolean }[] = [];
+      transport.subscribe(message => { if (message.type === "run.event.ack") observed.push({ sequence: message.payload.sequence, settled }); });
+      const sending = transport.send({ kind: "run.event", node_id: hello.node_id, run_id: "run_1", sequence: 3,
+        event: { type: "run.lifecycle", payload: { phase: "completed" } } }).then(() => { settled = true; });
+      await waitUntil(() => harness.received.some(value => (value as { sequence?: number }).sequence === 3));
+      const ack = { kind: "command", id: "receipt", idempotency_key: "receipt", type: "run.event.ack",
+        payload: { run_id: "run_1", sequence: 2, status: "accepted" } };
+      socket.send(JSON.stringify(ack)); await new Promise(resolve => setTimeout(resolve, 20)); expect(observed).toEqual([]); expect(settled).toBe(false);
+      socket.send(JSON.stringify({ ...ack, payload: { ...ack.payload, sequence: 3 } })); await sending;
+      expect(observed).toEqual([{ sequence: 3, settled: false }]);
+      socket.send(JSON.stringify({ ...ack, payload: { ...ack.payload, sequence: 3 } })); await new Promise(resolve => setTimeout(resolve, 20));
+      expect(observed).toHaveLength(1);
+    } finally { await transport.close(); }
+  });
+
   it("replays a health report after disconnect and waits for its exact committed receipt", async () => {
     const harness = await startServer(); activeServer = harness.wss;
     const reports: ProductReleaseHealthMessage[] = []; let current: WsServerSocket | undefined;

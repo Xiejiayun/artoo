@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArtoodConfig } from "./main.js";
 import type { CleanSupervisedCompletion, CleanSupervisedOwner } from "./windows-clean-supervised-owner.js";
 const local = vi.hoisted(() => ({ prepare: vi.fn(), open: vi.fn(), claim: vi.fn(), generation: vi.fn(), describe: vi.fn(), close: vi.fn(),
-  start: vi.fn(), load: vi.fn(), remove: vi.fn(), stop: undefined as (() => void) | undefined }));
+  start: vi.fn(), load: vi.fn(), legacyLoad: vi.fn(), remove: vi.fn(), stop: undefined as (() => void) | undefined }));
 vi.mock("./source-lifecycle-observer.js", () => ({ openSourceLifecycleObserver: local.open, claimSourceCleanRestart: local.claim,
   closeSourceLifecycleObserver: local.close }));
 vi.mock("./windows-clean-local-configuration.js", () => ({ prepareCleanSupervisorConfiguration: local.prepare,
@@ -12,7 +12,7 @@ vi.mock("./windows-clean-local-configuration.js", () => ({ prepareCleanSuperviso
 vi.mock("./windows-clean-supervised-owner.js", () => ({ startCleanWindowsSupervisor: local.start }));
 vi.mock("./windows-daemon-launcher.js", () => ({ supervisedStdinControlEnabled: () => true,
   installSupervisedStdinControl: (_input: unknown, stop: () => void) => { local.stop = stop; return local.remove; } }));
-vi.mock("./main.js", () => ({ loadConfigFromEnv: local.load }));
+vi.mock("./main.js", () => ({ loadPreparedConfigFromEnv: local.load, loadConfigFromEnv: local.legacyLoad }));
 import { launchCleanWindowsSupervisedCli } from "./windows-clean-launcher.js";
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: Error) => void;
@@ -53,6 +53,9 @@ describe("persistent native clean launcher", () => {
     closed.resolve(); await started(2);
     expect(local.claim).toHaveBeenCalledWith({ observer: "successor" }, receipt.stop_id);
     expect(local.generation).toHaveBeenCalledWith({ predecessor: { configuration: "initial" }, observer: { observer: "successor" }, grant: { controlledGrant: true } });
+    expect(local.load).toHaveBeenCalledExactlyOnceWith({ ...env, ARTOO_PRODUCT_SOURCE_CONFIG_FILE: "C:\\protected\\successor\\source.json" });
+    expect(local.legacyLoad).not.toHaveBeenCalled();
+    expect(local.prepare.mock.calls[1]![0].config).toBe(config);
     expect(local.start.mock.calls[1]![0].configuration).toEqual({ configuration: "successor" });
     expect(owners[1]!.value.transitionAfterAcceptedH6).not.toHaveBeenCalled();
     local.stop!(); await work;

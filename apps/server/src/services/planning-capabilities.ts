@@ -1,4 +1,5 @@
 import { AutonomousPlanningRequestV1Schema, GoalPlanningCapabilitySnapshotSchema,
+  APPLICATION_VERIFICATION_FEATURE_V1, APPLICATION_PUBLICATION_FEATURE_V1, ApplicationPublicationGrantV1Schema,
   type ContextPack, type GoalPlanningCapabilitySnapshot, type VerificationCapabilities } from "@artoo/domain";
 import { isDeepStrictEqual } from "node:util";
 import type { ServerContext } from "../context.js";
@@ -11,6 +12,8 @@ export interface PlanningCapabilityOwner {
   releaseProfileId?: string | null;
   executionMode: string;
   planningCapabilitySnapshot: unknown;
+  appDelivery?: unknown;
+  appPublication?: unknown;
 }
 
 /** SQL NULL is historical absence. An invalid versioned value never becomes absence. */
@@ -19,6 +22,8 @@ export function persistedPlanningSnapshot(owner: PlanningCapabilityOwner, projec
   const parsed = GoalPlanningCapabilitySnapshotSchema.safeParse(owner.planningCapabilitySnapshot);
   if (!parsed.success) throw AppError.conflict("The stored planning capability snapshot is invalid");
   const snapshot = parsed.data;
+  if (!isDeepStrictEqual(snapshot.app_delivery ?? null, owner.appDelivery ?? null)) throw AppError.conflict("The original application planning authorization changed");
+  if (!isDeepStrictEqual(snapshot.app_publication ?? null, owner.appPublication ?? null)) throw AppError.conflict("The original application publication planning authorization changed");
   if (snapshot.computer_id !== owner.computerId || snapshot.workspace_root !== owner.workspaceRoot
     || snapshot.project_id !== projectId || snapshot.verification_profile_id !== owner.verificationProfileId) {
     throw AppError.conflict("The fixed planning capability target changed");
@@ -37,6 +42,15 @@ export function persistedPlanningSnapshot(owner: PlanningCapabilityOwner, projec
 }
 
 export function assertPlanningTargetAvailable(ctx: ServerContext, owner: PlanningCapabilityOwner, projectId: string): void {
+  if ((owner.appDelivery != null || owner.appPublication != null) && (!owner.computerId
+    || ctx.supportsExecutionFeature?.(owner.computerId, APPLICATION_VERIFICATION_FEATURE_V1) !== true)) {
+    throw AppError.conflict("The fixed planning target does not support application development verification");
+  }
+  if (owner.appPublication != null && (!owner.computerId
+    || ctx.supportsExecutionFeature?.(owner.computerId, APPLICATION_PUBLICATION_FEATURE_V1) !== true
+    || !ctx.getPairedNodeSession?.(owner.computerId))) {
+    throw AppError.conflict("The fixed planning target lacks its original paired application publication session");
+  }
   if (!owner.computerId || !owner.workspaceRoot
     || ctx.supportsExecutionFeature?.(owner.computerId, "run-verification.v1") !== true
     || (owner.executionMode === "agent_team" && ctx.supportsExecutionFeature?.(owner.computerId, "product-stage-verification.v1") !== true)
@@ -62,8 +76,15 @@ export function capturePlanningSnapshot(ctx: ServerContext, owner: PlanningCapab
       || release.binding.verification_profile_digest !== capabilities.profile_digest)) {
     throw AppError.conflict("The fixed planning target cannot enforce the selected publication acceptance contract");
   }
+  const grant = owner.appPublication == null ? undefined : ApplicationPublicationGrantV1Schema.parse(owner.appPublication);
+  const publication = grant ? ctx.getApplicationPublicationCapabilities?.(owner.computerId!, grant.publication_profile_id, projectId) : undefined;
+  if (grant && (!publication || !capabilities?.application || capabilities.measurement_plan_policy || owner.releaseProfileId || owner.appDelivery != null)) {
+    throw AppError.conflict("The fixed planning target cannot enforce the separate application publication contract");
+  }
   return GoalPlanningCapabilitySnapshotSchema.parse({ version: 1, computer_id: owner.computerId, project_id: projectId,
     workspace_root: owner.workspaceRoot, verification_profile_id: owner.verificationProfileId, capabilities: capabilities ?? null,
+    ...(owner.appDelivery != null ? { app_delivery: owner.appDelivery } : {}),
+    ...(grant ? { app_publication: grant, application_publication: { version: 1, capabilities: publication } } : {}),
     ...(release ? { release: { version: 1, capabilities: release } } : {}) });
 }
 
@@ -90,7 +111,8 @@ export function planningRequest(request: string, snapshot: GoalPlanningCapabilit
 export function assertPlanningContext(context: ContextPack, request: string, snapshot: GoalPlanningCapabilitySnapshot | null): void {
   const noExecutionAuthority = context.policy.execution_mode === "discussion" && context.policy.filesystem_write_scope.length === 0
     && context.verification_capabilities === undefined && context.release_capabilities === undefined
-    && context.product_development === undefined && context.review_subject === undefined;
+    && context.product_development === undefined && context.review_subject === undefined
+    && context.app_delivery === undefined && context.app_publication === undefined && context.application_publication === undefined;
   // Only an already-persisted historical request may retain its exact legacy
   // text. Parse failure itself never authorizes a fallback for new snapshots.
   if (snapshot === null && context.conversation?.current_request === request && noExecutionAuthority) return;

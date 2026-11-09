@@ -1,10 +1,10 @@
-import { agentInstances, agents, assistantRunDispatches, assistantTurns, autonomousReviews, computers, contextPacks, discussions, eventLog, goalAutomations, goals, runEvidence, runs, tasks } from "@artoo/db";
+import { agentInstances, agents, applicationPublications, applicationPublicationSettlements, assistantRunDispatches, assistantTurns, autonomousReviews, computers, contextPacks, discussions, eventLog, goalAutomations, goals, runEvidence, runs, tasks } from "@artoo/db";
 import { AutonomousPlanningRequestV1Schema, ContextPackSchema, productStageHandoffPaths,
   type ProductReleaseReceipt, type RunVerificationPayload, type VerificationRequirement } from "@artoo/domain";
 import type { NodeTransport, RunEventMessage, ServerToNodeMessage } from "@artoo/protocol";
 import { and, asc, eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildTestServer, type TestServer } from "./test-support.js";
+import { buildTestServer, fixedClock, type TestServer } from "./test-support.js";
 import { attachNodeBinding, type NodeBinding } from "./node-binding.js";
 import { createGoalAutomationDispatcher, getGoalAutomation, stopAutonomousGoalPlanning } from "./services/goal-automation-service.js";
 import { createDiscussionDispatcher } from "./services/discussion-service.js";
@@ -20,6 +20,15 @@ import { verificationCapabilityBinding } from "./services/verification-capabilit
 import { releaseAcceptanceFixture } from "./test-fixtures/release-acceptance.js";
 import { releaseAcceptanceBindingDigest } from "./services/release-acceptance.js";
 import { getGoalProductRelease, ingestProductReleaseReceipt, ingestProductReleaseHealthReport } from "./services/product-release-service.js";
+import { randomUUID } from "node:crypto";
+import { APPLICATION_VERIFICATION_FEATURE_V1, APPLICATION_PUBLICATION_FEATURE_V1, ApplicationPublicationRequestV1Schema,
+  ApplicationPublicationObservationV1Schema, type ApplicationVerificationObservationV1 } from "@artoo/domain";
+import { applicationPublicationCapabilitiesFixture, applicationPublicationLedgerFixture } from "./test-fixtures/application-publication-capabilities.js";
+import { applicationPublicationDigest, cancelGoalApplicationPublication, getGoalApplicationPublication,
+  ingestApplicationPublicationReceipt, ingestApplicationPublicationObservation } from "./services/application-publication-service.js";
+import { committedApplicationVerificationReceipt } from "./services/application-publication-receipt.js";
+import { readRunVerificationEvidence } from "./services/verification-service.js";
+import { runStartCommandSchema } from "@artoo/protocol";
 
 const digest = `sha256:${"a".repeat(64)}`, changedDigest = `sha256:${"b".repeat(64)}`;
 const specs = ["research", "design", "implementation", "validation"].map((stage, index) => ({
@@ -61,10 +70,15 @@ describe("Agent Team execution and independent source-bound review", () => {
   }
 
   async function complete(run: typeof runs.$inferSelect, answer?: string, source = digest, receipt = true, files: RunVerificationPayload["required_files"] = [],
-    outcome: "passed" | "failed" = "passed", observation?: RunVerificationPayload["checks"][number]["observation"]) {
+    outcome: "passed" | "failed" = "passed", observation?: RunVerificationPayload["checks"][number]["observation"], omitApplication = false) {
     let sequence = 0;
-    const send = (event: RunEventMessage["event"]) => ingestWireRunEvent(server.ctx,
-      { kind: "run.event", node_id: run.computerId, run_id: run.id, sequence: sequence++, event });
+    const send = async (event: RunEventMessage["event"]) => {
+      const frame: RunEventMessage = { kind: "run.event", node_id: run.computerId, run_id: run.id, sequence: sequence++, event };
+      if ((run.verificationRequirement as VerificationRequirement | null)?.application_publication) {
+        const binding = server.nodeRegistry.get(run.computerId)!;
+        binding.receive(frame); await binding.drain();
+      } else await ingestWireRunEvent(server.ctx, frame);
+    };
     await send({ type: "run.lifecycle", payload: { phase: "started" } });
     if (answer !== undefined) await send({ type: "run.answer", payload: { text: answer } });
     if (run.verificationRequirement && receipt) {
@@ -79,10 +93,26 @@ describe("Agent Team execution and independent source-bound review", () => {
         observation = { version: 1, format: "static-web-acceptance.v1", scope: "final", stage, cases: [], ...observation,
           capability_binding: { version: 1, profile_digest: request.capability_binding.profile_digest,
             ...request.capability_binding.checks.find((check) => check.command_id === "acceptance")! } };
+        if (context.app_delivery || context.app_publication) observation = { version: 3, format: "static-web-acceptance.v3", scope: "final", stage,
+          device_scale_factor: 1, cases: [], evidence_bundle: { bundle_id: "controlled_app_bundle", manifest_digest: digest },
+          capability_binding: { version: 1, profile_digest: request.capability_binding.profile_digest,
+            ...request.capability_binding.checks.find(check => check.command_id === "acceptance")! } };
       }
       const payload: RunVerificationPayload = { version: 1, request_id: request.request_id, profile_id: request.profile_id,
         profile_digest: request.capability_binding?.profile_digest ?? digest, subject_digest: source, outcome, checks: [{ id: "acceptance", exit_code: outcome === "passed" ? 0 : 1, duration_ms: 10, output_digest: digest,
           ...(observation ? { observation } : {}) }], required_files: [...measured.values()] };
+      if (request.application && outcome === "passed" && !omitApplication && (stage === "implementation" || stage === "validation")) {
+        // Controlled node evidence only: these digests/closures do not claim a native compiler, app service or browser run.
+        payload.application = applicationObservation(run.id, request, stage, source);
+        if (context.application_publication) payload.application.publication = {
+          version: 1, authorization_event_id: context.application_publication.authorization.event_id,
+          publication_contract_digest: context.application_publication.capabilities.binding.publication_contract_digest,
+          research_digest: digest, design_digest: digest, measurement_plan_digest: digest, application_definition_digest: digest,
+          development_criteria: [{ requirement_id: "save", criterion_index: 0, criterion_digest: digest, case_ids: ["save"] }],
+          publication_criteria: [{ requirement_id: "publish", criterion_index: 0, criterion_digest: digest,
+            claim: "bounded-local-application-publication" }], unmet_criteria: [],
+        };
+      }
       if (outcome === "passed" && context.verification_capabilities?.measurement_plan_policy?.version === 2 && context.release_capabilities) {
         const fixture = releaseAcceptanceFixture(stage), summary = fixture.payload.measurement_plan;
         if (summary?.version !== 2) throw new Error("Expected controlled publication summary");
@@ -95,9 +125,12 @@ describe("Agent Team execution and independent source-bound review", () => {
     await send({ type: "run.lifecycle", payload: { phase: "completed" } });
   }
 
-  async function create(team = true, maxRetries = 3) {
+  async function create(team = true, maxRetries = 3, application: boolean | "publication" = false) {
     const response = await server.app.inject({ method: "POST", url: "/api/v1/autonomous-goals", headers: { "idempotency-key": "team-objective" },
-      payload: { project_id: "proj_artoo", objective: "Build a journal product", max_retries: maxRetries, ...(team ? { execution_mode: "agent_team" } : {}) } });
+      payload: { project_id: "proj_artoo", objective: "Build a journal product", max_retries: maxRetries, ...(team ? { execution_mode: "agent_team" } : {}),
+        ...(application === true ? { app_delivery: { version: 1, kind: "local-application-development" } } : {}),
+        ...(application === "publication" ? { app_publication: { version: 1, kind: "same-computer-local-application-publication",
+          publication_profile_id: "application-publisher" } } : {}) } });
     expect(response.statusCode, response.body).toBe(201);
     return response.json().goal.id as string;
   }
@@ -120,6 +153,241 @@ describe("Agent Team execution and independent source-bound review", () => {
     await planner.stop(); await assistant.stop();
     return taskRows(goalId);
   }
+
+  function applicationObservation(runId: string, request: VerificationRequirement, stage: "implementation" | "validation", source = digest): ApplicationVerificationObservationV1 {
+    const expected = request.application?.expected_candidate;
+    return { version: 1, scope: "local-development-api-browser-reopen", stage, run_id: runId, request_id: request.request_id,
+      origin_run_id: expected?.origin_run_id ?? runId, origin_request_id: expected?.origin_request_id ?? request.request_id,
+      candidate: expected?.candidate ?? { version: 1, subject_digest: source, source_digest: digest, artifact_digest: digest,
+        toolchain_digest: digest, package_digest: digest, schema_digest: digest, qualified_for_product: false }, qualified_for_product: false,
+      acceptance: { version: 1, cases: [{ case_id: "save", program_digest: digest, trace_digest: digest, assertions: 1, capture_digests: [digest] }],
+        persistence: { request_digest: digest, before_read_digest: digest, after_read_digest: digest, replay_response_digest: digest,
+          after_replay_read_digest: digest, browser_trace_digest: digest },
+        closures: { compiler: true, initialize: true, services: 2, browser: true }, test_store_id: randomUUID() } };
+  }
+
+  async function applicationWorker(publication = false) {
+    const root = "C:\\Work Space\\Team", capabilities = verificationCapabilitiesV3Fixture();
+    capabilities.profile_digest = digest;
+    capabilities.application = { version: 1, kind: "local-application-development", claim: "configured", config_digest: digest,
+      contract_digest: changedDigest, source_paths: ["product/client", "product/server", ".artoo/product/application.json"],
+      definition_format: "artoo.application-definition.v1", test_scope: "normal-api-browser-reopen", failure_recovery: "unsupported",
+      browser_viewport: { width: 1280, height: 900, device_scale_factor: 1 },
+      publication: "unsupported", qualified_for_product: false };
+    const publicationCapabilities = applicationPublicationCapabilitiesFixture(capabilities);
+    await server.db.db.update(computers).set({ os: "windows" });
+    await server.db.db.update(agentInstances).set({ workspaceRoot: root });
+    server.ctx.supportsExecutionFeature = (node, feature) => server.nodeRegistry.get(node)?.supportsExecutionFeature(feature) ?? false;
+    server.ctx.supportsVerificationProfile = (node, profile, project, workspace) =>
+      server.nodeRegistry.get(node)?.supportsVerificationProfile(profile, project, workspace) ?? false;
+    server.ctx.onRunQueued = async () => {};
+    // Windows planning must resolve the exact root from the current authenticated
+    // advertisement. Register it before planning; keep the real workspace and capability getters.
+    const sent: ServerToNodeMessage[] = [];
+    const connect = (application = true, sessionId = randomUUID()) => {
+      const transport: NodeTransport = { async send(message) { sent.push(structuredClone(message)); }, subscribe() { return () => {}; }, async close() {} };
+      const binding: NodeBinding = attachNodeBinding(server.ctx, transport, "computer_local_mock",
+        ["run-verification.v1", "product-stage-verification.v1", "verification-capabilities.v1", ...(application ? [APPLICATION_VERIFICATION_FEATURE_V1] : []),
+          ...(publication ? [APPLICATION_PUBLICATION_FEATURE_V1] : [])],
+        () => server.nodeRegistry.get("computer_local_mock") === binding,
+        [{ profile_id: "default", project_id: "proj_artoo", workspace_root: root, capabilities }], undefined, undefined, undefined, "windows",
+        publication ? { identity: { computerId: "computer_local_mock", deviceId: "controlled-device", tokenLookup: "controlled-lookup" },
+          sessionId, artifactDir: "/controlled-application-publication", qualifiedRunEventReceiptsReady: () => true } : undefined,
+        undefined, publication ? [{ profile_id: "application-publisher", project_id: "proj_artoo", computer_id: "computer_local_mock",
+          verification_profile_id: "default", capabilities: publicationCapabilities }] : []);
+      bindings.push(binding); server.nodeRegistry.register("computer_local_mock", binding); return binding;
+    };
+    const binding = connect();
+    expect(server.ctx.getVerificationWorkspace?.("computer_local_mock", "default", "proj_artoo", root)).toBe(root);
+    return { root, capabilities, publicationCapabilities, sent, connect, binding };
+  }
+
+  it("captures a separate original publication grant and session, then refuses reconnect takeover before planning", async () => {
+    const f = await applicationWorker(true), goalId = await create(true, 3, "publication");
+    const automation = await getGoalAutomation(server.ctx, goalId);
+    const [authorization] = await server.db.db.select().from(eventLog).where(eq(eventLog.id, automation!.application_publication_authorization_event_id!));
+    expect(authorization).toMatchObject({ actorType: "user", actorId: server.ctx.actorUserId,
+      payload: { app_publication: automation!.app_publication, capabilities: f.publicationCapabilities,
+        publisher_session_id: f.binding.getPairedNodeSession!()!.sessionId } });
+    f.connect();
+    await pump();
+    expect(await getGoalAutomation(server.ctx, goalId)).toMatchObject({ status: "waiting", discussion_id: null,
+      last_error: expect.stringContaining("original paired connection") });
+    expect(await server.db.db.select().from(runs)).toHaveLength(0);
+  });
+
+  it("refuses an unavailable publication profile without retaining a partial goal or authorization", async () => {
+    await applicationWorker();
+    const response = await server.app.inject({ method: "POST", url: "/api/v1/autonomous-goals", headers: { "idempotency-key": "publication-unavailable" },
+      payload: { project_id: "proj_artoo", objective: "Build a journal product", execution_mode: "agent_team", verification_profile_id: "default",
+        app_publication: { version: 1, kind: "same-computer-local-application-publication", publication_profile_id: "application-publisher" } } });
+    expect(response.statusCode).toBe(409);
+    expect(await server.db.db.select().from(goals)).toHaveLength(0);
+    expect(await server.db.db.select().from(eventLog).where(eq(eventLog.type, "goal.application-publication.authorized"))).toHaveLength(0);
+  });
+
+  it("routes the independent publication grant through all stages without treating development success as publication", async () => {
+    const f = await applicationWorker(true);
+    await f.binding.announceApplicationPublicationSession!();
+    expect(f.sent).toContainEqual(expect.objectContaining({ kind: "command", type: "application.publication.session.v1",
+      payload: { version: 1, node_id: "computer_local_mock", session_id: f.binding.getPairedNodeSession!()!.sessionId } }));
+    expect(f.binding.getApplicationPublicationCapabilities?.("application-publisher", "proj_artoo")).toEqual(f.publicationCapabilities);
+    const goalId = await create(true, 3, "publication"), stageTasks = await plan(goalId);
+    const original = await getGoalAutomation(server.ctx, goalId);
+    expect(original?.planning_capability_snapshot?.application_publication?.capabilities).toEqual(f.publicationCapabilities);
+    for (const task of stageTasks) {
+      const author = await start(goalId, task.id), requirement = author.verificationRequirement as VerificationRequirement;
+      expect(requirement.application_publication).toMatchObject({ authorization_event_id: original!.application_publication_authorization_event_id,
+        publisher_session_id: f.binding.getPairedNodeSession!()!.sessionId, publication_profile_id: "application-publisher" });
+      await f.binding.dispatchRunStart(author.id);
+      const command = f.sent.find(message => message.kind === "command" && message.type === "run.start" && message.payload.run_id === author.id)!;
+      const payload = runStartCommandSchema.parse(command).payload;
+      expect(payload.context_pack?.payload?.application_publication?.agent_instance_id).toBe(author.agentInstanceId);
+      await complete(author);
+      if (task.title === "validation") {
+        const evidence = (await readRunVerificationEvidence(server.ctx, server.db.db, author.id))!;
+        const [event] = await server.db.db.select().from(eventLog).where(eq(eventLog.id, evidence.eventId));
+        const frame: RunEventMessage = { kind: "run.event", node_id: author.computerId, run_id: author.id,
+          sequence: event!.sequence!, event: { type: "run.verification", payload: evidence.payload } };
+        const session = f.binding.getPairedNodeSession!()!;
+        const committed = { version: 1,
+          request_id: evidence.requestId, evidence_id: evidence.id, event_id: evidence.eventId,
+          publisher_session_id: session.sessionId, payload_digest: applicationPublicationDigest(evidence.payload) };
+        expect(await committedApplicationVerificationReceipt(server.ctx, frame, session, () => true)).toEqual(committed);
+        expect(f.sent).toContainEqual(expect.objectContaining({ kind: "command", type: "run.event.ack", payload: expect.objectContaining({
+          run_id: author.id, sequence: frame.sequence, status: "accepted", application_verification: committed }) }));
+        await expect(committedApplicationVerificationReceipt(server.ctx, frame, { ...session, sessionId: "replacement-session" }, () => true)).rejects.toThrow();
+        await expect(committedApplicationVerificationReceipt(server.ctx, { ...frame, sequence: frame.sequence + 1 }, session, () => true)).rejects.toThrow();
+        await expect(committedApplicationVerificationReceipt(server.ctx, { ...frame, event: { type: "run.verification",
+          payload: { ...evidence.payload, subject_digest: changedDigest } } }, session, () => true)).rejects.toThrow();
+      }
+      await verdict(author);
+    }
+    await pump();
+    expect((await taskRows(goalId)).every(task => task.status === "done")).toBe(true);
+    expect(await getGoalAutomation(server.ctx, goalId)).toMatchObject({ status: "waiting", delivery: "verified_workspace" });
+    expect((await server.db.db.select().from(goals).where(eq(goals.id, goalId)))[0]?.status).toBe("running");
+    expect(await getGoalProductRelease(server.ctx, goalId)).toBeNull();
+    const [queued] = await server.db.db.select().from(applicationPublications).where(eq(applicationPublications.goalId, goalId));
+    expect(queued?.status, (await getGoalAutomation(server.ctx, goalId))?.last_error ?? "publication should queue").toBe("queued");
+    const request = ApplicationPublicationRequestV1Schema.parse(queued!.request);
+    const ledger = applicationPublicationLedgerFixture(request, server.ctx.clock.nowIso());
+    server.ctx.clock = fixedClock(ledger.at(60));
+    const old = applicationPublicationLedgerFixture({ ...request, publisher_session_id: "old-session" }, ledger.at(0));
+    const changed = applicationPublicationLedgerFixture({ ...request, application_definition_digest: changedDigest }, ledger.at(0));
+    await expect(ingestApplicationPublicationReceipt(server.ctx, request.computer_id, old.receipt, () => true)).rejects.toThrow();
+    await expect(ingestApplicationPublicationReceipt(server.ctx, request.computer_id, changed.receipt, () => true)).rejects.toThrow();
+    await ingestApplicationPublicationReceipt(server.ctx, request.computer_id, ledger.receipt, () => true);
+    await expect(ingestApplicationPublicationObservation(server.ctx, request.computer_id, old.observation(1, 7), () => true)).rejects.toThrow();
+    await ingestApplicationPublicationObservation(server.ctx, request.computer_id, ledger.observation(1, 7), () => true);
+    await pump();
+    expect(await getGoalAutomation(server.ctx, goalId)).toMatchObject({ status: "waiting", delivery: "verified_workspace" });
+    expect(await server.db.db.select().from(applicationPublicationSettlements)).toHaveLength(0);
+    for (const change of ["owner", "pid", "creation", "counter", "counter-time"] as const) {
+      const report = ledger.observation(2, 60);
+      if (change === "owner") { report.health!.service.owner_id = "replacement-owner"; report.live!.service.owner_id = "replacement-owner"; }
+      if (change === "pid") report.live!.native.root_pid++;
+      if (change === "creation") report.live!.native.root_creation_time = "133000000000000002";
+      if (change === "counter") report.live!.requests_used = 1;
+      if (change === "counter-time") report.live!.counters_observed_at = ledger.at(6);
+      expect(ApplicationPublicationObservationV1Schema.safeParse(report).success).toBe(true);
+      await expect(ingestApplicationPublicationObservation(server.ctx, request.computer_id, report, () => true)).rejects.toThrow();
+    }
+    const sessionGetter = server.ctx.getPairedNodeSession!;
+    server.ctx.getPairedNodeSession = node => { const session = sessionGetter(node); return session ? { ...session, sessionId: "replacement-session" } : undefined; };
+    await expect(ingestApplicationPublicationObservation(server.ctx, request.computer_id, ledger.observation(2, 60), () => true)).rejects.toThrow();
+    await pump();
+    expect(await getGoalAutomation(server.ctx, goalId)).toMatchObject({ status: "waiting", delivery: "verified_workspace" });
+    server.ctx.getPairedNodeSession = sessionGetter;
+    const staleCounters = ledger.observation(2, 60); staleCounters.live!.counters_observed_at = ledger.at(20);
+    await ingestApplicationPublicationObservation(server.ctx, request.computer_id, staleCounters, () => true);
+    await pump();
+    expect(await getGoalAutomation(server.ctx, goalId)).toMatchObject({ status: "waiting", delivery: "verified_workspace" });
+    expect(await server.db.db.select().from(applicationPublicationSettlements)).toHaveLength(0);
+    await ingestApplicationPublicationObservation(server.ctx, request.computer_id, ledger.observation(3, 60), () => true);
+    await pump();
+    expect(await getGoalAutomation(server.ctx, goalId)).toMatchObject({ status: "completed", delivery: "published_product" });
+    expect(await server.db.db.select().from(applicationPublicationSettlements)).toHaveLength(1);
+    const historical = await getGoalApplicationPublication(server.ctx, goalId);
+    expect(historical).toMatchObject({ status: "published", current_state: "healthy" });
+    server.ctx.clock = fixedClock(ledger.at(61));
+    server.ctx.onApplicationPublicationQueued = async (id, control) => {
+      expect(id).toBe(request.publication_id); expect(control).toBe("stop");
+      await ingestApplicationPublicationObservation(server.ctx, request.computer_id, ledger.observation(4, 61, true), () => true);
+    };
+    await cancelGoalApplicationPublication(server.ctx, goalId);
+    expect(await getGoalApplicationPublication(server.ctx, goalId)).toMatchObject({ status: "published", current_state: "closed-normal", receipt: historical!.receipt });
+    expect(await getGoalAutomation(server.ctx, goalId)).toMatchObject({ status: "completed", delivery: "published_product" });
+    expect(await server.db.db.select().from(applicationPublicationSettlements)).toHaveLength(1);
+  });
+
+  it("routes an explicitly authorized application through actual planning, four stages and fresh independent review, then waits for unsupported publication", async () => {
+    const { sent, connect, binding: initialBinding } = await applicationWorker();
+    const goalId = await create(true, 3, true), stageTasks = await plan(goalId);
+    let binding = initialBinding;
+    const original = await getGoalAutomation(server.ctx, goalId);
+    expect(original?.planning_capability_snapshot?.app_delivery).toEqual({ version: 1, kind: "local-application-development" });
+    for (const task of stageTasks) {
+      const author = await start(goalId, task.id), requirement = author.verificationRequirement as VerificationRequirement;
+      expect(requirement.application).toMatchObject({ version: 1, config_digest: digest, contract_digest: changedDigest });
+      if (task.title === "implementation") {
+        const old = connect(false);
+        await expect(old.dispatchRunStart(author.id)).rejects.toMatchObject({ details: { reason: "unsupported_application_verification" } });
+        binding = connect();
+      }
+      await binding.dispatchRunStart(author.id);
+      const startCommand = sent.find(message => message.kind === "command" && message.type === "run.start" && message.payload.run_id === author.id)!;
+      expect(runStartCommandSchema.parse(startCommand).payload.verification?.application).toEqual(requirement.application);
+      await complete(author);
+      const peer = await verdict(author), source = await readRunVerificationEvidence(server.ctx, server.db.db, author.id);
+      const reviewed = await readRunVerificationEvidence(server.ctx, server.db.db, peer.run.id);
+      if (task.title === "implementation" || task.title === "validation") {
+        expect(reviewed?.payload.application).toMatchObject({ run_id: peer.run.id, origin_run_id: author.id,
+          origin_request_id: requirement.request_id, candidate: source?.payload.application?.candidate, qualified_for_product: false });
+        expect(reviewed?.payload.application?.acceptance.test_store_id).not.toBe(source?.payload.application?.acceptance.test_store_id);
+      } else expect(source?.payload.application).toBeUndefined();
+    }
+    await pump();
+    expect((await taskRows(goalId)).every(task => task.status === "done")).toBe(true);
+    expect(await getGoalAutomation(server.ctx, goalId)).toMatchObject({ status: "waiting", delivery: "verified_workspace",
+      last_error: expect.stringContaining("publication remains unsupported") });
+    expect((await server.db.db.select().from(goals).where(eq(goals.id, goalId)))[0]?.status).toBe("running");
+    expect(await getGoalProductRelease(server.ctx, goalId)).toBeNull();
+  });
+
+  it("refuses application planning on an old node and makes the original application grant immutable", async () => {
+    await applicationWorker();
+    const goalId = await create(true, 3, true);
+    server.ctx.supportsExecutionFeature = (_node, feature) => feature !== APPLICATION_VERIFICATION_FEATURE_V1;
+    await pump();
+    expect(await getGoalAutomation(server.ctx, goalId)).toMatchObject({ status: "waiting", discussion_id: null });
+    expect(await server.db.db.select().from(runs)).toHaveLength(0);
+    await expect(server.db.db.update(goalAutomations).set({ appDelivery: null }).where(eq(goalAutomations.goalId, goalId))).rejects.toThrow();
+    await expect(server.db.db.update(goalAutomations).set({ status: "completed" }).where(eq(goalAutomations.goalId, goalId))).rejects.toThrow();
+  });
+
+  it("rejects missing application measurement and requalifies current-run, origin and authorization bindings on read", async () => {
+    await applicationWorker();
+    const goalId = await create(true, 3, true), stageTasks = await plan(goalId);
+    for (const task of stageTasks.slice(0, 2)) { const run = await start(goalId, task.id); await complete(run); await verdict(run); }
+    const author = await start(goalId, stageTasks[2]!.id);
+    await expect(complete(author, undefined, digest, true, [], "passed", undefined, true)).rejects.toThrow("lacks successful evidence");
+    await complete(author);
+    const evidence = (await readRunVerificationEvidence(server.ctx, server.db.db, author.id))!;
+    expect(evidence.payload.application).toBeDefined();
+    for (const application of [undefined, { ...evidence.payload.application!, run_id: "another-run" },
+      { ...evidence.payload.application!, origin_run_id: "another-author" }, { ...evidence.payload.application!, origin_request_id: "another-request" }]) {
+      const payload = { ...evidence.payload, application };
+      await server.db.db.update(runEvidence).set({ payload }).where(eq(runEvidence.id, evidence.id));
+      await server.db.db.update(eventLog).set({ payload }).where(eq(eventLog.id, evidence.eventId));
+      expect(await readRunVerificationEvidence(server.ctx, server.db.db, author.id)).toBeNull();
+    }
+    await server.db.db.update(runEvidence).set({ payload: evidence.payload }).where(eq(runEvidence.id, evidence.id));
+    await server.db.db.update(eventLog).set({ payload: evidence.payload }).where(eq(eventLog.id, evidence.eventId));
+    expect(await readRunVerificationEvidence(server.ctx, server.db.db, author.id)).not.toBeNull();
+    await server.db.db.update(eventLog).set({ actorId: "another-user" }).where(and(eq(eventLog.goalId, goalId), eq(eventLog.type, "goal.application-development.authorized")));
+    expect(await readRunVerificationEvidence(server.ctx, server.db.db, author.id)).toBeNull();
+  });
 
   async function start(goalId: string, taskId: string) {
     for (let step = 0; step < 3; step++) {

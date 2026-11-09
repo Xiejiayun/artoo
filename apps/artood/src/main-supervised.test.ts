@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as installation from "./windows-process-installation.js";
 import * as runner from "./node-runner.js";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
-import { main, type ShutdownHost } from "./main.js";
+import { main, runDaemonEntrypoint, type ShutdownHost } from "./main.js";
+import * as verification from "./verification.js";
+import * as launcher from "./windows-daemon-launcher.js";
 import { withWindowsStartupDiagnostics, type WindowsStartupDiagnostic } from "./windows-startup-diagnostics.js";
 import * as sourceConfiguration from "./product-source-config.js";
 import * as bootstrapGit from "./product-bootstrap-git.js";
@@ -29,6 +31,32 @@ function fixture() {
   return { node, create, host, resolve, reject };
 }
 describe("controlled daemon registration gate", () => {
+  it.each(["win32", "linux", "darwin"] as const)("keeps the %s configuration-loading contract at the ordinary entry", async selectedPlatform => {
+    Object.defineProperty(process, "platform", { ...platform, value: selectedPlatform });
+    const f = fixture(), file = join(process.cwd(), "controlled-verifiers.json");
+    const raw = [{ id: "local", project_id: "project", workspace_root: process.cwd(), commands: [], required_files: [], subject_paths: [] }];
+    const prepared = Object.freeze([Object.freeze({ ...raw[0]!, digest: `sha256:${"a".repeat(64)}`, trustedFiles: [] })]);
+    const legacyLoad = vi.spyOn(verification, "loadVerificationProfilesFile").mockReturnValue(raw);
+    const preparedLoad = vi.spyOn(verification, "loadPreparedVerificationProfilesFile").mockReturnValue(prepared);
+    await main({ ARTOO_NODE_URL: env.ARTOO_NODE_URL, ARTOO_NODE_ID: env.ARTOO_NODE_ID, ARTOO_RUNTIMES: "codex",
+      ARTOO_ALLOWED_ROOTS: process.cwd(), ARTOO_VERIFICATION_PROFILES_FILE: file }, f.host as ShutdownHost);
+    expect(f.create.mock.calls[0]![0].verificationProfiles).toBe(selectedPlatform === "win32" ? prepared : raw);
+    expect(selectedPlatform === "win32" ? preparedLoad : legacyLoad).toHaveBeenCalledExactlyOnceWith(file, [process.cwd()]);
+    expect(selectedPlatform === "win32" ? legacyLoad : preparedLoad).not.toHaveBeenCalled();
+    f.host.emit("message", { type: "shutdown" }); await vi.waitFor(() => expect(f.node.stop).toHaveBeenCalledOnce());
+  });
+  it("passes prepared identities to the Windows supervisor parent without constructing a daemon", async () => {
+    const f = fixture(), file = join(process.cwd(), "controlled-verifiers.json");
+    f.host.argv[2] = "--windows-supervised";
+    const profiles = Object.freeze([]);
+    const legacyLoad = vi.spyOn(verification, "loadVerificationProfilesFile");
+    const preparedLoad = vi.spyOn(verification, "loadPreparedVerificationProfilesFile").mockReturnValue(profiles);
+    const launch = vi.spyOn(launcher, "launchWindowsSupervisedCli").mockResolvedValue(undefined);
+    await runDaemonEntrypoint({ ...env, ARTOO_VERIFICATION_PROFILES_FILE: file }, f.host as ShutdownHost);
+    expect(preparedLoad).toHaveBeenCalledExactlyOnceWith(file, [process.cwd()]);
+    expect(legacyLoad).not.toHaveBeenCalled(); expect(f.create).not.toHaveBeenCalled();
+    expect(launch).toHaveBeenCalledOnce(); expect(launch.mock.calls[0]![1].verificationProfiles).toBe(profiles);
+  });
   it("projects configuration failure before cleanup without exposing the cause", async () => {
     const f = fixture(), diagnostics: WindowsStartupDiagnostic[] = [];
     vi.spyOn(installation, "prepareWindowsProcessInstallation").mockImplementation(() => { throw Error("sensitive configuration path or key"); });

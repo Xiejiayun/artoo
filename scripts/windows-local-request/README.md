@@ -1,8 +1,32 @@
 # Windows 本机单需求入口
 
-本入口用两个独立的原生 Windows 监督节点和四个 Codex agents，把一次静态 Web 产品需求交给 Artoo GoalRunner，执行调研、设计、实现、测试、独立审核和配置内的本机发布。模型使用已配置的 Aerial `127.0.0.1:18181` / `gpt-6.1-sol`，其上游是 GitHub Copilot。无需 WSL。
+本入口把一次产品需求交给 Artoo GoalRunner，执行调研、设计、实现、测试、独立审核和配置内的交付。模型使用已配置的 Aerial `127.0.0.1:18181` / `gpt-6.1-sol`，其上游是 GitHub Copilot。无需 WSL。维护者在安装时选择静态 Web、应用开发或有界本机应用发布；最终用户仍只提交一次需求。
 
-新版入口为 `max_retries=3` 在启动时准备一个源工作区和四个独立目标工作区。源端作者、审核者各一个实例；目标端同一逻辑作者、审核者各有四个实例，共四个逻辑 agents、十个执行实例。每个目标工作区分别绑定验证配置、证据目录、发布存储和端口，slot 0 保持原路径和配置 ID。所有节点声明和完整写入根范围均在提交前确定，执行中不会按模型输出创建新配置或扩大目录权限。
+省略新增应用配置时保持原静态 Web 路径：两个独立原生 Windows 监督节点、四个逻辑 Codex agents，以及下述源端与目标端工作区池。应用模式使用同一电脑的一项普通原生 daemon、其原始 IPC owner 和两个独立 agents；每次执行仍受原 native ownership 管理。它不启用静态源交接、shared supervisor 或 source recovery。
+
+## 维护者配置应用模式
+
+本节是新增的安装接口，不表示当前安装已经通过真实使用验收。维护者须将完整工具链、匹配的 daemon/Web/server 和这些入口文件作为同一版本交付；用户不填写以下 JSON。
+
+`LOCAL-INSTALLATION.json` 可增加可选 `product` 对象：`version: 1`、`kind: "local-application"`、`delivery: "development"` 或 `"publication"`、`verification_profile_id` 和固定 `origin`。`origin` 必须是精确的 `http://127.0.0.1:<port>`，不自动变更端口。开发模式禁止发布字段；发布模式还须指定 `publication_profile_id` 与完整 `limits`。这些字段不来自 Objective 或模型输出。
+
+`limits` 使用原 `ApplicationPublicationLimitsV1` 契约：`root_lifetime_ms`、`startup_timeout_ms`、`health_timeout_ms`、`normal_drain_reserve_ms`、`health_interval_ms`、`health_freshness_ms`、`maximum_service_generations: 2`、`maximum_requests_per_generation: 256`、`maximum_concurrent: 1`、`maximum_health_rounds`。应用验证固定 operation timeout 为 30 秒，正常排空配置至少须留 47.5 秒，原节点还会做完整校验；总租期必须覆盖初始化、两代服务、健康检查和排空，不延长或重置已有预算。
+
+安装清单还须增加 `application: { version: 1, tools, trees }`。`tools` 包含原生产配置所需的 `compiler: { helper, helperManifest, node, entry, configuration }`、`runtime: { helper, helperManifest, entry, vendorManifest, guestBootstrap }`、`broker`、`hostManifest`。每项使用安装清单既有的 `{ path, bytes, sha256 }` 裸十六进制摘要，compiler 的 Node 必须等于 `programs.node`。`trees` 是完整工具目录数组，每项 `{ root, tree }`，包括所有嵌套模块、vendor、host 和 compiler 依赖；目录不得重叠，每个工具 pin 必须被一个完整目录覆盖。入口会转换为生产 profile 所需的 `sha256:` 格式，保留原嵌套配置的生产校验。
+
+每次请求创建新工作区、验证存储、独立发布存储与配置目录。真实 pairing/claim/enroll 返回 computer ID 后，入口通过已绑定 daemon bundle 的 `describeWindowsApplicationEntryVerifier` 读取本地 verifier 的完整准入描述，再写本机发布配置。此描述不返回进程或候选权限；discovery 和实际 daemon 各自重新完成 ACL、hash、工具、原生能力及完整写入根检查。安装清单不允许任意运行命令或未绑定 `apps/artood/dist` 导入。
+
+应用发布使用既有 prepared `app_publication` 请求，应用开发使用单独的 `app_delivery`，两者都不携带静态 `release_profile_id` 或 `source_handoff`。Console 和 Browser 的唯一提交者、原用户授权、稳定请求 ID、GoalRunner 与验收/独立审核路径相同。
+
+`development` 完成后输出 `local-request.delivered` 和验证工作区，随后正常关闭；`product_published` 为 false，也没有产品 URL。`publication` 完成后才输出真实 URL、原租期截止时间和剩余请求数。`healthy` 表示新鲜的节点 HTTP/数据库健康测量，`live` 仅表示原服务 owner 和预算仍有效，不将历史健康记录显示为当前健康。`draining` 显示不可用并等待实际关闭；缺失、过期、unknown 或不匹配的原发布事实保留为失败。
+
+应用停止先同步关闭本次 prepared session 的提交入口，等待已准入的原始提交事务完成，再从原用户、session 和 request key 找回已提交的 goal。即使浏览器或 Console 尚未收到提交响应，也会对同一 goal 调用正式 cancel（尚未完成时）或 application publication stop；不会补发需求。此关闭操作仅供原本机 Server owner 调用，不增加 HTTP 权限或暴露 Console request key。停止后本次 session 不再接受提交，普通项目的手动请求不受影响。
+
+停止时复用并核验已有的原始 `GOAL.json`；记录缺失时才独占创建。已知 goal ID 但尚未保存记录也可正常补齐。现有记录内容冲突会保留为失败，不覆盖原记录，也不会因为正常路径已经保存过记录而重复创建失败。
+
+随后入口把原 stdin shutdown 转换为同一 `ARTOO_WORKER_LAUNCH_ID` 的既有 IPC shutdown。入口检查原 `worker.ready`/`worker.stopped`、IPC 断开、exit/close、stdout/stderr EOF 和实际发布 normal closure；已经在途的唯一原始 ready 可以在 shutdown 之后、stopped 之前被记录，但不会重新启动工作。重复 ready、身份不匹配、stopped 之后的 ready 和强制终止都不算成功。已完成的应用发布若缺少原始发布记录，也不能标记为正常未发布。静态路径继续使用下述原监督 CLI。应用 session 不支持 `-OpenProduct`；已验证的一次同 URL、同数据库重开属于原发布过程，不能当作停机后的第三次启动或永久托管。
+
+静态 Web 入口为 `max_retries=3` 在启动时准备一个源工作区和四个独立目标工作区。源端作者、审核者各一个实例；目标端同一逻辑作者、审核者各有四个实例，共四个逻辑 agents、十个执行实例。每个目标工作区分别绑定验证配置、证据目录、发布存储和端口，slot 0 保持原路径和配置 ID。所有节点声明和完整写入根范围均在提交前确定，执行中不会按模型输出创建新配置或扩大目录权限。
 
 入口显式请求 `source_handoff.research_revision.strategy=configured_pool`，并在 READY/提交前检查真实源节点是否声明 `product-research-revision.v1`。仅有新 schema 或配置文件不能满足此条件；旧安装或尚未实现基线保留的节点会停止启动，不会提交一个无法完成的需求。该检查和下面的配置测试不代替最终版本的原生修订、发布验收。
 
@@ -44,7 +68,7 @@ API key 仅来自启动进程环境或现有 Aerial 本地文件，经 `ARTOO_CO
 
 ## 发布、保持与停止
 
-成功发布后，控制台输出实际产品地址，入口继续保持两个节点和本机 publisher，并观察发布状态与实际 HTTP 身份。验收、独立审核或发布失败会保留失败记录，不会改成通过。
+静态 Web 成功发布后，控制台输出实际产品地址，入口继续保持两个节点和本机 publisher，并观察发布状态与实际 HTTP 身份。应用模式按上文保持其单个原始 daemon 和有界服务。验收、独立审核或发布失败会保留失败记录，不会改成通过。
 
 保持原控制台开启。停止时在同一标准输入发送下面完整的一行并换行：
 
@@ -52,15 +76,15 @@ API key 仅来自启动进程环境或现有 Aerial 本地文件，经 `ARTOO_CO
 {"version":1,"kind":"shutdown"}
 ```
 
-入口向两个原始 CLI 发送正式 shutdown，检查实际 exit/close、stdout/stderr EOF、cleanupConfirmed、节点断开和 Server 关闭。原 75 秒正常停止边界保留；紧急终止或未知关闭记为失败。Ctrl+C、关闭窗口和无限后台服务不在此处宣称通过。
+静态 Web 入口向两个原始 CLI 发送正式 shutdown，检查实际 exit/close、stdout/stderr EOF、cleanupConfirmed、节点断开和 Server 关闭。应用模式采用上文的提交排空、正式 API 停止和原始 IPC 关闭。原 75 秒 CLI 正常停止边界保留；紧急终止或未知关闭记为失败。Ctrl+C、关闭窗口和无限后台服务不在此处宣称通过。
 
-流程仍采用配置的发布前运行预算；browser 模式等用户输入另有同样长度的等待上限，完整产品预算从真实提交后开始。发布后保持受原监督进程 lifetime/output 上限约束。停止后本机产品地址失效，因此这不是永久或公网托管。
+流程仍采用配置的发布前运行预算；browser 模式等用户输入另有同样长度的等待上限，完整产品预算从真实提交后开始。静态 Web 发布后保持受原监督进程 lifetime/output 上限约束；应用发布采用其原始租期和请求预算。停止后本机产品地址失效，因此这不是永久或公网托管。
 
 每次调用使用 fresh session 目录并保留数据库、workspace、来源与恢复信息、验证证据、发布存储及最终结果；不删除成功或失败历史。`goal_posts` 记录 launcher 实际发送次数（Console 为 1，Browser 为 0），`logical_goals_created` 记录实际数据库核对的一项需求。浏览器网络重试次数不能冒充多个逻辑需求，也不能用 launcher POST=0 声称页面已经提交。
 
 ## 重新打开已完成的本机产品
 
-新版入口成功发布并从原 stdin 正常停止后，输出中的 `open_product` 是可选择的原 session 路径。重新使用产品时运行：
+静态 Web 模式成功发布并从原 stdin 正常停止后，输出中的 `open_product` 是可选择的原 session 路径。应用模式不输出此入口，配置与保留结果检查也会拒绝静态重开。重新使用静态产品时运行：
 
 ```powershell
 & .\scripts\windows-local-request\Start-ArtooDaily.ps1 -OpenProduct '<原 session 的绝对路径>'
@@ -80,16 +104,18 @@ API key 仅来自启动进程环境或现有 Aerial 本地文件，经 `ARTOO_CO
 
 原 daily 与重开入口在任何发布器初始化前共享同一独占锁。原两个节点、Server 与输入校验全部正常结束后才释放；重开也仅在发布器明确关闭和输入复核通过后释放。并发运行或异常遗留的锁会拒绝启动，不按 PID 猜测删除。旧版本缺少共享锁释放记录、原 stdin 关闭记录或完整发布 request/receipt 的 session 不支持重开；有 recovery/clean publisher fence 的记录也保留原拒绝规则。这不是旧任务恢复、crash 恢复、后台服务或公网托管。
 
-当前范围为同一物理电脑的两个独立节点、静态 Web 产品和前台 loopback 发布。任意远程电脑/agent 自动接入、后端或数据库产品、旧任务安全恢复、签名安装与公网生产发布仍需各自实现和验收。
+静态模式范围为同一物理电脑的两个独立节点和前台 loopback 发布；新增应用模式连接既有受约束的应用编译、服务器、SQLite broker 与两代本机发布流程。新增入口仍需最终安装上的真实模型、浏览器、应用操作与正常停止验收。任意远程电脑/agent 自动接入、任意后端技术栈、旧任务安全恢复、签名安装与公网生产发布不由此入口证明。
 
 ## 维护者检查
 
 入口和 Web/server 必须在同一版本集成；不能把仅实现 `-BrowserInput` 参数的启动器配给旧 Console 草案。先运行项目规定检查以及：
 
 ```powershell
-node --test scripts/windows-local-request/launcher.test.mjs scripts/windows-local-request/entry-preflight.test.mjs scripts/windows-local-request/reopen-inputs.test.mjs scripts/windows-local-request/slots.test.mjs
+node --test scripts/windows-local-request/launcher.test.mjs scripts/windows-local-request/entry-preflight.test.mjs scripts/windows-local-request/reopen-inputs.test.mjs scripts/windows-local-request/slots.test.mjs scripts/windows-local-request/application.test.mjs
 ```
 
 启动器套件使用真实 PowerShell/Node 与明确标注的假 entry，只验证参数、环境、stdin 和退出行为。预检套件使用真实 entry 和明确不存在的配置，验证输入模式在应用启动前被正确处理。随后仍需通过实际交付入口提交一次非固定产品需求，验证真实模型、native、独立审核、HTTP 发布、保持及原 stdin 关闭。结果应明确区分这些证据范围。
+
+`application.test.mjs` 使用实际编译后的 domain schema、受控元数据/发布记录与 Fastify injection，验证请求模式、完整工具树、原用户/会话/发布身份、可用状态、正式停止路径、提交响应丢失后的原始 goal 找回和 IPC 消息交错；它不启动模型或 native 服务，不是应用产品验收。`apps/server/src/goal-entry.test.ts` 使用真实路由和数据库事务屏障，覆盖关闭提交入口时原始提交的 commit/rollback、Console key 保密以及随后取消原 goal。另须运行 `windows-application-entry.test.ts` 与 `windows-daemon-launcher.test.ts` 的相应源码回归。
 
 重开元数据测试拒绝不完整关闭、错配记录和变更的发布身份；它不替代发布器的实际 HTTP/端口/独占/停止测试。交付前还须用同一最终安装完成真实产品“正常停止 → 重开原 URL → 操作产品 → 原 stdin 停止”的验收，不能以源码、fixture 或一次 HTTP 可访问宣称完成。

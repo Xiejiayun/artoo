@@ -8,6 +8,8 @@ A maintainer first prepares installation metadata from the final reviewed candid
 
 The default configuration is `%LOCALAPPDATA%\Artoo\windows-local-request\LOCAL-INSTALLATION.json`. The launcher never chooses Node from PATH: it checks the configuration's installation-manifest pin, reads `programs.node` from that manifest, and checks its path, length and SHA-256 before direct invocation. These pins are trusted local installation metadata, not signatures. The Node entry still validates the complete runtime trees, other executable pins, private session roots and exact authorization before starting work.
 
+A maintainer may select the optional versioned `product` application mode described in `README.md`. The strict configuration and installation schemas admit its exact fields; the Node entry checks every application tool pin and complete dependency tree before local profile admission. No end-user mode, profile or command argument is added. An omitted `product` retains the static Web flow. Development delivers a verified workspace; publication runs the configured bounded local application. The original source supervisor remains specific to static Web; application mode uses the existing daemon IPC owner protocol and native ownership for each operation. It does not claim shared-supervisor recovery.
+
 ```powershell
 & .\scripts\windows-local-request\Start-ArtooDaily.ps1
 ```
@@ -38,6 +40,8 @@ After the original daily session has published and stopped successfully, select 
 
 This mode asks for no requirement and is mutually exclusive with `-Objective`, `-ObjectiveFile` and `-BrowserInput`. It selects the original configuration from the sibling `RESULT.json`'s `configuration` pin and verifies that pin before selecting the installed Node. It does not use the current default configuration. An optional `-Config` must name that same original configuration path; a different configuration is rejected even if its contents match. Selection paths must be normalized absolute Windows paths with no links or reparse points in the selected path or its parents.
 
+`-OpenProduct` is only for qualified static Web sessions. Application configuration and retained application results reject it. The application's one normal same-database reopen occurs inside its original bounded publication; this launcher does not add another service generation after shutdown.
+
 The launcher directly invokes the adjacent `reopen.mjs --product <selected path> --config <original configuration> --stdin-control` with the selected Node. The result record only selects the configuration at this stage: the real reopen entry must validate the complete stopped publication, retained product and installation bindings before serving it. Passing launcher checks or a controlled test is not product validation. This operation opens the retained product; it does not resume a goal or generate a new product. Keep the original process open and use the same stdin shutdown protocol below.
 
 The publisher continues the health monitoring and withdrawal policies authorized by its original protected profile. Monitoring may update health journals and `current.json`. If the selected product is withdrawn or the current selection changes, reopening must fail and retain evidence from before and after the change. Reopening does not start the old goal, agents, source-recovery or clean workflow; this boundary does not disable the publisher's existing monitoring actions.
@@ -59,6 +63,8 @@ Keep the original console open after publication. To stop, send this complete li
 ```
 
 The launcher directly invokes the original Node entry and returns its exit code. It does not convert an early EOF, timeout, force kill or missing closure into success. Ctrl+C and long-lived background hosting remain separate qualification scopes. A stopped local publisher is not permanent hosting.
+
+For application mode, the same input first fences unfinished GoalRunner work and requests the formal application stop API. It then sends shutdown on the original daemon IPC channel with its unique launch ID and observes the original stopped message, disconnection, process exit/close and both output EOFs. A `draining` status means stop is still pending. Historical URLs and a successful HTTP stop response cannot replace actual original-owner closure.
 
 ## Regression and delivery checks
 

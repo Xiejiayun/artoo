@@ -111,7 +111,7 @@ elseif (-not $PSBoundParameters.ContainsKey('Config')) {
 $artooEntry = Join-Path $PSScriptRoot $(if ($artooHasProduct) { 'reopen.mjs' } else { 'start.mjs' })
 $null = Get-ArtooPhysicalFile $artooEntry (4MB)
 $artooLocal = Read-ArtooJson $Config (64KB)
-Assert-ArtooShape $artooLocal @('version', 'installation', 'runtime', 'authorization')
+Assert-ArtooShape $artooLocal @('version', 'installation', 'runtime', 'authorization') @('product')
 if (($artooLocal.version -isnot [int] -and $artooLocal.version -isnot [long]) -or $artooLocal.version -ne 1) { throw 'Unsupported local installation version.' }
 Assert-ArtooShape $artooLocal.runtime @('private_parent', 'provider_key_env', 'timeout_minutes')
 Assert-ArtooShape $artooLocal.authorization @('scope', 'policy_version')
@@ -123,14 +123,66 @@ if ($artooLocal.runtime.private_parent -isnot [string] -or $artooLocal.runtime.p
     $artooLocal.authorization.policy_version -isnot [string] -or $artooLocal.authorization.policy_version -cnotmatch '^sha256:[a-f0-9]{64}$') {
     throw 'Invalid runtime or provider authorization configuration.'
 }
+if ($artooLocal.Contains('product')) {
+    if ($artooHasProduct) { throw 'Application sessions do not support -OpenProduct.' }
+    $artooProduct = $artooLocal.product
+    Assert-ArtooShape $artooProduct @('version', 'kind', 'delivery', 'verification_profile_id', 'origin') @('publication_profile_id', 'limits')
+    if (($artooProduct.version -isnot [int] -and $artooProduct.version -isnot [long]) -or $artooProduct.version -ne 1 -or
+        $artooProduct.kind -cne 'local-application' -or $artooProduct.delivery -cnotin @('development', 'publication') -or
+        $artooProduct.verification_profile_id -isnot [string] -or $artooProduct.verification_profile_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' -or
+        $artooProduct.origin -isnot [string] -or $artooProduct.origin -cnotmatch '^http://127\.0\.0\.1:[1-9][0-9]{0,4}$') {
+        throw 'Invalid configured application mode.'
+    }
+    $artooApplicationUri = [Uri]$artooProduct.origin
+    if ($artooApplicationUri.Port -le 0 -or $artooApplicationUri.Port -gt 65535 -or
+        $artooApplicationUri.GetLeftPart([UriPartial]::Authority) -cne $artooProduct.origin) { throw 'Expected an exact loopback application origin.' }
+    if ($artooProduct.delivery -ceq 'development') {
+        if ($artooProduct.Contains('publication_profile_id') -or $artooProduct.Contains('limits')) { throw 'Application development cannot authorize publication.' }
+    }
+    else {
+        if (-not $artooProduct.Contains('publication_profile_id') -or -not $artooProduct.Contains('limits') -or
+            $artooProduct.publication_profile_id -isnot [string] -or $artooProduct.publication_profile_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') {
+            throw 'Application publication requires its configured profile and limits.'
+        }
+        $artooLimits = $artooProduct.limits
+        $artooDurations = @('root_lifetime_ms', 'startup_timeout_ms', 'health_timeout_ms', 'normal_drain_reserve_ms', 'health_interval_ms', 'health_freshness_ms')
+        Assert-ArtooShape $artooLimits ($artooDurations + @('maximum_service_generations', 'maximum_requests_per_generation', 'maximum_concurrent', 'maximum_health_rounds'))
+        foreach ($artooDuration in $artooDurations) {
+            if (($artooLimits[$artooDuration] -isnot [int] -and $artooLimits[$artooDuration] -isnot [long]) -or
+                $artooLimits[$artooDuration] -lt 1 -or $artooLimits[$artooDuration] -gt 43200000) { throw 'Invalid application publication duration.' }
+        }
+        foreach ($artooCount in @('maximum_service_generations', 'maximum_requests_per_generation', 'maximum_concurrent', 'maximum_health_rounds')) {
+            if ($artooLimits[$artooCount] -isnot [int] -and $artooLimits[$artooCount] -isnot [long]) { throw 'Invalid application publication count.' }
+        }
+        if ($artooLimits.maximum_service_generations -ne 2 -or $artooLimits.maximum_requests_per_generation -ne 256 -or $artooLimits.maximum_concurrent -ne 1 -or
+            $artooLimits.maximum_health_rounds -lt 2 -or $artooLimits.maximum_health_rounds -gt 128 -or $artooLimits.normal_drain_reserve_ms -lt 47500 -or
+            (3 * $artooLimits.startup_timeout_ms + 2 * $artooLimits.health_timeout_ms + 2 * $artooLimits.normal_drain_reserve_ms) -ge $artooLimits.root_lifetime_ms -or
+            $artooLimits.health_interval_ms -gt $artooLimits.root_lifetime_ms -or $artooLimits.health_freshness_ms -gt $artooLimits.root_lifetime_ms) {
+            throw 'Application publication limits do not cover the original bounded lifecycle.'
+        }
+    }
+}
 $artooInstallationFile = Assert-ArtooPin $artooLocal.installation (64MB)
 $artooInstallation = Read-ArtooJson $artooInstallationFile (64MB)
-Assert-ArtooShape $artooInstallation @('format', 'daemon', 'server', 'programs') @('web')
+Assert-ArtooShape $artooInstallation @('format', 'daemon', 'server', 'programs') @('web', 'application')
 if ($artooInstallation.format -isnot [string] -or $artooInstallation.format -cne 'artoo.windows-single-goal-installation.v1') { throw 'Unsupported installation manifest.' }
 Assert-ArtooShape $artooInstallation.daemon @('root', 'manifest', 'tree')
 Assert-ArtooShape $artooInstallation.server @('root', 'package_files', 'trees', 'dependencies')
 Assert-ArtooShape $artooInstallation.programs @('node', 'codex', 'git', 'browser')
 if ($artooInstallation.Contains('web')) { Assert-ArtooShape $artooInstallation.web @('root', 'tree') }
+if ($artooLocal.Contains('product') -and -not $artooInstallation.Contains('application')) { throw 'Application mode requires its installed toolchain.' }
+if ($artooInstallation.Contains('application')) {
+    $artooApplication = $artooInstallation.application
+    Assert-ArtooShape $artooApplication @('version', 'tools', 'trees')
+    if (($artooApplication.version -isnot [int] -and $artooApplication.version -isnot [long]) -or $artooApplication.version -ne 1) { throw 'Unsupported application installation version.' }
+    Assert-ArtooShape $artooApplication.tools @('compiler', 'runtime', 'broker', 'hostManifest')
+    Assert-ArtooShape $artooApplication.tools.compiler @('helper', 'helperManifest', 'node', 'entry', 'configuration')
+    Assert-ArtooShape $artooApplication.tools.runtime @('helper', 'helperManifest', 'entry', 'vendorManifest', 'guestBootstrap')
+    if ($artooApplication.trees -isnot [array] -or $artooApplication.trees.Count -lt 1 -or $artooApplication.trees.Count -gt 32) { throw 'Expected complete application installation trees.' }
+    foreach ($artooTree in $artooApplication.trees) { Assert-ArtooShape $artooTree @('root', 'tree') }
+    # The Node entry validates every tool pin, complete tree and exact compiler
+    # Node identity before loading runtime code. This launcher selects Node only.
+}
 $artooNode = Assert-ArtooPin $artooInstallation.programs.node (512MB)
 if ([IO.Path]::GetExtension($artooNode) -ine '.exe') { throw 'The installation must select a native Node executable.' }
 # Recheck the named manifest after parsing it; the real entry then verifies all

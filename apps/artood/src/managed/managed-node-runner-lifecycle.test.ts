@@ -31,6 +31,7 @@ function fixture(mixed?: { allowNewAllocations: boolean },
   const state = { connected: false };
   const client = { start: vi.fn(), ready: vi.fn(async () => {}), stop: vi.fn(async (_cancel?: boolean) => {}),
     replayReleaseHealth: vi.fn(async () => {}),
+    invalidateApplicationPublicationSession: vi.fn(async () => {}),
     invalidateManagedStartupSession: vi.fn(), requestManagedRunStop: vi.fn(async () => {}),
     failManagedConnection: vi.fn(async () => {}) };
   const close = vi.fn(async () => { state.connected = false; ready.reject(new DeliveryStopped("intentional link close")); });

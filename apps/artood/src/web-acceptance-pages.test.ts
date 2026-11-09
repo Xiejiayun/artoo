@@ -3,6 +3,7 @@ import type { BrowserContext, Page } from "playwright";
 import { describe, expect, it, vi } from "vitest";
 import { BrowserOperationTraceV3Schema, type ProductBrowserProgramV3, type ProductBrowserStepV3 } from "@artoo/domain";
 import { executeBrowserProgramV3 } from "./web-acceptance-pages.js";
+import { AcceptanceCleanupError } from "./web-acceptance-cleanup.js";
 
 const digest = `sha256:${"a".repeat(64)}`, origin = "http://127.0.0.1:23456";
 const step = (action: string, page = "main", data: object = {}) => ({ action, page, ...data }) as ProductBrowserStepV3;
@@ -14,6 +15,7 @@ class ControlledPage extends EventEmitter {
   closed = false; address = "about:blank"; extraFrame = false; confirmClose = true;
   closeWait?: Promise<void>;
   onGoto?: () => void;
+  onText?: () => void;
   onScreenshot?: () => void;
   readonly frame = { url: () => this.address };
   constructor(readonly owner: ControlledContext, readonly name: string) { super(); }
@@ -24,7 +26,7 @@ class ControlledPage extends EventEmitter {
   isClosed() { return this.closed; }
   context() { return this.owner; }
   async goto(url: string) { this.address = url; this.owner.log.push(`navigate:${this.name}`); this.emit("framenavigated", this.frame); this.onGoto?.(); return { ok: () => true, status: () => 200 }; }
-  locator() { return { textContent: async () => { this.owner.log.push(`text:${this.name}`); return this.name; },
+  locator() { return { textContent: async () => { this.owner.log.push(`text:${this.name}`); this.onText?.(); return this.name; },
     count: async () => { this.owner.log.push(`count:${this.name}`); return 1; } }; }
   async screenshot() { this.onScreenshot?.(); this.owner.log.push(`capture:${this.name}`); if (this.closed) throw new Error("closed screenshot"); return Buffer.from(`controlled screenshot ${this.name}`); }
   async close() { this.owner.log.push(`close:${this.name}`); await this.closeWait; if (this.confirmClose && !this.closed) { this.closed = true; this.emit("close"); } }
@@ -34,6 +36,7 @@ class ControlledContext extends EventEmitter {
   closed = false;
   beforePage?: (page: ControlledPage, number: number) => void | Promise<void>;
   onClose?: () => void;
+  onDetach?: (page: ControlledPage) => void;
   routeHandler?: (route: { request(): { url(): string }; continue(): Promise<void>; abort(reason: string): Promise<void> }) => unknown;
   websocketHandler?: (socket: { close(): void }) => void;
   pages() { return this.all.filter((page) => !page.closed); }
@@ -55,7 +58,7 @@ class ControlledContext extends EventEmitter {
       if (method === "DOM.describeNode") return { node: { shadowRoots: [] } };
       if (method === "Runtime.releaseObjectGroup") return {};
       throw new Error(`unexpected CDP ${method}`);
-    }, detach: async () => { this.log.push(`detach:${page.name}`); } };
+    }, detach: async () => { this.log.push(`detach:${page.name}`); this.onDetach?.(page); } };
   }
   async close() {
     this.log.push("context-close"); this.onClose?.(); this.closed = true;
@@ -148,5 +151,31 @@ describe("v3 page lifecycle and actual execution (controlled browser seam)", () 
   it("rejects an existing untracked page instead of adopting it as main", async () => {
     const context = new ControlledContext(); const existing = new ControlledPage(context, "existing"); context.all.push(existing);
     await expect(run(context, [navigate])).rejects.toThrow("unexpected page"); expect(existing.closed).toBe(true);
+  });
+  it.each([false, true])("preserves the original program failure and context cleanup failure with program failure=%s", async programFails => {
+    const context = new ControlledContext(), programFailure = new Error("actual navigation failure"), contextFailure = new Error("actual context close failure");
+    if (programFails) context.beforePage = page => { page.onGoto = () => { throw programFailure; }; };
+    context.onClose = () => { throw contextFailure; };
+    const caught = await run(context, [navigate]).catch(error => error);
+    expect(caught).toBeInstanceOf(AcceptanceCleanupError); expect(caught.message).toBe("Browser acceptance context cleanup failed");
+    const originals = (error: unknown): unknown[] => error instanceof AcceptanceCleanupError ? error.errors.flatMap(originals) : [error];
+    const errors = originals(caught);
+    expect(caught.cause).toBe(contextFailure); expect(errors.at(-1)).toBe(contextFailure);
+    expect(errors).toHaveLength(programFails ? 2 : 1);
+    if (programFails) expect(errors[0]).toBe(programFailure);
+    expect(context.log.filter(entry => entry === "context-close")).toHaveLength(1);
+    expect(context.closed).toBe(false);
+  });
+  it("retains program and focus failures, skips later focus probes after failure, and still closes the context", async () => {
+    const context = new ControlledContext(), programFailure = new Error("actual text failure"), focusFailure = new Error("actual focus close failure");
+    context.beforePage = (page, index) => { if (index === 0) page.onText = () => { throw programFailure; }; };
+    context.onDetach = () => { throw focusFailure; };
+    const caught = await run(context, [navigate, step("focus", "main", { selector: "#main" }), step("open_page", "peer", { path: "/" }),
+      step("focus", "peer", { selector: "#peer" }), step("assert_text", "main", { selector: "body", text: "page0" })]).catch(error => error);
+    expect(caught).toBeInstanceOf(AcceptanceCleanupError); expect(caught.message).toBe("Browser acceptance context cleanup failed");
+    expect(caught.errors[0]).toBe(programFailure); expect(caught.errors[1]).toBe(focusFailure); expect(caught.cause).toBe(focusFailure);
+    expect(context.log.filter(entry => entry.startsWith("probe:"))).toEqual(["probe:page0", "probe:page1"]);
+    expect(context.log.filter(entry => entry.startsWith("detach:"))).toEqual(["detach:page0"]);
+    expect(context.log.at(-1)).toBe("context-close"); expect(context.closed).toBe(true);
   });
 });

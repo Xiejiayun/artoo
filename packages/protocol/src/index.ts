@@ -2,6 +2,7 @@ export const ARTOO_PROTOCOL_PACKAGE = "@artoo/protocol";
 
 export * from "./errors.js";
 export * from "./node-messages.js";
+export * from "./application-publication.js";
 export * from "./workspace-guard.js";
 export * from "./workspace-allocation.js";
 export * from "./ingest.js";

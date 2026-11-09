@@ -13,7 +13,11 @@ const reportDirectory = process.env.ARTOO_JOURNAL_REPORT_DIR;
 if (!reportDirectory || !isAbsolute(reportDirectory) || !existsSync(reportDirectory) || !statSync(reportDirectory).isDirectory()) {
   throw new Error("correction validation requires an existing outer-owned absolute report directory");
 }
-const aliases = Object.fromEntries(["domain", "protocol"].map((name) => [`@artoo/${name}`, at(`packages/${name}/dist/index.js`)]));
+const aliases = Object.fromEntries([
+  ["@artoo/domain/dist/application-publication.js", at("packages/domain/dist/application-publication.js")],
+  ["@artoo/protocol/dist/source-recovery.js", at("packages/protocol/dist/source-recovery.js")],
+  ...["domain", "protocol"].map((name) => [`@artoo/${name}`, at(`packages/${name}/dist/index.js`)]),
+]);
 const requiredProducts = [
   ...Object.values(aliases),
   at("apps/artood/dist/process-adapter.js"),

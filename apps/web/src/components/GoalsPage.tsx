@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Flag, Plus, Download, ListChecks, MessageSquare } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { PreparedGoalEntryV1Schema, canProposePlan, canTransitionGoal, type Goal, type GoalAutomation, type TaskSpec } from "@artoo/domain";
@@ -151,7 +151,8 @@ function AutonomousProgress({ goal, automation }: { goal: Goal; automation: Goal
   return <section className="product-card u-stack-sm" aria-label="Autonomous progress">
     <div className="action-row"><strong>{automation.execution_mode === "agent_team" ? "Agent Team" : "Autonomous development"}</strong><Badge>{goal.status === "paused" ? "paused" : automation.status}</Badge></div>
     {automation.source_handoff?.mode === "automatic" && <p className="insights-help" aria-label="Cross-computer authorization">Cross-computer work is allowed for this goal. Artoo selects a destination after the required checks pass.</p>}
-    <p>{published ? unhealthy ? "The product was published; a later health check reported a problem." : "The verified product was published and its endpoint passed the configured health checks." : automation.status === "completed" && !automation.release_profile_id ? "Configured acceptance checks passed. The verified workspace is ready; it has not been automatically published." : "Artoo manages the plan, task execution and acceptance checks. You can pause or cancel at any time."}</p>
+    <p>{automation.app_publication ? "Artoo manages development, independent review and local application publication. Publication history and current availability appear below."
+      : published ? unhealthy ? "The product was published; a later health check reported a problem." : "The verified product was published and its endpoint passed the configured health checks." : automation.status === "completed" && !automation.release_profile_id ? "Configured acceptance checks passed. The verified workspace is ready; it has not been automatically published." : "Artoo manages the plan, task execution and acceptance checks. You can pause or cancel at any time."}</p>
     {automation.team && <div aria-label="Team responsibilities"><ul>{automation.team.members.map((member) => <li key={member.stage}><strong>{stageLabels[member.stage]}</strong> · {name(member.agent_instance_id)}</li>)}</ul><p className="insights-help">Each task is reviewed by another team member against the same verified source version.</p></div>}
     {automation.release_profile_id && <div aria-label="Product publication"><strong>Publication</strong><p role="status">{health?.state === "rolled_back" ? "Post-publication health checks failed; the previous release was restored and checked."
       : health?.state === "unavailable" ? "The publication was taken offline after failed health checks."
@@ -167,6 +168,69 @@ function AutonomousProgress({ goal, automation }: { goal: Goal; automation: Goal
       {link && <a href={link} target="_blank" rel="noopener noreferrer">Open published product</a>}
       {(health?.reason ?? publication?.receipt?.reason) && <p>{health?.reason ?? publication?.receipt?.reason}</p>}<ActionError error={release.error} /></div>}
     {automation.last_error && <p role="status">{automation.last_error}</p>}
+    {automation.app_publication && <ApplicationPublicationProgress goalId={goal.id} />}
+  </section>;
+}
+
+function ApplicationPublicationProgress({ goalId }: { goalId: string }): React.ReactNode {
+  const api = useApi(), query = useQueryClient(), key = ["goal-application-publication", goalId];
+  const publicationQuery = useQuery({ queryKey: key, queryFn: () => api.getGoalApplicationPublication(goalId), refetchInterval: 5000 });
+  const publication = publicationQuery.data?.publication, receipt = publication?.receipt, report = publication?.latest_observation;
+  const published = publication?.status === "published" && receipt?.outcome === "published";
+  const stop = useMutation({ mutationFn: () => api.stopGoalApplicationPublication(goalId, newIdempotencyKey()),
+    onSuccess: result => { query.setQueryData(key, result); },
+    // A hanging status GET must not withhold the stop result or prevent retry.
+    onSettled: () => { void query.invalidateQueries({ queryKey: key }); } });
+  const [now, setNow] = useState(Date.now);
+  const deadline = receipt?.lease?.deadline_at ?? report?.lease.deadline_at;
+  const freshness = publication?.request.capabilities.contract.limits.health_freshness_ms ?? 0;
+  const samples = [report?.observed_at, report?.health?.checked_at, report?.live?.observed_at, report?.live?.counters_observed_at]
+    .filter((value): value is string => !!value).map(Date.parse);
+  const freshUntil = Math.min(...samples.map(time => time + freshness), deadline ? Date.parse(deadline) : Infinity);
+  // An old successful response cannot keep an availability link alive after its
+  // own observation window expires, including while the next GET is failing.
+  useEffect(() => {
+    setNow(Date.now());
+    if (!Number.isFinite(freshUntil)) return;
+    const remaining = freshUntil - Date.now(); if (remaining < 0) return;
+    const timer = setTimeout(() => setNow(Date.now()), remaining + 1); return () => clearTimeout(timer);
+  }, [freshUntil, publicationQuery.dataUpdatedAt]);
+  const reportedState = publication?.current_state ?? "pending";
+  const reportsRunning = ["healthy", "live", "draining"].includes(reportedState);
+  const stale = reportsRunning && (!report || !samples.length || samples.some(time => !Number.isFinite(time) || time > now)
+    || now >= freshUntil || publicationQuery.isError
+    // A stop attempt invalidates earlier running evidence even if it is rejected.
+    // Only actual newer observations, not a completed GET, can restore the link.
+    || stop.submittedAt > 0 && samples.some(time => time <= stop.submittedAt));
+  const state = stale || publicationQuery.isError && !publication ? "unknown" : reportedState;
+  const closed = !!report?.closure || receipt?.outcome === "failed" && receipt.cleanup.state !== "unconfirmed";
+  const stateLabel = closed && receipt?.outcome === "failed" ? "No application is running from this attempt."
+    : stop.isPending ? "Stopping — waiting for the application to close."
+      : { pending: publication ? "Publishing and checking the application…" : "Waiting for implementation, tests and independent review.",
+        healthy: "Running — the latest health check passed.", live: "Running — a fresh health check is unavailable.",
+        draining: "Stopping — waiting for the application to close.", "closed-normal": "Stopped.", "closed-aborted": "Stopped after an interruption.",
+        expired: "The configured running time has ended.", unknown: "Current availability is unconfirmed." }[state];
+  let link: string | undefined;
+  const endpoint = publication?.endpoint;
+  if (published && state === "healthy" && !stop.isPending && !publicationQuery.isError && endpoint && endpoint === receipt.deployment.origin) {
+    try { const url = new URL(endpoint);
+      if (url.protocol === "http:" && url.hostname === "127.0.0.1" && url.port && url.pathname === "/" && !url.search && !url.hash
+        && !url.username && !url.password) link = url.href;
+    } catch { /* Invalid addresses are never advertised as a usable product. */ }
+  }
+  return <section className="u-stack-sm" aria-label="Application publication">
+    <strong>Application publication</strong>
+    <p aria-label="Publication history">{published ? <>Published at <time dateTime={receipt.recorded_at}>{new Date(receipt.recorded_at).toLocaleString()}</time>. Initial health checks and a normal restart passed.</>
+      : publication?.status === "failed" ? "Publication failed." : publicationQuery.isError && !publication ? "Publication history is unavailable."
+        : publicationQuery.isLoading ? "Loading publication history…" : "No completed application publication has been recorded."}</p>
+    {publicationQuery.isLoading ? <p role="status">Loading application availability…</p> : <p role="status" aria-label="Current application availability">{stateLabel}</p>}
+    {report && <p className="insights-help">Last received observation: <time dateTime={report.observed_at}>{new Date(report.observed_at).toLocaleString()}</time>.</p>}
+    {deadline && <p className="insights-help">Running time limit: <time dateTime={deadline}>{new Date(deadline).toLocaleString()}</time>.</p>}
+    <p className="insights-help">This application runs on the publishing computer within its configured time and request limits. Continuous hosting and recovery after failure are unavailable.</p>
+    {link && <a href={link} target="_blank" rel="noopener noreferrer">Open local application</a>}
+    {publication && !closed && <Button disabled={stop.isPending} loading={stop.isPending} onClick={() => stop.mutate()}>Stop application</Button>}
+    {(receipt?.outcome === "failed" ? receipt.reason : report?.reason) && <p>{receipt?.outcome === "failed" ? receipt.reason : report?.reason}</p>}
+    <ActionError error={stop.error ?? publicationQuery.error} />
   </section>;
 }
 

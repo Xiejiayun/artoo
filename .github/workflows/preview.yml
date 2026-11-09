@@ -16,9 +16,96 @@ concurrency:
   cancel-in-progress: true
 jobs:
   shared:
+    if: always()
+    needs: [shared-checks, shared-vitest, shared-windows-process]
     runs-on: windows-latest
-    # The expanded two-worker integration suite can take 45 minutes by itself;
-    # retain time for the build, evidence checks, browser workflows and audit.
+    timeout-minutes: 75
+    steps:
+      - name: Require every shared partition
+        env:
+          SHARED_CHECKS_RESULT: ${{ needs.shared-checks.result }}
+          SHARED_VITEST_RESULT: ${{ needs.shared-vitest.result }}
+          WINDOWS_PROCESS_RESULT: ${{ needs.shared-windows-process.result }}
+        run: |
+          if ($env:SHARED_CHECKS_RESULT -ne 'success' -or $env:SHARED_VITEST_RESULT -ne 'success' -or $env:WINDOWS_PROCESS_RESULT -ne 'success') {
+            throw "Shared checks=$env:SHARED_CHECKS_RESULT; Vitest shards=$env:SHARED_VITEST_RESULT; Windows process=$env:WINDOWS_PROCESS_RESULT"
+          }
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vitest-*
+          path: artifacts/preview-gate/vitest
+      - name: Require actual Vitest file coverage without omissions or overlap
+        run: node scripts/ci-vitest-coverage.mjs verify artifacts/preview-gate/vitest
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vitest-coverage
+          path: artifacts/preview-gate/vitest/coverage.json
+          if-no-files-found: ignore
+          retention-days: 14
+  shared-vitest:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      ARTOO_CI_TEST_PARTITION: parallel
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install chromium
+        working-directory: apps/web
+      - run: npm run build:preview
+      - run: node scripts/ci-vitest-coverage.mjs record parallel-${{ matrix.shard }} artifacts/preview-gate/vitest
+      # list --filesOnly records discovery, not Vitest's shard allocation. The
+      # aggregate checks actual JSON reporter sets from both executed shards.
+      - run: npx vitest list --config vitest.ci.config.mjs --filesOnly --json=artifacts/preview-gate/vitest/discovery.json
+      - run: npm test -- --config vitest.ci.config.mjs --maxWorkers=2 --shard=${{ matrix.shard }}/2 --reporter=default --reporter=json --outputFile.json=artifacts/preview-gate/vitest/results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vitest-parallel-${{ matrix.shard }}
+          path: artifacts/preview-gate/vitest/*.json
+          if-no-files-found: error
+          retention-days: 14
+  shared-windows-process:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      ARTOO_CI_TEST_PARTITION: windows-process
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build:preview
+      - run: node scripts/ci-vitest-coverage.mjs record windows-process artifacts/preview-gate/vitest
+      - run: npx vitest list --filesOnly --json=artifacts/preview-gate/vitest/full-discovery.json
+      - run: npx vitest list --config vitest.ci.config.mjs --filesOnly --json=artifacts/preview-gate/vitest/discovery.json
+      # Dedicated runner and one file at a time; original per-case deadlines,
+      # assertions and platform guards remain in the four complete test files.
+      - run: npm test -- --config vitest.ci.config.mjs --maxWorkers=1 --no-file-parallelism --reporter=default --reporter=json --outputFile.json=artifacts/preview-gate/vitest/results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vitest-windows-process
+          path: artifacts/preview-gate/vitest/*.json
+          if-no-files-found: error
+          retention-days: 14
+  shared-checks:
+    runs-on: windows-latest
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +116,7 @@ jobs:
       - run: npm ci
       - run: npx playwright install chromium
         working-directory: apps/web
-      - run: npm run verify:preview
+      - run: npm run verify:preview -- --suite=shared-checks
       - uses: actions/upload-artifact@v4
         if: always()
         with:

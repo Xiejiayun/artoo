@@ -20,8 +20,12 @@ if (!reportDirectory || !isAbsolute(reportDirectory) || !existsSync(reportDirect
 
 // All workspace imports, including those inside the compiled server, enter
 // the same compiled graph. Never merge the root config's source aliases here.
-const aliases = Object.fromEntries(["domain", "protocol", "db", "storage", "testkit", "node-supervisor", "client"]
-  .map((name) => [`@artoo/${name}`, at(`packages/${name}/dist/index.js`)]));
+const aliases = Object.fromEntries([
+  ["@artoo/domain/dist/application-publication.js", at("packages/domain/dist/application-publication.js")],
+  ["@artoo/protocol/dist/source-recovery.js", at("packages/protocol/dist/source-recovery.js")],
+  ...["domain", "protocol", "db", "storage", "testkit", "node-supervisor", "client"]
+    .map((name) => [`@artoo/${name}`, at(`packages/${name}/dist/index.js`)]),
+]);
 aliases["@artoo/artood"] = at("apps/artood/dist/index.js");
 aliases["@artoo/server"] = at("apps/server/dist/index.js");
 const requiredProducts = [

@@ -7,6 +7,10 @@ replicas, shared network storage and rolling concurrent instances are unsupporte
 The repository supplies configuration; it does not provision a host, register
 accounts, configure DNS, deploy credentials or prove a live deployment.
 
+For Azure control-plane hosting with multiple Windows execution computers, see
+[the Azure deployment guide](azure-deployment.md) and its Bicep resource template.
+It preserves this single-process storage and same-origin proxy model.
+
 ## Prepare the host
 
 Use an unprivileged `artoo` system user and group. Put the checked-out release
@@ -123,7 +127,27 @@ npm run verify:desktop
   desktop and `ARTOO_DESKTOP_INTERACTIVE=1`. It is an explicit local/operator
   gate; a headless hosted runner is not claimed to verify installation/UI.
 
-The unified script also accepts `--suite=shared|ios|desktop` and `--list`.
+Windows CI runs `windows-browser-exit.test.ts`,
+`windows-browser-native-retry.test.ts` and
+`windows-browser-observer-request.test.ts` as complete files on a dedicated
+Windows runner, with one worker and no file parallelism. Their original
+subprocess deadlines, assertions and platform guards remain unchanged.
+The rest of the Vitest inventory runs in two shards, each with two workers.
+All three jobs retain the 75-minute job limit. This separates execution
+conditions; it does not establish the cause of earlier process-observation failures.
+
+The local shared suite has 37 checks; `shared-checks` runs the 36 checks outside
+Vitest, including the fixed application host/runtime packaging fixtures, both
+browser suites, partition coverage validation and the production audit.
+Packaging fixtures do not qualify native runtime execution. The aggregate
+`shared` check requires all three Vitest jobs and `shared-checks` to succeed,
+then compares their actual JSON reporter file sets with complete
+`list --filesOnly` discovery. Missing files, duplicates, overlapping lanes and
+mismatched commits fail the aggregate. Discovery alone is not evidence of
+shard execution; existing skipped or opt-in cases remain skipped. Local
+`npm run verify:preview` and `npm test` still run the complete inventory once.
+
+The unified script also accepts `--suite=shared|shared-checks|ios|desktop|mac` and `--list`.
 It writes the selected suite's pass/fail record to `artifacts/preview-gate`;
 native runs retain `.xcresult` bundles and UI evidence under `artifacts/ios`. A passed suite
 does not imply that another suite ran. `.github/workflows/preview.yml` runs the
