@@ -10,13 +10,14 @@ const runtime = args[0] === "exec" ? "codex" : args[0] === "-p" ? "claude-code" 
 assert.ok(runtime, "Controlled fixture requires the ordinary runtime command");
 const nonce = process.env.ARTOO_NPM_SMOKE_NONCE;
 assert.match(nonce ?? "", /^[a-f0-9-]{36}$/);
-const parent = realpathSync(process.env.ARTOO_NPM_SMOKE_WORKSPACE_ROOT);
-const workspace = realpathSync(process.cwd()), local = relative(parent, workspace);
+// Match the adapter's native canonicalization, including Windows 8.3 aliases.
+const parent = realpathSync.native(process.env.ARTOO_NPM_SMOKE_WORKSPACE_ROOT);
+const workspace = realpathSync.native(process.cwd()), local = relative(parent, workspace);
 assert.ok(local && !isAbsolute(local) && local !== ".." && !local.startsWith(`..${sep}`), "Fixture workspace escaped the isolated smoke root");
 const contextPath = join(workspace, "context_pack.md");
 if (runtime === "codex") {
   assert.ok(args.includes("--json"));
-  assert.equal(realpathSync(resolve(args[args.indexOf("-C") + 1])), workspace);
+  assert.equal(realpathSync.native(resolve(args[args.indexOf("-C") + 1])), workspace);
 } else {
   assert.equal(args[args.indexOf("--output-format") + 1], "stream-json");
   assert.equal(args[args.indexOf("--permission-mode") + 1], "dontAsk");

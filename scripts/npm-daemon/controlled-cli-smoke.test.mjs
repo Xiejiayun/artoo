@@ -16,6 +16,23 @@ function fixture(t) {
   return { root, workspace };
 }
 
+function contextFor(workspace, env, runtime, taskId) {
+  const context = join(realpathSync.native(workspace), "context_pack.md");
+  writeFileSync(context, "# Context\n## Raw Payload\n" + JSON.stringify({ task: {
+    id: taskId, description: JSON.stringify({ fixture: "artoo.npm-controlled-cli.v1", runtime,
+      outcome: "success", nonce: env.ARTOO_NPM_SMOKE_NONCE }),
+  } }));
+  return context;
+}
+
+function launchFixture(env, runtime, workspace, context) {
+  const command = join(env.PATH, (runtime === "codex" ? "codex" : "claude") + (process.platform === "win32" ? ".mjs" : ""));
+  const args = runtime === "codex" ? ["exec", "--json", "-C", workspace]
+    : ["-p", "--output-format", "stream-json", "--permission-mode", "dontAsk"];
+  return spawnSync(process.execPath, [command, ...args, `Read the file ${context}.`],
+    { cwd: workspace, env, encoding: "utf8", timeout: 10_000, windowsHide: true });
+}
+
 test("pairing uses the actual desktop platform and rejects unsupported hosts", () => {
   assert.equal(devicePlatform("win32"), "windows");
   assert.equal(devicePlatform("darwin"), "macos");
@@ -55,6 +72,53 @@ test("the actual controlled CLI process rejects an unbound context before writin
   assert.ifError(result.error); assert.notEqual(result.status, 0); assert.equal(result.signal, null);
   assert.equal(result.stdout, "");
   for (const file of ["fixture-start.json", "fixture-output.txt", "fixture-exit.json", "changes.patch"]) assert.equal(existsSync(join(childWorkspace, file)), false);
+});
+
+test("actual controlled CLI processes accept native context paths when cwd uses a Windows short-path alias", { skip: process.platform !== "win32" }, t => {
+  const { root, workspace } = fixture(t);
+  // Query existing filesystem aliases only; never change 8.3-name settings.
+  const script = 'Add-Type -TypeDefinition \'using System; using System.Text; using System.Runtime.InteropServices; public static class ArtooShortPath { [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true, EntryPoint="GetShortPathNameW")] public static extern uint Get(string path, StringBuilder output, uint length); }\'; '
+    + '$buffer = [Text.StringBuilder]::new(32768); $length = [ArtooShortPath]::Get($env:ARTOO_NPM_TEST_SHORT_PATH, $buffer, $buffer.Capacity); '
+    + 'if ($length -eq 0 -or $length -ge $buffer.Capacity) { throw "GetShortPathNameW failed" }; [Console]::Write($buffer.ToString())';
+  const alias = spawnSync(join(process.env.SystemRoot ?? process.env.SYSTEMROOT, "System32/WindowsPowerShell/v1.0/powershell.exe"),
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    { env: { ...process.env, ARTOO_NPM_TEST_SHORT_PATH: workspace }, encoding: "utf8", timeout: 15_000, windowsHide: true });
+  assert.ifError(alias.error); assert.equal(alias.status, 0, alias.stderr); assert.equal(alias.signal, null);
+  const shortWorkspace = alias.stdout;
+  assert.equal(realpathSync.native(shortWorkspace), realpathSync.native(workspace));
+  if (shortWorkspace.toLowerCase() === realpathSync.native(workspace).toLowerCase()) {
+    t.skip("This filesystem provides no Windows short-path alias"); return;
+  }
+  assert.notEqual(realpathSync(shortWorkspace), realpathSync.native(shortWorkspace), "Exercise the actual short/long-path distinction");
+  const env = prepareControlledCli({ evidenceDirectory: root, workspace: shortWorkspace, env: process.env });
+  for (const runtime of ["codex", "claude-code"]) {
+    const childWorkspace = join(shortWorkspace, runtime); mkdirSync(childWorkspace);
+    const context = contextFor(childWorkspace, env, runtime, `alias-${runtime}`);
+    const result = launchFixture(env, runtime, childWorkspace, context);
+    assert.ifError(result.error); assert.equal(result.status, 0, result.stderr); assert.equal(result.signal, null);
+    const started = JSON.parse(readFileSync(join(childWorkspace, "fixture-start.json"), "utf8"));
+    assert.equal(started.runtime, runtime); assert.equal(started.taskId, `alias-${runtime}`); assert.equal(started.modelInvoked, false);
+    assert.deepEqual(JSON.parse(readFileSync(join(childWorkspace, "fixture-exit.json"), "utf8")), { ...started, exitCode: 0 });
+    assert.ok(result.stdout.includes(started.marker));
+    assert.equal(readFileSync(join(childWorkspace, "fixture-output.txt"), "utf8"), started.marker + "\n");
+  }
+});
+
+test("actual controlled CLI processes still reject a context from a different workspace", t => {
+  const { root, workspace } = fixture(t);
+  const env = prepareControlledCli({ evidenceDirectory: root, workspace, env: process.env });
+  for (const runtime of ["codex", "claude-code"]) {
+    const childWorkspace = join(workspace, runtime), sibling = join(workspace, runtime + "-other");
+    mkdirSync(childWorkspace); mkdirSync(sibling);
+    contextFor(childWorkspace, env, runtime, `own-${runtime}`);
+    const context = contextFor(sibling, env, runtime, `other-${runtime}`);
+    const result = launchFixture(env, runtime, childWorkspace, context);
+    assert.ifError(result.error); assert.notEqual(result.status, 0); assert.equal(result.signal, null);
+    assert.match(result.stderr, /The preset must pass the materialized task context/); assert.equal(result.stdout, "");
+    for (const file of ["fixture-start.json", "fixture-output.txt", "fixture-exit.json", "changes.patch"]) {
+      assert.equal(existsSync(join(childWorkspace, file)), false); assert.equal(existsSync(join(sibling, file)), false);
+    }
+  }
 });
 
 test("unexpected task failure preserves the status assertion and redacts bounded audit diagnostics", async t => {

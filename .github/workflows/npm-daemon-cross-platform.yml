@@ -127,6 +127,8 @@ jobs:
             nativeManifestSha256 = $nativeManifestSha
             runtimeManifestSha256 = $metadata.artoo.runtimeManifestSha256
             platforms = $metadata.artoo.platforms
+            requiredPlatforms = @('linux-arm64', 'linux-x64', 'win32-x64')
+            optionalPlatforms = @('darwin-arm64', 'darwin-x64')
           } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $artifactRoot 'release-metadata.json') -Encoding utf8
           "CANDIDATE_ARTIFACT=$artifactRoot" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
           @(
@@ -144,6 +146,7 @@ jobs:
           retention-days: 30
 
   platforms:
+    name: Required package (${{ matrix.platform }})
     needs: build
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -153,18 +156,17 @@ jobs:
         include:
           - runner: windows-latest
             platform: win32-x64
-          - runner: macos-15-intel
-            platform: darwin-x64
-          - runner: macos-15
-            platform: darwin-arm64
+            qualification: required
           - runner: ubuntu-24.04
             platform: linux-x64
+            qualification: required
           - runner: ubuntu-24.04-arm
             platform: linux-arm64
+            qualification: required
     defaults:
       run:
         shell: bash
-    env:
+    env: &platform-environment
       PACKAGE_NAME: '@jiayunxie/artood'
       PACKAGE_VERSION: ${{ needs.build.outputs.version }}
       PACKAGE_TARBALL: ${{ needs.build.outputs.tarball }}
@@ -173,7 +175,7 @@ jobs:
       EXPECTED_PLATFORM: ${{ matrix.platform }}
       NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
       NPM_CONFIG_LOGS_MAX: '0'
-    steps:
+    steps: &platform-steps
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -208,7 +210,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: npm-daemon-smoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.platform }}
+          name: npm-daemon-smoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.qualification }}-${{ matrix.platform }}
           path: |
             ${{ runner.temp }}/artoo-npm-package-evidence/*.json
             ${{ runner.temp }}/artoo-npm-package-evidence/*.log
@@ -218,12 +220,36 @@ jobs:
         if: always() && runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: npm-daemon-posix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.platform }}
+          name: npm-daemon-posix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.qualification }}-${{ matrix.platform }}
           path: ${{ runner.temp }}/posix-verification.log
           if-no-files-found: warn
           retention-days: 14
 
+  mac-platforms:
+    name: Optional Mac package (${{ matrix.platform }})
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            platform: darwin-x64
+            qualification: optional
+          - runner: macos-15
+            platform: darwin-arm64
+            qualification: optional
+    defaults:
+      run:
+        shell: bash
+    # Same immutable candidate and checks, but this job is not a dependency of
+    # the Windows/Linux release aggregate. Its result is separate evidence.
+    env: *platform-environment
+    steps: *platform-steps
+
   cross-platform:
+    name: Required Windows/Linux aggregate
     if: always()
     needs: [build, platforms]
     runs-on: ubuntu-24.04
@@ -236,16 +262,16 @@ jobs:
       PACKAGE_SHA256: ${{ needs.build.outputs.sha256 }}
       PACKAGE_SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
     steps:
-      - name: Require build and every matrix leg
+      - name: Require build and all three Windows/Linux matrix legs
         run: test "$BUILD_RESULT" = success && test "$PLATFORM_RESULT" = success
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
       - uses: actions/download-artifact@v4
         with:
-          pattern: npm-daemon-smoke-${{ github.run_id }}-${{ github.run_attempt }}-*
+          pattern: npm-daemon-smoke-${{ github.run_id }}-${{ github.run_attempt }}-required-*
           path: ${{ runner.temp }}/artoo-npm-platform-reports
-      - name: Match all five reports to the same candidate
+      - name: Match the three required reports to the same candidate
         env:
           REPORTS_ROOT: ${{ runner.temp }}/artoo-npm-platform-reports
         run: |
@@ -253,11 +279,11 @@ jobs:
           import assert from 'node:assert/strict';
           import { appendFileSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
           import { join } from 'node:path';
-          const expected = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-x64'];
+          const expected = ['linux-arm64', 'linux-x64', 'win32-x64'];
           const reports = readdirSync(process.env.REPORTS_ROOT, { withFileTypes: true })
             .filter(entry => entry.isDirectory())
             .map(entry => JSON.parse(readFileSync(join(process.env.REPORTS_ROOT, entry.name, 'result.json'), 'utf8')));
-          assert.equal(reports.length, 5);
+          assert.equal(reports.length, 3);
           assert.deepEqual(reports.map(report => report.platform).sort(), expected);
           for (const report of reports) {
             assert.equal(report.status, 'passed');
@@ -272,10 +298,12 @@ jobs:
           const summary = { status: 'passed', sourceCommit: process.env.PACKAGE_SOURCE_COMMIT,
             sourceRef: process.env.GITHUB_REF, eventName: process.env.GITHUB_EVENT_NAME,
             name: '@jiayunxie/artood', version: process.env.PACKAGE_VERSION,
-            sha256: process.env.PACKAGE_SHA256, platforms: expected,
-            scope: 'One tarball installed without force or ignored scripts on five real OS/architecture pairs; controlled CLI tasks and separate POSIX source fixtures. No publication or live-provider qualification.' };
+            sha256: process.env.PACKAGE_SHA256, platforms: expected, requiredPlatforms: expected,
+            optionalMac: { platforms: ['darwin-arm64', 'darwin-x64'], requiredForRelease: false,
+              qualification: 'deferred', validation: 'Separate optional jobs; not evaluated by this aggregate.' },
+            scope: 'Windows x64 and Linux x64/arm64 release scope: one tarball installed without force or ignored scripts on three real OS/architecture pairs; controlled CLI tasks and separate POSIX source fixtures. Mac implementation remains in the package but release qualification is deferred. No publication or live-provider qualification.' };
           writeFileSync(join(process.env.REPORTS_ROOT, 'cross-platform-summary.json'), JSON.stringify(summary, null, 2) + '\n');
-          appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'All five platforms passed for the same tarball.\n\n'
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'All three required Windows/Linux platforms passed for the same tarball. Optional Mac jobs are separate and do not establish Mac release qualification here.\n\n'
             + JSON.stringify(summary, null, 2) + '\n\nPR merge-ref artifacts are validation only; deliver candidates built and validated from main.\n');
           NODE
       - uses: actions/upload-artifact@v4

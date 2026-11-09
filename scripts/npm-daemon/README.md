@@ -1,12 +1,12 @@
 # Artoo agent daemon
 
-Connect a Windows, macOS or Linux computer to an Artoo Web platform. One npm tarball contains the daemon, its JavaScript dependencies and the self-contained Windows x64 process host. Users need **Node.js 24 or later and npm 11 or later**, but do not need a repository checkout or .NET.
+Connect a Windows or Linux computer to an Artoo Web platform. One npm tarball contains the daemon, its JavaScript dependencies and the self-contained Windows x64 process host. macOS implementation is included, but its release qualification is deferred and is not guaranteed by this release. Users need **Node.js 24 or later and npm 11 or later**, but do not need a repository checkout or .NET.
 
-| Operating system | Supported architecture |
-| --- | --- |
-| Windows | x64 |
-| macOS | Intel x64, Apple Silicon arm64 |
-| Linux | x64, arm64 |
+| Operating system | Implemented architecture | Release validation scope |
+| --- | --- | --- |
+| Windows | x64 | Required |
+| Linux | x64, arm64 | Required |
+| macOS | Intel x64, Apple Silicon arm64 | Deferred; optional CI evidence only |
 
 Windows arm64 is not supported. npm's separate OS/CPU fields cannot express that exclusion, so the daemon checks the exact platform/architecture pair before starting. The Windows native host is carried in the same tarball on every platform; ordinary macOS/Linux execution does not load it.
 
@@ -39,7 +39,7 @@ $env:ARTOO_CODEX_BINARY = 'C:\Tools\codex.exe'
 artood start
 ```
 
-macOS/Linux shell example:
+Linux shell example (macOS uses the same implemented interface, with release qualification deferred):
 
 ```sh
 export ARTOO_NODE_URL='wss://artoo.example.com/api/v1/node?token=<your-node-token>'
@@ -78,12 +78,12 @@ node scripts/npm-daemon/build.mjs --name {{PACKAGE_NAME}} --version {{PACKAGE_VE
 npm pack C:\ArtooRelease\package --pack-destination C:\ArtooRelease
 ```
 
-Use fresh output/install directories. The `npm-daemon-cross-platform.yml` workflow builds one tarball on Windows and distributes those exact bytes to Windows x64, macOS Intel/Apple Silicon, and Linux x64/arm64 runners. Every runner verifies the SHA-256, rejects unexpected package metadata or install scripts, installs with npm without `--force` or `--ignore-scripts`, tests the actual installed CLI shim, and runs the manifest and fixture-authenticated connection/task/normal-stop checks. POSIX real-process verification runs in a separate step against built repository modules, not as a claim about a live model or native Windows qualification.
+Use fresh output/install directories. The `npm-daemon-cross-platform.yml` workflow builds one tarball on Windows and distributes those exact bytes to required Windows x64 and Linux x64/arm64 jobs, plus separate optional macOS Intel/Apple Silicon jobs. Every runner uses the same SHA-256, package metadata, npm installation without `--force` or `--ignore-scripts`, installed CLI shim, manifest and fixture-authenticated connection/task/normal-stop checks. POSIX real-process verification runs separately against built repository modules. The required aggregate waits for Windows and Linux only; optional Mac results never turn that three-platform summary into five-platform qualification.
 
-PR artifacts validate that PR's merge checkout. For a deliverable release candidate, use the successful `push` run on `main` or dispatch the workflow on `main`, and retain its exact source commit, tarball hash and all five platform reports. Do not publish a PR merge-ref build as though it came from main. This build/check workflow has read-only GitHub permissions, no npm credentials and no publication step.
+PR artifacts validate that PR's merge checkout. For a deliverable release candidate, use a `push` run on `main` or dispatch the workflow on `main`, and require its build, all three Windows/Linux jobs and **Required Windows/Linux aggregate** to succeed for the exact source and tarball. Retain the three required reports, POSIX logs, metadata, summary and raw run/attempt-specific job facts. The overall run may remain pending or fail because of optional Mac jobs; record that status separately. Do not publish a PR merge-ref build as though it came from main. This build/check workflow has read-only GitHub permissions, no npm credentials and no publication step. The package's five platform tuples describe implemented startup interfaces, not five qualified release targets.
 
 Individual installation checks can also use `scripts/npm-daemon/package-smoke.mjs` with `--tarball`, `--sha256`, `--name`, `--version`, `--platform`, `--source-commit` and a new absolute `--evidence-directory`. Build `@artoo/server` and its TypeScript references first for the connection fixture. The safe evidence directory excludes the test database, package installation, cache and credentials.
 
-The historical Windows-only registry check in `registry-smoke.mjs` remains pinned to published `0.1.0-rc.1`; it is not the universal-candidate check. For publication, use the separate staged-publishing runbook and verify the final registry version after approval. A five-platform fixture run does not establish production OAuth, a real provider, browser acceptance, Windows native-supervisor admission or deployed-product health.
+The historical Windows-only registry check in `registry-smoke.mjs` remains pinned to published `0.1.0-rc.1`; it is not the universal-candidate check. For publication, use the separate staged-publishing runbook and verify fresh registry installations on the three required Windows/Linux targets after approval. Candidate checks do not prove npm publication, production OAuth, a real provider, browser acceptance, Windows native-supervisor admission or deployed-product health.
 
 The complete runtime remains in `runtime/`, including its nested `node_modules`. The outer npm manifest has no private workspace dependencies or install lifecycle scripts. Neither the runtime manifest nor the private internal package manifest is rewritten for npm.

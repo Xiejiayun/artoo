@@ -2,7 +2,7 @@
 
 使用 `@jiayunxie/artood` 将自己的电脑连接到 Artoo Web。需要 Node.js 24+、npm 11+，以及已经在该用户账户下安装并登录的 Codex 或 Claude CLI；无需安装仓库或 .NET。本文使用 Codex，先完成普通连接，再配置受监督执行。
 
-**版本状态：** `0.1.0-rc.1` 已发布到 npm，仅支持 Windows x64。`0.1.0-rc.2` 是跨平台候选，目标为 Windows x64、macOS Intel/Apple Silicon、Linux x64/arm64；本文不表示 rc.2 已发布或五平台验收已经通过。Windows arm64 不支持。始终指定版本，不依赖 `latest` 或可变的 `next` 标签。
+**版本状态：** `0.1.0-rc.1` 已发布到 npm，仅支持 Windows x64。`0.1.0-rc.2` 是跨平台候选，本次发布验收范围为 **Windows x64、Linux x64 和 Linux arm64**。macOS Intel/Apple Silicon 的实现保留，但发布资格延期、不保证可用；独立 Mac 验证不阻塞本次 Windows/Linux 发布。本文不表示 rc.2 已发布或上述验收已经通过。Windows arm64 不支持。始终指定版本，不依赖 `latest` 或可变的 `next` 标签。
 
 Linux 配对前，管理员必须部署对应的 server/Web 版本并应用新迁移 `0056_linux_devices.sql`。先备份服务器数据库并确认恢复方案；安装 daemon 不会升级服务器。存在 Linux 设备或配对记录时，不可直接恢复旧平台约束。Web 部署细节见 [部署方案](web-deployment-plan.zh-CN.md)。
 
@@ -16,7 +16,7 @@ artood.cmd --version
 artood.cmd --help
 ```
 
-跨平台候选需先取得维护者交付的最终 `jiayunxie-artood-0.1.0-rc.2.tgz` 和其 SHA-256。只使用从已合并 main 构建、同一包通过五平台验证的交付物；PR 的测试包不作为最终交付。不要用 `--force` 绕过平台检查。
+跨平台候选需先取得维护者交付的最终 `jiayunxie-artood-0.1.0-rc.2.tgz` 和其 SHA-256。只使用从已合并 main 构建、同一包通过上述三个 Windows/Linux 平台必需验证的交付物；PR 的测试包不作为最终交付。Mac 的独立结果单独记录，不代表本次资格已保证。不要用 `--force` 绕过平台检查。
 
 Windows PowerShell 7：
 
@@ -31,7 +31,7 @@ if ($LASTEXITCODE -ne 0 -or $artooInstalledVersion -ne '0.1.0-rc.2') { throw 'PA
 artood.cmd --help
 ```
 
-macOS/Linux，在 Bash 中执行（macOS 默认使用 zsh 时，先运行 `bash`）：
+Linux，在 Bash 中执行。macOS 的实现使用同一命令，但仅供后续资格验证参考，暂不保证；若默认使用 zsh，先运行 `bash`：
 
 ```bash
 (
@@ -109,9 +109,9 @@ try {
 }
 ```
 
-### macOS / Linux：Bash
+### Linux：Bash（macOS 实现供后续验证参考）
 
-先安装 rc.2 最终交付包。下面在独立子 shell 内完成领取、登记查询和启动，Ctrl+C 停止后不向父 shell 留下节点环境变量。Node 内置 `fetch` 完成 API 请求，无需 jq 或 Python：
+先安装 rc.2 最终交付包。下面在独立子 shell 内完成领取、登记查询和启动，Ctrl+C 停止后不向父 shell 留下节点环境变量。Node 内置 `fetch` 完成 API 请求，无需 jq 或 Python。代码保留 macOS 分支，但该平台不在本次发布资格保证范围：
 
 ```bash
 (
