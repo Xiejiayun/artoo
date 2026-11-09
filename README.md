@@ -12,6 +12,9 @@ Current acceptance evidence is tracked in
 deployment and validation instructions are in
 [the shared-server guide](docs/shared-server.md); pairing, backup and recovery
 are covered by [the preview operations guide](docs/preview-operations.md).
+For the planned Azure VM + Supabase deployment with direct Google sign-in, see
+[the resource setup and deployment guide](docs/azure-supabase-deployment.md).
+The guide separates resource preparation from the PostgreSQL adapter still to be implemented.
 Historical milestone records below are not evidence that the current preview
 has passed its release gates.
 
