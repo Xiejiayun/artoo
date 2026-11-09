@@ -391,7 +391,7 @@ export const devices = pgTable("devices", {
   createdAt: ts("created_at").notNull(),
   revokedAt: ts("revoked_at"),
 }, (t) => [
-  check("devices_platform_chk", sql`${t.platform} in ('windows','macos','android','ios')`),
+  check("devices_platform_chk", sql`${t.platform} in ('windows','macos','linux','android','ios')`),
   check("devices_trust_chk", sql`${t.trust} in ('active','revoked')`),
   index("devices_org_trust_idx").on(t.organizationId, t.trust),
   index("devices_computer_idx").on(t.computerId),
@@ -443,7 +443,7 @@ export const pairingCodes = pgTable("pairing_codes", {
   check("pairing_codes_status_chk", sql`${t.status} in ('pending','claimed','expired','cancelled')`),
   check(
     "pairing_codes_platform_chk",
-    sql`${t.intendedPlatform} is null or ${t.intendedPlatform} in ('windows','macos','android','ios')`,
+    sql`${t.intendedPlatform} is null or ${t.intendedPlatform} in ('windows','macos','linux','android','ios')`,
   ),
   index("pairing_codes_code_hash_idx").on(t.codeHash),
   index("pairing_codes_org_status_idx").on(t.organizationId, t.status),

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { idempotencyKeys } from "@artoo/db";
 import { createClaimLimiter } from "./claim-rate-limit.js";
+import { resolveNodeToken } from "./services/device-service.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 
 /**
@@ -69,10 +70,11 @@ describe("device HTTP flow (pairing → claim → enroll → list → revoke)", 
     expect(deviceId).toMatch(/^device_/);
   });
 
-  it("enrolls the claimed device, links a computer, and lists it", async () => {
+  it.each(["windows", "macos", "linux"])("enrolls the claimed %s device, links a computer, and lists it", async (platform) => {
     server = await buildTestServer();
-    const code = await createPairing(server);
-    const { deviceId } = await claim(server, code);
+    const code = await createPairing(server, { intended_platform: platform });
+    const { deviceId, nodeToken } = await claim(server, code, platform);
+    expect(await resolveNodeToken(server.ctx, nodeToken)).toMatchObject({ deviceId, computerId: null });
 
     const enroll = await server.app.inject({
       method: "POST",
@@ -83,12 +85,14 @@ describe("device HTTP flow (pairing → claim → enroll → list → revoke)", 
     const e = enroll.json();
     expect(e.created).toBe(true);
     expect(e.computer_id).toMatch(/^computer_/);
+    expect(await resolveNodeToken(server.ctx, nodeToken)).toMatchObject({ deviceId, computerId: e.computer_id });
 
     const list = await server.app.inject({ method: "GET", url: "/api/v1/devices" });
     expect(list.statusCode).toBe(200);
     const found = list.json().devices.find((d: { id: string }) => d.id === deviceId);
     expect(found).toBeDefined();
     expect(found.computer_id).toBe(e.computer_id);
+    expect(found.platform).toBe(platform);
   });
 
   it("revokes a device idempotently", async () => {
@@ -116,10 +120,10 @@ describe("device HTTP flow (pairing → claim → enroll → list → revoke)", 
     expect(res.json().error.code).toBe("validation_error");
   });
 
-  it("rejects enrolling a mobile device (remote control surface, not a node host)", async () => {
+  it.each(["android", "ios"])("rejects enrolling a %s device (remote control surface, not a node host)", async (platform) => {
     server = await buildTestServer();
-    const code = await createPairing(server, { intended_platform: "android" });
-    const { deviceId } = await claim(server, code, "android");
+    const code = await createPairing(server, { intended_platform: platform });
+    const { deviceId } = await claim(server, code, platform);
     const enroll = await server.app.inject({
       method: "POST",
       url: `/api/v1/devices/${deviceId}/enroll`,

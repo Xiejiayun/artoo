@@ -1,10 +1,10 @@
-name: Stage Windows daemon on npm
+name: Stage daemon on npm
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Draft release containing the validated Windows npm tarball
+        description: Draft release containing the validated npm daemon tarball
         required: true
         type: string
       version:
@@ -129,8 +129,15 @@ jobs:
           assert.notEqual(pkg.private, true);
           assert.equal(pkg.type, 'module');
           assert.deepEqual(pkg.bin, { artood: 'bin/artood.mjs' });
-          assert.deepEqual(pkg.os, ['win32']);
-          assert.deepEqual(pkg.cpu, ['x64']);
+          if (pkg.artoo?.platforms === undefined) {
+            // Preserve the original Windows-only release contract.
+            assert.deepEqual(pkg.os, ['win32']);
+            assert.deepEqual(pkg.cpu, ['x64']);
+          } else {
+            assert.deepEqual(pkg.os, ['win32', 'darwin', 'linux']);
+            assert.deepEqual(pkg.cpu, ['x64', 'arm64']);
+            assert.deepEqual(pkg.artoo.platforms, ['win32-x64', 'darwin-x64', 'darwin-arm64', 'linux-x64', 'linux-arm64']);
+          }
           assert.deepEqual(pkg.publishConfig, { access: 'public', registry: 'https://registry.npmjs.org/' });
           for (const key of ['scripts', 'dependencies', 'devDependencies', 'optionalDependencies', 'workspaces']) assert.equal(pkg[key], undefined, `Unexpected ${key}`);
           assert.equal(pkg.artoo?.format, 'artoo.npm-daemon.v1');

@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildDaemon } from "../../apps/desktop/scripts/bundle-daemon.mjs";
 import { verifyPackage } from "./verify.mjs";
+import { SUPPORTED_PLATFORMS } from "./platforms.mjs";
 
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const defaultRoot = resolve(sourceDirectory, "../..");
@@ -36,16 +37,16 @@ export async function buildNpmDaemon({ name, version, outputDirectory, repoRoot 
   mkdirSync(outputDirectory, { recursive: false });
   const result = await buildDaemon({ repoRoot, outputDirectory: join(outputDirectory, "runtime"), windowsProcessBundle });
   mkdirSync(join(outputDirectory, "bin"));
-  for (const [source, target] of [["cli.mjs", "artood.mjs"], ["verify.mjs", "verify.mjs"]])
+  for (const [source, target] of [["cli.mjs", "artood.mjs"], ["verify.mjs", "verify.mjs"], ["platforms.mjs", "platforms.mjs"]])
     copyFileSync(join(sourceDirectory, source), join(outputDirectory, "bin", target));
   copyFileSync(join(repoRoot, "LICENSE"), join(outputDirectory, "LICENSE"));
-  const metadata = { name, version, description: "Connect a Windows computer to the Artoo agent platform", license: "MIT", type: "module",
+  const metadata = { name, version, description: "Connect Windows, macOS and Linux computers to the Artoo agent platform", license: "MIT", type: "module",
     bin: { artood: "bin/artood.mjs" }, files: ["bin/", "runtime/", "README.md", "LICENSE"],
-    engines: { node: ">=24.0.0" }, os: ["win32"], cpu: ["x64"],
+    engines: { node: ">=24.0.0" }, os: ["win32", "darwin", "linux"], cpu: ["x64", "arm64"],
     repository: { type: "git", url: "git+https://github.com/Xiejiayun/artoo.git" },
     homepage: "https://github.com/Xiejiayun/artoo", bugs: { url: "https://github.com/Xiejiayun/artoo/issues" },
     publishConfig: { access: "public", registry: "https://registry.npmjs.org/" },
-    artoo: { format: "artoo.npm-daemon.v1", runtimeManifestSha256: result.manifestSha256 } };
+    artoo: { format: "artoo.npm-daemon.v1", runtimeManifestSha256: result.manifestSha256, platforms: [...SUPPORTED_PLATFORMS] } };
   writeFileSync(join(outputDirectory, "package.json"), `${JSON.stringify(metadata, null, 2)}\n`, { flag: "wx" });
   writeFileSync(join(outputDirectory, "README.md"), readFileSync(join(sourceDirectory, "README.md"), "utf8")
     .replaceAll("{{PACKAGE_NAME}}", name).replaceAll("{{PACKAGE_VERSION}}", version), { flag: "wx" });
