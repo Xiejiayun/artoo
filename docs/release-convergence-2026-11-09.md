@@ -56,7 +56,11 @@ Windows npm 包 [`@jiayunxie/artood@0.1.0-rc.1`](https://www.npmjs.com/package/@
 
 [发布工作流 42608645915](https://github.com/Xiejiayun/artoo/actions/runs/42608645915) 已完成精确制品核对、网页登录、staging、会话撤销与临时配置清理；npm 网站随后批准相同 stage `c017cb69-cdfc-4d8f-b387-88e16368ebb8`。站点发布和标签证据保存在本机 `artifacts/release-convergence/npm-published-success.jpg` 与 `npm-published-tags.jpg`。
 
-本机现有 Microsoft npm feed 两次查询返回 E404，官方 registry 在本机被组织网络策略阻止。后续独立 GitHub Windows runner 的线上固定版本安装、manifest/CLI 和连接 smoke 验证尚待执行；已发布不代表该安装验收已通过，也不代表真实模型、受保护的本地应用发布、签名分发或日常 Console 完整流程已合格。
+本机现有 Microsoft npm feed 查询返回 E404，官方 registry 在本机被组织网络策略阻止；这一限制仍保留。独立 [Windows 线上安装验证 42615273316](https://github.com/Xiejiayun/artoo/actions/runs/42615273316) 已通过：从官方 `https://registry.npmjs.org/` 安装同一固定版本 `0.1.0-rc.1`，包名、版本、`next`、SHA-512 integrity 和 SHA-256 均与已发布制品相符。环境为 Windows、Node 24.22.2、npm 11.19.1；9 条原始命令 exit 0、signal null，安装后的 177 个 runtime 文件共 99,035,866 字节核对通过，CLI help/version 通过。
+
+安装后的 daemon 完成实际 HTTP 配对、登记、WebSocket 注册与 heartbeat 落库，并经正常 IPC 停止；原进程 exit/close 均为 0、双 EOF、服务端确认断开，祖先可选 addon 解析尝试为 0。该验证使用托管 Windows runner 和 fixture owner，关闭开发 node token，未调用真实模型，也未证明 native-supervisor、受保护的本地应用发布、签名分发或日常 Console 完整流程资格；不表示本机 Microsoft 镜像可用。
+
+此验证对应 PR head `5940691`，实际 checkout 为 PR merge ref `3080bb35872059877d0d2847074df39d8134d163`；结果仅覆盖该 npm 安装与连接工作流，不概括其他预览 CI。证据保存在本机 `artifacts/release-convergence/remote-npm-verify-42615273316/result.json` 与 `daemon-result.json`。
 
 已发布制品对应的候选压缩包 SHA-256：`65c4c81189b80465cd9c4072c80aa3fc28cdbf2bf511529548b5bd45c11f179d`，构建 source 为 `c233493eda2ee0ab2fd1734935f2da6826cf7d74`。本机 tarball 独立安装与连接证据在 `C:\artoo-builds\npm-daemon-20261109\connection-release-r2\result.json`，发行压缩包位于同级 `release-r2/`；该记录不是线上 registry 安装证据。这些构建制品不提交进源码仓库。
 
