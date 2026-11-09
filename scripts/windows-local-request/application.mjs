@@ -82,6 +82,7 @@ const configurationPin = file => applicationPin(reference(file));
 export function prepareApplicationProfiles({ inputs, state, projectId, computerId, privateBundle, nativeManifest, daemon, nodeEnvironment }) {
   assert.ok(inputs.product && inputs.application, 'An installed application mode is required');
   assert.equal(typeof daemon.describeWindowsApplicationEntryVerifier, 'function', 'Installed daemon lacks the application entry configuration API');
+  assert.equal(typeof daemon.loadPreparedConfigFromEnv, 'function', 'Installed daemon lacks the prepared configuration API');
   const make = (parent, name) => { const dir = path.join(parent, name); fs.mkdirSync(dir); return physical(dir, true); };
   const configRoot = state.paths.config, root = path.dirname(state.paths.workspace);
   const appConfig = make(configRoot, 'application'), prototypeConfig = make(configRoot, 'prototype'), verifierConfig = make(configRoot, 'verifier');
@@ -105,7 +106,7 @@ export function prepareApplicationProfiles({ inputs, state, projectId, computerI
     commands: [{ id: 'browser-acceptance', argv: [inputs.programs.node.path, path.join(privateBundle, 'web-acceptance-cli.js'), browserFile],
       timeout_ms: 180000, observation: { format: 'static-web-acceptance.v3', evidence_root: state.paths.evidence, capabilities: { version: 1 } } }] }]);
   const environment = { ...nodeEnvironment, ARTOO_VERIFICATION_PROFILES_FILE: verifierFile };
-  const facts = daemon.describeWindowsApplicationEntryVerifier(daemon.loadConfigFromEnv(environment), inputs.product.verification_profile_id);
+  const facts = daemon.describeWindowsApplicationEntryVerifier(daemon.loadPreparedConfigFromEnv(environment), inputs.product.verification_profile_id);
   assert.equal(facts.verification_profile_id, inputs.product.verification_profile_id);
   assert.equal(facts.origin, inputs.product.origin);
   assert.deepEqual(facts.application_configuration, configurationPin(applicationFile));

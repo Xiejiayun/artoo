@@ -38,9 +38,9 @@ export async function launchCleanWindowsSupervisedCli(env: NodeJS.ProcessEnv, co
         const generation = prepareCleanRestartGeneration({ predecessor, observer, grant });
         const description = describeCleanRestartGeneration(generation);
         const currentEnv = { ...env, ARTOO_PRODUCT_SOURCE_CONFIG_FILE: description.source_configuration_file };
-        const { loadConfigFromEnv } = await import("./main.js");
+        const { loadPreparedConfigFromEnv } = await import("./main.js");
         if (userStopped) break;
-        configuration = prepareCleanSupervisorConfiguration({ config: loadConfigFromEnv(currentEnv), env: currentEnv, entry, lineageFile, generation });
+        configuration = prepareCleanSupervisorConfiguration({ config: loadPreparedConfigFromEnv(currentEnv), env: currentEnv, entry, lineageFile, generation });
       }
       if (userStopped) break;
       owner = startCleanWindowsSupervisor({ configuration, observer, manageStopSignals: false, onReady(generation) {

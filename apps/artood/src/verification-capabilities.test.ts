@@ -5,7 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { productDevelopmentContext, type RunStartPayload } from "@artoo/domain";
-import { prepareVerificationProfiles, readVerificationCapabilities, selectVerificationProfile, runVerification, VerificationCleanupError,
+import { prepareVerificationProfiles, loadPreparedVerificationProfilesFile, readVerificationCapabilities,
+  selectVerificationProfile, runVerification, VerificationCleanupError,
   type PreparedVerificationProfile, type VerificationProfile } from "./verification.js";
 import { OwnedGitError, runOwnedGit } from "./owned/owned-git.js";
 import { prepareStaticWebCapabilities } from "./web-acceptance.js";
@@ -55,6 +56,30 @@ function payload(profile: PreparedVerificationProfile): RunStartPayload {
 function admitOnSupportedPlatform() { Object.defineProperty(process, "platform", { ...originalPlatform, value: "linux" }); }
 
 describe("protected static-web capability profiles", () => {
+  it("reuses the explicit loader's original capability profile without changing its digest", () => {
+    const f = fixture(), profilesFile = join(f.root, "profiles.json");
+    writeProtected(profilesFile, JSON.stringify([f.profile]));
+    const expected = prepareVerificationProfiles([f.profile], [f.workspace])[0]!;
+    const loaded = loadPreparedVerificationProfilesFile(profilesFile, [f.workspace]);
+    expect(loaded[0]!.digest).toBe(expected.digest);
+    expect(readVerificationCapabilities(loaded[0]!)).toEqual(readVerificationCapabilities(expected));
+    expect(prepareVerificationProfiles(loaded, [f.workspace])[0]).toBe(loaded[0]);
+    for (const clone of [structuredClone(loaded[0]!), JSON.parse(JSON.stringify(loaded[0])) as PreparedVerificationProfile]) {
+      expect(() => readVerificationCapabilities(clone)).toThrow(/locally prepared/);
+      expect(() => prepareVerificationProfiles([clone], [f.workspace])).toThrow(/unknown capability profile field/);
+    }
+  });
+
+  it.each(["browser", "configuration"] as const)("rechecks the loaded profile after an awaited %s change", async (target) => {
+    const f = fixture(), profilesFile = join(f.root, "profiles.json");
+    writeProtected(profilesFile, JSON.stringify([f.profile]));
+    const loaded = loadPreparedVerificationProfilesFile(profilesFile, [f.workspace]);
+    await Promise.resolve();
+    if (target === "browser") writeProtected(f.browser, "changed protected browser fixture");
+    else writeProtected(f.config, JSON.stringify({ ...f.options, action_timeout_ms: 800 }));
+    expect(() => prepareVerificationProfiles(loaded, [f.workspace])).toThrow(/administrator verifier changed/);
+  });
+
   it("derives only public configured capabilities from normalized protected options", () => {
     const f = fixture(), prepared = prepareVerificationProfiles([f.profile])[0]!;
     const expected = prepareStaticWebCapabilities(f.options), context = readVerificationCapabilities(prepared)!;

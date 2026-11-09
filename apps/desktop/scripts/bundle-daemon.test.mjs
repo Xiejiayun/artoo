@@ -70,15 +70,24 @@ test("packaged verification resolves its real sibling CLI and the CLI executes i
       observation: { format: "static-web-acceptance.v1", evidence_root: evidence, capabilities: { version: 1 } } }],
     required_files: [], subject_paths: ["product", ".artoo/product"] }]));
   const probe = String.raw`
-    const assert = require('node:assert/strict'), {pathToFileURL} = require('node:url');
+    const assert = require('node:assert/strict'), fs = require('node:fs'), {pathToFileURL} = require('node:url');
     const [entry, workspace, profiles, cli] = process.argv.slice(1);
     // Import the public configuration builder without matching the daemon's
     // direct-entry argv guard. No node connection or provider may start here.
     process.argv[1] = 'packaged-verifier-probe';
     import(pathToFileURL(entry).href).then(module => {
-      const config = module.loadConfigFromEnv({ ARTOO_NODE_URL:'ws://127.0.0.1:1/api/v1/node', ARTOO_NODE_ID:'packaged-probe',
-        ARTOO_ALLOWED_ROOTS:workspace, ARTOO_VERIFICATION_PROFILES_FILE:profiles });
+      const env = { ARTOO_NODE_URL:'ws://127.0.0.1:1/api/v1/node', ARTOO_NODE_ID:'packaged-probe',
+        ARTOO_ALLOWED_ROOTS:workspace, ARTOO_VERIFICATION_PROFILES_FILE:profiles };
+      const config = module.loadConfigFromEnv(env);
+      assert.deepEqual(config.verificationProfiles, JSON.parse(fs.readFileSync(profiles, 'utf8')));
+      assert.equal(Object.isFrozen(config.verificationProfiles[0]), false);
+      assert.equal(Object.hasOwn(config.verificationProfiles[0], 'digest'), false);
       assert.equal(config.verificationProfiles[0].commands[0].argv[1], cli);
+      const prepared = module.loadPreparedConfigFromEnv(env).verificationProfiles;
+      assert.equal(Object.isFrozen(prepared), true); assert.equal(Object.isFrozen(prepared[0]), true);
+      assert.match(prepared[0].digest, /^sha256:[a-f0-9]{64}$/u);
+      assert.equal(prepared[0].capabilities.profile_digest, prepared[0].digest);
+      assert.equal(prepared[0].commands[0].argv[1], cli);
       process.stdout.write('verified-sibling-cli\n');
     }).catch(error => { console.error(error); process.exitCode = 1; });
   `;
@@ -123,7 +132,7 @@ function controlledRepository(name = "controlled-repo") {
   } }));
   for (const name of ["playwright", "playwright-core"]) fs.cpSync(dirname(require.resolve(`${name}/package.json`)), join(modules, name), { recursive: true });
   fs.symlinkSync(dirname(require.resolve("esbuild/package.json")), join(modules, "esbuild"), process.platform === "win32" ? "junction" : "dir");
-  fs.writeFileSync(join(source, "main.ts"), "export function loadConfigFromEnv() { return {}; }\n");
+  fs.writeFileSync(join(source, "main.ts"), "export function loadConfigFromEnv() { return {}; }\nexport function loadPreparedConfigFromEnv() { return {}; }\n");
   for (const name of ["managed/journal-worker.ts", "workspace-tools-mcp.ts", "research-mcp.ts", "web-acceptance-cli.ts"]) fs.writeFileSync(join(source, name), "export const fixture = true;\n");
   const output = join(desktop, "daemon"); fs.mkdirSync(output); fs.writeFileSync(join(output, "artood.mjs"), "legacy-build-to-preserve\n");
   return { directory, output, source };

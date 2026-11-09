@@ -437,6 +437,7 @@ try {
     consent_id: consent.consent.id, authorization_basis: 'explicit existing Aerial authorization in local configuration', api_grant: true };
   baselineGoals = (await server.ctx.db.db.select().from(schema.goals)).length;
   const daemon = await import(pathToFileURL(path.join(privateBundle, 'artood.mjs')).href);
+  assert.equal(typeof daemon.loadPreparedConfigFromEnv, 'function', 'Installed daemon lacks the prepared configuration API');
   // Share the same branded ownership boundary with publisher-only reopening.
   // Even discovery/config preparation can touch a release journal, so acquire
   // this before any node/profile/storage initialization and retain it on error.
@@ -481,7 +482,7 @@ try {
         members: structuredClone(state.slots) };
       Object.assign(state.nodeEnv, { ARTOO_VERIFICATION_PROFILES_FILE: verifierFile, ARTOO_RELEASE_PROFILES_FILE: releaseFile });
     }
-    const config = daemon.loadConfigFromEnv(state.nodeEnv); assert.equal(config.productSourceConfigFile, undefined); assert.equal(config.requireSupervisorLifetime, undefined);
+    const config = daemon.loadPreparedConfigFromEnv(state.nodeEnv); assert.equal(config.productSourceConfigFile, undefined); assert.equal(config.requireSupervisorLifetime, undefined);
     state.discovery = daemon.createNodeFromConfig(config); await state.discovery.start(); state.report.discovery.started = true;
     await waitFor(() => server.ctx.getPairedNodeSession(computerId)?.deviceId === deviceId, state.role + ' paired discovery');
     state.report.discovery.session_id = server.ctx.getPairedNodeSession(computerId).sessionId;

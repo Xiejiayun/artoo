@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import * as domain from '../../packages/domain/dist/index.js';
 import { applicationInstallation, productConfiguration, reference, tree, sha, save, validateStoppedProductRecords } from './inputs.mjs';
-import { preparedRequest, confirmApplicationPublication, confirmApplicationStopped, stopApplicationGoal, applicationWorkerLifecycle, localJsonRequest, reconcilePreparedSubmission, retainPreparedGoalRecord } from './application.mjs';
+import { preparedRequest, prepareApplicationProfiles, confirmApplicationPublication, confirmApplicationStopped, stopApplicationGoal, applicationWorkerLifecycle, localJsonRequest, reconcilePreparedSubmission, retainPreparedGoalRecord } from './application.mjs';
 
 const limits = () => ({ root_lifetime_ms: 3_600_000, startup_timeout_ms: 10000, health_timeout_ms: 10000,
   normal_drain_reserve_ms: 50000, health_interval_ms: 10000, health_freshness_ms: 30000,
@@ -66,6 +66,46 @@ function installationFixture(t) {
     trees: [{ root: code, tree: tree(code) }] };
   return { root, code, file, manifest, programs: { node: nodePin } };
 }
+test('application setup keeps prepared configuration inside the same daemon namespace', t => {
+  const f = installationFixture(t), session = path.join(f.root, 'session'); fs.mkdirSync(session);
+  const paths = Object.fromEntries(['config', 'workspace', 'evidence'].map(name => {
+    const directory = path.join(session, name); fs.mkdirSync(directory); return [name, directory];
+  }));
+  const inputs = { product: product('development'), application: f.manifest,
+    programs: { node: reference(path.join(f.root, 'fixture-node.exe')), browser: reference(f.file) } };
+  const privateBundle = path.join(f.root, 'bundle'), nativeManifest = { sha256: 'b'.repeat(64) };
+  const nodeEnvironment = { ARTOO_NODE_ID: 'computer', ARTOO_ALLOWED_ROOTS: paths.workspace };
+  const prepared = Object.freeze({ controlled_local_identity: true });
+  let loaded = 0, described = 0;
+  const daemon = {
+    loadConfigFromEnv() { assert.fail('Application setup must not discard the prepared verifier'); },
+    loadPreparedConfigFromEnv(environment) {
+      loaded++; assert.equal(environment.ARTOO_NODE_ID, nodeEnvironment.ARTOO_NODE_ID);
+      assert.equal(environment.ARTOO_ALLOWED_ROOTS, paths.workspace);
+      const profiles = JSON.parse(fs.readFileSync(environment.ARTOO_VERIFICATION_PROFILES_FILE, 'utf8'));
+      assert.equal(profiles.length, 1); assert.equal(profiles[0].id, inputs.product.verification_profile_id);
+      return prepared;
+    },
+    describeWindowsApplicationEntryVerifier(configuration, id) {
+      described++; assert.equal(configuration, prepared); assert.equal(id, inputs.product.verification_profile_id);
+      const pin = reference(path.join(paths.config, 'application/application.json'));
+      return { verification_profile_id: id, origin: inputs.product.origin,
+        application_configuration: { ...pin, sha256: 'sha256:' + pin.sha256 },
+        backend: { directory: path.join(privateBundle, 'native/windows-process'), manifest_sha256: 'sha256:' + nativeManifest.sha256 } };
+    },
+  };
+  const configured = prepareApplicationProfiles({ inputs, state: { paths }, projectId: 'project', computerId: 'computer',
+    privateBundle, nativeManifest, daemon, nodeEnvironment });
+  assert.equal(loaded, 1); assert.equal(described, 1);
+  assert.equal(configured.facts.verification_profile_id, inputs.product.verification_profile_id);
+  assert.equal(configured.pins.length, 3); assert.equal(configured.publicationConfiguration, undefined);
+});
+
+test('application setup rejects an older daemon before creating configuration', () => {
+  assert.throws(() => prepareApplicationProfiles({ inputs: { product: product('development'), application: {} },
+    daemon: { describeWindowsApplicationEntryVerifier() {} } }), /prepared configuration API/u);
+});
+
 test('application installation binds every tool and the complete dependency tree', t => {
   const f = installationFixture(t); assert.deepEqual(applicationInstallation(f.manifest, f.programs), f.manifest);
   fs.writeFileSync(path.join(f.code, 'unlisted-dependency.txt'), 'new executable dependency');

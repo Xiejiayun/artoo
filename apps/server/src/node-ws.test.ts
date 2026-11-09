@@ -127,6 +127,32 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
     transport = undefined;
   });
 
+  it("requires the first persisted runtime advertisement before registering an agent workspace", async () => {
+    server = await buildTestServer();
+    const computerId = "computer_first_heartbeat";
+    await addComputer(server, computerId);
+    const port = await listen(server);
+    // A connected hello is deliberately observable before the first heartbeat.
+    // Drive that boundary over the real socket instead of sleeping until a timer.
+    transport = createWebSocketTransport({
+      url: `ws://127.0.0.1:${port}/api/v1/node?token=dev`, hello: hello(computerId),
+    });
+    await transport.ready;
+    await waitFor(() => server?.nodeRegistry.get(computerId) !== undefined, "hello registered");
+    const url = `/api/v1/computers/${computerId}/instances`;
+    const payload = { runtime: "codex", workspace_root: "C:/first-heartbeat", display_name: "First heartbeat" };
+    expect(await advertisedRuntimeIds(server, computerId)).toEqual([]);
+    expect((await server.app.inject({ method: "POST", url, payload })).statusCode).toBe(409);
+
+    await transport.send({ kind: "node.heartbeat", node_id: computerId, sequence: 0,
+      resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 1 }, running_instances: [],
+      runtimes: [{ runtime: "codex", status: "available", capabilities: ["code.modify"] }] });
+    await waitFor(async () => (await advertisedRuntimeIds(server!, computerId)).includes("codex"), "runtime persisted");
+    const created = await server.app.inject({ method: "POST", url, payload });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().agent_instance).toMatchObject({ computer_id: computerId, runtime: "codex", workspace_root: payload.workspace_root });
+  });
+
   it("drives an assigned run to review over a real WebSocket node connection", async () => {
     server = await buildTestServer();
     const port = await listen(server);

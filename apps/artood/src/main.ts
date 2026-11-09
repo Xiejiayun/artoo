@@ -21,7 +21,7 @@ import { createManagedBootstrap, validateManagedJournalBinding, validateManagedJ
 import { provisionLocalJournal, upgradeLocalJournalForOwnedResults } from "./managed/journal.js";
 import { initializeOwnedResultProfilesFile } from "./owned-result-profiles.js";
 import { DeliveryCancelled } from "./managed/managed-delivery.js";
-import { loadVerificationProfilesFile, type VerificationProfile } from "./verification.js";
+import { loadPreparedVerificationProfilesFile, loadVerificationProfilesFile, type VerificationProfile } from "./verification.js";
 import { loadReleaseProfilesFile, type ReleaseProfile } from "./product-release.js";
 import { prepareWindowsProcessInstallation } from "./windows-process-installation.js";
 import { prepareWindowsReleaseStorage, type PreparedWindowsReleaseStorage } from "./windows-release-storage.js";
@@ -183,6 +183,18 @@ function windowsProcessBackendFromEnv(env: NodeJS.ProcessEnv, allowedRoots: read
 
 /** Parse the artood config from environment variables, throwing on missing required keys. */
 export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
+  return configFromEnv(env, loadVerificationProfilesFile);
+}
+
+/** Preserve prepared verifier identities inside this process and module instance.
+ * Consumers still recheck them at their existing boundaries. Do not serialize
+ * this configuration or transfer its local authorities to another daemon. */
+export function loadPreparedConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
+  return configFromEnv(env, loadPreparedVerificationProfilesFile);
+}
+
+function configFromEnv(env: NodeJS.ProcessEnv,
+  loadProfiles: (path: string, writableRoots?: readonly string[]) => readonly VerificationProfile[]): ArtoodConfig {
   const url = env.ARTOO_NODE_URL?.trim();
   const nodeId = env.ARTOO_NODE_ID?.trim();
   const allowedRoots = splitList(env.ARTOO_ALLOWED_ROOTS);
@@ -209,7 +221,7 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
     || /[\u0000-\u001f\u007f]/.test(productSourceConfigFile) || !windowsProcessBackend)) {
     throw new Error("ARTOO_PRODUCT_SOURCE_CONFIG_FILE requires an absolute protected file and native Windows backend");
   }
-  const verificationProfiles = env.ARTOO_VERIFICATION_PROFILES_FILE ? loadVerificationProfilesFile(env.ARTOO_VERIFICATION_PROFILES_FILE, allowedRoots) : undefined;
+  const verificationProfiles = env.ARTOO_VERIFICATION_PROFILES_FILE ? loadProfiles(env.ARTOO_VERIFICATION_PROFILES_FILE, allowedRoots) : undefined;
   const releaseProfiles = env.ARTOO_RELEASE_PROFILES_FILE ? loadReleaseProfilesFile(env.ARTOO_RELEASE_PROFILES_FILE, verificationProfiles, allowedRoots) : undefined;
   const publicationFile = env.ARTOO_APPLICATION_PUBLICATION_PROFILE_FILE, publicationHash = env.ARTOO_APPLICATION_PUBLICATION_PROFILE_SHA256,
     publicationVerifier = env.ARTOO_APPLICATION_PUBLICATION_VERIFIER;
@@ -334,7 +346,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env, host: ShutdownH
   let node: ArtoodNode, launchId: string | undefined;
   try {
     recordWindowsStartupPhase("load_configuration");
-    const config = loadConfigFromEnv(env);
+    const config = process.platform === "win32" ? loadPreparedConfigFromEnv(env) : loadConfigFromEnv(env);
     if (supervisedReady) {
       config.requireSupervisorLifetime = true;
       if (env.ARTOO_SOURCE_CLEAN_CONFIG_FILE !== undefined) {
@@ -645,7 +657,7 @@ export async function runDaemonEntrypoint(env: NodeJS.ProcessEnv = process.env, 
     return;
   }
   const supervised = supervisedSelection(args, host.connected !== undefined);
-  if (supervised === "parent") return launchWindowsSupervisedCli(env, loadConfigFromEnv(env), fileURLToPath(import.meta.url));
+  if (supervised === "parent") return launchWindowsSupervisedCli(env, loadPreparedConfigFromEnv(env), fileURLToPath(import.meta.url));
   if (supervised === "daemon") return runWindowsSupervisedDaemon(env, host, (controlled, ready) => main(env, controlled, ready));
   const initializeResults = args.includes("--initialize-owned-result-profiles"), upgradeResults = args.includes("--upgrade-owned-result-journal");
   if (initializeResults || upgradeResults) {

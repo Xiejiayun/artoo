@@ -7,7 +7,8 @@ import type { NodeHello, NodeToServerMessage, RuntimeAdapter, RunStartCommand } 
 import { loadConfigFromEnv } from "./main.js";
 import { createArtoodNode } from "./node-runner.js";
 import { createNodeClient } from "./node-client.js";
-import { assertVerificationWorkspaceBoundary, loadVerificationProfilesFile, prepareVerificationProfiles,
+import { assertVerificationWorkspaceBoundary, assertLocallyPreparedVerificationProfile,
+  loadVerificationProfilesFile, loadPreparedVerificationProfilesFile, prepareVerificationProfiles,
   type VerificationProfile } from "./verification.js";
 
 const fixtures: string[] = [];
@@ -42,6 +43,56 @@ function adapter() {
 }
 const hello: NodeHello = { kind: "node.hello", node_id: "node_1", protocol_version: "2026-06-11", artood_version: "0.1.0",
   machine: { hostname: "local", os: process.platform, arch: process.arch } };
+
+describe("explicit prepared profile loading", () => {
+  it("keeps the legacy loader's mutable definitions and exact serialization", () => {
+    const f = fixture();
+    Object.assign(f.profile, { operator_note: "legacy metadata" });
+    f.writeProfiles();
+    const loaded = loadVerificationProfilesFile(f.profilesFile, [f.workspace]);
+    expect(JSON.stringify(loaded)).toBe(JSON.stringify([f.profile]));
+    expect(loaded[0]).not.toHaveProperty("digest");
+    expect(loaded[0]).not.toHaveProperty("trustedFiles");
+    expect(Object.isFrozen(loaded)).toBe(false);
+    expect(Object.isFrozen(loaded[0])).toBe(false);
+    expect(Object.isFrozen(loaded[0]!.commands)).toBe(false);
+    loaded[0]!.commands[0]!.timeout_ms = 2000;
+    expect(loaded[0]!.commands[0]!.timeout_ms).toBe(2000);
+    expect(f.profile.commands[0]!.timeout_ms).toBe(1000);
+  });
+
+  it("reserves the configuration file on the original prepared objects and subsequent preparations", () => {
+    const f = fixture(), prepared = loadPreparedVerificationProfilesFile(f.profilesFile, [f.workspace]);
+    expect(Object.isFrozen(prepared)).toBe(true);
+    expect(Object.isFrozen(prepared[0])).toBe(true);
+    expect(() => assertLocallyPreparedVerificationProfile(prepared[0]!)).not.toThrow();
+    for (const profiles of [prepared, prepareVerificationProfiles(prepared)]) {
+      expect(JSON.stringify(profiles)).not.toContain(f.profilesFile.replaceAll("\\", "\\\\"));
+      expect(() => assertVerificationWorkspaceBoundary(command(f.control).payload, profiles, false)).toThrow(/protected verification/);
+      expect(() => prepareVerificationProfiles(profiles, [f.workspace, f.control])).toThrow(/protected verification/);
+    }
+  });
+
+  it("preserves ordinary profiles' fresh preparation after their verifier changes", () => {
+    const f = fixture(), loaded = loadPreparedVerificationProfilesFile(f.profilesFile, [f.workspace]);
+    writeFileSync(f.script, "process.exit(7)\n");
+    const prepared = prepareVerificationProfiles(loaded, [f.workspace]);
+    expect(prepared[0]).not.toBe(loaded[0]);
+    expect(prepared[0]!.digest).not.toBe(loaded[0]!.digest);
+    expect(() => assertLocallyPreparedVerificationProfile(prepared[0]!)).not.toThrow();
+  });
+
+  it.each([
+    ["legacy", loadVerificationProfilesFile],
+    ["prepared", loadPreparedVerificationProfilesFile],
+  ] as const)("keeps validation before configuration-root rejection in the %s loader", (_name, load) => {
+    const f = fixture();
+    f.writeProfiles([{ ...f.profile, commands: [{ id: "inline", argv: [process.execPath, "-e", "process.exit(0)"], timeout_ms: 1000 }] }]);
+    expect(() => load(f.profilesFile, [f.workspace, f.control])).toThrow(/external script/);
+    f.writeProfiles();
+    expect(() => load(f.profilesFile, [f.workspace, f.control])).toThrow(/profiles file.*writable/);
+  });
+});
 
 describe("all node writable roots stay outside verifier authority", () => {
   it("rejects a broad parent root that includes a sibling verifier", () => {

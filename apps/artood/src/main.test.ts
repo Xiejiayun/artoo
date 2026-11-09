@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as nodeRunner from "./node-runner.js";
 import * as processAdapter from "./process-adapter.js";
 import * as windowsInstallation from "./windows-process-installation.js";
+import * as verification from "./verification.js";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 
 import {
@@ -11,6 +12,7 @@ import {
   createNodeFromConfig,
   helloFor,
   loadConfigFromEnv,
+  loadPreparedConfigFromEnv,
   installShutdownHandlers,
   type ArtoodConfig
 } from "./main.js";
@@ -95,6 +97,40 @@ describe("Windows process bootstrap (controlled installation admission, not nati
       managedJournal: { version: 1, serverOrigin: "http://127.0.0.1:4000", nodeId: "c1", directory: "/tmp/prepared-journal",
         expectedNamespace: "namespace", controllerScope: "controller" } }))).toThrow(/cannot be combined with managed/);
     expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe("explicit prepared configuration loading (controlled loader results)", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+  const file = "/protected/verifiers.json";
+  const raw = [{ id: "local", project_id: "project", workspace_root: "/ws", commands: [], required_files: [], subject_paths: [] }];
+
+  it("keeps the legacy loader on its original raw objects", () => {
+    const legacy = vi.spyOn(verification, "loadVerificationProfilesFile").mockReturnValue(raw);
+    const prepared = vi.spyOn(verification, "loadPreparedVerificationProfilesFile");
+    const config = loadConfigFromEnv({ ...baseEnv, ARTOO_VERIFICATION_PROFILES_FILE: file });
+    expect(legacy).toHaveBeenCalledExactlyOnceWith(file, ["/ws"]);
+    expect(prepared).not.toHaveBeenCalled();
+    expect(config.verificationProfiles).toBe(raw);
+    expect(Object.isFrozen(config)).toBe(false);
+  });
+
+  it("passes the explicit loader's same-process prepared identities onward", () => {
+    const profiles = Object.freeze([Object.freeze({ ...raw[0]!, digest: `sha256:${"a".repeat(64)}`, trustedFiles: [] })]);
+    const legacy = vi.spyOn(verification, "loadVerificationProfilesFile");
+    const prepared = vi.spyOn(verification, "loadPreparedVerificationProfilesFile").mockReturnValue(profiles);
+    const config = loadPreparedConfigFromEnv({ ...baseEnv, ARTOO_VERIFICATION_PROFILES_FILE: file });
+    expect(prepared).toHaveBeenCalledExactlyOnceWith(file, ["/ws"]);
+    expect(legacy).not.toHaveBeenCalled();
+    expect(config.verificationProfiles).toBe(profiles);
+    // main still adds its local supervised configuration after loading.
+    config.requireSupervisorLifetime = true;
+    expect(config.requireSupervisorLifetime).toBe(true);
+  });
+
+  it("does not add profile fields or resolve optional roots when unconfigured", () => {
+    expect(loadPreparedConfigFromEnv(baseEnv)).toEqual(loadConfigFromEnv(baseEnv));
+    expect(Object.hasOwn(loadPreparedConfigFromEnv(baseEnv), "verificationProfiles")).toBe(false);
   });
 });
 

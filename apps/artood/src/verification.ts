@@ -471,7 +471,10 @@ export function prepareVerificationProfiles(input: readonly VerificationProfile[
   return Object.freeze(prepared);
 }
 
-export function loadVerificationProfilesFile(path: string, writableRoots?: readonly string[]): VerificationProfile[] {
+function readVerificationProfilesFile(path: string, writableRoots?: readonly string[]): {
+  raw: VerificationProfile[];
+  prepared: readonly PreparedVerificationProfile[];
+} {
   text(path, "profiles file");
   if (!isAbsolute(path)) fail("profiles file must be absolute");
   const stat = lstatSync(path);
@@ -487,7 +490,20 @@ export function loadVerificationProfilesFile(path: string, writableRoots?: reado
     fail("profiles file must be outside every writable root");
   }
   for (const profile of profiles) profileConfigurationFiles.set(profile, physical);
-  return profiles;
+  for (const profile of prepared) profileConfigurationFiles.set(profile, physical);
+  return { raw: profiles, prepared };
+}
+
+/** Preserve the legacy mutable definitions and their serialization. */
+export function loadVerificationProfilesFile(path: string, writableRoots?: readonly string[]): VerificationProfile[] {
+  return readVerificationProfilesFile(path, writableRoots).raw;
+}
+
+/** Return the original local preparation for callers in this module instance.
+ * These frozen identities must not cross serialization, IPC or bundle boundaries.
+ * Reuse still performs the existing fresh trust, write-root and backend checks. */
+export function loadPreparedVerificationProfilesFile(path: string, writableRoots?: readonly string[]): readonly PreparedVerificationProfile[] {
+  return readVerificationProfilesFile(path, writableRoots).prepared;
 }
 
 /** Read-only local authority used for model context; private paths never leave preparation. */
