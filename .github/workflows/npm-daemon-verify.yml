@@ -1,0 +1,35 @@
+name: Verify published Windows npm daemon
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/npm-daemon-verify.yml
+      - scripts/npm-daemon/registry-smoke.mjs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  registry-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install and verify the fixed published package on this Windows runner
+        run: node scripts/npm-daemon/registry-smoke.mjs
+      - name: Upload safe validation evidence
+        if: always() && env.REGISTRY_VERIFY_EVIDENCE != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-windows-npm-daemon-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.REGISTRY_VERIFY_EVIDENCE }}/*.json
+            ${{ env.REGISTRY_VERIFY_EVIDENCE }}/*.log
+          if-no-files-found: error
+          retention-days: 7

@@ -2,7 +2,7 @@
 
 采用 **Azure 单台 Linux 控制服务器 + 多台 Windows 执行电脑**。Web、API、调度和数据集中在一个 HTTPS 域名；模型和代码执行留在各台 Windows 电脑。本方案复用现有 Azure 模板，不要求先改造数据库或运行时。
 
-本文交付的是可执行部署方案，未创建云资源，也不表示公网环境已经验收。npm 候选版本为 `@jiayunxie/artood@0.1.0-rc.1`，**尚未发布**；下列安装命令应在该版本实际发布并验证后执行。服务器固定到通过检查的完整 commit SHA，记录该 SHA 与 npm 版本的兼容关系。
+本文交付的是可执行部署方案，未创建云资源，也不表示公网环境已经验收。npm 包 [`@jiayunxie/artood@0.1.0-rc.1`](https://www.npmjs.com/package/@jiayunxie/artood/v/0.1.0-rc.1) 已正式发布，`next` 指向该版本；当前 `latest` 仍为 `0.0.0-stage` 占位，安装须使用下列固定版本。本机 Microsoft npm feed 暂不可见（E404），独立 GitHub Windows runner 的线上安装验证尚待完成，详见 [发行状态](release-convergence-2026-11-09.md#发行与部署状态)。服务器固定到通过检查的完整 commit SHA，记录该 SHA 与 npm 版本的兼容关系。
 
 ## 1. 拓扑与容量起点
 
@@ -108,7 +108,7 @@ ARTOO_AI_DATA_SHARING_POLICY='{"mode":"external","providers":[{"id":"实际供�
 
 ## 5. Windows daemon 接入
 
-npm CLI 负责启动现有 daemon，命令为 `artood start`；当前没有 `pair`、`status` 或自动注册 Windows 服务的子命令。安装/构建说明见 [npm daemon README](../scripts/npm-daemon/README.md)。以下为 PowerShell 7、Node 24+ 的接入流程；候选 `0.1.0-rc.1` 尚未发布，发布成功后使用固定版本安装，不依赖 `latest`。
+npm CLI 负责启动现有 daemon，命令为 `artood start`；当前没有 `pair`、`status` 或自动注册 Windows 服务的子命令。安装/构建说明见 [npm daemon README](../scripts/npm-daemon/README.md)。以下为 PowerShell 7、Node 24+ 的接入流程，使用已发布的固定版本 `0.1.0-rc.1`；线上 Windows 安装验收尚待完成。`next` 指向该版本，`latest` 仍是占位版本，不使用省略版本号的安装命令。
 
 ```powershell
 npm install --global '@jiayunxie/artood@0.1.0-rc.1'

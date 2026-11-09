@@ -209,7 +209,7 @@ curl --silent --output /dev/null --write-out '%{http_code}\n' https://artoo.exam
 
 所有电脑输入同一 origin：`https://artoo.example.com`。npm daemon 的安装、无桌面配对和启动步骤见 [Web 与 Windows daemon 部署方案](web-deployment-plan.zh-CN.md#5-windows-daemon-接入)。每台电脑选择 npm CLI 或桌面 worker 其中一个作为同一设备的执行入口，不同时启动两个 daemon。重复以下步骤，每台电脑保留自己的身份、工作目录和模型凭证：
 
-1. npm 路径使用 Node 24+、npm 11+。本次候选为 `@jiayunxie/artood@0.1.0-rc.1`，**尚未发布**；待实际发布并验证后使用该固定版本安装。桌面路径仍安装经过本地验证的同版 Windows Artoo 包，核对 SHA-256/签名状态。npm 发布不等于 Windows 安装程序签名；首次只能使用控制界面也不影响 Azure server。
+1. npm 路径使用 Node 24+、npm 11+。[`@jiayunxie/artood@0.1.0-rc.1`](https://www.npmjs.com/package/@jiayunxie/artood/v/0.1.0-rc.1) 已正式发布，`next` 指向该版本；当前 `latest` 仍为 `0.0.0-stage` 占位，必须明确指定 `0.1.0-rc.1` 安装。本机 Microsoft npm feed 当前返回 E404，独立 GitHub Windows runner 的线上安装验收尚待完成。桌面路径仍安装经过本地验证的同版 Windows Artoo 包，核对 SHA-256/签名状态。npm 发布不等于 Windows 安装程序签名；首次只能使用控制界面也不影响 Azure server。
 2. **该设备的实际使用者以本人受信账号在 Web 登录**，在 Settings → Connect a device 选择 Windows，生成自己的单次配对码。桌面端输入 origin、设备名和配对码；npm CLI 当前没有 `pair` 子命令，按部署方案调用现有 `/api/v1/devices/claim` 接口领取自己的设备凭证。配对码携带生成者身份/权限，不让 owner 为其他成员代生成；同一人可以为自己的多台电脑分别配对。不要复制其他电脑的凭证或把配对码、返回 token 发到日志。
 3. 若该设备尚无 computer 绑定，owner/admin 在 Settings → Devices 选择 **Enroll computer** 并确认。配对与登记执行电脑是两个步骤；未登记不能启动 worker。npm 配置中的 `ARTOO_NODE_ID` 使用登记后的 `computer_id`，不能使用 `device.id`。
 4. npm 路径把节点凭证和 `ARTOO_*` 设置放在工作目录之外、仅本机账户和管理员可读的环境文件中，通过 Node 的 `--env-file` 启动 `artood start`。桌面路径在 Settings → This computer 配置本机 CLI 的绝对路径、允许工作目录和运行时，再启动 worker；只有桌面保存的凭证使用 Electron `safeStorage`，npm 环境文件没有自动加密。每个工作根必须实际存在；`C:\Products` 是该电脑的路径，不是 Azure VM 的共享盘。
