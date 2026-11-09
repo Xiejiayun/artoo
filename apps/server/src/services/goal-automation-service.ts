@@ -1,12 +1,13 @@
-import { agentInstances, appendEvent, artifacts, assistantTurns, autonomousReviews, computers, discussions, eventLog, goalAutomations, goals, messages, plans, runs, tasks } from "@artoo/db";
+import { agentInstances, appendEvent, applicationPublications, applicationPublicationSettlements, artifacts, assistantTurns, autonomousReviews, computers, discussions, eventLog, goalAutomations, goals, messages, plans, runs, tasks } from "@artoo/db";
 import { AutonomousTeamSchema, canTransitionTask, CreateAutonomousGoalRequestSchema, GoalAutomationSchema, GoalBudgetsSchema, TaskSpecSchema, validateProductDevelopmentPlan,
   type AutonomousTeam, type CreateAutonomousGoalRequest, type GoalAutomation, type TaskStatus } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
-import { and, asc, desc, eq, inArray, isNotNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
+import { isDeepStrictEqual } from "node:util";
 import type { ImportedSourceReceiptFamily, ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
-import { assertPreparedGoalRequest } from "../config/goal-entry.js";
+import { withPreparedGoalSubmission } from "../config/goal-entry.js";
 import { beginGoalSubmission, finishGoalSubmission, type GoalSubmissionIdentity } from "./goal-submission.js";
 import { requireAiSharingAuthorization } from "./ai-data-sharing-service.js";
 import { requireContentAllowed } from "./content-moderation-service.js";
@@ -67,6 +68,9 @@ import { goalImportedDesignCompletions, goalImportedDesignReviewReceipts, goalIm
   goalImportedValidationCompletions, goalImportedValidationReceipts, goalImportedValidationReviewReceipts } from "@artoo/db";
 import { IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1 } from "@artoo/domain";
 import { APPLICATION_VERIFICATION_FEATURE_V1 } from "@artoo/domain";
+import { APPLICATION_PUBLICATION_FEATURE_V1, ApplicationPublicationCapabilitiesV1Schema } from "@artoo/domain";
+import { originalApplicationPublication, assertCurrentApplicationPublication } from "./application-verification.js";
+import { ensureGoalApplicationPublication, cancelGoalApplicationPublication } from "./application-publication-service.js";
 
 type AutomationRow = typeof goalAutomations.$inferSelect;
 type StopProcess = (ctx: ServerContext, runId: string) => Promise<void>;
@@ -88,8 +92,10 @@ export function mapGoalAutomation(row: AutomationRow, importedPublication = fals
     computer_id: row.computerId, workspace_root: row.workspaceRoot,
     planning_capability_snapshot: row.planningCapabilitySnapshot,
     ...(row.appDelivery != null ? { app_delivery: row.appDelivery } : {}),
+    ...(row.appPublication != null ? { app_publication: row.appPublication,
+      application_publication_authorization_event_id: row.applicationPublicationAuthorizationEventId } : {}),
     verification_profile_id: row.verificationProfileId, execution_mode: row.executionMode, team: row.team, source_handoff: row.sourceHandoff, release_profile_id: row.releaseProfileId, last_error: row.lastError,
-    delivery: row.status === "completed" && (row.releaseProfileId || importedPublication) ? "published_product" : "verified_workspace",
+    delivery: row.status === "completed" && (row.releaseProfileId || row.appPublication != null || importedPublication) ? "published_product" : "verified_workspace",
     created_at: row.createdAt, updated_at: row.updatedAt });
 }
 
@@ -127,14 +133,13 @@ async function update(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, pat
   const importedPublication = next!.status === "completed" && (await hasImportedValidationPublication(ctx, tx, row.goalId) || await hasCleanValidationPublication(ctx, tx, row.goalId));
   await appendEvent(tx, buildEvent(ctx, { type: "goal.automation.updated", actorType: "system", actorId: "goal_runner",
     correlationId: row.goalId, goalId: row.goalId, projectId: goal?.projectId, roomId: goal?.roomId,
-    payload: { status: next!.status, delivery: next!.status === "completed" && (next!.releaseProfileId || importedPublication) ? "published_product" : "verified_workspace", last_error: next!.lastError } }));
+    payload: { status: next!.status, delivery: next!.status === "completed" && (next!.releaseProfileId || next!.appPublication != null || importedPublication) ? "published_product" : "verified_workspace", last_error: next!.lastError } }));
   return next!;
 }
 
 export async function createAutonomousGoal(ctx: ServerContext, request: CreateAutonomousGoalRequest, identity?: GoalSubmissionIdentity) {
   const input = CreateAutonomousGoalRequestSchema.parse(request);
-  assertPreparedGoalRequest(ctx, input, identity);
-  return ctx.db.transaction(async (tx) => {
+  return withPreparedGoalSubmission(ctx, input, identity, () => ctx.db.transaction(async (tx) => {
     if (identity) {
       const existing = await beginGoalSubmission(ctx, tx, input, identity);
       if (existing) return existing;
@@ -146,11 +151,38 @@ export async function createAutonomousGoal(ctx: ServerContext, request: CreateAu
       acceptance_criteria: [input.objective, "The configured node verification profile passes against the delivered workspace."],
       budgets: { max_elapsed_ms: (input.execution_mode === "agent_team" ? 8 : 1) * 60 * 60 * 1000, max_retries: input.max_retries, max_concurrent_runs: 1 },
     });
+    let applicationPublicationAuthorizationEventId: string | null = null;
+    if (input.app_publication) {
+      const available = await tx.select().from(computers).where(eq(computers.organizationId, ctx.organizationId));
+      const selected = available.flatMap(computer => {
+        const capabilities = ApplicationPublicationCapabilitiesV1Schema.safeParse(ctx.getApplicationPublicationCapabilities?.(
+          computer.id, input.app_publication!.publication_profile_id, input.project_id));
+        const session = ctx.getPairedNodeSession?.(computer.id);
+        if (!capabilities.success || !session || session.computerId !== computer.id || !["windows", "win32"].includes(computer.os)
+          || capabilities.data.binding.computer_id !== computer.id || capabilities.data.binding.project_id !== input.project_id
+          || capabilities.data.binding.verification_profile_id !== input.verification_profile_id
+          || capabilities.data.binding.publication_profile_id !== input.app_publication!.publication_profile_id
+          || ctx.supportsExecutionFeature?.(computer.id, APPLICATION_PUBLICATION_FEATURE_V1) !== true
+          || ctx.supportsExecutionFeature?.(computer.id, APPLICATION_VERIFICATION_FEATURE_V1) !== true) return [];
+        return [{ capabilities: capabilities.data, session }];
+      });
+      if (selected.length !== 1) throw AppError.conflict("Application publication requires one unambiguous currently paired native Windows profile for the requested project and verifier");
+      const original = selected[0]!;
+      const event = buildEvent(ctx, { type: "goal.application-publication.authorized", actorType: "user", actorId: ctx.actorUserId,
+        goalId: goal.id, projectId: goal.project_id, correlationId: goal.id });
+      event.payload = { app_publication: input.app_publication, verification_profile_id: input.verification_profile_id,
+        capabilities: original.capabilities, publisher_session_id: original.session.sessionId,
+        authorization: { version: 1, event_id: event.id, actor_user_id: ctx.actorUserId, consent_id: sharing.consentId,
+          policy_version: sharing.policyVersion, grant: input.app_publication } };
+      await appendEvent(tx, event);
+      applicationPublicationAuthorizationEventId = event.id;
+    }
     const [row] = await tx.insert(goalAutomations).values({ goalId: goal.id, organizationId: ctx.organizationId,
       actorUserId: ctx.actorUserId, consentId: sharing.consentId, policyVersion: sharing.policyVersion,
       status: "planning", verificationProfileId: input.verification_profile_id, executionMode: input.execution_mode ?? "single_agent", releaseProfileId: input.release_profile_id ?? null,
       sourceHandoff: input.source_handoff ?? null,
       appDelivery: input.app_delivery ?? null,
+      appPublication: input.app_publication ?? null, applicationPublicationAuthorizationEventId,
       createdAt: ctx.clock.nowIso(), updatedAt: ctx.clock.nowIso(),
     }).returning();
     if (input.app_delivery) await appendEvent(tx, buildEvent(ctx, { type: "goal.application-development.authorized", actorType: "user", actorId: ctx.actorUserId,
@@ -162,7 +194,7 @@ export async function createAutonomousGoal(ctx: ServerContext, request: CreateAu
     const result = { goal, automation: mapGoalAutomation(row!) };
     if (identity) await finishGoalSubmission(ctx, tx, identity, result);
     return result;
-  });
+  }));
 }
 
 export async function getGoalAutomation(ctx: ServerContext, goalId: string): Promise<GoalAutomation | null> {
@@ -207,6 +239,7 @@ export async function stopAutonomousGoalPlanning(ctx: ServerContext, goalId: str
   const goal = await getGoal(ctx, goalId);
   if (goal && ["draft", "running", "awaiting_approval", "blocked"].includes(goal.status)) await pauseGoal(ctx, goalId);
   await cancelGoalProductRelease(ctx, goalId);
+  await cancelGoalApplicationPublication(ctx, goalId);
   // Reload after the goal fence: a concurrent planner may have committed its link before pause acquired the goal lock.
   const current = await getGoalAutomation(ctx, goalId);
   await stopIndependentReviews(ctx, goalId, stopProcess);
@@ -311,7 +344,13 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
   if (["cancelled", "archived"].includes(goal.status)) { await update(ctx, tx, row, { status: "cancelled", lastError: null }); return; }
   if (goal.status === "completed") {
     if (row.appDelivery != null) throw AppError.conflict("Application publication is unsupported; development verification cannot complete a product goal");
-    await assertRecordedGoalReleaseCompletion(ctx, tx, row);
+    if (row.appPublication != null) {
+      const [settlement] = await tx.select().from(applicationPublicationSettlements).where(and(
+        eq(applicationPublicationSettlements.goalId, row.goalId), eq(applicationPublicationSettlements.organizationId, ctx.organizationId)));
+      if (!settlement || settlement.authorizationEventId !== row.applicationPublicationAuthorizationEventId) {
+        throw AppError.conflict("Completed application goal lacks its immutable original publication settlement");
+      }
+    } else await assertRecordedGoalReleaseCompletion(ctx, tx, row);
     await update(ctx, tx, row, { status: "completed", lastError: null }); return;
   }
   if (["paused", "awaiting_approval"].includes(goal.status)) { await update(ctx, tx, row, { status: "waiting", lastError: `Goal is ${goal.status}; no new work will start.` }); return; }
@@ -320,6 +359,8 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
     await update(ctx, tx, row, { status: "failed", lastError: "The accepted plan changed; automatic execution stopped." }); return;
   }
   if (!row.discussionId) {
+    const publication = row.appPublication == null ? undefined : await originalApplicationPublication(ctx, tx, row, goal.projectId);
+    if (publication) assertCurrentApplicationPublication(ctx, publication);
     // This query also adopts a committed discussion after an interrupted older dispatcher.
     const existing = (await tx.select().from(discussions).where(and(eq(discussions.goalId, goal.id), eq(discussions.organizationId, ctx.organizationId)))
       .orderBy(asc(discussions.createdAt), asc(discussions.id)).limit(1))[0];
@@ -345,7 +386,8 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
       const computer = availableComputers.find((item) => item.id === candidate.computer_id);
       if (!instance?.workspaceRoot || !computer || ctx.supportsExecutionFeature?.(computer.id, "run-verification.v1") !== true) continue;
       if (row.executionMode === "agent_team" && ctx.supportsExecutionFeature?.(computer.id, "product-stage-verification.v1") !== true) continue;
-      if (row.appDelivery != null && ctx.supportsExecutionFeature?.(computer.id, APPLICATION_VERIFICATION_FEATURE_V1) !== true) continue;
+      if ((row.appDelivery != null || row.appPublication != null) && ctx.supportsExecutionFeature?.(computer.id, APPLICATION_VERIFICATION_FEATURE_V1) !== true) continue;
+      if (publication && computer.id !== publication.capabilities.binding.computer_id) continue;
       const root = resolveAutomationWorkspace(ctx, computer, row.verificationProfileId, goal.projectId, instance.workspaceRoot);
       if (root !== undefined) {
         profileRoots.set(candidate.agent_instance_id, root);
@@ -363,7 +405,7 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
       if (!computer) continue;
       const root = resolveAutomationWorkspace(ctx, computer, row.verificationProfileId, goal.projectId, instance.workspaceRoot);
       if (root === undefined || root !== profileRoots.get(candidate.agent_instance_id)) continue;
-      if (row.appDelivery != null && (!['windows', 'win32'].includes(computer.os)
+      if ((row.appDelivery != null || row.appPublication != null) && (!['windows', 'win32'].includes(computer.os)
         || !ctx.getVerificationCapabilities?.(computer.id, row.verificationProfileId, goal.projectId, root)?.application)) continue;
       if (row.sourceHandoff != null && (!row.releaseProfileId || !["windows", "win32"].includes(computer.os)
         || !automaticSourceAvailable(ctx, computer.id, goal.projectId, root, row.verificationProfileId, row.releaseProfileId))) continue;
@@ -402,6 +444,11 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
     if (!reviewer) throw AppError.conflict("Connect a second available planning instance advertising the requested verification profile, project and ordinary workspace.");
     const planningCapabilitySnapshot = capturePlanningSnapshot(ctx, { ...row, computerId: writer.computer_id,
       workspaceRoot: writerRoot! }, goal.projectId);
+    if (publication) {
+      assertCurrentApplicationPublication(ctx, publication);
+      if (!isDeepStrictEqual(planningCapabilitySnapshot.application_publication?.capabilities, publication.capabilities))
+        throw AppError.conflict("The planning publication capability differs from the original user's selected profile");
+    }
     const discussion = await startDiscussion(ctx, goal.id, { participants: [
       { agent_instance_id: writer.agent_instance_id, role: team ? "Coordinate staged research, design, implementation and validation. Assign concrete deliverables and dependencies for the Agent Team." : "Plan research, design and implementation as concrete workspace tasks with observable criteria." },
       { agent_instance_id: reviewer.agent_instance_id, role: team ? "Challenge feasibility and evidence. Require cited research, a working prototype and measured validation. Peer review and release are handled by trusted executors." : "Review feasibility and verification. Keep delivery in the configured workspace; do not plan deployment." },
@@ -558,6 +605,13 @@ async function advance(ctx: ServerContext, tx: DrizzleDb, row: AutomationRow, qu
   if (row.appDelivery != null && planTasks.every((task) => task.status === "done")) {
     await update(ctx, tx, row, { status: "waiting", lastError: "Application development verification and independent review completed. Application publication remains unsupported." }); return;
   }
+  if (row.appPublication != null && planTasks.every((task) => task.status === "done")) {
+    const publication = await ensureGoalApplicationPublication(ctx, tx, row);
+    // Publication owns the completion event, immutable settlement and both status writes.
+    if (publication.status !== "succeeded") await update(ctx, tx, row,
+      { status: publication.status === "failed" ? "failed" : "waiting", lastError: publication.reason ?? null });
+    return;
+  }
   if (row.releaseProfileId && planTasks.every((task) => task.status === "done")) {
     await advancePublication(ctx, tx, row, goal); return;
   }
@@ -706,6 +760,12 @@ export function createGoalAutomationDispatcher(ctx: ServerContext, stopProcess: 
     const pendingReceipts: PendingReceipt[] = [];
     const pendingReviews = await ctx.db.db.select({ goalId: autonomousReviews.goalId }).from(autonomousReviews)
       .where(and(eq(autonomousReviews.organizationId, ctx.organizationId), eq(autonomousReviews.status, "pending")));
+    const pendingPublications = await ctx.db.db.select({ goalId: applicationPublications.goalId }).from(applicationPublications)
+      .leftJoin(applicationPublicationSettlements, eq(applicationPublicationSettlements.publicationId, applicationPublications.id))
+      .where(and(eq(applicationPublications.organizationId, ctx.organizationId), or(inArray(applicationPublications.status, ["queued", "published"]),
+        and(eq(applicationPublications.status, "failed"), sql`${applicationPublications.receipt}->'cleanup'->>'state' = 'unconfirmed'`)),
+        isNull(applicationPublicationSettlements.publicationId)));
+    pendingReviews.push(...pendingPublications);
     const importedReviews = await ctx.db.db.select({ goalId: goalImportedProductReviews.goalId, result: goalImportedProductReviews.result }).from(goalImportedProductReviews)
       .where(eq(goalImportedProductReviews.organizationId, ctx.organizationId));
     pendingReviews.push(...importedReviews.filter(row => ImportedProductReviewResultV1Schema.safeParse(row.result).data?.closed !== true).map(row => ({ goalId: row.goalId })));
@@ -844,6 +904,7 @@ export function createGoalAutomationDispatcher(ctx: ServerContext, stopProcess: 
           await update(actor, tx, row, { status: fatal ? "failed" : "waiting", lastError: error instanceof Error ? error.message : "Automation failed" });
         });
         if (error instanceof AppError && ["permission_denied", "ai_consent_required", "ai_sharing_unconfigured"].includes(error.code)) {
+          try { await cancelGoalApplicationPublication(actor, snapshot.goalId); } catch (stopError) { onError(stopError); }
           // Withdrawal also stops a dedicated H5 whose ordinary run already ended but whose closure remains uncertain.
           try { await stopGoalImportedExecutions(actor, snapshot.goalId); } catch (stopError) { onError(stopError); }
           try { await stopGoalImportedExecutionReviews(actor, snapshot.goalId); } catch (stopError) { onError(stopError); }
@@ -859,6 +920,19 @@ export function createGoalAutomationDispatcher(ctx: ServerContext, stopProcess: 
       }
       const latest = (await ctx.db.db.select().from(goalAutomations).where(eq(goalAutomations.goalId, snapshot.goalId)))[0];
       const goal = await getGoal(actor, snapshot.goalId);
+      if (latest?.appPublication != null) {
+        // Dispatch after commit. A restart can redeliver the immutable intent, but only its original node session may act.
+        try {
+          if (goal?.status !== "running" || !ACTIVE.includes(latest.status)) {
+            if (goal?.status !== "completed") await cancelGoalApplicationPublication(actor, snapshot.goalId);
+          } else {
+            const [publication] = await ctx.db.db.select().from(applicationPublications).where(and(
+              eq(applicationPublications.goalId, snapshot.goalId), eq(applicationPublications.organizationId, ctx.organizationId)));
+            if (publication?.status === "queued" || publication?.status === "published")
+              await ctx.onApplicationPublicationQueued?.(publication.id, publication.status === "queued" ? "start" : "status");
+          }
+        } catch (error) { onError(error); }
+      }
       if (latest?.discussionId && (goal?.status === "cancelled" || latest.status === "failed" || latest.status === "cancelled")) {
         try { await cancelDiscussion(actor, latest.discussionId, stopProcess); } catch (error) { onError(error); }
       }

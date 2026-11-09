@@ -9,12 +9,16 @@ import { createHash } from "node:crypto";
 import { createApplicationArtifactOwner, readApplicationClientArtifact, type ApplicationClientReader } from "./application-artifact-admission.js";
 const state = vi.hoisted(() => ({ describe: vi.fn(), assertStore: vi.fn(), createService: vi.fn(),
   prepareBroker: vi.fn(), prepareRuntime: vi.fn(), prepareClient: vi.fn(), startBroker: vi.fn() }));
+const publicationAdmissions = vi.hoisted(() => new WeakMap<object, unknown>());
+vi.mock("./application-bootstrap-admission.js", () => ({ readApplicationBootstrapPublication: (token: object) => {
+  const saved = publicationAdmissions.get(token); if (!saved) throw Error("Original publication admission required"); return saved;
+} }));
 vi.mock("./application-service-profile.js", () => ({ describeApplicationServiceProfile: state.describe,
   assertApplicationServiceOpenStore: state.assertStore, prepareProfileApplicationBroker: state.prepareBroker,
   prepareProfileApplicationRuntime: state.prepareRuntime, prepareProfileApplicationClient: state.prepareClient }));
 vi.mock("./application-service.js", () => ({ createApplicationService: state.createService }));
 vi.mock("./application-broker-process.js", () => ({ startApplicationBrokerProcess: state.startBroker }));
-import { startLocalApplicationService, type LocalApplicationService } from "./application-local-service.js";
+import { startLocalApplicationService, readApplicationLocalPublicationControl, type LocalApplicationService } from "./application-local-service.js";
 
 const profile = Object.freeze({}) as PreparedApplicationServiceProfile;
 const testDeadlineMs = 10_000, observationDeadlineMs = 2500;
@@ -37,7 +41,7 @@ interface Fixture {
   connect(): Client;
   onCleanup(release: () => void): void;
 }
-async function usingPort(options: { timeoutMs?: number; occupied?: boolean; sameOrigin?: boolean }, run: (fixture: Fixture) => Promise<void>): Promise<void> {
+async function usingPort(options: { timeoutMs?: number; occupied?: boolean; sameOrigin?: boolean; publication?: boolean }, run: (fixture: Fixture) => Promise<void>): Promise<void> {
   // Reserve once on port 0, then close that original reservation before starting
   // the fixed-port production listener. A subsequent collision fails, never retries.
   const reservation = createServer(socket => socket.destroy()), clients: Client[] = [], releases: (() => void)[] = [];
@@ -56,7 +60,15 @@ async function usingPort(options: { timeoutMs?: number; occupied?: boolean; same
     state.describe.mockReturnValue({ origin, port, timeoutMs: options.timeoutMs ?? 5000,
       maximumAccess: "write", qualifiedForProduct: false,
       ...(options.sameOrigin ? { sameOrigin: { version: 1, apiPrefix: "/api" } } : {}) });
-    await run({ origin, start: () => opening ??= startLocalApplicationService(profile),
+    const admission = options.publication ? Object.freeze({}) as NonNullable<Parameters<typeof startLocalApplicationService>[1]> : undefined;
+    if (admission) {
+      const digest = "sha256:" + "a".repeat(64);
+      publicationAdmissions.set(admission, { version: 1, challenge: "11111111-1111-4111-8111-111111111111",
+        control: { version: 1, read_path: "/api/items" },
+        identity: { publication_id: "publication1", lease_id: "lease1", owner_id: "owner1", generation: 1, deployment_generation: "generation1",
+          reopen_pin_digest: digest, database_identity: { device: "1", inode: "2" }, schema_digest: digest, scope_digest: digest, artifact_digest: digest, origin } });
+    }
+    await run({ origin, start: () => opening ??= startLocalApplicationService(profile, admission),
       onCleanup: release => releases.push(release), connect() {
         const socket = new Socket(), parts: Buffer[] = [];
         const closed = new Promise<void>(resolve => socket.once("close", () => resolve()));
@@ -100,6 +112,50 @@ beforeEach(() => {
 });
 
 describe("actual local application HTTP listener with controlled native owners", () => {
+  it("pauses admission without closing its listener or reader and joins late body owners and original sockets", async () => {
+    const admitted = deferred<void>(), createIngress = ingressApi.createApplicationHttpIngress;
+    let unsubscribe: (() => void) | undefined;
+    const ingressObserver = vi.spyOn(ingressApi, "createApplicationHttpIngress").mockImplementation(options => {
+      const original = createIngress(options);
+      unsubscribe = ingressApi.subscribeApplicationHttpCounters(original, value => { if (value.requests_used === 1) admitted.resolve(); });
+      return original;
+    });
+    try {
+      await usingPort({ sameOrigin: true, publication: true }, async f => {
+        const entered = deferred<void>(), response = deferred<string>(), settled = deferred<void>();
+        let invocation: string | undefined, normalClosure: (() => void) | undefined;
+        const cancel = vi.fn();
+        state.createService.mockImplementation(options => { normalClosure = options.observeNormalClosure; return { maximumAccess: "write", begin }; });
+        begin.mockImplementation(action => { invocation = action.invocation; entered.resolve();
+          return { response: response.promise, settled: settled.promise, cancel }; });
+        f.onCleanup(() => { response.resolve(JSON.stringify({ invocation, response: { status: 200, body: { saved: true } } })); settled.resolve(); });
+        const live = await within(f.start(), "initially paused publication listener"), control = readApplicationLocalPublicationControl(live);
+        expect(await within(control.pause(), "initial quiescence")).toMatchObject({ counters: { requests_used: 0, in_flight: 0 } });
+        control.resume();
+        const client = f.connect(), headerOnly = f.connect();
+        await within(Promise.all([client.connected, headerOnly.connected]), "original request and incomplete-header connections");
+        headerOnly.socket.write(`GET /api/items HTTP/1.1\r\nHost: ${new URL(f.origin).host}\r\nX-Incomplete: `);
+        const body = '{"value":7}', split = 4;
+        client.socket.write(`POST /api/items HTTP/1.1\r\nHost: ${new URL(f.origin).host}\r\nOrigin: ${f.origin}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body.slice(0, split)}`);
+        await within(admitted.promise, "body admission before original owner exists"); expect(begin).not.toHaveBeenCalled();
+        let paused = false, listenerClosed = false;
+        const pausing = control.pause().then(value => { paused = true; return value; });
+        void live.closed.then(() => { listenerClosed = true; });
+        await within(headerOnly.closed, "old unadmitted socket closure"); expect(paused).toBe(false);
+        client.socket.write(body.slice(split)); await within(entered.promise, "late admitted original owner");
+        response.resolve(JSON.stringify({ invocation, response: { status: 200, body: { saved: true } } }));
+        await new Promise<void>(resolve => setImmediate(resolve)); expect(paused).toBe(false); expect(cancel).not.toHaveBeenCalled();
+        normalClosure!(); settled.resolve();
+        const [quiescence] = await within(Promise.all([pausing, client.closed]), "original transport, runtime and broker quiescence");
+        expect(quiescence).toMatchObject({ counters: { requests_used: 1, closed_transports: 1, in_flight: 0 },
+          closure: { invocations: 1, runtime_normal_closures: 1, broker_normal_closures: 1 } });
+        expect(listenerClosed).toBe(false); expect(() => readApplicationClientArtifact(lastClientReader!, "client/app.js")).not.toThrow();
+        expect(client.text()).toMatch(/^HTTP\/1\.1 200 /u); control.resume(); await within(live.drain(), "same original listener final drain");
+        expect(listenerClosed).toBe(true); expect(begin).toHaveBeenCalledOnce();
+      });
+    } finally { unsubscribe?.(); ingressObserver.mockRestore(); }
+  }, testDeadlineMs);
+
   it("drains a real accepted partial body through its original owner settlement before closing", async () => {
     const admitted = deferred<void>(), createIngress = ingressApi.createApplicationHttpIngress;
     // Observe the actual ingress call only; its body, deadline and transport code

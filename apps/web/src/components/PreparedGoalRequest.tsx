@@ -50,7 +50,11 @@ function PreparedBrowserGoalForm({ entry, organizationId, userId, onCreated }: P
     } catch (error) { setStorageError(error); }
   }}>
     <h2>Describe your product</h2>
-    <p>Your team handles research, design, implementation, tests, independent review and publication to the configured destination. You can pause or cancel from the goal.</p>
+    <p>{entry.request.app_publication
+      ? "Your team handles research, design, implementation, tests, independent review and publication on the prepared computer. The application runs within the configured time and request limits. You can stop it from the goal, including after development finishes."
+      : entry.request.app_delivery
+        ? "Your team handles research, design, implementation, tests and independent review. This session delivers a verified application workspace. You can pause or cancel from the goal."
+        : "Your team handles research, design, implementation, tests, independent review and publication to the configured destination. You can pause or cancel from the goal."}</p>
     <Textarea label="Objective" required maxLength={10000} value={objective} disabled={!!submission || mutation.isPending}
       placeholder="Describe the result you need." onChange={(event) => setObjective(event.target.value)} />
     {submission && <p role="status">This request is saved. Reconnecting uses the same request and cannot create another goal.</p>}

@@ -7,6 +7,7 @@
  */
 import { z } from "zod";
 import { ApplicationDeliveryV1Schema } from "./application-development.js";
+import { ApplicationPublicationGrantV1Schema, ApplicationPublicationContextV1Schema } from "./application-publication.js";
 
 import { ActorSchema } from "./events.js";
 import { ProductDevelopmentContextSchema } from "./product-development.js";
@@ -27,6 +28,8 @@ import { ImportedCleanValidationContextV1Schema, ImportedCleanValidationReviewSu
 
 export const ContextPackSchema = z.object({
   app_delivery: ApplicationDeliveryV1Schema.optional(),
+  app_publication: ApplicationPublicationGrantV1Schema.optional(),
+  application_publication: ApplicationPublicationContextV1Schema.optional(),
   product_research_revision: ProductResearchRevisionContextV1Schema.optional(),
   imported_clean_validation: ImportedCleanValidationContextV1Schema.optional(),
   imported_clean_validation_review_subject: ImportedCleanValidationReviewSubjectV1Schema.optional(),

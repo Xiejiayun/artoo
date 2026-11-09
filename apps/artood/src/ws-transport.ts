@@ -7,6 +7,8 @@ import type {
   Unsubscribe
 } from "@artoo/protocol";
 import { commandSchema } from "@artoo/protocol";
+import { createHash } from "node:crypto";
+import { canonicalReleaseJson } from "@artoo/domain";
 
 /**
  * Node-side {@link NodeSideTransport} over a WebSocket to `ws /api/v1/node`
@@ -44,12 +46,16 @@ export interface WebSocketTransportOptions {
   onFatalDisconnect?: () => void;
   /** Called after hello on every connection, including reconnects. */
   onConnected?: () => void;
+  /** Loss of the original publication connection revokes new work, not cleanup ownership. */
+  onPublicationSessionEnded?: () => void;
 }
 
 export interface WebSocketNodeTransport extends NodeSideTransport {
   readonly connected: boolean;
   /** Original connection object for in-process authority; never serialized and changes on reconnect. */
   currentSessionIdentity(): object | undefined;
+  /** Server-announced device session bound to this exact socket; never carried across reconnects. */
+  currentPublicationSession(): Readonly<{ id: string; identity: object }> | undefined;
   /** Resolves once the socket is open and node.hello has been sent. */
   readonly ready: Promise<void>;
   /** Always present here (overrides the optional base close). */
@@ -69,13 +75,18 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
   let closed = false;
   let retries = 0;
   let counter = 0;
+  let publicationSession: Readonly<{ id: string; identity: object }> | undefined;
   let resolveReady!: () => void;
   let rejectReady!: (reason: unknown) => void;
   const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
 
   const eventKey = (runId: string, sequence: number) => runId + ':' + sequence;
   const healthKey = (releaseId: string, sequence: number, eventId: string) => 'health:' + JSON.stringify([releaseId, sequence, eventId]);
+  const bodyDigest = (body: unknown) => `sha256:${createHash("sha256").update(canonicalReleaseJson(body)).digest("hex")}`;
+  const publicationKey = (kind: "receipt" | "observation", publication: string, session: string, request: string, body: string,
+    event?: string, sequence?: number) => "application:" + canonicalReleaseJson([kind, publication, session, request, body, event ?? null, sequence ?? null]);
   const needsReceipt = (message: NodeToServerMessage): boolean => message.kind === 'product.release.health'
+    || message.kind === 'application.publication.receipt' || message.kind === 'application.publication.observation'
     || message.kind === 'run.event' && acknowledgesRunEvents;
   function settleReady(error?: Error): void {
     if (readySettled) return;
@@ -96,6 +107,11 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
   function failPending(error: Error): void {
     for (const key of pending.keys()) settlePending(key, error);
   }
+  function revokePublicationSession(): void {
+    if (!publicationSession) return;
+    publicationSession = undefined;
+    options.onPublicationSessionEnded?.();
+  }
   function sendRaw(message: NodeToServerMessage): void {
     if (socket.readyState !== WS.OPEN) throw new Error('websocket is not open');
     socket.send(JSON.stringify(message));
@@ -110,10 +126,11 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
   }
   function connect(): void {
     if (closed) return;
+    revokePublicationSession();
     socket = new WS(options.url);
     const thisSocket = socket;
     thisSocket.addEventListener('open', () => {
-      if (closed) { thisSocket.close(); return; }
+      if (closed || thisSocket !== socket) { thisSocket.close(); return; }
       connectedOnce = true;
       retries = 0;
       sendRaw(options.hello);
@@ -131,9 +148,27 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
       try { parsed = JSON.parse(typeof event.data === 'string' ? event.data : String(event.data)); } catch { return; }
       const result = commandSchema.safeParse(parsed);
       if (!result.success) return;
+      if (result.data.type === 'application.publication.session.v1') {
+        const session = result.data.payload;
+        if (session.node_id !== options.hello.node_id || thisSocket.readyState !== WS.OPEN) return;
+        if (publicationSession && publicationSession.id !== session.session_id) {
+          // A paired connection has one identity. A conflicting announcement may
+          // not replace the authority held by completed verification records.
+          revokePublicationSession();
+          closed = true; clearHeartbeat();
+          failPending(new Error('publication session changed on its original connection'));
+          thisSocket.close(); options.onFatalDisconnect?.();
+          return;
+        }
+        publicationSession ??= Object.freeze({ id: session.session_id, identity: thisSocket });
+        return;
+      }
       if (result.data.type === 'run.event.ack') {
         const receipt = result.data.payload;
         const key = eventKey(receipt.run_id, receipt.sequence);
+        // Consumers retain the original verification object and body digest.
+        // Notify only for an actually pending frame, before its send resolves.
+        if (pending.has(key)) for (const handler of [...handlers]) handler(result.data);
         settlePending(key, receipt.status === 'accepted' ? undefined : new Error(receipt.message ?? 'run event rejected'));
         return;
       }
@@ -143,12 +178,22 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
           receipt.status === 'accepted' ? undefined : new Error(receipt.message ?? 'product release health rejected'));
         return;
       }
+      if (result.data.type === 'application.publication.receipt.ack' || result.data.type === 'application.publication.observation.ack') {
+        const ack = result.data.payload;
+        const key = "receipt_digest" in ack
+          ? publicationKey("receipt", ack.publication_id, ack.publisher_session_id, ack.request_digest, ack.receipt_digest)
+          : publicationKey("observation", ack.publication_id, ack.publisher_session_id, ack.request_digest, ack.observation_digest, ack.event_id, ack.sequence);
+        settlePending(key, ack.status === "accepted" ? undefined : Error(ack.message ?? "application publication evidence rejected"));
+        return;
+      }
       for (const handler of [...handlers]) handler(result.data);
     });
     thisSocket.addEventListener('error', () => {
       if (!connectedOnce) settleReady(new Error('websocket error'));
     });
     thisSocket.addEventListener('close', (event: CloseEvent) => {
+      if (thisSocket !== socket) return;
+      revokePublicationSession();
       clearHeartbeat();
       if (closed) return;
       if (!connectedOnce || event.code === 1008 || options.reconnect === false) {
@@ -171,7 +216,13 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
     acknowledgesRunEvents,
     get connected(): boolean { return !closed && socket.readyState === WS.OPEN; },
     currentSessionIdentity(): object | undefined { return !closed && socket.readyState === WS.OPEN ? socket : undefined; },
+    currentPublicationSession() {
+      return !closed && socket.readyState === WS.OPEN && publicationSession?.identity === socket ? publicationSession : undefined;
+    },
     async send(message, delivery): Promise<void> {
+      // Publication receipts retain their immutable body through ACK waits and
+      // replay. A caller's mutation cannot change the pending evidence identity.
+      if (message.kind === "application.publication.receipt" || message.kind === "application.publication.observation") message = structuredClone(message);
       const bestEffort = delivery?.delivery === 'best-effort';
       if (bestEffort && (message.kind !== 'run.event' || message.event.type !== 'run.output')) {
         throw new Error('best-effort delivery is only supported for run.output');
@@ -193,10 +244,16 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
       if (pending.size >= 1000) throw new Error('node event delivery buffer is full');
       const key = message.kind === 'run.event' ? eventKey(message.run_id, message.sequence)
         : message.kind === 'product.release.health' ? healthKey(message.payload.request.release_id, message.payload.sequence, message.payload.event_id)
+          : message.kind === "application.publication.receipt" ? publicationKey("receipt", message.payload.request.publication_id,
+            message.payload.request.publisher_session_id, message.payload.request_digest, bodyDigest(message.payload))
+            : message.kind === "application.publication.observation" ? publicationKey("observation", message.payload.request.publication_id,
+              message.payload.request.publisher_session_id, message.payload.request_digest, bodyDigest(message.payload), message.payload.event_id, message.payload.sequence)
           : 'frame:' + counter++;
       // Never replace a receipt-bearing retention entry under the same key: its
       // deadline and promise belong to that first enqueue, including replays.
       const previous = pending.get(key);
+      if (previous && (message.kind === "application.publication.receipt" || message.kind === "application.publication.observation"))
+        throw Error("Original application publication evidence is already pending");
       if (previous && message.kind === 'product.release.health') throw new Error('product release health is already pending');
       if (previous && ((message.kind === 'run.event' && message.event.type === 'run.workspace.retained')
         || (previous.message.kind === 'run.event' && previous.message.event.type === 'run.workspace.retained'))) {
@@ -211,9 +268,9 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
             settlePending(key, new Error(`workspace retention receipt timed out after ${timeoutMs}ms`));
           }, timeoutMs);
         }
-        if (message.kind === 'product.release.health') {
+        if (message.kind === 'product.release.health' || message.kind === "application.publication.receipt" || message.kind === "application.publication.observation") {
           item.retentionTimer = setTimeout(() => {
-            settlePending(key, new Error('product release health receipt timed out'));
+            settlePending(key, new Error(message.kind === "product.release.health" ? "product release health receipt timed out" : "application publication evidence receipt timed out"));
           }, options.releaseHealthReceiptTimeoutMs ?? 30_000);
         }
         if (socket.readyState === WS.OPEN) {
@@ -230,6 +287,7 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
     },
     async close(): Promise<void> {
       closed = true;
+      revokePublicationSession();
       clearHeartbeat();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       handlers.clear();

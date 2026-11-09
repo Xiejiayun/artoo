@@ -6,6 +6,8 @@ import { assertCanonicalWindowsPath, assertNativeWindows, physicalWindowsDirecto
 import { prepareWindowsCodeInstallation, assertWindowsCodeInstallation, auditWindowsCodeInstallation, type PreparedWindowsCodeInstallation } from "./windows-code-installation.js";
 import { prepareWindowsProcessInstallation } from "./windows-process-installation.js";
 import { assertWindowsProcessBackend, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
+import { ApplicationPublicationInitializeSelectionSchema, ApplicationPublicationServiceSelectionSchema,
+  type ApplicationPublicationProbeBinding } from "./application-publication-process-protocol.js";
 
 const bootstrapName = "application-service-bootstrap.mjs", apiName = "application-service-host-api.mjs";
 const manifestName = "application-service-host-manifest.json", maximumManifestBytes = 4_194_304, maximumSelectionBytes = 65_536;
@@ -50,10 +52,17 @@ export interface ApplicationInitializationPackage {
 declare const initializationBrand: unique symbol;
 export interface PreparedApplicationInitializationAdmission { readonly [initializationBrand]: true }
 const initializations = new WeakMap<object, { target: ApplicationInitializationTarget; audit: () => void; failed: boolean;
-  package: ApplicationInitializationPackage; members: ReadonlyMap<string, Pin> }>();
+  package: ApplicationInitializationPackage; members: ReadonlyMap<string, Pin>; publication: boolean }>();
 declare const bootstrapBrand: unique symbol;
 export interface PreparedApplicationBootstrapAdmission { readonly [bootstrapBrand]: true }
-const admissions = new WeakMap<object, { target: ApplicationBootstrapTarget; audit: () => void; failed: boolean }>();
+const admissions = new WeakMap<object, { target: ApplicationBootstrapTarget; audit: () => void; failed: boolean;
+  publication?: ApplicationPublicationProbeBinding }>();
+/** Only the original protected publication selection can bind trusted HTTP markers.
+ * A plain identity/probe object does not establish this host admission. */
+export function readApplicationBootstrapPublication(token: PreparedApplicationBootstrapAdmission): ApplicationPublicationProbeBinding | undefined {
+  const saved = admissions.get(token) ?? fail("original bootstrap admission required");
+  assertApplicationBootstrapAdmission(token, saved.target); return saved.publication;
+}
 const samePin = (left: Pin, right: Pin) => left?.path === right?.path && left?.bytes === right?.bytes && left?.sha256 === right?.sha256;
 const sameCommon = (target: Omit<ApplicationBootstrapTarget, "reference">, original: Omit<ApplicationBootstrapTarget, "reference">) =>
   target.hostCode === original.hostCode && target.backend === original.backend && target.hostDirectory === original.hostDirectory
@@ -80,6 +89,10 @@ export function assertApplicationInitializationAdmission(token: PreparedApplicat
       fail("initialization target binding differs");
     saved.audit();
   } catch (error) { saved.failed = true; throw error; }
+}
+export function assertApplicationPublicationInitializationAdmission(token: PreparedApplicationInitializationAdmission, target: ApplicationInitializationTarget): void {
+  assertApplicationInitializationAdmission(token, target);
+  if (!initializations.get(token)!.publication) fail("original publication initialization selection required");
 }
 export function describeApplicationInitializationPackage(token: PreparedApplicationInitializationAdmission, target: ApplicationInitializationTarget): ApplicationInitializationPackage {
   assertApplicationInitializationAdmission(token, target); return initializations.get(token)!.package;
@@ -149,12 +162,14 @@ function inventory(directory: string): { files: string[]; directories: string[] 
 /** Trusted installed bootstrap only. A protected local selection supplies data;
  * actual current-process Windows objects are created here before the application
  * graph is imported. This function never imports an application implementation. */
-function prepareHost(selectionFile: string, entry: string, initialize: boolean) {
+function prepareHost(selectionFile: string, entry: string, initialize: boolean, publication = false) {
   checkRuntime();
   const hostDirectory = physicalWindowsDirectory(win32.dirname(entry));
   if (win32.basename(entry) !== bootstrapName || process.argv[1] !== entry) fail("fixed installed bootstrap entry required");
-  const initial = read(selectionFile, maximumSelectionBytes), selection = initialize
-    ? initializationSelectionSchema.parse(decode(initial.bytes)) : selectionSchema.parse(decode(initial.bytes));
+  const initial = read(selectionFile, maximumSelectionBytes), selection = publication
+    ? (initialize ? ApplicationPublicationInitializeSelectionSchema.parse(decode(initial.bytes))
+      : ApplicationPublicationServiceSelectionSchema.parse(decode(initial.bytes)))
+    : (initialize ? initializationSelectionSchema.parse(decode(initial.bytes)) : selectionSchema.parse(decode(initial.bytes)));
   const allowedRoots = Object.freeze(selection.writable_workspace_roots.map(physicalWindowsDirectory).sort());
   if (new Set(allowedRoots.map(value => value.toLowerCase())).size !== allowedRoots.length) fail("duplicate write roots");
   const selectionDirectory = physicalWindowsDirectory(win32.dirname(selectionFile));
@@ -213,19 +228,22 @@ function prepareHost(selectionFile: string, entry: string, initialize: boolean) 
   return { selection, allowedRoots, hostCode, hostDirectory, backend, assertCurrent };
 }
 
-export function prepareApplicationServiceHost(selectionFile: string, entry: string) {
-  const { selection, allowedRoots, hostCode, hostDirectory, backend, assertCurrent } = prepareHost(selectionFile, entry, false);
+export function prepareApplicationServiceHost(selectionFile: string, entry: string, publication = false) {
+  const { selection, allowedRoots, hostCode, hostDirectory, backend, assertCurrent } = prepareHost(selectionFile, entry, false, publication);
   if (!("installation_reference" in selection)) fail("service selection required");
   const target = Object.freeze({ reference: Object.freeze({ ...selection.installation_reference }), nodeId: selection.node_id,
     allowedRoots, node: Object.freeze({ ...selection.node }), backend, hostCode, hostDirectory });
   const bootstrap = Object.freeze({}) as PreparedApplicationBootstrapAdmission;
-  admissions.set(bootstrap, { target, audit: assertCurrent, failed: false });
+  const publicationBinding = "publication" in selection ? Object.freeze({ ...selection.publication,
+    ...(selection.publication.control ? { control: Object.freeze({ ...selection.publication.control }) } : {}),
+    identity: Object.freeze({ ...selection.publication.identity, database_identity: Object.freeze({ ...selection.publication.identity.database_identity }) }) }) : undefined;
+  admissions.set(bootstrap, { target, audit: assertCurrent, failed: false, ...(publicationBinding ? { publication: publicationBinding } : {}) });
   const check = () => assertApplicationBootstrapAdmission(bootstrap, target); check();
   return Object.freeze({ shutdown: selection.shutdown, assertCurrent: check, options: Object.freeze({ ...target, bootstrap }) });
 }
 
-export function prepareApplicationInitializationHost(selectionFile: string, entry: string) {
-  const { selection, allowedRoots, hostCode, hostDirectory, backend, assertCurrent } = prepareHost(selectionFile, entry, true);
+export function prepareApplicationInitializationHost(selectionFile: string, entry: string, publication = false) {
+  const { selection, allowedRoots, hostCode, hostDirectory, backend, assertCurrent } = prepareHost(selectionFile, entry, true, publication);
   if (!("source_manifest" in selection)) fail("initialization selection required");
   const parent = physicalWindowsDirectory(selection.installation_parent), directory = physicalWindowsDirectory(win32.dirname(selection.source_manifest.path));
   if (win32.basename(selection.source_manifest.path) !== packageManifestName || selection.source_manifest.bytes > maximumManifestBytes
@@ -257,7 +275,7 @@ export function prepareApplicationInitializationHost(selectionFile: string, entr
   const bootstrap = Object.freeze({}) as PreparedApplicationInitializationAdmission;
   const packageData: ApplicationInitializationPackage = Object.freeze({ directory, profile,
     files: Object.freeze(manifest.files.map(value => Object.freeze({ ...value }))) });
-  initializations.set(bootstrap, { target, audit: assertSource, failed: false, package: packageData, members });
+  initializations.set(bootstrap, { target, audit: assertSource, failed: false, package: packageData, members, publication });
   const check = () => assertApplicationInitializationAdmission(bootstrap, target); check();
   return Object.freeze({ shutdown: selection.shutdown, assertCurrent: check, options: Object.freeze({ ...target, bootstrap }) });
 }
@@ -271,6 +289,10 @@ export function prepareApplicationBootstrap(selectionFile: string, entry: string
     return Object.freeze({ operation: "reopen" as const, ...prepareApplicationServiceHost(selectionFile, entry) });
   if (format === "artoo.application-initialize-selection.v1")
     return Object.freeze({ operation: "initialize" as const, ...prepareApplicationInitializationHost(selectionFile, entry) });
+  if (format === "artoo.application-publication-initialize-selection.v1")
+    return Object.freeze({ operation: "publication-initialize" as const, ...prepareApplicationInitializationHost(selectionFile, entry, true) });
+  if (format === "artoo.application-publication-service-selection.v1")
+    return Object.freeze({ operation: "publication-reopen" as const, ...prepareApplicationServiceHost(selectionFile, entry, true) });
   return fail("fixed application selection format required");
 }
 

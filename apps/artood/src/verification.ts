@@ -57,6 +57,7 @@ import { isV2WebAcceptanceOptions, isV3WebAcceptanceOptions, normalizeWebAccepta
 import { prepareApplicationVerificationProfile, readApplicationVerificationProfile, assertApplicationVerificationProfile,
   type ApplicationVerificationProfileSelection, type PreparedApplicationVerificationProfile } from "./application-verification-profile.js";
 import { executeApplicationVerification, readOriginalApplicationMeasurement, type ApplicationVerificationRun } from "./application-verification.js";
+import { ApplicationPublicationContextV1Schema, ApplicationPublicationVerificationBindingV1Schema } from "@artoo/domain";
 
 export const VERIFICATION_FEATURE = "run-verification.v1";
 export const PRODUCT_STAGE_VERIFICATION_FEATURE = "product-stage-verification.v1";
@@ -523,12 +524,27 @@ export function selectVerificationProfile(payload: RunStartPayload, profiles: re
   if (realpathSync.native(payload.workspace.root) !== profile.workspace_root || payload.workspace.root !== profile.workspace_root) fail("verification workspace mismatch");
   if (context.policy.execution_mode === "discussion" && !payload.verification.expected_subject_digest) fail("verified discussion requires an exact source digest");
   assertCapabilityContext(profile, context);
-  if (context.app_delivery || payload.verification.application) {
+  if (context.app_delivery || context.app_publication || payload.verification.application) {
     const selected = applicationProfiles.get(profile), requirement = payload.verification.application;
-    if (!selected || !applicationVerificationSupported(profile) || !context.app_delivery || !requirement
+    if (!selected || !applicationVerificationSupported(profile) || !!context.app_delivery === !!context.app_publication || !requirement
       || payload.workspace_allocation || context.transferred_product_input || Object.keys(context).some(key => key.startsWith("imported_"))
       || requirement.config_digest !== profile.capabilities?.application?.config_digest
       || requirement.contract_digest !== profile.capabilities?.application?.contract_digest) fail("application verification requires its original Windows ordinary-run profile");
+    if (context.app_publication) {
+      const intent = ApplicationPublicationContextV1Schema.parse(context.application_publication), binding = intent.capabilities.binding;
+      const selectedBinding = ApplicationPublicationVerificationBindingV1Schema.parse(payload.verification.application_publication);
+      if (!isDeepStrictEqual(context.app_publication, intent.authorization.grant) || intent.agent_instance_id !== payload.agent_instance_id
+        || binding.project_id !== profile.project_id || binding.verification_profile_id !== profile.id || binding.verification_profile_digest !== profile.digest
+        || computerId !== undefined && binding.computer_id !== computerId
+        || binding.application_config_digest !== requirement.config_digest || binding.application_contract_digest !== requirement.contract_digest
+        || !isDeepStrictEqual(selectedBinding, { version: 1, authorization_event_id: intent.authorization.event_id,
+          publication_profile_id: binding.publication_profile_id, publication_profile_digest: binding.publication_profile_digest,
+          publication_contract_digest: binding.publication_contract_digest, publisher_session_id: intent.publisher_session_id })) {
+        fail("application publication intent and exact verification binding differ");
+      }
+    } else if (context.application_publication || payload.verification.application_publication) {
+      fail("development-only grant cannot authorize application publication");
+    }
     const stage = productStage(context), source = context.review_subject?.verification?.application;
     const needsCandidate = !!context.review_subject && (stage === "implementation" || stage === "validation");
     const expected = needsCandidate && source ? { candidate: source.candidate, origin_run_id: source.origin_run_id, origin_request_id: source.origin_request_id } : undefined;
@@ -782,7 +798,7 @@ export async function runVerification(profile: PreparedVerificationProfile, requ
   if (context?.imported_clean_validation || context?.imported_clean_validation_review_subject || context?.imported_recovery_validation || context?.imported_recovery_validation_review_subject || context?.imported_validation || context?.imported_validation_review_subject || context?.transferred_product_input || context?.imported_design_review_subject || context?.imported_execution || context?.imported_execution_review_subject || context?.imported_execution_repair) fail("Imported design requires its original dedicated verifier admission");
   const originalContext = JSON.stringify(context ?? null);
   const result = await executeVerification(profile, requestId, signal, context, expectedSubjectDigest, "final", undefined, readReleaseCapabilities);
-  if (result.outcome === "passed" && context?.app_delivery) {
+  if (result.outcome === "passed" && (context?.app_delivery || context?.app_publication)) {
     try {
       const selected = applicationProfiles.get(profile), backend = windowsProfileBackends.get(profile), stage = productStage(context);
       if (!selected || !backend || !applicationRun || applicationRun.runStart.context_pack.payload !== context
@@ -809,7 +825,7 @@ export async function runVerification(profile: PreparedVerificationProfile, requ
       delete result.application; for (const check of result.checks) delete check.observation;
     }
   }
-  if (result.outcome === "passed" && !context?.app_delivery && !signal.aborted && locallyPreparedProfiles.has(profile) && JSON.stringify(context ?? null) === originalContext) {
+  if (result.outcome === "passed" && !context?.app_delivery && !context?.app_publication && !signal.aborted && locallyPreparedProfiles.has(profile) && JSON.stringify(context ?? null) === originalContext) {
     exportableFinalVerifications.set(result, { profile, requestId, context: originalContext, payload: JSON.stringify(result) });
   }
   return result;

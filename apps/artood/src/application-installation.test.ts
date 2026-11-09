@@ -94,7 +94,7 @@ vi.mock("./application-bootstrap-admission.js", () => ({ assertApplicationBootst
   assertApplicationInitializationAdmission: controlled.initializationAssert }));
 import { createApplicationInstallationOwner, describeApplicationInstallation, assertApplicationInstallation,
   auditApplicationInstallation, invalidateApplicationInstallation, bindApplicationInstallationClientReader,
-  createApplicationInstallationReopenReference, reopenApplicationInstallation, retireApplicationInstallation, bindApplicationInstallationSession } from "./application-installation.js";
+  createApplicationInstallationReopenReference, readApplicationInstallationReopenFacts, reopenApplicationInstallation, retireApplicationInstallation, bindApplicationInstallationSession } from "./application-installation.js";
 import type { PreparedApplicationSession } from "./application-session-ownership.js";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import type { ApplicationClientReader } from "./application-artifact-admission.js";
@@ -438,14 +438,21 @@ function initializationContext() {
     hostCode: {} as NonNullable<ApplicationInstallationOptions["initialization"]>["hostCode"], hostDirectory: "C:\\host",
     sourceManifest: { path: "C:\\package\\application-install-package.json", bytes: 42, sha256: "sha256:" + "c".repeat(64) } };
 }
-function restartFixture(withInitialization = false) {
+function restartFixture(withInitialization = false, publication = false) {
   const target = withInitialization ? createApplicationInstallationOwner({ ...options(), initialization: initializationContext() }) : owner();
   const selected = plan(target), database = target.storageDirectory + "\\product.sqlite";
-  const open = Buffer.from(JSON.stringify({ mode: "open", databasePath: database }));
+  const scope = { product_id: "project1", data_generation: "original-candidate-data", service_generation: 1, artifact_digest: "sha256:" + "e".repeat(64) };
+  const schemaJson = '{"controlled":"schema"}';
+  const open = Buffer.from(JSON.stringify({ mode: "open", databasePath: database, ...(publication ? { schemaJson, scope } : {}) }));
   const openPin = { path: target.directory + "\\open.json", bytes: open.length, sha256: sha(open) };
+  const client = Buffer.from("<html>controlled</html>"), clientPin = { path: target.directory + "\\client.html", bytes: client.length, sha256: sha(client) };
+  const runtime = Buffer.from(JSON.stringify({ artifacts: [{ logicalPath: "client/index.html", file: clientPin }] }));
+  const runtimePin = { path: target.directory + "\\runtime.json", bytes: runtime.length, sha256: sha(runtime) };
   const profile = Buffer.from(JSON.stringify({ version: 1, installation: { version: 1, generation_id: target.generationId },
-    broker: { open_configuration: openPin } }));
+    broker: { open_configuration: openPin }, ...(publication ? { runtime: { configuration: runtimePin }, http: { origin: "http://127.0.0.1:31000" } } : {}) }));
   const token = target.install({ ...selected, files: [selected.files[1]!,
+    ...(publication ? [{ path: "client.html", bytes: client.length, sha256: sha(client), content: client },
+      { path: "runtime.json", bytes: runtime.length, sha256: sha(runtime), content: runtime }] : []),
     { path: "open.json", bytes: open.length, sha256: sha(open), content: open },
     { path: "service.json", bytes: profile.length, sha256: sha(profile), content: profile }],
     profile: { path: target.directory + "\\service.json", bytes: profile.length, sha256: sha(profile) } });
@@ -454,13 +461,29 @@ function restartFixture(withInitialization = false) {
   const hostCode = controlled.codePrepare({ directory: "C:\\host", writableWorkspaceRoots: ["C:\\work"] });
   const session = Object.freeze({}) as PreparedApplicationSession; controlled.sessions.add(session);
   bindApplicationInstallationSession(token, session);
-  return { target, token, database, hostCode, session,
+  return { target, token, database, hostCode, session, scope, schemaJson, clientPin,
     options(reference: ReturnType<typeof createApplicationInstallationReopenReference>) {
       return { reference, nodeId: "node1", allowedRoots: ["C:\\work"], node: pin("C:\\node\\node.exe"),
         backend: controlled.backend as PreparedWindowsProcessBackend, hostCode, hostDirectory: "C:\\host", session };
     } };
 }
 describe("persistent expectations and fresh installed application admission", () => {
+  it("exports publication facts only from the original persisted installation and preserves physical database and stored scope", () => {
+    const f = restartFixture(true, true), reference = createApplicationInstallationReopenReference(f.token), original = controlled.nodes.get(f.database)!;
+    const facts = readApplicationInstallationReopenFacts(f.token);
+    expect(facts).toEqual({ version: 1, generation_id: f.target.generationId, reference,
+      database: { path: f.database, dev: "1", ino: String(original.ino) }, scope: f.scope,
+      schema_digest: sha(Buffer.from(f.schemaJson)), origin: "http://127.0.0.1:31000", client_entry_digest: f.clientPin.sha256 });
+    expect(() => readApplicationInstallationReopenFacts({ ...f.token })).toThrow("original admitted");
+    expect(Object.isFrozen(facts.scope)).toBe(true); expect(Object.isFrozen(facts.database)).toBe(true);
+    retireApplicationInstallation(f.token); expect(() => readApplicationInstallationReopenFacts(f.token)).toThrow("original admitted");
+  });
+  it("never rebaselines publication database identity after descriptor publication", () => {
+    const f = restartFixture(true, true); createApplicationInstallationReopenReference(f.token);
+    controlled.nodes.get(f.database)!.ino++;
+    expect(() => readApplicationInstallationReopenFacts(f.token)).toThrow("database replaced");
+    expect(() => readApplicationInstallationReopenFacts(f.token)).toThrow("original admitted");
+  });
   it("keeps creation bootstrap authority through descriptor publication and retirement", () => {
     const f = restartFixture(true), reference = createApplicationInstallationReopenReference(f.token);
     expect(reference.path).toContain("REOPEN.v1.json");

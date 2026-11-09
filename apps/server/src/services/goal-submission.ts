@@ -19,7 +19,8 @@ export function canonicalGoalRequest(value: CreateAutonomousGoalRequest): string
   return JSON.stringify({ project_id: input.project_id, objective: input.objective,
     verification_profile_id: input.verification_profile_id, execution_mode: input.execution_mode ?? null,
     release_profile_id: input.release_profile_id ?? null, max_retries: input.max_retries,
-    source_handoff: input.source_handoff ?? null, ...(input.app_delivery ? { app_delivery: input.app_delivery } : {}) });
+    source_handoff: input.source_handoff ?? null, ...(input.app_delivery ? { app_delivery: input.app_delivery } : {}),
+    ...(input.app_publication ? { app_publication: input.app_publication } : {}) });
 }
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 function identityHash(identity: GoalSubmissionIdentity): string { return hash(JSON.stringify(identity.rawBody ?? null)); }

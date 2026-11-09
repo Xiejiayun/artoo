@@ -10,11 +10,13 @@ import { readApplicationVerificationProfile, type PreparedApplicationVerificatio
 import { assertLocallyPreparedVerificationProfile, readPreparedApplicationVerificationProfile, readWindowsVerificationBackend,
   type PreparedVerificationProfile } from "./verification.js";
 import { describeWindowsProcessInstallation } from "./windows-process-installation.js";
-import { assertWindowsProcessBackend, assertWindowsProcessTargetInputCapability,
+import { assertWindowsProcessBackend, assertWindowsProcessTargetInputCapability, assertWindowsProcessTargetControlCapability,
   type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import { prepareWindowsCodeInstallation, auditWindowsCodeInstallation, type PreparedWindowsCodeInstallation } from "./windows-code-installation.js";
 import { prepareWindowsReleaseStorage, auditWindowsReleaseStorage, type PreparedWindowsReleaseStorage } from "./windows-release-storage.js";
 import { assertCanonicalWindowsPath, assertNativeWindows, physicalWindowsDirectory, windowsPathsOverlap } from "./windows-local-acl.js";
+import { registerApplicationPublicationResources, registerApplicationPublicationVerifierResources,
+  assertApplicationPublicationAuditAvailable } from "./application-publication-coordination.js";
 
 const id = ApplicationPublicationIdentifierV1Schema;
 const path = z.string().min(1).max(4096), digest = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
@@ -61,11 +63,12 @@ function rootsOf(values: readonly string[]): readonly string[] {
 }
 function assertNative(): void { assertNativeWindows(); if (process.arch !== "x64") fail("native x64 is required"); }
 function assertNativeCapabilities(backend: PreparedWindowsProcessBackend, manifest: ApplicationRuntimeFilePin): void {
-  assertWindowsProcessBackend(backend); assertWindowsProcessTargetInputCapability(backend);
+  assertWindowsProcessBackend(backend); assertWindowsProcessTargetInputCapability(backend); assertWindowsProcessTargetControlCapability(backend);
   const value = z.object({ version: z.literal(1), protocol: z.literal("artoo.windows-job-process.v1"), runtime: z.literal("win-x64"),
     capabilities: z.array(z.string()).max(16).refine(values => new Set(values).size === values.length),
   }).passthrough().parse(json(readApplicationRuntimePin(manifest)));
   if (!value.capabilities.includes("artoo.windows-target-input.v1")
+    || !value.capabilities.includes("artoo.windows-target-control.v1")
     || !value.capabilities.includes("artoo.windows-job-member-observation.v1")) fail("original native input and live member observation capabilities required");
   assertWindowsProcessBackend(backend);
 }
@@ -145,6 +148,9 @@ export function prepareApplicationPublicationProfile(selection: ApplicationPubli
       application_toolchain_digest: original.toolchainDigest } }));
   const token = Object.freeze({}) as PreparedApplicationPublicationProfile;
   profiles.set(token, { configuration, config, verifier, application, backend, roots, nativeManifest, capabilities, codes, storage, failed: false });
+  registerApplicationPublicationVerifierResources(verifier, verificationStorage);
+  registerApplicationPublicationResources(token, { id: config.id, workspace, verifier,
+    directories: [...mutable, ...verificationStorage] });
   try { assertApplicationPublicationProfile(token); return token; }
   catch (error) { profiles.delete(token); throw error; }
 }
@@ -153,6 +159,7 @@ export function prepareApplicationPublicationProfile(selection: ApplicationPubli
  * An integrity failure is terminal for this token; a later disk repair cannot rebaseline it. */
 export function assertApplicationPublicationProfile(token: PreparedApplicationPublicationProfile): void {
   const saved = profiles.get(token); if (!saved || saved.failed) fail("original current local publication profile required");
+  assertApplicationPublicationAuditAvailable(token);
   try {
     assertNative(); assertLocallyPreparedVerificationProfile(saved.verifier);
     if (readPreparedApplicationVerificationProfile(saved.verifier) !== saved.application

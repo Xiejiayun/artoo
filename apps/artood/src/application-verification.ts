@@ -1,7 +1,8 @@
 import { request } from "node:http";
 import { win32 } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { ApplicationVerificationObservationV1Schema, type ApplicationVerificationObservationV1, type RunStartPayload } from "@artoo/domain";
+import { ApplicationVerificationObservationV1Schema, ApplicationPublicationContextV1Schema,
+  inspectApplicationPublicationMeasurementV1, type ApplicationVerificationObservationV1, type RunStartPayload } from "@artoo/domain";
 import { readApplicationRuntimePin } from "./application-runtime-installation.js";
 import { readApplicationVerificationProfile, type PreparedApplicationVerificationProfile } from "./application-verification-profile.js";
 import { readApplicationVerificationDefinition, type ApplicationVerificationDefinition } from "./application-verification-definition.js";
@@ -93,7 +94,7 @@ export async function executeApplicationVerification(profile: PreparedApplicatio
   const started = performance.now();
   const configured = readApplicationVerificationProfile(profile), original = input.run.runStart;
   const context = original.context_pack.payload, requirement = original.verification?.application;
-  if (!context?.app_delivery || !requirement || original.verification?.request_id !== input.requestId
+  if (!context || !!context.app_delivery === !!context.app_publication || !requirement || original.verification?.request_id !== input.requestId
     || context.task.id !== original.task_id || context.workspace.root !== input.workspace || original.workspace.root !== input.workspace
     || requirement.config_digest !== configured.capabilities.config_digest || requirement.contract_digest !== configured.capabilities.contract_digest) throw Error("Application run/profile binding differs");
   const identity = JSON.stringify(original), controller = new AbortController(), signal = AbortSignal.any([input.signal, controller.signal]);
@@ -113,7 +114,19 @@ export async function executeApplicationVerification(profile: PreparedApplicatio
   let measurement: OriginalApplicationMeasurement | undefined;
   try {
     check();
-    const definition = readApplicationVerificationDefinition(read(".artoo/product/application.json"), read(".artoo/product/design.json"), configured.capabilities.contract_digest);
+    const definitionText = read(".artoo/product/application.json"), designText = read(".artoo/product/design.json");
+    const definition = readApplicationVerificationDefinition(definitionText, designText, configured.capabilities.contract_digest);
+    const publication = context.app_publication ? ApplicationPublicationContextV1Schema.parse(context.application_publication) : undefined;
+    if (publication && (!isDeepStrictEqual(publication.authorization.grant, context.app_publication)
+      || publication.agent_instance_id !== original.agent_instance_id || publication.capabilities.binding.computer_id !== input.run.nodeId)) {
+      throw Error("Application publication intent differs from the original run");
+    }
+    const researchText = publication ? read(".artoo/product/research.json") : undefined;
+    if (publication && ([
+      [".artoo/product/application.json", definitionText], [".artoo/product/design.json", designText], [".artoo/product/research.json", researchText!],
+    ] as const).some(([path, text]) => sha(Buffer.from(text)) !== input.subject.files.get(path)!.checksum)) {
+      throw Error("Publication JSON text differs from its original measured bytes");
+    }
     const key = `${original.run_id}\0${input.requestId}`, known = candidates.get(profile) ?? new Map<string, PreparedApplicationVerificationCandidate>();
     if (!candidates.has(profile)) candidates.set(profile, known);
     let candidate: PreparedApplicationVerificationCandidate;
@@ -176,7 +189,10 @@ export async function executeApplicationVerification(profile: PreparedApplicatio
         request_digest: sha(canonical({ method: "POST", path: definition.persistence.write.path, body: definition.persistence.write.body })),
         before_read_digest: before, after_read_digest: after, replay_response_digest: replay, after_replay_read_digest: afterReplay,
         browser_trace_digest: sha(canonical(reopened.operations)) }, closures: { compiler: true, initialize: true, services: 2, browser: true },
-        test_store_id: readApplicationVerificationStore(store).testStoreId }, qualified_for_product: false });
+        test_store_id: readApplicationVerificationStore(store).testStoreId }, qualified_for_product: false,
+      ...(publication ? { publication: inspectApplicationPublicationMeasurementV1({ research_json: researchText!, design_json: designText,
+        application_definition_digest: sha(Buffer.from(definitionText)), authorization: publication.authorization,
+        capabilities: publication.capabilities, cases, digest: value => sha(Buffer.from(value)) }) } : {}) });
     current();
     measurement = Object.freeze({ profile, candidate, backend: input.backend, nodeId: input.run.nodeId, runStart: original,
       runSnapshot: identity, observationSnapshot: JSON.stringify(completed), definition, deadline });

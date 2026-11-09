@@ -1,7 +1,12 @@
 import { createServer } from "node:http";
 import type { Socket } from "node:net";
 import { createApplicationService } from "./application-service.js";
-import { createApplicationHttpIngress, APPLICATION_HTTP_LIMITS, type ApplicationHttpInvocation } from "./application-http-ingress.js";
+import { createApplicationHttpIngress, APPLICATION_HTTP_LIMITS, readApplicationHttpCounters, subscribeApplicationHttpCounters,
+  readApplicationPublicationHttpControl, type ApplicationHttpInvocation } from "./application-http-ingress.js";
+import { readApplicationBootstrapPublication, type PreparedApplicationBootstrapAdmission } from "./application-bootstrap-admission.js";
+import type { ApplicationPublicationCounters } from "./application-publication-process-protocol.js";
+import { ApplicationPublicationQuiescenceSchema, type ApplicationPublicationQuiescence } from "./application-publication-control-protocol.js";
+import type { ApplicationPublicationHostOperations } from "./application-publication-bootstrap-control.js";
 import { startApplicationBrokerProcess, type ApplicationBrokerProcess, type ApplicationBrokerProcessReceipt } from "./application-broker-process.js";
 import { revokeApplicationClientReader, type ApplicationClientReader } from "./application-artifact-admission.js";
 import { describeApplicationServiceProfile, assertApplicationServiceOpenStore, prepareProfileApplicationBroker, prepareProfileApplicationRuntime, prepareProfileApplicationClient,
@@ -66,6 +71,18 @@ export interface ApplicationLocalServiceClosure {
   readonly broker_normal_closures: number; readonly listener_closed: true;
 }
 const normalClosures = new WeakMap<object, () => ApplicationLocalServiceClosure>();
+const publicationControls = new WeakMap<object, ApplicationPublicationHostOperations>();
+export function readApplicationLocalPublicationControl(service: LocalApplicationService): ApplicationPublicationHostOperations {
+  const control = publicationControls.get(service); if (!control) throw Error("Original controlled publication listener required"); return control;
+}
+const counterReaders = new WeakMap<object, { read(): ApplicationPublicationCounters;
+  subscribe(listener: (counters: ApplicationPublicationCounters) => void): () => void }>();
+export function readApplicationLocalServiceCounters(service: LocalApplicationService): ApplicationPublicationCounters {
+  const saved = counterReaders.get(service); if (!saved) throw Error("Original application listener required"); return saved.read();
+}
+export function subscribeApplicationLocalServiceCounters(service: LocalApplicationService, listener: (counters: ApplicationPublicationCounters) => void): () => void {
+  const saved = counterReaders.get(service); if (!saved) throw Error("Original application listener required"); return saved.subscribe(listener);
+}
 /** An original closed listener owns this observation; a copied service or JSON
  * cannot supply the normal native-closure counts used by application verification. */
 export function readApplicationLocalServiceClosure(service: LocalApplicationService): ApplicationLocalServiceClosure {
@@ -74,25 +91,26 @@ export function readApplicationLocalServiceClosure(service: LocalApplicationServ
 
 /** A bounded loopback application API. Installation and database creation are
  * separate commands; each request opens the existing store under its fixed profile. */
-export async function startLocalApplicationService(profile: PreparedApplicationServiceProfile): Promise<LocalApplicationService> {
+export async function startLocalApplicationService(profile: PreparedApplicationServiceProfile, publication?: PreparedApplicationBootstrapAdmission): Promise<LocalApplicationService> {
   const binding = describeApplicationServiceProfile(profile);
   assertApplicationServiceOpenStore(profile); // Metadata/admission only, before binding a listener.
   const clientReader = binding.sameOrigin ? prepareProfileApplicationClient(profile) : undefined;
   // A client authority must also close if construction fails before a listener
   // exists. Once created, the ingress/listener lifetime owns its single revoke.
-  try { return await startBoundLocalApplicationService(profile, binding, clientReader); }
+  try { return await startBoundLocalApplicationService(profile, binding, clientReader, publication); }
   catch (error) {
     if (clientReader) revokeApplicationClientReader(clientReader);
     throw error;
   }
 }
 async function startBoundLocalApplicationService(profile: PreparedApplicationServiceProfile,
-  binding: ApplicationServiceBinding, clientReader: ApplicationClientReader | undefined): Promise<LocalApplicationService> {
+  binding: ApplicationServiceBinding, clientReader: ApplicationClientReader | undefined, publication?: PreparedApplicationBootstrapAdmission): Promise<LocalApplicationService> {
   let successfulInvocations = 0, normallyClosed = false;
   const service = createApplicationService({ maximumAccess: binding.maximumAccess,
     prepareRuntime: () => prepareProfileApplicationRuntime(profile), prepareBroker: () => prepareProfileApplicationBroker(profile, "open"),
     observeNormalClosure: () => { successfulInvocations++; } });
   const handles: ApplicationHttpInvocation[] = [], transports = new Set<Promise<void>>(), sockets = new Set<Socket>();
+  const requestSockets = new Set<Socket>(), socketClosures = new Map<Socket, Promise<void>>();
   const headerTimers = new Map<Socket, ReturnType<typeof setTimeout>>();
   const clearHeaderTimer = (socket: Socket) => {
     const timer = headerTimers.get(socket);
@@ -102,17 +120,24 @@ async function startBoundLocalApplicationService(profile: PreparedApplicationSer
   const ingress = createApplicationHttpIngress({ origin: binding.origin, purpose: "application", access: binding.maximumAccess,
     timeoutMs: binding.timeoutMs, maximumConcurrent: 1, readOnlyGet: true,
     ...(clientReader ? { clientReader } : {}),
+    ...(publication ? { publication } : {}),
     service: { maximumAccess: service.maximumAccess, begin(action, signal) {
       const handle = service.begin(action, signal); handles.push(handle); return handle;
     } } });
+  const publicationControl = publication && readApplicationBootstrapPublication(publication)?.control
+    ? readApplicationPublicationHttpControl(ingress) : undefined;
+  let quiescent = false;
   let stopping = false, listened = false, cancelled = false, closeWork: Promise<void> | undefined, drainWork: Promise<void> | undefined;
   let resolveClosed!: () => void, rejectClosed!: (error: unknown) => void;
   const closed = new Promise<void>((resolve, reject) => { resolveClosed = resolve; rejectClosed = reject; }); void closed.catch(() => {});
   const server = createServer({ maxHeaderSize: APPLICATION_HTTP_LIMITS.headerBytes, insecureHTTPParser: false }, (request, response) => {
     clearHeaderTimer(request.socket); // The parser has delivered complete headers.
-    if (stopping) { response.destroy(); return; }
+    if (stopping || publicationControl?.mode === "paused") { response.destroy(); return; }
+    requestSockets.add(request.socket);
     const work = ingress.handle(request, response); transports.add(work);
-    void work.then(() => transports.delete(work), error => { transports.delete(work); failures.push(error); void stop(true).catch(() => {}); });
+    void work.then(() => { transports.delete(work); requestSockets.delete(request.socket); }, error => {
+      transports.delete(work); requestSockets.delete(request.socket); failures.push(error); void stop(true).catch(() => {});
+    });
   });
   // Preserve all raw headers for ingress's count/duplicate checks. The parser's
   // independent byte ceiling bounds allocation; maxHeadersCount=64 would truncate.
@@ -123,15 +148,16 @@ async function startBoundLocalApplicationService(profile: PreparedApplicationSer
   server.keepAliveTimeout = 1;
   server.maxRequestsPerSocket = 1;
   server.on("connection", socket => {
-    if (stopping || sockets.size >= 16) { socket.destroy(); return; }
+    if (stopping || publicationControl?.mode === "paused" || sockets.size >= 16) { socket.destroy(); return; }
     sockets.add(socket);
+    socketClosures.set(socket, new Promise<void>(resolve => socket.once("close", resolve)));
     // Node checks headersTimeout on a periodic connection scan (30 seconds by
     // default). Enforce this phase directly, without extending it on new bytes.
     headerTimers.set(socket, setTimeout(() => socket.destroy(), Math.min(5_000, binding.timeoutMs)));
     // Absolute connection lifetime, not a sliding inactivity timer. It includes
     // header-only connections and never extends the original ingress deadline.
     const timer = setTimeout(() => socket.destroy(), binding.timeoutMs + 5_000);
-    socket.once("close", () => { clearHeaderTimer(socket); clearTimeout(timer); sockets.delete(socket); });
+    socket.once("close", () => { clearHeaderTimer(socket); clearTimeout(timer); sockets.delete(socket); socketClosures.delete(socket); });
     socket.on("error", () => socket.destroy());
   });
   server.on("checkContinue", (_request, response) => response.destroy());
@@ -143,7 +169,7 @@ async function startBoundLocalApplicationService(profile: PreparedApplicationSer
   server.on("error", serverError);
 
   function stop(cancel: boolean): Promise<void> {
-    stopping = true;
+    stopping = true; quiescent = false;
     if (cancel && !cancelled) {
       cancelled = true; ingress.close();
       // Transport termination forwards the same cancellation; it never settles
@@ -210,6 +236,45 @@ async function startBoundLocalApplicationService(profile: PreparedApplicationSer
     };
     const result = Object.freeze({ origin: binding.origin, closed, drain, close: () => stop(true) });
     normalClosures.set(result, readNormalClosure);
+    counterReaders.set(result, { read: () => readApplicationHttpCounters(ingress),
+      subscribe: listener => subscribeApplicationHttpCounters(ingress, listener) });
+    if (publicationControl) {
+      const pause = (): Promise<ApplicationPublicationQuiescence> => {
+        if (stopping) throw Error("Original publication listener is stopping");
+        publicationControl.pause(); quiescent = false; // Synchronous before capturing any asynchronous joins.
+        const connections = [...socketClosures.entries()];
+        for (const [socket] of connections) if (!requestSockets.has(socket)) socket.destroy();
+        return (async () => {
+          // Body admission can create its owner after pause. First join its
+          // transport path, then capture every original runtime/broker handle.
+          const transportOutcomes = await Promise.allSettled([...transports]);
+          const ownerOutcomes = await Promise.allSettled(handles.map(handle => handle.settled));
+          for (const [socket] of connections) socket.destroy();
+          const connectionOutcomes = await Promise.allSettled(connections.map(([, ended]) => ended));
+          const errors = [...failures, ...[...transportOutcomes, ...ownerOutcomes, ...connectionOutcomes]
+            .flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : [])];
+          if (errors.length) throw new AggregateError(errors, "Original publication quiescence has unsettled transports or owners");
+          if (stopping || publicationControl.mode !== "paused" || successfulInvocations !== handles.length)
+            throw Error("Original publication quiescence was interrupted or owner closure is unconfirmed");
+          const proof = ApplicationPublicationQuiescenceSchema.parse({ counters: readApplicationHttpCounters(ingress),
+            closure: { version: 1, scope: "original-native-owners", invocations: handles.length,
+              runtime_normal_closures: successfulInvocations, broker_normal_closures: successfulInvocations } });
+          quiescent = true; return proof;
+        })();
+      };
+      publicationControls.set(result, Object.freeze({ pause,
+        probe(path: string, nonce: string): Promise<ApplicationPublicationQuiescence> {
+          if (!quiescent || stopping) throw Error("Original publication probe requires completed quiescence");
+          quiescent = false;
+          const settled = publicationControl.probe(path, nonce);
+          return settled.then(() => pause());
+        },
+        resume() {
+          if (!quiescent || stopping) throw Error("Original publication resume requires completed quiescence");
+          publicationControl.resume(); quiescent = false;
+        }, drain,
+      }));
+    }
     return result;
   } catch (error) {
     const cleanup = await Promise.allSettled([stop(true)]);

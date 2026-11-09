@@ -9,7 +9,7 @@ import { loadAuthConfig, type AuthConfig, type AuthConfigEnv } from "./auth/auth
 import { createFetchOidcHttp } from "./auth/oidc-client.js";
 import { loadDeviceAuthConfig } from "./config/device-auth.js";
 import { loadAiDataSharingPolicy } from "./config/ai-data-sharing.js";
-import { loadGoalEntryConfig } from "./config/goal-entry.js";
+import { closePreparedGoalSubmission, loadGoalEntryConfig } from "./config/goal-entry.js";
 import { loadTrustedProxies } from "./config/trusted-proxies.js";
 import type { ServerContext } from "./context.js";
 import { createEventPublisher } from "./ws/event-publisher.js";
@@ -87,7 +87,8 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env) {
       await app.close();
       await db.close();
     })();
-    return { app, ctx, close, dataRoot, persistent: dbDir !== undefined };
+    return { app, ctx, close, dataRoot, persistent: dbDir !== undefined,
+      closePreparedGoalSubmission: (identity: { session_id: string; request_key: string }) => closePreparedGoalSubmission(ctx, identity) };
   } catch (error) {
     await db.close();
     throw error;

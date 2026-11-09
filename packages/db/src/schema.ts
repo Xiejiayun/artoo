@@ -1106,6 +1106,8 @@ export const goalAutomations = pgTable("goal_automations", {
   // An explicit grant on new goals only; historical fixed-computer goals retain SQL NULL.
   sourceHandoff: jsonb("source_handoff"),
   appDelivery: jsonb("app_delivery"),
+  appPublication: jsonb("app_publication"),
+  applicationPublicationAuthorizationEventId: text("application_publication_authorization_event_id").references(() => eventLog.id),
   // SQL NULL preserves unsampled historical planning; captured unknown scope is a versioned object.
   planningCapabilitySnapshot: jsonb("planning_capability_snapshot"),
   releaseProfileId: text("release_profile_id"),
@@ -1116,6 +1118,12 @@ export const goalAutomations = pgTable("goal_automations", {
   check("goal_automations_status_chk", sql`${t.status} in ('planning','executing','waiting','completed','failed','cancelled')`),
   index("goal_automations_status_idx").on(t.organizationId, t.status, t.createdAt),
   check("goal_automations_mode_chk", sql`${t.executionMode} in ('single_agent','agent_team')`),
+  check("goal_automations_app_publication_chk", sql`(${t.appPublication} IS NULL AND ${t.applicationPublicationAuthorizationEventId} IS NULL) OR
+    (${t.appPublication} IS NOT NULL AND ${t.applicationPublicationAuthorizationEventId} IS NOT NULL AND ${t.executionMode} = 'agent_team'
+      AND ${t.appDelivery} IS NULL AND ${t.sourceHandoff} IS NULL AND ${t.releaseProfileId} IS NULL
+      AND ${t.appPublication} = jsonb_build_object('version',1,'kind','same-computer-local-application-publication',
+        'publication_profile_id',${t.appPublication}->>'publication_profile_id')
+      AND (${t.appPublication}->>'publication_profile_id') ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') IS TRUE`),
   check("goal_automations_app_delivery_chk", sql`${t.appDelivery} IS NULL OR
     (${t.executionMode} = 'agent_team' AND ${t.status} <> 'completed' AND ${t.sourceHandoff} IS NULL AND ${t.releaseProfileId} IS NULL
       AND ${t.appDelivery} = '{"version":1,"kind":"local-application-development"}'::jsonb) IS TRUE`),
@@ -1125,6 +1133,47 @@ export const goalAutomations = pgTable("goal_automations", {
         '{"version":1,"mode":"automatic","research_revision":{"version":1,"strategy":"configured_pool"}}'::jsonb)) IS TRUE`),
   check("goal_automations_planning_capability_snapshot_chk", sql`${t.planningCapabilitySnapshot} IS NULL OR
     (jsonb_typeof(${t.planningCapabilitySnapshot}) = 'object' AND ${t.planningCapabilitySnapshot} -> 'version' = '1'::jsonb) IS TRUE`),
+]);
+
+/** Durable application publication projections. They do not reconstruct node-local permits or owners. */
+export const applicationPublications = pgTable("application_publications", {
+  id: text("id").primaryKey(), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  goalId: text("goal_id").notNull().references(() => goals.id), projectId: text("project_id").notNull().references(() => projects.id),
+  computerId: text("computer_id").notNull().references(() => computers.id), publisherSessionId: text("publisher_session_id").notNull(),
+  authorizationEventId: text("authorization_event_id").notNull().references(() => eventLog.id),
+  request: jsonb("request").notNull(), requestDigest: text("request_digest").notNull(), status: text("status").notNull(),
+  receipt: jsonb("receipt"), receiptDigest: text("receipt_digest"), receiptEventId: text("receipt_event_id").references(() => eventLog.id),
+  createdAt: ts("created_at").notNull(), updatedAt: ts("updated_at").notNull(),
+}, t => [unique("application_publications_goal_uniq").on(t.goalId),
+  check("application_publications_status_chk", sql`${t.status} IN ('queued','published','failed')`),
+  check("application_publications_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND (${t.receiptDigest} IS NULL OR ${t.receiptDigest} ~ '^sha256:[a-f0-9]{64}$')`),
+  check("application_publications_receipt_chk", sql`(${t.status} = 'queued' AND ${t.receipt} IS NULL AND ${t.receiptDigest} IS NULL AND ${t.receiptEventId} IS NULL) OR
+    (${t.status} IN ('published','failed') AND ${t.receipt} IS NOT NULL AND ${t.receiptDigest} IS NOT NULL AND ${t.receiptEventId} IS NOT NULL
+      AND ${t.receipt}->>'outcome' = ${t.status}) IS TRUE`),
+]);
+export const applicationPublicationObservations = pgTable("application_publication_observations", {
+  id: text("id").primaryKey(), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  publicationId: text("publication_id").notNull().references(() => applicationPublications.id),
+  publisherSessionId: text("publisher_session_id").notNull(), sequence: integer("sequence").notNull(), generation: integer("generation").notNull(),
+  state: text("state").notNull(), requestDigest: text("request_digest").notNull(), payload: jsonb("payload").notNull(),
+  payloadDigest: text("payload_digest").notNull(), eventId: text("event_id").notNull().references(() => eventLog.id), createdAt: ts("created_at").notNull(),
+}, t => [unique("application_publication_observation_sequence_uniq").on(t.publicationId, t.publisherSessionId, t.sequence),
+  check("application_publication_observation_sequence_chk", sql`${t.sequence} >= 1 AND ${t.generation} = 2`),
+  check("application_publication_observation_state_chk", sql`${t.state} IN ('healthy','live','draining','closed-normal','closed-aborted','expired','unknown')`),
+  check("application_publication_observation_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.payloadDigest} ~ '^sha256:[a-f0-9]{64}$'`),
+]);
+/** Immutable historical completion; later runtime observations remain independent facts. */
+export const applicationPublicationSettlements = pgTable("application_publication_settlements", {
+  goalId: text("goal_id").primaryKey().references(() => goals.id), organizationId: text("organization_id").notNull().references(() => organizations.id),
+  publicationId: text("publication_id").notNull().references(() => applicationPublications.id),
+  requestDigest: text("request_digest").notNull(), receiptDigest: text("receipt_digest").notNull(),
+  authorizationEventId: text("authorization_event_id").notNull().references(() => eventLog.id),
+  observationId: text("observation_id").notNull().references(() => applicationPublicationObservations.id),
+  observationSequence: integer("observation_sequence").notNull(), leaseId: text("lease_id").notNull(), deadlineAt: ts("deadline_at").notNull(),
+  scope: text("scope").notNull(), eventId: text("event_id").notNull().references(() => eventLog.id), createdAt: ts("created_at").notNull(),
+}, t => [unique("application_publication_settlement_publication_uniq").on(t.publicationId),
+  check("application_publication_settlement_scope_chk", sql`${t.scope} = 'bounded-local-application-publication' AND ${t.observationSequence} >= 1`),
+  check("application_publication_settlement_digest_chk", sql`${t.requestDigest} ~ '^sha256:[a-f0-9]{64}$' AND ${t.receiptDigest} ~ '^sha256:[a-f0-9]{64}$'`),
 ]);
 
 /** Only qualified node-owned verification ingestion creates these immutable rows. */

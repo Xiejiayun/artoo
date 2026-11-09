@@ -1,10 +1,14 @@
-import { autonomousReviews, eventLog, goalAutomations, runs, tasks } from "@artoo/db";
+import { agentInstances, autonomousReviews, eventLog, goalAutomations, runs, tasks } from "@artoo/db";
 import { ApplicationDeliveryV1Schema, ContextPackSchema, type ApplicationCapabilitiesV1, type ApplicationRequirementV1,
+  APPLICATION_PUBLICATION_FEATURE_V1, ApplicationPublicationAuthorizationV1Schema, ApplicationPublicationCapabilitiesV1Schema,
+  ApplicationPublicationGrantV1Schema, ApplicationPublicationIdentifierV1Schema,
+  type ApplicationPublicationContextV1, type ApplicationPublicationVerificationBindingV1,
   type RunVerificationPayload, type VerificationRequirement } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
 import { and, eq, sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 import type { ServerContext } from "../context.js";
+import { AppError } from "../errors.js";
 import { readRunVerificationEvidence } from "./verification-service.js";
 
 export function applicationRequirement(capabilities: ApplicationCapabilitiesV1,
@@ -12,6 +16,48 @@ export function applicationRequirement(capabilities: ApplicationCapabilitiesV1,
   return { version: 1, config_digest: capabilities.config_digest, contract_digest: capabilities.contract_digest,
     ...(source ? { expected_candidate: { candidate: source.candidate, origin_run_id: source.origin_run_id,
       origin_request_id: source.origin_request_id } } : {}) };
+}
+
+/** Read the immutable user event, never infer a grant or replacement session from a live advertisement. */
+export async function originalApplicationPublication(ctx: ServerContext, db: DrizzleDb,
+  automation: typeof goalAutomations.$inferSelect, projectId: string): Promise<Omit<ApplicationPublicationContextV1, "agent_id" | "agent_instance_id">> {
+  const grant = ApplicationPublicationGrantV1Schema.safeParse(automation.appPublication);
+  const [event] = automation.applicationPublicationAuthorizationEventId ? await db.select().from(eventLog).where(and(
+    eq(eventLog.id, automation.applicationPublicationAuthorizationEventId), eq(eventLog.organizationId, ctx.organizationId))) : [];
+  const payload = event?.payload as Record<string, unknown> | undefined;
+  const authorization = ApplicationPublicationAuthorizationV1Schema.safeParse(payload?.authorization);
+  const capabilities = ApplicationPublicationCapabilitiesV1Schema.safeParse(payload?.capabilities);
+  const session = ApplicationPublicationIdentifierV1Schema.safeParse(payload?.publisher_session_id);
+  if (!grant.success || !event || !authorization.success || !capabilities.success || !session.success
+    || automation.executionMode !== "agent_team" || automation.appDelivery != null || automation.sourceHandoff != null || automation.releaseProfileId != null
+    || event.type !== "goal.application-publication.authorized" || event.actorType !== "user" || event.actorId !== automation.actorUserId
+    || event.goalId !== automation.goalId || event.projectId !== projectId || payload?.verification_profile_id !== automation.verificationProfileId
+    || authorization.data.event_id !== event.id || authorization.data.actor_user_id !== automation.actorUserId
+    || authorization.data.consent_id !== automation.consentId || authorization.data.policy_version !== automation.policyVersion
+    || !isDeepStrictEqual(authorization.data.grant, grant.data) || !isDeepStrictEqual(payload?.app_publication, grant.data)
+    || capabilities.data.binding.project_id !== projectId || capabilities.data.binding.verification_profile_id !== automation.verificationProfileId
+    || capabilities.data.binding.publication_profile_id !== grant.data.publication_profile_id
+    || automation.computerId !== null && capabilities.data.binding.computer_id !== automation.computerId) {
+    throw AppError.conflict("Application publication lost its original user's authorization event, capability or paired session");
+  }
+  return { version: 1, authorization: authorization.data, capabilities: capabilities.data, publisher_session_id: session.data };
+}
+
+export function assertCurrentApplicationPublication(ctx: ServerContext,
+  publication: Omit<ApplicationPublicationContextV1, "agent_id" | "agent_instance_id">): void {
+  const binding = publication.capabilities.binding, current = ctx.getPairedNodeSession?.(binding.computer_id);
+  if (!current || current.computerId !== binding.computer_id || current.sessionId !== publication.publisher_session_id
+    || ctx.supportsExecutionFeature?.(binding.computer_id, APPLICATION_PUBLICATION_FEATURE_V1) !== true
+    || !isDeepStrictEqual(ctx.getApplicationPublicationCapabilities?.(binding.computer_id, binding.publication_profile_id, binding.project_id), publication.capabilities)) {
+    throw AppError.conflict("Application publication requires its original paired connection and unchanged protected profile");
+  }
+}
+
+export function applicationPublicationRequirement(context: Omit<ApplicationPublicationContextV1, "agent_id" | "agent_instance_id">): ApplicationPublicationVerificationBindingV1 {
+  const binding = context.capabilities.binding;
+  return { version: 1, authorization_event_id: context.authorization.event_id, publication_profile_id: binding.publication_profile_id,
+    publication_profile_digest: binding.publication_profile_digest, publication_contract_digest: binding.publication_contract_digest,
+    publisher_session_id: context.publisher_session_id };
 }
 
 /** Re-qualify the original authorization and current node receipt; model output never grants application execution. */
@@ -25,22 +71,44 @@ export async function applicationVerificationQualificationError(ctx: ServerConte
       eq(goalAutomations.organizationId, ctx.organizationId)))
     .where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId)));
   const review = owner?.review, automation = owner?.automation, goalId = automation?.goalId;
-  const grant = automation?.appDelivery;
-  if (grant == null) return requirement.application || context?.app_delivery || payload.application
+  const grant = automation?.appDelivery, publicationGrant = automation?.appPublication;
+  if (grant == null && publicationGrant == null) return requirement.application || requirement.application_publication
+    || context?.app_delivery || context?.app_publication || context?.application_publication || payload.application
     ? "Application verification lacks original goal authorization" : undefined;
-  if (!owner || !automation || !context || !ApplicationDeliveryV1Schema.safeParse(grant).success
-    || !isDeepStrictEqual(grant, context.app_delivery) || automation.executionMode !== "agent_team"
+  if (!owner || !automation || !context || automation.executionMode !== "agent_team"
     || automation.sourceHandoff != null || automation.releaseProfileId != null
     || owner.run.workspaceBranch != null || owner.run.computerId !== automation.computerId
     || owner.run.workspaceRoot !== automation.workspaceRoot || context.workspace.root !== automation.workspaceRoot
     || context.project.id !== owner.task.projectId || context.goal_context?.goal_id !== goalId
     || context.goal_context?.plan?.id !== automation.planId) return "Application verification lost its original goal or ordinary workspace binding";
-  const [authorization] = await db.select().from(eventLog).where(and(eq(eventLog.organizationId, ctx.organizationId),
-    eq(eventLog.goalId, goalId!), eq(eventLog.type, "goal.application-development.authorized"),
-    eq(eventLog.actorType, "user"), eq(eventLog.actorId, automation.actorUserId))).limit(1);
-  if (!authorization || authorization.projectId !== owner.task.projectId || !isDeepStrictEqual(authorization.payload,
-    { version: 1, app_delivery: grant, consent_id: automation.consentId, policy_version: automation.policyVersion })) {
-    return "Application verification lacks its original user's authorization event";
+  if (publicationGrant != null) {
+    let original;
+    try { original = await originalApplicationPublication(ctx, db, automation, owner.task.projectId); }
+    catch (error) { if (error instanceof AppError) return error.message; throw error; }
+    const [instance] = await db.select().from(agentInstances).where(and(eq(agentInstances.id, owner.run.agentInstanceId),
+      eq(agentInstances.organizationId, ctx.organizationId), eq(agentInstances.computerId, owner.run.computerId)));
+    if (!instance || grant != null || context.app_delivery || !isDeepStrictEqual(context.app_publication, publicationGrant)
+      || !isDeepStrictEqual(context.application_publication, { ...original, agent_id: instance.agentId, agent_instance_id: instance.id })
+      || !isDeepStrictEqual(requirement.application_publication, applicationPublicationRequirement(original))) {
+      return "Application publication verification differs from its original authorization, agent or paired connection";
+    }
+    const binding = original.capabilities.binding, selected = context.verification_capabilities;
+    if (binding.computer_id !== owner.run.computerId || binding.verification_profile_digest !== selected?.profile_digest
+      || binding.application_config_digest !== selected?.application?.config_digest || binding.application_contract_digest !== selected?.application?.contract_digest) {
+      return "Application publication verification differs from its protected application capability";
+    }
+  } else {
+    if (!ApplicationDeliveryV1Schema.safeParse(grant).success || !isDeepStrictEqual(grant, context.app_delivery)
+      || context.app_publication || context.application_publication || requirement.application_publication || payload.application?.publication) {
+      return "Development-only authorization cannot acquire application publication authority";
+    }
+    const [authorization] = await db.select().from(eventLog).where(and(eq(eventLog.organizationId, ctx.organizationId),
+      eq(eventLog.goalId, goalId!), eq(eventLog.type, "goal.application-development.authorized"),
+      eq(eventLog.actorType, "user"), eq(eventLog.actorId, automation.actorUserId))).limit(1);
+    if (!authorization || authorization.projectId !== owner.task.projectId || !isDeepStrictEqual(authorization.payload,
+      { version: 1, app_delivery: grant, consent_id: automation.consentId, policy_version: automation.policyVersion })) {
+      return "Application verification lacks its original user's authorization event";
+    }
   }
   const capabilities = context.verification_capabilities, selected = capabilities?.application;
   const stage = context.product_development?.stage ?? context.review_subject?.development_stage;
@@ -74,6 +142,20 @@ export async function applicationVerificationQualificationError(ctx: ServerConte
   if (source && (!isDeepStrictEqual(actual.candidate, source.candidate)
     || actual.acceptance.test_store_id === source.acceptance.test_store_id)) {
     return "Independent application review must reproduce the exact candidate using a fresh test store";
+  }
+  if (publicationGrant != null) {
+    const measurement = actual.publication, publication = context.application_publication!;
+    if (!measurement || measurement.authorization_event_id !== publication.authorization.event_id
+      || measurement.publication_contract_digest !== publication.capabilities.binding.publication_contract_digest
+      || source && !isDeepStrictEqual(source.publication, measurement)) return "Application publication lacks its original complete criterion measurement";
+    for (const [path, checksum] of [[".artoo/product/research.json", measurement.research_digest],
+      [".artoo/product/design.json", measurement.design_digest]] as const) {
+      const observed = payload.required_files.find(file => file.path === path);
+      const accepted = context.product_development?.accepted_inputs?.files.find(file => file.path === path);
+      if (!observed || observed.checksum !== checksum || !review && (!accepted || accepted.checksum !== checksum || accepted.size !== observed.size)) {
+        return "Application publication criterion measurement differs from its original accepted research or design";
+      }
+    }
   }
   if (review && source) {
     // Review evidence cannot bootstrap another review or qualify a copied context after its author receipt changes.

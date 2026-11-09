@@ -2,9 +2,11 @@ import { recordWindowsStartupPhase, recordWindowsStartupFailure, completeWindows
 import { observeWindowsStopStage, type WindowsStopDiagnostics, type WindowsStopPhase } from "./windows-stop-diagnostics.js";
 import type { SourceCommandDiagnostic } from "./source-command-diagnostics.js";
 export { acquirePublishedProductOwnership, createPublishedProduct } from "./published-product.js";
+export { describeWindowsApplicationEntryVerifier } from "./windows-application-entry.js";
 import { arch as osArch, hostname, platform } from "node:os";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { lstatSync } from "node:fs";
 
 import type { NodeHello } from "@artoo/protocol";
 
@@ -12,7 +14,7 @@ import { createAdapterRegistry, type AdapterRegistry, type RuntimeRegistration }
 import { createArtifactUploader } from "./artifact-upload.js";
 import { runtimeAvailable } from "./cli-resolver.js";
 import { createRegistryHeartbeat } from "./heartbeat.js";
-import { createArtoodNode, type ArtoodNode } from "./node-runner.js";
+import { createArtoodNode, type ArtoodNode, type ArtoodNodeOptions } from "./node-runner.js";
 import { claudeCodeRuntime, codexRuntime, type CodexSettings, type RuntimePresetOptions } from "./runtimes.js";
 import { createManagedBootstrap, validateManagedJournalBinding, validateManagedJournalPreparation,
   type ManagedJournalBinding } from "./managed/managed-bootstrap.js";
@@ -89,6 +91,7 @@ export interface ArtoodConfig {
   /** Opaque authority returned by protected local Windows installation qualification. */
   windowsProcessBackend?: PreparedWindowsProcessBackend;
   releaseProfiles?: readonly ReleaseProfile[];
+  applicationPublicationProfiles?: ArtoodNodeOptions["applicationPublicationProfiles"];
   windowsReleaseStorage?: ReadonlyMap<string, PreparedWindowsReleaseStorage>;
   ownedResultProfilesFile?: string;
   research?: ResearchOptions;
@@ -208,6 +211,22 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
   }
   const verificationProfiles = env.ARTOO_VERIFICATION_PROFILES_FILE ? loadVerificationProfilesFile(env.ARTOO_VERIFICATION_PROFILES_FILE, allowedRoots) : undefined;
   const releaseProfiles = env.ARTOO_RELEASE_PROFILES_FILE ? loadReleaseProfilesFile(env.ARTOO_RELEASE_PROFILES_FILE, verificationProfiles, allowedRoots) : undefined;
+  const publicationFile = env.ARTOO_APPLICATION_PUBLICATION_PROFILE_FILE, publicationHash = env.ARTOO_APPLICATION_PUBLICATION_PROFILE_SHA256,
+    publicationVerifier = env.ARTOO_APPLICATION_PUBLICATION_VERIFIER;
+  let applicationPublicationProfiles: ArtoodNodeOptions["applicationPublicationProfiles"];
+  if ([publicationFile, publicationHash, publicationVerifier].some(value => value !== undefined)) {
+    if (!windowsProcessBackend || managed.managedJournal || !publicationFile || !isAbsolute(publicationFile)
+      || /[\u0000-\u001f\u007f]/u.test(publicationFile) || !publicationHash || !/^sha256:[a-f0-9]{64}$/u.test(publicationHash)
+      || !publicationVerifier || !verificationProfiles?.some(profile => profile.id === publicationVerifier))
+      throw Error("ARTOO_APPLICATION_PUBLICATION_PROFILE_FILE, PROFILE_SHA256 and VERIFIER require a protected native Windows ordinary verifier configuration");
+    const stat = lstatSync(publicationFile, { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || stat.size < 1n || stat.size > 65_536n)
+      throw Error("Application publication profile file exceeds its fixed size or link bound");
+    // This is a local selection only. Node construction performs protected ACL,
+    // inventory, content-pin, original verifier/backend and storage admission.
+    applicationPublicationProfiles = Object.freeze([{ verificationProfileId: publicationVerifier,
+      selection: { version: 1 as const, configuration: Object.freeze({ path: publicationFile, bytes: Number(stat.size), sha256: publicationHash }) } }]);
+  }
   const windowsReleaseStorage = windowsProcessBackend && releaseProfiles?.length ? new Map(releaseProfiles.map(profile => [profile.storage_root,
     prepareWindowsReleaseStorage({ directory: profile.storage_root, writableWorkspaceRoots: allowedRoots })])) : undefined;
   return {
@@ -226,6 +245,7 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv): ArtoodConfig {
     ...(productSourceConfigFile ? { productSourceConfigFile } : {}),
     ...(env.ARTOO_OWNED_RESULT_PROFILES_FILE ? { ownedResultProfilesFile: env.ARTOO_OWNED_RESULT_PROFILES_FILE } : {}),
     ...(releaseProfiles ? { releaseProfiles } : {}),
+    ...(applicationPublicationProfiles ? { applicationPublicationProfiles } : {}),
     ...(windowsReleaseStorage ? { windowsReleaseStorage } : {}),
     ...(env.ARTOO_RESEARCH_ENABLED === "1" ? { research: { receiptDirectory: env.ARTOO_RESEARCH_RECEIPTS_DIR!,
       ...(env.ARTOO_RESEARCH_BRAVE_KEY ? { braveApiKeyEnv: "ARTOO_RESEARCH_BRAVE_KEY" } : {}) } } : {}),
@@ -295,6 +315,7 @@ export function createNodeFromConfig(config: ArtoodConfig, sourceCommandDiagnost
     verificationProfiles: config.verificationProfiles,
     windowsProcessBackend: config.windowsProcessBackend,
     releaseProfiles: config.releaseProfiles,
+    applicationPublicationProfiles: config.applicationPublicationProfiles,
     windowsReleaseStorage: config.windowsReleaseStorage,
     productSourceConfigFile: config.productSourceConfigFile,
     requireSupervisorLifetime: config.requireSupervisorLifetime,

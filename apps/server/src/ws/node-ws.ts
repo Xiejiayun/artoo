@@ -1,4 +1,5 @@
 import { computers } from "@artoo/db";
+import { APPLICATION_PUBLICATION_FEATURE_V1 } from "@artoo/domain";
 import { parseDeviceToken, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1 } from "@artoo/domain";
 import { randomUUID } from "node:crypto";
 import type { NodeHello, NodeToServerMessage, NodeTransport } from "@artoo/protocol";
@@ -155,7 +156,7 @@ export function registerNodeWsRoute(
           identity: { deviceId: auth.deviceId, computerId: auth.computerId, tokenLookup: auth.tokenLookup }, sessionId: managed?.id ?? connectionId, artifactDir,
           qualifiedRunEventReceiptsReady: () => qualifiedReceiptsReady && raw.readyState === 1 && !terminated && registered
             && registry.get(computerId) === binding && (!gated || managed?.active === true),
-        } : undefined, message.product_source_routing);
+        } : undefined, message.product_source_routing, message.application_publication_profiles);
     }
     async function initializeManaged(message: NodeHello): Promise<void> {
       const request = message.managed_receipts!;
@@ -187,6 +188,7 @@ export function registerNodeWsRoute(
         if (terminated || raw.readyState !== 1 || !registered || binding !== candidate || registry.get(nodeId!) !== candidate) return;
         qualifiedReceiptsReady = true;
         await candidate?.announceSourceRecoverySession?.();
+        await candidate?.announceApplicationPublicationSession?.();
       } catch { close(1008, "imported design receipt schema unavailable"); }
     }
     const handleMessage = (message: NodeToServerMessage): void => {
@@ -203,7 +205,8 @@ export function registerNodeWsRoute(
         else {
           attach(message, false); activate();
           if (currentAuth.mode === "device" && artifactDir && message.execution_features?.some(feature => [IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
-            PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1].includes(feature))) {
+            PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1,
+            APPLICATION_PUBLICATION_FEATURE_V1].includes(feature))) {
             void initializeOrdinaryImportedDesignReceipts();
           }
         }

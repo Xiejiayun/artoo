@@ -1,19 +1,24 @@
 // Controlled boundaries only: no actual native process, SQLite, socket or host.
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import type { PreparedApplicationInstallation } from "./application-installation.js";
 import type { InstalledApplicationReopenOptions } from "./application-installed-session.js";
 const state = vi.hoisted(() => ({ describe: vi.fn(), bind: vi.fn(), audit: vi.fn(), reference: vi.fn(), reopen: vi.fn(), retire: vi.fn(),
-  acquire: vi.fn(), release: vi.fn(), profile: vi.fn(), initialize: vi.fn(), preflight: vi.fn(), start: vi.fn(), host: vi.fn(), backend: vi.fn(), localClosure: vi.fn() }));
+  acquire: vi.fn(), release: vi.fn(), profile: vi.fn(), initialize: vi.fn(), preflight: vi.fn(), start: vi.fn(), host: vi.fn(), backend: vi.fn(), localClosure: vi.fn(),
+  facts: vi.fn(), publication: vi.fn(), counters: vi.fn(), subscribe: vi.fn() }));
 vi.mock("./application-installation.js", () => ({ describeApplicationInstallation: state.describe, bindApplicationInstallationSession: state.bind,
   auditApplicationInstallation: state.audit, createApplicationInstallationReopenReference: state.reference,
-  reopenApplicationInstallation: state.reopen, retireApplicationInstallation: state.retire }));
+  reopenApplicationInstallation: state.reopen, retireApplicationInstallation: state.retire, readApplicationInstallationReopenFacts: state.facts }));
+vi.mock("./application-bootstrap-admission.js", () => ({ readApplicationBootstrapPublication: state.publication }));
 vi.mock("./application-session-ownership.js", () => ({ acquireApplicationSession: state.acquire, releaseApplicationSession: state.release }));
 vi.mock("./application-service-profile.js", () => ({ prepareInstalledApplicationServiceProfile: state.profile }));
 vi.mock("./application-local-service.js", () => ({ initializeApplicationStore: state.initialize, checkExistingApplicationStore: state.preflight,
-  startLocalApplicationService: state.start, readApplicationLocalServiceClosure: state.localClosure }));
+  startLocalApplicationService: state.start, readApplicationLocalServiceClosure: state.localClosure,
+  readApplicationLocalServiceCounters: state.counters, subscribeApplicationLocalServiceCounters: state.subscribe }));
 vi.mock("./windows-code-installation.js", () => ({ assertWindowsCodeInstallation: state.host }));
 vi.mock("./owned/windows-owned-process.js", () => ({ assertWindowsProcessBackend: state.backend }));
-import { initializeRestartableApplication, reopenInstalledApplicationService, readInitializedApplicationClosure, readInstalledApplicationClosure } from "./application-installed-session.js";
+import { initializeRestartableApplication, reopenInstalledApplicationService, readInitializedApplicationClosure, readInstalledApplicationClosure,
+  readInitializedApplicationInstallation, reopenInstalledApplicationPublicationService, readInstalledApplicationPublication } from "./application-installed-session.js";
 const installation = Object.freeze({}) as PreparedApplicationInstallation, session = Object.freeze({}), profile = Object.freeze({});
 const reference = { path: "C:\\installed\\generation\\control\\REOPEN.v1.json", bytes: 42, sha256: "sha256:" + "a".repeat(64) };
 function deferred<T>() {
@@ -38,6 +43,31 @@ beforeEach(() => {
   state.localClosure.mockReturnValue({ version: 1, invocations: 2, runtime_normal_closures: 2, broker_normal_closures: 2, listener_closed: true });
 });
 describe("clean-only installed application coordination", () => {
+  it("captures original publication installation facts before retirement and exposes them only on the returned reference", async () => {
+    const facts = Object.freeze({ reference, generation_id: "original-generation" }); state.facts.mockReturnValue(facts);
+    const initialized = deferred<void>(); state.initialize.mockReturnValue(initialized.promise);
+    const work = initializeRestartableApplication(installation, undefined, true); await tick(); expect(state.facts).not.toHaveBeenCalled();
+    initialized.resolve(); const actual = await work;
+    expect(readInitializedApplicationInstallation(actual)).toBe(facts);
+    expect(state.facts.mock.invocationCallOrder[0]).toBeLessThan(state.retire.mock.invocationCallOrder[0]!);
+    expect(() => readInitializedApplicationInstallation({ ...actual })).toThrow("Original");
+  });
+  it("binds publication markers to original descriptor/database/scope and waits for real preflight closure", async () => {
+    const scope = { product_id: "project1", data_generation: "data1", service_generation: 1, artifact_digest: "sha256:" + "c".repeat(64) };
+    const facts = { generation_id: "generation1", reference, database: { dev: "1", ino: "77" }, scope,
+      schema_digest: "sha256:" + "d".repeat(64), origin: "http://127.0.0.1:31000" };
+    const publication = { identity: { deployment_generation: facts.generation_id, reopen_pin_digest: reference.sha256,
+      database_identity: { device: "1", inode: "77" }, schema_digest: facts.schema_digest, origin: facts.origin,
+      artifact_digest: scope.artifact_digest, scope_digest: `sha256:${createHash("sha256").update(JSON.stringify(scope)).digest("hex")}` } };
+    state.publication.mockReturnValue(publication); state.facts.mockReturnValue(facts); state.counters.mockReturnValue({ requests_used: 0 });
+    const selected = { ...input(), bootstrap: Object.freeze({}) as NonNullable<InstalledApplicationReopenOptions["bootstrap"]> };
+    const preflight = deferred<void>(); state.preflight.mockReturnValue(preflight.promise);
+    const work = reopenInstalledApplicationPublicationService(selected); await tick(); expect(state.start).not.toHaveBeenCalled();
+    preflight.resolve(); const service = await work;
+    expect(state.start).toHaveBeenCalledExactlyOnceWith(profile, selected.bootstrap);
+    expect(readInstalledApplicationPublication(service)).toMatchObject({ preflight: { existing_database: true, process_exit_confirmed: true } });
+    expect(() => readInstalledApplicationPublication({ ...service })).toThrow("Original"); closure.resolve(); await service.closed;
+  });
   it("exposes closure only for the original initialized reference and fully closed installed service", async () => {
     const unique = Object.freeze({ ...reference }); state.reference.mockReturnValue(unique);
     expect(() => readInitializedApplicationClosure(unique)).toThrow("Original");

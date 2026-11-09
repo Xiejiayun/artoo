@@ -33,6 +33,7 @@ import type {
 
 import type {
   AuditBundleExportResponse,
+  ApplicationPublicationView,
   ApprovalsResponse,
   AssignResponse,
   AuditBundleResponse,
@@ -236,6 +237,12 @@ export class ApiClient {
   }
   getGoalRelease(id: string): Promise<{ release: ProductRelease | null }> {
     return this.request("GET", `/goals/${encodeURIComponent(id)}/release`);
+  }
+  getGoalApplicationPublication(id: string): Promise<{ publication: ApplicationPublicationView | null }> {
+    return this.request("GET", `/goals/${encodeURIComponent(id)}/application-publication`);
+  }
+  stopGoalApplicationPublication(id: string, key: string): Promise<{ publication: ApplicationPublicationView | null }> {
+    return this.request("POST", `/goals/${encodeURIComponent(id)}/application-publication/stop`, { idempotencyKey: key });
   }
   goalAction(id: string, action: "pause" | "resume" | "cancel" | "reconcile", key: string): Promise<unknown> { return this.request("POST", `/goals/${encodeURIComponent(id)}/${action}`, { idempotencyKey: key }); }
   listPlans(id: string): Promise<{ plans: Plan[] }> { return this.request("GET", `/goals/${encodeURIComponent(id)}/plans`); }

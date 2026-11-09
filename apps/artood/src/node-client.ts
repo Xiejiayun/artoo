@@ -1,5 +1,7 @@
 import { observeWindowsStopStage, recordWindowsStopDiagnostic } from "./windows-stop-diagnostics.js";
 import { createHash, randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { dirname, basename, join } from "node:path";
 import { ManagedDelivery, boundedOperation, abortableOperation, DeliveryCancelled,
   type ManagedJournalOptions, type ManagedSession } from "./managed/managed-delivery.js";
 import type { FreshLaunchPermit, JournalRun, TerminalSettlement } from "./managed/journal-types.js";
@@ -44,9 +46,19 @@ import {
 import { snapshotGitOptions, type GitReadOptions } from "./owned/git-operations.js";
 import { OwnedGitError } from "./owned/owned-git.js";
 import { readWindowsNativeFailure } from "./owned/windows-process-diagnostic.js";
-import { prepareVerificationProfiles, selectVerificationProfile, readVerificationCapabilities, readWindowsVerificationBackend, assertVerificationWorkspaceBoundary, runVerification, runVerificationPreview, VerificationCleanupError,
+import { prepareVerificationProfiles, selectVerificationProfile, readVerificationCapabilities, readWindowsVerificationBackend, readPreparedApplicationVerificationProfile, assertVerificationWorkspaceBoundary, runVerification, runVerificationPreview, VerificationCleanupError,
   type VerificationProfile, type PreparedVerificationProfile } from "./verification.js";
 import { createProductReleaseExecutor, prepareReleaseProfiles, type ReleaseProfile } from "./product-release.js";
+import { createApplicationPublicationAcceptanceRegistry, type ApplicationPublicationSession } from "./application-publication-acceptance.js";
+import { readApplicationPublicationProfile, type PreparedApplicationPublicationProfile } from "./application-publication-profile.js";
+import { createApplicationPublicationExecutor } from "./application-publication-executor.js";
+import { readApplicationVerificationProfile } from "./application-verification-profile.js";
+import { applicationPublicationPathsOverlap, applicationPublicationRunResources, assertApplicationPublicationRunAdmission,
+  assertApplicationPublicationResourcesIdle, registerApplicationPublicationVerifierResources,
+  readApplicationPublicationResourceMetadata } from "./application-publication-coordination.js";
+import { canonicalApplicationPublicationRequest } from "@artoo/domain";
+import { applicationPublicationStartCommandSchema, applicationPublicationStopCommandSchema,
+  applicationPublicationStatusCommandSchema, runEventAckCommandSchema } from "@artoo/protocol";
 import { bindWorkspaceToolVerifier, bindWorkspaceToolEvidenceReader, bindWorkspaceToolCapabilities, bindWorkspaceToolReleaseCapabilities } from "./workspace-tools.js";
 import { bindWorkspaceReadOnlyTools, isAutonomousPlanningContext } from "./workspace-readonly.js";
 import { createSourceStartReplay, type SourceStartOutcome, type SourceStartScope } from "./source-start-replay.js";
@@ -78,7 +90,7 @@ import { provisionRunNamespace } from "./owned/workspace-namespace.js";
 import { prepareOwnedWorktree, reserveOwnedWorktree, materializeOwnedWorktree,
   type MaterializedWorktree, type OwnedReservation } from "./owned/worktree-reservation.js";
 import type { ArtifactUploader } from "./artifact-upload.js";
-import { assertProductSourceRuntimeConfiguration, assertProductSourceWorkspaceBoundary, claimProductSourceRun,
+import { assertProductSourceRuntimeConfiguration, assertProductSourceWorkspaceBoundary, claimProductSourceRun, reserveProductSourcePublicationWorkspace,
   claimImportedValidationRelease, readPreparedImportedValidationRelease,
   releaseProductSourceRun, captureProductSourceExport, captureProductSourceExportV2, productSourceSemanticExportEnabled, productSourceMeasurementV2ExportEnabled,
   type PreparedProductSourceRuntime } from "./product-source-runtime.js";
@@ -141,6 +153,10 @@ export interface NodeClientOptions {
     onFailure?(error: Error): void; onReady?(): void };
   /** Node-runner-owned authenticated connection identity; reconnect cannot revive publication retry authority. */
   releaseRetrySession?: () => object | undefined;
+  /** Prepared local profiles and the actual device-authenticated socket session.
+   * Session IDs or capabilities supplied in a command cannot install this controller. */
+  applicationPublication?: { profiles: readonly PreparedApplicationPublicationProfile[];
+    getSession(): ApplicationPublicationSession | undefined };
   /** Explicit local transport preparation. Absence preserves ordinary/manual behavior and import fencing. */
   productSourceOperations?: {client:ReturnType<typeof createProductSourceSemanticClient>;isCurrent:()=>boolean;importedReview?:boolean;importedDesign?:boolean;importedDesignReview?:boolean;importedExecution?:boolean;importedExecutionReview?:boolean;importedValidation?:boolean};
   /** Local bounded observation only; never supplied by a command or used as execution evidence. */
@@ -157,6 +173,8 @@ export interface NodeClient {
   replayReleaseHealth(): Promise<void>;
   stop(cancelRunning?: boolean): Promise<void>;
   invalidateManagedStartupSession(session: ManagedSession | undefined, cause: Error): void;
+  /** Stops original publication owners without reconstructing authority on reconnect. */
+  invalidateApplicationPublicationSession(): void;
   failManagedConnection(cause: Error): Promise<void>;
   requestManagedRunStop(runId: string): Promise<void>;
 }
@@ -240,6 +258,55 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
   const git: GitExecutor = options.git ?? createGitCliExecutor();
   const verificationProfiles = prepareVerificationProfiles(options.verificationProfiles, workspaceConfig.allowedRoots);
+  if (options.applicationPublication && (options.managedJournal || options.ownedResultProfiles || transport.acknowledgesRunEvents !== true)) {
+    throw Error("Application publication requires ordinary original runs and committed event receipts");
+  }
+  for (const profile of options.applicationPublication?.profiles ?? []) {
+    if (!verificationProfiles.includes(readApplicationPublicationProfile(profile).verifier)) throw Error("Publication requires the client's original verifier profile");
+  }
+  // Capture routing metadata only before any publication owner exists. Actual
+  // verifier/permission/subject checks remain at their original launch boundary.
+  if (options.applicationPublication) for (const profile of verificationProfiles) {
+    const application = readPreparedApplicationVerificationProfile(profile);
+    if (application) {
+      const { config } = readApplicationVerificationProfile(application);
+      registerApplicationPublicationVerifierResources(profile, [config.candidate_parent, config.installation_parent, config.selection_parent]);
+    }
+  }
+  const publicationRunInputs = new Map<string, RunStartPayload>();
+  const publicationRunResources = (payload: RunStartPayload): readonly string[] => {
+    // Resolve existing ancestors too: a new worktree beneath a directory alias
+    // must not evade the reservation before normal workspace authorization runs.
+    let path = payload.workspace.root; const suffix: string[] = [];
+    for (;;) {
+      try { path = join(realpathSync.native(path), ...suffix); break; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        const parent = dirname(path); if (parent === path) throw error;
+        suffix.unshift(basename(path)); path = parent;
+      }
+    }
+    const selected = verificationProfiles.filter(profile => profile.id === payload.verification?.profile_id
+      || applicationPublicationPathsOverlap(profile.workspace_root, path));
+    return [path, ...selected.flatMap(profile => applicationPublicationRunResources(profile.workspace_root, profile))];
+  };
+  const applicationAcceptance = options.applicationPublication ? createApplicationPublicationAcceptanceRegistry({ nodeId,
+    profiles: options.applicationPublication.profiles, getSession: options.applicationPublication.getSession }) : undefined;
+  const applicationPublisher = options.applicationPublication ? createApplicationPublicationExecutor({
+    profiles: options.applicationPublication.profiles, getSession: options.applicationPublication.getSession, acceptance: applicationAcceptance!,
+    onReceipt: receipt => transport.send({ kind: "application.publication.receipt", node_id: nodeId, payload: receipt }),
+    onObservation: observation => transport.send({ kind: "application.publication.observation", node_id: nodeId, payload: observation }),
+    assertResourcesIdle: profile => assertApplicationPublicationResourcesIdle(profile, [
+      ...[...publicationRunInputs].filter(([id]) => starting.has(id) || runs.has(id) || verificationRuns.has(id) || planningToolRuns.has(id))
+        .map(([, payload]) => publicationRunResources(payload)),
+      ...[...releasingWorkspaces.keys()].map(workspace => [workspace]),
+    ]),
+    claimExternalResources: profile => {
+      if (!sourceRuntime) return undefined;
+      const resources = readApplicationPublicationResourceMetadata(profile);
+      return reserveProductSourcePublicationWorkspace(sourceRuntime, resources.workspace, resources.directories);
+    },
+  }) : undefined;
   let sourceRuntime = options.productSourceRuntime;
   let recoveryRuntime: PreparedWindowsSourceRecoveryRuntime | undefined;
   let recoveredValidations: ReturnType<typeof createImportedRecoveryValidationClient> | undefined;
@@ -845,6 +912,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     let readReleaseCapabilities: ReleaseCapabilityReader | undefined;
     try {
       runStartCommandSchema.parse(command); // Also guard typed/in-memory transports before duplicate ACKs.
+      if (applicationPublisher) assertApplicationPublicationRunAdmission(publicationRunResources(command.payload));
       if(command.payload.context_pack.payload?.imported_recovery_validation || command.payload.context_pack.payload?.imported_recovery_validation_review_subject || command.payload.context_pack.payload?.imported_validation || command.payload.context_pack.payload?.imported_validation_review_subject || command.payload.context_pack.payload?.imported_review_subject || command.payload.context_pack.payload?.transferred_product_input || command.payload.context_pack.payload?.imported_design_review_subject || command.payload.context_pack.payload?.imported_execution || command.payload.context_pack.payload?.imported_execution_review_subject || command.payload.context_pack.payload?.imported_execution_repair)throw new Error("Imported research requires its dedicated local operation controller");
       if (sourceRuntime) assertProductSourceWorkspaceBoundary(sourceRuntime, command.payload.workspace.root);
       const configuredAdapter = resolveAdapter(command.payload.runtime);
@@ -868,6 +936,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       }
       readOnlyPlanning = !options.managedJournal && configuredAdapter !== undefined
         && supportsWorkspaceReadOnlyTools(configuredAdapter) && isAutonomousPlanningContext(admitted);
+      if (admitted.context_pack.payload?.app_publication && !readOnlyPlanning && (!applicationAcceptance || !verificationProfile)) {
+        throw Error("Application publication run requires its prepared original local controller and verifier");
+      }
       if (sourceRuntime && !verificationProfile) {
         if (!readOnlyPlanning) throw new Error("Product source runtime requires original Windows verified execution");
         // The future-worker snapshot describes capability only. Native ownership
@@ -963,18 +1034,23 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       if ([...verificationRuns.values()].some((run) => run.profile.workspace_root === verificationProfile.workspace_root)) {
         await ackRejected(command.id, "process_start_failed", "Verification workspace already has an active execution"); return;
       }
+      if (launchCommand.payload.context_pack.payload?.app_publication) {
+        try { applicationAcceptance!.admitRun(verificationProfile, launchCommand.payload); }
+        catch (error) { await ackRejected(command.id, "process_start_failed", errorMessage(error)); return; }
+      }
       if (sourceRuntime) {
         try {
           if (readProductResearchRevision(launchCommand.payload.context_pack.payload)) claimProductResearchRevisionRun(sourceRuntime, launchCommand.payload, verificationProfile);
           else claimProductSourceRun(sourceRuntime, runId, launchCommand.payload.workspace.root);
         }
-        catch (error) { await ackRejected(command.id, "process_start_failed", errorMessage(error)); return; }
+        catch (error) { applicationAcceptance?.discardRun(runId); await ackRejected(command.id, "process_start_failed", errorMessage(error)); return; }
       }
       verificationRuns.set(runId, { profile: verificationProfile, runStart: launchCommand.payload, requestId: launchCommand.payload.verification!.request_id,
         expectedSubjectDigest: launchCommand.payload.verification!.expected_subject_digest,
         context: launchCommand.payload.context_pack.payload, readReleaseCapabilities, controller: new AbortController() });
     }
     if (readOnlyPlanning) planningToolRuns.set(runId, { controller: new AbortController(), ...(planningProfile ? { profile: planningProfile } : {}) });
+    if (applicationPublisher) publicationRunInputs.set(runId, launchCommand.payload);
     let ready!: () => void;
     launchBindings.set(runId, replayIdentity);
     starting.set(runId, new Promise<void>((resolve) => { ready = resolve; }));
@@ -993,6 +1069,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         } else if (verification) verification.unsafe = true; // An invoked producer without a closed handle retains its source claim.
       }
       if (!runs.has(runId) && !verificationRuns.get(runId)?.unsafe) verificationRuns.delete(runId);
+      if (!runs.has(runId) && !finished.has(runId)) applicationAcceptance?.discardRun(runId);
       ready();
     }
   }
@@ -1282,6 +1359,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     let ownedStopAttempted = false;
     let sequence = 0;
     let retentionReported: WorkspaceRetentionOutcome | undefined;
+    let publicationVerification: RunStartPayload | undefined, publicationCompleted = false;
     const reportRetainedWorkspace = async (outcome: WorkspaceRetentionOutcome): Promise<void> => {
       if (plan.kind !== "worktree") return;
       // Only completed delivery can need one subsequent correction. A timed-out
@@ -1342,11 +1420,18 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
               if (error instanceof VerificationCleanupError) verification.unsafe = true;
               throw error;
             }
-            if (!verification.context?.app_delivery) releaseExecutor.recordVerification(delivery.runId, verification.profile.project_id, verification.profile.workspace_root, evidence,
+            if (!verification.context?.app_delivery && !verification.context?.app_publication) releaseExecutor.recordVerification(delivery.runId, verification.profile.project_id, verification.profile.workspace_root, evidence,
               verification.readReleaseCapabilities ? { context: verification.context!, readCapabilities: verification.readReleaseCapabilities } : undefined);
-            await transport.send({ kind: "run.event", node_id: nodeId, run_id: delivery.runId, sequence: sequence++,
+            const verificationSequence = sequence++;
+            if (verification.context?.app_publication && evidence.outcome === "passed" && evidence.application?.publication) {
+              if (!applicationAcceptance || !verification.windowsAdmission) throw Error("Original application publication completion authority unavailable");
+              applicationAcceptance.expectVerificationReceipt({ runStart: verification.runStart, evidence, sequence: verificationSequence,
+                admission: verification.windowsAdmission, handle });
+              publicationVerification = verification.runStart;
+            }
+            await transport.send({ kind: "run.event", node_id: nodeId, run_id: delivery.runId, sequence: verificationSequence,
               event: { type: "run.verification", payload: evidence } });
-            if (sourceRuntime && evidence.outcome === "passed" && verification.context?.product_development && !verification.context.app_delivery
+            if (sourceRuntime && evidence.outcome === "passed" && verification.context?.product_development && !verification.context.app_delivery && !verification.context.app_publication
               && verification.context.policy.execution_mode !== "discussion" && !verification.controller.signal.aborted) {
               try {
                 if (!verification.windowsAdmission) throw new Error("Source export requires original native Windows author closure");
@@ -1389,10 +1474,12 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         };
         sequence += 1;
         await transport.send(message);
+        if (publicationVerification && rawEvent.type === "run.lifecycle" && rawEvent.payload.phase === "completed") publicationCompleted = true;
         if (verificationRuns.has(delivery.runId) && rawEvent.type === "run.lifecycle"
           && ["completed", "failed", "cancelled"].includes(rawEvent.payload.phase)) break;
       }
     } catch (error) {
+      publicationCompleted = false;
       if (error instanceof VerificationCleanupError) {
         const verification = verificationRuns.get(delivery.runId);
         if (verification) verification.unsafe = true;
@@ -1428,6 +1515,13 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
             catch (error) { planning.unsafe = true; throw error; }
           }
         }
+        if (publicationCompleted && publicationVerification && !verificationRuns.get(delivery.runId)?.controller.signal.aborted) {
+          // The stream's actual completed lifecycle was delivered only after the
+          // adapter stopped. The registry repeats the exact original native
+          // closure/final-evidence binding; pending verification ACKs alone do
+          // not create a completed publication source.
+          applicationAcceptance!.recordCompleted(publicationVerification);
+        } else applicationAcceptance?.discardRun(delivery.runId);
         finished.add(delivery.runId);
         const ordinary = mixedLegacyStarts.get(delivery.runId);
         // Stream completion does not erase a mixed run's remaining Stop
@@ -1712,6 +1806,11 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   async function dispatchFresh(message: ServerToNodeMessage): Promise<void> {
+    // Retained owners keep cancellation/status paths even after the execution
+    // grant or source runtime is revoked. These paths never mint a new owner.
+    if (message.type === "application.publication.stop" || message.type === "application.publication.status"
+      || message.type === "application.publication.session.v1" || message.type === "application.publication.receipt.ack"
+      || message.type === "application.publication.observation.ack" || message.type === "run.event.ack") return dispatchActive(message);
     if (!sourceRecovery) return dispatchActive(message);
     recordSourceCommandPhase("recovery");
     try { if (await sourceRecovery.handle(message)) {
@@ -1723,7 +1822,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       if (isOrdinarySourceResultReceipt(message)) throw error;
       return ackRejected(message.id, "process_start_failed", errorMessage(error));
     }
-    if (message.type === "run.event.ack" || message.type === "product.release.health.ack"
+    if (message.type === "product.release.health.ack"
       || message.type === "node.session.ready" || message.type === "node.session.pong") return;
     const recovered = message.type.startsWith("product.source.recovery-validation.") || message.type.startsWith("product.source.recovery-validation-review.");
     const clean = message.type.startsWith("product.source.clean-validation.") || message.type.startsWith("product.source.clean-validation-review.");
@@ -1761,8 +1860,10 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       // Return the promise without awaiting it: only synchronous admission errors
       // before dispatch belong to this rejection, never a later ACK delivery failure.
       recordSourceCommandPhase("dispatch_scope");
-      return withWindowsSourceRecoveryOperation(runtime, { operationId: operation?.operation_id ?? message.id,
-        bindingDigest: operation?.request_digest ?? sha(canonicalProductSourceTransferValueV1(message)), serverOperation: operation }, () => {
+      const publicationRequest = message.type === "application.publication.start" ? message.payload : undefined;
+      return withWindowsSourceRecoveryOperation(runtime, { operationId: publicationRequest?.publication_id ?? operation?.operation_id ?? message.id,
+        bindingDigest: publicationRequest ? sha(canonicalApplicationPublicationRequest(publicationRequest))
+          : operation?.request_digest ?? sha(canonicalProductSourceTransferValueV1(message)), serverOperation: operation }, () => {
         dispatched = true;
         return dispatchActive(message);
       });
@@ -1774,6 +1875,17 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
 
   async function dispatchActive(message: ServerToNodeMessage): Promise<void> {
     recordSourceCommandPhase("handler");
+    // The transport forwards this original pending-frame ACK before resolving
+    // send(). Apply it before any unrelated controller await so an immediate
+    // completed lifecycle cannot overtake its committed verification identity.
+    if (message.type === "run.event.ack") {
+      const ack = runEventAckCommandSchema.parse(message);
+      if (ack.payload.application_verification) {
+        if (!applicationAcceptance || ack.payload.status !== "accepted") throw Error("Application verification receipt has no original controller");
+        applicationAcceptance.acknowledgeVerification(ack.payload.run_id, ack.payload.sequence, ack.payload.application_verification);
+      }
+      return;
+    }
     if (cleanValidations && await cleanValidations.handle(message)) return;
     if (recoveredValidations && await recoveredValidations.handle(message)) return;
     if(sourceOperations&&await sourceOperations.handle(message))return;
@@ -1788,6 +1900,35 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
     // acquire that meaning by falling through the command switch.
     if (isOrdinarySourceResultReceipt(message)) throw Error("Original source result receipt controller is unavailable");
     switch (message.type) {
+      case "application.publication.start": {
+        try {
+          const command = applicationPublicationStartCommandSchema.parse(message);
+          if (!applicationPublisher) throw Error("Original application publication controller unavailable");
+          if (command.deadline_at && Date.parse(command.deadline_at) <= Date.now()) throw Error("Publication command expired before admission");
+          await applicationPublisher.start(command.payload); await ackAccepted(command.id);
+        } catch (error) { await ackRejected(message.id, "process_start_failed", errorMessage(error)); }
+        return;
+      }
+      case "application.publication.stop": {
+        try {
+          const command = applicationPublicationStopCommandSchema.parse(message);
+          if (!applicationPublisher) throw Error("Original application publication controller unavailable");
+          await applicationPublisher.stop(command.payload.request, command.payload.reason); await ackAccepted(command.id);
+        } catch (error) { await ackRejected(message.id, "process_start_failed", errorMessage(error)); }
+        return;
+      }
+      case "application.publication.status": {
+        try {
+          const command = applicationPublicationStatusCommandSchema.parse(message);
+          if (!applicationPublisher) throw Error("Original application publication controller unavailable");
+          await applicationPublisher.status(command.payload); await ackAccepted(command.id);
+        } catch (error) { await ackRejected(message.id, "process_start_failed", errorMessage(error)); }
+        return;
+      }
+      case "application.publication.session.v1":
+      case "application.publication.receipt.ack":
+      case "application.publication.observation.ack":
+        return; // The authenticated transport owns socket/session and committed-send receipts.
       case "product.release.cancel": {
         try {
           const receipt = await releaseExecutor.cancel(message.payload);
@@ -1808,6 +1949,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
           return ackRejected(message.id, "process_start_failed", "Release profile unavailable or its workspace is still executing");
         }
         const root = profile.verifier.workspace_root;
+        try { assertApplicationPublicationRunAdmission(applicationPublicationRunResources(root, profile.verifier)); }
+        catch (error) { return ackRejected(message.id, "process_start_failed", errorMessage(error)); }
         const sourceClaim = `product-release:${message.payload.release_id}`;
         let retry: ReturnType<typeof releaseExecutor.prepareRetry> | undefined;
         try { if (message.payload.retry) retry = releaseExecutor.prepareRetry(message.payload); }
@@ -1882,7 +2025,6 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         return ackAccepted(message.id);
       case "run.resume":
         return onRunResume(message);
-      case "run.event.ack":
       case "product.release.health.ack":
         return; // WebSocket transport owns persisted-event acknowledgements.
       case "node.session.ready":
@@ -1892,6 +2034,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   const client: NodeClient = {
+    invalidateApplicationPublicationSession(): void {
+      applicationPublisher?.invalidate(); applicationAcceptance?.invalidate();
+    },
     productSourceFeatures() {
       if (options.productSourceRecovery) {
         const recovery = options.productSourceRecovery;
@@ -1936,6 +2081,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       }
     },
     async failManagedConnection(cause): Promise<void> {
+      client.invalidateApplicationPublicationSession();
       // Latch cause and wake/cancel all owned consumers synchronously, before
       // the first awaited stop or database write. A resulting producer cancel
       // is not read back as an earlier user-cancelled terminal.
@@ -1973,9 +2119,11 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       await flushHealth();
     },
     async stop(cancelRunning = false): Promise<void> {
+      client.invalidateApplicationPublicationSession();
       sourceCommandInflight.invalidate();
       sourceStartReplay.invalidate(); // Wake duplicate waiters before any synchronous shutdown audit.
       const close = () => observeWindowsStopStage("client_close", async () => {
+      try {
       healthStopped = true;
       if (healthRetry) clearTimeout(healthRetry);
       healthRetry = undefined;
@@ -2020,6 +2168,11 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       await sourceOperations?.settled();await importedReviews?.settled();await importedDesigns?.settled();await importedDesignReviews?.settled();await importedExecutions?.settled();await importedExecutionReviews?.settled();await importedValidations?.settled();
       await recoveredValidations?.settled(); await cleanValidations?.settled(); await sourceRecovery?.settled();
       await observeWindowsStopStage("publisher_stop", () => releaseExecutor.stop());
+      } finally {
+        // A failure in ordinary-run/source cleanup cannot skip the original
+        // application's shutdown or rewrite its terminal facts as success.
+        await applicationPublisher?.shutdown();
+      }
       });
       if (recoveryRuntime) {
         let entered = false;

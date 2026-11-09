@@ -12,7 +12,9 @@ import {
   type RecoveryNodeBindingV1, type RecoveryEpochV1, type RecoveryOperationRefV1,
   type ProductSourceRecoveryRegistrationV1, type ProductSourceRecoveryAvailabilityV1, type ProductSourceRecoveryRequestV1,
 } from "@artoo/domain";
-import { productSourceRecoveryRegisteredSchema } from "@artoo/protocol";
+// Installation admission also loads this module in the early service bootstrap.
+// Keep unrelated transport envelope initialization out of that static graph.
+import { productSourceRecoveryRegisteredSchema } from "@artoo/protocol/dist/source-recovery.js";
 import { auditWindowsReleaseStorage, assertWindowsReleaseStorage, assertWindowsReleaseStorageWorkspace, type PreparedWindowsReleaseStorage } from "../windows-release-storage.js";
 import { physicalWindowsDirectory, windowsPathsOverlap } from "../windows-local-acl.js";
 import { assertWindowsProcessBackend, assertWindowsProcessBackendImage, invokeWindowsGuardianNative, invokeWindowsGuardianNativeSync, type PreparedWindowsProcessBackend } from "./windows-owned-process.js";

@@ -21,6 +21,9 @@ import { prepareWindowsDaemonSupervisorAuthority, type PreparedWindowsDaemonSupe
 import type { PreparedCleanDaemonConfiguration } from "./windows-clean-local-configuration.js";
 import type { ResearchOptions } from "./research.js";
 import type { SourceCommandDiagnostic } from "./source-command-diagnostics.js";
+import { APPLICATION_PUBLICATION_FEATURE_V1 } from "@artoo/domain";
+import { prepareApplicationPublicationProfile, readApplicationPublicationProfile,
+  type ApplicationPublicationProfileSelection } from "./application-publication-profile.js";
 
 /**
  * The artood node daemon: wires a {@link createWebSocketTransport} (real WS to
@@ -61,6 +64,8 @@ export interface ArtoodNodeOptions {
   research?: ResearchOptions;
   /** Trusted local sink; supervised launch binds this to its original daemon output. */
   sourceCommandDiagnostic?: (value: SourceCommandDiagnostic) => unknown;
+  /** Administrator-selected protected configurations. Never accepted from hello or task text. */
+  applicationPublicationProfiles?: readonly { verificationProfileId: string; selection: ApplicationPublicationProfileSelection }[];
 }
 
 export interface ArtoodNode {
@@ -95,6 +100,13 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
     windowsStorage: options.windowsReleaseStorage, writableRoots: options.workspace?.allowedRoots,
   });
   const advertisedReleaseProfiles = releaseProfiles.filter(releaseProfileExecutionSupported);
+  if (options.applicationPublicationProfiles?.length && (!windowsBackend || options.acknowledgeRunEvents !== true || options.hello.managed_receipts))
+    throw Error("Application publication requires native Windows, ordinary paired execution and committed event receipts");
+  const applicationPublicationProfiles = (options.applicationPublicationProfiles ?? []).map(selected => {
+    const verifier = advertisedVerificationProfiles.find(profile => profile.id === selected.verificationProfileId);
+    if (!verifier || !windowsBackend) throw Error("Application publication requires its configured original application verifier");
+    return prepareApplicationPublicationProfile(selected.selection, { nodeId: options.hello.node_id, verifier, backend: windowsBackend });
+  });
   const hello: NodeHello = structuredClone(options.hello);
   // Discovery is derived only from this worker's validated local configuration.
   // Inherited caller advertisements must not invent a capability or scope.
@@ -102,9 +114,10 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
   delete hello.release_profiles;
   delete hello.owned_result_profiles;
   delete hello.product_source_routing;
+  delete hello.application_publication_profiles;
   const configuredFeatures = (hello.execution_features ?? []).filter((feature) => ![VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE, VERIFICATION_CAPABILITIES_FEATURE,
     MEASUREMENT_PLAN_FEATURE, MEASUREMENT_PLAN_V2_FEATURE, PRODUCT_RELEASE_FEATURE, PRODUCT_RELEASE_HEALTH_FEATURE, PRODUCT_RELEASE_ACCEPTANCE_FEATURE, PRODUCT_RELEASE_RETRY_FEATURE_V1,
-      PRODUCT_DESIGN_REVISION_FEATURE_V1, APPLICATION_VERIFICATION_FEATURE_V1,
+      PRODUCT_DESIGN_REVISION_FEATURE_V1, APPLICATION_VERIFICATION_FEATURE_V1, APPLICATION_PUBLICATION_FEATURE_V1,
       "owned-result-run.v1", "product-source-transfer.v1", "product-source-transfer.v2", "product-source-transfer.measurement-v2.v1",
       "product-source-operations.v1", "product-research-revision.v1", "imported-product-review.v1", "imported-design-continuation.v1", "imported-design-review.v1", "imported-execution.v1", "imported-execution-review.v1", "imported-validation.v1",
       "product.source.recovery.v1", SOURCE_CLEAN_RESTART_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1,
@@ -132,6 +145,17 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
         verification_profile_id: profile.verifier.id, target_kind: "static_site" as const, ...(capabilities ? { capabilities } : {}) });
     });
     Object.freeze(hello.release_profiles);
+  }
+  if (applicationPublicationProfiles.length) {
+    configuredFeatures.push(APPLICATION_PUBLICATION_FEATURE_V1);
+    hello.application_publication_profiles = applicationPublicationProfiles.map(profile => {
+      const saved = readApplicationPublicationProfile(profile);
+      return Object.freeze({ profile_id: saved.config.id, project_id: saved.config.project_id, computer_id: saved.config.computer_id,
+        verification_profile_id: saved.config.verification_profile_id, capabilities: saved.capabilities });
+    });
+    if (new Set(hello.application_publication_profiles.map(profile => profile.profile_id)).size !== applicationPublicationProfiles.length)
+      throw Error("Application publication profile identities must be unique");
+    Object.freeze(hello.application_publication_profiles);
   }
   if (hello.execution_features !== undefined || configuredFeatures.length) hello.execution_features = configuredFeatures;
   if (hello.execution_features) Object.freeze(hello.execution_features);
@@ -183,6 +207,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
     ...(failed ? { failed } : {}),
     ...(executionReady ? { executionReady } : {}),
     async start(): Promise<void> {
+      if (applicationPublicationProfiles.length && sessionInvalidated) throw Error("Application publication session ended; construct a new node for a new paired session");
       if (sourceFile !== undefined && sessionInvalidated) throw new Error("Product source session ended; construct a new node after recovery");
       if (transport !== null && client !== null) {
         await transport.ready;
@@ -238,7 +263,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
           heartbeatIntervalMs: options.heartbeatIntervalMs,
           acknowledgeRunEvents: options.acknowledgeRunEvents,
           reconnectDelayMs: options.reconnectDelayMs,
-          reconnect: source === undefined,
+          reconnect: source === undefined && applicationPublicationProfiles.length === 0,
           onFatalDisconnect: () => {
             if (sourceFile === undefined) { void client?.stop(true); return; }
             sessionInvalidated = true;
@@ -246,6 +271,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
             void stop().catch(error => { reportFailure(error instanceof Error ? error : new Error("Product source shutdown failed")); });
           },
           onConnected: () => { void client?.replayReleaseHealth().catch(() => {}); },
+          onPublicationSessionEnded: () => { sessionInvalidated = true; client?.invalidateApplicationPublicationSession(); },
           WebSocketImpl: options.WebSocketImpl
         });
         // Observe early connection rejection even if controller construction fails.
@@ -259,6 +285,8 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
           git: options.git,
           uploadArtifact: options.uploadArtifact,
           verificationProfiles, releaseProfiles,
+          ...(applicationPublicationProfiles.length ? { applicationPublication: { profiles: applicationPublicationProfiles,
+            getSession: () => sessionInvalidated ? undefined : transport?.currentPublicationSession() } } : {}),
           sourceCommandDiagnostic: options.sourceCommandDiagnostic,
           releaseRetrySession: () => {
             if (sessionInvalidated || !transport?.connected) return undefined;

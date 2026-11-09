@@ -66,9 +66,44 @@ export const ApplicationPublicationAuthorizationV1Schema = z.object({
 }).strict();
 export type ApplicationPublicationAuthorizationV1 = z.infer<typeof ApplicationPublicationAuthorizationV1Schema>;
 
+/** Server-issued run routing. These data projections never recreate a node-private permit. */
+export const ApplicationPublicationContextV1Schema = z.object({
+  version: z.literal(1), authorization: ApplicationPublicationAuthorizationV1Schema,
+  capabilities: ApplicationPublicationCapabilitiesV1Schema, publisher_session_id: id, agent_id: id, agent_instance_id: id,
+}).strict().superRefine((value, ctx) => {
+  if (value.authorization.grant.publication_profile_id !== value.capabilities.binding.publication_profile_id)
+    issue(ctx, ["capabilities"], "Publication context must retain the original authorized profile");
+});
+export type ApplicationPublicationContextV1 = z.infer<typeof ApplicationPublicationContextV1Schema>;
+
+export const ApplicationPublicationVerificationBindingV1Schema = z.object({
+  version: z.literal(1), authorization_event_id: id, publication_profile_id: id,
+  publication_profile_digest: digest, publication_contract_digest: digest, publisher_session_id: id,
+}).strict();
+export type ApplicationPublicationVerificationBindingV1 = z.infer<typeof ApplicationPublicationVerificationBindingV1Schema>;
+
+/** A committed server evidence identity, matched to the node's original pending event body and session. */
+export const ApplicationPublicationVerificationAckV1Schema = z.object({
+  version: z.literal(1), request_id: id, evidence_id: id, event_id: id, payload_digest: digest, publisher_session_id: id,
+}).strict();
+export type ApplicationPublicationVerificationAckV1 = z.infer<typeof ApplicationPublicationVerificationAckV1Schema>;
+
+export const ApplicationPublicationProfileAdvertisementV1Schema = z.object({
+  profile_id: id, project_id: id, computer_id: id, verification_profile_id: id,
+  capabilities: ApplicationPublicationCapabilitiesV1Schema,
+}).strict().superRefine((value, ctx) => {
+  const binding = value.capabilities.binding;
+  if (value.profile_id !== binding.publication_profile_id || value.project_id !== binding.project_id
+    || value.computer_id !== binding.computer_id || value.verification_profile_id !== binding.verification_profile_id)
+    issue(ctx, ["capabilities"], "Publication advertisement must retain its exact protected capability binding");
+});
+export type ApplicationPublicationProfileAdvertisementV1 = z.infer<typeof ApplicationPublicationProfileAdvertisementV1Schema>;
+export const ApplicationPublicationProfileAdvertisementsV1Schema = z.array(ApplicationPublicationProfileAdvertisementV1Schema).max(64)
+  .refine(values => new Set(values.map(value => value.profile_id)).size === values.length, "Duplicate application publication profile ID");
+
 /** These projections must be checked against original node-private completion records and server evidence. */
 export const ApplicationPublicationVerificationSourceV1Schema = z.object({
-  run_id: id, request_id: id, evidence_id: id, agent_id: id, stage: z.literal("validation"),
+  run_id: id, request_id: id, evidence_id: id, agent_id: id, agent_instance_id: id, stage: z.literal("validation"),
   origin_run_id: id, origin_request_id: id, test_store_id: z.string().guid(), candidate: ApplicationCandidateV1Schema,
 }).strict();
 export type ApplicationPublicationVerificationSourceV1 = z.infer<typeof ApplicationPublicationVerificationSourceV1Schema>;
@@ -81,7 +116,7 @@ export type ApplicationPublicationCriterionV1 = z.infer<typeof ApplicationPublic
 /** The server must additionally prove exhaustive coverage of the exact accepted plan and actual case IDs. */
 export const ApplicationPublicationAcceptanceBindingV1Schema = z.object({
   version: z.literal(1), plan: z.object({ id, version: z.number().int().min(1).max(2_147_483_647) }).strict(),
-  research_digest: digest, measurement_plan_digest: digest, accepted_review_event_id: id,
+  research_digest: digest, design_digest: digest, measurement_plan_digest: digest, accepted_review_event_id: id,
   development_criteria: z.array(criterion.extend({
     case_ids: z.array(id).min(1).max(400).refine(values => new Set(values).size === values.length, "Duplicate verification case ID"),
   }).strict()).min(1).max(10_000),
@@ -112,7 +147,7 @@ export const ApplicationPublicationRequestV1Schema = z.object({
   if (value.author.origin_run_id !== value.author.run_id || value.author.origin_request_id !== value.author.request_id
     || value.reviewer.origin_run_id !== value.author.run_id || value.reviewer.origin_request_id !== value.author.request_id)
     issue(ctx, ["reviewer"], "Both verification sources must retain the final author's original run and request");
-  for (const field of ["run_id", "request_id", "evidence_id", "agent_id", "test_store_id"] as const)
+  for (const field of ["run_id", "request_id", "evidence_id", "agent_id", "agent_instance_id", "test_store_id"] as const)
     if (value.author[field] === value.reviewer[field]) issue(ctx, ["reviewer", field], "Independent review requires a distinct agent, run, request, evidence and test store");
   if (value.acceptance.accepted_review_event_id === value.authorization.event_id)
     issue(ctx, ["acceptance", "accepted_review_event_id"], "The system review decision is separate from the original user's authorization");
@@ -169,11 +204,13 @@ export type ApplicationPublicationHealthV1 = z.infer<typeof ApplicationPublicati
 
 /** An original Job observation says live at this instant; it intentionally has no exit-confirmed field. */
 export const ApplicationPublicationLiveOwnerV1Schema = z.object({
-  service: ApplicationPublicationServiceIdentityV1Schema, observed_at: time, closed: z.literal(false),
+  service: ApplicationPublicationServiceIdentityV1Schema, counters_observed_at: time, observed_at: time, closed: z.literal(false),
   native: z.object({ root_pid: z.number().int().min(1).max(4_294_967_295), root_creation_time: decimal,
     observed: z.literal(true), job_member: z.literal(true) }).strict(),
   requests_used: count, in_flight: z.number().int().min(0).max(1),
 }).strict().superRefine((value, ctx) => {
+  if (Date.parse(value.counters_observed_at) > Date.parse(value.observed_at))
+    issue(ctx, ["counters_observed_at"], "Service counters must be sampled before the accompanying original native observation");
   if (value.in_flight > value.requests_used) issue(ctx, ["in_flight"], "An active request must have consumed the original owner's request budget");
 });
 export type ApplicationPublicationLiveOwnerV1 = z.infer<typeof ApplicationPublicationLiveOwnerV1Schema>;

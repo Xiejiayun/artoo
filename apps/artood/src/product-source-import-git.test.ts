@@ -11,21 +11,22 @@ import type { PreparedVerificationProfile } from "./verification.js";
 import type { OwnedGitRequest } from "./owned/owned-git.js";
 import type { ProtectedCommandResult } from "./protected-command.js";
 
-const control = vi.hoisted(() => ({ command: vi.fn(), subject: vi.fn() }));
+const control = vi.hoisted(() => ({ command: vi.fn(), subject: vi.fn(), storageRead: vi.fn() }));
 vi.mock("./windows-code-installation.js", () => ({ prepareWindowsCodeInstallation: vi.fn(() => ({})), assertWindowsCodeInstallation: vi.fn() }));
 vi.mock("./windows-release-storage.js", () => ({ prepareWindowsReleaseStorage: vi.fn(() => ({})),
-  assertWindowsReleaseStorage: vi.fn(), auditWindowsReleaseStorage: vi.fn() }));
+  assertWindowsReleaseStorage: control.storageRead, auditWindowsReleaseStorage: vi.fn() }));
 vi.mock("./owned/windows-owned-process.js", () => ({ assertWindowsProcessBackend: vi.fn() }));
 vi.mock("./verification.js", () => ({ assertFinalVerificationExportBinding: vi.fn(), assertLocallyPreparedVerificationProfile: vi.fn(),
   prepareVerificationProfiles: vi.fn(value => value), subjectManifest: control.subject,
   selectVerificationProfile: vi.fn(), runTransferredResearchVerification: vi.fn() }));
 vi.mock("./protected-command.js", () => ({ runProtectedCommand: control.command }));
-import { importProductSourceTransfer, prepareProductSourceRuntime } from "./product-source-runtime.js";
+import { importProductSourceTransfer, prepareProductSourceRuntime, claimProductSourceRun, releaseProductSourceRun,
+  closeProductSourceRuntime, reserveProductSourcePublicationWorkspace } from "./product-source-runtime.js";
 
 const data = JSON.parse(readFileSync(new URL("../../../packages/domain/test-fixtures/product-source-operation.json", import.meta.url), "utf8"));
 const sha = (value: string | Uint8Array) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!, roots: string[] = [];
-beforeEach(() => { vi.clearAllMocks(); Object.defineProperty(process, "platform", { ...platform, value: "win32" }); });
+beforeEach(() => { vi.clearAllMocks(); control.storageRead.mockReset(); Object.defineProperty(process, "platform", { ...platform, value: "win32" }); });
 afterEach(() => {
   Object.defineProperty(process, "platform", platform);
   const prefix = `${realpathSync.native(tmpdir())}${sep}artoo-import-git-`;
@@ -68,8 +69,62 @@ function fixture() {
   const journal = () => readdirSync(operation).filter(name => /^\d{4}\.json$/.test(name)).sort()
     .map(name => JSON.parse(readFileSync(join(operation, name), "utf8")));
   const run = () => importProductSourceTransfer(runtime, request, requestDigest, capsule);
-  return { workspace, staging, operation, claim, git, backend, product, request, requestDigest, capsule, journal, run };
+  return { root, runtime, store, workspace, staging, operation, claim, git, backend, product, request, requestDigest, capsule, journal, run };
 }
+
+describe("publication shares original source workspace ownership", () => {
+  function publication(f: ReturnType<typeof fixture>) {
+    const directory = join(f.root, "publication"); mkdirSync(directory); return directory;
+  }
+  it("blocks real import admission and overlapping ordinary claims until its captured fence is released", async () => {
+    const f = fixture(), directory = publication(f);
+    const reservation = reserveProductSourcePublicationWorkspace(f.runtime, f.workspace, [directory]);
+    await expect(f.run()).rejects.toThrow(/occupied/);
+    expect(control.command).not.toHaveBeenCalled();
+    expect(() => claimProductSourceRun(f.runtime, "other-run", f.workspace)).toThrow(/occupied/);
+    expect(() => closeProductSourceRuntime(f.runtime)).toThrow(/live or uncertain/);
+    reservation.release(); reservation.release();
+    claimProductSourceRun(f.runtime, "other-run", f.workspace);
+    releaseProductSourceRun(f.runtime, "other-run"); closeProductSourceRuntime(f.runtime);
+  });
+  it("rejects publication while another original source writer retains the workspace", () => {
+    const f = fixture(), directory = publication(f);
+    claimProductSourceRun(f.runtime, "source-writer", f.workspace);
+    expect(() => reserveProductSourcePublicationWorkspace(f.runtime, f.workspace, [directory])).toThrow(/occupied/);
+    expect(() => closeProductSourceRuntime(f.runtime)).toThrow(/live or uncertain/);
+    releaseProductSourceRun(f.runtime, "source-writer");
+    const reservation = reserveProductSourcePublicationWorkspace(f.runtime, f.workspace, [directory]);
+    reservation.release(); closeProductSourceRuntime(f.runtime);
+  });
+  it("releases only its own claim and preserves a distinct workspace claim", () => {
+    const f = fixture(), directory = publication(f), unrelated = join(f.root, "unrelated"); mkdirSync(unrelated);
+    const reservation = reserveProductSourcePublicationWorkspace(f.runtime, f.workspace, [directory]);
+    // A workspace claim is only a conflict fence; actual execution still needs
+    // the separate configured-root and verifier admission.
+    claimProductSourceRun(f.runtime, "unrelated-writer", unrelated);
+    reservation.release();
+    expect(() => closeProductSourceRuntime(f.runtime)).toThrow(/live or uncertain/);
+    releaseProductSourceRun(f.runtime, "unrelated-writer"); closeProductSourceRuntime(f.runtime);
+  });
+  it("can release its original fence after configuration reads are revoked without granting new work", () => {
+    const f = fixture(), directory = publication(f);
+    const reservation = reserveProductSourcePublicationWorkspace(f.runtime, f.workspace, [directory]);
+    control.storageRead.mockImplementation(() => { throw Error("Controlled original configuration revoked"); });
+    expect(() => claimProductSourceRun(f.runtime, "blocked", f.workspace)).toThrow(/revoked/);
+    const reads = control.storageRead.mock.calls.length;
+    reservation.release(); reservation.release();
+    expect(control.storageRead).toHaveBeenCalledTimes(reads);
+    expect(() => claimProductSourceRun(f.runtime, "still-blocked", f.workspace)).toThrow(/revoked/);
+    control.storageRead.mockReset(); closeProductSourceRuntime(f.runtime);
+  });
+  it.each(["equal", "ancestor", "descendant"] as const)("rejects %s source-store overlap before claiming a workspace", relation => {
+    const f = fixture(), directory = relation === "equal" ? f.store : relation === "ancestor" ? f.root : join(f.store, "publication");
+    if (relation === "descendant") mkdirSync(directory);
+    expect(() => reserveProductSourcePublicationWorkspace(f.runtime, f.workspace, [directory])).toThrow(/overlaps protected source storage/);
+    claimProductSourceRun(f.runtime, "still-available", f.workspace);
+    releaseProductSourceRun(f.runtime, "still-available"); closeProductSourceRuntime(f.runtime);
+  });
+});
 
 describe("source import Git staging under a fixed Guardian workspace", () => {
   it("keeps the workspace empty until Git closes, then imports from the separate node-local staging directory", async () => {

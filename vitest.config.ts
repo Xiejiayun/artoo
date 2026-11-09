@@ -7,7 +7,13 @@ export default defineConfig({
       "@artoo/server": new URL("./apps/server/src/index.ts", import.meta.url).pathname,
       "@artoo/web": new URL("./apps/web/src/index.ts", import.meta.url).pathname,
       "@artoo/db": new URL("./packages/db/src/index.ts", import.meta.url).pathname,
+      // The fixed publication host imports this pure contract directly. Match
+      // its subpath before the domain barrel alias, using the same source graph.
+      "@artoo/domain/dist/application-publication.js": new URL("./packages/domain/src/application-publication.ts", import.meta.url).pathname,
       "@artoo/domain": new URL("./packages/domain/src/index.ts", import.meta.url).pathname,
+      // Guardian admission uses the same recovery schema without eagerly loading
+      // the protocol barrel's unrelated publication envelopes.
+      "@artoo/protocol/dist/source-recovery.js": new URL("./packages/protocol/src/source-recovery.ts", import.meta.url).pathname,
       "@artoo/protocol": new URL("./packages/protocol/src/index.ts", import.meta.url).pathname,
       "@artoo/storage": new URL("./packages/storage/src/index.ts", import.meta.url).pathname,
       "@artoo/testkit": new URL("./packages/testkit/src/index.ts", import.meta.url).pathname,

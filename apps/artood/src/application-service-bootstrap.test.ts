@@ -3,10 +3,13 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LocalApplicationService } from "./application-local-service.js";
+import { encodeApplicationPublicationControlCommand } from "./application-publication-control-protocol.js";
 
 const state = vi.hoisted(() => ({ selection: vi.fn(), prepare: vi.fn(), current: vi.fn(), reopen: vi.fn(), initialize: vi.fn(),
+  publication: vi.fn(), publicationInitialize: vi.fn(), publicationRead: vi.fn(), publicationSubscribe: vi.fn(), publicationControl: vi.fn(),
   events: [] as string[], imports: 0 }));
-vi.mock("./application-bootstrap-admission.js", () => ({ applicationServiceSelection: state.selection, prepareApplicationBootstrap: state.prepare }));
+vi.mock("./application-bootstrap-admission.js", () => ({ applicationServiceSelection: state.selection, prepareApplicationBootstrap: state.prepare,
+  readApplicationBootstrapPublication: state.publication }));
 const originalProcess = process;
 // Explicit controlled native-closure observations. Production uses the original
 // initialized reference/service WeakMaps and cannot obtain these from task JSON.
@@ -46,10 +49,14 @@ class Output extends EventEmitter {
 let last: Awaited<ReturnType<typeof fixture>> | undefined;
 beforeEach(() => {
   vi.resetModules(); state.events.length = 0; state.imports = 0;
-  for (const mock of [state.selection, state.prepare, state.current, state.reopen, state.initialize]) mock.mockReset();
+  for (const mock of [state.selection, state.prepare, state.current, state.reopen, state.initialize, state.publication,
+    state.publicationInitialize, state.publicationRead, state.publicationSubscribe, state.publicationControl]) mock.mockReset();
   vi.doMock("./application-service-host-api.js", () => {
     state.imports++; state.events.push("host-import"); return { reopenInstalledApplicationService: state.reopen, initializeApplicationPackage: state.initialize,
-      readInitializedApplicationClosure: () => initializedClosure, readInstalledApplicationClosure: () => serviceClosure };
+      readInitializedApplicationClosure: () => initializedClosure, readInstalledApplicationClosure: () => serviceClosure,
+      initializeApplicationPublicationPackage: state.publicationInitialize, reopenInstalledApplicationPublicationService: state.reopen,
+      readInstalledApplicationPublication: state.publicationRead, subscribeInstalledApplicationPublication: state.publicationSubscribe,
+      readInstalledApplicationPublicationControl: state.publicationControl };
   });
 });
 afterEach(async () => {
@@ -60,7 +67,7 @@ afterEach(async () => {
   }
   vi.unstubAllGlobals(); vi.doUnmock("./application-service-host-api.js");
 });
-async function fixture(mode: "stdin" | "signals" = "stdin", operation: "reopen" | "initialize" = "reopen") {
+async function fixture(mode: "stdin" | "signals" = "stdin", operation: "reopen" | "initialize" | "publication-initialize" | "publication-reopen" = "reopen") {
   // Import under the genuine process argv so the module's direct-entry guard
   // cannot start a second runner. Only subsequent explicit calls see this host.
   const { runApplicationServiceBootstrap } = await import("./application-service-bootstrap.js");
@@ -307,6 +314,54 @@ describe("application-only bootstrap runner with original controlled owners", ()
 });
 
 describe("fixed package initialization runner", () => {
+  it("keeps publication initialization status distinct and emits the same original proof after closure", async () => {
+    const f = await fixture("stdin", "publication-initialize"), result = { reference: { path: "original-reference" },
+      provenance: { retained: "controlled-proof".repeat(500) }, installation: { generation_id: "original-generation" } };
+    state.publicationInitialize.mockResolvedValue(result); await f.run();
+    expect(f.stdout.records).toEqual([{ version: 1, kind: "application-publication.initialized", ...result, closure: initializedClosure }]);
+    expect(state.initialize).not.toHaveBeenCalled(); expect(state.reopen).not.toHaveBeenCalled(); expectDetached(f);
+  });
+  it("withholds controlled publication listening until original quiescence and retains its final drain/EOF", async () => {
+    const f = await fixture("stdin", "publication-reopen"), digest = "sha256:" + "a".repeat(64);
+    const identity = { publication_id: "publication", lease_id: "lease", owner_id: "owner", generation: 1 as const,
+      deployment_generation: "deployment", reopen_pin_digest: digest, database_identity: { device: "1", inode: "2" },
+      schema_digest: digest, scope_digest: digest, artifact_digest: digest, origin: f.service.origin };
+    const counters = { observed_at: "2026-11-09T12:00:00.000Z", requests_used: 0, closed_transports: 0, in_flight: 0 };
+    const proof = { counters, closure: { version: 1 as const, scope: "original-native-owners" as const,
+      invocations: 0, runtime_normal_closures: 0, broker_normal_closures: 0 } };
+    const initial = deferred<typeof proof>(), pause = vi.fn(() => initial.promise), resume = vi.fn();
+    state.publication.mockReturnValue({ version: 1, identity, challenge: "11111111-1111-4111-8111-111111111111",
+      control: { version: 1, read_path: "/api/items" } });
+    state.publicationControl.mockReturnValue({ pause, resume, probe: vi.fn(), drain: f.drain });
+    state.publicationRead.mockReturnValue({ preflight: { existing_database: true, process_exit_confirmed: true }, counters });
+    state.publicationSubscribe.mockReturnValue(vi.fn());
+    const work = f.run(); await until(() => pause.mock.calls.length === 1); expect(f.stdout.records).toEqual([]);
+    initial.resolve(proof); await until(() => f.stdout.records.length === 1);
+    expect(f.stdout.records[0]).toMatchObject({ kind: "application-publication.listening",
+      control: { identity, sequence: -1, cycle: 0, state: "quiesced", ...proof } });
+    f.input.emit("data", Buffer.from(encodeApplicationPublicationControlCommand({ version: 1, identity, kind: "resume", sequence: 0, cycle: 0 })));
+    await until(() => f.stdout.records.length === 2); expect(resume).toHaveBeenCalledOnce();
+    f.input.emit("data", Buffer.from(encodeApplicationPublicationControlCommand({ version: 1, identity, kind: "drain", sequence: 1, cycle: 0 })));
+    expect(f.drain).toHaveBeenCalledOnce(); f.finish(); await new Promise<void>(resolve => setImmediate(resolve));
+    expect(f.settled).toBe(false); f.input.emit("end"); await work;
+    expect(f.stdout.records.at(-1)).toMatchObject({ kind: "application-publication.closed", reason: "stdin-drain", identity });
+    expectDetached(f);
+  });
+  it("emits separate publication listening/progress/normal-drain statuses from the original service", async () => {
+    const f = await fixture("stdin", "publication-reopen"), identity = { owner_id: "controlled-original-owner" };
+    const counters = { observed_at: new Date().toISOString(), requests_used: 0, in_flight: 0, closed_transports: 0 };
+    state.publication.mockReturnValue({ version: 1, identity, challenge: "controlled" });
+    state.publicationRead.mockReturnValue({ preflight: { existing_database: true, process_exit_confirmed: true }, counters });
+    const unsubscribe = vi.fn(); state.publicationSubscribe.mockReturnValue(unsubscribe);
+    const work = f.run(); await until(() => f.stdout.records.length === 1 && state.publicationSubscribe.mock.calls.length === 1);
+    await Promise.resolve();
+    state.publicationSubscribe.mock.calls[0]![1](counters); await until(() => f.stdout.records.length === 2);
+    f.input.emit("data", drainCommand); f.input.emit("end"); await until(() => f.drain.mock.calls.length === 1);
+    expect(f.close).not.toHaveBeenCalled(); f.finish(); await work;
+    expect(f.stdout.records.map(record => record.kind)).toEqual(["application-publication.listening", "application-publication.progress", "application-publication.closed"]);
+    expect(f.stdout.records[2]).toMatchObject({ identity, reason: "stdin-drain", closure: serviceClosure, counters });
+    expect(unsubscribe).toHaveBeenCalledOnce(); expectDetached(f);
+  });
   const reference = Object.freeze({ path: "C:\\installed\\generation\\control\\REOPEN.v1.json", bytes: 42, sha256: "sha256:" + "a".repeat(64) });
   it("awaits original initialization, hands off only its reference and never starts a service", async () => {
     const f = await fixture("stdin", "initialize"), initialized = deferred<typeof reference>(); state.initialize.mockReturnValue(initialized.promise);

@@ -36,6 +36,14 @@ function same(left, right) { return JSON.stringify(left) === JSON.stringify(righ
 function moduleFailure(reason, file, name, kind, position = {}) {
   fail(reason + ' [module_edge.v1 ' + JSON.stringify({ file: String(file).slice(0, 512), module: String(name).slice(0, 256), kind, ...position }) + ']');
 }
+function earlyInputFailure(file, input, repoRoot, bytesInOutput) {
+  // Metadata paths only, never source or arbitrary output. Retain the supplied
+  // spelling and its lexical location so resolver aliases can be diagnosed.
+  const resolved = resolve(repoRoot, input);
+  fail('application source in bootstrap static closure: ' + basename(input).slice(0, 128)
+    + ' [bootstrap_input.v1 ' + JSON.stringify({ file: String(file).slice(0, 512), input: String(input).slice(0, 512),
+      resolved: resolved.slice(0, 512), bytesInOutput: Number.isSafeInteger(bytesInOutput) ? bytesInOutput : null }) + ']');
+}
 
 // ulid 2.4.0 advertises an ESM entry, but its Node PRNG still calls require.
 // Bind only this reviewed source and replace that one builtin load at build
@@ -148,19 +156,28 @@ export function auditApplicationServiceHostBuild(result, { repoRoot, outputDirec
   };
   const early = closure(BOOTSTRAP), host = closure(HOST);
   if (early.has(HOST)) fail('host imported before admission');
-  // This reviewed domain wire contract contains only data schemas and fixed
-  // guidance, with no application execution, installation or I/O authority.
-  // Permit its exact source/build locations, never an arbitrary matching name.
-  const earlyContracts = new Set(['packages/domain/src/application-development.ts', 'packages/domain/dist/application-development.js']
-    .map(path => resolve(repoRoot, path)));
+  // These reviewed wire contracts contain only schemas, fixed guidance and the
+  // pure publication marker digest. They do not create installation, process,
+  // listener or SQLite authority. Permit exact locations, not matching names
+  // or the domain barrel; the executor/runtime remain in the deferred graph.
+  const earlyContracts = new Set([
+    ...['application-development', 'application-publication', 'application-publication-measurement']
+      .flatMap(name => [`packages/domain/src/${name}.ts`, `packages/domain/dist/${name}.js`]),
+    'apps/artood/src/application-publication-process-protocol.ts',
+    'apps/artood/src/application-publication-control-protocol.ts',
+  ].map(path => resolve(repoRoot, path)));
+  // This fixed input parser has no module-evaluation side effects. It binds
+  // only the original bootstrap stream and later-attached host operations;
+  // neither its name nor its imports grant early application execution.
+  const earlyPublicationControl = resolve(repoRoot, 'apps/artood/src/application-publication-bootstrap-control.ts');
   // The trusted broker core imports SQLite without opening a store at module
   // evaluation. It belongs to the delayed application graph, never bootstrap.
   for (const file of early) if (graph.get(file).some(edge => edge.path === 'node:sqlite'))
     moduleFailure('SQLite must remain in the deferred host', file, 'node:sqlite', 'import-statement');
   for (const file of early) for (const [input, contribution] of Object.entries(metadata.get(file).inputs)) {
     if (contribution.bytesInOutput > 0 && basename(input).startsWith('application-') && !EARLY_APPLICATION.has(basename(input))
-      && !earlyContracts.has(resolve(repoRoot, input)))
-      fail('application source in bootstrap static closure: ' + basename(input));
+      && !earlyContracts.has(resolve(repoRoot, input)) && resolve(repoRoot, input) !== earlyPublicationControl)
+      earlyInputFailure(file, input, repoRoot, contribution.bytesInOutput);
   }
   const authority = source('windows-code-installation.ts');
   const owners = [...metadata].filter(([, value]) => Object.entries(value.inputs).some(([input, contribution]) =>

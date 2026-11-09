@@ -14,6 +14,8 @@ import { importedCleanValidationCommandSchema, importedCleanValidationStopSchema
 import { importedRecoveryValidationReviewCommandSchema, importedRecoveryValidationReviewStopSchema, importedRecoveryValidationReviewStatusSchema, importedRecoveryValidationReviewReceiptSchema } from "./imported-recovery-validation-review.js";
 import { importedCleanValidationReviewCommandSchema, importedCleanValidationReviewStopSchema, importedCleanValidationReviewStatusSchema, importedCleanValidationReviewReceiptSchema } from "./imported-clean-validation-review.js";
 import { z } from "zod";
+import { applicationPublicationStartCommandSchema, applicationPublicationStopCommandSchema, applicationPublicationStatusCommandSchema,
+  applicationPublicationSessionCommandSchema, applicationPublicationReceiptAckCommandSchema, applicationPublicationObservationAckCommandSchema } from "./application-publication.js";
 
 import {
   ArtifactPayloadSchema,
@@ -25,6 +27,8 @@ import {
   RunVerificationPayloadSchema,
   VerificationProfileAdvertisementsSchema,
   ReleaseProfileAdvertisementsSchema,
+  ApplicationPublicationProfileAdvertisementsV1Schema,
+  ApplicationPublicationVerificationAckV1Schema,
   ProductReleaseRequestSchema,
   ProductReleaseReceiptSchema,
   ProductReleaseHealthReportSchema,
@@ -66,10 +70,15 @@ export const nodeHelloSchema = z.object({
   execution_features: z.array(z.string().min(1).max(128)).max(32).optional(),
   verification_profiles: VerificationProfileAdvertisementsSchema.optional(),
   release_profiles: ReleaseProfileAdvertisementsSchema.optional(),
+  application_publication_profiles: ApplicationPublicationProfileAdvertisementsV1Schema.optional(),
   owned_result_profiles: NodeOwnedResultProfileDescriptorsV1Schema.optional(),
   product_source_routing: ProductSourceRoutingV1Schema.optional(),
   managed_receipts: z.object({ version: z.number().int().positive(), nonce: z.string().guid(),
     required_contract: z.string().min(1).max(128) }).optional()
+}).superRefine((value, ctx) => {
+  if (value.application_publication_profiles?.length && (!value.execution_features?.includes("application-publication.v1")
+    || value.application_publication_profiles.some(profile => profile.computer_id !== value.node_id)))
+    ctx.addIssue({ code: "custom", path: ["application_publication_profiles"], message: "Application publication profiles require their original node and explicit execution feature" });
 });
 
 export const nodeSessionProbeSchema = z.object({ kind: z.literal("node.session.probe"),
@@ -181,6 +190,10 @@ export const runEventAckCommandSchema = z.object({
   payload: z.object({
     run_id: z.string().min(1), sequence: z.number().int().nonnegative().max(2147483647),
     status: z.enum(["accepted", "rejected"]), message: z.string().optional(),
+    application_verification: ApplicationPublicationVerificationAckV1Schema.optional(),
+  }).superRefine((value, ctx) => {
+    if (value.application_verification && value.status !== "accepted") ctx.addIssue({ code: "custom", path: ["application_verification"],
+      message: "Only an accepted committed event can bind an application verification evidence identity" });
   }),
 });
 
@@ -211,12 +224,32 @@ const legacyRunStartPayloadSchema = z.unknown().superRefine((raw, ctx) => {
   }
 }).pipe(RunStartPayloadSchema).superRefine((start, ctx) => {
   const context = start.context_pack.payload;
-  if (!start.verification?.application && !context?.app_delivery) return;
-  if (!start.verification?.application || !context?.app_delivery || !context.verification_capabilities?.application
+  const publication = context?.application_publication, grant = context?.app_publication, required = start.verification?.application_publication;
+  if (!start.verification?.application && !context?.app_delivery && !grant && !publication && !required) return;
+  if (!start.verification?.application || !(context?.app_delivery || grant) || !context?.verification_capabilities?.application
+    || context.app_delivery && (grant || publication || required)
     || start.workspace_allocation || start.workspace.branch != null || context.release_capabilities
     || Object.keys(context).some(key => key.startsWith("imported_") || key === "transferred_product_input" || key === "product_research_revision")) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["verification", "application"],
       message: "Application development requires its ordinary inline workspace context without handoff, managed allocation or static publication" });
+  }
+  if (grant || publication || required) {
+    const binding = publication?.capabilities.binding, verification = start.verification;
+    if (!grant || !publication || !required || !binding || !context?.goal_context
+      || publication.agent_instance_id !== start.agent_instance_id || binding.project_id !== context.project.id
+      || grant.publication_profile_id !== publication.authorization.grant.publication_profile_id
+      || grant.publication_profile_id !== binding.publication_profile_id || required.authorization_event_id !== publication.authorization.event_id
+      || required.publisher_session_id !== publication.publisher_session_id || required.publication_profile_id !== binding.publication_profile_id
+      || required.publication_profile_digest !== binding.publication_profile_digest || required.publication_contract_digest !== binding.publication_contract_digest
+      || binding.verification_profile_id !== verification?.profile_id || binding.verification_profile_digest !== verification?.capability_binding?.profile_digest
+      || binding.verification_profile_id !== context.verification_capabilities?.profile_id
+      || binding.verification_profile_digest !== context.verification_capabilities?.profile_digest
+      || binding.application_config_digest !== verification?.application?.config_digest
+      || binding.application_contract_digest !== verification?.application?.contract_digest
+      || binding.application_config_digest !== context.verification_capabilities?.application?.config_digest
+      || binding.application_contract_digest !== context.verification_capabilities?.application?.contract_digest)
+      ctx.addIssue({ code: "custom", path: ["verification", "application_publication"],
+        message: "Publication verification must bind the original grant, user event, agent instance, paired session and protected verifier capabilities" });
   }
 });
 export const runStartCommandSchema = z.object({
@@ -253,6 +286,12 @@ export const productReleaseHealthAckCommandSchema = z.object({
 
 // Name each existing option so declaration emit preserves exact types without expanding the entire graph.
 type CommandSchemaOptions = [
+  typeof applicationPublicationSessionCommandSchema,
+  typeof applicationPublicationStartCommandSchema,
+  typeof applicationPublicationStopCommandSchema,
+  typeof applicationPublicationStatusCommandSchema,
+  typeof applicationPublicationReceiptAckCommandSchema,
+  typeof applicationPublicationObservationAckCommandSchema,
   typeof sourceLifecycleRegisteredCommandSchema,
   typeof sourceCleanCheckpointCommittedCommandSchema,
   typeof sourceLifecycleRejectedCommandSchema,
@@ -329,6 +368,9 @@ type CommandSchemaOptions = [
 
 /** All Server -> Node commands, discriminated on `type`. */
 export const commandSchema: z.ZodDiscriminatedUnion<CommandSchemaOptions, "type"> = z.discriminatedUnion("type", [
+  applicationPublicationSessionCommandSchema,
+  applicationPublicationStartCommandSchema, applicationPublicationStopCommandSchema, applicationPublicationStatusCommandSchema,
+  applicationPublicationReceiptAckCommandSchema, applicationPublicationObservationAckCommandSchema,
   sourceLifecycleRegisteredCommandSchema, sourceCleanCheckpointCommittedCommandSchema, sourceLifecycleRejectedCommandSchema,
   productSourceRecoverySessionSchema,
   productSourceRecoveryRegisteredSchema,

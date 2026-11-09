@@ -2,12 +2,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplicationPackageInitializationOptions } from "./application-initialize-package.js";
 const state = vi.hoisted(() => ({ assert: vi.fn(), create: vi.fn(), materialize: vi.fn(), install: vi.fn(), abandon: vi.fn(),
-  initialize: vi.fn(), invalidate: vi.fn(), token: Object.freeze({}), bootstrap: Object.freeze({}) }));
-vi.mock("./application-bootstrap-admission.js", () => ({ assertApplicationInitializationAdmission: state.assert }));
+  initialize: vi.fn(), invalidate: vi.fn(), publication: vi.fn(), materializePublication: vi.fn(), facts: vi.fn(), token: Object.freeze({}), bootstrap: Object.freeze({}) }));
+vi.mock("./application-bootstrap-admission.js", () => ({ assertApplicationInitializationAdmission: state.assert,
+  assertApplicationPublicationInitializationAdmission: state.publication }));
 vi.mock("./application-installation.js", () => ({ createApplicationInstallationOwner: state.create, invalidateApplicationInstallation: state.invalidate }));
-vi.mock("./application-install-package.js", () => ({ materializeApplicationInstallationPlan: state.materialize }));
-vi.mock("./application-installed-session.js", () => ({ initializeRestartableApplication: state.initialize }));
-import { initializeApplicationPackage } from "./application-initialize-package.js";
+vi.mock("./application-install-package.js", () => ({ materializeApplicationInstallationPlan: state.materialize,
+  materializeApplicationInstallationPlanWithProvenance: state.materializePublication }));
+vi.mock("./application-installed-session.js", () => ({ initializeRestartableApplication: state.initialize, readInitializedApplicationInstallation: state.facts }));
+import { initializeApplicationPackage, initializeApplicationPublicationPackage } from "./application-initialize-package.js";
 const owner = Object.freeze({ generationId: "fixed", directory: "C:\\dest\\fixed\\code", storageDirectory: "C:\\dest\\fixed\\store", install: state.install, abandon: state.abandon });
 const plan = Object.freeze({}), reference = Object.freeze({ path: "C:\\dest\\fixed\\control\\REOPEN.v1.json", bytes: 42, sha256: "sha256:" + "a".repeat(64) });
 const pin = (path: string) => ({ path, bytes: 42, sha256: "sha256:" + "b".repeat(64) });
@@ -19,12 +21,28 @@ function deferred<T>() {
   let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve };
 }
 beforeEach(() => {
-  for (const mock of [state.assert, state.create, state.materialize, state.install, state.abandon, state.initialize, state.invalidate]) mock.mockReset();
+  for (const mock of [state.assert, state.create, state.materialize, state.install, state.abandon, state.initialize, state.invalidate,
+    state.publication, state.materializePublication, state.facts]) mock.mockReset();
   state.assert.mockImplementation((token: object) => { if (token !== state.bootstrap) throw Error("original initialization admission required"); });
   state.create.mockReturnValue(owner); state.materialize.mockReturnValue(plan); state.install.mockReturnValue(state.token);
   state.initialize.mockResolvedValue(reference);
 });
 describe("fixed original package initialization", () => {
+  it("exports provenance from the same materialization and facts only after original initialization closes", async () => {
+    const provenance = Object.freeze({ format: "controlled-relocation" }), installation = Object.freeze({ generation_id: "controlled" });
+    const initialized = deferred<typeof reference>(); state.initialize.mockReturnValue(initialized.promise);
+    state.materializePublication.mockReturnValue({ plan, provenance }); state.facts.mockReturnValue(installation);
+    const work = initializeApplicationPublicationPackage(input()); await Promise.resolve();
+    expect(state.publication).toHaveBeenCalledOnce(); expect(state.materialize).not.toHaveBeenCalled(); expect(state.facts).not.toHaveBeenCalled();
+    expect(state.initialize).toHaveBeenCalledExactlyOnceWith(state.token, undefined, true);
+    initialized.resolve(reference); expect(await work).toEqual({ reference, provenance, installation });
+    expect(state.facts).toHaveBeenCalledExactlyOnceWith(reference);
+  });
+  it("does not upgrade a legacy initialization admission to publication", async () => {
+    state.publication.mockImplementation(() => { throw Error("original publication initialization selection required"); });
+    await expect(initializeApplicationPublicationPackage(input())).rejects.toThrow("original publication");
+    expect(state.create).not.toHaveBeenCalled(); expect(state.materializePublication).not.toHaveBeenCalled();
+  });
   it("preserves original authority and returns only the original initializer's reference after actual settlement", async () => {
     const selected = input(), controller = new AbortController(), initialized = deferred<typeof reference>(); state.initialize.mockReturnValue(initialized.promise);
     const work = initializeApplicationPackage(selected, controller.signal); let settled = false; void work.then(() => { settled = true; });

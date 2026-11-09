@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { eventLog, goals, goalAutomations, idempotencyKeys, users } from "@artoo/db";
-import { beforeEach, afterEach, describe, expect, it } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { buildTestServer, type TestServer } from "./test-support.js";
-import { loadGoalEntryConfig } from "./config/goal-entry.js";
+import { closePreparedGoalSubmission, loadGoalEntryConfig } from "./config/goal-entry.js";
 
 const request = { project_id: "proj_artoo", objective: "Build a personal task tracker", execution_mode: "agent_team" as const,
   verification_profile_id: "native-web", release_profile_id: "native-publish", max_retries: 3,
@@ -20,6 +20,94 @@ describe("prepared product request and atomic autonomous submission", () => {
   afterEach(async () => { await server.close(); });
   const post = (body: Record<string, unknown> = request, key = "request-one", url = "/api/v1/autonomous-goals") => server.app.inject({
     method: "POST", url, headers: { "idempotency-key": key }, payload: body,
+  });
+  const identity = { session_id: "session-one", request_key: "request-one" };
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>(done => { resolve = done; });
+    return { promise, resolve };
+  }
+  function holdFirstTransactionSettlement() {
+    const entered = deferred(), release = deferred(), original = server.db.transaction.bind(server.db);
+    let held = false;
+    const observer = vi.spyOn(server.db, "transaction").mockImplementation(async function<T>(fn: (tx: import("@artoo/storage").DrizzleDb) => Promise<T>): Promise<T> {
+      if (held) return original(fn);
+      held = true;
+      return original(async tx => {
+        try { return await fn(tx); }
+        finally { entered.resolve(); await release.promise; }
+      });
+    });
+    return { entered: entered.promise, release: release.resolve, restore: () => observer.mockRestore() };
+  }
+
+  for (const owner of ["browser", "console"] as const) it(`joins an admitted ${owner} POST before recovering and cancelling its original goal`, async () => {
+    server.ctx.goalEntry = config(owner);
+    expect((await server.app.inject("/api/v1/bootstrap")).json().goal_entry.goal_id).toBeNull();
+    const barrier = holdFirstTransactionSettlement();
+    // Start the real route. Hold its actual transaction after the body succeeds
+    // but before commit; no timing delay substitutes for the admission barrier.
+    const pending = post().then(response => response);
+    let closing: ReturnType<typeof closePreparedGoalSubmission> | undefined;
+    let late: typeof pending | undefined;
+    try {
+      await barrier.entered;
+      closing = closePreparedGoalSubmission(server.ctx, identity);
+      expect(closePreparedGoalSubmission(server.ctx, identity)).toBe(closing);
+      let settled = false; void closing.then(() => { settled = true; }, () => { settled = true; });
+      await Promise.resolve(); expect(settled).toBe(false);
+      late = post().then(response => response);
+      barrier.release();
+      const created = await pending, closure = await closing;
+      expect(created.statusCode).toBe(201);
+      expect((await late).statusCode).toBe(409);
+      expect(closure).toEqual({ version: 1, ...identity, project_id: "proj_artoo", actor_user_id: "user_owner", goal_id: created.json().goal.id });
+      expect(Object.isFrozen(closure)).toBe(true);
+      const snapshot = (await server.app.inject("/api/v1/bootstrap")).json().goal_entry;
+      expect(snapshot.goal_id).toBe(closure.goal_id);
+      if (owner === "console") expect(snapshot).not.toHaveProperty("request_key");
+      expect(await server.db.db.select().from(goals)).toHaveLength(1);
+      barrier.restore();
+      const cancelled = await server.app.inject({ method: "POST", url: `/api/v1/goals/${closure.goal_id}/cancel` });
+      expect(cancelled.statusCode).toBe(200); expect(cancelled.json().goal.status).toBe("cancelled");
+      expect((await server.app.inject(`/api/v1/goals/${closure.goal_id}`)).json().goal.status).toBe("cancelled");
+    } finally { barrier.release(); await Promise.allSettled([pending, closing, late]); barrier.restore(); }
+  });
+
+  it("joins a failed original transaction without inventing a goal or reopening admission", async () => {
+    server.ctx.goalEntry = config("browser"); server.ctx.aiDataSharingPolicy = null;
+    const barrier = holdFirstTransactionSettlement(), pending = post().then(response => response);
+    let closing: ReturnType<typeof closePreparedGoalSubmission> | undefined;
+    try {
+      await barrier.entered; closing = closePreparedGoalSubmission(server.ctx, identity); barrier.release();
+      expect((await pending).statusCode).toBe(503); expect((await closing).goal_id).toBeNull();
+      expect(await server.db.db.select().from(goals)).toHaveLength(0);
+      expect(await server.db.db.select().from(idempotencyKeys)).toHaveLength(0);
+      expect((await post()).statusCode).toBe(409);
+    } finally { barrier.release(); await Promise.allSettled([pending, closing]); barrier.restore(); }
+  });
+
+  it("closes before submission while preserving ordinary goals in other projects", async () => {
+    server.ctx.goalEntry = config("browser");
+    expect((await closePreparedGoalSubmission(server.ctx, identity)).goal_id).toBeNull();
+    expect((await post()).statusCode).toBe(409);
+    const created = await server.app.inject({ method: "POST", url: "/api/v1/projects", payload: { name: "Ordinary project" } });
+    expect(created.statusCode).toBe(201);
+    const projectId = created.json().project.id;
+    expect((await post({ ...request, project_id: projectId }, "ordinary-request")).statusCode).toBe(201);
+    expect((await server.app.inject({ method: "POST", url: "/api/v1/goals", payload: { project_id: projectId, title: "Manual goal" } })).statusCode).toBe(201);
+    expect(await server.db.db.select().from(goals)).toHaveLength(2);
+  });
+
+  it("rejects a different local session, key or actor without closing the original admission", async () => {
+    server.ctx.goalEntry = config("console");
+    for (const change of [{ session_id: "replacement" }, { request_key: "replacement" }])
+      expect(() => closePreparedGoalSubmission(server.ctx, { ...identity, ...change })).toThrow(/Original local prepared session/);
+    const owner = server.ctx.actorUserId; server.ctx.actorUserId = "other";
+    expect(() => closePreparedGoalSubmission(server.ctx, identity)).toThrow(/Original local prepared session/);
+    server.ctx.actorUserId = owner;
+    const created = await post(); expect(created.statusCode).toBe(201);
+    expect((await closePreparedGoalSubmission(server.ctx, identity)).goal_id).toBe(created.json().goal.id);
   });
 
   it("commits one goal and one authorization event for concurrent requests and a lost response replay", async () => {

@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { CreateAutonomousGoalRequestSchema } from "./autonomy.js";
+import { PreparedGoalRequestV1Schema } from "./goal-entry.js";
+import { canonicalReleaseJson } from "./release-capabilities.js";
+import { APPLICATION_PUBLICATION_STATEMENT_V1, inspectApplicationPublicationMeasurementV1 } from "./application-publication-measurement.js";
 import { ApplicationCandidateV1Schema, ApplicationDeliveryV1Schema } from "./application-development.js";
 import {
   APPLICATION_PUBLICATION_CLAIM_V1, ApplicationPublicationIdentifierV1Schema, ApplicationPublicationGrantV1Schema, ApplicationPublicationLimitsV1Schema,
@@ -27,11 +32,11 @@ const request = () => ({ version: 1, publication_id: "publication-1", goal_id: "
   publisher_session_id: "session", subject_digest: digest, application_definition_digest: digest,
   authorization: { version: 1, event_id: "user-event", actor_user_id: "user", consent_id: "consent", policy_version: "v1", grant: grant() },
   capabilities: capabilities(),
-  author: { run_id: "author", request_id: "author-request", evidence_id: "author-evidence", agent_id: "author-agent", stage: "validation",
+  author: { run_id: "author", request_id: "author-request", evidence_id: "author-evidence", agent_id: "author-agent", agent_instance_id: "author-instance", stage: "validation",
     origin_run_id: "author", origin_request_id: "author-request", test_store_id: "00000000-0000-4000-8000-000000000001", candidate: candidate() },
-  reviewer: { run_id: "reviewer", request_id: "review-request", evidence_id: "review-evidence", agent_id: "review-agent", stage: "validation",
+  reviewer: { run_id: "reviewer", request_id: "review-request", evidence_id: "review-evidence", agent_id: "review-agent", agent_instance_id: "review-instance", stage: "validation",
     origin_run_id: "author", origin_request_id: "author-request", test_store_id: "00000000-0000-4000-8000-000000000002", candidate: candidate() },
-  acceptance: { version: 1, plan: { id: "plan", version: 1 }, research_digest: digest, measurement_plan_digest: digest,
+  acceptance: { version: 1, plan: { id: "plan", version: 1 }, research_digest: digest, design_digest: digest, measurement_plan_digest: digest,
     accepted_review_event_id: "review-event", development_criteria: [{ requirement_id: "business", criterion_index: 0,
       criterion_digest: digest, case_ids: ["save-and-read"] }], publication_criteria: [{ requirement_id: "publish", criterion_index: 0,
       criterion_digest: digest, claim: APPLICATION_PUBLICATION_CLAIM_V1 }], unmet_criteria: [] } });
@@ -52,7 +57,7 @@ const normalClosure = (generation: 1 | 2, seconds: number) => ({ ...processClosu
   kind: "normal-drain", service: service(generation), reason: "stdin-drain", input_ack_digest: digest,
   listener_closed: true, audit_complete: true, session_released: true,
   counters: { accepted_transports: 2, closed_transports: 2, runtime_invocations: 1, runtime_closed: 1, broker_invocations: 1, broker_closed: 1 } });
-const live = () => ({ service: service(2), observed_at: at(5), closed: false,
+const live = () => ({ service: service(2), counters_observed_at: at(5), observed_at: at(5), closed: false,
   native: { root_pid: 123, root_creation_time: "133000000000000001", observed: true, job_member: true }, requests_used: 2, in_flight: 0 });
 const published = () => ({ version: 1, scope: APPLICATION_PUBLICATION_CLAIM_V1, outcome: "published", request: request(), request_digest: requestDigest,
   lease: lease(), deployment: deployment(), initialization: { ...processClosure("initializer", 1), broker_invocations: 1, broker_closed: 1 },
@@ -65,6 +70,50 @@ const observation = () => ({ version: 1, event_id: "observation", sequence: 1, g
   lease: lease(), deployment: deployment(), state: "healthy", observed_at: at(7), reason: null, health: health(2), live: live(), closure: null });
 
 describe("bounded local application publication contracts", () => {
+  it("keeps new-goal publication exclusive and preserves the development-only prepared entry", () => {
+    const request = { project_id: "project", objective: "Make an application", execution_mode: "agent_team", app_publication: grant() };
+    expect(CreateAutonomousGoalRequestSchema.parse(request).app_publication).toEqual(grant());
+    const prepared = { execution_mode: "agent_team", verification_profile_id: "verifier", max_retries: 3, app_publication: grant() };
+    expect(PreparedGoalRequestV1Schema.parse(prepared)).toEqual(prepared);
+    for (const change of [{ execution_mode: "single_agent" }, { app_delivery: { version: 1, kind: "local-application-development" } },
+      { release_profile_id: "static" }, { source_handoff: { version: 1, mode: "automatic" } }])
+      expect(CreateAutonomousGoalRequestSchema.safeParse({ ...request, ...change }).success).toBe(false);
+    expect(PreparedGoalRequestV1Schema.safeParse({ ...prepared, app_delivery: { version: 1, kind: "local-application-development" } }).success).toBe(false);
+    expect(CreateAutonomousGoalRequestSchema.parse({ project_id: "project", objective: "Old request" })).not.toHaveProperty("app_publication");
+  });
+
+  it("derives exhaustive publication measurement only from the actual pinned plan, design and executed cases", () => {
+    const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
+    const program = { version: 3, contract_digest: digest, steps: [{ action: "navigate", page: "main", path: "/" },
+      { action: "assert_text", page: "main", selector: "#saved", text: "Saved" }] };
+    const research = { version: 1, requirements: [
+      { id: "business", description: "Saved records", priority: "must", acceptance_criteria: ["Saved records appear in the application"] },
+      { id: "publish", description: "Bounded local publication", priority: "must", acceptance_criteria: [APPLICATION_PUBLICATION_STATEMENT_V1] },
+    ], application_publication_plan: { version: 1, authorization_event_id: "user-event", publication_contract_digest: digest, entries: [
+      { requirement_id: "business", criterion_index: 0, method: "application-case" },
+      { requirement_id: "publish", criterion_index: 0, method: APPLICATION_PUBLICATION_CLAIM_V1, claim: APPLICATION_PUBLICATION_CLAIM_V1 },
+    ] } };
+    const design = { version: 1, validation_cases: [{ id: "saved", requirement_ids: ["business", "publish"], browser_program: program }],
+      application_publication_coverage: { version: 1, entries: [{ requirement_id: "business", criterion_index: 0, case_ids: ["saved"] }] } };
+    const accepted = ApplicationPublicationRequestV1Schema.parse(request());
+    const input = { research_json: JSON.stringify(research), design_json: JSON.stringify(design), application_definition_digest: changed,
+      authorization: accepted.authorization, capabilities: accepted.capabilities,
+      cases: [{ case_id: "saved", program_digest: sha(canonicalReleaseJson(program)), trace_digest: digest, assertions: 1, capture_digests: [digest] }], digest: sha };
+    const actual = inspectApplicationPublicationMeasurementV1(input);
+    expect(actual.research_digest).toBe(sha(input.research_json)); expect(actual.design_digest).toBe(sha(input.design_json));
+    expect(actual.measurement_plan_digest).toBe(sha(canonicalReleaseJson(research.application_publication_plan)));
+    expect(actual.application_definition_digest).toBe(changed); expect(actual.development_criteria[0]?.case_ids).toEqual(["saved"]);
+    expect(actual.publication_criteria[0]?.claim).toBe(APPLICATION_PUBLICATION_CLAIM_V1); expect(actual.unmet_criteria).toEqual([]);
+    for (const change of [
+      { research_json: JSON.stringify({ ...research, application_publication_plan: undefined }) },
+      { research_json: JSON.stringify({ ...research, measurement_plan: { version: 1, entries: [] } }) },
+      { research_json: JSON.stringify({ ...research, requirements: [...research.requirements, { id: "missing", description: "Unmeasured", priority: "must", acceptance_criteria: ["Must also work offline"] }] }) },
+      { research_json: JSON.stringify({ ...research, requirements: [research.requirements[0], { ...research.requirements[1], acceptance_criteria: ["Run continuously and recover after power loss"] }] }) },
+      { design_json: JSON.stringify({ ...design, application_publication_coverage: { version: 1, entries: [] } }) },
+      { cases: [] }, { cases: [{ ...input.cases[0]!, program_digest: changed }] }, { cases: [{ ...input.cases[0]!, assertions: 0 }] },
+      { authorization: { ...accepted.authorization, event_id: "different-user-event" } },
+    ]) expect(() => inspectApplicationPublicationMeasurementV1({ ...input, ...change })).toThrow();
+  });
   it("keeps publication a separate explicit opt-in and preserves old candidate/development meanings", () => {
     expect(ApplicationPublicationIdentifierV1Schema.parse("profile:local-v1")).toBe("profile:local-v1");
     expect(ApplicationPublicationIdentifierV1Schema.safeParse("profile/local").success).toBe(false);
@@ -107,7 +156,7 @@ describe("bounded local application publication contracts", () => {
       { author: { ...value.author, origin_run_id: "another-author" } }]) {
       expect(ApplicationPublicationRequestV1Schema.safeParse({ ...value, ...change }).success).toBe(false);
     }
-    for (const field of ["run_id", "request_id", "evidence_id", "agent_id", "test_store_id"] as const)
+    for (const field of ["run_id", "request_id", "evidence_id", "agent_id", "agent_instance_id", "test_store_id"] as const)
       expect(ApplicationPublicationRequestV1Schema.safeParse({ ...value, reviewer: { ...value.reviewer, [field]: value.author[field] } }).success).toBe(false);
   });
 

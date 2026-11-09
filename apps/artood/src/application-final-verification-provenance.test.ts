@@ -30,9 +30,10 @@ vi.mock("node:child_process", async original => ({ ...await original<typeof impo
   spawn: controlled.forbidden, spawnSync: controlled.forbidden, exec: controlled.forbidden, execFile: controlled.forbidden, fork: controlled.forbidden }));
 
 import { attachWindowsVerificationBackend, prepareVerificationProfiles, readVerificationCapabilities,
-  readFinalApplicationVerificationBinding, readPreparedApplicationVerificationProfile, runVerification,
+  readFinalApplicationVerificationBinding, readPreparedApplicationVerificationProfile, runVerification, selectVerificationProfile, assertFinalVerificationExportBinding,
   type VerificationProfile } from "./verification.js";
 import { prepareWindowsProcessBackend } from "./owned/windows-owned-process.js";
+import { applicationPublicationRequestFixture } from "./test-fixtures/application-publication-request.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const roots: { root: string; parent: string }[] = [];
@@ -186,6 +187,43 @@ function fixture() {
 }
 
 describe("final application verification provenance (controlled boundaries, not native acceptance)", () => {
+  function publicationFixture() {
+    const f = fixture(), request = applicationPublicationRequestFixture(), app = f.profile.capabilities!.application!;
+    const capabilities = structuredClone(request.capabilities);
+    Object.assign(capabilities.binding, { verification_profile_id: f.profile.id, verification_profile_digest: f.profile.digest,
+      application_config_digest: app.config_digest, application_contract_digest: app.contract_digest });
+    delete f.context.app_delivery; f.context.app_publication = request.authorization.grant;
+    f.context.application_publication = { version: 1, authorization: request.authorization, capabilities, publisher_session_id: "session",
+      agent_id: "author-agent", agent_instance_id: f.run.runStart.agent_instance_id };
+    f.run.runStart.verification!.application_publication = { version: 1, authorization_event_id: request.authorization.event_id,
+      publication_profile_id: capabilities.binding.publication_profile_id, publication_profile_digest: capabilities.binding.publication_profile_digest,
+      publication_contract_digest: capabilities.binding.publication_contract_digest, publisher_session_id: "session" };
+    f.run.runStart.verification!.capability_binding = { version: 1, profile_digest: f.profile.digest,
+      checks: f.profile.capabilities!.checks.map(({ command_id, config_digest, contract_digest }) => ({ command_id, config_digest, contract_digest })) };
+    return f;
+  }
+  it("routes only the separately bound original publication intent and never stamps static export authority", async () => {
+    const f = publicationFixture();
+    expect(selectVerificationProfile(f.run.runStart, [f.profile], false, undefined, "node")).toBe(f.profile);
+    const result = await f.verify(); expect(result.outcome).toBe("passed"); expect(controlled.execute).toHaveBeenCalledOnce();
+    expect(readFinalApplicationVerificationBinding(f.profile, result, f.run)).toBe(f.measurement());
+    expect(() => assertFinalVerificationExportBinding(f.profile, result, "request", f.context)).toThrow(/original completed final/);
+  });
+  it.each(["grant", "instance", "computer", "profile", "config", "event", "session", "mixed-intent", "legacy-companion"] as const)
+    ("rejects changed publication %s at the protected verifier selection boundary", changed => {
+      const f = publicationFixture(), payload = structuredClone(f.run.runStart), context = payload.context_pack.payload!, intent = context.application_publication!;
+      if (changed === "grant") context.app_publication!.publication_profile_id = "other";
+      if (changed === "instance") intent.agent_instance_id = "other";
+      if (changed === "computer") intent.capabilities.binding.computer_id = "other";
+      if (changed === "profile") intent.capabilities.binding.verification_profile_digest = sha("other profile");
+      if (changed === "config") intent.capabilities.binding.application_config_digest = sha("other config");
+      if (changed === "event") payload.verification!.application_publication!.authorization_event_id = "other";
+      if (changed === "session") payload.verification!.application_publication!.publisher_session_id = "other";
+      if (changed === "mixed-intent" || changed === "legacy-companion") context.app_delivery = { version: 1, kind: "local-application-development" };
+      if (changed === "legacy-companion") delete context.app_publication;
+      expect(() => selectVerificationProfile(payload, [f.profile], false, undefined, "node")).toThrow();
+      expect(controlled.command).not.toHaveBeenCalled(); expect(controlled.execute).not.toHaveBeenCalled();
+    });
   it("stamps only the actual successful runVerification result after its final source audit", async () => {
     const f = fixture(), result = await f.verify();
     expect(result.outcome).toBe("passed"); expect(result.application).toBe(f.observation());

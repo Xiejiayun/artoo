@@ -38,6 +38,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { ProductSourceRoutingV1Schema, type ProductSourceRoutingV1 } from "@artoo/domain";
+import { APPLICATION_PUBLICATION_FEATURE_V1, ApplicationPublicationProfileAdvertisementsV1Schema,
+  type ApplicationPublicationProfileAdvertisementV1, type ApplicationPublicationCapabilitiesV1,
+  type ApplicationPublicationVerificationAckV1 } from "@artoo/domain";
+import { committedApplicationVerificationReceipt } from "./services/application-publication-receipt.js";
+import { applicationPublications } from "@artoo/db";
+import { ApplicationPublicationRequestV1Schema } from "@artoo/domain";
+import { applicationPublicationDigest, assertApplicationPublicationDispatch, ingestApplicationPublicationReceipt,
+  ingestApplicationPublicationObservation } from "./services/application-publication-service.js";
 
 import { agentInstances, assistantRunDispatches, assistantTurns, computers, contextPacks, goalAutomations, goals, productReleases, runs, tasks } from "@artoo/db";
 import { assertDesignRevisionRunAdmission, assertNoActiveDesignRevision } from "./services/product-design-revision-guard.js";
@@ -80,6 +88,9 @@ const FALLBACK_WORKSPACE_ROOT = join(tmpdir(), "artoo-workspace");
 export interface NodeBinding {
   getProductSourceRouting?(): ProductSourceRoutingV1 | undefined;
   announceSourceRecoverySession?(): Promise<void>;
+  announceApplicationPublicationSession?(): Promise<void>;
+  getApplicationPublicationCapabilities?(profileId: string, projectId: string): ApplicationPublicationCapabilitiesV1 | undefined;
+  dispatchApplicationPublication?(publicationId: string, control: "start" | "stop" | "status"): Promise<void>;
   dispatchSourceRecovery?(recoveryId: string, control: "start" | "stop" | "status"): Promise<void>;
   dispatchRecoveryValidation?(validationId: string, control: "start" | "stop" | "status"): Promise<void>;
   dispatchCleanValidation?(validationId: string, control: "start" | "stop" | "status"): Promise<void>;
@@ -146,10 +157,12 @@ export function attachNodeBinding(
   nodeOs?: string,
   importedReviewOptions?: { identity: AuthenticatedTransferNode; sessionId: string; artifactDir: string; qualifiedRunEventReceiptsReady?: () => boolean },
   productSourceRouting?: ProductSourceRoutingV1,
+  applicationPublicationProfiles: readonly ApplicationPublicationProfileAdvertisementV1[] = [],
 ): NodeBinding {
   // Copy the accepted hello snapshot so later caller mutation cannot change it.
   const executionFeatureSet = new Set(executionFeatures);
   const pairedSession = importedReviewOptions ? Object.freeze({ ...importedReviewOptions.identity, sessionId: importedReviewOptions.sessionId }) : undefined;
+  const publicationProfiles = ApplicationPublicationProfileAdvertisementsV1Schema.parse(applicationPublicationProfiles);
   const routingSnapshot = productSourceRouting === undefined ? undefined : ProductSourceRoutingV1Schema.parse(productSourceRouting);
   const profileSnapshot = Object.freeze(VerificationProfileAdvertisementsSchema.parse(verificationProfiles)
     .map((profile) => Object.freeze(profile)));
@@ -179,6 +192,7 @@ export function attachNodeBinding(
   const pendingResumeRun = new Map<string, { runId: string; timer: ReturnType<typeof setTimeout> }>();
   const pendingStops = new Map<string, { runId: string; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const pendingReleaseStops = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  const pendingApplicationStops = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const stoppingRuns = new Map<string, Promise<void>>();
   const pendingDesignStops = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const pendingExecutionStops = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -570,6 +584,27 @@ export function attachNodeBinding(
           payload: { event_id: payload.event_id, release_id: payload.request.release_id, sequence: payload.sequence, status,
             ...(reason ? { message: reason } : {}) } });
       });
+    } else if (message.kind === "application.publication.receipt" || message.kind === "application.publication.observation") {
+      if (!pairedSession || message.node_id !== computerId || !isCurrentBinding()) return;
+      const frame = structuredClone(message);
+      enqueue(async () => {
+        const current = () => !closed && isCurrentBinding() && pairedSession.sessionId === frame.payload.request.publisher_session_id;
+        let status: "accepted" | "rejected" = "accepted", failure: string | undefined;
+        try {
+          if (frame.kind === "application.publication.receipt") await ingestApplicationPublicationReceipt(ctx, computerId, frame.payload, current);
+          else await ingestApplicationPublicationObservation(ctx, computerId, frame.payload, current);
+        } catch (error) { status = "rejected"; failure = error instanceof Error ? error.message.slice(0, 2000) : "Application publication evidence rejected"; }
+        if (!current()) return;
+        const base = { version: 1 as const, publication_id: frame.payload.request.publication_id,
+          publisher_session_id: frame.payload.request.publisher_session_id, request_digest: frame.payload.request_digest,
+          status, ...(failure ? { message: failure } : {}) };
+        if (frame.kind === "application.publication.receipt") await transport.send({ kind: "command", id: `application-receipt:${base.publication_id}`,
+          idempotency_key: `application-receipt:${base.publication_id}`, type: "application.publication.receipt.ack",
+          payload: { ...base, receipt_digest: applicationPublicationDigest(frame.payload) } });
+        else await transport.send({ kind: "command", id: `application-observation:${frame.payload.event_id}`,
+          idempotency_key: `application-observation:${frame.payload.event_id}`, type: "application.publication.observation.ack",
+          payload: { ...base, event_id: frame.payload.event_id, sequence: frame.payload.sequence, observation_digest: applicationPublicationDigest(frame.payload) } });
+      });
     } else if (message.kind === "run.event") {
       // Snapshot serialized-wire semantics before queued work can observe caller mutation.
       let frame: typeof message;
@@ -577,6 +612,7 @@ export function attachNodeBinding(
       enqueue(async () => {
         if (!(await ownsRun(frame.run_id))) return;
         let status: "accepted" | "rejected" = "accepted";
+        let applicationVerification: ApplicationPublicationVerificationAckV1 | undefined;
         try {
           const result = await ingestWireRunEvent(ctx, frame, profile => {
             const current = binding.getOwnedResultProfile?.(profile.result_profile.id, profile.verifier_template.id, profile.project_id);
@@ -584,6 +620,13 @@ export function attachNodeBinding(
           });
           if (result === null) return;
           if (!result.receiptBodyIdentity) throw new Error("run event did not obtain a qualified receipt");
+          if (frame.event.type === "run.verification" && frame.event.payload.application?.publication) {
+            if (!pairedSession || !binding.supportsExecutionFeature(APPLICATION_PUBLICATION_FEATURE_V1)
+              || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true)
+              throw AppError.conflict("Application verification receipt requires the current paired publication session");
+            applicationVerification = await committedApplicationVerificationReceipt(ctx, frame, pairedSession,
+              () => !closed && isCurrentBinding() && importedReviewOptions?.qualifiedRunEventReceiptsReady?.() === true);
+          }
           if (frame.event.type === "run.lifecycle" && ["started", "completed", "failed", "cancelled"].includes(frame.event.payload.phase)) {
             forgetSourceStart(frame.run_id);
           }
@@ -593,10 +636,15 @@ export function attachNodeBinding(
           kind: "command", id: `receipt:${frame.run_id}:${frame.sequence}`,
           idempotency_key: `receipt:${frame.run_id}:${frame.sequence}`, type: "run.event.ack",
           payload: { run_id: frame.run_id, sequence: frame.sequence, status,
+            ...(status === "accepted" && applicationVerification ? { application_verification: applicationVerification } : {}),
             ...(status === "rejected" ? { message: "run event could not be accepted" } : {}),
           },
         });
       });
+    } else if (message.kind === "command.ack" && pendingApplicationStops.has(message.command_id)) {
+      const pending = pendingApplicationStops.get(message.command_id)!;
+      pendingApplicationStops.delete(message.command_id); clearTimeout(pending.timer);
+      enqueue(async () => { if (message.status === "accepted") pending.resolve(); else pending.reject(AppError.conflict(message.message)); });
     } else if (message.kind === "command.ack" && pendingReleaseStops.has(message.command_id)) {
       const pending = pendingReleaseStops.get(message.command_id)!;
       pendingReleaseStops.delete(message.command_id); clearTimeout(pending.timer);
@@ -871,13 +919,24 @@ export function attachNodeBinding(
               { run_id: runId, dispatch: "blocked", reason: "unsupported_measurement_plan_verification" });
           }
           const expected = verification.capability_binding, supplied = context.payload!.verification_capabilities;
-          if (verification.application || context.payload!.app_delivery) {
-            if (!verification.application || !context.payload!.app_delivery || !current?.application || allocated || workspaceBranch !== null
+          if (verification.application || context.payload!.app_delivery || context.payload!.app_publication || verification.application_publication) {
+            const intent = context.payload!.application_publication;
+            if (!verification.application || !!context.payload!.app_delivery === !!context.payload!.app_publication || !current?.application || allocated || workspaceBranch !== null
               || !binding.supportsExecutionFeature(APPLICATION_VERIFICATION_FEATURE_V1)
               || !isDeepStrictEqual(verification.application, applicationRequirement(current.application, context.payload!.review_subject?.verification?.application))) {
               throw AppError.conflict("The current node cannot enforce this application's exact configured development requirement",
                 { run_id: runId, dispatch: "blocked", reason: "unsupported_application_verification" });
             }
+            if (context.payload!.app_publication) {
+              const configured = intent && binding.getApplicationPublicationCapabilities?.(intent.authorization.grant.publication_profile_id, context.payload!.project.id);
+              if (!intent || !verification.application_publication || !pairedSession || intent.publisher_session_id !== pairedSession.sessionId
+                || intent.agent_instance_id !== run.agentInstanceId || !configured || !isDeepStrictEqual(configured, intent.capabilities)
+                || !isDeepStrictEqual(intent.authorization.grant, context.payload!.app_publication)
+                || !isDeepStrictEqual(verification.application_publication, { version: 1, authorization_event_id: intent.authorization.event_id,
+                  publication_profile_id: configured.binding.publication_profile_id, publication_profile_digest: configured.binding.publication_profile_digest,
+                  publication_contract_digest: configured.binding.publication_contract_digest, publisher_session_id: pairedSession.sessionId }))
+                throw AppError.conflict("Application publication run lost its original paired grant and configured capability");
+            } else if (intent || verification.application_publication) throw AppError.conflict("Development-only run cannot obtain publication authority");
           }
           if ((current || expected || supplied) && (!current || !expected || !supplied
             || !isDeepStrictEqual(expected, verificationCapabilityBinding(current))
@@ -949,6 +1008,9 @@ export function attachNodeBinding(
   const binding: NodeBinding = {
     receive,
     supportsExecutionFeature(feature): boolean {
+      if (feature === APPLICATION_PUBLICATION_FEATURE_V1 && (!pairedSession
+        || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true || !publicationProfiles.length
+        || !["windows", "win32"].includes(nodeOs ?? ""))) return false;
       if ([IMPORTED_CLEAN_VALIDATION_FEATURE_V1, IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1, PRODUCT_RELEASE_CLEAN_FEATURE_V1].includes(feature)
         && (!ctx.sourceLifecycle || !cleanValidations || !cleanValidationReviews || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true)) return false;
       if (feature === SOURCE_CLEAN_RESTART_FEATURE_V1 && (!ctx.sourceLifecycle || !sourceRecovery
@@ -1022,6 +1084,52 @@ export function attachNodeBinding(
     getPairedNodeSession() {
       if (closed || !isCurrentBinding() || !pairedSession) return undefined;
       return { ...pairedSession };
+    },
+    getApplicationPublicationCapabilities(profileId, projectId) {
+      if (closed || !isCurrentBinding() || !pairedSession || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true
+        || !binding.supportsExecutionFeature(APPLICATION_PUBLICATION_FEATURE_V1)) return undefined;
+      const profile = publicationProfiles.find(item => item.profile_id === profileId && item.project_id === projectId && item.computer_id === computerId);
+      if (!profile) return undefined;
+      const verifier = profileSnapshot.find(item => item.profile_id === profile.verification_profile_id && item.project_id === projectId);
+      const capabilities = verifier?.capabilities, profileBinding = profile.capabilities.binding;
+      if (!capabilities?.application || capabilities.profile_digest !== profileBinding.verification_profile_digest
+        || capabilities.application.config_digest !== profileBinding.application_config_digest
+        || capabilities.application.contract_digest !== profileBinding.application_contract_digest) return undefined;
+      return structuredClone(profile.capabilities);
+    },
+    async announceApplicationPublicationSession() {
+      if (closed || !isCurrentBinding() || !pairedSession || importedReviewOptions?.qualifiedRunEventReceiptsReady?.() !== true
+        || !executionFeatureSet.has(APPLICATION_PUBLICATION_FEATURE_V1) || !publicationProfiles.some(profile =>
+          binding.getApplicationPublicationCapabilities?.(profile.profile_id, profile.project_id))) return;
+      await transport.send({ kind: "command", id: `application-session:${pairedSession.sessionId}`,
+        idempotency_key: `application-session:${pairedSession.sessionId}`, type: "application.publication.session.v1",
+        payload: { version: 1, node_id: computerId, session_id: pairedSession.sessionId } });
+      if (closed || !isCurrentBinding()) throw AppError.conflict("Application publication session announcement lost its original binding");
+    },
+    async dispatchApplicationPublication(publicationId, control) {
+      if (closed || !isCurrentBinding() || !pairedSession) throw AppError.conflict("Original application publication node is unavailable");
+      const [row] = await ctx.db.db.select().from(applicationPublications).where(and(eq(applicationPublications.id, publicationId),
+        eq(applicationPublications.organizationId, ctx.organizationId), eq(applicationPublications.computerId, computerId)));
+      if (!row) throw AppError.notFound("Application publication not found on this node");
+      const request = control === "start" ? await assertApplicationPublicationDispatch(ctx, row) : ApplicationPublicationRequestV1Schema.parse(row.request);
+      if (closed || !isCurrentBinding() || pairedSession.sessionId !== request.publisher_session_id)
+        throw AppError.conflict("Application publication cannot adopt another paired connection");
+      const id = `application-${control}:${row.id}`;
+      if (control !== "stop") {
+        await transport.send({ kind: "command", id, idempotency_key: id,
+          type: control === "start" ? "application.publication.start" : "application.publication.status", payload: request });
+        return;
+      }
+      if (pendingApplicationStops.has(id)) throw AppError.conflict("Original application stop is still pending");
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => { pendingApplicationStops.delete(id); reject(AppError.conflict("Original application stop confirmation timed out")); },
+          Math.min(60_000, request.capabilities.contract.limits.normal_drain_reserve_ms + 5_000));
+        pendingApplicationStops.set(id, { resolve, reject, timer });
+        void transport.send({ kind: "command", id, idempotency_key: id, type: "application.publication.stop",
+          payload: { version: 1, request, reason: "user-stop" } }).catch(error => {
+            clearTimeout(timer); pendingApplicationStops.delete(id); reject(error);
+          });
+      });
     },
     async redeliverCommittedSourceReceipt(family, id): Promise<void> {
       const owner = {
@@ -1317,6 +1425,8 @@ export function attachNodeBinding(
       pendingCleanValidationStops.clear();
       for (const pending of pendingReleaseStops.values()) { clearTimeout(pending.timer); pending.reject(AppError.conflict("Node disconnected before publication stop was confirmed")); }
       pendingReleaseStops.clear();
+      for (const pending of pendingApplicationStops.values()) { clearTimeout(pending.timer); pending.reject(AppError.conflict("Node disconnected before original application stop was confirmed")); }
+      pendingApplicationStops.clear();
     },
   };
   return binding;

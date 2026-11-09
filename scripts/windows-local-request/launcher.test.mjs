@@ -330,6 +330,41 @@ runTest('uses the documented local config convention without inventing a missing
     assert.equal(r.result.status, 0); assert.equal(r.started.key_matches, true);
   } finally { f.cleanup(); }
 });
+function configureApplicationFixture(f, delivery = 'publication') {
+  const pin = f.manifest.daemon.manifest;
+  f.manifest.application = { version: 1, tools: { compiler: { helper: pin, helperManifest: pin, node: f.nodePin, entry: pin, configuration: pin },
+    runtime: { helper: pin, helperManifest: pin, entry: pin, vendorManifest: pin, guestBootstrap: pin }, broker: pin, hostManifest: pin },
+    trees: [{ root: f.root, tree: {} }] };
+  // Launcher metadata fixture only; the fake entry never claims these text files
+  // are executable tools. Real Node admission validates all pins and full trees.
+  f.configuration.product = { version: 1, kind: 'local-application', delivery, verification_profile_id: 'native-application',
+    origin: 'http://127.0.0.1:4173', ...(delivery === 'publication' ? { publication_profile_id: 'native-application-publication',
+      limits: { root_lifetime_ms: 3600000, startup_timeout_ms: 10000, health_timeout_ms: 10000, normal_drain_reserve_ms: 50000,
+        health_interval_ms: 10000, health_freshness_ms: 30000, maximum_service_generations: 2, maximum_requests_per_generation: 256,
+        maximum_concurrent: 1, maximum_health_rounds: 128 } } : {}) };
+  f.refreshManifest();
+}
+for (const delivery of ['publication', 'development']) runTest(`maintainer configured application ${delivery} preserves one objective and original stdin`, () => {
+  const f = fixture(); try {
+    configureApplicationFixture(f, delivery); const r = f.run(); assert.equal(r.result.status, 0);
+    assert.deepEqual(r.started.argv.slice(-2), ['--objective', r.objective]); assert.deepEqual(r.stdin, { exact_shutdown: true });
+    assert.equal(r.started.key_matches, true);
+  } finally { f.cleanup(); }
+});
+for (const variant of ['missing-tools', 'mode-command', 'remote-origin', 'invalid-limit', 'development-grant', 'application-reopen'])
+  runTest(`application launcher rejects ${variant} before entry execution`, () => {
+    const f = fixture(); try {
+      configureApplicationFixture(f, variant === 'development-grant' ? 'development' : 'publication');
+      if (variant === 'missing-tools') delete f.manifest.application;
+      if (variant === 'mode-command') f.configuration.product.command = 'arbitrary.exe';
+      if (variant === 'remote-origin') f.configuration.product.origin = 'http://192.168.1.1:4173';
+      if (variant === 'invalid-limit') f.configuration.product.limits.maximum_service_generations = 3;
+      if (variant === 'development-grant') f.configuration.product.publication_profile_id = 'publisher';
+      f.refreshManifest(); f.refreshOriginalResult();
+      const r = f.run(variant === 'application-reopen' ? { openProduct: f.originalSession } : {});
+      assert.equal(r.result.status, 1); assert.equal(r.started, null);
+    } finally { f.cleanup(); }
+  });
 runTest('one interactive requirement prompt leaves the same stdin available for shutdown', async () => {
   const f = fixture(); try { await f.prompt(); } finally { f.cleanup(); }
 });

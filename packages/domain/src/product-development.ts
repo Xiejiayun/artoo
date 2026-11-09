@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ApplicationPublicationMeasurementPlanV1Schema, ApplicationPublicationDesignCoverageV1Schema } from "./application-publication-measurement.js";
 import { ProductBrowserStepSchema, ProductBrowserProgramV2Schema } from "./browser-program.js";
 import { ProductBrowserProgramV3Schema } from "./browser-program-v3.js";
 import { ProductStorageChecksV1Schema, validateProductStorageChecksV1 } from "./storage-fault.js";
@@ -40,6 +41,7 @@ const ProductResearchBaseSchema = z.object({
   findings: z.array(z.object({ summary: text, source_ids: references })).min(1).max(100),
   decisions: z.array(z.object({ question: text, decision: text, rationale: text, source_ids: z.array(identifier).max(100) })).max(100),
   measurement_plan: ProductMeasurementPlanV1Schema.optional(),
+  application_publication_plan: ApplicationPublicationMeasurementPlanV1Schema.optional(),
 });
 function validateResearch(report: z.infer<typeof ProductResearchBaseSchema>, ctx: z.RefinementCtx): void {
   for (const key of ["requirements", "sources"] as const) {
@@ -71,6 +73,7 @@ export type ProductResearchReport = z.infer<typeof ProductResearchReportSchema>;
 
 const ProductDesignBaseSchema = z.object({
   version: z.literal(1),
+  application_publication_coverage: ApplicationPublicationDesignCoverageV1Schema.optional(),
   requirement_ids: references,
   information_architecture: strings,
   user_flows: z.array(z.object({ id: identifier, name: text, requirement_ids: references, steps: strings })).min(1).max(100),

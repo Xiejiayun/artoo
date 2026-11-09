@@ -93,4 +93,5 @@ export * from "./research-revision-context.js";
 export * from "./research-revision.js";
 export * from "./application-development.js";
 export * from "./application-publication.js";
+export * from "./application-publication-measurement.js";
 export * from "./application-sdk-v1.js";

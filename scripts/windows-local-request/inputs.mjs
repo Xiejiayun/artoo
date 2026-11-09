@@ -151,7 +151,7 @@ export function serverInstallation(root) {
 }
 function installation(pin) {
   const manifestPin = check(pin), manifest = read(manifestPin.path);
-  exact(manifest, ['format', 'daemon', 'server', 'programs'], ['web']);
+  exact(manifest, ['format', 'daemon', 'server', 'programs'], ['web', 'application']);
   assert.ok(manifest.format === 'artoo.windows-single-goal-installation.v1', 'Unsupported installation manifest version');
   exact(manifest.daemon, ['root', 'manifest', 'tree']);
   const bundle = physical(manifest.daemon.root, true), bundleManifest = check(manifest.daemon.manifest);
@@ -175,18 +175,83 @@ function installation(pin) {
     exact(manifest.web, ['root', 'tree']); web = { root: physical(manifest.web.root, true), tree: tree(manifest.web.root) };
     same(web, manifest.web, 'Installed Web tree differs'); assert.ok(web.tree.files.some(file => file.path === 'index.html'), 'Missing compiled Web index');
   }
+  const application = manifest.application === undefined ? undefined : applicationInstallation(manifest.application, programs);
   check(manifestPin);
   return { installation_manifest: manifestPin, candidate: { snapshot: server.root },
     bundle, bundle_manifest: bundleManifest, bundle_tree: inventory, programs, dependencies: server.dependencies,
-    server, ...(web ? { web, web_dist: web.root } : {}) };
+    server, ...(web ? { web, web_dist: web.root } : {}), ...(application ? { application } : {}) };
 }
 function inside(root, target) {
   const relative = path.relative(root, target); return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
 }
+
+/** Maintainer-owned tool installation. Inspect complete physical trees without
+ * importing executables; the original node still performs its full ACL/profile
+ * and nested toolchain admission before advertising any application capability. */
+export function applicationInstallation(value, programs) {
+  exact(value, ['version', 'tools', 'trees']);
+  assert.equal(value.version, 1, 'Unsupported application installation version');
+  exact(value.tools, ['compiler', 'runtime', 'broker', 'hostManifest']);
+  exact(value.tools.compiler, ['helper', 'helperManifest', 'node', 'entry', 'configuration']);
+  exact(value.tools.runtime, ['helper', 'helperManifest', 'entry', 'vendorManifest', 'guestBootstrap']);
+  assert.ok(Array.isArray(value.trees) && value.trees.length >= 1 && value.trees.length <= 32, 'Expected complete application tool trees');
+  const trees = value.trees.map(item => {
+    exact(item, ['root', 'tree']);
+    const root = physical(item.root, true), inventory = tree(root);
+    same(inventory, item.tree, 'Installed application tool tree differs'); return { root, tree: inventory };
+  });
+  for (let index = 0; index < trees.length; index++) for (const other of trees.slice(index + 1))
+    assert.ok(!inside(trees[index].root, other.root) && !inside(other.root, trees[index].root), 'Application tool trees overlap');
+  const tools = { compiler: Object.fromEntries(Object.entries(value.tools.compiler).map(([name, pin]) => [name, check(pin)])),
+    runtime: Object.fromEntries(Object.entries(value.tools.runtime).map(([name, pin]) => [name, check(pin)])),
+    broker: check(value.tools.broker), hostManifest: check(value.tools.hostManifest) };
+  same(tools.compiler.node, programs.node, 'Application compiler must use the installed Node');
+  for (const pin of [...Object.entries(tools.compiler).filter(([name]) => name !== 'node').map(([, pin]) => pin),
+    ...Object.values(tools.runtime), tools.broker, tools.hostManifest]) {
+    const matches = trees.filter(item => inside(item.root, pin.path));
+    assert.equal(matches.length, 1, 'Application tool is outside its complete installation tree');
+    const local = path.relative(matches[0].root, pin.path).replaceAll('\\', '/');
+    same(matches[0].tree.files.find(item => item.path === local), { ...pin, path: local }, 'Application tool pin differs from its tree');
+  }
+  return { version: 1, tools, trees };
+}
+
+/** Optional and versioned: omitted metadata retains the original static flow. */
+export function productConfiguration(value) {
+  if (value === undefined) return null;
+  exact(value, ['version', 'kind', 'delivery', 'verification_profile_id', 'origin'], ['publication_profile_id', 'limits']);
+  assert.equal(value.version, 1, 'Unsupported product configuration version');
+  assert.equal(value.kind, 'local-application', 'Unsupported configured product kind');
+  assert.ok(['development', 'publication'].includes(value.delivery), 'Unsupported application delivery mode');
+  const identifier = id => assert.ok(typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(id), 'Invalid application profile ID');
+  identifier(value.verification_profile_id); assertLoopbackEndpoint(value.origin);
+  if (value.delivery === 'development') {
+    assert.equal(value.publication_profile_id, undefined, 'Development cannot carry publication authorization');
+    assert.equal(value.limits, undefined, 'Development cannot carry publication limits');
+  } else {
+    identifier(value.publication_profile_id);
+    exact(value.limits, ['root_lifetime_ms', 'startup_timeout_ms', 'health_timeout_ms', 'normal_drain_reserve_ms',
+      'health_interval_ms', 'health_freshness_ms', 'maximum_service_generations', 'maximum_requests_per_generation',
+      'maximum_concurrent', 'maximum_health_rounds']);
+    for (const name of ['root_lifetime_ms', 'startup_timeout_ms', 'health_timeout_ms', 'normal_drain_reserve_ms', 'health_interval_ms', 'health_freshness_ms'])
+      assert.ok(Number.isSafeInteger(value.limits[name]) && value.limits[name] >= 1 && value.limits[name] <= 43_200_000, 'Invalid application publication duration');
+    assert.equal(value.limits.maximum_service_generations, 2); assert.equal(value.limits.maximum_requests_per_generation, 256);
+    assert.equal(value.limits.maximum_concurrent, 1);
+    assert.ok(Number.isSafeInteger(value.limits.maximum_health_rounds) && value.limits.maximum_health_rounds >= 2 && value.limits.maximum_health_rounds <= 128,
+      'Invalid application health budget');
+    const limits = value.limits;
+    assert.ok(3 * limits.startup_timeout_ms + 2 * limits.health_timeout_ms + 2 * limits.normal_drain_reserve_ms < limits.root_lifetime_ms,
+      'Publication lease cannot cover its original starts, health checks and drains');
+    assert.ok(limits.normal_drain_reserve_ms >= 47_500, 'Publication needs the configured operation and native cleanup reserve');
+    assert.ok(limits.health_interval_ms <= limits.root_lifetime_ms && limits.health_freshness_ms <= limits.root_lifetime_ms,
+      'Health timing exceeds the original lease');
+  }
+  return freeze(structuredClone(value));
+}
 function configuration(file) {
   const pin = reference(file); assert.ok(pin.bytes <= 64 * 1024, 'Local configuration is too large');
   const value = read(pin.path);
-  exact(value, ['version', 'installation', 'runtime', 'authorization']);
+  exact(value, ['version', 'installation', 'runtime', 'authorization'], ['product']);
   assert.ok(value.version === 1, 'Unsupported local configuration version');
   exact(value.runtime, ['private_parent', 'provider_key_env', 'timeout_minutes']);
   physical(value.runtime.private_parent, true);
@@ -199,7 +264,8 @@ function configuration(file) {
     'Expected the previously granted provider policy version');
   // The actual Server disclosure must match this exact previously granted
   // version before start.mjs calls the normal consent API. Never auto-upgrade.
-  check(pin); return { pin, value };
+  const product = productConfiguration(value.product);
+  check(pin); return { pin, value, product };
 }
 export async function capture({ objective, submission_owner = 'console', configuration_file = path.join(toolsRoot, 'LOCAL-INSTALLATION.json') }) {
   assert.equal(process.platform, 'win32'); assert.equal(process.arch, 'x64');
@@ -208,15 +274,17 @@ export async function capture({ objective, submission_owner = 'console', configu
   else assert.ok(typeof objective === 'string' && objective.trim().length > 0 && objective.length <= 10000
     && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(objective), 'Provide a nonempty objective of at most 10000 characters');
   const local = configuration(configuration_file), installed = installation(local.value.installation);
+  if (local.product) assert.ok(installed.application, 'Configured application mode requires its complete installed toolchain');
   if (submission_owner === 'browser') assert.ok(installed.web_dist, 'Browser input requires an installed and separately qualified local development Web build');
   const parent = local.value.runtime.private_parent;
   const protectedRoots = [toolsRoot, installed.bundle, installed.server.root, ...installed.dependencies.packages.map(item => item.directory),
-    ...(installed.web ? [installed.web.root] : [])];
+    ...(installed.web ? [installed.web.root] : []), ...(installed.application?.trees.map(item => item.root) ?? [])];
   assert.ok(protectedRoots.every(root => !inside(root, parent)), 'Session parent must be outside installation code');
   const output = path.join(parent, 'session-' + new Date().toISOString().replaceAll(/[-:.]/gu, '') + '-' + randomUUID());
   assert.equal(fs.existsSync(output), false, 'A session path must be fresh');
   check(local.pin);
   const result = freeze({ ...installed, configuration: local.pin, output, submission_owner, objective: objective?.trim() ?? null, provider,
+    product: local.product,
     timeout_minutes: local.value.runtime.timeout_minutes, provider_key_env: local.value.runtime.provider_key_env,
     authorization_policy_version: local.value.authorization.policy_version });
   captures.set(result, { configuration: local.pin, installation: local.value.installation, installed, parent });
@@ -233,6 +301,7 @@ export async function recheck(inputs) {
 // database, submits a goal, reads a provider credential or repairs a journal.
 export function validateStoppedProductRecords(result, published, binding, sessionRoot) {
   assert.ok(result?.version === 1 && result.scope === 'windows-local-single-goal', 'Unsupported original daily result');
+  assert.ok(result.product_mode === undefined || result.product_mode === 'static-web', 'Application sessions do not support static publisher reopening');
   assert.ok(result.status === 'stopped-after-publication' && result.product_published === true
     && result.shutdown_confirmed === true && result.server_closed === true && result.inputs_unchanged === true
     && Array.isArray(result.errors) && result.errors.length === 0, 'Only a successfully published, normally closed daily product can reopen');
@@ -371,6 +440,7 @@ export async function captureReopen({ product_path, configuration_file }) {
   if (configuration_file !== undefined) assert.equal(physical(path.resolve(configuration_file)), configurationPin.path,
     'Use the original product installation configuration');
   const local = configuration(configurationPin.path), installed = installation(local.value.installation);
+  assert.equal(local.product, null, 'Application configurations do not support static publisher reopening');
   same(local.pin, configurationPin, 'Original product configuration changed');
   same(installed.installation_manifest, original.value.installation_manifest, 'Original product installation changed');
   const parent = local.value.runtime.private_parent;

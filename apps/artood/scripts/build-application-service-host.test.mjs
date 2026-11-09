@@ -86,14 +86,59 @@ test('rejects application schema initialization hoisted into the shared bootstra
   assert.throws(() => audit(f, result), /application source in bootstrap static closure: application-runtime-process-protocol.ts/u);
 });
 
+test('fixed sealed-record observation facts can share the graph without running a collector', async () => {
+  const f = fixture();
+  f.put('windows-sealed-record-observer.ts', `import {isDeepStrictEqual} from 'node:util';
+    export const collector = "Microsoft.PowerShell.Utility\\\\Add-Type -TypeDefinition 'fixed inert source'";
+    export function same(left, right) { return isDeepStrictEqual(left, right); }`);
+  for (const name of [bootstrapName, hostName]) f.put(name + '.ts', f.original[name + '.ts']
+    + `\nimport {collector,same} from './windows-sealed-record-observer.js'; export const observerSource=collector; export const equalFacts=same;`);
+  const result = await compile(f); assert.doesNotThrow(() => audit(f, result));
+});
+
+for (const dependency of ['application-publication-executor', 'sqlite']) {
+  test('sealed-record facts do not exempt early execution dependencies: ' + dependency, async () => {
+    const f = fixture();
+    if (dependency === 'sqlite') f.put('windows-sealed-record-observer.ts', "export {DatabaseSync as value} from 'node:sqlite';");
+    else {
+      f.put(dependency + '.ts', 'export function value() { return "controlled-fixture-only"; }');
+      f.put('windows-sealed-record-observer.ts', `export {value} from './${dependency}.js';`);
+    }
+    f.put(bootstrapName + '.ts', f.original[bootstrapName + '.ts'] + "\nimport {value} from './windows-sealed-record-observer.js'; export const observerValue=value;");
+    const result = await compile(f);
+    assert.throws(() => audit(f, result), dependency === 'sqlite' ? /SQLite must remain in the deferred host/u : /application source in bootstrap static closure/u);
+  });
+}
+
 for (const [member, allowed] of [
   ['packages/domain/src/application-development.ts', true],
   ['packages/domain/dist/application-development.js', true],
+  ['packages/domain/src/application-publication.ts', true],
+  ['packages/domain/dist/application-publication.js', true],
+  ['packages/domain/src/application-publication-measurement.ts', true],
+  ['packages/domain/dist/application-publication-measurement.js', true],
+  ['packages/protocol/src/application-publication.ts', false],
+  ['packages/protocol/dist/application-publication.js', false],
+  ['apps/artood/src/application-publication-process-protocol.ts', true],
+  ['apps/artood/src/application-publication-control-protocol.ts', true],
+  ['apps/artood/src/application-publication-bootstrap-control.ts', true],
+  ['apps/artood/src/nested/application-publication-control-protocol.ts', false],
+  ['apps/artood/src/nested/application-publication-bootstrap-control.ts', false],
+  ['packages/other/src/application-publication-control-protocol.ts', false],
+  ['packages/other/src/application-publication-bootstrap-control.ts', false],
+  ['apps/artood/dist/application-publication-control-protocol.js', false],
+  ['apps/artood/dist/application-publication-bootstrap-control.js', false],
+  ['apps/artood/src/nested/application-publication-process-protocol.ts', false],
+  ['packages/other/src/application-publication-process-protocol.ts', false],
+  ['packages/domain/src/nested/application-publication.ts', false],
+  ['apps/artood/src/application-publication.ts', false],
+  ['apps/artood/src/application-publication-process.ts', false],
+  ['apps/artood/src/application-publication-executor.ts', false],
   ['apps/artood/src/application-development.ts', false],
   ['packages/domain/src/nested/application-development.ts', false],
   ['packages/other/src/application-development.ts', false],
   ['packages/domain/dist/nested/application-development.js', false],
-]) test('early domain contract exact path: ' + member, async () => {
+]) test('early reviewed module exact path: ' + member, async () => {
   const f = fixture(), contract = join(f.directory, member);
   mkdirSync(dirname(contract), { recursive: true });
   writeFileSync(contract, 'export const schema = Object.freeze({ qualified_for_product: false });');
@@ -105,8 +150,31 @@ for (const [member, allowed] of [
     && Object.entries(output.inputs).some(([input, contribution]) => resolve(f.directory, input) === contract && contribution.bytesInOutput > 0)),
   'the real split graph retains the contract in a shared chunk');
   if (allowed) assert.doesNotThrow(() => audit(f, result));
-  else assert.throws(() => audit(f, result), /application source in bootstrap static closure: application-development\.(?:ts|js)/u);
+  else assert.throws(() => audit(f, result), error => {
+    assert.ok(error instanceof Error); assert.ok(error.message.includes('application source in bootstrap static closure: ' + basename(contract)));
+    const detail = JSON.parse(error.message.match(/\[bootstrap_input\.v1 (.+)\]$/u)[1]);
+    assert.equal(detail.resolved, contract); assert.ok(detail.bytesInOutput > 0);
+    assert.ok(detail.input.endsWith(member)); return true;
+  });
 });
+
+for (const name of ['application-publication-control-protocol', 'application-publication-bootstrap-control']) {
+  test('reviewed control module cannot import early application execution: ' + name, async () => {
+    const f = fixture();
+    f.put('application-publication-process.ts', 'export function execute() { return "controlled-execution-fixture"; }');
+    f.put(name + '.ts', "export {execute} from './application-publication-process.js';");
+    f.put(bootstrapName + '.ts', f.original[bootstrapName + '.ts'] + `\nimport {execute} from './${name}.js'; export const bootstrapExecute = execute;`);
+    const result = await compile(f);
+    assert.throws(() => audit(f, result), /application source in bootstrap static closure: application-publication-process.ts/u);
+  });
+  test('reviewed control module cannot import early SQLite: ' + name, async () => {
+    const f = fixture();
+    f.put(name + '.ts', "export {DatabaseSync} from 'node:sqlite';");
+    f.put(bootstrapName + '.ts', f.original[bootstrapName + '.ts'] + `\nimport {DatabaseSync} from './${name}.js'; export const bootstrapDatabase = DatabaseSync;`);
+    const result = await compile(f);
+    assert.throws(() => audit(f, result), /SQLite must remain in the deferred host/u);
+  });
+}
 
 test('rejects independently bundled authority copies instead of accepting their matching names', async () => {
   const f = fixture(), result = await compile(f);

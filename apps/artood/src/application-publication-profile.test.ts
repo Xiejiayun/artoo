@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplicationRuntimeFilePin } from "./application-runtime-process-protocol.js";
 import type { PreparedVerificationProfile } from "./verification.js";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
+import { claimApplicationPublicationResources, withApplicationPublicationAuditScope, beginApplicationPublicationOwner,
+  closeApplicationPublicationOwner, releaseApplicationPublicationResources } from "./application-publication-coordination.js";
 
 type File = { bytes: Buffer; ino: bigint; ctime: bigint; links: bigint; symlink: boolean };
 const controlled = vi.hoisted(() => ({ files: new Map<string, File>(), directories: new Map<string, number>(),
@@ -30,7 +32,7 @@ vi.mock("./verification.js", () => ({ assertLocallyPreparedVerificationProfile: 
 vi.mock("./application-verification-profile.js", () => ({ readApplicationVerificationProfile: controlled.applicationRead }));
 vi.mock("./windows-process-installation.js", () => ({ describeWindowsProcessInstallation: controlled.nativeDescribe }));
 vi.mock("./owned/windows-owned-process.js", () => ({ assertWindowsProcessBackend: controlled.backendAssert,
-  assertWindowsProcessTargetInputCapability: controlled.inputCapability }));
+  assertWindowsProcessTargetInputCapability: controlled.inputCapability, assertWindowsProcessTargetControlCapability: controlled.inputCapability }));
 vi.mock("./windows-code-installation.js", () => ({ prepareWindowsCodeInstallation: controlled.codePrepare, auditWindowsCodeInstallation: controlled.codeAudit }));
 vi.mock("./windows-release-storage.js", () => ({ prepareWindowsReleaseStorage: controlled.storagePrepare, auditWindowsReleaseStorage: controlled.storageAudit }));
 vi.mock("./windows-local-acl.js", async () => {
@@ -102,7 +104,7 @@ beforeEach(() => {
   const candidateParent = "C:\\verification\\candidates", installationParent = "C:\\verification\\installations", selectionParent = "C:\\verification\\selections";
   [candidateParent, installationParent, selectionParent].forEach(addDirectory);
   put(manifestPath, JSON.stringify({ version: 1, protocol: "artoo.windows-job-process.v1", runtime: "win-x64",
-    capabilities: ["artoo.windows-target-input.v1", "artoo.windows-job-member-observation.v1"] }));
+    capabilities: ["artoo.windows-target-input.v1", "artoo.windows-target-control.v1", "artoo.windows-job-member-observation.v1"] }));
   const application = { configuration: applicationConfiguration, roots, hostEntry, toolchainDigest: digest("original toolchain"),
     capabilities: { config_digest: applicationConfiguration.sha256, contract_digest: digest("application contract") },
     config: { node, hostManifest, candidate_parent: candidateParent, installation_parent: installationParent, selection_parent: selectionParent,
@@ -146,6 +148,15 @@ beforeEach(() => {
 afterEach(() => { Object.defineProperty(process, "arch", architecture); expect(controlled.forbidden).not.toHaveBeenCalled(); });
 
 describe("protected local application publication profile", () => {
+  it("rejects an active owner before auditing without poisoning the original integrity token", () => {
+    const token = prepare(), reservation = claimApplicationPublicationResources(token), owner = {};
+    withApplicationPublicationAuditScope(reservation, () => beginApplicationPublicationOwner(reservation, owner));
+    const audits = controlled.storageAudit.mock.calls.length;
+    expect(() => withApplicationPublicationAuditScope(reservation, () => readApplicationPublicationProfile(token))).toThrow(/quiescent/);
+    expect(controlled.storageAudit).toHaveBeenCalledTimes(audits);
+    closeApplicationPublicationOwner(reservation, owner); releaseApplicationPublicationResources(reservation);
+    expect(() => readApplicationPublicationProfile(token)).not.toThrow();
+  });
   it("retains the original authorities and exact bounded configuration without executing or advertising", () => {
     const token = prepare(), saved = readApplicationPublicationProfile(token);
     expect(saved.verifier).toBe(verifier); expect(saved.application).toBe(controlled.application); expect(saved.backend).toBe(controlled.backend);
@@ -186,7 +197,7 @@ describe("protected local application publication profile", () => {
     config.limits.root_lifetime_ms = 600_000;
     expect(() => prepare({ limits: { ...config.limits, normal_drain_reserve_ms: 47_499 } })).toThrow(/normal drain reserve/);
   });
-  it.each(["artoo.windows-target-input.v1", "artoo.windows-job-member-observation.v1"])("requires native capability %s", missing => {
+  it.each(["artoo.windows-target-input.v1", "artoo.windows-target-control.v1", "artoo.windows-job-member-observation.v1"])("requires native capability %s", missing => {
     const value = JSON.parse(controlled.files.get(manifestPath)!.bytes.toString()) as { capabilities: string[] };
     value.capabilities = value.capabilities.filter(value => value !== missing); put(manifestPath, JSON.stringify(value));
     expect(() => prepare({ backend: { ...config.backend, manifest_sha256: pin(manifestPath).sha256 } })).toThrow(/native input and live member/);

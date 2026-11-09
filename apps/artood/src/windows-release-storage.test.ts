@@ -4,7 +4,7 @@ import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
   spawnSync: vi.fn(), readFileSync: vi.fn(), sequence: 0n, auditLimit: 65536,
-  nodes: new Map<string, { directory: boolean; ino: bigint; ctimeNs: bigint; mtimeNs?: bigint; size?: bigint; link?: boolean; nlink?: bigint }>(),
+  nodes: new Map<string, { directory: boolean; dev?: bigint; ino: bigint; ctimeNs: bigint; mtimeNs?: bigint; size?: bigint; link?: boolean; nlink?: bigint }>(),
   aliases: new Map<string, string>(),
 }));
 vi.mock("node:child_process", () => ({ spawnSync: state.spawnSync }));
@@ -14,7 +14,7 @@ vi.mock("node:fs", () => ({
   lstatSync: vi.fn((path: string, options?: { bigint?: boolean }) => {
     const node = state.nodes.get(path); if (!node) throw Object.assign(new Error("Missing controlled file"), { code: "ENOENT" });
     return { isDirectory: () => node.directory, isFile: () => !node.directory, isSymbolicLink: () => !!node.link,
-      nlink: options?.bigint ? node.nlink ?? 1n : Number(node.nlink ?? 1n), dev: 1n, ino: node.ino,
+      nlink: options?.bigint ? node.nlink ?? 1n : Number(node.nlink ?? 1n), dev: node.dev ?? 1n, ino: node.ino,
       ctimeNs: node.ctimeNs, mtimeNs: node.mtimeNs ?? 1n, size: node.size ?? 0n };
   }),
   readdirSync: vi.fn((path: string) => [...state.nodes.keys()].filter(value => value.startsWith(`${path}\\`)
@@ -133,11 +133,14 @@ describe("synchronous Windows release-storage audit batches", () => {
 
   it.each([0, 1])("rejects metadata changes in storage %i with the original safe diagnostics", async index => {
     const entries = pair(), root = entries[index]!.directory, file = `${root}\\existing.json`; add(file, false);
+    const ino = state.nodes.get(file)!.ino.toString();
     change = () => { state.nodes.get(file)!.ctimeNs++; };
     const { error, failure } = await startupRejection(() => auditWindowsReleaseStorageBatch(entries));
     expect(failure.storage_failure).toEqual({ code: "storage_inventory_changed", first_change_fields: ["ctime"] });
     expect(JSON.parse(error.message.slice(changedPrefix.length))).toMatchObject({ root: { value: root },
-      first_change: { relative: { value: "existing.json" }, fields: ["ctime"] } });
+      first_change: { relative: { value: "existing.json" }, fields: ["ctime"],
+        before: { dev: "1", ino, directory: false, ctimeNs: "1", mtimeNs: "1", size: "0" },
+        after: { dev: "1", ino, directory: false, ctimeNs: "2", mtimeNs: "1", size: "0" } } });
     expect(state.spawnSync).toHaveBeenCalledOnce();
   });
 
@@ -289,6 +292,8 @@ describe("Windows mutable release-storage authority", () => {
   it.each(["added", "removed", "identity", "ctime", "mtime", "size"])("keeps rejecting %s and safely projects the captured change without re-reading it", async field => {
     const file = `${directory}\\a.json`;
     if (field !== "added") add(file, false);
+    const ino = field === "added" ? state.sequence + 1n : state.nodes.get(file)!.ino;
+    const originalMetadata = { dev: "1", ino: ino.toString(), directory: false, ctimeNs: "1", mtimeNs: "1", size: "0" };
     change = () => {
       if (field === "added") add(file, false);
       else if (field === "removed") state.nodes.delete(file);
@@ -304,7 +309,11 @@ describe("Windows mutable release-storage authority", () => {
     expect(error.message.startsWith(changedPrefix)).toBe(true);
     expect(JSON.parse(error.message.slice(changedPrefix.length))).toEqual({
       root: { value: directory, truncated: false, sha256: pathHash(directory) },
-      first_change: { relative: { value: "a.json", truncated: false, sha256: pathHash("a.json") }, fields: [field] },
+      first_change: { relative: { value: "a.json", truncated: false, sha256: pathHash("a.json") }, fields: [field],
+        before: field === "added" ? null : originalMetadata,
+        after: field === "removed" ? null : { ...originalMetadata,
+          ino: (field === "identity" ? ino + 1n : ino).toString(), ctimeNs: field === "ctime" ? "2" : "1",
+          mtimeNs: field === "mtime" ? "2" : "1", size: field === "size" ? "1" : "0" } },
     });
     expect(failure.storage_failure).toEqual({ code: "storage_inventory_changed", first_change_fields: [field] });
     expect(JSON.stringify(events)).not.toContain("a.json"); expect(JSON.stringify(events)).not.toContain(pathHash("a.json"));
@@ -335,12 +344,15 @@ describe("Windows mutable release-storage authority", () => {
     expect(state.spawnSync).toHaveBeenCalledOnce();
   });
   it("identifies a storage-root metadata change with the relative dot entry", () => {
+    const ino = state.nodes.get(directory)!.ino.toString();
     change = () => { state.nodes.get(directory)!.ctimeNs++; };
     const error = auditRejection(), details = JSON.parse(error.message.slice(changedPrefix.length));
     expect(details.root.value).toBe(directory); expect(details.first_change.relative.value).toBe(".");
+    expect(details.first_change.before).toEqual({ dev: "1", ino, directory: true, ctimeNs: "1", mtimeNs: "1", size: "0" });
+    expect(details.first_change.after).toEqual({ dev: "1", ino, directory: true, ctimeNs: "2", mtimeNs: "1", size: "0" });
     expect(details.first_change.fields).toEqual(["ctime"]); expect(state.spawnSync).toHaveBeenCalledOnce();
   });
-  it("bounds and escapes path diagnostics without contents, ACLs, environment or metadata values", () => {
+  it("bounds and escapes path diagnostics while retaining exact metadata without contents, ACLs or environment", () => {
     const rootParts = ["root" + "根".repeat(90), "中".repeat(90), "末".repeat(90)];
     let root = "C:";
     for (const part of rootParts) { root += `\\${part}`; add(root); }
@@ -360,8 +372,38 @@ describe("Windows mutable release-storage authority", () => {
     expect(details.first_change.relative).toMatchObject({ truncated: true, sha256: pathHash(relative) });
     expect(details.root.value.length).toBeLessThanOrEqual(240); expect(details.first_change.relative.value.length).toBeLessThanOrEqual(240);
     expect(details.first_change.fields).toEqual(["ctime"]);
-    for (const forbidden of [contents, environment, "AccessAllowed", "ownerSid", currentSid, "98765432109876543210987654321", "z-later-"])
+    expect(details.first_change.before.ctimeNs).toBe("1");
+    expect(details.first_change.after.ctimeNs).toBe("98765432109876543210987654321");
+    expect(details.first_change.before.ino).toBe(state.nodes.get(file)!.ino.toString());
+    expect(details.first_change.after.ino).toBe(state.nodes.get(file)!.ino.toString());
+    expect(details.first_change.before).not.toHaveProperty("truncated_fields");
+    expect(details.first_change.after).not.toHaveProperty("truncated_fields");
+    for (const forbidden of [contents, environment, "AccessAllowed", "ownerSid", currentSid, "z-later-"])
       expect(error.message).not.toContain(forbidden);
+    expect(state.readFileSync).not.toHaveBeenCalled(); expect(state.spawnSync).toHaveBeenCalledOnce();
+  });
+  it("bounds long Unicode paths and out-of-range captured metadata together without accepting changes", () => {
+    const root = `C:\\${"根".repeat(241)}`, nested = `${root}\\${"文".repeat(241)}`, file = `${nested}\\a.json`;
+    add(root); add(nested); add(file, false); input = { ...input, directory: root };
+    const value = BigInt("1234567890".repeat(16));
+    const selected = state.nodes.get(file)!;
+    Object.assign(selected, { dev: value, ino: value, ctimeNs: value, mtimeNs: value, size: value });
+    change = () => { selected.dev!++; selected.ino++; selected.ctimeNs++; selected.mtimeNs!++; selected.size!++; };
+    const error = auditRejection(), details = JSON.parse(error.message.slice(changedPrefix.length));
+    expect(details.root.truncated).toBe(true); expect(details.first_change.relative.truncated).toBe(true);
+    expect(details.first_change.fields).toEqual(["identity", "ctime", "mtime", "size"]);
+    for (const [phase, expected] of [["before", value], ["after", value + 1n]] as const) {
+      const metadata = details.first_change[phase];
+      expect(metadata.truncated_fields).toEqual(["dev", "ino", "ctimeNs", "mtimeNs", "size"]);
+      expect(metadata.directory).toBe(false);
+      for (const field of metadata.truncated_fields) {
+        expect(metadata[field].length).toBeLessThanOrEqual(40);
+        expect(metadata[field]).toBe(`${expected.toString().slice(0, 18)}...${expected.toString().slice(-18)}`);
+      }
+    }
+    expect(error.message.length).toBeLessThanOrEqual(4096);
+    expect(error.message).not.toContain(value.toString());
+    expect(vi.mocked(lstatSync).mock.calls.filter(([path]) => path === file)).toHaveLength(2);
     expect(state.readFileSync).not.toHaveBeenCalled(); expect(state.spawnSync).toHaveBeenCalledOnce();
   });
   it("rejects hardlinks and aliases before collecting authority", () => {

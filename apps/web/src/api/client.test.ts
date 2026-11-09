@@ -49,6 +49,23 @@ describe("ApiClient", () => {
     }));
     await expect(client.getGoalRelease("goal/with space")).resolves.toEqual({ release: null });
   });
+  it("fetches application publication separately and preserves an absent publication", async () => {
+    server.use(http.get(`${BASE}/goals/:id/application-publication`, ({ params }) => {
+      expect(params.id).toBe("goal/with space"); return HttpResponse.json({ publication: null });
+    }));
+    await expect(client.getGoalApplicationPublication("goal/with space")).resolves.toEqual({ publication: null });
+  });
+  it("stops the selected application's original publication and preserves a rejected stop", async () => {
+    let attempts = 0;
+    server.use(http.post(`${BASE}/goals/:id/application-publication/stop`, async ({ params, request }) => {
+      expect(params.id).toBe("goal/with space"); expect(request.headers.get("Idempotency-Key")).toBe("application-stop");
+      expect(await request.text()).toBe(""); attempts++;
+      return attempts === 1 ? HttpResponse.json({ error: { code: "conflict", message: "Original service closure remains unconfirmed" } }, { status: 409 })
+        : HttpResponse.json({ publication: { status: "published", current_state: "closed-normal" } });
+    }));
+    await expect(client.stopGoalApplicationPublication("goal/with space", "application-stop")).rejects.toMatchObject({ status: 409, code: "conflict" });
+    await expect(client.stopGoalApplicationPublication("goal/with space", "application-stop")).resolves.toMatchObject({ publication: { status: "published", current_state: "closed-normal" } });
+  });
 
   it("enrolls the selected device with an idempotency key and preserves enrollment errors", async () => {
     let attempts = 0;

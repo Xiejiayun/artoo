@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PassThrough, Writable } from "node:stream";
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
+const publicationAdmissions = vi.hoisted(() => new WeakMap<object, unknown>());
+vi.mock("./application-bootstrap-admission.js", () => ({ readApplicationBootstrapPublication: (token: object) => {
+  const saved = publicationAdmissions.get(token); if (!saved) throw Error("Original publication admission required"); return saved;
+} }));
 import { APPLICATION_HTTP_LIMITS as limits, createApplicationHttpIngress,
+  readApplicationHttpCounters, subscribeApplicationHttpCounters,
+  readApplicationPublicationHttpControl,
   type ApplicationHttpIngressOptions, type ApplicationHttpInvocation, type ApplicationHttpService } from "./application-http-ingress.js";
+import { applicationPublicationProbeHeaders, type ApplicationPublicationProbeBinding } from "./application-publication-process-protocol.js";
+import { APPLICATION_PUBLICATION_CONTROL_PROBE_HEADER } from "./application-publication-control-protocol.js";
 
 const origin = "http://127.0.0.1:31000", host = "127.0.0.1:31000";
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -57,7 +65,74 @@ function pending() {
   return { output, settlement, cancel, handle: { response: output.promise, settled: settlement.promise, cancel } };
 }
 
+describe("publication-only private ingress gate", () => {
+  function controlled(factory?: () => ApplicationHttpInvocation) {
+    const digest = "sha256:" + "a".repeat(64), token = Object.freeze({}) as NonNullable<ApplicationHttpIngressOptions["publication"]>;
+    publicationAdmissions.set(token, { version: 1, challenge: "11111111-1111-4111-8111-111111111111",
+      control: { version: 1, read_path: "/api/items?limit=1" },
+      identity: { publication_id: "publication1", lease_id: "lease1", owner_id: "owner1", generation: 1, deployment_generation: "generation1",
+        reopen_pin_digest: digest, database_identity: { device: "1", inode: "2" }, schema_digest: digest, scope_digest: digest, artifact_digest: digest, origin } });
+    const f = fixture({ publication: token, maximumConcurrent: 1 }, factory);
+    return { ...f, control: readApplicationPublicationHttpControl(f.ingress) };
+  }
+  it("starts paused, admits exactly one fixed GET nonce and waits for both owner and transport settlement", async () => {
+    const invocation = pending(), f = controlled(() => invocation.handle), nonce = "22222222-2222-4222-8222-222222222222";
+    const denied = await exchange(f, request => { request.url = "/api/items?limit=1"; });
+    expect(denied.response.statusCode).toBe(503); expect(f.begin).not.toHaveBeenCalled();
+    let settled = false; const probe = f.control.probe("/api/items?limit=1", nonce).then(() => { settled = true; });
+    const wrong = await exchange(f, request => { request.url = "/api/items?limit=2"; request.rawHeaders.push(APPLICATION_PUBLICATION_CONTROL_PROBE_HEADER, nonce); });
+    expect(wrong.response.statusCode).toBe(503); expect(f.control.mode).toBe("armed");
+    const request = new Request(), response = new Response(); response.hold = true; request.url = "/api/items?limit=1";
+    request.rawHeaders.push(APPLICATION_PUBLICATION_CONTROL_PROBE_HEADER, nonce);
+    const work = f.ingress.handle(request.http, response.http); request.finish();
+    expect(f.control.mode).toBe("paused");
+    const duplicate = await exchange(f, duplicate => { duplicate.url = request.url; duplicate.rawHeaders.push(APPLICATION_PUBLICATION_CONTROL_PROBE_HEADER, nonce); });
+    expect(duplicate.response.statusCode).toBe(503);
+    invocation.output.resolve('{"status":200,"body":{"ok":true}}'); await tick(); expect(settled).toBe(false);
+    invocation.settlement.resolve(); await tick(); expect(settled).toBe(false);
+    response.releaseWrite?.(); await work; await probe;
+    expect(f.begin).toHaveBeenCalledOnce(); expect(response.headers.has(APPLICATION_PUBLICATION_CONTROL_PROBE_HEADER)).toBe(false);
+    expect(JSON.stringify(f.calls[0]!.action)).not.toContain(nonce);
+    expect(readApplicationHttpCounters(f.ingress)).toMatchObject({ requests_used: 1, in_flight: 0, closed_transports: 1 });
+    expect(() => f.control.probe(request.url, nonce)).toThrow(/private.*probe/);
+    f.control.resume(); expect(f.control.mode).toBe("running"); f.control.pause(); expect(f.control.mode).toBe("paused"); f.ingress.close();
+  });
+  it("keeps Stop dominant over an armed probe and never grants public control", async () => {
+    const f = controlled(), nonce = "22222222-2222-4222-8222-222222222222";
+    const probe = f.control.probe("/", nonce); f.ingress.drain();
+    await expect(probe).rejects.toThrow(/stopped/); expect(() => f.control.resume()).toThrow(/quiescent/);
+    const rejected = await exchange(f, request => { request.url = "/"; request.rawHeaders.push(APPLICATION_PUBLICATION_CONTROL_PROBE_HEADER, nonce); });
+    expect(rejected.response.statusCode).toBe(503); expect(f.begin).not.toHaveBeenCalled();
+    expect(() => readApplicationPublicationHttpControl({ ...f.ingress })).toThrow(/Original/);
+  });
+  it("retains ordinary manual routing without a publication selection", async () => {
+    const f = fixture(); const result = await exchange(f);
+    expect(result.response.statusCode).toBe(200); expect(f.begin).toHaveBeenCalledOnce();
+    expect(() => readApplicationPublicationHttpControl(f.ingress)).toThrow(/Original/); f.ingress.close();
+  });
+});
+
 describe("fixed application HTTP ingress", () => {
+  it("overwrites reserved response identity with original host markers and observes actual admission/transport settlement", async () => {
+    const digest = "sha256:" + "a".repeat(64), token = Object.freeze({}) as NonNullable<ApplicationHttpIngressOptions["publication"]>;
+    const binding: ApplicationPublicationProbeBinding = { version: 1, challenge: "11111111-1111-4111-8111-111111111111",
+      identity: { publication_id: "publication1", lease_id: "lease1", owner_id: "owner1", generation: 1, deployment_generation: "generation1",
+        reopen_pin_digest: digest, database_identity: { device: "1", inode: "2" }, schema_digest: digest, scope_digest: digest, artifact_digest: digest, origin } };
+    publicationAdmissions.set(token, binding);
+    const invocation = pending(), f = fixture({ publication: token, maximumConcurrent: 1 }, () => invocation.handle);
+    const observer = vi.fn(), unsubscribe = subscribeApplicationHttpCounters(f.ingress, observer);
+    const request = new Request(), response = new Response();
+    request.rawHeaders.push("x-artoo-publication-probe", "forged-request", "x-artoo-publication-identity", "forged-request");
+    response.setHeader("x-artoo-publication-probe", "forged-response"); response.setHeader("x-artoo-publication-identity", "forged-response");
+    const work = f.ingress.handle(request.http, response.http); request.finish();
+    expect(readApplicationHttpCounters(f.ingress)).toMatchObject({ requests_used: 1, in_flight: 1, closed_transports: 0 });
+    invocation.output.resolve('{"status":200,"body":{"ok":true}}'); invocation.settlement.resolve(); await work;
+    for (const [name, value] of Object.entries(applicationPublicationProbeHeaders(binding))) expect(response.headers.get(name)).toBe(value);
+    expect(readApplicationHttpCounters(f.ingress)).toMatchObject({ requests_used: 1, in_flight: 0, closed_transports: 1 });
+    expect(observer.mock.calls.at(-1)?.[0]).toMatchObject({ requests_used: 1, in_flight: 0, closed_transports: 1 });
+    expect(() => fixture({ publication: { ...token } })).toThrow("Original publication admission");
+    expect(() => readApplicationHttpCounters({ ...f.ingress })).toThrow("Original"); unsubscribe();
+  });
   it("maps canonical input into the existing begin action with host correlation and immutable policy", async () => {
     const f = fixture();
     const { response } = await exchange(f, request => {

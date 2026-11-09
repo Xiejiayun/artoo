@@ -18,6 +18,55 @@ export const PreparedGoalEntryConfigV1Schema = z.discriminatedUnion("submission_
   z.object({ ...common, submission_owner: z.literal("browser") }).strict(),
 ]);
 export type PreparedGoalEntryConfigV1 = z.infer<typeof PreparedGoalEntryConfigV1Schema>;
+interface SubmissionGate { closed: boolean; pending: Set<Promise<void>>; closing?: Promise<PreparedGoalSubmissionClosure> }
+export interface PreparedGoalSubmissionClosure {
+  readonly version: 1; readonly session_id: string; readonly request_key: string;
+  readonly project_id: string; readonly actor_user_id: string; readonly goal_id: string | null;
+}
+// Request contexts retain this exact local configuration object. These gates are
+// process-local lifecycle state, never serialized authorization or HTTP input.
+const submissionGates = new WeakMap<PreparedGoalEntryConfigV1, SubmissionGate>();
+function submissionGate(entry: PreparedGoalEntryConfigV1): SubmissionGate {
+  let gate = submissionGates.get(entry);
+  if (!gate) { gate = { closed: false, pending: new Set() }; submissionGates.set(entry, gate); }
+  return gate;
+}
+
+/** Register synchronously before entering the original creation transaction.
+ * Its commit or rollback must settle before local Stop can inspect the key. */
+export async function withPreparedGoalSubmission<T>(ctx: ServerContext, input: CreateAutonomousGoalRequest,
+  identity: GoalSubmissionIdentity | undefined, work: () => Promise<T>): Promise<T> {
+  assertPreparedGoalRequest(ctx, input, identity);
+  const entry = ctx.goalEntry;
+  if (!entry || entry.project_id !== input.project_id) return work();
+  const gate = submissionGate(entry);
+  if (gate.closed) throw AppError.conflict("This prepared session has stopped accepting product requests");
+  let settled!: () => void;
+  const pending = new Promise<void>(resolve => { settled = resolve; }); gate.pending.add(pending);
+  try { return await work(); }
+  finally { gate.pending.delete(pending); settled(); }
+}
+
+/** Original local Server owner only. Closing admission occurs before returning
+ * a promise, then all admitted transactions settle before reading the original
+ * stored response. No route exposes this operation and it never submits a goal. */
+export function closePreparedGoalSubmission(ctx: ServerContext,
+  identity: { session_id: string; request_key: string }): Promise<PreparedGoalSubmissionClosure> {
+  const selected = z.object({ session_id: z.string().min(1), request_key: z.string().min(1) }).strict().parse(identity);
+  const entry = ctx.goalEntry;
+  if (!entry || entry.session_id !== selected.session_id || entry.request_key !== selected.request_key
+    || entry.actor_user_id !== ctx.actorUserId) throw AppError.conflict("Original local prepared session identity required for shutdown");
+  const gate = submissionGate(entry), captured = { ...ctx, goalEntry: entry };
+  gate.closed = true;
+  return gate.closing ??= (async () => {
+    await Promise.all([...gate.pending]);
+    const snapshot = await preparedGoalEntrySnapshot(captured);
+    if (!snapshot || snapshot.session_id !== entry.session_id || snapshot.project_id !== entry.project_id)
+      throw AppError.conflict("Original prepared submission outcome remains unconfirmed");
+    return Object.freeze({ version: 1 as const, session_id: entry.session_id, request_key: entry.request_key,
+      project_id: entry.project_id, actor_user_id: entry.actor_user_id, goal_id: snapshot.goal_id });
+  })();
+}
 /** Only the local startup process supplies this; never read it from HTTP input. */
 export function loadGoalEntryConfig(env: NodeJS.ProcessEnv): PreparedGoalEntryConfigV1 | undefined {
   if (env.ARTOO_GOAL_ENTRY === undefined) return undefined;
@@ -31,6 +80,7 @@ export function loadGoalEntryConfig(env: NodeJS.ProcessEnv): PreparedGoalEntryCo
     throw new Error("Prepared polling requires explicit loopback development mode with dev node tokens disabled");
   }
   Object.freeze(result.data.request.source_handoff); Object.freeze(result.data.request.app_delivery);
+  Object.freeze(result.data.request.app_publication);
   Object.freeze(result.data.request); return Object.freeze(result.data);
 }
 export function assertPreparedManualGoal(ctx: ServerContext, projectId: string): void {
@@ -71,7 +121,7 @@ export async function preparedGoalEntrySnapshot(ctx: ServerContext): Promise<Pre
       execution_mode: result.automation.execution_mode, verification_profile_id: result.automation.verification_profile_id,
       release_profile_id: result.automation.release_profile_id ?? undefined,
       max_retries: result.goal.budgets.max_retries ?? 3, source_handoff: result.automation.source_handoff ?? undefined,
-      app_delivery: result.automation.app_delivery ?? undefined };
+      app_delivery: result.automation.app_delivery ?? undefined, app_publication: result.automation.app_publication ?? undefined };
     assertPreparedGoalRequest(ctx, actual, { key: entry.request_key, url: AUTONOMOUS_GOAL_PATH, rawBody: actual });
     goalId = result.goal.id;
   }

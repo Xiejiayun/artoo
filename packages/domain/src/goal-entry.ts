@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AutonomousSourceHandoffV1Schema } from "./autonomy.js";
 import { ApplicationDeliveryV1Schema } from "./application-development.js";
+import { ApplicationPublicationGrantV1Schema } from "./application-publication.js";
 
 /** Display defaults for a prepared request, never evidence of node capability. */
 const preparedFields = {
@@ -10,9 +11,11 @@ const preparedFields = {
 };
 export const PreparedGoalRequestV1Schema = z.union([
   z.object({ ...preparedFields, release_profile_id: z.string().min(1).max(128),
-    source_handoff: AutonomousSourceHandoffV1Schema, app_delivery: z.never().optional() }).strict(),
+    source_handoff: AutonomousSourceHandoffV1Schema, app_delivery: z.never().optional(), app_publication: z.never().optional() }).strict(),
   z.object({ ...preparedFields, app_delivery: ApplicationDeliveryV1Schema,
-    release_profile_id: z.never().optional(), source_handoff: z.never().optional() }).strict(),
+    release_profile_id: z.never().optional(), source_handoff: z.never().optional(), app_publication: z.never().optional() }).strict(),
+  z.object({ ...preparedFields, app_publication: ApplicationPublicationGrantV1Schema,
+    release_profile_id: z.never().optional(), source_handoff: z.never().optional(), app_delivery: z.never().optional() }).strict(),
 ]);
 const common = {
   version: z.literal(1), session_id: z.string().min(1).max(128),

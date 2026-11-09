@@ -4,10 +4,11 @@ import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RunStartPayload } from "@artoo/domain";
+import { APPLICATION_PUBLICATION_STATEMENT_V1, canonicalReleaseJson, type RunStartPayload } from "@artoo/domain";
 import type { PreparedApplicationVerificationProfile } from "./application-verification-profile.js";
 import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
-import { webAcceptanceDigest as sha } from "./web-acceptance-identity.js";
+import { canonicalWebAcceptance, webAcceptanceDigest as sha } from "./web-acceptance-identity.js";
+import { applicationPublicationRequestFixture } from "./test-fixtures/application-publication-request.js";
 const state = vi.hoisted(() => ({ profile: vi.fn(), pin: vi.fn(), definition: vi.fn(), create: vi.fn(), candidate: vi.fn(),
   initialize: vi.fn(), store: vi.fn(), service: vi.fn(), browser: vi.fn(), program: vi.fn() }));
 vi.mock("./application-verification-profile.js", () => ({ readApplicationVerificationProfile: state.profile }));
@@ -25,7 +26,7 @@ const digest = "sha256:" + "a".repeat(64), workspace = "C:\\work";
 const servers: Server[] = [];
 afterEach(async () => { for (const server of servers.splice(0)) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); });
 beforeEach(() => { for (const mock of Object.values(state)) mock.mockReset(); });
-async function fixture() {
+async function fixture(publication = false) {
   const profile = Object.freeze({}) as PreparedApplicationVerificationProfile, backend = Object.freeze({}) as PreparedWindowsProcessBackend;
   const events: string[] = [], rows = new Set<string>(), storeIds = new WeakMap<object, string>();
   let activeService = 0, requests = 0, corruptReopen = false, corruptReplay = false, writes = 0;
@@ -48,15 +49,35 @@ async function fixture() {
   const configured = { config: { origin, timeout_ms: 10_000, operation_timeout_ms: 1000, action_timeout_ms: 500,
     browser: { path: "C:\\browser\\chrome.exe" } }, capabilities: { config_digest: digest, contract_digest: digest } };
   state.profile.mockImplementation(value => { expect(value).toBe(profile); return configured; });
-  const files = new Map(["product/client/index.html", "product/server/handler.ts", ".artoo/product/application.json", ".artoo/product/design.json"]
-    .map(path => [path, { checksum: sha(path), size: Buffer.byteLength(path) }] as const));
+  const program = { version: 3, contract_digest: digest, steps: [{ action: "navigate", page: "main", path: "/" },
+    { action: "assert_text", page: "main", selector: "#items", text: "Saved" }] };
+  const publicationRequest = applicationPublicationRequestFixture();
+  const research = { version: 1, requirements: [
+    { id: "business", description: "Saved records", priority: "must", acceptance_criteria: ["Saved records appear in the application"] },
+    { id: "publication", description: "Bounded local publication", priority: "must", acceptance_criteria: [APPLICATION_PUBLICATION_STATEMENT_V1] },
+  ], application_publication_plan: { version: 1, authorization_event_id: publicationRequest.authorization.event_id,
+    publication_contract_digest: publicationRequest.capabilities.binding.publication_contract_digest, entries: [
+      { requirement_id: "business", criterion_index: 0, method: "application-case" },
+      { requirement_id: "publication", criterion_index: 0, method: "bounded-local-application-publication", claim: "bounded-local-application-publication" },
+    ] } };
+  const design = { version: 1, validation_cases: [{ id: "save", requirement_ids: ["business"], browser_program: program }],
+    application_publication_coverage: { version: 1, entries: [{ requirement_id: "business", criterion_index: 0, case_ids: ["save"] }] } };
+  const fileBytes = new Map(["product/client/index.html", "product/server/handler.ts", ".artoo/product/application.json", ".artoo/product/design.json"]
+    .map(path => [path, Buffer.from(path)] as const));
+  if (publication) {
+    fileBytes.set(".artoo/product/application.json", Buffer.from("{}"));
+    fileBytes.set(".artoo/product/design.json", Buffer.from(JSON.stringify(design)));
+    fileBytes.set(".artoo/product/research.json", Buffer.from(JSON.stringify(research)));
+  }
+  const files = new Map([...fileBytes].map(([path, bytes]) => [path, { checksum: sha(bytes), size: bytes.length }]));
+  const replaceFile = (path: string, value: string | Buffer) => {
+    const bytes = Buffer.from(value); fileBytes.set(path, bytes); files.set(path, { checksum: sha(bytes), size: bytes.length });
+  };
   state.pin.mockImplementation(pin => {
     const path = win32.relative(workspace, pin.path).split("\\").join("/");
     expect(pin).toEqual({ path: win32.join(workspace, ...path.split("/")), bytes: files.get(path)!.size, sha256: files.get(path)!.checksum });
-    return Buffer.from(path);
+    return fileBytes.get(path)!;
   });
-  const program = { version: 3, contract_digest: digest, steps: [{ action: "navigate", page: "main", path: "/" },
-    { action: "assert_text", page: "main", selector: "#items", text: "Saved" }] };
   const definition = { schemaDigest: digest, schemaJson: "{}", schema: {}, cases: [{ id: "save", program }],
     persistence: { write: { path: "/api/items", body: { idempotency_key: "Saved" }, expected_status: 201, expected_json: { saved: true } },
       read: { path: "/api/items", expected_status: 200, expected_json: { items: ["Saved"] } }, after_restart_browser_program: program } };
@@ -89,15 +110,18 @@ async function fixture() {
     return { operations: [{ action: "assert_text", result: "controlled" }], captures: [{ page_id: "main", screenshot_digest: checksum }], screenshots: new Map([["main", screenshot]]) };
   });
   const makeRun = (id = "author", expected?: { candidate: unknown; origin_run_id: string; origin_request_id: string }) => ({
-    run_id: id, task_id: `task-${id}`, workspace: { root: workspace }, verification: { request_id: `${id}-request`,
+    run_id: id, task_id: `task-${id}`, agent_instance_id: `${id}-instance`, workspace: { root: workspace }, verification: { request_id: `${id}-request`,
       application: { version: 1, config_digest: digest, contract_digest: digest, ...(expected ? { expected_candidate: expected } : {}) } },
-    context_pack: { payload: { app_delivery: { version: 1, kind: "local-application-development" }, project: { id: "project" }, task: { id: `task-${id}` },
+    context_pack: { payload: { ...(publication ? { app_publication: publicationRequest.authorization.grant,
+      application_publication: { version: 1, authorization: publicationRequest.authorization, capabilities: publicationRequest.capabilities,
+        publisher_session_id: publicationRequest.publisher_session_id, agent_id: `${id}-agent`, agent_instance_id: `${id}-instance` } }
+      : { app_delivery: { version: 1, kind: "local-application-development" } }), project: { id: "project" }, task: { id: `task-${id}` },
       workspace: { root: workspace }, ...(expected ? { review_subject: { run_id: "author" } } : {}) } },
   }) as unknown as RunStartPayload;
   const subject = { digest, files }, assertSubject = vi.fn();
   const run = (payload = makeRun()) => executeApplicationVerification(profile, { run: { nodeId: "node", runStart: payload }, requestId: payload.verification!.request_id,
     workspace, stage: "implementation", subject, assertSubject, backend, signal: new AbortController().signal });
-  return { profile, run, makeRun, events, services, browserClose, newContext, candidate, identity, subject, assertSubject,
+  return { profile, run, makeRun, events, services, browserClose, newContext, candidate, identity, subject, assertSubject, research, design, replaceFile,
     corruptReopen: () => { corruptReopen = true; }, corruptReplay: () => { corruptReplay = true; } };
 }
 describe("actual application orchestration over controlled owner boundaries", () => {
@@ -134,6 +158,43 @@ describe("actual application orchestration over controlled owner boundaries", ()
     expect(result.acceptance.closures).toEqual({ compiler: true, initialize: true, services: 2, browser: true });
     expect(result.qualified_for_product).toBe(false); expect(result.candidate).toEqual(f.identity);
     expect(f.newContext).toHaveBeenCalledTimes(2);
+  });
+  it("measures the separate publication intent from original research/design bytes and actual completed cases", async () => {
+    const f = await fixture(true), result = await f.run();
+    expect(result.publication).toMatchObject({ research_digest: sha(JSON.stringify(f.research)), design_digest: sha(JSON.stringify(f.design)),
+      application_definition_digest: sha("{}"), measurement_plan_digest: sha(canonicalReleaseJson(f.research.application_publication_plan)),
+      development_criteria: [{ requirement_id: "business", case_ids: ["save"] }],
+      publication_criteria: [{ requirement_id: "publication", claim: "bounded-local-application-publication" }], unmet_criteria: [] });
+    expect(result.qualified_for_product).toBe(false); expect(f.services.every(service => service.close.mock.calls.length === 1)).toBe(true);
+    const program = f.design.validation_cases[0]!.browser_program;
+    expect(canonicalWebAcceptance(program)).toBe(canonicalReleaseJson(program));
+    expect(result.acceptance.cases[0]!.program_digest).toBe(sha(canonicalReleaseJson(program)));
+  });
+  it.each(["missing-plan", "static-plan", "stronger-publication", "missing-coverage", "changed-program"])
+    ("withholds publication measurement for %s without inventing criterion evidence", async changed => {
+      const f = await fixture(true);
+      if (changed === "missing-plan") f.replaceFile(".artoo/product/research.json", JSON.stringify({ ...f.research, application_publication_plan: undefined }));
+      if (changed === "static-plan") f.replaceFile(".artoo/product/research.json", JSON.stringify({ ...f.research, measurement_plan: { version: 1, entries: [] } }));
+      if (changed === "stronger-publication") { f.research.requirements[1]!.acceptance_criteria = ["Keep running after a machine restart"];
+        f.replaceFile(".artoo/product/research.json", JSON.stringify(f.research)); }
+      if (changed === "missing-coverage") f.replaceFile(".artoo/product/design.json", JSON.stringify({ ...f.design,
+        application_publication_coverage: { version: 1, entries: [] } }));
+      if (changed === "changed-program") { const replacement = structuredClone(f.design); replacement.validation_cases[0]!.browser_program.steps[1]!.text = "Other";
+        f.replaceFile(".artoo/product/design.json", JSON.stringify(replacement)); }
+      await expect(f.run()).rejects.toThrow();
+      expect(f.browserClose).toHaveBeenCalledOnce(); expect(f.services.every(service => service.close.mock.calls.length === 1)).toBe(true);
+      await expect(f.run(f.makeRun("reviewer", { candidate: f.identity, origin_run_id: "author", origin_request_id: "author-request" }))).rejects.toThrow("unavailable");
+    });
+  it("rejects normalized publication JSON bytes before creating a candidate or service", async () => {
+    const f = await fixture(true);
+    f.replaceFile(".artoo/product/application.json", Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("{}") ]));
+    await expect(f.run()).rejects.toThrow("original measured bytes");
+    expect(state.create).not.toHaveBeenCalled(); expect(state.service).not.toHaveBeenCalled();
+  });
+  it("preserves legacy development-only runs without a research read or publication measurement", async () => {
+    const f = await fixture(), result = await f.run();
+    expect(result.publication).toBeUndefined();
+    expect(state.pin.mock.calls.some(([pin]) => pin.path.endsWith("research.json"))).toBe(false);
   });
   it("reuses the exact candidate for independent review and creates a different test store", async () => {
     const f = await fixture(), author = await f.run();

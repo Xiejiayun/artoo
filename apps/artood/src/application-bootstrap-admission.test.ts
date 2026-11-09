@@ -44,7 +44,7 @@ vi.mock("./windows-process-installation.js", () => ({ prepareWindowsProcessInsta
 vi.mock("./owned/windows-owned-process.js", () => ({ assertWindowsProcessBackend: state.assertBackend }));
 import { applicationServiceSelection, prepareApplicationServiceHost, assertApplicationBootstrapAdmission, prepareApplicationInitializationHost,
   assertApplicationInitializationAdmission, describeApplicationInitializationPackage, readApplicationInitializationFile,
-  prepareApplicationBootstrap } from "./application-bootstrap-admission.js";
+  prepareApplicationBootstrap, assertApplicationPublicationInitializationAdmission, readApplicationBootstrapPublication } from "./application-bootstrap-admission.js";
 const originalProcess = process, root = "C:\\host", entry = root + "\\application-service-bootstrap.mjs", file = "C:\\configuration\\application.json";
 const sha = (bytes: Uint8Array) => "sha256:" + createHash("sha256").update(bytes).digest("hex");
 function add(path: string, text?: string) {
@@ -108,6 +108,30 @@ function initializeFixture() {
   write(); return { manifest, write };
 }
 describe("independent initialization bootstrap admission", () => {
+  it("keeps publication initialization separate from the strict legacy selection and original token", () => {
+    initializeFixture(); const legacy = prepareApplicationInitializationHost(file, entry);
+    expect(() => assertApplicationPublicationInitializationAdmission(legacy.options.bootstrap, legacy.options)).toThrow("publication initialization selection");
+    const selected = JSON.parse(state.files.get(file)!.bytes.toString("utf8"));
+    add(file, JSON.stringify({ ...selected, format: "artoo.application-publication-initialize-selection.v1" }));
+    expect(() => prepareApplicationInitializationHost(file, entry)).toThrow();
+    const admitted = prepareApplicationBootstrap(file, entry);
+    if (admitted.operation !== "publication-initialize") throw Error("publication initialization dispatch missing");
+    expect(() => assertApplicationPublicationInitializationAdmission(admitted.options.bootstrap, admitted.options)).not.toThrow();
+    expect(() => assertApplicationPublicationInitializationAdmission({ ...admitted.options.bootstrap }, admitted.options)).toThrow("original current");
+  });
+  it("admits publication identity only from the strict protected service selection", () => {
+    const checksum = "sha256:" + "a".repeat(64), publication = { version: 1, challenge: "11111111-1111-4111-8111-111111111111",
+      identity: { publication_id: "publication1", lease_id: "lease1", owner_id: "owner1", generation: 1,
+        deployment_generation: "generation1", reopen_pin_digest: checksum, database_identity: { device: "1", inode: "2" },
+        schema_digest: checksum, scope_digest: checksum, artifact_digest: checksum, origin: "http://127.0.0.1:31000" } };
+    add(file, JSON.stringify({ ...configuration(), publication }));
+    expect(() => prepareApplicationBootstrap(file, entry)).toThrow();
+    add(file, JSON.stringify({ ...configuration(), format: "artoo.application-publication-service-selection.v1", publication }));
+    const selected = prepareApplicationBootstrap(file, entry);
+    if (selected.operation !== "publication-reopen") throw Error("publication service dispatch missing");
+    expect(readApplicationBootstrapPublication(selected.options.bootstrap)).toEqual(publication);
+    expect(() => readApplicationBootstrapPublication({ ...selected.options.bootstrap })).toThrow("original bootstrap");
+  });
   it("admits a complete package before any generation or descriptor exists", () => {
     initializeFixture(); const selected = prepareApplicationInitializationHost(file, entry);
     const source = describeApplicationInitializationPackage(selected.options.bootstrap, selected.options);

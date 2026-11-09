@@ -564,6 +564,35 @@ export function createApplicationInstallationReopenReference(token: PreparedAppl
   } catch (error) { invalidate(saved, error); throw error; }
 }
 
+/** Observations captured by the original descriptor writer while its exclusive
+ * session is still held. This getter cannot reconstruct an installation from JSON. */
+export function readApplicationInstallationReopenFacts(token: PreparedApplicationInstallation) {
+  const saved = state(token); guard(saved, true);
+  try {
+  if (!saved.session || !saved.persisted || !saved.reopenReference) fail("original persisted installation session required");
+  const memberBytes = (pin: ApplicationRuntimeFilePin) => {
+    const member = saved.files.find(file => win32.join(saved.binding!.directory, ...file.path.split("/")) === pin.path);
+    if (!member || member.pin.bytes !== pin.bytes || member.pin.sha256 !== pin.sha256) fail("publication member differs from original installation");
+    return read(pin);
+  };
+  const json = (bytes: Uint8Array): unknown => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  const profile = z.object({ broker: z.object({ open_configuration: ApplicationRuntimeFilePinSchema }).passthrough(),
+    runtime: z.object({ configuration: ApplicationRuntimeFilePinSchema }).passthrough(),
+    http: z.object({ origin: z.string() }).passthrough() }).passthrough().parse(json(memberBytes(saved.binding!.profile)));
+  const broker = z.object({ mode: z.literal("open"), databasePath: z.string(), schemaJson: z.string(),
+    scope: z.object({ product_id: z.string(), data_generation: z.string(), service_generation: z.number().int().min(1),
+      artifact_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u) }).strict() }).passthrough().parse(json(memberBytes(profile.broker.open_configuration)));
+  if (broker.databasePath !== saved.persisted.store.path) fail("publication database differs from original descriptor");
+  const runtime = z.object({ artifacts: z.array(z.object({ logicalPath: z.string(), file: ApplicationRuntimeFilePinSchema }).strict()).max(256) })
+    .passthrough().parse(json(memberBytes(profile.runtime.configuration)));
+  const client = runtime.artifacts.find(member => member.logicalPath === "client/index.html") ?? fail("original client entry required");
+  memberBytes(client.file); guard(saved, true);
+  return Object.freeze({ version: 1 as const, generation_id: saved.generationId,
+    reference: saved.reopenReference, database: Object.freeze({ ...saved.persisted.store }), scope: Object.freeze({ ...broker.scope }),
+    schema_digest: sha(broker.schemaJson), origin: profile.http.origin, client_entry_digest: client.file.sha256 });
+  } catch (error) { invalidate(saved, error); throw error; }
+}
+
 export interface ApplicationInstallationReopenOptions {
   /** Independently retained local descriptor pin, never measured from current disk. */
   readonly reference: ApplicationRuntimeFilePin;

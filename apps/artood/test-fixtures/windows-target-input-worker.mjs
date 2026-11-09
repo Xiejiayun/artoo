@@ -1,4 +1,4 @@
-// Controlled target for the real Windows helper fixture. Source only: not yet run.
+// Controlled target for the real Windows helper fixture.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -20,14 +20,19 @@ async function report(kind, facts = {}) {
 
 let eof = false, observedBytes = 0;
 const chunks = [];
-process.stdin.on("data", chunk => {
-  observedBytes += chunk.length;
-  assert.ok(observedBytes <= 4096, "Target input exceeded the fixed native bridge bound");
-  chunks.push(Buffer.from(chunk));
-});
-process.stdin.on("end", () => { eof = true; });
-process.stdin.on("error", error => { throw error; });
-process.stdin.resume();
+if (mode !== "held-reader") {
+  process.stdin.on("data", chunk => {
+    observedBytes += chunk.length;
+    assert.ok(observedBytes <= 4096, "Target input exceeded the fixed native bridge bound");
+    chunks.push(Buffer.from(chunk));
+  });
+  process.stdin.on("end", () => { eof = true; });
+  process.stdin.on("error", error => { throw error; });
+  process.stdin.resume();
+}
+// held-reader only retains the inherited handle and admits its exact PID over
+// IPC. Like the control fixture, it never accesses/resumes process.stdin; active
+// consumption is not part of this descendant's lingering-reader obligation.
 await report("ready");
 
 if (mode === "legacy-null") {

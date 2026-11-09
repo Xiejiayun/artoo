@@ -4,6 +4,9 @@ import type { ApplicationBrokerAction } from "./application-broker-control.js";
 import { assertApplicationClientReader, readApplicationClientArtifact, type ApplicationClientReader } from "./application-artifact-admission.js";
 import { APPLICATION_WIRE_LIMITS, ApplicationWireEncoder, type ApplicationWireRequest,
   type ApplicationWireResponse } from "./application-wire-v1.js";
+import { readApplicationBootstrapPublication, type PreparedApplicationBootstrapAdmission } from "./application-bootstrap-admission.js";
+import { applicationPublicationProbeHeaders, type ApplicationPublicationCounters } from "./application-publication-process-protocol.js";
+import { APPLICATION_PUBLICATION_CONTROL_PROBE_HEADER } from "./application-publication-control-protocol.js";
 
 /** Host-only HTTP adapter. It creates no listener, process, database or authority. */
 export const APPLICATION_HTTP_LIMITS = Object.freeze({
@@ -41,6 +44,8 @@ export interface ApplicationHttpIngressOptions {
   /** Explicit same-origin v1 opt-in. /api and /api/... keep their complete path;
    * other targets may serve captured client bytes and never begin a broker. */
   readonly clientReader?: ApplicationClientReader;
+  /** Original fixed host admission, never model or request supplied headers. */
+  readonly publication?: PreparedApplicationBootstrapAdmission;
 }
 export type ApplicationHttpAdmissionStop = "closed" | "failed" | "budget_exhausted" | "draining";
 export interface ApplicationHttpIngress {
@@ -57,6 +62,25 @@ export interface ApplicationHttpIngress {
   readonly admissionFailed: Promise<void>;
 }
 const limits = APPLICATION_HTTP_LIMITS;
+const responseMarkers = new WeakMap<ServerResponse, Readonly<Record<string, string>>>();
+const ingressCounters = new WeakMap<object, { read(): ApplicationPublicationCounters;
+  subscribe(listener: (counters: ApplicationPublicationCounters) => void): () => void }>();
+export interface ApplicationPublicationHttpControl {
+  readonly mode: "paused" | "armed" | "running" | "ended";
+  pause(): void;
+  probe(path: string, nonce: string): Promise<void>;
+  resume(): void;
+}
+const publicationControls = new WeakMap<object, ApplicationPublicationHttpControl>();
+export function readApplicationPublicationHttpControl(ingress: ApplicationHttpIngress): ApplicationPublicationHttpControl {
+  const control = publicationControls.get(ingress); if (!control) throw Error("Original controlled publication ingress required"); return control;
+}
+export function readApplicationHttpCounters(ingress: ApplicationHttpIngress): ApplicationPublicationCounters {
+  const saved = ingressCounters.get(ingress); if (!saved) throw Error("Original application ingress required"); return saved.read();
+}
+export function subscribeApplicationHttpCounters(ingress: ApplicationHttpIngress, listener: (counters: ApplicationPublicationCounters) => void): () => void {
+  const saved = ingressCounters.get(ingress); if (!saved) throw Error("Original application ingress required"); return saved.subscribe(listener);
+}
 class Rejection extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); }
 }
@@ -165,6 +189,7 @@ function send(response: ServerResponse, status: number, bytes: Buffer, contentTy
   response.setHeader("x-content-type-options", "nosniff");
   response.setHeader("content-length", bytes.length);
   if (status !== 204) response.setHeader("content-type", contentType);
+  for (const [name, value] of Object.entries(responseMarkers.get(response) ?? {})) response.setHeader(name, value);
   response.end(head ? undefined : bytes);
 }
 function sendError(response: ServerResponse, failure: Rejection): void {
@@ -197,6 +222,9 @@ export function createApplicationHttpIngress(options: ApplicationHttpIngressOpti
   const { origin, purpose, access, timeoutMs } = options;
   const readOnlyGet = options.readOnlyGet ?? false;
   const clientReader = options.clientReader;
+  const publication = options.publication ? readApplicationBootstrapPublication(options.publication) : undefined;
+  if (options.publication && (!publication || publication.identity.origin !== origin)) throw Error("Original publication HTTP binding required");
+  const markers = publication ? applicationPublicationProbeHeaders(publication) : undefined;
   const concurrent = options.maximumConcurrent ?? limits.concurrent, service = options.service;
   const maximumAccess = service.maximumAccess, begin = service.begin.bind(service);
   const url = new URL(origin);
@@ -212,12 +240,25 @@ export function createApplicationHttpIngress(options: ApplicationHttpIngressOpti
     assertApplicationClientReader(clientReader);
   }
   const active = new Set<{ stop(failure: Rejection): void }>(); let closed = false, cancelled = false, started = 0;
+  let mode: ApplicationPublicationHttpControl["mode"] = publication?.control ? "paused" : "running";
+  type Probe = { path: string; nonce: string; resolve(): void; reject(error: Error): void };
+  let armed: Probe | undefined, probePending: Probe | undefined;
+  const usedNonces = new Set<string>();
+  let closedTransports = 0;
+  const listeners = new Set<(counters: ApplicationPublicationCounters) => void>();
+  const counters = (): ApplicationPublicationCounters => Object.freeze({ observed_at: new Date().toISOString(),
+    requests_used: started, in_flight: active.size, closed_transports: closedTransports });
+  const changed = () => {
+    const value = counters();
+    for (const listener of listeners) { try { listener(value); } catch { close("failed"); } }
+  };
   let resolveAdmissionStop!: (reason: ApplicationHttpAdmissionStop) => void;
   const admissionStopped = new Promise<ApplicationHttpAdmissionStop>(resolve => { resolveAdmissionStop = resolve; });
   let resolveAdmissionFailure!: () => void;
   const admissionFailed = new Promise<void>(resolve => { resolveAdmissionFailure = resolve; });
   const stopAdmission = (reason: ApplicationHttpAdmissionStop) => {
-    if (!closed) { closed = true; resolveAdmissionStop(reason); }
+    if (!closed) { closed = true; mode = "ended"; armed = undefined;
+      probePending?.reject(Error("Original publication probe was stopped")); probePending = undefined; resolveAdmissionStop(reason); }
   };
   const close = (reason: ApplicationHttpAdmissionStop = "closed") => {
     if (reason === "failed") resolveAdmissionFailure();
@@ -225,8 +266,19 @@ export function createApplicationHttpIngress(options: ApplicationHttpIngressOpti
     if (cancelled) return; cancelled = true;
     for (const pending of active) pending.stop(new Rejection(503, "service_closed"));
   };
-  return Object.freeze({ close: () => close(), drain: () => stopAdmission("draining"), admissionStopped, admissionFailed, handle(request: IncomingMessage, response: ServerResponse, signal?: AbortSignal): Promise<void> {
+  const result = Object.freeze({ close: () => close(), drain: () => stopAdmission("draining"), admissionStopped, admissionFailed, handle(request: IncomingMessage, response: ServerResponse, signal?: AbortSignal): Promise<void> {
+    if (markers) responseMarkers.set(response, markers);
+    let selectedProbe: Probe | undefined;
+    if (publication?.control) {
+      try {
+        const input = headers(request), nonce = input[APPLICATION_PUBLICATION_CONTROL_PROBE_HEADER];
+        if (mode === "armed" && armed && request.method === "GET" && request.url === armed.path && nonce === armed.nonce) {
+          selectedProbe = armed; armed = undefined; mode = "paused"; // Consume before any await or owner creation.
+        } else if (mode !== "running" || nonce !== undefined) return rejectHttp(request, response, timeoutMs);
+      } catch { return rejectHttp(request, response, timeoutMs); }
+    }
     if (closed || started >= limits.requests || active.size >= concurrent) {
+      selectedProbe?.reject(Error("Original publication probe could not be admitted"));
       return rejectHttp(request, response, timeoutMs);
     }
     started++;
@@ -239,7 +291,14 @@ export function createApplicationHttpIngress(options: ApplicationHttpIngressOpti
     let cancellation: (() => void | Promise<void>) | undefined, stopped: Rejection | undefined;
     let finish!: () => void;
     const finished = new Promise<void>(resolve => { finish = resolve; });
-    const release = () => { if (transportDone && ownerSettled) active.delete(pending); };
+    const release = () => { if (transportDone && ownerSettled && active.delete(pending)) {
+      changed();
+      if (selectedProbe) {
+        if (closed || cancelled || stopped) selectedProbe.reject(Error("Original publication probe did not settle normally"));
+        else selectedProbe.resolve();
+        if (probePending === selectedProbe) probePending = undefined;
+      }
+    } };
     const cancelOwner = () => {
       if (!cancellation || cancellationSent || ownerSettled) return;
       cancellationSent = true;
@@ -258,7 +317,7 @@ export function createApplicationHttpIngress(options: ApplicationHttpIngressOpti
     const onClientLoss = () => { onAbort(); response.destroy(); };
     const onClose = () => { if (!response.writableFinished) onAbort(); complete(); };
     const complete = () => {
-      if (transportDone) return; transportDone = true;
+      if (transportDone) return; transportDone = true; closedTransports++;
       clearTimeout(timer); if (transportCutoff) clearImmediate(transportCutoff);
       signal?.removeEventListener("abort", onAbort);
       request.off("aborted", onClientLoss); request.off("error", onClientLoss);
@@ -276,6 +335,7 @@ export function createApplicationHttpIngress(options: ApplicationHttpIngressOpti
     request.once("aborted", onClientLoss); request.once("error", onClientLoss);
     response.once("finish", complete); response.once("close", onClose); response.once("error", onClientLoss);
     signal?.addEventListener("abort", onAbort, { once: true });
+    try { changed(); } catch { close("failed"); }
     const remaining = () => {
       const milliseconds = Math.floor(deadline - performance.now());
       if (milliseconds < 1) throw new Rejection(504, "request_deadline");
@@ -371,4 +431,27 @@ export function createApplicationHttpIngress(options: ApplicationHttpIngressOpti
     })();
     return finished;
   } });
+  ingressCounters.set(result, { read: counters, subscribe(listener) {
+    if (typeof listener !== "function" || listeners.size >= 1) throw Error("One original ingress observer required");
+    listeners.add(listener); return () => { listeners.delete(listener); };
+  } });
+  if (publication?.control) publicationControls.set(result, Object.freeze({ get mode() { return mode; },
+    pause() {
+      if (closed || armed || probePending) throw Error("Original publication ingress cannot pause during an armed or active probe");
+      mode = "paused";
+    },
+    probe(path: string, nonce: string): Promise<void> {
+      if (closed || mode !== "paused" || active.size || probePending || path !== "/" && path !== publication.control!.read_path
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(nonce)
+        || usedNonces.has(nonce) || usedNonces.size >= 512) throw Error("One original fixed-path private publication probe required");
+      usedNonces.add(nonce);
+      const completed = new Promise<void>((resolve, reject) => { armed = { path, nonce, resolve, reject }; probePending = armed; });
+      void completed.catch(() => {}); mode = "armed"; return completed;
+    },
+    resume() {
+      if (closed || mode !== "paused" || active.size || probePending) throw Error("Original publication ingress is not quiescent");
+      mode = "running";
+    },
+  }));
+  return result;
 }
