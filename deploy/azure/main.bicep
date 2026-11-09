@@ -169,15 +169,6 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     }
   }
 }
-resource vaultReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(vault.id, vm.id, 'secrets-user')
-  scope: vault
-  properties: {
-    principalId: vm.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
-  }
-}
 resource backups 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageName
   location: location
@@ -211,13 +202,15 @@ resource backupContainer 'Microsoft.Storage/storageAccounts/blobServices/contain
   name: 'artoo-backups'
   properties: { publicAccess: 'None' }
 }
-resource backupWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: backupContainer
-  name: guid(backupContainer.id, vm.id, 'backup-writer')
-  properties: {
+// The module receives the identity after VM creation, so assignment names can
+// include the principal that changes when a VM is recreated with the same name.
+module vmDataAccess './vm-data-access.bicep' = {
+  name: '${namePrefix}-vm-data-access'
+  params: {
     principalId: vm.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+    keyVaultName: vault.name
+    storageAccountName: backups.name
+    backupContainerName: backupContainer.name
   }
 }
 resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = if (enableMonitoring) {

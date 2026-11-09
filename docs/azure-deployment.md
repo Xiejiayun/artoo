@@ -213,7 +213,7 @@ curl --silent --output /dev/null --write-out '%{http_code}\n' https://artoo.exam
 2. **该设备的实际使用者以本人受信账号在 Web 登录**，在 Settings → Connect a device 选择 Windows，生成自己的单次配对码，再在该电脑输入 origin、设备名和配对码。配对码携带生成者身份/权限，不让 owner 为其他成员代生成；同一人可以为自己的多台电脑分别配对。不要复制其他电脑的凭证或把配对码发到日志。
 3. 若该设备尚无 computer 绑定，owner/admin 在 Settings → Devices 选择 **Enroll computer** 并确认。配对与登记执行电脑是两个步骤；未登记不能启动 worker。
 4. Windows Settings → This computer 配置本机 CLI 的绝对路径、允许工作目录和运行时，再启动 worker。Windows 凭证由该账户的 Electron `safeStorage` 保护。每个工作根必须实际存在；`C:\Products` 是该电脑的路径，不是 Azure VM 的共享盘。
-5. 在 **Computers** 页面确认 computer、runtime 的当前状态，打开 **Register agent workspace**，选择该电脑的 runtime 和本地 workspace，点击 **Register agent**，再在 Agents 查看实例。实例绑定 **computer + runtime + workspace**；多个 Agent 可以在同一电脑，也可以分布不同电脑。名称建议包含电脑/职责，例如 `pc-a-builder`、`pc-b-reviewer`。独立审核需要不同 Agent 身份，不能以相同身份换一个显示名称代替。
+5. **owner/admin** 在 **Computers** 页面确认 computer、runtime 的当前状态，打开 **Register agent workspace**，选择该电脑的 runtime 和本地 workspace，点击 **Register agent**，再在 Agents 查看实例。普通成员没有注册入口，需由 owner/admin 完成这一步。实例绑定 **computer + runtime + workspace**；多个 Agent 可以在同一电脑，也可以分布不同电脑。名称建议包含电脑/职责，例如 `pc-a-builder`、`pc-b-reviewer`。独立审核需要不同 Agent 身份，不能以相同身份换一个显示名称代替。
 6. 各电脑独立配置模型。例如 A 使用本机 Aerial `http://127.0.0.1:18181/v1` 与其实际可用 Codex 模型；B 可使用自己的 Aerial/另一模型，或配置并登录 Claude CLI。模型名以该电脑供应方目录和实际调用为准。`127.0.0.1` 永远指当前执行电脑，Azure 和 B 不能通过 A 的 loopback 地址使用 Aerial。
 7. 在每台电脑完成一次受限小任务，记录实际选择的电脑/Agent/runtime、模型可用性、产物归属及正常取消。CLI 文件存在只证明程序被发现，不证明模型鉴权或模型名称有效。
 8. 自治开发另需每个执行/审核节点的受保护验证 profile、原生 helper、浏览器、源码交接与发布配置；按 [Windows 原生说明](windows-native-development.md) 和 [来源节点配置](windows-native-source-nodes.md) 准备。普通节点上线不等于具备全部自治阶段资格。配置、helper、验证器和制品证据应在 Agent 可写根之外。
@@ -284,6 +284,8 @@ sudo -u artoo /usr/bin/node --env-file=/etc/artoo/artoo.env /opt/artoo/current/s
 ```
 
 下载失败/文件不完整则停止，保留失败目录；恢复命令会校验全部内容后再发布新目录。上述工具校验和 DB health 成功还不等于业务恢复成功；在隔离网络/端口的恢复环境中用相同代码检查登录、历史和制品，并避免恢复副本与正式 server 同时向真实节点派单。灾备新 VM 还必须恢复受限配置、角色和防火墙访问，不能假定原 VM 的 system-assigned identity 自动迁移。
+
+同名 VM 删除重建后，其托管身份的 principal ID 会改变。模板通过 [数据访问授权模块](../deploy/azure/vm-data-access.bicep)，按目标资源、实际 principal ID 和角色 ID 生成授权名称，避免尝试修改旧授权不可变的 principal。旧身份的遗留授权不会自动删除；由运维核对后清理。若曾部署旧版按 VM 资源 ID 命名的授权，升级模板前须在维护窗口记录两条旧授权的精确 assignment ID、scope、principal ID 和 role definition ID，由有 RBAC 管理权限的操作者迁移这两条授权：核对并移除旧记录，再部署当前模板建立新授权；不要批量删除同一 scope 或 principal 的其他授权。此迁移会短暂中断数据访问，需保留旧授权记录及恢复方案。等待权限传播后验证新 VM 可读取 Vault、上传并读回备份，失败时保留诊断并恢复所需授权后再继续服务。
 
 升级步骤：在新版本目录完成构建/检查 → 维护暂停与排空 → 停止服务 → 完整备份 → 保存当前 commit、环境 secret 版本和数据路径 → 更换 `/opt/artoo/current` → 启动并执行第 8 节关键路径。迁移会在启动时按 append-only journal 执行。升级前备份保留与旧代码绑定。
 
