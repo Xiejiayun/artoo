@@ -25,6 +25,10 @@ concurrency:
 
 jobs:
   stage:
+    # GitHub requires push access to see draft releases. GH_TOKEN is exported
+    # only to the download step; checkout does not persist this temporary token.
+    permissions:
+      contents: write
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
