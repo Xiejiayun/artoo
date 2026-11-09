@@ -10,7 +10,12 @@ if (process.env.ARTOO_MANAGED_VALIDATION_PHASE !== "mixed-failure") throw new Er
 if (!tmpdir().startsWith("/private/tmp/artoo-ws-journal-validation-") || !existsSync(join(tmpdir(), ".validation-owner"))) throw new Error("Mixed-failure validation requires its owned WS fixture parent");
 const report = process.env.ARTOO_NODE_PHYSICAL_REPORT_DIR;
 if (!report || !isAbsolute(report) || !existsSync(report) || !statSync(report).isDirectory()) throw new Error("Mixed-failure validation requires an existing owned report directory");
-const aliases = Object.fromEntries(["domain", "protocol", "db", "storage", "testkit", "node-supervisor", "client"].map((name) => [`@artoo/${name}`, at(`packages/${name}/dist/index.js`)]));
+const aliases = Object.fromEntries([
+  ["@artoo/domain/dist/application-publication.js", at("packages/domain/dist/application-publication.js")],
+  ["@artoo/protocol/dist/source-recovery.js", at("packages/protocol/dist/source-recovery.js")],
+  ...["domain", "protocol", "db", "storage", "testkit", "node-supervisor", "client"]
+    .map((name) => [`@artoo/${name}`, at(`packages/${name}/dist/index.js`)]),
+]);
 aliases["@artoo/artood"] = at("apps/artood/dist/index.js"); aliases["@artoo/server"] = at("apps/server/dist/index.js");
 const required = [...Object.values(aliases),
   ...["node-client", "process-adapter", "process-adapter-owned-receipts", "node-allocation-identity"].map((name) => at(`apps/artood/dist/${name}.js`)),

@@ -17,8 +17,12 @@ if (!receipt || !isAbsolute(receipt) || !existsSync(receipt) || !process.env.ART
 if (Object.keys(process.env).some((key) => key.startsWith("PG") || /(?:^|_)(?:DATABASE|DB)_URL$/.test(key))) {
   throw new Error("External PostgreSQL environment is forbidden");
 }
-const aliases = Object.fromEntries(["domain", "protocol", "db", "storage", "testkit", "node-supervisor", "client"]
-  .map((name) => [`@artoo/${name}`, at(`packages/${name}/dist/index.js`)]));
+const aliases = Object.fromEntries([
+  ["@artoo/domain/dist/application-publication.js", at("packages/domain/dist/application-publication.js")],
+  ["@artoo/protocol/dist/source-recovery.js", at("packages/protocol/dist/source-recovery.js")],
+  ...["domain", "protocol", "db", "storage", "testkit", "node-supervisor", "client"]
+    .map((name) => [`@artoo/${name}`, at(`packages/${name}/dist/index.js`)]),
+]);
 aliases["@artoo/server"] = at("apps/server/dist/index.js");
 aliases["@artoo/artood"] = at("apps/artood/dist/index.js");
 aliases["pg"] = at(`${directory}/node_modules/pg/lib/index.js`);
