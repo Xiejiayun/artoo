@@ -49,6 +49,8 @@ const processes = [{ pid: 7001, created_utc: "2026-11-05T00:00:00.0000000Z" }];
 const ancestryFailure = () => ({ version: 1, attempt: 2, census: "first", root_pid: 7001, parent_pid: 7002, child_pid: 7003,
   root_filetime: "134383440000000000", parent_filetime: "134383440000000101", child_filetime: "134383440000000100",
   root_type: "System.Int64", parent_type: "System.Int64", child_type: "System.Int64", delta_ticks: "-1" });
+const observationBoundFailure = () => ({ version: 1, boundary: "current_subtree", limit: 128, attempt: 1, census: "first", root_pid: 7001,
+  root_handle_state: "live", current_count: 129, current_count_is_lower_bound: true, history_count: 3 });
 async function observed() {
   const result = await bound(); const pending = result.session.observe();
   result.child.frame(result.child.response({ parent_pid: 7001, processes })); await pending;
@@ -64,6 +66,64 @@ afterEach(() => {
 });
 
 describe("persistent Windows observer transport (controlled child events, no native acceptance)", () => {
+  it.each(["live", "exited", "unavailable"])("retains count failure facts for root HANDLE state %s without recovering observation", async root_handle_state => {
+    const { child, session } = await bound(); const initial = session.observe(), evidence = { ...observationBoundFailure(), root_handle_state };
+    child.frame(child.response({ status: "error", error_code: "observation_bound_exceeded", parent_pid: 7001,
+      exit_history: { version: 1, pids: [7002, 7003] }, observation_bound_failure: evidence }));
+    const failure: unknown = await initial.catch(error => error);
+    expect(WindowsBrowserSessionObservationError.boundNegativeEvidence(failure, 7001)).toEqual(evidence);
+    expect((failure as Error).message).toContain(`observation_bound_failure_v1=${JSON.stringify(evidence)}`);
+    expect(WindowsBrowserSessionObservationError.cleanupOnlyHistory(failure, 7001)).toEqual([7002, 7003]);
+    expect(WindowsBrowserSessionObservationError.boundNegativeEvidence(failure, 7002)).toBeUndefined();
+    expect(WindowsBrowserSessionObservationError.negativeEvidence(failure, 7001)).toBeUndefined();
+    await expect(session.observe()).rejects.toBe(failure); await expect(session.finalAudit(1000)).rejects.toBe(failure);
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+    child.close(1); await session.cleanup(); expect(() => session.assertCompleted()).toThrow("observation_bound_exceeded");
+  });
+  it("keeps the original 128-member history on a history-union failure without adding the 129th candidate", async () => {
+    const { child, session } = await bound(); const initial = session.observe(), pids = Array.from({ length: 127 }, (_, index) => 8000 + index);
+    const evidence = { ...observationBoundFailure(), boundary: "history_union", current_count: 2, current_count_is_lower_bound: false, history_count: 128 };
+    child.frame(child.response({ status: "error", error_code: "observation_bound_exceeded", parent_pid: 7001,
+      exit_history: { version: 1, pids }, observation_bound_failure: evidence }));
+    const failure: unknown = await initial.catch(error => error);
+    expect(WindowsBrowserSessionObservationError.boundNegativeEvidence(failure, 7001)).toEqual(evidence);
+    expect(WindowsBrowserSessionObservationError.cleanupOnlyHistory(failure, 7001)).toEqual(pids);
+    await expect(session.finalAudit(1000)).rejects.toBe(failure);
+  });
+  it.each([
+    { name: "unknown version", evidence: { ...observationBoundFailure(), version: 2 } },
+    { name: "extra process data", evidence: { ...observationBoundFailure(), command_line: "forbidden" } },
+    { name: "wrong root", evidence: { ...observationBoundFailure(), root_pid: 8001 } },
+    { name: "mismatched history count", evidence: { ...observationBoundFailure(), history_count: 4 } },
+    { name: "incorrect exact count", evidence: { ...observationBoundFailure(), current_count_is_lower_bound: false } },
+    { name: "null", evidence: null },
+    { name: "wrong error code", evidence: observationBoundFailure(), code: "observer_retry_exhausted" },
+  ])("rejects $name count evidence while retaining independently validated history", async ({ evidence, code }) => {
+    const { child, session } = await bound(); const initial = session.observe();
+    child.frame(child.response({ status: "error", error_code: code ?? "observation_bound_exceeded", parent_pid: 7001,
+      exit_history: { version: 1, pids: [7002, 7003] }, observation_bound_failure: evidence }));
+    const failure: unknown = await initial.catch(error => error);
+    expect((failure as Error).message).toContain("observer_protocol_failed");
+    expect((failure as Error).message).not.toContain("observation_bound_failure_v1");
+    expect(WindowsBrowserSessionObservationError.boundNegativeEvidence(failure, 7001)).toBeUndefined();
+    expect(WindowsBrowserSessionObservationError.cleanupOnlyHistory(failure, 7001)).toEqual([7002, 7003]);
+    await expect(session.finalAudit(1000)).rejects.toBe(failure);
+  });
+  it("keeps the original cleanup-only probes and failure after valid count evidence", async () => {
+    const { child, session } = await bound();
+    const probe = vi.fn((_pid: number) => { throw Object.assign(new Error("Controlled absent PID"), { code: "ESRCH" }); });
+    const terminateParent = vi.fn(async (_remainingMs: number) => {}), requestGracefulClose = vi.fn(async () => {});
+    const closing = closeObservedWindowsProcesses({ parentPid: 7001, parentClosed: () => true,
+      observe: () => session.observe(), terminateParent, requestGracefulClose, finalAudit: remaining => session.finalAudit(remaining) },
+    { probe, now: () => now, sleep: async () => {}, connectionTimeoutMs: 100, confirmationTimeoutMs: 100, auditTimeoutMs: 100 });
+    void closing.catch(() => {});
+    child.frame(child.response({ status: "error", error_code: "observation_bound_exceeded", parent_pid: 7001,
+      exit_history: { version: 1, pids: [7002, 7003] }, observation_bound_failure: observationBoundFailure() }));
+    await expect(closing).rejects.toThrow(`observation_bound_failure_v1=${JSON.stringify(observationBoundFailure())}`);
+    expect(probe.mock.calls).toEqual([[7001], [7002], [7003]]);
+    expect(terminateParent).toHaveBeenCalledExactlyOnceWith(3000); expect(requestGracefulClose).not.toHaveBeenCalled();
+    child.close(1); await session.cleanup(); expect(() => session.assertCompleted()).toThrow("observation_bound_exceeded");
+  });
   it("captures optional exact negative evidence in the same bound error frame without recovering failure", async () => {
     const { child, session } = await bound(); const initial = session.observe();
     child.frame(child.response({ status: "error", error_code: "descendant_precedes_parent", parent_pid: 7001,
