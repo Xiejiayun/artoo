@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-import { dirname, join, resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { disableOptionalWebSocketAddons, readRelease } from "./verify.mjs";
 import { assertSupportedPlatform } from "./platforms.mjs";
+
+const modulePath = realpathSync(fileURLToPath(import.meta.url));
 
 export function parseArguments(args) {
   if (args.length === 1 && ["--help", "-h"].includes(args[0])) return "help";
@@ -43,7 +45,7 @@ export function safeError(error, env = process.env) {
 }
 
 export async function runCli({ args = process.argv.slice(2), env = process.env,
-  packageDirectory = dirname(dirname(fileURLToPath(import.meta.url))), output = value => process.stdout.write(value) } = {}) {
+  packageDirectory = dirname(dirname(modulePath)), output = value => process.stdout.write(value) } = {}) {
   const mode = parseArguments(args);
   if (mode !== "help" && mode !== "version") {
     if (Number(process.versions.node.split(".")[0]) < 24) throw Error("Artoo requires Node.js 24 or later.");
@@ -81,6 +83,7 @@ export async function runCli({ args = process.argv.slice(2), env = process.env,
   finally { process.argv = previous; }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// npm's POSIX bin is a symlink; compare physical paths while keeping imports inert.
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === modulePath) {
   runCli().catch(error => { console.error(safeError(error)); process.exitCode = 1; });
 }

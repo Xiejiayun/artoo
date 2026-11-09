@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { parseArguments, prepareEnvironment, runCli, safeError } from "./cli.mjs";
 import { parseBuildArguments } from "./build.mjs";
@@ -73,6 +75,60 @@ test("help/version need no runtime, network or credentials", async () => {
   assert.match(output, /artood \[start\]/); assert.doesNotMatch(output, /do-not-show/);
   assert.match(output, /Windows arm64 is not supported/);
   await withTuple("win32-arm64", () => runCli({ args: ["--version"], packageDirectory: directory, output: () => {} }));
+});
+
+function installedEntrypoints(t) {
+  const parent = realpathSync(tmpdir()), root = mkdtempSync(join(parent, "artoo-npm-entry-test-"));
+  t.after(() => {
+    assert.ok(realpathSync(root).startsWith(`${parent}${sep}artoo-npm-entry-test-`));
+    rmSync(root, { recursive: true });
+  });
+  const directory = join(root, "node_modules/@artoo/controlled-fixture"), bin = join(directory, "bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(directory, "package.json"), JSON.stringify({ name: "@artoo/controlled-fixture", version: "0.1.0-test.1", type: "module" }));
+  for (const [source, target] of [["cli.mjs", "artood.mjs"], ["verify.mjs", "verify.mjs"], ["platforms.mjs", "platforms.mjs"]])
+    copyFileSync(fileURLToPath(new URL(source, import.meta.url)), join(bin, target));
+  const direct = join(bin, "artood.mjs"), npmBin = join(root, "node_modules/.bin");
+  let linked;
+  if (process.platform === "win32") {
+    // A real directory junction exercises path canonicalization without the
+    // elevated privilege required to create a Windows file symlink.
+    symlinkSync(bin, npmBin, "junction"); linked = join(npmBin, "artood.mjs");
+  } else {
+    mkdirSync(npmBin); chmodSync(direct, 0o755);
+    linked = join(npmBin, "artood");
+    symlinkSync("../@artoo/controlled-fixture/bin/artood.mjs", linked);
+  }
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:NODE_OPTIONS|NODE_PATH)$/i.test(key)));
+  return { direct, linked, env };
+}
+
+function entryProcess(executable, args, env) {
+  const result = spawnSync(executable, args, { env, encoding: "utf8", timeout: 10_000, windowsHide: true });
+  assert.ifError(result.error); assert.equal(result.status, 0, result.stderr); assert.equal(result.signal, null);
+  assert.equal(result.stderr, "");
+  return result.stdout;
+}
+
+test("actual and npm-linked CLI entrypoints print version and help in real child processes", t => {
+  const { direct, linked, env } = installedEntrypoints(t);
+  for (const entry of [direct, linked]) {
+    const launch = flag => entry === linked && process.platform !== "win32"
+      ? entryProcess(entry, [flag], env) : entryProcess(process.execPath, [entry, flag], env);
+    assert.equal(launch("--version"), "0.1.0-test.1\n", entry);
+    const help = launch("--help");
+    assert.match(help, /^@artoo\/controlled-fixture 0\.1\.0-test\.1 — Artoo agent daemon\n/);
+    assert.match(help, /Usage: artood \[start\] \[--windows-supervised\]/);
+  }
+});
+
+test("importing actual or linked CLI modules never launches the daemon or prints output", t => {
+  const { direct, linked, env } = installedEntrypoints(t);
+  for (const entry of [direct, linked]) {
+    const source = `const cli = await import(${JSON.stringify(pathToFileURL(entry).href)}); if (typeof cli.runCli !== 'function') throw Error('missing CLI export');`;
+    for (const argv of [[], ["nonexistent-importer-argument"]])
+      assert.equal(entryProcess(process.execPath, ["--input-type=module", "-e", source, ...argv], env), "");
+  }
 });
 
 test("ordinary CLI reaches its controlled runtime on all five supported tuples without enabling the Windows host", async () => {

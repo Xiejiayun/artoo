@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -161,14 +161,17 @@ export async function packageSmoke(options) {
     assert.equal(createHash("sha256").update(bytes).digest("hex"), options.sha256, "Downloaded tarball hash mismatch");
     const integrity = "sha512-" + createHash("sha512").update(bytes).digest("base64");
     Object.assign(report.package, { integrity, bytes: bytes.length });
-    const members = run("tar-members", "tar", ["-tzf", tarball]).trim().split(/\r?\n/);
+    // Git Bash's GNU tar treats a Windows drive colon as a remote archive.
+    // Keep both reads local by passing only the filename from its directory.
+    const tarOptions = { cwd: dirname(tarball) }, tarName = basename(tarball);
+    const members = run("tar-members", "tar", ["-tzf", tarName], tarOptions).trim().split(/\r?\n/);
     assert.equal(members.filter(member => member === "package/package.json").length, 1);
     assert.ok(members.length < 30_000);
     for (const member of members) {
       assert.ok(member.startsWith("package/") && !/[\\\u0000-\u001f]/.test(member));
       assert.ok(!member.split("/").some(part => part === "." || part === ".."));
     }
-    const metadata = JSON.parse(run("package-metadata", "tar", ["-xOzf", tarball, "package/package.json"]));
+    const metadata = JSON.parse(run("package-metadata", "tar", ["-xOzf", tarName, "package/package.json"], tarOptions));
     validateMetadata(metadata, options);
     save("candidate-metadata.json", metadata);
 
