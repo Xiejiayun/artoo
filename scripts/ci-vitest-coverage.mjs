@@ -7,6 +7,7 @@ export const windowsProcessFiles = [
   "apps/artood/src/owned/windows-browser-exit.test.ts",
   "apps/artood/src/owned/windows-browser-native-retry.test.ts",
   "apps/artood/src/owned/windows-browser-observer-request.test.ts",
+  "apps/artood/src/owned/windows-browser-session-script.test.ts",
 ];
 export const laneNames = ["parallel-1", "parallel-2", "windows-process"];
 

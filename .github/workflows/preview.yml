@@ -95,7 +95,7 @@ jobs:
       - run: npx vitest list --filesOnly --json=artifacts/preview-gate/vitest/full-discovery.json
       - run: npx vitest list --config vitest.ci.config.mjs --filesOnly --json=artifacts/preview-gate/vitest/discovery.json
       # Dedicated runner and one file at a time; original per-case deadlines,
-      # assertions and platform guards remain in the three complete test files.
+      # assertions and platform guards remain in the four complete test files.
       - run: npm test -- --config vitest.ci.config.mjs --maxWorkers=1 --no-file-parallelism --reporter=default --reporter=json --outputFile.json=artifacts/preview-gate/vitest/results.json
       - uses: actions/upload-artifact@v4
         if: always()

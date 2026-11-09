@@ -20,7 +20,7 @@
 ## 本轮整合内容
 
 - 以 `application-publication-executor` 的累计实现作为基线，纳入 `windows-prepared-startup` 的 prepared loader 与安装绑定修复；不覆盖现有诊断实现为旧版本。
-- 采用原 #22 的 CI 分区和实际测试覆盖核对，将三个 Windows 进程相关测试整文件放在独立单 worker 作业；原断言、平台条件和超时不变。并行两个分片继续执行其余文件，聚合检查比较实际 JSON reporter 与完整 discovery，缺失、重复、重叠或 commit 不同均失败。
+- 采用原 #22 的 CI 分区和实际测试覆盖核对，将四个 Windows 进程相关测试整文件放在独立单 worker 作业；原断言、平台条件和超时不变。并行两个分片继续执行其余文件，聚合检查比较实际 JSON reporter 与完整 discovery，缺失、重复、重叠或 commit 不同均失败。首次整合 CI 中 `windows-browser-session-script.test.ts` 的三个 PowerShell 子进程在 10 秒限制处超时，因此将该完整文件加入已有串行分区；调整后的 CI 仍需通过，不能将负载隔离建议当作已证实的资源争用根因。
 - Computers 与 Settings 保留桌面接入，并增加 [Windows npm daemon 接入说明](web-deployment-plan.zh-CN.md)。UI 不展示未经发布验证的版本；实际启动命令是 `artood start`，配对与环境配置按文档执行，没有新增 `pair` 或 `status` 子命令。
 - #19 的 trusted-profile 文件批量读属于独立性能待办，本轮不扩入；#23 的 iOS context 修改按 Web/Windows 范围不纳入。
 
@@ -29,8 +29,8 @@
 | 检查 | 当前已记录结果 | 边界 |
 | --- | --- | --- |
 | CI 覆盖核对器 | 23/23 通过 | 受控 discovery/reporter 正反例；不代表整个产品已验收。 |
-| 实际 Vitest discovery | 566 个文件 = 并行分区 563 + 串行分区 3；无遗漏或重叠 | 发现文件与实际执行文件分开核对；两个完整并行分片仍需在整合版本上执行。 |
-| Windows 串行分区 | 三文件 84/84 通过；包含 native-retry 3、exit 53、observer-request 28 | 对应本机回归；不代表 npm 安装后模型、浏览器或产品发布的完整验收。 |
+| 实际 Vitest discovery | 调整后 566 个文件 = 并行分区 562 + 串行分区 4；无遗漏或重叠 | 发现文件与实际执行文件分开核对；调整后的完整 CI 仍待执行。 |
+| Windows 串行分区 | 原三文件 84/84 通过；包含 native-retry 3、exit 53、observer-request 28；新增 session-script 四例待在该分区验证 | 对应本机及首次整合 CI 回归；不代表 npm 安装后模型、浏览器或产品发布的完整验收。 |
 | CI 门禁清单与脚本 | shared/shared-checks 分别 37/36；脚本语法和 `git diff --check` 通过 | 新增覆盖核对与 npm CLI 测试，不移除现有客户端门禁。 |
 | Web 接入文案回归 | InventoryPages 与 SettingsPage 两个既有套件 16/16 通过 | 无新增 API、认证流程或 runtime 能力；不替代浏览器和安装验收。 |
 | 本文文档链接 | 25 个相对链接的目标文件存在 | UI 指向 main 上的部署文档，随本轮整合后可访问；不是已部署网站检查。 |
@@ -40,8 +40,8 @@
 | npm CLI 与发行契约 | 7/7 通过；独立审查通过 | 保留未知参数拒绝、秘密脱敏、manifest 与安装内容校验。 |
 | npm 压缩包独立安装 | 仓库外安装通过，177 个 runtime 文件逐个核对，CLI shim/help/version 通过 | 自带 Windows x64 native helper；无需仓库或 .NET。未证明完整 supervised 产品执行资格。 |
 | 安装后的 daemon 连接 | 实际 HTTP 配对、登记、WebSocket 注册、heartbeat 落库和正常 IPC 停止通过；exit/close 均为 0、双 EOF、服务端确认断开 | 使用 fixture owner 身份，关闭开发 node token；未调用模型或模拟物理 Ctrl+C。依赖隔离探针确认 0 次祖先 addon 解析。 |
-| 完整 Vitest、远程 CI、npm 发布 | 仍在执行或待确认 | 不把候选打包、本地通过或旧版本 CI 当作已合并/已发行。 |
-| 生产依赖审计 | 本机未完成：配置的 Microsoft npm feed 返回 HTTP 429 | 不能把审计端点失败记成无漏洞；保留网络错误记录，由 CI 的原有 audit 门禁核验。 |
+| 完整 Vitest、远程 CI、npm 发布 | 本机全量测试 8,432 通过、90 既有跳过，554 文件通过、12 文件跳过；原始 npm 进程退出码 0。首次整合 CI 第二分片有 3 个超时失败，尚未合并或发布 | 本机运行从 `c233493` 开始，期间仅修改 CI 分区、其核对器测试和本文，产品及 Vitest 测试源码未改。[CI 42588597318](https://github.com/Xiejiayun/artoo/actions/runs/42588597318) 实际 checkout 为 PR merge ref `32ecddff`；原失败证据保留，不把文件覆盖完整当作测试通过。 |
+| 生产依赖审计 | 首次整合 CI 的原有 audit 门禁通过，报告 0 vulnerabilities | 本机配置的 Microsoft npm feed 返回 HTTP 429，保留其网络错误；CI 结果仅对应上述已核对的版本。 |
 
 CI 证据保存在本机 `artifacts/release-convergence/ci-partition/`：`discovery-validation.json`、`windows-results.json`、`windows-tests.log`、`coverage-tests.log`。制品目录不作为已发布 npm 包的内容。
 

@@ -20,14 +20,14 @@ function fixture() {
 }
 
 test("actual reporter sets cover the complete inventory once across different checkout roots", () => {
-  assert.deepEqual(verifyCoverage(fixture(), commit).actualFilesByLane, { "parallel-1": 1, "parallel-2": 1, "windows-process": 3 });
+  assert.deepEqual(verifyCoverage(fixture(), commit).actualFilesByLane, { "parallel-1": 1, "parallel-2": 1, "windows-process": 4 });
 });
 
 test("keeps files with deliberate platform/opt-in skips and todo cases in coverage", () => {
   const value = fixture();
   value["parallel-1"].report.testResults[0].assertionResults = [{ status: "skipped" }];
   value["parallel-2"].report.testResults[0].assertionResults = [{ status: "todo" }];
-  assert.equal(verifyCoverage(value, commit).discoveredFiles, 5);
+  assert.equal(verifyCoverage(value, commit).discoveredFiles, 6);
 });
 
 for (const [name, mutate, reason] of [
