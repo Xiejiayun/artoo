@@ -1305,7 +1305,8 @@ final class SharedServerChatUITests: XCTestCase {
     }
 
     @MainActor
-    private func revealText(_ element: XCUIElement, preferTop: Bool = false, attempts: Int = 24) throws {
+    private func revealText(_ element: XCUIElement, preferTop: Bool = false, attempts: Int = 24,
+                            strictViewport: (() throws -> CGRect)? = nil) throws {
         // Plain summaries and selectable originals can be visibly rendered yet
         // make XCTest's activation-point lookup throw. Read-only checks require
         // visible content; disclosure callers separately verify touch geometry.
@@ -1324,6 +1325,7 @@ final class SharedServerChatUITests: XCTestCase {
             if connection.exists && !connection.frame.isEmpty { top = max(top, connection.frame.maxY + 4) }
             if composer.exists && !composer.frame.isEmpty { bottom = min(bottom, composer.frame.minY - 4) }
             viewport = CGRect(x: viewport.minX, y: top, width: viewport.width, height: max(0, bottom - top)).insetBy(dx: 2, dy: 2)
+            if let strictViewport { viewport = try strictViewport() }
             try require(!viewport.isEmpty && !viewport.isNull && !viewport.isInfinite,
                         "The list must have an unobscured content viewport")
             var scrollUp = preferTop ? attempt >= attempts / 2 : attempt < attempts / 2
@@ -1334,9 +1336,10 @@ final class SharedServerChatUITests: XCTestCase {
                     // Text that fits must be completely visible. Text taller
                     // than the viewport must show at least half of it. Exact content
                     // is independently asserted by the caller against the server.
-                    let requiredHeight = frame.height <= viewport.height ? frame.height : viewport.height / 2
-                    if !visible.isNull && visible.width >= frame.width - 1
-                        && visible.height >= requiredHeight - 1 { return }
+                    let requiredHeight = strictViewport != nil || frame.height <= viewport.height ? frame.height : viewport.height / 2
+                    let revealed = strictViewport != nil ? viewport.contains(frame)
+                        : !visible.isNull && visible.width >= frame.width - 1 && visible.height >= requiredHeight - 1
+                    if revealed { return }
                     // Move only the distance needed to reveal the required
                     // height. A fixed swipe can fling an expanded reply past
                     // the opposite edge and oscillate without showing it all.
@@ -1462,7 +1465,9 @@ final class SharedServerChatUITests: XCTestCase {
         try requireTaskSurface()
         // Accept precedes the review input. Reveal that exact row toward the top
         // without asking XCTest to derive an activation point for a virtualized row.
-        try revealText(button, preferTop: true)
+        // Use the final strict viewport while scrolling too: PR 24 stopped 2/3 pt
+        // above that boundary, where observing an already stable frame cannot help.
+        try revealText(button, preferTop: true, strictViewport: viewport)
         try require(matches.count == 1 && button.label == "Accept" && button.isEnabled,
                     "The reviewed task must expose exactly one enabled Accept button")
         let deadline = ProcessInfo.processInfo.systemUptime + 20
