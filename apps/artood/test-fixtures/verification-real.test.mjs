@@ -2,15 +2,17 @@
 // Uses actual subprocesses/process groups; no injected lifecycle or success fixtures.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { prepareVerificationProfiles, runVerification, runVerificationPreview, verificationSupported, selectVerificationProfile, subjectManifest } from "../dist/verification.js";
 import { createNodeClient } from "../dist/node-client.js";
 import { createProcessAdapter } from "../dist/process-adapter.js";
 
-function fixture(body) {
-  const root = mkdtempSync(join(tmpdir(), "artoo-real-verification-"));
+function fixture(body, temporaryRoot = tmpdir()) {
+  // macOS tmpdir can use /var while profiles bind its physical /private/var path.
+  // Construct requests from the same physical root; production still rejects aliases.
+  const root = realpathSync.native(mkdtempSync(join(temporaryRoot, "artoo-real-verification-")));
   const workspace = join(root, "product"); mkdirSync(workspace); writeFileSync(join(workspace, "index.txt"), "expected");
   const script = join(root, "verify.mjs"); writeFileSync(script, body);
   const profile = { id: "acceptance", project_id: "project_1", workspace_root: workspace,
@@ -38,6 +40,24 @@ function node(f) {
   const client = createNodeClient({ nodeId: "node_1", adapter, transport, verificationProfiles: [f.profile] }); client.start();
   return { events, client, send: (request) => subscriber(request), starts: () => starts, stops: () => stops };
 }
+
+test("temporary parent aliases yield physical fixtures while aliased requests remain rejected", { skip: !verificationSupported() }, () => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "artoo-verification-parent-")));
+  const physical = join(parent, "physical"), alias = join(parent, "alias");
+  let f;
+  try {
+    mkdirSync(physical); symlinkSync(physical, alias, "dir");
+    f = fixture("process.exit(0)", alias);
+    const [profile] = prepareVerificationProfiles([f.profile]);
+    assert.equal(f.root, realpathSync.native(f.root));
+    assert.equal(f.workspace, profile.workspace_root);
+    assert.equal(selectVerificationProfile(requestFor(f).payload, [profile], false), profile);
+    const aliased = requestFor({ ...f, workspace: join(alias, basename(f.root), "product") }).payload;
+    assert.notEqual(aliased.workspace.root, profile.workspace_root);
+    assert.equal(realpathSync.native(aliased.workspace.root), profile.workspace_root);
+    assert.throws(() => selectVerificationProfile(aliased, [profile], false), /verification workspace mismatch/);
+  } finally { f?.close(); rmSync(parent, { recursive: true, force: true }); }
+});
 
 const browserReport = { version: 1, format: "static-web-acceptance.v1", stage: "design", passed: true, requirements: 17,
   cases: [390, 1280].map((viewport) => ({ case_id: "prototype", viewport, assertions: 0, screenshot_digest: `sha256:${"a".repeat(64)}` })) };

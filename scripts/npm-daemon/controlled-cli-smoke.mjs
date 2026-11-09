@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { safeError } from "./cli.mjs";
 
 export const controlledRuntimes = ["codex", "claude-code"];
 
@@ -67,7 +68,21 @@ export async function runControlledCliTasks({ request, computerId, workspace, en
       run = (await request(`/api/v1/runs/${assigned.run.id}`)).run;
       return ["completed", "failed", "cancelled"].includes(run.status);
     }, `${runtime} ${outcome} task terminal state`, 30_000);
-    assert.equal(run.status, outcome === "success" ? "completed" : "failed", run.failure_reason ?? "Unexpected terminal state");
+    const expectedStatus = outcome === "success" ? "completed" : "failed";
+    let terminalDiagnostic = run.failure_reason ?? "Unexpected terminal state";
+    if (run.status !== expectedStatus) {
+      // Keep the original assertion, but retain bounded output from the actual
+      // failed subprocess. Never upload the database or the task context files.
+      const failedBundle = (await request(`/api/v1/tasks/${taskId}/audit-bundle`)).bundle;
+      const output = failedBundle.events.filter(event => event.type === "run.output" && event.run_id === run.id)
+        .slice(-20).map(event => `[${event.payload.stream}] ${event.payload.text}`).join("\n");
+      const nodeToken = new URL(env.ARTOO_NODE_URL).searchParams.get("token") ?? "";
+      const redact = text => safeError(Error(text), { ...env, ARTOO_NPM_SMOKE_NODE_TOKEN: nodeToken });
+      // Redact before truncating so a credential crossing the limit cannot leak
+      // as an unmatched suffix. Only this bounded diagnostic enters the logs.
+      terminalDiagnostic = `${redact(terminalDiagnostic).slice(0, 2_000)}\nControlled ${runtime} ${outcome} process output:\n${redact(output).slice(-12_000)}`;
+    }
+    assert.equal(run.status, expectedStatus, terminalDiagnostic);
     const started = JSON.parse(readFileSync(join(root, "fixture-start.json"), "utf8"));
     const exited = JSON.parse(readFileSync(join(root, "fixture-exit.json"), "utf8"));
     assert.deepEqual(exited, { ...started, exitCode: outcome === "success" ? 0 : 23 });

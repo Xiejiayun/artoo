@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import test from "node:test";
-import { devicePlatform, prepareControlledCli } from "./controlled-cli-smoke.mjs";
+import { devicePlatform, prepareControlledCli, runControlledCliTasks } from "./controlled-cli-smoke.mjs";
 
 function fixture(t) {
   const parent = realpathSync(tmpdir()), root = mkdtempSync(join(parent, "artoo-controlled-cli-test-"));
@@ -55,4 +55,30 @@ test("the actual controlled CLI process rejects an unbound context before writin
   assert.ifError(result.error); assert.notEqual(result.status, 0); assert.equal(result.signal, null);
   assert.equal(result.stdout, "");
   for (const file of ["fixture-start.json", "fixture-output.txt", "fixture-exit.json", "changes.patch"]) assert.equal(existsSync(join(childWorkspace, file)), false);
+});
+
+test("unexpected task failure preserves the status assertion and redacts bounded audit diagnostics", async t => {
+  const { workspace } = fixture(t), token = "fixture-secret-token-that-must-not-leak";
+  const output = "x".repeat(10_000) + token + "z".repeat(11_990);
+  const request = async path => {
+    if (path.endsWith("/instances")) return { agent_instance: { id: "instance" } };
+    if (path === "/api/v1/tasks") return { task: { id: "task" } };
+    if (path.endsWith("/ready")) return {};
+    if (path.endsWith("/assign")) return { run: { id: "run", computer_id: "computer", runtime_id: "codex" } };
+    if (path === "/api/v1/runs/run") return { run: { id: "run", status: "failed", failure_reason: "exit 1" } };
+    if (path.endsWith("/audit-bundle")) return { bundle: { events: [
+      { type: "run.output", run_id: "run", payload: { stream: "stderr", text: output } },
+    ] } };
+    throw Error(`Unexpected unit-test request: ${path}`);
+  };
+  await assert.rejects(runControlledCliTasks({ request, computerId: "computer", workspace,
+    env: { ARTOO_NODE_URL: `ws://localhost/?token=${token}`, ARTOO_NPM_SMOKE_NONCE: "fixture" },
+    waitFor: async predicate => { assert.equal(await predicate(), true); } }), error => {
+    assert.equal(error.code, "ERR_ASSERTION"); assert.equal(error.actual, "failed"); assert.equal(error.expected, "completed");
+    assert.match(error.message, /Controlled codex success process output/);
+    assert.ok(error.message.length < 14_500);
+    assert.equal(error.message.includes(token), false);
+    assert.equal(error.message.includes("must-not-leak"), false, "Truncation must not expose a credential suffix");
+    return true;
+  });
 });
