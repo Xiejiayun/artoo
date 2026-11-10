@@ -110,6 +110,14 @@ class FakeClientWebSocket {
     this.sent.push(data);
   }
 
+  receive(message: ServerToNodeMessage): void {
+    this.emit("message", { data: JSON.stringify(message) });
+  }
+
+  beginClosing(): void {
+    this.readyState = 2;
+  }
+
   close(): void {
     this.readyState = 3;
     this.emit("close", {});
@@ -144,8 +152,43 @@ describe("createWebSocketTransport", () => {
       expect(original.id).toBe(session.payload.session_id); expect(original.identity).toBe(transport.currentSessionIdentity());
       socket.send(JSON.stringify(session)); await new Promise(resolve => setTimeout(resolve, 20));
       expect(transport.currentPublicationSession()).toBe(original);
-      socket.close(1012); await waitUntil(() => !transport.connected);
+      // Leaving OPEN precedes the close event; wait for its revocation callback.
+      socket.close(1012); await waitUntil(() => ended > 0);
+      expect(transport.connected).toBe(false); expect(transport.currentSessionIdentity()).toBeUndefined();
       expect(transport.currentPublicationSession()).toBeUndefined(); expect(ended).toBe(1);
+      await transport.close(); expect(ended).toBe(1);
+    } finally { await transport.close(); }
+  });
+
+  it("hides publication authority while closing and notifies once on the close event", async () => {
+    let ended = 0;
+    const transport = createWebSocketTransport({ url: "ws://fixture.invalid", hello, reconnect: false,
+      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket, onPublicationSessionEnded: () => { ended++; } });
+    try {
+      const socket = fakeClientSockets.at(-1)!;
+      socket.open(); await transport.ready;
+      const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+      socket.receive({ kind: "command", id: "session", idempotency_key: "session", type: "application.publication.session.v1",
+        payload: { version: 1, node_id: hello.node_id, session_id: sessionId } });
+      expect(transport.connected).toBe(true);
+      expect(transport.currentPublicationSession()).toEqual({ id: sessionId, identity: socket });
+      expect(transport.currentSessionIdentity()).toBe(socket);
+
+      // The old !connected wait is satisfied before any close event is emitted.
+      socket.beginClosing();
+      await waitUntil(() => !transport.connected);
+      expect(transport.currentPublicationSession()).toBeUndefined();
+      expect(transport.currentSessionIdentity()).toBeUndefined();
+      expect(ended).toBe(0);
+
+      socket.close();
+      expect(ended).toBe(1);
+      expect(transport.currentPublicationSession()).toBeUndefined();
+      expect(transport.currentSessionIdentity()).toBeUndefined();
+      socket.close();
+      expect(ended).toBe(1);
+      await transport.close();
+      expect(ended).toBe(1);
     } finally { await transport.close(); }
   });
 
