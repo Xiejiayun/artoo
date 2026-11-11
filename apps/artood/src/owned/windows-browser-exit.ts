@@ -326,7 +326,7 @@ interface OwnedWindowsExit {
   requestGracefulClose?(remainingMs: number): Promise<void>;
   /** The direct ChildProcess is the only termination target; receives no helper IDs. */
   terminateParent(remainingMs: number): Promise<void>;
-  /** Finish the client connection before the last OS audit, within the confirmation deadline. */
+  /** After observed exit, finish the client connection before the last OS audit, within the confirmation deadline. */
   closeConnection?(remainingMs: number): Promise<void>;
   /** Exact protected executable/profile matches; the original parent may already be gone. */
   finalAudit(remainingMs: number): Promise<readonly number[]>;
@@ -404,13 +404,7 @@ export async function closeObservedWindowsProcesses(owned: OwnedWindowsExit, pri
   let lastPresent: number[] = [];
   try {
     const confirmationStarted = primitives.now();
-    let deadline = confirmationStarted + primitives.confirmationTimeoutMs, auditStarted = false;
-    if (owned.closeConnection) {
-      confirmationPhase = "connection_close";
-      await bounded(owned.closeConnection,
-        Math.min(primitives.connectionTimeoutMs, deadline - primitives.now()), "Browser client disconnect");
-      confirmationPhase = "exit_confirmation";
-    }
+    let deadline = confirmationStarted + primitives.confirmationTimeoutMs, auditStarted = false, connectionClosed = false;
     const probe = () => {
       lastPresent = [];
       // Failed initial history is deliberately separate from successful observations:
@@ -430,6 +424,18 @@ export async function closeObservedWindowsProcesses(owned: OwnedWindowsExit, pri
         // timely exit confirmation, so helpers and repeated audits cannot renew it.
         if (!auditStarted) {
           if (primitives.now() >= deadline) throw new Error("Owned browser exit confirmation exceeded its deadline");
+          if (owned.closeConnection && !connectionClosed) {
+            // CDP disconnect can await the browser's WebSocket close. A kill request
+            // is not exit, so do not spend this shorter budget waiting for the OS.
+            confirmationPhase = "connection_close";
+            const connectionDeadline = Math.min(deadline, primitives.now() + primitives.connectionTimeoutMs);
+            await bounded(owned.closeConnection, connectionDeadline - primitives.now(), "Browser client disconnect");
+            if (primitives.now() >= connectionDeadline) throw new Error("Browser client disconnect exceeded its deadline");
+            connectionClosed = true; confirmationPhase = "exit_confirmation";
+            // Disconnect awaited I/O: recheck every PID and actual parent close
+            // against the same deadline before starting the one final-audit budget.
+            continue;
+          }
           deadline = primitives.now() + primitives.auditTimeoutMs;
           auditStarted = true; confirmationPhase = "final_audit";
         }
