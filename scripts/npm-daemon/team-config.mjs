@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, readdirSync, realpathSync } from "node:fs";
+import { lstatSync, opendirSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertPrivateProviderKeyFile, atomicPrivateFile, connectionEnvironment, containsPath, loadConnection, protectDirectory, readPrivateFile, stateDirectory } from "./local-config.mjs";
 import { disableOptionalWebSocketAddons, packagedWindowsProcessEnvironment } from "./verify.mjs";
 
 const filename = "team-config.json";
-const fields = ["version", "research_receipts_directory", "verification_profiles_file", "initialize_repository", "codex"];
+const fields = ["version", "research_receipts_directory", "verification_profiles_file", "temporary_directory", "initialize_repository", "codex"];
 const normalize = path => process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
 
 function physicalPath(path, kind, roots) {
@@ -90,6 +90,87 @@ function codexHome(path, roots) {
   return home;
 }
 
+/** A selected temporary root must protect existing state and future private children. */
+function temporaryDirectory(path, roots) {
+  if (process.platform === "win32" && (typeof path !== "string" || !/^[a-z]:[\\/]/i.test(path)))
+    throw Error("Team temporary_directory must be an absolute local disk directory.");
+  const directory = physicalPath(path, "directory", roots), entries = [];
+  let pathBytes = 0;
+  const inspect = (path, ancestor = false) => {
+    if (entries.length >= 2048 || (pathBytes += Buffer.byteLength(path)) > 1024 * 1024)
+      throw Error("Team temporary_directory exceeds the bounded state inspection limit.");
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || (ancestor ? !stat.isDirectory() : !stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1))
+      || normalize(realpathSync.native(path)) !== normalize(path))
+      throw Error("Team temporary_directory requires physical directories and single-link files without links.");
+    entries.push({ path, stat, ancestor });
+    return stat;
+  };
+  const visit = (path, depth) => {
+    if (depth > 32)
+      throw Error("Team temporary_directory exceeds the bounded state inspection limit.");
+    if (inspect(path).isDirectory()) {
+      const handle = opendirSync(path);
+      try { for (let entry; (entry = handle.readSync()); ) visit(join(path, entry.name), depth + 1); }
+      finally { handle.closeSync(); }
+    }
+  };
+  visit(directory, 0);
+  for (let cursor = dirname(directory); ; cursor = dirname(cursor)) {
+    inspect(cursor, true);
+    if (dirname(cursor) === cursor) break;
+  }
+  if (process.platform !== "win32") {
+    for (const { stat, ancestor } of entries) {
+      if (ancestor) {
+        if (![0, process.getuid()].includes(stat.uid) || (stat.mode & 0o022))
+          throw Error("Team temporary_directory ancestors must have trusted ownership and no group or other write permission.");
+      } else if (stat.uid !== process.getuid() || !(stat.isDirectory() ? [0o700] : [0o400, 0o600]).includes(stat.mode & 0o7777)) {
+        throw Error("Team temporary_directory and its contents must be private to the current user (directories 0700, files 0400 or 0600).");
+      }
+    }
+  } else {
+    // Raw ACEs include inherit-only grants: an empty directory must not grant
+    // another principal access to the private context a future task creates.
+    const script = "$ErrorActionPreference='Stop';Set-StrictMode -Version Latest;" +
+      "$v=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))|ConvertFrom-Json;" +
+      "$trusted=@([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');" +
+      "foreach($item in $v.paths){$drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($item.path));" +
+      "if($drive.DriveType -ne 'Fixed' -or $drive.DriveFormat -ne 'NTFS'){throw 'Local fixed NTFS disk required'};" +
+      "$attributes=[IO.File]::GetAttributes($item.path);if(([int]$attributes -band 1024) -or (([int]$attributes -band 16) -ne 0) -ne $item.directory){throw 'Physical path changed'};" +
+      "$acl=Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $item.path;" +
+      "if($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -or -not $acl.AreAccessRulesCanonical){throw 'Untrusted owner or DACL'};" +
+      "$raw=[Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0);" +
+      "if(-not ($raw.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -or $null -eq $raw.DiscretionaryAcl -or $raw.DiscretionaryAcl.Count -gt 256){throw 'Missing or oversized DACL'};" +
+      "foreach($ace in $raw.DiscretionaryAcl){$flags=[int]$ace.AceFlags;" +
+      "if(-not ($ace -is [Security.AccessControl.CommonAce]) -or $ace.IsCallback -or $flags -lt 0 -or $flags -gt 31 " +
+      "-or $ace.AceType -notin @([Security.AccessControl.AceType]::AccessAllowed,[Security.AccessControl.AceType]::AccessDenied)){throw 'Unsupported ACE'};" +
+      "if($ace.AceType -ne [Security.AccessControl.AceType]::AccessAllowed -or $trusted -contains $ace.SecurityIdentifier.Value){continue};" +
+      "$mask=[long]$ace.AccessMask -band [long]4294967295;$effective=($flags -band 8) -eq 0;$futureChild=$item.directory -and ($flags -band 3) -ne 0;" +
+      // Private FullControl + all generic rights; ancestor replacement matches
+      // windows-local-acl.ts and permits ordinary read/sibling creation grants.
+      "if(($item.ancestor -and $effective -and ($mask -band [long]1343029586)) " +
+      "-or (-not $item.ancestor -and ($effective -or $futureChild) -and ($mask -band [long]4028563967))){throw 'Temporary permissions are not private'}}}";
+    const systemRoot = process.env.SystemRoot || "C:\\Windows";
+    const result = spawnSync(join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoProfile", "-NonInteractive", "-Command", script], {
+        input: Buffer.from(JSON.stringify({ paths: entries.map(({ path, stat, ancestor }) => ({ path, directory: stat.isDirectory(), ancestor })) })).toString("base64"),
+        encoding: "utf8", windowsHide: true, timeout: 15_000, maxBuffer: 128 * 1024,
+        env: { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: join(systemRoot, "System32"),
+          PSModulePath: join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules") },
+      });
+    if (result.error || result.status !== 0 || result.signal !== null)
+      throw Error("Team temporary_directory, contents and ancestors require local fixed NTFS storage and private, trusted Windows permissions; no ACL was changed.");
+  }
+  for (const { path, stat } of entries) {
+    const after = lstatSync(path);
+    if (after.dev !== stat.dev || after.ino !== stat.ino || after.mode !== stat.mode || after.uid !== stat.uid
+      || after.nlink !== stat.nlink || after.isSymbolicLink() || normalize(realpathSync.native(path)) !== normalize(path))
+      throw Error("Team temporary_directory changed during inspection.");
+  }
+  return directory;
+}
+
 function codexConfiguration(value, roots) {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || Object.keys(value).some(key => !["model", "provider_url", "provider_key_file", "home_directory"].includes(key))
@@ -127,6 +208,7 @@ export function validateTeamConfiguration(value, roots) {
       ? { research_receipts_directory: physicalPath(value.research_receipts_directory, "directory", roots) } : {}),
     ...(value.verification_profiles_file !== undefined
       ? { verification_profiles_file: physicalPath(value.verification_profiles_file, "file", roots) } : {}),
+    ...(value.temporary_directory !== undefined ? { temporary_directory: temporaryDirectory(value.temporary_directory, roots) } : {}),
     ...(value.initialize_repository !== undefined ? { initialize_repository: value.initialize_repository } : {}),
     ...(value.codex !== undefined ? { codex: codexConfiguration(value.codex, roots) } : {}),
   };
@@ -144,6 +226,8 @@ function readConfiguration(path, roots) {
 
 export function teamConfigurationEnvironment(configuration, release) {
   return {
+    ...(configuration.temporary_directory ? { ARTOO_MANAGED_TEMPORARY_DIRECTORY: configuration.temporary_directory,
+      TMP: configuration.temporary_directory, TEMP: configuration.temporary_directory, TMPDIR: configuration.temporary_directory } : {}),
     ...(configuration.research_receipts_directory ? { ARTOO_RESEARCH_ENABLED: "1",
       ARTOO_RESEARCH_RECEIPTS_DIR: configuration.research_receipts_directory } : {}),
     ...(configuration.verification_profiles_file ? { ARTOO_VERIFICATION_PROFILES_FILE: configuration.verification_profiles_file,
@@ -175,9 +259,14 @@ export function managedConnectionEnvironment(connection, base, directory, releas
   try { lstatSync(path); }
   catch (error) { if (error.code !== "ENOENT") throw error; present = false; }
   const configuration = present ? readConfiguration(path, connection.roots) : { version: 1 };
-  const cleanBase = Object.fromEntries(Object.entries(base).filter(([key]) => !/^(?:NODE_OPTIONS|NODE_PATH)$/i.test(key)
-    && !(configuration.codex?.home_directory && /^CODEX_HOME$/i.test(key))));
+  const cleanBase = cleanSelectedEnvironment(base, configuration);
   return { ...connectionEnvironment(connection, cleanBase), ...teamConfigurationEnvironment(configuration, release), ...providerKey(configuration) };
+}
+
+function cleanSelectedEnvironment(base, configuration) {
+  return Object.fromEntries(Object.entries(base).filter(([key]) => !/^(?:NODE_OPTIONS|NODE_PATH)$/i.test(key)
+    && !(configuration.codex?.home_directory && /^CODEX_HOME$/i.test(key))
+    && !(configuration.temporary_directory && /^(?:TMP|TEMP|TMPDIR)$/i.test(key))));
 }
 
 export async function configureTeam({ args, env, release, output = () => {} }) {
@@ -200,7 +289,15 @@ export async function configureTeam({ args, env, release, output = () => {} }) {
     if (typeof saved?.codex?.home_directory !== "string" || normalize(saved.codex.home_directory) !== normalize(home))
       throw Error("A newly selected Codex home_directory must be empty; do not copy global settings or credentials.");
   }
-  const configured = { ...connectionEnvironment(connection, env), ...teamConfigurationEnvironment(configuration, release),
+  const temporary = configuration.temporary_directory;
+  if (temporary && readdirSync(temporary).length) {
+    let saved;
+    try { saved = JSON.parse(readPrivateFile(join(directory, filename)).toString("utf8")); }
+    catch (error) { if (error.code !== "ENOENT") throw Error("Saved team settings could not qualify the existing temporary_directory."); }
+    if (typeof saved?.temporary_directory !== "string" || normalize(saved.temporary_directory) !== normalize(temporary))
+      throw Error("A newly selected temporary_directory must be empty; use a dedicated private directory.");
+  }
+  const configured = { ...connectionEnvironment(connection, cleanSelectedEnvironment(env, configuration)), ...teamConfigurationEnvironment(configuration, release),
     // The parser needs only credential presence. Configure never reads the key
     // or authenticates against a provider; the worker reads it on each start.
     ...(configuration.codex?.provider_key_file ? { ARTOO_CODEX_PROVIDER_KEY: "selected-local-credential" } : {}) };

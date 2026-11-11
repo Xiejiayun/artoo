@@ -65,11 +65,15 @@ export function safeError(error, env = process.env) {
   return message.replace(/((?:token|key|secret|password)=)[^\s&]+/gi, "$1[redacted]");
 }
 
-/** Apply saved model settings only inside the daemon, restoring its prior home on exit. */
+/** Apply saved local settings in the daemon and its children, then restore them. */
 export async function launchManagedRuntime(env, launch) {
   let key = env.ARTOO_CODEX_PROVIDER_KEY;
   const home = env.CODEX_HOME, previousHome = process.env.CODEX_HOME;
   const homeChanged = home !== undefined && home !== previousHome;
+  const temporary = env.ARTOO_MANAGED_TEMPORARY_DIRECTORY;
+  const temporaryKeys = /^(?:TMP|TEMP|TMPDIR)$/i;
+  const previousTemporary = temporary === undefined ? [] : Object.entries(process.env).filter(([name]) => temporaryKeys.test(name));
+  const lifecycleRequired = key !== undefined || homeChanged || temporary !== undefined;
   let cleared = false;
   const clear = () => {
     if (cleared) return;
@@ -79,17 +83,25 @@ export async function launchManagedRuntime(env, launch) {
       if (previousHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousHome;
     }
+    if (temporary !== undefined) {
+      for (const name of Object.keys(process.env)) if (temporaryKeys.test(name)) delete process.env[name];
+      for (const [name, value] of previousTemporary) process.env[name] = value;
+    }
     delete env.ARTOO_CODEX_PROVIDER_KEY;
     key = undefined;
     process.off("exit", clear);
   };
   if (key !== undefined) process.env.ARTOO_CODEX_PROVIDER_KEY = key;
   if (homeChanged) process.env.CODEX_HOME = home;
-  if (key !== undefined || homeChanged) process.once("exit", clear);
+  if (temporary !== undefined) {
+    for (const name of Object.keys(process.env)) if (temporaryKeys.test(name)) delete process.env[name];
+    for (const name of ["TMP", "TEMP", "TMPDIR"]) process.env[name] = temporary;
+  }
+  if (lifecycleRequired) process.once("exit", clear);
   try {
     const node = await launch(env);
-    if (key !== undefined || homeChanged) {
-      if (!node || typeof node.stop !== "function") throw Error("Configured Codex runtime requires the daemon's normal shutdown lifecycle.");
+    if (lifecycleRequired) {
+      if (!node || typeof node.stop !== "function") throw Error("Configured runtime requires the daemon's normal shutdown lifecycle.");
       const stop = node.stop.bind(node);
       let stopping;
       node.stop = (...args) => stopping ??= (async () => {
