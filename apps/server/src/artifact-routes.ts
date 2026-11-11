@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { ContentAddressedBlobNotFoundError } from "@artoo/storage";
 
 import { artifacts, runs } from "@artoo/db";
 import { ArtifactTypeSchema, ID_PREFIXES } from "@artoo/domain";
@@ -10,12 +9,12 @@ import type { FastifyInstance } from "fastify";
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import { resolveNodeToken } from "./services/device-service.js";
-import { writeContentAddressedBlob } from "./content-addressed-blob.js";
+import { readContentAddressedBlob, writeContentAddressedBlob, type ContentAddressedBlobSource } from "./content-addressed-blob.js";
 
 export const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
 
 /** Bounded, content-addressed storage. Client paths are labels, never disk paths. */
-export function registerArtifactRoutes(app: FastifyInstance, ctx: ServerContext, artifactDir: string): void {
+export function registerArtifactRoutes(app: FastifyInstance, ctx: ServerContext, artifactStore: ContentAddressedBlobSource): void {
   app.addContentTypeParser("application/octet-stream", { parseAs: "buffer", bodyLimit: MAX_ARTIFACT_BYTES },
     (_req, body, done) => done(null, body));
 
@@ -50,7 +49,7 @@ export function registerArtifactRoutes(app: FastifyInstance, ctx: ServerContext,
     const digest = createHash("sha256").update(bytes).digest("hex");
     const checksum = `sha256:${digest}`;
     if (req.headers["x-artoo-checksum"] !== checksum) throw AppError.validation("artifact checksum does not match uploaded bytes");
-    await writeContentAddressedBlob(artifactDir, bytes);
+    await writeContentAddressedBlob(artifactStore, bytes);
     const artifact = await ctx.db.transaction(async (tx) => {
       const current = (await tx.select().from(runs).where(and(eq(runs.id, runId), eq(runs.organizationId, ctx.organizationId))))[0];
       if (!current || current.computerId !== computerId || !["queued", "starting", "running"].includes(current.status)) {
@@ -79,9 +78,15 @@ export function registerArtifactRoutes(app: FastifyInstance, ctx: ServerContext,
     const metadata = artifact?.metadata as Record<string, unknown> | undefined;
     const key = metadata?.storage_key;
     if (!artifact || typeof key !== "string" || !/^[a-f0-9]{64}$/.test(key)) throw AppError.notFound("stored artifact not found");
+    const size = metadata?.size;
+    if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0 || size > MAX_ARTIFACT_BYTES
+      || artifact.checksum !== `sha256:${key}`) throw AppError.conflict("stored artifact metadata is invalid");
     let bytes: Buffer;
-    try { bytes = await readFile(join(artifactDir, key)); }
-    catch { throw AppError.notFound("stored artifact content not found"); }
+    try { bytes = await readContentAddressedBlob(artifactStore, artifact.checksum, size); }
+    catch (error) {
+      if (error instanceof ContentAddressedBlobNotFoundError) throw AppError.notFound("stored artifact content not found");
+      throw error;
+    }
     const filename = typeof metadata?.filename === "string" ? metadata.filename : "artifact.bin";
     void reply.header("content-type", "application/octet-stream")
       .header("content-disposition", `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`)

@@ -1,9 +1,10 @@
 import { parseDeviceToken, PRODUCT_SOURCE_TRANSFER_MAX_BYTES_V1 } from "@artoo/domain";
+import { ContentAddressedBlobIntegrityError, ContentAddressedBlobNotFoundError } from "@artoo/storage";
 import { PRODUCT_SOURCE_TRANSFER_CHECKSUM_HEADER_V1, PRODUCT_SOURCE_TRANSFER_CONTENT_ROUTE_V1,
   PRODUCT_SOURCE_TRANSFER_REQUEST_HEADER_V1, ProductSourceTransferUploadResponseV1Schema } from "@artoo/protocol";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { isDeepStrictEqual } from "node:util";
-import { blobChecksum, readContentAddressedBlob, writeContentAddressedBlob } from "./content-addressed-blob.js";
+import { blobChecksum, readContentAddressedBlob, writeContentAddressedBlob, type ContentAddressedBlobSource } from "./content-addressed-blob.js";
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import { resolveNodeToken } from "./services/device-service.js";
@@ -22,7 +23,7 @@ function requestBinding(req: FastifyRequest) {
   return { id: (req.params as { id: string }).id, digest };
 }
 
-export function registerProductSourceTransferRoutes(app: FastifyInstance, ctx: ServerContext, artifactDir: string): void {
+export function registerProductSourceTransferRoutes(app: FastifyInstance, ctx: ServerContext, artifactStore: ContentAddressedBlobSource): void {
   // Encapsulation keeps the existing ordinary artifact parser and its 10 MiB limit unchanged.
   void app.register(async scoped => {
     scoped.removeContentTypeParser("application/octet-stream");
@@ -56,7 +57,7 @@ export function registerProductSourceTransferRoutes(app: FastifyInstance, ctx: S
         || blobChecksum(Buffer.from(JSON.stringify(capsule.manifest))) !== source.manifest_digest) {
         throw AppError.validation("Product source capsule header differs from the immutable request");
       }
-      await writeContentAddressedBlob(artifactDir, bytes);
+      await writeContentAddressedBlob(artifactStore, bytes);
       // A failure here can retain an unreferenced blob, never an available transfer.
       const fresh = await nodeIdentity(ctx, req);
       const completed = await inspectProductSourceTransferForNode(ctx, binding.id, binding.digest, fresh, "upload", true);
@@ -67,8 +68,13 @@ export function registerProductSourceTransferRoutes(app: FastifyInstance, ctx: S
       const identity = await nodeIdentity(ctx, req), binding = requestBinding(req);
       const { request } = await inspectProductSourceTransferForNode(ctx, binding.id, binding.digest, identity, "download");
       let bytes: Buffer;
-      try { bytes = await readContentAddressedBlob(artifactDir, request.source.capsule_digest, request.source.capsule_bytes); }
-      catch { throw AppError.conflict("Product source content is missing or differs from its stored digest"); }
+      try { bytes = await readContentAddressedBlob(artifactStore, request.source.capsule_digest, request.source.capsule_bytes); }
+      catch (error) {
+        if (error instanceof ContentAddressedBlobNotFoundError || error instanceof ContentAddressedBlobIntegrityError) {
+          throw AppError.conflict("Product source content is missing or differs from its stored digest");
+        }
+        throw error;
+      }
       const fresh = await nodeIdentity(ctx, req);
       await inspectProductSourceTransferForNode(ctx, binding.id, binding.digest, fresh, "download");
       void reply.header("content-type", "application/octet-stream").header("cache-control", "private, no-store")

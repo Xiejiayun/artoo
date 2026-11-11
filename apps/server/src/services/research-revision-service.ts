@@ -89,8 +89,9 @@ export async function ensureGoalResearchRevision(ctx: ServerContext, tx: Drizzle
   const [parentHandoff] = await tx.select().from(handoffs).where(and(eq(handoffs.id, parent.handoffId), eq(handoffs.organizationId, ctx.organizationId)));
   if (!parentHandoff?.qualifiedReceipt || parentHandoff.stopRequested || hash(parentHandoff.intent) !== hash(request.operation.intent))
     throw AppError.conflict("Rejected H2 lost its qualified immutable transfer");
-  if (!ctx.productSourceArtifactDir) throw AppError.conflict("Research revision requires the protected capsule store");
-  const capsule = await readContentAddressedBlob(ctx.productSourceArtifactDir, source.capsule_digest, source.capsule_bytes);
+  const artifactStore = ctx.artifactStore ?? ctx.productSourceArtifactDir;
+  if (!artifactStore) throw AppError.conflict("Research revision requires the protected capsule store");
+  const capsule = await readContentAddressedBlob(artifactStore, source.capsule_digest, source.capsule_bytes);
   assertSemanticCapsuleResearch(capsule, transfer);
   const content = JSON.parse(capsule.toString("utf8")) as { files: Array<{ path: string; base64: string }> };
   const research = Buffer.from(content.files.find(file => file.path === ".artoo/product/research.json")!.base64, "base64");

@@ -5,7 +5,10 @@ if (existsSync(".env")) loadEnvFile(".env");
 process.env.NODE_ENV = "production";
 process.env.ARTOO_WEB_DIST ||= resolve("apps/web/dist");
 const { startServer } = await import("../apps/server/dist/main.js");
-const server = await startServer();
+const server = await startServer(process.env, { onFatal: () => {
+  console.error("Database ownership lost; server shutting down");
+  process.exitCode = 1;
+} });
 console.log(`Artoo trusted-team preview ready; persistent data: ${server.dataRoot}`);
 let closing = false;
 const close = () => {

@@ -27,6 +27,7 @@ import { verificationCapabilitiesV3Fixture } from "./test-fixtures/verification-
 import { verificationCapabilityBinding } from "./services/verification-capabilities.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 import * as blobs from "./content-addressed-blob.js";
+import { MemoryArtifactStore } from "./test-fixtures/memory-artifact-store.js";
 import * as semanticExports from "./services/product-source-semantic-export-service.js";
 import * as semanticTransfers from "./services/product-source-transfer-service.js";
 import { ingestRunEvent, ingestWireRunEvent } from "./services/run-service.js";
@@ -212,6 +213,23 @@ describe("paired-node semantic source transport (controlled protocol receipts on
     return { source, destination, other, review, request, base, actor, digest, bytes, upload, download, headers, url, proof, exportFrame, terminalFrame,
       sourceRelease, destinationRelease, researchBytes, researchReport };
   }
+
+  it("uses the injected object store for semantic capsules without a local directory", async () => {
+    await server.close();
+    const store = new MemoryArtifactStore();
+    server = await buildTestServer({ artifactStore: store, workspaceRoot: "/workspace/product", authConfig: { enforceApiAuth: true },
+      deviceAuth: testDeviceAuthConfig({ devNodeToken: "dev", devControlEscape: false }) });
+    const f = await prepare();
+    await admitProductSourceSemanticTransfer(f.actor, f.request);
+    expect((await f.upload()).statusCode).toBe(200);
+    const downloaded = await f.download();
+    expect(downloaded.statusCode).toBe(200);
+    expect(downloaded.rawPayload).toEqual(f.bytes);
+    expect(store.writes).toContain(f.base.source.capsule_digest);
+    expect(store.reads).toContain(f.base.source.capsule_digest);
+    vi.spyOn(store, "read").mockRejectedValue(new Error("Object store unavailable"));
+    expect((await f.download()).statusCode).toBe(500);
+  });
 
   it("persists both immutable requests, replays and returns full v2 and export digests without creating execution", async () => {
     const f = await prepare(), accepted = await admitProductSourceSemanticTransfer(f.actor, f.request);

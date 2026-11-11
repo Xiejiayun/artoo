@@ -40,9 +40,10 @@ function originalActor(ctx: ServerContext, actor: string) {
   if (ctx.automationActor?.id !== "goal_runner" || ctx.actorUserId !== actor) throw AppError.permissionDenied("Only the initiating user's GoalRunner owns H5 execution");
 }
 async function researchBytes(ctx: ServerContext, request: ReturnType<typeof ImportedDesignReviewRequestV1Schema.parse>) {
-  if (!ctx.productSourceArtifactDir) throw AppError.conflict("H5 requires the protected source artifact store");
+  const artifactStore = ctx.artifactStore ?? ctx.productSourceArtifactDir;
+  if (!artifactStore) throw AppError.conflict("H5 requires the protected source artifact store");
   const transfer = request.continuation_request.review_request.operation.intent.request, source = transfer.byte_request.source;
-  const bytes = await readContentAddressedBlob(ctx.productSourceArtifactDir, source.capsule_digest, source.capsule_bytes);
+  const bytes = await readContentAddressedBlob(artifactStore, source.capsule_digest, source.capsule_bytes);
   assertSemanticCapsuleResearch(bytes, transfer);
   const capsule = JSON.parse(bytes.toString("utf8")) as { files: { path: string; base64: string }[] };
   return Buffer.from(capsule.files.find(file => file.path === ".artoo/product/research.json")!.base64, "base64");

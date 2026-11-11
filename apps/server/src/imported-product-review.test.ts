@@ -31,6 +31,7 @@ import { verificationCapabilitiesV3Fixture } from "./test-fixtures/verification-
 import { verificationCapabilityBinding } from "./services/verification-capabilities.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 import * as blobs from "./content-addressed-blob.js";
+import { MemoryArtifactStore } from "./test-fixtures/memory-artifact-store.js";
 import * as semanticExports from "./services/product-source-semantic-export-service.js";
 import * as semanticTransfers from "./services/product-source-transfer-service.js";
 import { ingestRunEvent, ingestWireRunEvent } from "./services/run-service.js";
@@ -284,7 +285,7 @@ describe("imported destination review orchestration (controlled DB/protocol evid
     const sent:ServerToNodeMessage[]=[];let current=true;
     const binding=(node:string,session="session-one")=>{const pairedNode=[f.source,f.destination,f.other].find(v=>v.nodeId===node)!;
       return createGoalProductHandoffBinding(f.actor,{identity:{computerId:node,deviceId:pairedNode.device.id,tokenLookup:parseDeviceToken(pairedNode.node_token)!.lookup},sessionId:session,isCurrent:()=>current,
-        artifactDir:directory,transport:{send:async message=>{sent.push(message);}}});};
+        artifactStore:server.ctx.artifactStore,artifactDir:directory,transport:{send:async message=>{sent.push(message);}}});};
     const ops=async()=>server.db.db.select().from(goalProductHandoffOperations);
     return {...f,intent,sent,binding,ops,invalidate:()=>{current=false;}};
   }
@@ -322,7 +323,7 @@ describe("imported destination review orchestration (controlled DB/protocol evid
     const sent: ServerToNodeMessage[] = []; let current = true;
     const binding = (sessionId = "imported-session-one") => createGoalImportedProductReviewBinding(f.actor, {
       identity: { computerId: f.destination.nodeId, deviceId: f.destination.device.id, tokenLookup: parseDeviceToken(f.destination.node_token)!.lookup },
-      sessionId, isCurrent: () => current, artifactDir: directory, transport: { send: async frame => { sent.push(frame); } },
+      sessionId, isCurrent: () => current, artifactStore: server.ctx.artifactStore, artifactDir: directory, transport: { send: async frame => { sent.push(frame); } },
     });
     return { ...f, ensure, automation, sent, queued, binding, expireSession: () => { current = false; } };
   }
@@ -410,6 +411,21 @@ describe("imported destination review orchestration (controlled DB/protocol evid
     const admit = async () => { const automation = await f.automation(); return server.db.transaction(tx => ensureGoalResearchRevision(f.actor, tx, automation, parent.id)); };
     return { ...f, parent, snapshot, poolId: storedPool!.id, admit };
   }
+  it("retains handoff, imported review and research revision bytes through an injected object store", async () => {
+    await server.close();
+    const store = new MemoryArtifactStore();
+    server = await buildTestServer({ artifactStore: store, workspaceRoot: "/workspace/product", authConfig: { enforceApiAuth: true },
+      deviceAuth: testDeviceAuthConfig({ devNodeToken: "dev", devControlEscape: false }) });
+    const f = await prepareRevision();
+    expect(server.ctx.productSourceArtifactDir).toBeUndefined();
+    expect(store.writes).toContain(f.base.source.capsule_digest);
+    const before = store.reads.length;
+    const revision = await f.admit();
+    expect(revision.parentReviewId).toBe(f.parent.id);
+    expect(store.reads.length).toBeGreaterThan(before);
+    expect(store.reads.every(checksum => checksum === f.base.source.capsule_digest)).toBe(true);
+  });
+
   it("creates one authorized H2 research successor without resetting original plan/history or spending twice", async () => {
     const f = await prepareRevision(), db = server.db.db;
     const [original] = await db.select().from(tasks).where(eq(tasks.id, f.base.source.task_id));

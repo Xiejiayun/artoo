@@ -24,6 +24,7 @@ import { IMPORTED_EXECUTION_REVIEW_FEATURE_V1, ImportedExecutionRepairResultV1Sc
 import { requireRunAiSharingAuthorization } from "./services/ai-data-sharing-service.js";
 import { createGoalImportedProductReviewBinding } from "./services/imported-product-review-service.js";
 import { createGoalProductHandoffBinding } from "./services/goal-product-handoff-service.js";
+import type { ArtifactStorageOptions } from "./content-addressed-blob.js";
 import { createImportedDesignContinuationBinding } from "./services/imported-design-continuation-service.js";
 import { createImportedDesignReviewBinding } from "./services/imported-design-review-service.js";
 import { createImportedExecutionBinding } from "./services/imported-execution-service.js";
@@ -155,7 +156,7 @@ export function attachNodeBinding(
   ownedResultProfiles: readonly NodeOwnedResultProfileDescriptorV1[] = [],
   managedResultReady: () => boolean = () => false,
   nodeOs?: string,
-  importedReviewOptions?: { identity: AuthenticatedTransferNode; sessionId: string; artifactDir: string; qualifiedRunEventReceiptsReady?: () => boolean },
+  importedReviewOptions?: ArtifactStorageOptions & { identity: AuthenticatedTransferNode; sessionId: string; qualifiedRunEventReceiptsReady?: () => boolean },
   productSourceRouting?: ProductSourceRoutingV1,
   applicationPublicationProfiles: readonly ApplicationPublicationProfileAdvertisementV1[] = [],
 ): NodeBinding {

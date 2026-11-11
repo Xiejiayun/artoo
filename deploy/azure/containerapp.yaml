@@ -1,0 +1,88 @@
+# Render a private copy outside Git. IMAGE must be registry/repository@sha256:...
+# Set the named secrets through the Azure portal before applying this template.
+# Merge ALL existing secret metadata into configuration.secrets below. The CLI
+# retrieves existing values for these named entries; do not omit other secrets.
+# For later releases, use Multiple here and switch the app to Multiple before
+# stopping the old revision. Restore Single only after the new revision is ready.
+# See docs/azure-container-apps.md: the database lock rejects process overlap.
+location: southeastasia
+identity:
+  type: SystemAssigned
+properties:
+  managedEnvironmentId: REPLACE_WITH_EXISTING_ENVIRONMENT_RESOURCE_ID
+  configuration:
+    activeRevisionsMode: Single
+    secrets:
+      - name: artoo-database-url
+      - name: supabase-service-role-key
+      - name: google-client-secret
+      - name: artoo-pairing-pepper
+    ingress:
+      external: true
+      allowInsecure: false
+      targetPort: 4000
+      transport: auto
+      traffic:
+        - latestRevision: true
+          weight: 100
+    registries:
+      - server: REPLACE_WITH_ACR_LOGIN_SERVER
+        identity: system
+  template:
+    revisionSuffix: REPLACE_WITH_UNIQUE_RELEASE_ID
+    containers:
+      - name: artoo
+        image: REPLACE_WITH_IMMUTABLE_IMAGE_DIGEST
+        resources:
+          cpu: 0.25
+          memory: 0.5Gi
+        env:
+          - name: ARTOO_DATABASE_URL
+            secretRef: artoo-database-url
+          - name: SUPABASE_URL
+            value: https://REPLACE_WITH_PROJECT_REF.supabase.co
+          - name: SUPABASE_SERVICE_ROLE_KEY
+            secretRef: supabase-service-role-key
+          - name: ARTOO_SUPABASE_STORAGE_BUCKET
+            value: artoo
+          - name: GOOGLE_CLIENT_ID
+            value: REPLACE_WITH_GOOGLE_WEB_CLIENT_ID
+          - name: GOOGLE_CLIENT_SECRET
+            secretRef: google-client-secret
+          - name: GOOGLE_REDIRECT_URI
+            value: https://REPLACE_WITH_APP_HOST/auth/google/callback
+          - name: AUTH_ALLOWED_EMAILS
+            value: REPLACE_WITH_ALLOWED_EMAILS
+          - name: AUTH_OWNER_EMAILS
+            value: REPLACE_WITH_OWNER_EMAILS
+          - name: ARTOO_PAIRING_PEPPER
+            secretRef: artoo-pairing-pepper
+          - name: ARTOO_EVENT_POLL_MS
+            value: '1000'
+        probes:
+          - type: Startup
+            httpGet:
+              path: /health/live
+              port: 4000
+              scheme: HTTP
+            periodSeconds: 5
+            failureThreshold: 60
+          - type: Readiness
+            httpGet:
+              path: /health/ready
+              port: 4000
+              scheme: HTTP
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          - type: Liveness
+            httpGet:
+              path: /health/live
+              port: 4000
+              scheme: HTTP
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+    scale:
+      minReplicas: 1
+      maxReplicas: 1

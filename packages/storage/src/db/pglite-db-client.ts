@@ -6,6 +6,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 
 import type { DbClient, DrizzleDb } from "./db-client.js";
+import { applyMigrationJournal } from "./migration-journal.js";
 
 export interface PgliteDbClientOptions {
   /** Persist to this directory. Omitted = ephemeral in-memory database. */
@@ -54,44 +55,10 @@ export class PgliteDbClient implements DbClient {
     // Journal and DDL commit together: a failed upgrade cannot leave a partially
     // applied schema or mark an unapplied statement as successful.
     await this.#pg.transaction(async (tx) => {
-      await tx.exec(`
-        CREATE SCHEMA IF NOT EXISTS artoo_meta;
-        CREATE TABLE IF NOT EXISTS artoo_meta.migrations (
-          position integer PRIMARY KEY,
-          checksum text NOT NULL,
-          applied_at timestamptz NOT NULL DEFAULT now()
-        );
-      `);
-      const applied = await tx.query<{ position: number; checksum: string }>(
-        "SELECT position, checksum FROM artoo_meta.migrations ORDER BY position",
-      );
-      const checksums = statements.map((statement) =>
-        createHash("sha256").update(statement.replace(/\r\n/g, "\n").trim()).digest("hex"),
-      );
-      for (const [index, migration] of applied.rows.entries()) {
-        if (migration.position !== index || checksums[index] !== migration.checksum) {
-          throw new Error(
-            `Migration history changed at statement ${index + 1}. Restore the original migrations and append a new migration; database downgrades are not supported.`,
-          );
-        }
-      }
-      if (applied.rows.length === 0) {
-        const existing = await tx.query<{ name: string }>(
-          "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' LIMIT 1",
-        );
-        if (existing.rows.length > 0) {
-          throw new Error(
-            "Database has an untracked legacy schema. Back it up and migrate it with the legacy adoption tool before starting; no existing tables were changed.",
-          );
-        }
-      }
-      for (let index = applied.rows.length; index < statements.length; index++) {
-        await tx.exec(statements[index]!);
-        await tx.query("INSERT INTO artoo_meta.migrations (position, checksum) VALUES ($1, $2)", [
-          index,
-          checksums[index]!,
-        ]);
-      }
+      await applyMigrationJournal({
+        execute: (statement) => tx.exec(statement),
+        query: (statement, parameters) => tx.query<Record<string, unknown>>(statement, parameters),
+      }, statements);
     });
   }
 
