@@ -157,7 +157,8 @@ function temporaryDirectory(path, roots) {
     // another principal access to the private context a future task creates.
     const script = "$ErrorActionPreference='Stop';Set-StrictMode -Version Latest;$script:code='collector_error';" +
       "function Reject([string]$code){$script:code=$code;throw 'Rejected'};try{$script:code='input_decode_failed';" +
-      "$v=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))|ConvertFrom-Json;" +
+      // Bind the built-in parser directly instead of unqualified command discovery.
+      "$v=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))|Microsoft.PowerShell.Utility\\ConvertFrom-Json;" +
       "$script:code='identity_read_failed';" +
       "$trusted=@([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');" +
       "foreach($item in $v.paths){$script:code='volume_inspection_failed';$drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($item.path));" +
