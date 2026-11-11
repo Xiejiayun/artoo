@@ -11,10 +11,10 @@ const device: Device = { id: "device_exact", organization_id: "org_default", dis
 
 describe("one-command machine connection", () => {
   it.each([
-    ["windows", "& ([scriptblock]::Create((irm 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.4/install.ps1'))) -Server 'https://artoo.example.com' -Code 'ABCD-1234'"],
-    ["linux", "curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.4/install.sh' | sh -s -- --server 'https://artoo.example.com' --code 'ABCD-1234'"],
-    ["macos", "curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.4/install.sh' | sh -s -- --server 'https://artoo.example.com' --code 'ABCD-1234'"],
-  ] as const)("pins the %s connection command to the rc.4 installer", (platform, expected) => {
+    ["windows", "& ([scriptblock]::Create((irm 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.5/install.ps1'))) -Server 'https://artoo.example.com' -Code 'ABCD-1234'"],
+    ["linux", "curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.5/install.sh' | sh -s -- --server 'https://artoo.example.com' --code 'ABCD-1234'"],
+    ["macos", "curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.5/install.sh' | sh -s -- --server 'https://artoo.example.com' --code 'ABCD-1234'"],
+  ] as const)("pins the %s connection command to the rc.5 installer", (platform, expected) => {
     expect(daemonConnectCommand("https://artoo.example.com", "ABCD-1234", platform)).toBe(expected);
   });
 

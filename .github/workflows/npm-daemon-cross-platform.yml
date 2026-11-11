@@ -31,7 +31,7 @@ on:
       version:
         description: Exact universal candidate version to build on main
         required: true
-        default: 0.1.0-rc.4
+        default: 0.1.0-rc.5
         type: string
 
 permissions:
@@ -51,7 +51,7 @@ jobs:
         shell: pwsh
     env:
       PACKAGE_NAME: '@jiayunxie/artood'
-      PACKAGE_VERSION: ${{ inputs.version || '0.1.0-rc.4' }}
+      PACKAGE_VERSION: ${{ inputs.version || '0.1.0-rc.5' }}
       NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
       NPM_CONFIG_LOGS_MAX: '0'
     outputs:

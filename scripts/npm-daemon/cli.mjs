@@ -65,20 +65,31 @@ export function safeError(error, env = process.env) {
   return message.replace(/((?:token|key|secret|password)=)[^\s&]+/gi, "$1[redacted]");
 }
 
-/** Only this selected provider credential enters the model process environment. */
+/** Apply saved model settings only inside the daemon, restoring its prior home on exit. */
 export async function launchManagedRuntime(env, launch) {
   let key = env.ARTOO_CODEX_PROVIDER_KEY;
+  const home = env.CODEX_HOME, previousHome = process.env.CODEX_HOME;
+  const homeChanged = home !== undefined && home !== previousHome;
+  let cleared = false;
   const clear = () => {
+    if (cleared) return;
+    cleared = true;
     if (key !== undefined && process.env.ARTOO_CODEX_PROVIDER_KEY === key) delete process.env.ARTOO_CODEX_PROVIDER_KEY;
+    if (homeChanged && process.env.CODEX_HOME === home) {
+      if (previousHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousHome;
+    }
     delete env.ARTOO_CODEX_PROVIDER_KEY;
     key = undefined;
     process.off("exit", clear);
   };
-  if (key !== undefined) { process.env.ARTOO_CODEX_PROVIDER_KEY = key; process.once("exit", clear); }
+  if (key !== undefined) process.env.ARTOO_CODEX_PROVIDER_KEY = key;
+  if (homeChanged) process.env.CODEX_HOME = home;
+  if (key !== undefined || homeChanged) process.once("exit", clear);
   try {
     const node = await launch(env);
-    if (key !== undefined) {
-      if (!node || typeof node.stop !== "function") throw Error("Configured provider requires the daemon's normal shutdown lifecycle.");
+    if (key !== undefined || homeChanged) {
+      if (!node || typeof node.stop !== "function") throw Error("Configured Codex runtime requires the daemon's normal shutdown lifecycle.");
       const stop = node.stop.bind(node);
       let stopping;
       node.stop = (...args) => stopping ??= (async () => {

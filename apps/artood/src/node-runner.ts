@@ -271,6 +271,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
             void stop().catch(error => { reportFailure(error instanceof Error ? error : new Error("Product source shutdown failed")); });
           },
           onConnected: () => { void client?.replayReleaseHealth().catch(() => {}); },
+          onDisconnected: () => { client?.invalidatePendingStartupReplay?.(); },
           onPublicationSessionEnded: () => { sessionInvalidated = true; client?.invalidateApplicationPublicationSession(); },
           WebSocketImpl: options.WebSocketImpl
         });
@@ -288,6 +289,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
           ...(applicationPublicationProfiles.length ? { applicationPublication: { profiles: applicationPublicationProfiles,
             getSession: () => sessionInvalidated ? undefined : transport?.currentPublicationSession() } } : {}),
           sourceCommandDiagnostic: options.sourceCommandDiagnostic,
+          startupReplaySession: () => sessionInvalidated || !transport?.connected ? undefined : transport.currentSessionIdentity(),
           releaseRetrySession: () => {
             if (sessionInvalidated || !transport?.connected) return undefined;
             source?.assertCurrent(); return transport.currentSessionIdentity();

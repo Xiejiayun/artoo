@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -129,6 +129,7 @@ function controlledPackage(root, observation) {
   for (const file of ["cli.mjs", "verify.mjs", "platforms.mjs", "local-config.mjs", "managed.mjs", "onboarding.mjs", "team-config.mjs"])
     copyFileSync(join(source, file), join(bin, file === "cli.mjs" ? "artood.mjs" : file));
   const files = new Map([["artood.mjs", `import {readFileSync,writeFileSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
 export function loadConfigFromEnv(env) {
   if(env.ARTOO_VERIFICATION_PROFILES_FILE && readFileSync(env.ARTOO_VERIFICATION_PROFILES_FILE,'utf8')==='reject')
     throw Error('Controlled profile qualification failed');
@@ -136,12 +137,15 @@ export function loadConfigFromEnv(env) {
 }
 export async function runDaemonEntrypoint(env) {
   loadConfigFromEnv(env);
+  const child=spawnSync(process.execPath,['-e','process.stdout.write(JSON.stringify({home:process.env.CODEX_HOME,provider:!!process.env.ARTOO_CODEX_PROVIDER_KEY}))'],{encoding:'utf8',windowsHide:true});
+  if(child.error||child.status!==0) throw Error('Controlled model environment probe failed');
   writeFileSync(${JSON.stringify(observation)}, JSON.stringify({node:env.ARTOO_NODE_ID,inherited:process.env.ARTOO_NODE_URL??null,entry:import.meta.url,
     research:env.ARTOO_RESEARCH_ENABLED,receipts:env.ARTOO_RESEARCH_RECEIPTS_DIR,profiles:env.ARTOO_VERIFICATION_PROFILES_FILE,
     initialize:env.ARTOO_INITIALIZE_REPOSITORY,native:env.ARTOO_WINDOWS_PROCESS_BUNDLE,pin:env.ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256,
     model:env.ARTOO_CODEX_MODEL,provider:env.ARTOO_CODEX_PROVIDER_URL,providerSelected:!!env.ARTOO_CODEX_PROVIDER_KEY,
     providerInherited:!!env.ARTOO_CODEX_PROVIDER_KEY && process.env.ARTOO_CODEX_PROVIDER_KEY===env.ARTOO_CODEX_PROVIDER_KEY,
     providerInArgv:!!env.ARTOO_CODEX_PROVIDER_KEY && process.argv.some(arg=>arg.includes(env.ARTOO_CODEX_PROVIDER_KEY)),
+    codexHome:env.CODEX_HOME,modelEnvironment:JSON.parse(child.stdout),
     inheritedSettings:Object.keys(process.env).filter(key=>/^ARTOO_|^(?:NODE_OPTIONS|NODE_PATH)$/i.test(key))}));
   const timer=setInterval(()=>{},1000);
   const node={stop:async()=>clearInterval(timer)};
@@ -367,6 +371,142 @@ function providerFixture(t, options) {
   writeFileSync(fixture.file, JSON.stringify(fixture.configuration));
   return { ...fixture, keyFile };
 }
+
+function codexHomeFixture(t, options) {
+  const fixture = providerFixture(t, options), home = join(dirname(fixture.keyFile), "codex-home");
+  mkdirSync(home, { mode: 0o700 });
+  fixture.configuration.codex.home_directory = home;
+  writeFileSync(fixture.file, JSON.stringify(fixture.configuration));
+  return { ...fixture, home };
+}
+
+test("Codex home selection requires an empty protected physical directory outside all agent roots", async t => {
+  const fixture = codexHomeFixture(t), roots = [fixture.workspace];
+  const value = home_directory => ({ version: 1, codex: { home_directory } });
+  for (const path of ["relative", "", 42, `${fixture.home}\n`, fixture.keyFile])
+    assert.throws(() => validateTeamConfiguration(value(path), roots));
+  if (process.platform === "win32") assert.throws(() => validateTeamConfiguration(value("\\\\server\\share\\home"), roots), /local disk/);
+  assert.throws(() => validateTeamConfiguration(value(fixture.workspace), roots), /outside all agent/);
+  const nestedRoot = join(fixture.home, "workspace"); mkdirSync(nestedRoot, { mode: 0o700 });
+  assert.throws(() => validateTeamConfiguration(value(fixture.home), [nestedRoot]), /outside all agent/);
+  rmdirSync(nestedRoot);
+  const alias = join(fixture.control, "home-alias"); symlinkSync(fixture.home, alias, process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() => validateTeamConfiguration(value(alias), roots), /physical files/);
+  const config = join(fixture.home, "config.toml"); writeFileSync(config, "# operator fixture, must not be imported", { mode: 0o600 });
+  const options = { args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory, output: () => {} };
+  await assert.rejects(runCli(options), /newly selected.*empty/);
+  assert.equal(existsSync(join(fixture.state, "team-config.json")), false);
+  assert.equal(readFileSync(config, "utf8"), "# operator fixture, must not be imported");
+  rmSync(config); await runCli(options);
+  assert.deepEqual(readdirSync(fixture.home), [], "Configure does not write or copy home contents.");
+  writeFileSync(join(fixture.home, "runtime-state.json"), "{}", { mode: 0o600 });
+  await runCli(options); // An already saved home can retain the CLI's state.
+  assert.equal(JSON.parse(readFileSync(join(fixture.state, "team-config.json"), "utf8")).codex.home_directory, fixture.home);
+});
+
+test("saved Codex home rejects linked, overly deep or unprotected contents before restart", async t => {
+  const fixture = codexHomeFixture(t);
+  await runCli({ args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory, output: () => {} });
+  const load = () => managedConnectionEnvironment(connection(fixture.workspace), {}, fixture.state, readRelease(fixture.packageDirectory));
+  const linked = join(fixture.home, "outside"); symlinkSync(fixture.control, linked, process.platform === "win32" ? "junction" : "dir");
+  assert.throws(load, /without links/); rmSync(linked);
+  const source = join(dirname(fixture.home), "synthetic-private"), hard = join(fixture.home, "hard-link");
+  writeFileSync(source, "synthetic, never read", { mode: 0o600 }); linkSync(source, hard);
+  assert.throws(load, /single-link/); rmSync(hard);
+  let deep = fixture.home;
+  for (let i = 0; i < 33; i++) { deep = join(deep, "d"); mkdirSync(deep, { mode: 0o700 }); }
+  assert.throws(load, /bounded state inspection/);
+  assert.ok(join(fixture.home, "d").startsWith(fixture.home + sep)); rmSync(join(fixture.home, "d"), { recursive: true });
+  const state = join(fixture.home, "state.json"); writeFileSync(state, "{}", { mode: 0o600 });
+  if (process.platform !== "win32") {
+    chmodSync(state, 0o644); assert.throws(load, /private to the current user/); assert.equal(statSync(state).mode & 0o777, 0o644);
+  } else {
+    const result = spawnSync(join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe"),
+      ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';" +
+        "$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()));$acl=Get-Acl -LiteralPath $p;" +
+        "$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'),'Write','Allow'));" +
+        "[IO.File]::SetAccessControl($p,$acl)"], { input: Buffer.from(state).toString("base64"), encoding: "utf8", windowsHide: true,
+        env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath")) });
+    assert.ifError(result.error); assert.equal(result.status, 0, result.stderr);
+    assert.throws(load, /private, trusted Windows permissions; no ACL was changed/);
+    for (const descriptor of ["null", "generic"]) {
+      const acl = spawnSync(join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe"),
+        ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';" +
+          "$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()));$owner=[Security.Principal.WindowsIdentity]::GetCurrent().User;" +
+          "$acl=[Security.AccessControl.FileSecurity]::new();" + (descriptor === "null"
+            ? "$flags=[Security.AccessControl.ControlFlags]::DiscretionaryAclPresent -bor [Security.AccessControl.ControlFlags]::DiscretionaryAclProtected;" +
+              "$raw=[Security.AccessControl.RawSecurityDescriptor]::new($flags,$owner,$null,$null,$null);$bytes=[byte[]]::new($raw.BinaryLength);$raw.GetBinaryForm($bytes,0);" +
+              "$acl.SetSecurityDescriptorBinaryForm($bytes,[Security.AccessControl.AccessControlSections]::Access);"
+            : "$acl.SetSecurityDescriptorSddlForm('D:P(A;;FA;;;'+$owner.Value+')(A;;GA;;;WD)',[Security.AccessControl.AccessControlSections]::Access);") +
+          "[IO.File]::SetAccessControl($p,$acl)"], { input: Buffer.from(state).toString("base64"), encoding: "utf8", windowsHide: true,
+          env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath")) });
+      assert.ifError(acl.error); assert.equal(acl.status, 0, acl.stderr);
+      assert.throws(load, /private, trusted Windows permissions; no ACL was changed/, descriptor);
+    }
+  }
+  assert.equal(readFileSync(state, "utf8"), "{}");
+});
+
+test("saved Codex home reaches actual controlled model children after background restart and foreground start", { timeout: 90_000 }, async t => {
+  const fixture = codexHomeFixture(t, { stop: true });
+  const operatorHome = join(dirname(fixture.home), "operator-home"); mkdirSync(operatorHome, { mode: 0o700 });
+  const operatorConfig = join(operatorHome, "config.toml"), operatorAuth = join(operatorHome, "auth.json");
+  writeFileSync(operatorConfig, "# unchanged operator configuration", { mode: 0o600 });
+  writeFileSync(operatorAuth, "synthetic-operator-credential", { mode: 0o600 });
+  const priorHome = process.env.CODEX_HOME;
+  await runCli({ args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory, output: () => {} });
+  assert.equal(process.env.CODEX_HOME, priorHome);
+  const env = { ...process.env, ARTOO_HOME: fixture.state, CODEX_HOME: operatorHome };
+  const selected = managedConnectionEnvironment(connection(fixture.workspace), { ...env, codex_home: "must-not-survive" }, fixture.state, readRelease(fixture.packageDirectory));
+  assert.equal(selected.CODEX_HOME, fixture.home); assert.equal(selected.codex_home, undefined);
+  const check = () => {
+    const observed = JSON.parse(readFileSync(fixture.observation, "utf8"));
+    assert.equal(observed.codexHome, fixture.home); assert.equal(observed.modelEnvironment.home, fixture.home);
+    assert.equal(observed.modelEnvironment.provider, true); assert.equal(observed.providerInArgv, false);
+    assert.doesNotMatch(readFileSync(fixture.observation, "utf8"), /fixture-provider-credential|synthetic-operator-credential/);
+    return observed;
+  };
+  const first = await startManaged({ directory: fixture.state, packageDirectory: fixture.packageDirectory, env });
+  const retained = dirname(dirname(fileURLToPath(check().entry))); await stopManaged(fixture.state);
+  writeFileSync(join(fixture.home, "runtime-state.json"), "{}", { mode: 0o600 });
+  const second = await startManaged({ directory: fixture.state, packageDirectory: retained, env });
+  assert.notEqual(first.pid, second.pid); check(); await stopManaged(fixture.state);
+  const child = spawn(process.execPath, [join(retained, "bin", "artood.mjs"), "start", "--foreground"], { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  let output = ""; child.stdout.on("data", bytes => { output += bytes; }); child.stderr.on("data", bytes => { output += bytes; });
+  const closed = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal })); });
+  let ready = false;
+  for (let attempt = 0; attempt < 150; attempt++) {
+    if ((await managedStatus(fixture.state)).status === "running") { ready = true; break; }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(ready, true, output); check(); await stopManaged(fixture.state); assert.deepEqual(await closed, { code: 0, signal: null });
+  assert.equal(process.env.CODEX_HOME, priorHome); assert.equal(env.CODEX_HOME, operatorHome);
+  assert.deepEqual(readdirSync(fixture.home), ["runtime-state.json"]);
+  assert.equal(readFileSync(operatorConfig, "utf8"), "# unchanged operator configuration");
+  assert.equal(readFileSync(operatorAuth, "utf8"), "synthetic-operator-credential");
+  writeFileSync(fixture.file, JSON.stringify({ version: 1 }));
+  await runCli({ args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: retained, output: () => {} });
+  assert.equal(managedConnectionEnvironment(connection(fixture.workspace), env, fixture.state, readRelease(retained)).CODEX_HOME, operatorHome);
+});
+
+test("daemon Codex home is restored after startup failure, normal stop and failed stop", async t => {
+  const previous = process.env.CODEX_HOME;
+  t.after(() => { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; });
+  for (const original of [undefined, "controlled-original-home"]) {
+    if (original === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = original;
+    await assert.rejects(launchManagedRuntime({ CODEX_HOME: "controlled-selected-home" }, async () => {
+      assert.equal(process.env.CODEX_HOME, "controlled-selected-home"); throw Error("controlled startup failure");
+    }), /controlled startup failure/);
+    assert.equal(process.env.CODEX_HOME, original);
+    for (const fail of [false, true]) {
+      const node = await launchManagedRuntime({ CODEX_HOME: "controlled-selected-home" }, async () => ({ stop: async () => {
+        assert.equal(process.env.CODEX_HOME, "controlled-selected-home"); if (fail) throw Error("controlled stop failure");
+      } }));
+      if (fail) await assert.rejects(node.stop(), /controlled stop failure/); else await node.stop();
+      assert.equal(process.env.CODEX_HOME, original);
+    }
+  }
+});
 
 test("Codex settings accept only an explicit safe provider and private credential reference", async t => {
   const fixture = providerFixture(t), roots = [fixture.workspace];

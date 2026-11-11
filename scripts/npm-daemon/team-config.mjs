@@ -1,5 +1,6 @@
-import { lstatSync, realpathSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { lstatSync, readdirSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertPrivateProviderKeyFile, atomicPrivateFile, connectionEnvironment, containsPath, loadConnection, protectDirectory, readPrivateFile, stateDirectory } from "./local-config.mjs";
 import { disableOptionalWebSocketAddons, packagedWindowsProcessEnvironment } from "./verify.mjs";
@@ -23,11 +24,77 @@ function physicalPath(path, kind, roots) {
   return resolved;
 }
 
+/** Inspect selected state without copying credentials, changing ACLs or reading its contents. */
+function codexHome(path, roots) {
+  if (process.platform === "win32" && (typeof path !== "string" || !/^[a-z]:[\\/]/i.test(path)))
+    throw Error("Codex home_directory must be an absolute local disk directory.");
+  const home = physicalPath(path, "directory", roots), entries = [];
+  let pathBytes = 0;
+  const visit = (path, depth) => {
+    if (depth > 32 || entries.length >= 2048 || (pathBytes += Buffer.byteLength(path)) > 1024 * 1024)
+      throw Error("Codex home_directory exceeds the bounded state inspection limit.");
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || (!stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1))
+      || normalize(realpathSync.native(path)) !== normalize(path))
+      throw Error("Codex home_directory contents must be physical directories and single-link files without links.");
+    entries.push({ path, stat });
+    if (stat.isDirectory()) for (const name of readdirSync(path).sort()) visit(join(path, name), depth + 1);
+  };
+  visit(home, 0);
+  const ancestors = [];
+  for (let cursor = dirname(home); ; cursor = dirname(cursor)) {
+    ancestors.push(cursor);
+    if (dirname(cursor) === cursor) break;
+  }
+  if (process.platform !== "win32") {
+    for (const { stat } of entries) if (stat.uid !== process.getuid() || (stat.mode & 0o077))
+      throw Error("Codex home_directory and its contents must be private to the current user (directories 0700, files 0600).");
+    for (const path of ancestors) {
+      const stat = lstatSync(path);
+      if (![0, process.getuid()].includes(stat.uid) || (stat.mode & 0o022))
+        throw Error("Codex home_directory ancestors must have trusted ownership and no group or other write permission.");
+    }
+  } else {
+    // Same trusted Windows principals and raw-ACE checks as private provider keys.
+    // Inspect the bounded tree once per configuration/start, never per model task.
+    const script = "$ErrorActionPreference='Stop';" +
+      "$v=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))|ConvertFrom-Json;" +
+      "if(([IO.DriveInfo]::new([IO.Path]::GetPathRoot($v.home))).DriveType -ne 'Fixed'){throw 'Local fixed disk required'};" +
+      "$trusted=@([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');" +
+      "$parentMask=[Security.AccessControl.FileSystemRights]'DeleteSubdirectoriesAndFiles,Delete,ChangePermissions,TakeOwnership,WriteAttributes,WriteExtendedAttributes';" +
+      "foreach($item in $v.paths){$acl=Get-Acl -LiteralPath $item.path;$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;" +
+      "if($trusted -notcontains $owner){throw 'Untrusted home owner'};" +
+      "$raw=[Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0);" +
+      "if(-not ($raw.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -or $null -eq $raw.DiscretionaryAcl){throw 'Missing home DACL'};" +
+      "foreach($ace in $raw.DiscretionaryAcl){" +
+      "if($ace.AceType -notin @([Security.AccessControl.AceType]::AccessAllowed,[Security.AccessControl.AceType]::AccessDenied)){throw 'Unsupported home ACE'};" +
+      "if($ace.AceType -eq [Security.AccessControl.AceType]::AccessAllowed -and -not ([int]$ace.AceFlags -band [int][Security.AccessControl.AceFlags]::InheritOnly) " +
+      "-and $trusted -notcontains $ace.SecurityIdentifier.Value -and ([long]$ace.AccessMask -band [long]4026531840)){throw 'Untrusted generic home rights'}};" +
+      "$mask=if($item.ancestor){$parentMask}else{[Security.AccessControl.FileSystemRights]::FullControl};" +
+      "foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){" +
+      "if($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) " +
+      "-and $trusted -notcontains $rule.IdentityReference.Value -and ($rule.FileSystemRights -band $mask)){throw 'Home permissions are not private'}}}";
+    const input = { home, paths: [...entries.map(({ path }) => ({ path, ancestor: false })), ...ancestors.map(path => ({ path, ancestor: true }))] };
+    const result = spawnSync(join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoProfile", "-NonInteractive", "-Command", script], { input: Buffer.from(JSON.stringify(input)).toString("base64"),
+        encoding: "utf8", windowsHide: true, timeout: 15_000, maxBuffer: 128 * 1024,
+        env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath")) });
+    if (result.error || result.status !== 0)
+      throw Error("Codex home_directory, contents and ancestors must have private, trusted Windows permissions; no ACL was changed.");
+  }
+  for (const { path, stat } of entries) {
+    const after = lstatSync(path);
+    if (after.dev !== stat.dev || after.ino !== stat.ino || after.isSymbolicLink() || after.mode !== stat.mode
+      || normalize(realpathSync.native(path)) !== normalize(path)) throw Error("Codex home_directory changed during inspection.");
+  }
+  return home;
+}
+
 function codexConfiguration(value, roots) {
   if (!value || typeof value !== "object" || Array.isArray(value)
-    || Object.keys(value).some(key => !["model", "provider_url", "provider_key_file"].includes(key))
+    || Object.keys(value).some(key => !["model", "provider_url", "provider_key_file", "home_directory"].includes(key))
     || (value.model !== undefined && (typeof value.model !== "string" || !value.model.trim() || value.model.length > 200 || /[\u0000-\u001f\u007f]/u.test(value.model))))
-    throw Error("Invalid Codex configuration. Use only model, provider_url and provider_key_file.");
+    throw Error("Invalid Codex configuration. Use only model, provider_url, provider_key_file and home_directory.");
   if (value.provider_url !== undefined) {
     let url;
     try { url = new URL(value.provider_url); } catch { throw Error("Codex provider_url must be an HTTPS or loopback HTTP URL."); }
@@ -44,6 +111,7 @@ function codexConfiguration(value, roots) {
   }
   return { ...(value.model !== undefined ? { model: value.model.trim() } : {}),
     ...(value.provider_url !== undefined ? { provider_url: value.provider_url } : {}),
+    ...(value.home_directory !== undefined ? { home_directory: codexHome(value.home_directory, roots) } : {}),
     ...(keyFile ? { provider_key_file: keyFile } : {}) };
 }
 
@@ -83,6 +151,7 @@ export function teamConfigurationEnvironment(configuration, release) {
     ...(configuration.initialize_repository === true ? { ARTOO_INITIALIZE_REPOSITORY: "1" } : {}),
     ...(configuration.codex?.model ? { ARTOO_CODEX_MODEL: configuration.codex.model } : {}),
     ...(configuration.codex?.provider_url ? { ARTOO_CODEX_PROVIDER_URL: configuration.codex.provider_url } : {}),
+    ...(configuration.codex?.home_directory ? { CODEX_HOME: configuration.codex.home_directory } : {}),
   };
 }
 
@@ -106,7 +175,8 @@ export function managedConnectionEnvironment(connection, base, directory, releas
   try { lstatSync(path); }
   catch (error) { if (error.code !== "ENOENT") throw error; present = false; }
   const configuration = present ? readConfiguration(path, connection.roots) : { version: 1 };
-  const cleanBase = Object.fromEntries(Object.entries(base).filter(([key]) => !/^(?:NODE_OPTIONS|NODE_PATH)$/i.test(key)));
+  const cleanBase = Object.fromEntries(Object.entries(base).filter(([key]) => !/^(?:NODE_OPTIONS|NODE_PATH)$/i.test(key)
+    && !(configuration.codex?.home_directory && /^CODEX_HOME$/i.test(key))));
   return { ...connectionEnvironment(connection, cleanBase), ...teamConfigurationEnvironment(configuration, release), ...providerKey(configuration) };
 }
 
@@ -120,6 +190,16 @@ export async function configureTeam({ args, env, release, output = () => {} }) {
   // authority on later starts; task-writable or linked input is never imported.
   const configuration = readConfiguration(args[1], connection.roots);
   physicalPath(directory, "directory", connection.roots);
+  const home = configuration.codex?.home_directory;
+  if (home && readdirSync(home).length) {
+    // Only the already saved selection may contain runtime-created state. A new
+    // selection cannot silently import an operator's global tools or credentials.
+    let saved;
+    try { saved = JSON.parse(readPrivateFile(join(directory, filename)).toString("utf8")); }
+    catch (error) { if (error.code !== "ENOENT") throw Error("Saved team settings could not qualify the existing Codex home_directory."); }
+    if (typeof saved?.codex?.home_directory !== "string" || normalize(saved.codex.home_directory) !== normalize(home))
+      throw Error("A newly selected Codex home_directory must be empty; do not copy global settings or credentials.");
+  }
   const configured = { ...connectionEnvironment(connection, env), ...teamConfigurationEnvironment(configuration, release),
     // The parser needs only credential presence. Configure never reads the key
     // or authenticates against a provider; the worker reads it on each start.
