@@ -1,5 +1,17 @@
 # Agent Team product development
 
+Stage reports are written before the author process exits. They may record actual
+preview observations with their diagnostic scope and limitations; they cannot
+embed a final receipt for their own exact source version. The node produces
+that final receipt after the author exits and keeps it outside the measured
+workspace. Independent review must inspect the current bound receipt, exact source
+and actual requirement coverage. Missing final verification, missing coverage and
+false claims still block acceptance, but an honest author report does not fail
+solely because it lacks its own final request ID, source digest or bundle ID.
+Those bindings remain in node-owned `run.verification` and `review_subject`.
+Planning must not add a self-referential report requirement; a requested final
+receipt belongs in a node-owned attachment outside the measured source.
+
 The opt-in native Windows application development increment is documented in
 [Application development verification](application-development-verification.md),
 including local configuration, validation status and unsupported publication and

@@ -4,6 +4,7 @@ import type { ProcessOutputFormat } from "./structured-output.js";
 import { fileURLToPath } from "node:url";
 import type { ResearchOptions } from "./research.js";
 import type { PreparedProductBootstrapGit } from "./product-bootstrap-git.js";
+import { PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE } from "@artoo/domain";
 
 /**
  * Runtime presets: ready-to-register {@link RuntimeRegistration}s for the
@@ -46,7 +47,7 @@ const DEFAULT_ARTIFACTS: ArtifactSpec[] = [{ type: "patch", path: "changes.patch
 const WORKSPACE_TOOL_NAMES = ["context", "list", "read", "mkdir", "write", "edit", "remove", "verify", "read_evidence"] as const;
 const EVIDENCE_TOOL_NAMES = ["context", "read_evidence"] as const;
 const READ_ONLY_TOOL_NAMES = ["context", "list", "read", "read_evidence"] as const;
-const EVIDENCE_PROMPT = " Use artoo_workspace context and read_evidence to inspect node-granted reports and actual screenshot images. Read only the references in the bound verification observation. Report their actual stage, cases and viewports; preview evidence is diagnostic, not final acceptance. Each image supports only the region it actually shows. A final-step viewport image does not establish that content below the fold or the entire page was visually inspected; do not infer a capture mode for older or unspecified evidence. Raw diagnostic output is repair information. Without checks[].observation the execution scope is unknown: never infer it from success logs or the design's validation_cases. Missing coverage remains missing. Do not copy evidence into the measured product workspace.";
+const EVIDENCE_PROMPT = " Use artoo_workspace context and read_evidence to inspect node-granted reports and actual screenshot images. Read only the references in the bound verification observation. Report their actual stage, cases and viewports; preview evidence is diagnostic, not final acceptance. Each image supports only the region it actually shows. A final-step viewport image does not establish that content below the fold or the entire page was visually inspected; do not infer a capture mode for older or unspecified evidence. Raw diagnostic output is repair information. Without checks[].observation the execution scope is unknown: never infer it from success logs or the design's validation_cases. Missing coverage remains missing. Do not copy evidence into the measured product workspace. " + PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE + " ";
 
 /** Approval is limited to the broker's named capabilities, not arbitrary MCP tools or shell commands. */
 function codexProductToolPolicy(server: "artoo_workspace" | "artoo_research", names: readonly string[]): string[] {
