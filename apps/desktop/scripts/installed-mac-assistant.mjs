@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { assistantHash, assistantStartupReceiptPath, assistantFailureReceiptPath } from "../../../scripts/fixtures/assistant-conversation.mjs";
+import { openInstalledNewAgentForm, openInstalledSettings, selectInstalledProject } from "./installed-ui-navigation.mjs";
 
 export const macAssistantImageNames = ["macos-assistant-waiting.png", "macos-assistant-failed.png", "macos-assistant-first-answer.png", "macos-assistant-followup.png", "macos-assistant-cancelled.png"];
 
@@ -127,7 +128,7 @@ export async function runInstalledMacAssistant({ page, workspace, configurationP
     const connection = await page.evaluate(() => window.artooDesktop.getConnection());
     fixture.computer_id = connection.computerId; assert.ok(fixture.computer_id);
     const worker = async (start) => {
-      await page.getByRole("link", { name: "Settings", exact: true }).click();
+      await openInstalledSettings(page);
       const target = start ? "running" : "stopped";
       const current = await page.evaluate(() => window.artooDesktop.daemonStatus());
       if (current.state !== target) {
@@ -143,18 +144,17 @@ export async function runInstalledMacAssistant({ page, workspace, configurationP
       }, { timeout: 65_000 }).toBe(true);
     };
     await worker(true);
-    await page.getByRole("link", { name: "Computers", exact: true }).click();
-    if (!await page.getByLabel("Agent runtime", { exact: true }).isVisible()) await page.getByText("Register an agent workspace", { exact: true }).click();
-    await page.getByLabel("Agent runtime", { exact: true }).selectOption("codex");
-    await page.getByLabel("Agent display name", { exact: true }).fill(agentName);
-    await page.getByLabel("Agent workspace path", { exact: true }).fill(fixture.workspace_root);
+    const instanceForm = await openInstalledNewAgentForm(page, fixture.computer_id);
+    await instanceForm.getByLabel("Agent runtime", { exact: true }).selectOption("codex");
+    await instanceForm.getByLabel("Agent display name", { exact: true }).fill(agentName);
+    await instanceForm.getByLabel("Agent workspace path", { exact: true }).fill(fixture.workspace_root);
     const registered = responseTo(`/computers/${fixture.computer_id}/instances`);
-    await page.getByRole("button", { name: "Register agent", exact: true }).click();
+    await instanceForm.getByRole("button", { name: "Create instance", exact: true }).click();
     const { agent_instance: instance } = await consume(registered);
     assert.equal(instance.computer_id, fixture.computer_id); assert.equal(instance.runtime, "codex"); assert.equal(instance.workspace_root, fixture.workspace_root);
     fixture.agent_instance_id = instance.id;
 
-    await page.getByRole("link", { name: "Channels", exact: true }).click();
+    await selectInstalledProject(page, "artoo", "thread");
     await page.getByRole("button", { name: "New channel", exact: true }).click();
     await page.getByLabel("Channel name", { exact: true }).fill(channelName);
     await page.getByLabel("Channel description", { exact: true }).fill("Installed-client direct assistant verification using a deterministic subprocess fixture");
@@ -167,7 +167,7 @@ export async function runInstalledMacAssistant({ page, workspace, configurationP
     writeFileSync(configurationPath, JSON.stringify(fixture), { mode: 0o600 });
     Object.assign(evidence, { room_id: fixture.room_id, computer_id: fixture.computer_id, agent_instance_id: fixture.agent_instance_id });
     const openChannel = async () => {
-      await page.getByRole("link", { name: "Channels", exact: true }).click();
+      await selectInstalledProject(page, "artoo", "thread");
       await page.getByRole("navigation", { name: "Channel list", exact: true }).getByRole("button", { name: `# ${channelName}`, exact: true }).click();
       await expect(page.getByRole("heading", { name: `# ${channelName}`, exact: true })).toBeVisible();
     };

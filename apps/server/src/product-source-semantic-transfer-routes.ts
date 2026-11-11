@@ -5,7 +5,8 @@ import { PRODUCT_SOURCE_TRANSFER_CHECKSUM_HEADER_V1, PRODUCT_SOURCE_TRANSFER_REQ
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { blobChecksum, readContentAddressedBlob, writeContentAddressedBlob } from "./content-addressed-blob.js";
+import { blobChecksum, readContentAddressedBlob, writeContentAddressedBlob, type ContentAddressedBlobSource } from "./content-addressed-blob.js";
+import { ContentAddressedBlobIntegrityError, ContentAddressedBlobNotFoundError } from "@artoo/storage";
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import { resolveNodeToken } from "./services/device-service.js";
@@ -57,7 +58,7 @@ export function assertSemanticCapsuleResearch(bytes: Buffer, request: ProductSou
   catch { throw AppError.validation("Research source metadata differs from its authenticated export provenance"); }
 }
 
-export function registerProductSourceSemanticTransferRoutes(app: FastifyInstance, ctx: ServerContext, artifactDir: string): void {
+export function registerProductSourceSemanticTransferRoutes(app: FastifyInstance, ctx: ServerContext, artifactStore: ContentAddressedBlobSource): void {
   void app.register(async scoped => {
     scoped.removeContentTypeParser("application/octet-stream");
     scoped.addContentTypeParser("application/octet-stream", { parseAs: "buffer", bodyLimit: PRODUCT_SOURCE_TRANSFER_MAX_BYTES_V1 },
@@ -77,7 +78,7 @@ export function registerProductSourceSemanticTransferRoutes(app: FastifyInstance
         throw AppError.validation("Semantic product source capsule bytes differ from the immutable request");
       }
       assertSemanticCapsuleResearch(req.body, request);
-      await writeContentAddressedBlob(artifactDir, req.body);
+      await writeContentAddressedBlob(artifactStore, req.body);
       const fresh = await nodeIdentity(ctx, req);
       const completed = await inspectProductSourceSemanticTransferForNode(ctx, binding.id, binding.digest, fresh, "upload", true);
       void reply.header("cache-control", "private, no-store");
@@ -88,8 +89,13 @@ export function registerProductSourceSemanticTransferRoutes(app: FastifyInstance
       const { request } = await inspectProductSourceSemanticTransferForNode(ctx, binding.id, binding.digest, identity, "download");
       const source = request.byte_request.source;
       let bytes: Buffer;
-      try { bytes = await readContentAddressedBlob(artifactDir, source.capsule_digest, source.capsule_bytes); }
-      catch { throw AppError.conflict("Semantic product source content is missing or differs from its stored digest"); }
+      try { bytes = await readContentAddressedBlob(artifactStore, source.capsule_digest, source.capsule_bytes); }
+      catch (error) {
+        if (error instanceof ContentAddressedBlobNotFoundError || error instanceof ContentAddressedBlobIntegrityError) {
+          throw AppError.conflict("Semantic product source content is missing or differs from its stored digest");
+        }
+        throw error;
+      }
       assertSemanticCapsuleResearch(bytes, request);
       const fresh = await nodeIdentity(ctx, req);
       await inspectProductSourceSemanticTransferForNode(ctx, binding.id, binding.digest, fresh, "download");

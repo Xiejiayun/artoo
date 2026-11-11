@@ -1,0 +1,33 @@
+# Only source/build inputs are sent to ACR. Private operator configuration must
+# stay outside the checkout, and never enters a build context or image layer.
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.base.json
+!apps/
+!apps/**
+!packages/
+!packages/**
+!scripts/
+!scripts/build-preview.mjs
+**/node_modules
+**/dist
+**/.artoo
+**/.git
+**/artifacts
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.log
+**/*.tsbuildinfo
+**/test-results*
+**/playwright-report
+**/native-dist
+apps/desktop/release
+apps/desktop/renderer
+apps/ios/Artoo.xcodeproj

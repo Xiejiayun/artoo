@@ -23,7 +23,7 @@ import type {
   Task,
   Message,
   Approval,
-  Goal, Plan, Checkpoint, TaskDependency, FileLease, Device, DevicePlatform,
+  Goal, Plan, Checkpoint, TaskDependency, FileLease, Device, DevicePlatform, PairingCode,
   GoalAutomation, CreateAutonomousGoalRequest, ProductRelease,
   CreateGoalRequest, ProposePlanRequest, CreateDependencyRequest, InstallSkillRequest, SkillInstall,
   DecisionRecord, HandoffRecord, BlockerRecord, CreateDecisionRequest, CreateHandoffRequest, CreateBlockerRequest,
@@ -265,11 +265,12 @@ export class ApiClient {
   listLeases(projectId: string): Promise<{ leases: FileLease[] }> { return this.request("GET", `/projects/${encodeURIComponent(projectId)}/leases`); }
   installSkill(body: InstallSkillRequest, key: string): Promise<{ skill: SkillInstall }> { return this.request("POST", "/skills/install", { body, idempotencyKey: key }); }
   listDevices(): Promise<{ devices: Device[] }> { return this.request("GET", "/devices"); }
-  registerAgent(computerId: string, body: { runtime: string; workspace_root: string; display_name?: string; capabilities?: string[] }, key: string): Promise<unknown> { return this.request("POST", `/computers/${encodeURIComponent(computerId)}/instances`, { body, idempotencyKey: key }); }
+  registerAgent(computerId: string, body: { runtime: string; workspace_root: string; agent_id?: string; display_name?: string; capabilities?: string[] }, key: string): Promise<unknown> { return this.request("POST", `/computers/${encodeURIComponent(computerId)}/instances`, { body, idempotencyKey: key }); }
   setAgentEnabled(id: string, enabled: boolean, key: string): Promise<unknown> { return this.request("PATCH", `/agent-instances/${encodeURIComponent(id)}`, { body: { enabled }, idempotencyKey: key }); }
   setAgentWorktreeBase(id: string, body: WorktreeBaseConfiguration): Promise<{ agent_instance: AgentInstance }> { return this.request("PATCH", `/agent-instances/${encodeURIComponent(id)}/worktree-workspace-base`, { body }); }
   clearAgentWorktreeBase(id: string): Promise<{ agent_instance: AgentInstance }> { return this.request("DELETE", `/agent-instances/${encodeURIComponent(id)}/worktree-workspace-base`); }
-  createPairing(platform: DevicePlatform, key: string): Promise<{ code: string; pairing: { expires_at: string } }> { return this.request("POST", "/devices/pairings", { body: { intended_platform: platform }, idempotencyKey: key }); }
+  createPairing(platform: DevicePlatform, key: string): Promise<{ code: string; pairing: { id?: string; expires_at: string } }> { return this.request("POST", "/devices/pairings", { body: { intended_platform: platform }, idempotencyKey: key }); }
+  getPairingStatus(id: string): Promise<{ pairing: PairingCode; device: Device | null }> { return this.request("GET", `/devices/pairings/${encodeURIComponent(id)}`); }
   revokeDevice(id: string, key: string): Promise<unknown> { return this.request("POST", `/devices/${encodeURIComponent(id)}/revoke`, { idempotencyKey: key }); }
   enrollDevice(id: string, key: string): Promise<{ device_id: string; computer_id: string; created: boolean }> { return this.request("POST", `/devices/${encodeURIComponent(id)}/enroll`, { body: {}, idempotencyKey: key }); }
   async downloadArtifact(id: string): Promise<Blob> {

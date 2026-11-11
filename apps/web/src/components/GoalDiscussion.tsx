@@ -37,7 +37,7 @@ export function GoalDiscussion({ goal }: { goal: Goal }): React.ReactNode {
     <div className="insights-section-heading"><Users size={17} aria-hidden="true" /><h3>Agent planning</h3></div>
     <p className="insights-help">Build a plan together. Choose agents to propose and challenge the approach, then review their plan before creating tasks.</p>
     <ActionError error={bootstrap.error ?? sessions.error ?? channels.error ?? start.error ?? action.error} />
-    {canProposePlan(goal.status, !!goal.current_plan_id) && <form className="u-stack-sm insights-discussion-form" onSubmit={(event) => {
+    {canProposePlan(goal.status, !!goal.current_plan_id) && <details className="insights-planning-setup"><summary>Choose planning agents</summary><form className="u-stack-sm insights-discussion-form" onSubmit={(event) => {
       event.preventDefault(); if (active || start.isPending || unavailable || invalidBounds || members.length < 2 || members.some((member) => !member.role)) return;
       start.mutate({ participants: members, rounds, max_minutes: minutes, ...(roomId ? { room_id: roomId } : {}) });
     }}>
@@ -63,7 +63,7 @@ export function GoalDiscussion({ goal }: { goal: Goal }): React.ReactNode {
       {unavailable && <p className="insights-warning" role="status">A selected agent is no longer available. Clear the selection and choose available agents.</p>}
       {unavailable && <Button size="sm" disabled={active || start.isPending} onClick={() => setSelected({})}>Clear agent selection</Button>}
       <Button type="submit" variant="primary" iconLeft={Sparkles} loading={start.isPending} disabled={active || sessions.isLoading || !!sessions.error || unavailable || invalidBounds || members.length < 2 || members.some((member) => !member.role)}>Start planning discussion</Button>
-    </form>}
+    </form></details>}
     {sessions.isLoading && <p role="status">Loading discussions…</p>}
     {sessions.data?.discussions.map((discussion) => <article className="insights-discussion-session u-stack-sm" key={discussion.id}>
       <div className="action-row"><strong>Discussion · {new Date(discussion.created_at).toLocaleString()}</strong><Badge tone={discussion.status === "ready" ? "success" : discussion.status === "failed" ? "warning" : "neutral"}>{discussion.status}</Badge></div>

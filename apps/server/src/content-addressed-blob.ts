@@ -1,37 +1,34 @@
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, rename, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { FileSystemContentAddressedBlobStore, type ContentAddressedBlobStore } from "@artoo/storage";
+
+/** Local directories remain supported by existing development and test callers. */
+export type ContentAddressedBlobSource = string | ContentAddressedBlobStore;
+export interface ArtifactStorageOptions {
+  artifactStore?: ContentAddressedBlobStore;
+  artifactDir?: string;
+}
+
+export function resolveArtifactStore(options: ArtifactStorageOptions): ContentAddressedBlobStore | undefined {
+  return options.artifactStore ?? (options.artifactDir ? new FileSystemContentAddressedBlobStore(options.artifactDir) : undefined);
+}
+
+export function requireArtifactStore(options: ArtifactStorageOptions): ContentAddressedBlobStore {
+  const store = resolveArtifactStore(options);
+  if (!store) throw new Error("A configured artifact store is required");
+  return store;
+}
+
+function storeFor(source: ContentAddressedBlobSource): ContentAddressedBlobStore {
+  return typeof source === "string" ? new FileSystemContentAddressedBlobStore(source) : source;
+}
 
 export const blobChecksum = (bytes: Uint8Array): string => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
-/** Flush a private temporary file before publishing its content-addressed name. */
-export async function writeContentAddressedBlob(directory: string, bytes: Buffer): Promise<void> {
-  await mkdir(directory, { recursive: true });
-  const staging = join(directory, `${randomUUID()}.upload`);
-  try {
-    const handle = await open(staging, "wx");
-    try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
-    await rename(staging, join(directory, blobChecksum(bytes).slice(7)));
-  } finally { await unlink(staging).catch(() => {}); }
+export async function writeContentAddressedBlob(source: ContentAddressedBlobSource, bytes: Buffer): Promise<void> {
+  await storeFor(source).write(bytes);
 }
 
 /** A missing, replaced, or truncated blob must not be sent under its expected digest. */
-export async function readContentAddressedBlob(directory: string, checksum: string, size: number): Promise<Buffer> {
-  if (!/^sha256:[a-f0-9]{64}$/.test(checksum)) throw new Error("Invalid blob checksum");
-  const path = join(directory, checksum.slice(7)), handle = await open(path, "r");
-  try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.size !== size) throw new Error("Stored blob size changed");
-    // Keep allocation bounded even if storage changes after stat; reject an extra byte.
-    const buffer = Buffer.alloc(size + 1);
-    let offset = 0;
-    while (offset < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
-      if (bytesRead === 0) break;
-      offset += bytesRead;
-    }
-    const bytes = buffer.subarray(0, offset);
-    if (offset !== size || blobChecksum(bytes) !== checksum) throw new Error("Stored blob checksum changed");
-    return bytes;
-  } finally { await handle.close(); }
+export async function readContentAddressedBlob(source: ContentAddressedBlobSource, checksum: string, size: number): Promise<Buffer> {
+  return Buffer.from(await storeFor(source).read(checksum, size));
 }

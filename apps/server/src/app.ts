@@ -39,6 +39,7 @@ import { eq } from "drizzle-orm";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 
 import type { ServerContext } from "./context.js";
+import { resolveArtifactStore, type ArtifactStorageOptions } from "./content-addressed-blob.js";
 import { goalImportedProductReviews, goalProductHandoffOperations, goalProductHandoffs } from "@artoo/db";
 import { goalImportedDesignContinuations, goalImportedDesignReviews, goalImportedExecutions, goalImportedExecutionReviews, goalImportedExecutionRepairs,
   goalImportedValidations, goalImportedValidationReviews } from "@artoo/db";
@@ -89,7 +90,7 @@ import { registerClientWsRoute, type ClientWsHooks } from "./ws/client-ws.js";
 import { createWsHub, type WsHub } from "./ws/ws-hub.js";
 import { registerWebStatic } from "./web-static.js";
 
-export interface BuildAppOptions {
+export interface BuildAppOptions extends ArtifactStorageOptions {
   assistantDispatcher?: boolean;
   /** Production startup invalidates stale persisted presence before listening. */
   resetPresenceOnStart?: boolean;
@@ -97,8 +98,6 @@ export interface BuildAppOptions {
   budgetMonitorIntervalMs?: number | false;
   /** Explicit local testing only. Disabled by default, including production. */
   enableDevRoutes?: boolean;
-  /** Durable artifact storage, colocated with persistent database backups. */
-  artifactDir?: string;
   /** Inject a registry so tests can observe node registration. */
   nodeRegistry?: NodeRegistry;
   /** Inject the realtime hub so the caller owns the event publisher. */
@@ -129,6 +128,7 @@ export interface DesktopCorsOptions {
  * business state transitions live in services, never in routes.
  */
 export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): FastifyInstance {
+  const artifactStore = resolveArtifactStore(options);
   const app = Fastify({ logger: false, trustProxy: options.trustedProxies?.length ? options.trustedProxies : false });
   if (options.budgetMonitorIntervalMs !== false) {
     let budgetMonitor: ReturnType<typeof startGoalBudgetMonitor> | undefined;
@@ -189,6 +189,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     await binding.dispatchImportedProductReview(reviewId, control);
   };
   ctx.productSourceArtifactDir = options.artifactDir;
+  ctx.artifactStore = artifactStore;
   ctx.onImportedExecutionReviewQueued ??= async (reviewId, control) => {
     const [row] = await ctx.db.db.select().from(goalImportedExecutionReviews).where(and(eq(goalImportedExecutionReviews.id, reviewId), eq(goalImportedExecutionReviews.organizationId, ctx.organizationId)));
     const binding = row && nodeRegistry.get(row.computerId);
@@ -311,7 +312,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     options: { handleProtocols: (protocols) => protocols.has("artoo") ? "artoo" : false },
   });
   void app.register(async (instance) => {
-    registerNodeWsRoute(instance, ctx, nodeRegistry, deviceConnections, graceWindow, options.artifactDir);
+    registerNodeWsRoute(instance, ctx, nodeRegistry, deviceConnections, graceWindow, artifactStore);
     registerSourceLifecycleWsRoute(instance, ctx, sourceLifecycle);
     registerClientWsRoute(instance, ctx, wsHub, options.clientWsHooks, deviceConnections);
   });
@@ -413,6 +414,11 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     return result;
   });
 
+  app.get("/api/v1/devices/pairings/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    return deviceService.getPairingStatus(rc(req), id);
+  });
+
   // Claim a pairing code into a device + credentials. The CODE is the authority
   // here (the unpaired client has no session yet), so this route is exempt from
   // the #34 session guard. Because it is public, every attempt — right or wrong —
@@ -469,7 +475,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   // live connection is its registered daemon node (nodeRegistry); the service
   // gathers the rest from runs/tasks/runtime/computer/device facts.
   const isLive = (computerId: string): boolean => nodeRegistry.get(computerId) !== undefined;
-  app.get("/api/v1/daemons", async (req) => ({ daemons: await listDaemons(rc(req), isLive, (id) => graceWindow.isArmed(id)) }));
+  app.get("/api/v1/daemons", async (req) => ({ daemons: await listDaemons(rc(req), isLive, (id) => graceWindow.isArmed(id), (id) => nodeRegistry.get(id)?.workspaceRoots) }));
   app.get("/api/v1/agent-instances/presence", async (req) => ({
     presence: await presenceService.listAgentInstancePresence(rc(req), isLive),
   }));
@@ -1092,10 +1098,10 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   });
 
   // Static web SPA last: the API/auth/WS routes above are matched first; this only
-  if (options.artifactDir) {
-    registerArtifactRoutes(app, ctx, options.artifactDir);
-    registerProductSourceTransferRoutes(app, ctx, options.artifactDir);
-    registerProductSourceSemanticTransferRoutes(app, ctx, options.artifactDir);
+  if (artifactStore) {
+    registerArtifactRoutes(app, ctx, artifactStore);
+    registerProductSourceTransferRoutes(app, ctx, artifactStore);
+    registerProductSourceSemanticTransferRoutes(app, ctx, artifactStore);
   }
   // adds file serving + an SPA navigation fallback (no-op when no built dist).
   registerWebStatic(app, options.webDistDir);

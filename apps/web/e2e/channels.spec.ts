@@ -164,8 +164,15 @@ test("channels and threads synchronize between independent browser clients and s
     await main.getByLabel("Message", { exact: true }).fill("A keyboard-friendly follow-up.");
     await main.getByLabel("Message", { exact: true }).press("Enter");
     await expect(main.getByRole("list", { name: "Messages" })).toContainText("A keyboard-friendly follow-up.");
-    const links = page.getByRole("navigation", { name: "Primary", exact: true }).locator(".app-nav__links li");
-    const boxes = await links.evaluateAll((items) => items.map((item) => { const rect = item.getBoundingClientRect(); return { left: rect.left, right: rect.right }; }));
-    for (let index = 1; index < boxes.length; index++) expect(boxes[index]!.left).toBeGreaterThanOrEqual(boxes[index - 1]!.right);
+    await page.getByRole("button", { name: "Toggle navigation", exact: true }).click();
+    const navigation = page.getByRole("navigation", { name: "Primary", exact: true });
+    await expect(navigation.getByRole("link", { name: "Machines", exact: true })).toBeVisible();
+    await expect.poll(async () => (await navigation.boundingBox())?.x).toBe(0);
+    const links = navigation.locator(".app-nav__links li");
+    const boxes = await links.evaluateAll((items) => items.map((item) => { const rect = item.getBoundingClientRect(); return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right }; }));
+    for (let index = 1; index < boxes.length; index++) expect(boxes[index]!.top).toBeGreaterThanOrEqual(boxes[index - 1]!.bottom);
+    for (const box of boxes) { expect(box.left).toBeGreaterThanOrEqual(0); expect(box.right).toBeLessThanOrEqual(390); }
+    await page.getByRole("button", { name: "Close navigation", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Toggle navigation", exact: true })).toHaveAttribute("aria-expanded", "false");
   } finally { await secondContext.close(); }
 });

@@ -7,6 +7,7 @@ import { and, eq } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { ServerContext } from "../context.js";
+import { resolveArtifactStore, type ContentAddressedBlobSource } from "../content-addressed-blob.js";
 import { attachNodeBinding, type NodeBinding } from "../node-binding.js";
 import { resolveNodeToken } from "../services/device-service.js";
 import { QUALIFIED_RECEIPT_PROFILE, requireQualifiedReceiptSchema } from "../services/run-event-receipt.js";
@@ -75,8 +76,9 @@ function helloComputerId(auth: NodeAuth, helloNodeId: string): string | null {
 export function registerNodeWsRoute(
   app: FastifyInstance, ctx: ServerContext, registry: NodeRegistry,
   deviceConnections?: DeviceConnectionRegistry, graceWindow?: GraceWindowManager,
-  artifactDir?: string,
+  artifactSource?: ContentAddressedBlobSource,
 ): void {
+  const artifactStore = typeof artifactSource === "string" ? resolveArtifactStore({ artifactDir: artifactSource }) : artifactSource;
   const disconnectSnapshots = new Map<string, Promise<string[]>>();
   app.get("/api/v1/node", { websocket: true }, (socket: unknown, req: FastifyRequest) => {
     const raw = socket as RawServerSocket;
@@ -152,11 +154,12 @@ export function registerNodeWsRoute(
         () => !terminated && registered && registry.get(computerId) === binding && (!gated || managed?.active === true),
         message.verification_profiles, message.release_profiles, message.owned_result_profiles,
         () => gated && !terminated && registered && managed?.active === true && registry.get(computerId) === binding, message.machine.os,
-        auth?.mode === "device" && artifactDir ? {
-          identity: { deviceId: auth.deviceId, computerId: auth.computerId, tokenLookup: auth.tokenLookup }, sessionId: managed?.id ?? connectionId, artifactDir,
+        auth?.mode === "device" && artifactStore ? {
+          identity: { deviceId: auth.deviceId, computerId: auth.computerId, tokenLookup: auth.tokenLookup }, sessionId: managed?.id ?? connectionId, artifactStore,
           qualifiedRunEventReceiptsReady: () => qualifiedReceiptsReady && raw.readyState === 1 && !terminated && registered
             && registry.get(computerId) === binding && (!gated || managed?.active === true),
         } : undefined, message.product_source_routing, message.application_publication_profiles);
+      if (message.workspace_roots) binding.workspaceRoots = Object.freeze({ version: 1, paths: Object.freeze([...message.workspace_roots.paths]) });
     }
     async function initializeManaged(message: NodeHello): Promise<void> {
       const request = message.managed_receipts!;
@@ -204,7 +207,7 @@ export function registerNodeWsRoute(
         if (managedRequested) { armManagedInitialization(); void initializeManaged(message); }
         else {
           attach(message, false); activate();
-          if (currentAuth.mode === "device" && artifactDir && message.execution_features?.some(feature => [IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
+          if (currentAuth.mode === "device" && artifactStore && message.execution_features?.some(feature => [IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
             PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1,
             APPLICATION_PUBLICATION_FEATURE_V1].includes(feature))) {
             void initializeOrdinaryImportedDesignReceipts();
@@ -233,6 +236,7 @@ export function registerNodeWsRoute(
         close(1008, "managed application frame before current session activation"); return;
       }
       if (message.kind === "node.heartbeat") {
+        if (!registered || registry.get(nodeId!) !== binding) { close(1008, "heartbeat from replaced node session"); return; }
         void touchHeartbeat(ctx, nodeId!);
         void recordHeartbeatRuntimes(ctx, nodeId!, message.runtimes).catch(() => {});
         if (currentAuth.mode === "device") void recordDeviceActivity(ctx, currentAuth.deviceId, "node").catch(() => {});

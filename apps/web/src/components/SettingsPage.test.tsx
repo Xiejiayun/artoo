@@ -55,10 +55,20 @@ describe("device enrollment in Settings", () => {
   it("creates a Linux pairing code from the selected platform", async () => {
     const createPairing = vi.fn(async () => ({ code: "LINU-X123", pairing: { expires_at: "2099-01-01T00:00:00Z" } }));
     renderWithProviders(<SettingsPage />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), listDevices: async () => ({ devices: [] }), createPairing }) });
+    await userEvent.click(screen.getByText("Pair a desktop or mobile app"));
     await userEvent.selectOptions(screen.getByLabelText("Device platform"), "linux");
     await userEvent.click(screen.getByRole("button", { name: "Generate pairing code" }));
     expect(await screen.findByLabelText("Pairing code")).toHaveTextContent("LINU-X123");
     expect(createPairing).toHaveBeenCalledWith("linux", expect.any(String));
+  });
+
+  it("opens the shared one-command node connection flow without creating a code prematurely", async () => {
+    const createPairing = vi.fn();
+    renderWithProviders(<SettingsPage />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), listDevices: async () => ({ devices: [] }), createPairing }) });
+    await userEvent.click(screen.getByRole("button", { name: "Connect Local Node" }));
+    expect(screen.getByRole("dialog", { name: "Connect Local Node" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Generate connection command" })).toBeVisible();
+    expect(createPairing).not.toHaveBeenCalled();
   });
 
   it.each([["owner", "macos"], ["admin", "macos"], ["owner", "linux"], ["admin", "linux"]] as const)("lets an %s confirm %s enrollment and refreshes the registered computer", async (role, platform) => {

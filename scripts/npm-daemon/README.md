@@ -1,6 +1,6 @@
 # Artoo agent daemon
 
-Connect a Windows or Linux computer to an Artoo Web platform. One npm tarball contains the daemon, its JavaScript dependencies and the self-contained Windows x64 process host. macOS implementation is included, but its release qualification is deferred and is not guaranteed by this release. Users need **Node.js 24 or later and npm 11 or later**, but do not need a repository checkout or .NET.
+Connect a Windows or Linux computer to an Artoo Web platform. One tarball contains the daemon, its JavaScript dependencies and the self-contained Windows x64 process host. macOS implementation is included, but its release qualification is deferred and is not guaranteed by this release. The GitHub installer provisions a private Node.js 24 runtime when needed; npm installation requires **Node.js 24 or later and npm 11 or later**. No repository checkout, administrator access or .NET installation is needed.
 
 | Operating system | Implemented architecture | Release validation scope |
 | --- | --- | --- |
@@ -10,17 +10,63 @@ Connect a Windows or Linux computer to an Artoo Web platform. One npm tarball co
 
 Windows arm64 is not supported. npm's separate OS/CPU fields cannot express that exclusion, so the daemon checks the exact platform/architecture pair before starting. The Windows native host is carried in the same tarball on every platform; ordinary macOS/Linux execution does not load it.
 
-```sh
-npm install --global {{PACKAGE_NAME}}@{{PACKAGE_VERSION}}
-artood --version
-artood --help
+## Connect with one command
+
+In Web, open **Machines → Connect Local Node**, select this computer's platform and copy its connection command. Run it in your local terminal as the same user who runs Codex/Claude. The command downloads the fixed GitHub release, checks its package SHA-256 and size, claims the short-lived pairing code, enrolls the computer, saves its credentials and starts Artoo in the background. The matching server/Web release must be deployed first.
+
+The release assets use this PowerShell form on Windows x64:
+
+```powershell
+& ([scriptblock]::Create((irm 'https://github.com/Xiejiayun/artoo/releases/download/artood-v{{PACKAGE_VERSION}}/install.ps1'))) -Server 'https://your-artoo-site' -Code 'XXXX-XXXX'
 ```
+
+Linux x64/arm64 (requires curl, tar and a glibc-based distribution):
+
+```sh
+curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releases/download/artood-v{{PACKAGE_VERSION}}/install.sh' | sh -s -- --server 'https://your-artoo-site' --code 'XXXX-XXXX'
+```
+
+Replace the example address and code with the command from your own Web session. `-Workspace` (PowerShell) or `--workspace` (shell) selects an absolute directory; the default is `ArtooWorkspaces` in your user home. Workspaces cannot include Artoo's credentials or installed package. The GitHub installer uses immutable release assets and does not contact the npm registry.
+
+If the exact package version is also published to npm and Node/npm are already installed:
+
+```sh
+npx --yes {{PACKAGE_NAME}}@{{PACKAGE_VERSION}} connect --server https://your-artoo-site --code XXXX-XXXX
+```
+
+An owner/admin is enrolled automatically. A member's device is saved while it waits for an administrator to enroll it in Web; run `start` afterward. An interrupted enrollment resumes the same saved identity. Repeating `connect` for the same website reuses that identity and leaves the new code unused.
+
+After startup, Web should show this computer online and its allowed workspace roots. Select an existing agent on the computer to create an instance. Install and sign in to a local Codex or Claude CLI before running model tasks. If no CLI is found, the computer connects with no registered model runtimes; stop/start Artoo after installing one to refresh detection. A computer being online does not establish that its model credentials work.
+
+## Start, status and stop
+
+The verified package is retained outside npm's disposable cache. The command prints a durable local launcher:
+
+```powershell
+& "$env:USERPROFILE\.artoo\daemon\artood.cmd" status
+& "$env:USERPROFILE\.artoo\daemon\artood.cmd" stop
+& "$env:USERPROFILE\.artoo\daemon\artood.cmd" start
+```
+
+```sh
+"$HOME/.artoo/daemon/artood" status
+"$HOME/.artoo/daemon/artood" stop
+"$HOME/.artoo/daemon/artood" start
+```
+
+`start --foreground` uses the saved connection in the current terminal; Ctrl+C stops it. Background `stop` requests the daemon's normal task shutdown and retains its configuration. The authenticated loopback management port is local to this user. An unresponsive or mismatched process is never force-killed. Concurrent managed starts cannot create duplicate daemons.
+
+Windows protects saved credentials with DPAPI CurrentUser and a private directory ACL. POSIX uses mode 0600 files in a mode 0700 directory. Long-lived node credentials are not passed as command arguments or inherited by model subprocesses in this managed flow. Do not copy the state directory between users or computers. `ARTOO_HOME` can select an absolute private state directory for advanced isolated installations.
+
+This is a background process, not an operating-system service: it does not register auto-start at login or boot. Run the printed `start` command after reboot. `npx` and the GitHub installer do not put a global `artood` command on PATH. An optional explicit `npm install --global {{PACKAGE_NAME}}@{{PACKAGE_VERSION}}` provides that command when the version is available on npm.
 
 Always install an explicit version. Prereleases use `next`; do not rely on an unversioned install or assume that `latest` points to the current candidate. Published `0.1.0-rc.1` was Windows x64 only; the universal candidate begins with `0.1.0-rc.2` and is a separate artifact.
 
 Linux pairing and enrollment require the matching server/Web upgrade and its new ordered database migration. Back up the existing server data before upgrading; installing this npm package alone does not add Linux support to an older server. Follow the server runbook for migration and recovery, and keep each computer's own credentials.
 
-## Connect a computer
+## Existing manual installations
+
+The explicit environment interface below remains supported and runs in the foreground. Before switching an existing daemon to managed connection, stop it through its original launcher and confirm it is offline. The new installer does not inspect arbitrary private configuration files, kill old processes or revoke devices. To preserve an existing computer identity, an operator must migrate its protected device/computer IDs, node token and workspace roots into the new protected connection format. Otherwise revoke the old device in Web before creating a replacement, and reassign agent workspaces to the new computer. Never run two daemons using the same node credential.
 
 1. Sign in to your Artoo Web platform as the person who will operate this computer. Create a pairing code for the computer's platform (`windows`, `macos` or `linux`) in **Settings → Connect a device**, then claim it using the platform's device pairing API. An owner/admin must **Enroll computer** for the paired device.
 2. Record this computer's `computer_id` and its own node token. The `device_id` is not the computer ID. Never reuse another computer's token.
@@ -50,11 +96,11 @@ export ARTOO_CODEX_BINARY='/absolute/path/to/codex'
 artood start
 ```
 
-The values above are placeholders. Keep tokens out of shell history, screenshots and shared scripts: read them interactively or supply the environment from a local secret store. If an operator uses Node's `--env-file`, restrict that file to the operator and administrators and never commit it. The CLI does not print, save, rotate or claim credentials. It does not provide a `pair` command.
+The values above are placeholders for the advanced manual interface. Keep tokens out of shell history, screenshots and shared scripts: read them interactively or supply the environment from a local secret store. If an operator uses Node's `--env-file`, restrict that file to the operator and administrators and never commit it. Use `connect` for automatic protected persistence; there is no separate `pair` subcommand.
 
 The daemon makes an outbound WebSocket connection. No inbound computer port or router forwarding is required. Production connections should use `wss://`; never disable TLS certificate validation. In Web, confirm the computer and runtime are online, then register an agent workspace using an owner/admin account.
 
-Press **Ctrl+C** for graceful shutdown. This is a foreground CLI; npm installation does not silently install a background service, register a scheduled task or change local permissions.
+Press **Ctrl+C** for graceful shutdown of a manual foreground run. `connect` and saved-configuration `start` use the managed background process described above.
 
 ## Windows supervised execution
 

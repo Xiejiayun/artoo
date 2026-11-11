@@ -9,7 +9,7 @@ const PRESENCE_MAX_AGE_MS = 12_000;
 const subscribeOnline = (notify: () => void) => onlineManager.subscribe(notify);
 const isOnline = () => onlineManager.isOnline();
 
-export function DaemonBadge({ computerId }: { computerId: string }): React.ReactNode {
+export function DaemonBadge({ computerId, compact = false }: { computerId: string; compact?: boolean }): React.ReactNode {
   const api = useApi();
   const query = useQueryClient();
   const online = useSyncExternalStore(subscribeOnline, isOnline);
@@ -48,6 +48,7 @@ export function DaemonBadge({ computerId }: { computerId: string }): React.React
   const unconfirmed = unavailable || awaitingMountConfirmation || unavailableSnapshot.current === snapshotVersion || snapshotAge >= PRESENCE_MAX_AGE_MS;
   const status = unconfirmed ? "unknown" : daemon?.status ?? (daemons.isLoading ? "checking" : "unknown");
   const tones: Record<string, Tone> = { online: "success", reconnecting: "warning", stale: "warning", offline: "neutral", disabled: "neutral", unknown: "warning", checking: "neutral" };
+  if (compact) return <div className="daemon-presence daemon-presence--compact" aria-label="Execution daemon" title={unconfirmed ? "Server connection unavailable or presence data is stale; daemon status cannot be verified." : daemon ? `${daemon.connected ? "Connected" : "Disconnected"} · ${daemon.active_runs} active runs` : "Waiting for server presence data."}><Badge tone={tones[status]}>Daemon: {status}</Badge></div>;
   return <div className="daemon-presence" aria-label="Execution daemon">
     <Badge tone={tones[status]}>Daemon: {status}</Badge>
     <span className="t-subtle">{unconfirmed ? "Server connection unavailable or presence data is stale; daemon status cannot be verified." : daemon ? `${daemon.connected ? "Connected" : "Disconnected"} · ${daemon.active_runs} active runs` : "Waiting for server presence data."}</span>

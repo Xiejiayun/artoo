@@ -19,6 +19,25 @@ describe("GoalsPage", () => {
     consent_id: null, policy_version: "local-v1", status: "planning", discussion_id: null, plan_id: null,
     agent_instance_id: null, computer_id: null, workspace_root: null, verification_profile_id: "default", last_error: null, created_at: goal.created_at, updated_at: goal.updated_at });
 
+  it("takes an outcome into setup without starting agents before explicit confirmation", async () => {
+    const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockResolvedValue({ goal, automation });
+    renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal }) });
+    await waitFor(() => expect(screen.getByLabelText("Outcome to plan")).toBeEnabled());
+    await userEvent.type(screen.getByLabelText("Outcome to plan"), "Build a journal with offline entries");
+    await userEvent.selectOptions(screen.getByLabelText("Planning approach"), "autonomous");
+    await userEvent.click(screen.getByRole("button", { name: "Review setup" }));
+    expect(createAutonomousGoal).not.toHaveBeenCalled();
+    await userEvent.click(within(screen.getByRole("dialog", { name: "New goal" })).getByRole("button", { name: "Cancel" }));
+    expect(screen.getAllByLabelText("Outcome to plan")).toHaveLength(1);
+    expect(screen.getByLabelText("Outcome to plan")).toHaveValue("Build a journal with offline entries");
+    await userEvent.click(screen.getByRole("button", { name: "Review setup" }));
+    const dialog = screen.getByRole("dialog", { name: "New goal" });
+    expect(within(dialog).getByLabelText("Objective")).toHaveValue("Build a journal with offline entries");
+    expect(within(dialog).getByLabelText("Execution mode")).toHaveValue("autonomous");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
+    await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledWith(expect.objectContaining({ objective: "Build a journal with offline entries", execution_mode: "agent_team" }), expect.any(String)));
+  });
+
   it("starts autonomous development from one requirement without asking for a title, team or plan", async () => {
     const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockResolvedValue({ goal, automation });
     renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal }) });
@@ -167,6 +186,7 @@ describe("GoalsPage", () => {
 
   it("does not report publication before an actual release receipt arrives", async () => {
     renderWithProviders(<GoalsPage />, { client: api({ getGoalAutomation: async () => ({ automation: { ...automation, release_profile_id: "default" } }) }) });
+    await userEvent.click(await screen.findByText(/^Publication details/));
     const publication = await screen.findByLabelText("Product publication");
     expect(within(publication).getByText(/Waiting for implementation/)).toBeInTheDocument();
     expect(within(publication).queryByRole("link", { name: "Open published product" })).not.toBeInTheDocument();
@@ -178,6 +198,7 @@ describe("GoalsPage", () => {
     const release = ProductReleaseSchema.parse({ id: "release_1", goal_id: goal.id, project_id: goal.project_id, computer_id: "computer_1", run_id: "run_1", evidence_id: "evidence_1", status: outcome, request, created_at: goal.created_at, updated_at: goal.updated_at,
       receipt: { request, release_profile_digest: digest, artifact_digest: digest, outcome, endpoint: outcome === "published" ? "https://journal.example.com/" : null, previous_release_id: null, health_checks: [{ path: "/", status_code: outcome === "published" ? 200 : 503, body_digest: digest, passed: outcome === "published", checked_at: "2026-11-04T00:00:00Z" }] } });
     renderWithProviders(<GoalsPage />, { client: api({ getGoalAutomation: async () => ({ automation: { ...automation, release_profile_id: "default" } }), getGoalRelease: async () => ({ release }) }) });
+    await userEvent.click(await screen.findByText(/^Publication details/));
     const publication = await screen.findByLabelText("Product publication");
     if (outcome === "published") expect(await within(publication).findByRole("link", { name: "Open published product" })).toHaveAttribute("href", "https://journal.example.com/");
     else {
@@ -198,6 +219,7 @@ describe("GoalsPage", () => {
         health_checks: checks.map((check) => ({ ...check, passed: state === "healthy", status_code: state === "healthy" ? 200 : 503 })),
         recovery_checks: state === "rolled_back" ? checks : [], checked_at: checkedAt } });
     renderWithProviders(<GoalsPage />, { client: api({ getGoalAutomation: async () => ({ automation: { ...automation, status: "completed", release_profile_id: "default" } }), getGoalRelease: async () => ({ release }) }) });
+    await userEvent.click(await screen.findByText(/^Publication details/));
     const publication = await screen.findByLabelText("Product publication");
     const labels = { healthy: /latest health check passed/, degraded: /latest health check failed/, rolled_back: /previous release was restored and checked/, unavailable: /taken offline/ };
     expect(await within(publication).findByText(labels[state])).toBeInTheDocument();

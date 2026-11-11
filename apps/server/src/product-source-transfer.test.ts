@@ -19,6 +19,7 @@ import { buildTestServer, type TestServer } from "./test-support.js";
 import * as blobs from "./content-addressed-blob.js";
 import { ingestRunEvent, ingestWireRunEvent } from "./services/run-service.js";
 import { qualifyRunEventMessage } from "./services/run-event-receipt.js";
+import { MemoryArtifactStore } from "./test-fixtures/memory-artifact-store.js";
 
 const sha = (bytes: string | Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 describe("paired-node product source byte transport (controlled receipts, no execution authority)", () => {
@@ -117,6 +118,24 @@ describe("paired-node product source byte transport (controlled receipts, no exe
     const download = (token = destination.node_token) => server.app.inject({ method: "GET", url, headers: headers(token) });
     return { source, destination, other, review, request, actor, digest, bytes, upload, download, headers, url, proof, exportFrame, terminalFrame };
   }
+
+  it("retains and transports source capsules through an injected object store without a directory", async () => {
+    await server.close();
+    const store = new MemoryArtifactStore();
+    server = await buildTestServer({ artifactStore: store, workspaceRoot: "/workspace/product", authConfig: { enforceApiAuth: true },
+      deviceAuth: testDeviceAuthConfig({ devNodeToken: "dev", devControlEscape: false }) });
+    const f = await prepare();
+    await admitProductSourceTransfer(f.actor, f.request);
+    expect((await f.upload()).statusCode).toBe(200);
+    const downloaded = await f.download();
+    expect(downloaded.statusCode).toBe(200);
+    expect(downloaded.rawPayload).toEqual(f.bytes);
+    expect(store.writes).toContain(f.request.source.capsule_digest);
+    expect(store.reads).toContain(f.request.source.capsule_digest);
+    expect((await f.download(f.other.node_token)).statusCode).toBe(403);
+    vi.spyOn(store, "read").mockRejectedValue(new Error("Object store unavailable"));
+    expect((await f.download()).statusCode).toBe(500);
+  });
 
   it("persists full admission, replays identical requests and transports exact bytes only to the selected node", async () => {
     const f = await prepare(), accepted = await admitProductSourceTransfer(f.actor, f.request);

@@ -1,3 +1,4 @@
+import { selectProject } from "./navigation.js";
 import { expect, test } from "@playwright/test";
 
 test("one objective persists autonomous resource waiting and supports pause/resume/cancel", async ({ page, request }, testInfo) => {
@@ -5,7 +6,7 @@ test("one objective persists autonomous resource waiting and supports pause/resu
   // no eligible execution node, so the truthful expected outcome is waiting.
   await page.setViewportSize({ width: 1100, height: 850 });
   await page.goto("/goals");
-  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption("proj_artoo");
+  await selectProject(page, "plan");
   await page.getByRole("button", { name: "New goal" }).click();
   await page.getByLabel("Execution mode").selectOption("autonomous");
   const objective = `Autonomous journal ${Date.now()}: preserve entries offline`;

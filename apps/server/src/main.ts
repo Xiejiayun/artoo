@@ -1,9 +1,10 @@
 import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadMigrationStatements, organizations, seed } from "@artoo/db";
 import { createSystemClock, createUlidIdGen } from "@artoo/domain";
-import { PgliteDbClient } from "@artoo/storage";
+import { PgliteDbClient, PostgresDbClient, SupabaseContentAddressedBlobStore } from "@artoo/storage";
 import { buildApp, type DesktopCorsOptions } from "./app.js";
 import { loadAuthConfig, type AuthConfig, type AuthConfigEnv } from "./auth/auth-config.js";
 import { createFetchOidcHttp } from "./auth/oidc-client.js";
@@ -11,6 +12,7 @@ import { loadDeviceAuthConfig } from "./config/device-auth.js";
 import { loadAiDataSharingPolicy } from "./config/ai-data-sharing.js";
 import { closePreparedGoalSubmission, loadGoalEntryConfig } from "./config/goal-entry.js";
 import { loadTrustedProxies } from "./config/trusted-proxies.js";
+import { loadStorageConfig } from "./config/storage.js";
 import type { ServerContext } from "./context.js";
 import { createEventPublisher } from "./ws/event-publisher.js";
 import { createWsHub } from "./ws/ws-hub.js";
@@ -34,9 +36,9 @@ function desktopCors(env: NodeJS.ProcessEnv): DesktopCorsOptions | undefined {
 
 /** Production owns a durable data directory. Tests/dev may use an ephemeral
  * database. Validate credentials before opening or changing persistent data. */
-export async function startServer(env: NodeJS.ProcessEnv = process.env) {
+export async function startServer(env: NodeJS.ProcessEnv = process.env, options: { onFatal?: () => void } = {}) {
   const production = env.NODE_ENV === "production";
-  const port = Number(env.ARTOO_PORT ?? "4000");
+  const port = Number(env.ARTOO_PORT ?? env.PORT ?? "4000");
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid ARTOO_PORT");
   const host = env.ARTOO_HOST ?? "127.0.0.1";
   const authConfig = resolveAuthConfig(env, `http://${host}:${port}`);
@@ -48,11 +50,21 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env) {
   const trustedProxies = loadTrustedProxies(env);
   const aiDataSharingPolicy = loadAiDataSharingPolicy(env);
   const goalEntry = loadGoalEntryConfig(env);
+  const storage = loadStorageConfig(env);
   const dataRoot = resolve(env.ARTOO_DATA_DIR?.trim() || ".artoo");
   const dbDir = env.ARTOO_DB_DIR?.trim() || (production ? join(dataRoot, "db") : undefined);
   const artifactDir = env.ARTOO_ARTIFACT_DIR?.trim() || join(dataRoot, "artifacts");
   const workspaceRoot = env.ARTOO_WORKSPACE_ROOT?.trim() || (production ? join(dataRoot, "workspaces") : join(tmpdir(), "artoo-workspace"));
-  const db = await PgliteDbClient.create(dbDir === undefined ? {} : { dataDir: resolve(dbDir) });
+  const artifactStore = storage.supabase ? await SupabaseContentAddressedBlobStore.create(storage.supabase) : undefined;
+  const sslCa = storage.databaseCaFile ? await readFile(storage.databaseCaFile, "utf8") : undefined;
+  let databaseFailed = false;
+  let stopAfterFailure: (() => void) | undefined;
+  const db = storage.databaseUrl
+    ? await PostgresDbClient.create({ connectionString: storage.databaseUrl, ...(sslCa ? { sslCa } : {}),
+      onFatal: () => { databaseFailed = true; stopAfterFailure?.(); } })
+    : await PgliteDbClient.create(dbDir === undefined ? {} : { dataDir: resolve(dbDir) });
+  let databaseClosing: Promise<void> | undefined;
+  const closeDatabase = (): Promise<void> => databaseClosing ??= db.close();
   try {
     await db.migrate(await loadMigrationStatements());
     if ((await db.db.select().from(organizations)).length === 0) {
@@ -71,32 +83,46 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env) {
       wsHub, webDistDir: env.ARTOO_WEB_DIST, desktopCors: cors, trustedProxies,
       enableDevRoutes: !production && env.ARTOO_ENABLE_DEV_ROUTES === "1",
       artifactDir: resolve(artifactDir),
+      ...(artifactStore ? { artifactStore } : {}),
     });
     const publisher = createEventPublisher(ctx, wsHub);
-    try {
-      await app.listen({ port, host });
-      await publisher.start();
-    } catch (error) {
+    let closing: Promise<void> | undefined;
+    const close = (): Promise<void> => {
+      // A pending publisher.start() may install its timer after an earlier
+      // close. Startup's failure path calls close again to stop that late timer.
       publisher.stop();
-      await app.close();
+      return closing ??= (async () => {
+        try { await app.close(); } finally { await closeDatabase(); }
+      })();
+    };
+    stopAfterFailure = () => {
+      options.onFatal?.();
+      // The database has permanently fenced queries. Stop all dispatchers and
+      // sockets too; a new container must acquire its own ownership session.
+      void close().catch(() => { options.onFatal?.(); });
+    };
+    try {
+      if (databaseFailed) throw new Error("Database ownership was lost during startup");
+      await app.listen({ port, host });
+      await publisher.start(storage.eventPollMs);
+      if (databaseFailed) throw new Error("Database ownership was lost during startup");
+    } catch (error) {
+      await close();
       throw error;
     }
-    let closing: Promise<void> | undefined;
-    const close = (): Promise<void> => closing ??= (async () => {
-      publisher.stop();
-      await app.close();
-      await db.close();
-    })();
-    return { app, ctx, close, dataRoot, persistent: dbDir !== undefined,
+    return { app, ctx, close, dataRoot, persistent: storage.databaseUrl !== undefined || dbDir !== undefined,
       closePreparedGoalSubmission: (identity: { session_id: string; request_key: string }) => closePreparedGoalSubmission(ctx, identity) };
   } catch (error) {
-    await db.close();
+    await closeDatabase();
     throw error;
   }
 }
 
 export async function main(): Promise<void> {
-  const server = await startServer();
+  const server = await startServer(process.env, { onFatal: () => {
+    console.error("Database ownership lost; server shutting down");
+    process.exitCode = 1;
+  } });
   const address = server.app.server.address();
   console.log(`Artoo server ready on ${typeof address === "object" && address ? address.port : address}; storage=${server.persistent ? "persistent" : "ephemeral"}`);
   const shutdown = (): void => { void server.close().catch(() => { process.exitCode = 1; }); };

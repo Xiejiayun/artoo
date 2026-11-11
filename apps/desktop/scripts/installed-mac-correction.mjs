@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { inspectInstalledMacRetention } from "./installed-mac-retention-ui.mjs";
 import { hasCompletePNGPixelStream } from "../../../scripts/png-evidence.mjs";
+import { openInstalledSettings, selectInstalledProject, waitForInstalledShell } from "./installed-ui-navigation.mjs";
 
 export const macCorrectionImageNames = [
   "macos-correction-worktree-settings.png", "macos-correction-initial-artifact.png",
@@ -123,7 +124,7 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
   scenario, fixture = scenario.fields, restartWithSystemPath, onEvidence = () => {} }) {
   assert.equal(process.platform, "darwin");
   const { expect } = await import("@playwright/test");
-  let page = initialPage, electronApp = initialApp, taskId;
+  let page = initialPage, electronApp = initialApp, taskId, projectName;
   const evidence = { passed: false, result: "fail", scope: "Installed Mac UI and actual Git worktrees; deterministic correction CLI, no live-provider claim",
     path_scope: "The earlier baseline uses empty PATH. This owned-app phase explicitly restores system PATH for real Git operations.",
     screenshots: [], checks: [], ui_commands: [], checkpoints: [], downloads: [], download_paths: [], observations: {}, retention_ui: [] };
@@ -167,9 +168,7 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
     return captureMacCorrectionScreenshot(snapshot, { filename: macCorrectionImageNames[index], caption, evidence });
   };
   const reopenTask = async () => {
-    await page.getByRole("link", { name: "Workspace", exact: true }).click();
-    const project = page.getByLabel("Project", { exact: true });
-    if (await project.inputValue() !== fixture.project_id) await project.selectOption(fixture.project_id);
+    await selectInstalledProject(page, projectName);
     const button = page.getByRole("list", { name: "Tasks", exact: true }).getByRole("button")
       .filter({ has: page.getByText(fixture.task_title, { exact: true }) });
     await expect(button).toHaveCount(1); await button.click();
@@ -272,12 +271,12 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
     const previousConfig = (await page.evaluate(() => window.artooDesktop.daemonStatus())).config;
     ({ page, electronApp } = await restartWithSystemPath());
     assert.ok(page && electronApp);
-    await expect(page.getByRole("link", { name: "Settings", exact: true })).toBeVisible({ timeout: 45_000 });
+    await waitForInstalledShell(page);
     const restored = await page.evaluate(async () => { const value = await window.artooDesktop.getConnection(); return { paired: value.paired, device_id: value.deviceId, computer_id: value.computerId }; });
     assert.deepEqual(restored, connection);
     assert.equal(await electronApp.evaluate(() => Boolean(process.env.PATH)), true, "This Git phase must not keep the baseline empty PATH");
     stage = "configure the Git repository and allowed workspace through Settings UI";
-    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await openInstalledSettings(page);
     if ((await page.evaluate(() => window.artooDesktop.daemonStatus())).state !== "stopped") {
       await page.getByRole("button", { name: "Stop worker", exact: true }).click();
       await expect.poll(async () => (await page.evaluate(() => window.artooDesktop.daemonStatus())).state, { timeout: 30_000 }).toBe("stopped");
@@ -303,8 +302,10 @@ export async function runInstalledMacCorrection({ page: initialPage, electronApp
 
     stage = "create the correction task and mark it Ready through installed UI";
     assert.equal((await scenario.observe()).snapshot, null);
-    await page.getByRole("link", { name: "Workspace", exact: true }).click();
-    await page.getByLabel("Project", { exact: true }).selectOption(fixture.project_id);
+    const project = (await api("/api/v1/bootstrap")).projects.find((item) => item.id === fixture.project_id);
+    assert.ok(project, "The correction fixture project must be available to the installed device");
+    projectName = project.name;
+    await selectInstalledProject(page, projectName);
     await page.getByRole("button", { name: "New task", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Create task", exact: true });
     await dialog.getByLabel("Title", { exact: true }).fill(fixture.task_title);

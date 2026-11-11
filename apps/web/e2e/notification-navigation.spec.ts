@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import type { Channel, Message, Notification, NotificationPage } from "@artoo/domain";
+import { selectProject } from "./navigation.js";
 
 async function post<T>(request: APIRequestContext, url: string, data: unknown): Promise<T> {
   const response = await request.post(`/api/v1${url}`, { data });
@@ -100,8 +101,9 @@ test("old unread notifications remain reachable beyond 100 and display the exact
 test("project switching clears the old thread and cross-project mentions restore the correct destination", async ({ page, request }) => {
   const bootstrap = await (await request.get("/api/v1/bootstrap")).json();
   const suffix = Date.now();
-  const first = (await post<{ project: { id: string } }>(request, "/projects", { name: `Notification project A ${suffix}` })).project;
-  const second = (await post<{ project: { id: string } }>(request, "/projects", { name: `Notification project B ${suffix}` })).project;
+  const firstName = `Notification project A ${suffix}`, secondName = `Notification project B ${suffix}`;
+  const first = (await post<{ project: { id: string } }>(request, "/projects", { name: firstName })).project;
+  const second = (await post<{ project: { id: string } }>(request, "/projects", { name: secondName })).project;
   const firstChannel = await createChannel(request, first.id, "project-a");
   const secondChannel = await createChannel(request, second.id, "project-b");
   const firstRoot = await send(request, firstChannel.id, "First project's discussion");
@@ -113,9 +115,10 @@ test("project switching clears the old thread and cross-project mentions restore
   // A conflicting URL hint must be corrected from the room API before a
   // composer is enabled; the displayed project must match the destination.
   await page.goto(`/channels?room=${firstChannel.id}&thread=${firstRoot.id}&project=${second.id}`);
-  await expect(page.getByLabel("Project", { exact: true })).toHaveValue(first.id);
+  const projects = page.getByRole("navigation", { name: "Primary", exact: true });
+  await expect(projects.getByRole("button", { name: firstName, exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("complementary", { name: "Thread", exact: true })).toContainText(firstRoot.body!);
-  await page.getByLabel("Project", { exact: true }).selectOption(second.id);
+  await selectProject(page, "thread", secondName);
   await expect(page.getByRole("heading", { name: "# project-b", exact: true })).toBeVisible();
   await expect(page.getByRole("complementary", { name: "Thread", exact: true })).toHaveCount(0);
   for (const key of ["room", "thread", "message", "notification", "project"]) expect(new URL(page.url()).searchParams.has(key)).toBe(false);
@@ -130,11 +133,11 @@ test("project switching clears the old thread and cross-project mentions restore
 
   // Legacy links without a project also resolve from authoritative room data.
   await page.goto(`/channels?room=${firstChannel.id}`);
-  await expect(page.getByLabel("Project", { exact: true })).toHaveValue(first.id);
+  await expect(projects.getByRole("button", { name: firstName, exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("heading", { name: "# project-a", exact: true })).toBeVisible();
   await page.getByRole("button", { name: /^Mentions,/ }).click();
   await page.getByRole("button", { name: new RegExp(`${mentionBody}$`) }).click();
-  await expect(page.getByLabel("Project", { exact: true })).toHaveValue(second.id);
+  await expect(projects.getByRole("button", { name: secondName, exact: true })).toHaveAttribute("aria-pressed", "true");
   const thread = page.getByRole("complementary", { name: "Thread", exact: true });
   await expect(thread.getByRole("region", { name: "Mentioned reply", exact: true })).toContainText(mention.body!);
   expect(new URL(page.url()).searchParams.get("room")).toBe(secondChannel.id);

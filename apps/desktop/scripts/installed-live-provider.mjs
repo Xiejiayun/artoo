@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { installedLiveProviderPlan } from "./installed-live-provider-gate.mjs";
+import { openInstalledNewAgentForm, openInstalledSettings, selectInstalledProject } from "./installed-ui-navigation.mjs";
 
 // Explicit extension of the installed-package smoke. This consumes five real
 // model turns (three for discussion scope) only when ARTOO_DESKTOP_LIVE_CODEX=1.
@@ -83,7 +84,7 @@ export async function runInstalledLiveProvider({ page, workspace, userData, base
       "Installed live verification requires actual external AI recipients and explicit ARTOO_LIVE_AI_SHARING_CONSENT=1");
     server.ctx.aiDataSharingPolicy = sharingPolicy;
     stage = "review actual AI recipients through installed UI";
-    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await openInstalledSettings(page);
     await page.getByRole("button", { name: "Review AI data sharing", exact: true }).click();
     for (const provider of sharingPolicy.providers) await expect(page.getByText(provider.name, { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Allow AI data sharing", exact: true }).click();
@@ -91,7 +92,7 @@ export async function runInstalledLiveProvider({ page, workspace, userData, base
     check("Actual configured AI recipients explicitly accepted through the installed client");
 
     stage = "save real provider settings through installed UI";
-    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await openInstalledSettings(page);
     if ((await status()).state !== "stopped") {
       await page.getByRole("button", { name: "Stop worker", exact: true }).click();
     }
@@ -110,7 +111,7 @@ export async function runInstalledLiveProvider({ page, workspace, userData, base
     assert.equal(readFileSync(join(userData, "connection.json"), "utf8").includes(apiKey), false);
     page = await restartApp();
     assert.deepEqual((await status()).config.codex, saved);
-    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await openInstalledSettings(page);
     await page.getByRole("button", { name: "Start worker", exact: true }).click();
     await until(async () => (await status()).state === "running");
     const connection = await page.evaluate(() => window.artooDesktop.getConnection());
@@ -121,14 +122,12 @@ export async function runInstalledLiveProvider({ page, workspace, userData, base
     const names = ["Installed live planner", "Installed live reviewer"];
     const instances = [];
     for (const name of names) {
-      await page.getByRole("link", { name: "Computers", exact: true }).click();
-      const summary = page.getByText("Register an agent workspace", { exact: true });
-      if (!await page.getByLabel("Agent runtime", { exact: true }).isVisible()) await summary.click();
-      await page.getByLabel("Agent runtime", { exact: true }).selectOption("codex");
-      await page.getByLabel("Agent display name", { exact: true }).fill(name);
-      await page.getByLabel("Agent workspace path", { exact: true }).fill(liveWorkspace);
+      const instanceForm = await openInstalledNewAgentForm(page, connection.computerId);
+      await instanceForm.getByLabel("Agent runtime", { exact: true }).selectOption("codex");
+      await instanceForm.getByLabel("Agent display name", { exact: true }).fill(name);
+      await instanceForm.getByLabel("Agent workspace path", { exact: true }).fill(liveWorkspace);
       const created = responseTo(`/computers/${connection.computerId}/instances`);
-      await page.getByRole("button", { name: "Register agent", exact: true }).click();
+      await instanceForm.getByRole("button", { name: "Create instance", exact: true }).click();
       instances.push((await consume(created)).agent_instance.id);
     }
     assert.equal(new Set(instances).size, 2);
@@ -136,7 +135,7 @@ export async function runInstalledLiveProvider({ page, workspace, userData, base
     const turns = [], answers = [];
     if (scope === "all") {
       stage = "create an installed-client conversation";
-      await page.getByRole("link", { name: "Workspace", exact: true }).click();
+      await selectInstalledProject(page);
       await page.getByRole("button", { name: "New task", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Create task" });
       await dialog.getByLabel("Title", { exact: true }).fill(`Installed ${platformName} provider conversation verification`);
@@ -204,7 +203,7 @@ export async function runInstalledLiveProvider({ page, workspace, userData, base
     }
 
     stage = "start bounded planning discussion through installed UI";
-    await page.getByRole("link", { name: "Goals", exact: true }).click();
+    await selectInstalledProject(page, "artoo", "plan");
     await page.getByRole("button", { name: "New goal", exact: true }).click();
     const titles = ["Specify chat response contract", "Verify chat response contract"];
     const criteria = ["Success and error response schemas are documented.", "Tests cover success and error responses against the documented schema."];

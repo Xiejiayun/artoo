@@ -16,11 +16,12 @@ import { buildTestServer, type TestServer } from "./test-support.js";
 import { buildEvent } from "./events.js";
 import { writeContentAddressedBlob } from "./content-addressed-blob.js";
 import { verificationCapabilitiesV3Fixture } from "./test-fixtures/verification-capabilities.js";
+import { MemoryArtifactStore } from "./test-fixtures/memory-artifact-store.js";
 import { verificationCapabilityBinding } from "./services/verification-capabilities.js";
 import { requestProductDesignRevision } from "./services/product-design-revision-service.js";
 import { assertDesignRevisionAssignment, assertDesignRevisionRunAdmission, assertNoActiveDesignRevision,
   bindDesignRevisionRun, designRevisionContextForRun, designRevisionDescriptorDigest, designRevisionDigest,
-  latestDesignRevision, prepareDesignRevisionAcceptance } from "./services/product-design-revision-guard.js";
+  latestDesignRevision, prepareDesignRevisionAcceptance, readDesignRevisionFile } from "./services/product-design-revision-guard.js";
 import { buildRunContextPack } from "./services/context-pack-service.js";
 import { readRunVerificationEvidence } from "./services/verification-service.js";
 import { inspectIndependentReview } from "./services/independent-review-service.js";
@@ -212,8 +213,31 @@ describe("local independently qualified additive design revision", () => {
   it.each(["missing", "substituted"])("rejects %s actual baseline content before reopening or charging", async change => {
     const file = join(directory, designPin.checksum.slice(7));
     if (change === "missing") await rm(file); else await writeFile(file, "x".repeat(designPin.size));
-    await expect(createRevision()).rejects.toThrow("Retained product bytes"); expect((await getTask("design")).status).toBe("done");
+    await expect(createRevision()).rejects.toMatchObject({ code: "conflict", httpStatus: 409, message: expect.stringContaining("Retained product bytes") });
+    expect((await getTask("design")).status).toBe("done");
     expect((await server.db.db.select().from(goals))[0]!.retryCount).toBe(0);
+  });
+  it("propagates remote storage failures without misclassifying or charging a design revision", async () => {
+    const read = vi.fn();
+    server.ctx.artifactStore = { read, write: vi.fn() };
+    for (const error of [new Error("Supabase Storage read timed out"), new Error("Supabase Storage read failed (HTTP 403)")]) {
+      read.mockRejectedValueOnce(error);
+      await expect(createRevision()).rejects.toBe(error);
+      expect(await server.db.db.select().from(productDesignRevisions)).toHaveLength(0);
+      expect((await getTask("design")).status).toBe("done");
+      expect((await server.db.db.select().from(goals))[0]!.retryCount).toBe(0);
+    }
+  });
+  it("rejects invalid JSON and UTF-8 after a successful retained-content read", async () => {
+    const artifactStore = new MemoryArtifactStore(), run = await getRun("design_old");
+    for (const bytes of [Buffer.from('{"unfinished":'), Buffer.from([0xff])]) {
+      const checksum = sha(bytes), pin = { path: designPin.path, checksum, size: bytes.length };
+      await artifactStore.write(bytes);
+      await server.db.db.update(artifacts).set({ checksum,
+        metadata: { storage_key: checksum.slice(7), size: bytes.length, computer_id: computerId } }).where(eq(artifacts.runId, run.id));
+      await expect(readDesignRevisionFile({ ...server.ctx, artifactStore }, server.db.db, run, pin)).rejects.toMatchObject({
+        code: "conflict", httpStatus: 409, message: expect.stringContaining("Retained product bytes") });
+    }
   });
   it.each(["manual", "paused", "prototype-only", "old-node", "changed-response"])("fails closed on %s authority or capability", async change => {
     if (change === "manual") { await expect(server.db.transaction(tx => requestProductDesignRevision(server.ctx, tx,

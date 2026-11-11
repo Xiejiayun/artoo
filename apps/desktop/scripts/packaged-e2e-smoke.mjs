@@ -19,6 +19,7 @@ import { macAssistantImageNames, runInstalledMacAssistant } from "./installed-ma
 import { macMentionsImageNames, runInstalledMacMentions } from "./installed-mac-mentions.mjs";
 import { macCorrectionImageNames, runInstalledMacCorrection } from "./installed-mac-correction.mjs";
 import { verifyMacCorrectionWorkspaceExport } from "./installed-mac-correction-evidence.mjs";
+import { openInstalledAccount, openInstalledNewAgentForm, openInstalledSettings, selectInstalledProject, waitForInstalledShell } from "./installed-ui-navigation.mjs";
 import { macZeroArtifactImageNames, runInstalledMacZeroArtifact } from "./installed-mac-zero-artifact.mjs";
 import { createZeroArtifactWorkspaceSetup, createZeroArtifactWorkspaceObserver, verifyZeroArtifactWorkspaceExport } from "../../../scripts/fixtures/zero-artifact-workspace-scenario.mjs";
 import { ZERO_ARTIFACT_FILES, zeroArtifactHash } from "../../../scripts/fixtures/zero-artifact-workspace.mjs";
@@ -394,6 +395,7 @@ ${isMac ? "}" : ""}
     const owner = await browser.newContext();
     await owner.addCookies([{ name: "artoo_session", value: session.raw, url: baseUrl, httpOnly: true, sameSite: "Lax" }]);
     const ownerPage = await owner.newPage(); await ownerPage.goto(`${baseUrl}/settings`);
+    await ownerPage.getByText("Pair a desktop or mobile app", { exact: true }).click();
     await ownerPage.getByLabel("Device platform").selectOption(isMac ? "macos" : "windows");
     await ownerPage.getByRole("button", { name: "Generate pairing code" }).click();
     const pairingRegion = ownerPage.getByRole("region", { name: "Device pairing" });
@@ -444,7 +446,7 @@ ${isMac ? "}" : ""}
     await page.getByLabel("Device name").fill(`Packaged ${platformName} smoke`);
     await page.getByLabel("Pairing code").fill(pairingCode);
     await page.getByRole("button", { name: "Pair this computer" }).click();
-    await expect(page.getByRole("link", { name: "Workspace", exact: true })).toBeVisible({ timeout: 45_000 });
+    await waitForInstalledShell(page);
     await expect(page.getByText("Live updates connected", { exact: true })).toBeVisible();
     const connection = await page.evaluate(() => window.artooDesktop.getConnection());
     assert.equal(connection.paired, true); assert.ok(connection.computerId);
@@ -453,7 +455,7 @@ ${isMac ? "}" : ""}
     assert.equal(await page.evaluate((token) => Object.values(localStorage).some((value) => value.includes(token)), nativeToken), false);
     check(`${platformName} packaged app pairs and enrolls through UI; native REST/realtime authenticate; credential encrypted at rest`);
 
-    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await openInstalledSettings(page);
     await page.getByLabel("Allowed workspace folders").fill(workspace);
     await page.getByLabel("Codex program (optional)").fill(fixtureProgram);
     await page.getByLabel("Model connection", { exact: true }).selectOption("responses");
@@ -504,14 +506,13 @@ ${isMac ? "}" : ""}
     check("Settings configures the bundled worker; start, stop, and restart verified");
     await captureScene(`${label}-desktop-worker.png`, "Paired computer with saved worker settings after start, restart and stop verification");
 
-    await page.getByRole("link", { name: "Computers", exact: true }).click();
-    await page.getByText("Register an agent workspace", { exact: true }).click();
-    await page.getByLabel("Agent runtime").selectOption("codex");
-    await page.getByLabel("Agent display name").fill("Packaged fixture Codex");
-    await page.getByLabel("Agent workspace path").fill(workspace);
-    await page.getByRole("button", { name: "Register agent", exact: true }).click();
-    await expect(page.getByText("Agent workspace registered. It is available on the Agents page.")).toBeVisible();
-    await page.getByRole("link", { name: "Workspace", exact: true }).click();
+    const instanceForm = await openInstalledNewAgentForm(page, connection.computerId);
+    await instanceForm.getByLabel("Agent runtime").selectOption("codex");
+    await instanceForm.getByLabel("Agent display name").fill("Packaged fixture Codex");
+    await instanceForm.getByLabel("Agent workspace path").fill(workspace);
+    await instanceForm.getByRole("button", { name: "Create instance", exact: true }).click();
+    await expect(page.getByText("Instance created. Find it in your Agent Squad.")).toBeVisible();
+    await selectInstalledProject(page);
     await page.getByRole("button", { name: "New task", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Create task" }), taskTitle = `Packaged authenticated run ${Date.now()}`;
     await dialog.getByLabel("Title", { exact: true }).fill(taskTitle);
@@ -598,6 +599,7 @@ ${isMac ? "}" : ""}
     await server.close(); server = undefined; server = await startServer(serverEnv);
     assert.equal((await ownerApi(`/api/v1/tasks/${taskId}`)).task.status, "done");
     await launchApp();
+    await selectInstalledProject(page);
     await page.getByRole("button", { name: new RegExp(taskTitle) }).click();
     await expect(page.locator(".task-detail__meta .ui-badge--status")).toHaveText("done");
     assert.deepEqual(await page.evaluate(() => window.artooDesktop.getConnection()), connection);
@@ -669,7 +671,7 @@ ${isMac ? "}" : ""}
           await launchApp();
           // firstWindow can initially expose about:blank. Wait for the actual
           // authenticated renderer before invoking its bridge after restart.
-          await expect(page.getByRole("link", { name: "Settings", exact: true })).toBeVisible({ timeout: 45_000 });
+          await waitForInstalledShell(page);
           assert.deepEqual(await page.evaluate(() => window.artooDesktop.getConnection()), connection,
             "Git correction restart must retain the same installed paired computer");
           report.correction_environment = { baseline_path_empty: true, git_stage_uses_system_path: true,
@@ -691,7 +693,7 @@ ${isMac ? "}" : ""}
         if (value === "none") appEnv.ARTOO_REPORT_ARTIFACTS = "none";
         else delete appEnv.ARTOO_REPORT_ARTIFACTS;
         await launchApp();
-        await expect(page.getByRole("link", { name: "Settings", exact: true })).toBeVisible({ timeout: 45_000 });
+        await waitForInstalledShell(page);
         assert.deepEqual(await page.evaluate(() => window.artooDesktop.getConnection()), connection);
         return { page, electronApp };
       };
@@ -743,9 +745,10 @@ ${isMac ? "}" : ""}
     }
     // Logout reloads this same URL. The connection screen can render in the old
     // document first, so observe the new document before reading the IPC bridge.
+    const account = await openInstalledAccount(page);
     await Promise.all([
       page.waitForNavigation({ waitUntil: "domcontentloaded" }),
-      page.getByRole("button", { name: "Sign out", exact: true }).click(),
+      account.getByRole("button", { name: "Sign out", exact: true }).click(),
     ]);
     await expect(page.getByRole("heading", { name: "Connect this computer" })).toBeVisible();
     assert.equal(await page.evaluate(() => window.artooDesktop.getToken()), null);

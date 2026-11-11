@@ -1,7 +1,7 @@
 import { useProject } from "../app/useProject.js";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import type { TaskStatus } from "@artoo/domain";
 
@@ -63,6 +63,7 @@ export function BoardView(): React.ReactNode {
   const [priority, setPriority] = useState<(typeof PRIORITIES)[number]>("all");
   const [search, setSearch] = useState("");
   const [creating, setCreating] = useState(false);
+  const [attentionOnly, setAttentionOnly] = useState(false);
 
   const { bootstrap, projectId } = useProject();
   useSubscription(projectId === undefined ? [] : [`project:${projectId}`]);
@@ -86,8 +87,8 @@ export function BoardView(): React.ReactNode {
 
   const all = tasks.data.tasks;
   const query = search.trim().toLowerCase();
-  const visible = all.filter((task) => (priority === "all" || task.priority === priority) && (!query || task.title.toLowerCase().includes(query)));
-  const filtering = priority !== "all" || query !== "";
+  const visible = all.filter((task) => (priority === "all" || task.priority === priority) && (!query || task.title.toLowerCase().includes(query)) && (!attentionOnly || ["awaiting_approval", "blocked", "review"].includes(task.status)));
+  const filtering = priority !== "all" || query !== "" || attentionOnly;
   const needsAttention = all.filter((task) => ["awaiting_approval", "blocked", "review"].includes(task.status)).length;
 
   function openTask(taskId: string): void {
@@ -99,7 +100,7 @@ export function BoardView(): React.ReactNode {
     <div className="board work-board">
       <header className="board-header">
         <div className="work-board__heading"><span className="work-eyebrow">{bootstrap.data?.projects.find((project) => project.id === projectId)?.name ?? "Workspace"}</span><h1 className="t-h1">Board <span className="work-count">{all.length}</span></h1><p>Keep work moving, from the first brief to the final review.</p></div>
-        <Button variant="primary" iconLeft={Plus} disabled={!projectId} onClick={() => setCreating(true)}>Create task</Button>
+        <div className="action-row"><Link className="os-secondary-link" to="/">Task list</Link><Button variant="primary" iconLeft={Plus} disabled={!projectId} onClick={() => setCreating(true)}>Create task</Button></div>
       </header>
       <div className="work-board__toolbar">
         <SearchInput aria-label="Search board" placeholder="Search tasks…" value={search} onChange={(event) => setSearch(event.target.value)} onClear={() => setSearch("")} />
@@ -115,7 +116,8 @@ export function BoardView(): React.ReactNode {
             </option>
           ))}
         </Select>
-        {filtering ? <Button size="sm" variant="ghost" onClick={() => { setSearch(""); setPriority("all"); }}>Clear filters</Button> : null}
+        <Button size="sm" className="os-attention-filter" aria-pressed={attentionOnly} onClick={() => setAttentionOnly(!attentionOnly)}>Needs attention<span className="work-count" aria-hidden="true">{needsAttention}</span></Button>
+        {filtering ? <Button size="sm" variant="ghost" onClick={() => { setSearch(""); setPriority("all"); setAttentionOnly(false); }}>Clear filters</Button> : null}
         <span className="work-board__summary">{filtering ? `${visible.length} of ${all.length} tasks` : needsAttention > 0 ? `${needsAttention} ${needsAttention === 1 ? "task needs" : "tasks need"} attention` : "No reviews or blockers"}</span>
       </div>
       {all.length === 0 ? (

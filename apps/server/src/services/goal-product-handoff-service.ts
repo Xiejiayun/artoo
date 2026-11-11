@@ -12,7 +12,7 @@ import type { DrizzleDb } from "@artoo/storage";
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
-import { readContentAddressedBlob } from "../content-addressed-blob.js";
+import { readContentAddressedBlob, requireArtifactStore, type ArtifactStorageOptions } from "../content-addressed-blob.js";
 import { assertSemanticCapsuleResearch } from "../product-source-semantic-transfer-routes.js";
 import { admitProductSourceSemanticTransferInTransaction, assertMeasurementV2TransferSessions, type AuthenticatedTransferNode } from "./product-source-transfer-service.js";
 import { requireActiveMember } from "./member-status.js";
@@ -121,7 +121,8 @@ async function workspaceFence(ctx:ServerContext,tx:DrizzleDb,payload:ProductSour
 }
 
 /** A current authenticated node transport owns this binding; never accept its identity/session from a frame. */
-export function createGoalProductHandoffBinding(ctx:ServerContext,options:{identity:AuthenticatedTransferNode;sessionId:string;isCurrent:()=>boolean;transport:Pick<NodeTransport,"send">;artifactDir:string}) {
+export function createGoalProductHandoffBinding(ctx:ServerContext,options:ArtifactStorageOptions & {identity:AuthenticatedTransferNode;sessionId:string;isCurrent:()=>boolean;transport:Pick<NodeTransport,"send">}) {
+  const artifactStore = requireArtifactStore(options);
   const identity=Object.freeze({...options.identity}),computerId=identity.computerId;
   const current=()=>{if(!options.isCurrent())throw AppError.permissionDenied("Handoff node session is no longer current");};
   async function credential(tx:DrizzleDb){
@@ -200,7 +201,7 @@ export function createGoalProductHandoffBinding(ctx:ServerContext,options:{ident
         if(!delivery||message.payload.payload_digest!==operation.payloadDigest||message.payload.request_digest!==payload.request_digest)throw AppError.conflict("Result has no corresponding issued command");
         let research=new Uint8Array();
         if(message.payload.outcome==="verified"){
-          const source=payload.intent.request.byte_request.source,bytes=await readContentAddressedBlob(options.artifactDir,source.capsule_digest,source.capsule_bytes);
+          const source=payload.intent.request.byte_request.source,bytes=await readContentAddressedBlob(artifactStore,source.capsule_digest,source.capsule_bytes);
           assertSemanticCapsuleResearch(bytes,payload.intent.request);
           const capsule=JSON.parse(bytes.toString("utf8")) as {files:{path:string;base64:string}[]};
           research=Buffer.from(capsule.files.find(file=>file.path===".artoo/product/research.json")!.base64,"base64");

@@ -21,6 +21,7 @@ describe("GoalDiscussion", () => {
   it("requires two distinct instances and sends the selected roles and bounds", async () => {
     const startDiscussion = vi.fn<ApiClient["startDiscussion"]>().mockResolvedValue({ discussion: session });
     renderWithProviders(<GoalDiscussion goal={goal} />, { client: api({ startDiscussion }) });
+    await userEvent.click(await screen.findByText("Choose planning agents"));
     const submit = await screen.findByRole("button", { name: "Start planning discussion" });
     expect(submit).toBeDisabled();
     const boxes = await screen.findAllByRole("checkbox");
@@ -46,6 +47,7 @@ describe("GoalDiscussion", () => {
     const cancelDiscussion = vi.fn<ApiClient["cancelDiscussion"]>().mockResolvedValue({ discussion: { ...session, status: "stopping" } });
     renderWithProviders(<GoalDiscussion goal={goal} />, { client: api({ listDiscussions: async () => ({ discussions: [{ ...session, status: "stopping" }] }), cancelDiscussion }) });
     expect(await screen.findByText(/Waiting for its daemon to confirm/)).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Choose planning agents"));
     expect(screen.getByRole("button", { name: "Start planning discussion" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "Stop discussion" }));
     expect(cancelDiscussion).toHaveBeenCalledWith(session.id, expect.any(String));

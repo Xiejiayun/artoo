@@ -48,9 +48,10 @@ export function importedDesignContinuationView(row: Continuation) {
     closed: result?.closed ?? false, acceptance_authorized: false, subsequent_stage_authorized: false } as const;
 }
 async function researchBytes(ctx: ServerContext, review: ReturnType<typeof ImportedProductReviewRequestV1Schema.parse>) {
-  if (!ctx.productSourceArtifactDir) throw AppError.conflict("Imported design requires the configured source artifact store");
+  const artifactStore = ctx.artifactStore ?? ctx.productSourceArtifactDir;
+  if (!artifactStore) throw AppError.conflict("Imported design requires the configured source artifact store");
   const source = review.operation.intent.request.byte_request.source;
-  const bytes = await readContentAddressedBlob(ctx.productSourceArtifactDir, source.capsule_digest, source.capsule_bytes);
+  const bytes = await readContentAddressedBlob(artifactStore, source.capsule_digest, source.capsule_bytes);
   assertSemanticCapsuleResearch(bytes, review.operation.intent.request);
   const capsule = JSON.parse(bytes.toString("utf8")) as { files: { path: string; base64: string }[] };
   return Buffer.from(capsule.files.find(file => file.path === ".artoo/product/research.json")!.base64, "base64");

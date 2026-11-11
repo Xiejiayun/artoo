@@ -137,6 +137,23 @@ export async function listDevices(ctx: ServerContext): Promise<Device[]> {
   return rows.map(mapDevice);
 }
 
+/** Poll only the caller's exact pairing attempt, without re-exposing its code. */
+export async function getPairingStatus(ctx: ServerContext, pairingId: string): Promise<{ pairing: PairingCode; device: Device | null }> {
+  await requireActiveMember(ctx, ctx.actorUserId);
+  const row = (await ctx.db.db.select().from(pairingCodes).where(and(
+    eq(pairingCodes.id, pairingId), eq(pairingCodes.organizationId, ctx.organizationId),
+    eq(pairingCodes.createdByUserId, ctx.actorUserId),
+  )))[0];
+  if (!row) throw AppError.notFound("pairing not found");
+  const pairing = mapPairingCode(row.status === "pending" && isExpired(row.expiresAt, ctx.clock.nowIso())
+    ? { ...row, status: "expired" } : row);
+  const device = row.claimedByDeviceId ? (await ctx.db.db.select().from(devices).where(and(
+    eq(devices.id, row.claimedByDeviceId), eq(devices.organizationId, ctx.organizationId),
+    eq(devices.enrolledByUserId, ctx.actorUserId),
+  )))[0] : undefined;
+  return { pairing, device: device ? mapDevice(device) : null };
+}
+
 /** Create a short-lived single-use code for the actor's own identity. Stores only its HMAC. */
 export async function createPairing(
   ctx: ServerContext,

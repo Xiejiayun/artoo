@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { dirname, join } from "node:path";
 import { planningHash, planningReceiptPath, verifyMacPlanningTurns } from "./mac-planning-fixture.mjs";
 import { capturePlanningEvidence } from "./installed-mac-planning-evidence.mjs";
+import { openInstalledNewAgentForm, openInstalledSettings, selectInstalledProject } from "./installed-ui-navigation.mjs";
 
 export const macPlanningImageNames = ["macos-planning-instructions.png", "macos-planning-original.png", "macos-planning-suggestion.png", "macos-planning-accepted.png", "macos-planning-requests.png", "macos-planning-dependent-task.png"];
 
@@ -55,7 +56,7 @@ export async function runInstalledMacPlanning({ page, workspace, configurationPa
     assert.ok(fixture.computer_id, "Planning requires the paired execution computer");
     // App restart restores configuration; starting execution remains an
     // explicit user action. Establish it through the actual Settings control.
-    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await openInstalledSettings(page);
     await page.getByRole("button", { name: "Start worker", exact: true }).click();
     await expect.poll(async () => (await page.evaluate(() => window.artooDesktop.daemonStatus())).state,
       { timeout: 45_000 }).toBe("running");
@@ -69,19 +70,18 @@ export async function runInstalledMacPlanning({ page, workspace, configurationPa
     stage = "register installed planning participants";
     const names = [`Mac planning author ${suffix}`, `Mac planning reviewer ${suffix}`];
     for (const [index, name] of names.entries()) {
-      await page.getByRole("link", { name: "Computers", exact: true }).click();
-      if (!await page.getByLabel("Agent runtime", { exact: true }).isVisible()) await page.getByText("Register an agent workspace", { exact: true }).click();
-      await page.getByLabel("Agent runtime", { exact: true }).selectOption("codex");
-      await page.getByLabel("Agent display name", { exact: true }).fill(name);
-      await page.getByLabel("Agent workspace path", { exact: true }).fill(planningWorkspace);
+      const instanceForm = await openInstalledNewAgentForm(page, fixture.computer_id);
+      await instanceForm.getByLabel("Agent runtime", { exact: true }).selectOption("codex");
+      await instanceForm.getByLabel("Agent display name", { exact: true }).fill(name);
+      await instanceForm.getByLabel("Agent workspace path", { exact: true }).fill(planningWorkspace);
       const created = responseTo(`/computers/${fixture.computer_id}/instances`);
-      await page.getByRole("button", { name: "Register agent", exact: true }).click();
+      await instanceForm.getByRole("button", { name: "Create instance", exact: true }).click();
       fixture[`${index === 0 ? "planner" : "reviewer"}_instance_id`] = (await consume(created)).agent_instance.id;
     }
     assert.notEqual(fixture.planner_instance_id, fixture.reviewer_instance_id);
 
     stage = "create goal and start discussion through installed UI";
-    await page.getByRole("link", { name: "Goals", exact: true }).click();
+    await selectInstalledProject(page, "artoo", "plan");
     await page.getByRole("button", { name: "New goal", exact: true }).click();
     await page.getByLabel("Goal title", { exact: true }).fill(`Installed Mac planning verification ${suffix}`);
     await page.getByLabel("Objective", { exact: true }).fill("Discuss an implementation and its dependent verification; a human reviews the proposal before work is created.");

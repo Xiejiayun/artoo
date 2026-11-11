@@ -1,3 +1,4 @@
+import { selectProject } from "./navigation.js";
 import { expect, test, type Page } from "@playwright/test";
 
 const unique = (prefix: string): string => `${prefix} ${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -16,7 +17,7 @@ test("narrow workspace supports messaging, decisions, handoffs, blockers and dep
   await page.goto("/");
   // Other specs create projects on this shared server; select the project used
   // by the API assertions instead of relying on bootstrap's alphabetical order.
-  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption("proj_artoo");
+  await selectProject(page);
   const prerequisite = unique("Prerequisite");
   const dependent = unique("Dependent");
   await createTask(page, prerequisite);
@@ -66,7 +67,7 @@ test("narrow workspace supports messaging, decisions, handoffs, blockers and dep
 
 test("goals materialize a reviewed dependent plan and preserve pause/resume checkpoints", async ({ page, request }) => {
   await page.goto("/goals");
-  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption("proj_artoo");
+  await selectProject(page, "plan");
   const title = unique("Preview goal");
   await page.getByRole("button", { name: "New goal" }).click();
   await page.getByLabel("Goal title").fill(title);
@@ -90,6 +91,7 @@ test("goals materialize a reviewed dependent plan and preserve pause/resume chec
   const plans = (await (await request.get(`/api/v1/goals/${goal.id}/plans`)).json()).plans;
   expect(plans[0].status).toBe("accepted");
   expect(plans[0].task_specs[1].dependencies).toEqual([{ ref: "0", type: "blocks" }]);
+  await page.getByText("Checkpoints & evidence", { exact: false }).click();
   await expect(page.getByRole("region", { name: "Checkpoints" })).toContainText("dag materialized");
   await page.getByRole("button", { name: "Pause goal" }).click();
   await page.getByRole("button", { name: "Resume goal" }).click();
@@ -109,18 +111,19 @@ test("project management, device pairing/revocation and reviewed skill installat
   await create.getByLabel("Project name").fill(name);
   await create.getByLabel("Default workspace").fill("C:/workspace/preview");
   await create.getByRole("button", { name: "Create project" }).click();
-  await expect(page.getByRole("combobox", { name: "Project", exact: true })).toHaveValue(/proj_/);
+  await expect(page.getByRole("navigation", { name: "Primary", exact: true }).getByRole("button", { name, exact: true })).toHaveAttribute("aria-pressed", "true");
   const edit = page.getByRole("form", { name: "Edit project" });
   await expect(edit.getByLabel("Project name")).toHaveValue(name);
   await edit.getByLabel("Project name").fill(`${name} renamed`);
   await edit.getByRole("button", { name: "Save project" }).click();
   await expect(edit.getByRole("status")).toContainText("Project saved");
-  await page.getByRole("link", { name: "Workspace", exact: true }).click();
+  await selectProject(page, "tasks", `${name} renamed`);
   await expect(page.getByRole("heading", { name: `${name} renamed`, exact: true })).toBeVisible();
   await createTask(page, unique("Isolated project task"));
-  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption("proj_artoo");
+  await selectProject(page);
   await expect(page.getByText("No task selected", { exact: true })).toBeVisible();
-  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await page.getByRole("link", { name: "Manage projects", exact: true }).click();
+  await page.getByText("Pair a desktop or mobile app", { exact: true }).click();
   await page.getByRole("button", { name: "Generate pairing code" }).click();
   const code = await page.getByRole("region", { name: "Device pairing" }).getByLabel("Pairing code", { exact: true }).textContent();
   const deviceName = unique("Preview Windows");
@@ -146,6 +149,7 @@ test("project management, device pairing/revocation and reviewed skill installat
 
 test("Linux pairing, computer enrollment and revocation persist through Settings", async ({ page, request }) => {
   await page.goto("/settings");
+  await page.getByText("Pair a desktop or mobile app", { exact: true }).click();
   await page.getByLabel("Device platform").selectOption("linux");
   await page.getByRole("button", { name: "Generate pairing code" }).click();
   const code = await page.getByRole("region", { name: "Device pairing" }).getByLabel("Pairing code", { exact: true }).textContent();
@@ -184,7 +188,7 @@ test("review controls remain usable at desktop, tablet and phone widths", async 
   await expect.poll(async () => (await (await request.get("/api/v1/bootstrap")).json()).computers.find((computer: { id: string; status: string }) => computer.id === "computer_local_mock")?.status).toBe("online");
   const title = unique("Responsive review");
   await page.goto("/");
-  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption("proj_artoo");
+  await selectProject(page);
   await createTask(page, title);
   await page.getByRole("button", { name: "Mark ready", exact: true }).click();
   await page.getByRole("button", { name: "Assign", exact: true }).click();
@@ -197,7 +201,7 @@ test("review controls remain usable at desktop, tablet and phone widths", async 
   }).not.toBe("");
   expect((await request.post(`/api/v1/dev/runs/${runId}/mock-execute`, { headers: { "Idempotency-Key": unique("responsive-execute") } })).ok()).toBeTruthy();
   await page.reload();
-  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption("proj_artoo");
+  await selectProject(page);
   await page.getByRole("button", { name: new RegExp(title) }).click();
   for (const width of [1280, 1024, 390]) {
     await page.setViewportSize({ width, height: 900 });

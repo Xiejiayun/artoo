@@ -4,7 +4,7 @@ import { canonicalProductDesignRevisionContextV1, canonicalReleaseJson, ContextP
   PRODUCT_DESIGN_REVISION_FEATURE_V1, ProductDesignRevisionContextV1Schema, ProductDesignV2Schema,
   RunVerificationPayloadSchema, validateAdditiveDesignRevision, type ContextPack, type ProductDesignRevisionContextV1, type RunVerificationPayload,
   type VerificationCapabilities } from "@artoo/domain";
-import type { DrizzleDb } from "@artoo/storage";
+import { ContentAddressedBlobIntegrityError, ContentAddressedBlobNotFoundError, type DrizzleDb } from "@artoo/storage";
 import { and, desc, eq } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -38,7 +38,7 @@ export function assertDesignRevisionProfile(capabilities: VerificationCapabiliti
 
 /** Capability guidance is shown only where this local optional path can actually be requested. */
 export async function canSuggestDesignRevision(ctx: ServerContext, tx: DrizzleDb, subject: typeof runs.$inferSelect): Promise<boolean> {
-  if (!ctx.productSourceArtifactDir || subject.workspaceBranch !== null || subject.workspaceAllocation !== null
+  if (!(ctx.artifactStore ?? ctx.productSourceArtifactDir) || subject.workspaceBranch !== null || subject.workspaceAllocation !== null
     || ctx.supportsExecutionFeature?.(subject.computerId, PRODUCT_DESIGN_REVISION_FEATURE_V1) !== true) return false;
   const context = await designRevisionContextForRun(ctx, tx, subject.id);
   if (!context || context.product_development?.stage !== "implementation" || context.transferred_product_input || context.imported_review_subject
@@ -211,15 +211,22 @@ export async function assertDesignRevisionRunAdmission(ctx: ServerContext, tx: D
 /** Read only a scoped content-store object and verify its actual bytes against the node's fact. */
 export async function readDesignRevisionFile(ctx: ServerContext, tx: DrizzleDb, run: typeof runs.$inferSelect,
   pin: { path: string; checksum: string; size: number }): Promise<{ text: string; json: unknown }> {
-  if (!ctx.productSourceArtifactDir || pin.size < 1 || pin.size > MAX_PRODUCT_DESIGN_REVISION_BYTES) throw AppError.conflict("Design revision needs bounded retained product bytes");
+  const artifactStore = ctx.artifactStore ?? ctx.productSourceArtifactDir;
+  if (!artifactStore || pin.size < 1 || pin.size > MAX_PRODUCT_DESIGN_REVISION_BYTES) throw AppError.conflict("Design revision needs bounded retained product bytes");
   const candidates = await tx.select().from(artifacts).where(and(eq(artifacts.organizationId, ctx.organizationId), eq(artifacts.runId, run.id),
     eq(artifacts.taskId, run.taskId), eq(artifacts.checksum, pin.checksum)));
   if (!candidates.some(artifact => {
     const metadata = artifact.metadata as Record<string, unknown> | null;
     return metadata?.storage_key === pin.checksum.slice(7) && metadata.size === pin.size && metadata.computer_id === run.computerId;
   })) throw AppError.conflict("Design revision baseline has no retained artifact from its measured source run");
+  let bytes: Buffer;
   try {
-    const bytes = await readContentAddressedBlob(ctx.productSourceArtifactDir, pin.checksum, pin.size);
+    bytes = await readContentAddressedBlob(artifactStore, pin.checksum, pin.size);
+  } catch (error) {
+    if (!(error instanceof ContentAddressedBlobNotFoundError || error instanceof ContentAddressedBlobIntegrityError)) throw error;
+    throw AppError.conflict(`Retained product bytes cannot be qualified: ${error.message}`);
+  }
+  try {
     const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
     if (!Buffer.from(text, "utf8").equals(bytes)) throw new Error("Product JSON is not lossless UTF-8");
     return { text, json: JSON.parse(text) };

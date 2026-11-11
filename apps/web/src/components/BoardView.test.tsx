@@ -83,4 +83,18 @@ describe("BoardView", () => {
     expect(screen.getByRole("dialog", { name: "Create task" })).toBeInTheDocument();
     expect(screen.getByLabelText("Title")).toHaveFocus();
   });
+
+  it("focuses reviews and blockers without changing task state", async () => {
+    renderWithProviders(<BoardView />, { client: boardClient(), route: "/board" });
+    await screen.findByText("Backlog item");
+    const filter = screen.getByRole("button", { name: "Needs attention" });
+    await userEvent.click(filter);
+    expect(filter).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("In review")).toBeInTheDocument();
+    expect(screen.queryByText("Backlog item")).not.toBeInTheDocument();
+    expect(screen.getByText("1 of 3 tasks")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(screen.getByText("Backlog item")).toBeInTheDocument();
+    expect(filter).toHaveAttribute("aria-pressed", "false");
+  });
 });

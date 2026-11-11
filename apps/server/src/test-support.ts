@@ -1,7 +1,7 @@
 import { buildAiDataSharingPolicy, type AiDataSharingPolicy } from "./config/ai-data-sharing.js";
 import { loadMigrationStatements, seed } from "@artoo/db";
 import type { Clock, IdGen } from "@artoo/domain";
-import { PgliteDbClient } from "@artoo/storage";
+import { PgliteDbClient, type ContentAddressedBlobStore } from "@artoo/storage";
 import type { FastifyInstance } from "fastify";
 
 import { buildApp, type DesktopCorsOptions } from "./app.js";
@@ -59,6 +59,7 @@ export interface BuildTestServerOptions {
   budgetMonitorIntervalMs?: number | false;
   enableDevRoutes?: boolean;
   artifactDir?: string;
+  artifactStore?: ContentAddressedBlobStore;
   /**
    * Override the seeded instance/project workspace root. The default seed points
    * at the live repo (`C:/workspace/artoo`), which is fine for ordinary runs (no
@@ -119,6 +120,7 @@ export async function buildTestServer(
     budgetMonitorIntervalMs: options.budgetMonitorIntervalMs ?? false,
     enableDevRoutes: options.enableDevRoutes ?? true,
     artifactDir: options.artifactDir,
+    artifactStore: options.artifactStore,
     nodeRegistry,
     wsHub,
     webDistDir: options.webDistDir,

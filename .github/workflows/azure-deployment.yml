@@ -1,0 +1,88 @@
+name: Azure deployment validation
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: azure-validation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: local-ci-only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Production release gate, backup encryption and recovery contracts
+        run: node --test scripts/azure-release/*.test.mjs
+      - run: npm run build:preview
+      - name: Real PostgreSQL migrations, transactions, ownership and disconnect fencing
+        env:
+          ARTOO_POSTGRES_TEST_ADMIN_URL: postgresql://postgres:local-ci-only@127.0.0.1:5432/postgres
+          ARTOO_POSTGRES_TEST_ISOLATED: '1'
+        run: npx vitest run --config packages/storage/src/db/postgres.integration.config.ts
+      - name: Remote storage and server lifecycle regressions
+        run: npx vitest run packages/storage/src/blob apps/server/src/config/storage.test.ts apps/server/src/remote-startup.test.ts apps/server/src/artifact-store.test.ts --maxWorkers=2
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Linux production image without cloud credentials
+        run: docker build --build-arg SOURCE_REVISION=${{ github.sha }} --tag artoo:ci .
+      - name: Import production dependencies and verify bundled runtime files
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          docker run --rm --memory=512m --memory-swap=512m --cpus=0.25 \
+            --env EXPECTED_SOURCE_SHA \
+            --entrypoint node artoo:ci --input-type=module -e '
+              import { access, readFile } from "node:fs/promises";
+              await import("./apps/server/dist/main.js");
+              const { loadMigrationStatements } = await import("@artoo/db");
+              const migrations = await loadMigrationStatements();
+              if (migrations.length === 0) throw new Error("Missing runtime migrations");
+              await access("./apps/web/dist/index.html");
+              const release = JSON.parse(await readFile("./apps/web/dist/artoo-release.json", "utf8"));
+              if (release.commit !== process.env.EXPECTED_SOURCE_SHA) throw new Error("Web build identity differs from image source");
+              console.log(`Production imports and ${migrations.length} migration statements available`);
+            '
+      - name: Require external storage rather than silently using container disk
+        shell: bash
+        run: |
+          set +e
+          docker run --rm --memory=512m --memory-swap=512m --cpus=0.25 \
+            -e ARTOO_PAIRING_PEPPER=controlled-ci-pepper \
+            -e GOOGLE_CLIENT_ID=controlled-ci-client \
+            -e GOOGLE_CLIENT_SECRET=controlled-ci-secret \
+            -e GOOGLE_REDIRECT_URI=https://artoo.example.test/auth/google/callback \
+            -e AUTH_ALLOWED_EMAILS=owner@example.test \
+            -e AUTH_OWNER_EMAILS=owner@example.test \
+            artoo:ci > startup.log 2>&1
+          result=$?
+          set -e
+          cat startup.log
+          test "$result" -eq 1
+          grep -F 'This deployment requires ARTOO_DATABASE_URL' startup.log

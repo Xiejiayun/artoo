@@ -128,7 +128,7 @@ export async function packageSmoke(options) {
   const evidence = resolve(options.evidenceDirectory);
   mkdirSync(evidence); // Exclusive fresh output: never overwrite prior evidence.
   const root = mkdtempSync(join(realpathSync(tmpdir()), "artoo-package-smoke-"));
-  const prefix = join(root, "installed"), connection = join(root, "connection");
+  const prefix = join(root, "installed"), connection = join(root, "connection"), managed = join(root, "managed");
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
     !/^(?:NPM_CONFIG_|ARTOO_)/i.test(key) && !/^(?:NODE_OPTIONS|NODE_PATH)$/i.test(key)
     && !/(?:TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key)));
@@ -230,6 +230,15 @@ export async function packageSmoke(options) {
       "--package-directory", installed, "--evidence-directory", connection], { timeout: 300_000 });
     report.connection = JSON.parse(readFileSync(join(connection, "result.json"), "utf8"));
     validateConnection(report.connection, options);
+    run("managed-connection-smoke", process.execPath, [join(repo, "scripts/npm-daemon/managed-connection-smoke.mjs"),
+      "--package-directory", installed, "--evidence-directory", managed], { timeout: 300_000 });
+    report.managed = JSON.parse(readFileSync(join(managed, "result.json"), "utf8"));
+    assert.equal(report.managed.status, "passed");
+    assert.equal(report.managed.platform, process.platform); assert.equal(report.managed.arch, process.arch);
+    assert.equal(report.managed.package.version, options.version); assert.equal(report.managed.model_invoked, false);
+    for (const key of ["connected", "workspaceHello", "sameIdentityOnRepeat", "gracefulStop", "restartWithoutSource",
+      "sameIdentityAfterRestart", "protectedCredentials", "unauthorizedStopRejected", "allProcessesAbsent", "serverDisconnected"])
+      assert.equal(report.managed[key], true, "Managed connection did not confirm " + key);
     report.status = "passed";
   } catch (error) {
     report.status = "failed"; report.error = safe(error.message); process.exitCode = 1;
@@ -239,13 +248,16 @@ export async function packageSmoke(options) {
     for (const file of ["result.json", "failure.json", "stdout.log", "stderr.log"])
       if (existsSync(join(connection, file)))
         writeFileSync(join(evidence, "daemon-" + file), safe(readFileSync(join(connection, file), "utf8")));
+    for (const file of ["result.json", "failure.json", "stdout.log"])
+      if (existsSync(join(managed, file)))
+        writeFileSync(join(evidence, "managed-" + file), safe(readFileSync(join(managed, file), "utf8")));
     save("result.json", report);
     if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
       "Universal npm package verification: **" + report.status + "** on **" + actualPlatform + "**.\n\n"
       + "Package: " + options.name + "@" + options.version + "; SHA-256: " + options.sha256
       + "; source checkout: " + options.sourceCommit + ".\n\n"
       + "Install source: " + options.installSource + ". Scope: pinned-tarball normal npm installation, installed CLI/manifest and fixture-authenticated "
-      + "pairing/enrollment/WebSocket, controlled Codex/Claude success/failure tasks, and normal daemon stop. "
+      + "pairing/enrollment/WebSocket, controlled Codex/Claude success/failure tasks, managed connect/status/stop/restart with the same identity and normal daemon stop. "
       + "No real provider, native-supervisor admission or deployed-product health claim.\n");
     console.log(JSON.stringify({ status: report.status, platform: actualPlatform, evidence }));
   }

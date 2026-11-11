@@ -37,7 +37,8 @@ export async function buildNpmDaemon({ name, version, outputDirectory, repoRoot 
   mkdirSync(outputDirectory, { recursive: false });
   const result = await buildDaemon({ repoRoot, outputDirectory: join(outputDirectory, "runtime"), windowsProcessBundle });
   mkdirSync(join(outputDirectory, "bin"));
-  for (const [source, target] of [["cli.mjs", "artood.mjs"], ["verify.mjs", "verify.mjs"], ["platforms.mjs", "platforms.mjs"]])
+  for (const [source, target] of [["cli.mjs", "artood.mjs"], ["verify.mjs", "verify.mjs"], ["platforms.mjs", "platforms.mjs"],
+    ["local-config.mjs", "local-config.mjs"], ["managed.mjs", "managed.mjs"], ["onboarding.mjs", "onboarding.mjs"]])
     copyFileSync(join(sourceDirectory, source), join(outputDirectory, "bin", target));
   copyFileSync(join(repoRoot, "LICENSE"), join(outputDirectory, "LICENSE"));
   const metadata = { name, version, description: "Connect Windows, macOS and Linux computers to the Artoo agent platform", license: "MIT", type: "module",

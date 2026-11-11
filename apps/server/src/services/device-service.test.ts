@@ -10,6 +10,7 @@ import {
   claimPairing,
   createPairing,
   enrollDeviceComputer,
+  getPairingStatus,
   resolveControlToken,
   resolveNodeToken,
   revokeDevice,
@@ -67,6 +68,21 @@ describe("device-service", () => {
     const row = (await db.db.select().from(pairingCodes).where(eq(pairingCodes.id, pairing.id)))[0]!;
     expect(row.codeHash).not.toBe(code);
     expect(row.codeHash).toHaveLength(64);
+  });
+
+  it("pairing status is creator-scoped even for another administrator and reports expiry", async () => {
+    const { ctx, db } = server;
+    const now = ctx.clock.nowIso();
+    await db.db.insert(organizations).values({ id: "org_other", name: "Other team", createdAt: now });
+    await db.db.insert(users).values([
+      { id: "user_admin", organizationId: ctx.organizationId, email: "admin@example.com", displayName: "Admin", role: "admin", createdAt: now },
+      { id: "user_other_owner", organizationId: "org_other", email: "other-owner@example.com", displayName: "Other owner", role: "owner", createdAt: now },
+    ]);
+    const { pairing } = await createPairing(ctx, config, { createdByUserId: ctx.actorUserId });
+    await expect(getPairingStatus({ ...ctx, actorUserId: "user_admin" }, pairing.id)).rejects.toMatchObject({ httpStatus: 404 });
+    await expect(getPairingStatus({ ...ctx, organizationId: "org_other", actorUserId: "user_other_owner" }, pairing.id)).rejects.toMatchObject({ httpStatus: 404 });
+    const later = { ...ctx, clock: fixedClock(new Date(Date.parse(pairing.expires_at) + 1).toISOString()) };
+    expect(await getPairingStatus(later, pairing.id)).toMatchObject({ pairing: { id: pairing.id, status: "expired" }, device: null });
   });
 
   it("claimPairing creates a device with two resolvable, distinct credentials", async () => {

@@ -67,6 +67,10 @@ export const nodeHelloSchema = z.object({
   protocol_version: z.string().min(1),
   artood_version: z.string().min(1),
   machine: machineSchema,
+  // Informational workspace choices from this session; execution still checks
+  // the node-local allowlist and real filesystem paths for every task.
+  workspace_roots: z.object({ version: z.literal(1), paths: z.array(z.string().min(1).max(4096)
+    .regex(/^(?:[A-Za-z]:[\\/]|\/|\\\\)/).regex(/^[^\u0000-\u001f\u007f]+$/u)).min(1).max(32) }).strict().optional(),
   execution_features: z.array(z.string().min(1).max(128)).max(32).optional(),
   verification_profiles: VerificationProfileAdvertisementsSchema.optional(),
   release_profiles: ReleaseProfileAdvertisementsSchema.optional(),
@@ -103,6 +107,8 @@ export const nodeHeartbeatSchema = z.object({
     memory_used_pct: z.number(),
     disk_free_gb: z.number()
   }),
+  // Required complete snapshot, also sent by released registry-mode daemons.
+  // [] explicitly means no runtimes; absence has never been a delta/no-op frame.
   runtimes: z.array(runtimeStatusSchema),
   running_instances: z.array(z.string())
 });

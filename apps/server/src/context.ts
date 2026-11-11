@@ -3,7 +3,7 @@ import type { AiDataSharingPolicy } from "./config/ai-data-sharing.js";
 import type { SourceLifecycleRegistry } from "./services/source-clean-lifecycle-service.js";
 import type { Clock, IdGen, VerificationCapabilities, ReleaseCapabilitiesV1, NodeOwnedResultProfileDescriptorV1, ProductSourceRoutingV1 } from "@artoo/domain";
 import type { ApplicationPublicationCapabilitiesV1 } from "@artoo/domain";
-import type { DbClient } from "@artoo/storage";
+import type { ContentAddressedBlobStore, DbClient } from "@artoo/storage";
 
 import type { AuthConfig } from "./auth/auth-config.js";
 import type { OidcHttp } from "./auth/oidc-client.js";
@@ -65,7 +65,9 @@ export interface ServerContext {
   /** Dedicated imported-subject controller; never routes through ordinary run.start. */
   onImportedProductReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;
   onProductSourceOperationQueued?: (operationId: string, control: "start" | "stop" | "status" | "qualify") => Promise<void>;
-  /** Server-local artifact store configured by app startup, never supplied by a task or frame. */
+  /** Private durable bytes configured at startup, never supplied by a task or frame. */
+  artifactStore?: ContentAddressedBlobStore;
+  /** Compatibility for local development callers; artifactStore takes precedence. */
   productSourceArtifactDir?: string;
   onImportedDesignContinuationQueued?: (continuationId: string, control: "start" | "stop" | "status") => Promise<void>;
   onImportedDesignReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;

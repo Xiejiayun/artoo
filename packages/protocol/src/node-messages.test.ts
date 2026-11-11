@@ -36,6 +36,15 @@ describe("node.hello", () => {
     expect(nodeHelloSchema.safeParse(valid).success).toBe(true);
   });
 
+  it("accepts versioned workspace suggestions without requiring them from older nodes", () => {
+    expect(nodeHelloSchema.parse(valid).workspace_roots).toBeUndefined();
+    const workspace_roots = { version: 1, paths: ["C:/ArtooWorkspaces", "/home/member/ArtooWorkspaces"] };
+    expect(nodeHelloSchema.parse({ ...valid, workspace_roots }).workspace_roots).toEqual(workspace_roots);
+    for (const invalid of [{ version: 2, paths: ["/work"] }, { version: 1, paths: ["relative"] }, { version: 1, paths: ["/work\nsecret"] }, { version: 1, paths: [] }]) {
+      expect(nodeHelloSchema.safeParse({ ...valid, workspace_roots: invalid }).success).toBe(false);
+    }
+  });
+
   it("rejects empty node_id", () => {
     expect(nodeHelloSchema.safeParse({ ...valid, node_id: "" }).success).toBe(false);
   });
@@ -91,6 +100,12 @@ describe("node.heartbeat", () => {
 
   it("accepts a well-formed heartbeat", () => {
     expect(nodeHeartbeatSchema.safeParse(valid).success).toBe(true);
+  });
+
+  it("keeps an explicit empty runtime snapshot distinct from an absent snapshot", () => {
+    expect(nodeHeartbeatSchema.parse({ ...valid, runtimes: [] }).runtimes).toEqual([]);
+    const { runtimes: _runtimes, ...absent } = valid;
+    expect(nodeHeartbeatSchema.safeParse(absent).success).toBe(false);
   });
 
   it("preserves finite JSON integer sequences beyond the safe range and existing bounds", () => {

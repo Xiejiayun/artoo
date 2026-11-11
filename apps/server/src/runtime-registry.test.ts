@@ -1,15 +1,14 @@
-import { computers } from "@artoo/db";
+import { computers, organizations } from "@artoo/db";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { recordHeartbeatRuntimes } from "./services/runtime-registry-service.js";
-import { buildTestServer, type TestServer } from "./test-support.js";
+import { listComputerRuntimes, recordHeartbeatRuntimes } from "./services/runtime-registry-service.js";
+import { buildTestServer, fixedClock, type TestServer } from "./test-support.js";
 
 /** A fresh computer with no seeded runtimes, so assertions see only what we add. */
-async function freshComputer(server: TestServer): Promise<string> {
-  const id = "computer_test";
+async function freshComputer(server: TestServer, id = "computer_test", organizationId = "org_default"): Promise<string> {
   await server.db.db.insert(computers).values({
     id,
-    organizationId: "org_default",
+    organizationId,
     displayName: "Test Box",
     hostname: "test-host",
     os: "windows",
@@ -25,14 +24,14 @@ async function getRuntimes(server: TestServer, computerId: string) {
     method: "GET",
     url: `/api/v1/computers/${computerId}/runtimes`,
   });
-  return res.json().runtimes as {
+  return (res.json().runtimes as {
     runtime: string;
     status: string;
     version: string | null;
     capabilities: string[];
     computer_id: string;
     last_seen_at: string | null;
-  }[];
+  }[]).sort((a, b) => a.runtime.localeCompare(b.runtime));
 }
 
 describe("runtime registry (#15 Part 2)", () => {
@@ -89,5 +88,52 @@ describe("runtime registry (#15 Part 2)", () => {
     server = await buildTestServer();
     const computerId = await freshComputer(server);
     expect(await getRuntimes(server, computerId)).toEqual([]);
+  });
+
+  it("reconciles omitted and empty runtime snapshots without refreshing historical observations", async () => {
+    server = await buildTestServer();
+    const computerId = await freshComputer(server);
+    await recordHeartbeatRuntimes(server.ctx, computerId, [
+      { runtime: "codex", status: "available", version: "1", capabilities: ["code.read"] },
+      { runtime: "claude-code", status: "available", version: "2", capabilities: ["code.modify"] },
+    ]);
+    const before = await getRuntimes(server, computerId);
+    const later = { ...server.ctx, clock: fixedClock("2026-06-13T00:01:00.000Z") };
+    await recordHeartbeatRuntimes(later, computerId, [{ runtime: "codex", status: "available", version: "1", capabilities: ["code.read"] }]);
+    const partial = await getRuntimes(server, computerId);
+    expect(partial.find((runtime) => runtime.runtime === "claude-code")).toEqual({ ...before.find((runtime) => runtime.runtime === "claude-code"), status: "missing" });
+    expect(new Date(partial.find((runtime) => runtime.runtime === "codex")!.last_seen_at!).toISOString()).toBe(later.clock.nowIso());
+
+    await recordHeartbeatRuntimes({ ...server.ctx, clock: fixedClock("2026-06-13T00:02:00.000Z") }, computerId, []);
+    expect(await getRuntimes(server, computerId)).toEqual(partial.map((runtime) => ({ ...runtime, status: "missing" })));
+    const registration = await server.app.inject({ method: "POST", url: `/api/v1/computers/${computerId}/instances`,
+      payload: { runtime: "codex", workspace_root: "/workspace" } });
+    expect(registration.statusCode).toBe(409);
+    expect(registration.body).toContain("advertise an available runtime");
+
+    await recordHeartbeatRuntimes({ ...server.ctx, clock: fixedClock("2026-06-13T00:03:00.000Z") }, computerId,
+      [{ runtime: "codex", status: "available", version: "3", capabilities: ["code.read", "code.modify"] }]);
+    const restored = await getRuntimes(server, computerId);
+    expect(restored).toHaveLength(2);
+    expect(restored.find((runtime) => runtime.runtime === "codex")).toMatchObject({ status: "available", version: "3", capabilities: ["code.read", "code.modify"] });
+    expect(restored.find((runtime) => runtime.runtime === "claude-code")).toEqual(partial.find((runtime) => runtime.runtime === "claude-code"));
+  });
+
+  it("scopes snapshot reconciliation to its organization and authenticated computer", async () => {
+    server = await buildTestServer();
+    const target = await freshComputer(server), sibling = await freshComputer(server, "computer_sibling");
+    await server.db.db.insert(organizations).values({ id: "org_other", name: "Other", createdAt: server.ctx.clock.nowIso() });
+    const foreign = await freshComputer(server, "computer_foreign", "org_other");
+    const foreignContext = { ...server.ctx, organizationId: "org_other" };
+    const snapshot = [{ runtime: "codex", status: "available" as const, capabilities: ["code.read"] }];
+    for (const id of [target, sibling]) await recordHeartbeatRuntimes(server.ctx, id, snapshot);
+    await recordHeartbeatRuntimes(foreignContext, foreign, snapshot);
+    const siblingBefore = await listComputerRuntimes(server.ctx, sibling), foreignBefore = await listComputerRuntimes(foreignContext, foreign);
+    await recordHeartbeatRuntimes(server.ctx, target, []);
+    await expect(recordHeartbeatRuntimes(server.ctx, foreign, [])).rejects.toMatchObject({ httpStatus: 404 });
+    await expect(recordHeartbeatRuntimes(server.ctx, foreign, [{ ...snapshot[0]!, status: "disabled" }])).rejects.toMatchObject({ httpStatus: 404 });
+    expect(await listComputerRuntimes(server.ctx, target)).toEqual([expect.objectContaining({ status: "missing" })]);
+    expect(await listComputerRuntimes(server.ctx, sibling)).toEqual(siblingBefore);
+    expect(await listComputerRuntimes(foreignContext, foreign)).toEqual(foreignBefore);
   });
 });

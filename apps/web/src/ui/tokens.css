@@ -1,102 +1,58 @@
-/**
- * Artoo UI design tokens — canonical source (#61/#65).
- *
- * Implements docs/ui-system-spec.md §3 and docs/production-ui-gate.md §7. Every
- * repeated color / spacing / radius / shadow / focus / motion value is a custom
- * property here; components and surfaces reference these names, never ad-hoc hex.
- *
- * Names are semantic so a future dark theme is an additive `:root` override, not
- * a rewrite. Legacy aliases (bottom) keep the pre-foundation styles.css working
- * until #69-#78 migrate surfaces onto the component primitives.
- */
+/* Shared semantic palette. Dark is the product default; the saved preference
+   is applied before React mounts to avoid a flash of the opposite theme. */
 :root {
-  /* Typography ------------------------------------------------------------- */
-  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-
-  --text-display: 20px;   --lh-display: 28px;
-  --text-h1: 17px;        --lh-h1: 24px;
-  --text-h2: 15px;        --lh-h2: 22px;
-  --text-h3: 13px;        --lh-h3: 18px;
-  --text-body: 14px;      --lh-body: 20px;
-  --text-small: 13px;     --lh-small: 18px;
-  --text-caption: 12px;   --lh-caption: 16px;
-  --text-mono: 12px;      --lh-mono: 18px;
-  --fw-regular: 450; --fw-medium: 550; --fw-semibold: 600; --fw-bold: 650;
-
-  /* Color — neutrals (light) ---------------------------------------------- */
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --surface-2: #fbfcfd;
-  --surface-3: #eff1f4;
-  --border: #e3e6ea;
-  --border-strong: #d2d7de;
-  --text: #1b1f27;
-  --text-muted: #5b6573;
-  --text-subtle: #677384;
-  --sidebar-bg: #f5f5fa;
-  --sidebar-border: #e6e6ef;
-  --avatar-bg: #e9e8fa;
-  --scrollbar-thumb: #d6dae0;
-  --scrollbar-thumb-hover: #c2c8d0;
-
-  /* Color — brand & semantic ---------------------------------------------- */
-  --accent: #4f46e5;
-  --accent-hover: #4338ca;
-  --accent-soft: #eef0fe;
-  --accent-text: #4338ca;
-  --on-accent: #ffffff;
-
-  --success: #15803d; --success-soft: #e7f6ec;
-  --warning: #b45309; --warning-soft: #fdf1e0;
-  --danger: #b42318;  --danger-hover: #991b1b; --danger-soft: #fdeceb;
-  --info: #1d6fd1;    --info-soft: #e8f1fc;
-  --neutral: #475467; --neutral-soft: #eef1f4;
-
-  /* Controls --------------------------------------------------------------- */
-  --control-border-hover: #c2c8d0;
-  --skeleton-shine: #e7eaee;
-  --state-error-border: #f3c9c5;
-  --tooltip-bg: var(--text);
-  --tooltip-text: var(--on-accent);
-  --modal-overlay: rgba(16, 24, 40, 0.45);
-
-  /* Spacing (4px grid) ----------------------------------------------------- */
-  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
-  --space-5: 24px; --space-6: 32px; --space-7: 48px;
-
-  /* Radius ----------------------------------------------------------------- */
+  color-scheme: dark;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --text-display: 20px; --lh-display: 28px;
+  --text-h1: 17px; --lh-h1: 24px;
+  --text-h2: 15px; --lh-h2: 22px;
+  --text-h3: 13px; --lh-h3: 18px;
+  --text-body: 14px; --lh-body: 20px;
+  --text-small: 13px; --lh-small: 18px;
+  --text-caption: 12px; --lh-caption: 16px;
+  --text-mono: 12px; --lh-mono: 18px;
+  --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600; --fw-bold: 650;
+  --bg: #000000;
+  --surface: #0a0a0b; --surface-2: #111113; --surface-3: #17171a;
+  --border: #242428; --border-strong: #35353b;
+  --text: #f4f4f5; --text-secondary: #c9c9ce; --text-muted: #9b9ba4; --text-subtle: #85858e;
+  --sidebar-bg: #0a0a0b; --sidebar-border: #242428; --avatar-bg: #24233f;
+  --scrollbar-thumb: #35353b; --scrollbar-thumb-hover: #4a4a53;
+  --accent: #5b5ef0; --accent-hover: #6b6ef5; --accent-soft: rgba(91,94,240,.16); --accent-text: #a4a6ff; --on-accent: #ffffff;
+  --success: #34d399; --success-soft: rgba(16,185,129,.12);
+  --warning: #f5b544; --warning-soft: rgba(245,165,36,.12);
+  --danger: #fb7979; --danger-hover: #fc9393; --danger-soft: rgba(240,82,82,.12);
+  --info: #4bd0e3; --info-soft: rgba(34,184,207,.12);
+  --neutral: #a1a1aa; --neutral-soft: #1c1c20;
+  --control-border-hover: #4a4a53; --skeleton-shine: #252529;
+  --state-error-border: rgba(240,82,82,.3);
+  --tooltip-bg: #f4f4f5; --tooltip-text: #111113; --modal-overlay: rgba(0,0,0,.7);
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px; --space-7: 48px;
   --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px; --radius-pill: 999px;
-
-  /* Elevation -------------------------------------------------------------- */
-  --e1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.04);
-  --e2: 0 4px 12px rgba(16, 24, 40, 0.10);
-  --e3: 0 12px 32px rgba(16, 24, 40, 0.18);
-
-  /* Focus ring ------------------------------------------------------------- */
+  --e1: 0 1px 2px rgba(0,0,0,.12); --e2: 0 8px 20px rgba(0,0,0,.2); --e3: 0 20px 60px rgba(0,0,0,.4);
   --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
-
-  /* Motion ----------------------------------------------------------------- */
-  --motion-fast: 120ms ease;
-  --motion-enter: 160ms ease-out;
-  --motion-reduced: 0.001ms;
-
-  /* Z-index layers --------------------------------------------------------- */
+  --motion-fast: 120ms ease; --motion-enter: 160ms ease-out; --motion-reduced: .001ms;
   --z-base: 0; --z-nav: 20; --z-dropdown: 30; --z-toast: 40; --z-modal: 50;
-
-  /* App chrome ------------------------------------------------------------- */
-  --nav-h: 52px;
-
-  /* Legacy aliases (pre-foundation styles.css) — map to semantic tokens.
-   * Remove once #69-#78 migrate surfaces onto components. */
-  --surface-elev: var(--surface);
-  --green: var(--success); --green-soft: var(--success-soft);
-  --amber: var(--warning); --amber-soft: var(--warning-soft);
-  --red: var(--danger); --red-soft: var(--danger-soft);
-  --blue: var(--info); --blue-soft: var(--info-soft);
-  --slate: var(--neutral); --slate-soft: var(--neutral-soft);
-  --purple: var(--accent-text); --purple-soft: var(--accent-soft);
-  --radius: var(--radius-md);
-  --shadow-sm: var(--e1); --shadow-md: var(--e2);
+  --nav-h: 64px;
+  --panel: var(--surface); --elev: var(--surface-2); --line: var(--border); --fg: var(--text); --fg2: var(--text-secondary); --muted: var(--text-muted);
+  --surface-elev: var(--surface-2);
+  --green: var(--success); --green-soft: var(--success-soft); --amber: var(--warning); --amber-soft: var(--warning-soft);
+  --red: var(--danger); --red-soft: var(--danger-soft); --blue: var(--info); --blue-soft: var(--info-soft);
+  --slate: var(--neutral); --slate-soft: var(--neutral-soft); --purple: var(--accent-text); --purple-soft: var(--accent-soft);
+  --radius: var(--radius-md); --shadow-sm: var(--e1); --shadow-md: var(--e2);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f7f7f8; --surface: #ffffff; --surface-2: #fafafa; --surface-3: #f0f0f2;
+  --border: #e4e4e7; --border-strong: #d4d4d8;
+  --text: #18181b; --text-secondary: #3f3f46; --text-muted: #62626c; --text-subtle: #71717b;
+  --sidebar-bg: #fafafa; --sidebar-border: #e4e4e7; --avatar-bg: #edecfd;
+  --scrollbar-thumb: #d4d4d8; --scrollbar-thumb-hover: #b7b7bf;
+  --accent: #5154dc; --accent-hover: #4649c8; --accent-soft: rgba(81,84,220,.08); --accent-text: #4f46d0;
+  --success: #047857; --success-soft: #ecfdf5; --warning: #a15a0a; --warning-soft: #fff7e6;
+  --danger: #c13434; --danger-hover: #a62222; --danger-soft: #fff0f0; --info: #087c91; --info-soft: #edfafd;
+  --neutral: #62626c; --neutral-soft: #f0f0f2; --control-border-hover: #b7b7bf; --skeleton-shine: #e7e7ec;
+  --state-error-border: #f2c4c4; --tooltip-bg: #27272a; --tooltip-text: #fafafa; --modal-overlay: rgba(24,24,27,.4);
+  --e1: 0 1px 2px rgba(0,0,0,.03); --e2: 0 6px 16px rgba(0,0,0,.06); --e3: 0 16px 48px rgba(0,0,0,.12);
 }

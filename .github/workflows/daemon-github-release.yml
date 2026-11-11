@@ -1,0 +1,75 @@
+name: Publish verified daemon installers
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full current main commit used by the package matrix
+        required: true
+        type: string
+      candidate_run_id:
+        description: Build and verify cross-platform npm daemon run ID for that commit
+        required: true
+        type: string
+      version:
+        description: Exact new public version
+        required: true
+        default: 0.1.0-rc.3
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: daemon-publication
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+      PACKAGE_VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Bind release output to this run
+        run: echo "RELEASE_DIRECTORY=$RUNNER_TEMP/daemon-publication-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      - name: Verify the main release gates and exact package-matrix jobs
+        run: node scripts/azure-release/daemon-publication.mjs inspect
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.candidate_run_id }}
+          name: ${{ env.CANDIDATE_ARTIFACT }}
+          path: ${{ env.RELEASE_DIRECTORY }}/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.candidate_run_id }}
+          name: ${{ env.SUMMARY_ARTIFACT }}
+          path: ${{ env.RELEASE_DIRECTORY }}/summary
+      - name: Verify the identical bytes and pin both bootstrap installers
+        run: node scripts/azure-release/daemon-publication.mjs render
+      - name: Require unchanged main, matrix attempt and an unused version tag
+        run: node scripts/azure-release/daemon-publication.mjs finalize
+      - name: Stage all public release assets without replacing existing releases
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" "$PUBLIC_ASSET_DIRECTORY"/* --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" --title "@jiayunxie/artood $PACKAGE_VERSION" --notes-file "$RELEASE_DIRECTORY/notes.md" --prerelease --draft
+      - name: Make the complete verified release available to target machines
+        run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+      - name: Record published package identity
+        shell: bash
+        run: |
+          echo "Published [artood $PACKAGE_VERSION](https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG) from \`$SOURCE_SHA\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Tarball SHA-256: \`$PACKAGE_SHA256\`. npm publication is separate." >> "$GITHUB_STEP_SUMMARY"

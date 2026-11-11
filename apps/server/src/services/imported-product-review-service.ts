@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
-import { readContentAddressedBlob } from "../content-addressed-blob.js";
+import { readContentAddressedBlob, requireArtifactStore, type ArtifactStorageOptions } from "../content-addressed-blob.js";
 import { assertSemanticCapsuleResearch } from "../product-source-semantic-transfer-routes.js";
 import { admitProductSourceSemanticTransferInTransaction, assertMeasurementV2TransferSessions, type AuthenticatedTransferNode } from "./product-source-transfer-service.js";
 import { requireActiveMember } from "./member-status.js";
@@ -251,9 +251,10 @@ export async function stopGoalImportedProductReviews(ctx: ServerContext, goalId:
 }
 
 /** The authenticated transport supplies identity/session; no frame can choose either or the initiating user. */
-export function createGoalImportedProductReviewBinding(ctx: ServerContext, options: {
-  identity: AuthenticatedTransferNode; sessionId: string; isCurrent: () => boolean; transport: Pick<NodeTransport, "send">; artifactDir: string;
+export function createGoalImportedProductReviewBinding(ctx: ServerContext, options: ArtifactStorageOptions & {
+  identity: AuthenticatedTransferNode; sessionId: string; isCurrent: () => boolean; transport: Pick<NodeTransport, "send">;
 }) {
+  const artifactStore = requireArtifactStore(options);
   const identity = Object.freeze({ ...options.identity });
   const current = () => { if (!options.isCurrent()) throw AppError.permissionDenied("Imported review node session is no longer current"); };
   async function credential(tx: DrizzleDb) {
@@ -323,7 +324,7 @@ export function createGoalImportedProductReviewBinding(ctx: ServerContext, optio
         const [delivery] = await tx.select().from(deliveries).where(and(eq(deliveries.id, message.command_id), eq(deliveries.reviewId, row.id), eq(deliveries.sessionId, options.sessionId)));
         if (!delivery || message.payload.request_digest !== row.requestDigest) throw AppError.conflict("Imported result has no matching issued command");
         const source = request.operation.intent.request.byte_request.source;
-        const bytes = await readContentAddressedBlob(options.artifactDir, source.capsule_digest, source.capsule_bytes);
+        const bytes = await readContentAddressedBlob(artifactStore, source.capsule_digest, source.capsule_bytes);
         assertSemanticCapsuleResearch(bytes, request.operation.intent.request);
         const capsule = JSON.parse(bytes.toString("utf8")) as { files: { path: string; base64: string }[] };
         const research = Buffer.from(capsule.files.find(file => file.path === ".artoo/product/research.json")!.base64, "base64");

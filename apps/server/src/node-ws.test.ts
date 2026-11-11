@@ -127,6 +127,22 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
     transport = undefined;
   });
 
+  it("exposes workspace suggestions only from the current authenticated node session", async () => {
+    server = await buildTestServer();
+    const port = await listen(server);
+    transport = createWebSocketTransport({ url: `ws://127.0.0.1:${port}/api/v1/node?token=dev`,
+      hello: { ...hello(NODE_ID), workspace_roots: { version: 1, paths: ["C:/ArtooWorkspaces"] } } });
+    await transport.ready;
+    await waitFor(() => server?.nodeRegistry.get(NODE_ID) !== undefined, "workspace hello registered");
+    const online = await server.app.inject({ method: "GET", url: "/api/v1/daemons" });
+    expect(online.statusCode).toBe(200);
+    expect(online.json().daemons.find((item: { computer_id: string }) => item.computer_id === NODE_ID).workspace_roots).toEqual({ version: 1, paths: ["C:/ArtooWorkspaces"] });
+    await transport.close();
+    await waitFor(() => server?.nodeRegistry.get(NODE_ID) === undefined, "node disconnected");
+    const offline = await server.app.inject({ method: "GET", url: "/api/v1/daemons" });
+    expect(offline.json().daemons.find((item: { computer_id: string }) => item.computer_id === NODE_ID)).not.toHaveProperty("workspace_roots");
+  });
+
   it("requires the first persisted runtime advertisement before registering an agent workspace", async () => {
     server = await buildTestServer();
     const computerId = "computer_first_heartbeat";
@@ -260,8 +276,18 @@ describe("node WS endpoint (real WebSocket loopback)", () => {
     expect(firstBinding?.supportsVerificationProfile("default", "proj_artoo", "/work/product")).toBe(false);
     expect(server.ctx.supportsVerificationProfile?.(NODE_ID, "default", "proj_artoo", "/work/product")).toBe(false);
 
-    first.close();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const heartbeat = { kind: "node.heartbeat", node_id: NODE_ID, sequence: 0,
+      resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 1 }, running_instances: [],
+      runtimes: [{ runtime: "codex", status: "available", capabilities: ["code.modify"] }] };
+    second.send(JSON.stringify(heartbeat));
+    await waitFor(async () => (await advertisedRuntimeIds(server!, NODE_ID)).includes("codex"), "current runtime snapshot persisted");
+    let replacedCloseCode: number | undefined;
+    first.addEventListener("close", (event) => { replacedCloseCode = event.code; });
+    first.send(JSON.stringify({ ...heartbeat, sequence: 1, runtimes: [] }));
+    await waitFor(() => replacedCloseCode !== undefined, "replaced heartbeat sender closed");
+    expect(replacedCloseCode).toBe(1008);
+    const runtimeRows = (await server.app.inject({ method: "GET", url: `/api/v1/computers/${NODE_ID}/runtimes` })).json().runtimes;
+    expect(runtimeRows.find((runtime: { runtime: string }) => runtime.runtime === "codex").status).toBe("available");
     expect(server.nodeRegistry.get(NODE_ID)).toBe(secondBinding);
     expect(await computerStatus(server)).toBe("online");
 
