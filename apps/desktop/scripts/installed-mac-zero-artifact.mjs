@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { hasCompletePNGPixelStream } from "../../../scripts/png-evidence.mjs";
 import { assertMacCorrectionAssignment, assertMacCorrectionRetention } from "./installed-mac-correction.mjs";
 import { inspectInstalledMacRetention } from "./installed-mac-retention-ui.mjs";
+import { openInstalledSettings, selectInstalledProject, waitForInstalledShell } from "./installed-ui-navigation.mjs";
 
 export const macZeroArtifactImageNames = [
   "macos-zero-artifact-worktree-settings.png", "macos-zero-artifact-completed-empty.png",
@@ -89,11 +90,11 @@ export async function runInstalledMacZeroArtifact({ page: initialPage, electronA
     assert.equal(connection.paired, true); assert.equal(connection.computerId, fixture.computer_id);
     const previousConfig = (await page.evaluate(() => window.artooDesktop.daemonStatus())).config;
     ({ page, electronApp } = await restartWithoutArtifacts());
-    await expect(page.getByRole("link", { name: "Settings", exact: true })).toBeVisible({ timeout: 45_000 });
+    await waitForInstalledShell(page);
     assert.deepEqual(await page.evaluate(() => window.artooDesktop.getConnection()), connection);
     assert.equal(await electronApp.evaluate(() => process.env.ARTOO_REPORT_ARTIFACTS), "none");
     stage = "configure the separate Git base through installed Settings";
-    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await openInstalledSettings(page);
     if ((await page.evaluate(() => window.artooDesktop.daemonStatus())).state !== "stopped") {
       await page.getByRole("button", { name: "Stop worker", exact: true }).click();
       await expect.poll(async () => (await page.evaluate(() => window.artooDesktop.daemonStatus())).state, { timeout: 30_000 }).toBe("stopped");
@@ -118,8 +119,9 @@ export async function runInstalledMacZeroArtifact({ page: initialPage, electronA
 
     stage = "create and approve one separate task through the installed UI";
     assert.equal((await scenario.observe()).snapshot, null);
-    await page.getByRole("link", { name: "Workspace", exact: true }).click();
-    await page.getByLabel("Project", { exact: true }).selectOption(fixture.project_id);
+    const project = (await api("/api/v1/bootstrap")).projects.find((item) => item.id === fixture.project_id);
+    assert.ok(project, "The zero-artifact fixture project must be available to the installed device");
+    await selectInstalledProject(page, project.name);
     await page.getByRole("button", { name: "New task", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Create task", exact: true });
     await dialog.getByLabel("Title", { exact: true }).fill(fixture.task_title);
@@ -159,8 +161,7 @@ export async function runInstalledMacZeroArtifact({ page: initialPage, electronA
     await page.reload();
     const coldRead = page.waitForRequest((request) => new URL(request.url()).pathname === `/api/v1/tasks/${taskId}` && request.method() === "GET", { timeout: 45_000 });
     void coldRead.catch(() => {});
-    await page.getByRole("link", { name: "Workspace", exact: true }).click();
-    await page.getByLabel("Project", { exact: true }).selectOption(fixture.project_id);
+    await selectInstalledProject(page, project.name);
     const taskButton = page.getByRole("list", { name: "Tasks", exact: true }).getByRole("button")
       .filter({ has: page.getByText(fixture.task_title, { exact: true }) });
     await expect(taskButton).toHaveCount(1); await taskButton.click(); await state("review");

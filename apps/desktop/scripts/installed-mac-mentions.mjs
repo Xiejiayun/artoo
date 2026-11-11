@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { assertCompleteTextVisible } from "./installed-mac-visual-evidence.mjs";
+import { installedProjectButton, selectInstalledProject } from "./installed-ui-navigation.mjs";
 
 export const macMentionsImageNames = [
   "macos-mentions-a-draft.png", "mentions-peer-first.png", "mentions-peer-second.png",
@@ -108,7 +109,7 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
       onScreenshot: async ({ locator, name, caption }) => capture(locator, name, caption),
     });
     const fields = scenario.fields;
-    const projectPicker = page.getByLabel("Project", { exact: true });
+    const projectA = installedProjectButton(page, fields.project_a_name);
     const channelList = page.getByRole("navigation", { name: "Channel list", exact: true });
     const conversation = page.getByRole("region", { name: "Channel conversation", exact: true });
     const thread = page.getByRole("complementary", { name: "Thread", exact: true });
@@ -153,7 +154,7 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
       assert.equal(await draft().inputValue(), originalDraft, "Full-reply viewing must not change or submit the thread draft");
     };
     const destination = async (target) => {
-      await expect(projectPicker).toHaveValue(publication.project_b.id);
+      await expect(installedProjectButton(page, publication.project_b.name)).toHaveAttribute("aria-pressed", "true");
       // A focused thread replaces the main conversation at narrower desktop
       // widths. The exact selected channel remains visible in its directory.
       const selectedChannel = channelList.getByRole("button", { name: `# ${publication.channel_b.name}`, exact: true });
@@ -177,23 +178,23 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
     };
 
     stage = "retain an A-thread draft before another client creates project B";
-    await page.getByRole("link", { name: "Channels", exact: true }).click();
-    await projectPicker.selectOption(fields.project_a_id);
+    await selectInstalledProject(page, fields.project_a_name, "thread");
     await openAThread();
     await draft().fill(fields.draft_a); await expect(draft()).toHaveValue(fields.draft_a);
-    const originalProjectIds = await projectPicker.locator("option").evaluateAll((options) => options.map((option) => option.value));
-    await expect(projectPicker).toHaveValue(fields.project_a_id);
+    const originalProjectNames = await page.locator("#primary-navigation").getByRole("region", { name: "Projects", exact: true, includeHidden: true })
+      .getByRole("button", { includeHidden: true }).allTextContents();
+    await expect(projectA).toHaveAttribute("aria-pressed", "true");
     await viewport(draft(), "macos-mentions-a-draft.png", "Installed Mac: the unsent project A thread draft is present before project B exists");
     const connection = await page.evaluate(() => window.artooDesktop.getConnection());
     assert.ok(connection.deviceId, "The scenario must bind the actual paired Mac device");
     publication = await scenario.publish({ deviceId: connection.deviceId });
-    assert.ok(!originalProjectIds.includes(publication.project_b.id));
+    assert.ok(!originalProjectNames.map((name) => name.trim()).includes(publication.project_b.name));
     assert.equal(publication.published_unread_count, publication.baseline_unread_count + 3);
     assert.equal(publication.history.later_message_ids.length, 55); assert.equal(publication.history.latest_message_ids.length, 50);
     assert.equal(publication.history.has_more, true);
     assert.ok([publication.first, publication.second].every((item) => !publication.history.latest_message_ids.includes(item.message_id)));
     assert.ok(publication.first.body.length > 240, "Exact navigation must reveal more than the notification preview");
-    await expect(projectPicker).toHaveValue(fields.project_a_id); await expect(draft()).toHaveValue(fields.draft_a);
+    await expect(projectA).toHaveAttribute("aria-pressed", "true"); await expect(draft()).toHaveValue(fields.draft_a);
     await expect(unread(publication.published_unread_count)).toBeVisible();
     evidence.publication = { project_a_id: fields.project_a_id, project_b_id: publication.project_b.id,
       channel_b_id: publication.channel_b.id, root_b_id: publication.root_b.id, recipient_device_id: publication.recipient_device_id,
@@ -248,7 +249,7 @@ export async function runInstalledMacMentions({ page, root, server, browser, bas
     check("UI Retry performed the production read; the second mention changed unread by exactly one and the unrelated sentinel stayed unread");
 
     stage = "restore both thread drafts across project switching and installed renderer reload";
-    await projectPicker.selectOption(fields.project_a_id);
+    await selectInstalledProject(page, fields.project_a_name, "thread");
     await expect(thread).toHaveCount(0);
     const switched = installedMentionRoute(page.url());
     for (const key of ["room", "thread", "message", "notification", "project"]) assert.ok(!(key in switched.search));
