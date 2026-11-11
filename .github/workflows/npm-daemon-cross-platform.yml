@@ -31,7 +31,7 @@ on:
       version:
         description: Exact universal candidate version to build on main
         required: true
-        default: 0.1.0-rc.5
+        default: 0.1.0-rc.6
         type: string
 
 permissions:
@@ -51,7 +51,7 @@ jobs:
         shell: pwsh
     env:
       PACKAGE_NAME: '@jiayunxie/artood'
-      PACKAGE_VERSION: ${{ inputs.version || '0.1.0-rc.5' }}
+      PACKAGE_VERSION: ${{ inputs.version || '0.1.0-rc.6' }}
       NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
       NPM_CONFIG_LOGS_MAX: '0'
     outputs:
@@ -74,7 +74,7 @@ jobs:
       - name: Build the server, daemon and referenced packages once
         run: npm run build --workspace @artoo/server
       - name: Check CLI contracts, controlled fixture isolation and registry pins
-        run: node --test scripts/npm-daemon/cli.test.mjs scripts/npm-daemon/onboarding.test.mjs scripts/npm-daemon/bootstrap.test.mjs scripts/npm-daemon/controlled-cli-smoke.test.mjs scripts/npm-daemon/registry-platform-smoke.test.mjs
+        run: node --test scripts/npm-daemon/cli.test.mjs scripts/npm-daemon/onboarding.test.mjs scripts/npm-daemon/bootstrap.test.mjs scripts/npm-daemon/controlled-cli-smoke.test.mjs scripts/npm-daemon/registry-platform-smoke.test.mjs scripts/npm-daemon/temporary-context-real.test.mjs
       - name: Build a fresh Windows host and one universal tarball
         id: pack
         run: |

@@ -4,13 +4,13 @@ import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { connectComputer, parseConnectArguments, savedConnectionEnvironment } from "./onboarding.mjs";
 import { assertPrivateProviderKeyFile, connectionEnvironment, loadConnection, prepareWorkspace, protectDirectory, saveConnection, serverOrigin, validateConnection } from "./local-config.mjs";
 import { managedStatus, startManaged, stopManaged } from "./managed.mjs";
 import { launchManagedRuntime, runCli } from "./cli.mjs";
-import { managedConnectionEnvironment, teamConfigurationEnvironment, validateTeamConfiguration } from "./team-config.mjs";
+import { classifyTemporaryDirectoryAudit, managedConnectionEnvironment, teamConfigurationEnvironment, validateTeamConfiguration } from "./team-config.mjs";
 import { readRelease } from "./verify.mjs";
 
 const source = dirname(fileURLToPath(import.meta.url));
@@ -130,6 +130,7 @@ function controlledPackage(root, observation) {
     copyFileSync(join(source, file), join(bin, file === "cli.mjs" ? "artood.mjs" : file));
   const files = new Map([["artood.mjs", `import {readFileSync,writeFileSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
+import {tmpdir} from 'node:os';
 export function loadConfigFromEnv(env) {
   if(env.ARTOO_VERIFICATION_PROFILES_FILE && readFileSync(env.ARTOO_VERIFICATION_PROFILES_FILE,'utf8')==='reject')
     throw Error('Controlled profile qualification failed');
@@ -137,7 +138,7 @@ export function loadConfigFromEnv(env) {
 }
 export async function runDaemonEntrypoint(env) {
   loadConfigFromEnv(env);
-  const child=spawnSync(process.execPath,['-e','process.stdout.write(JSON.stringify({home:process.env.CODEX_HOME,provider:!!process.env.ARTOO_CODEX_PROVIDER_KEY}))'],{encoding:'utf8',windowsHide:true});
+  const child=spawnSync(process.execPath,['-e','process.stdout.write(JSON.stringify({home:process.env.CODEX_HOME,provider:!!process.env.ARTOO_CODEX_PROVIDER_KEY,temporary:require("node:os").tmpdir(),temporaryVariables:[process.env.TMP,process.env.TEMP,process.env.TMPDIR]}))'],{encoding:'utf8',windowsHide:true});
   if(child.error||child.status!==0) throw Error('Controlled model environment probe failed');
   writeFileSync(${JSON.stringify(observation)}, JSON.stringify({node:env.ARTOO_NODE_ID,inherited:process.env.ARTOO_NODE_URL??null,entry:import.meta.url,
     research:env.ARTOO_RESEARCH_ENABLED,receipts:env.ARTOO_RESEARCH_RECEIPTS_DIR,profiles:env.ARTOO_VERIFICATION_PROFILES_FILE,
@@ -145,7 +146,7 @@ export async function runDaemonEntrypoint(env) {
     model:env.ARTOO_CODEX_MODEL,provider:env.ARTOO_CODEX_PROVIDER_URL,providerSelected:!!env.ARTOO_CODEX_PROVIDER_KEY,
     providerInherited:!!env.ARTOO_CODEX_PROVIDER_KEY && process.env.ARTOO_CODEX_PROVIDER_KEY===env.ARTOO_CODEX_PROVIDER_KEY,
     providerInArgv:!!env.ARTOO_CODEX_PROVIDER_KEY && process.argv.some(arg=>arg.includes(env.ARTOO_CODEX_PROVIDER_KEY)),
-    codexHome:env.CODEX_HOME,modelEnvironment:JSON.parse(child.stdout),
+    codexHome:env.CODEX_HOME,temporary:tmpdir(),modelEnvironment:JSON.parse(child.stdout),
     inheritedSettings:Object.keys(process.env).filter(key=>/^ARTOO_|^(?:NODE_OPTIONS|NODE_PATH)$/i.test(key))}));
   const timer=setInterval(()=>{},1000);
   const node={stop:async()=>clearInterval(timer)};
@@ -379,6 +380,245 @@ function codexHomeFixture(t, options) {
   writeFileSync(fixture.file, JSON.stringify(fixture.configuration));
   return { ...fixture, home };
 }
+
+function temporaryDirectoryFixture(t, options) {
+  const fixture = teamFixture(t, options), parent = realpathSync.native(homedir());
+  const privateRoot = protectDirectory(mkdtempSync(join(parent, ".artoo-temporary-test-")));
+  t.after(() => {
+    assert.ok(realpathSync.native(privateRoot).startsWith(`${parent}${sep}.artoo-temporary-test-`));
+    rmSync(privateRoot, { recursive: true });
+  });
+  const temporaryDirectory = protectDirectory(join(privateRoot, "temporary"));
+  fixture.configuration.temporary_directory = temporaryDirectory;
+  writeFileSync(fixture.file, JSON.stringify(fixture.configuration));
+  return { ...fixture, privateRoot, temporaryDirectory };
+}
+
+test("temporary audit diagnostics accept only the fixed complete collector protocol and never expose subprocess text", () => {
+  const result = overrides => ({ status: 0, signal: null, stdout: "ok\r\n", ...overrides,
+    get stderr() { throw Error("Raw subprocess text must not be read for diagnostics."); } });
+  assert.equal(classifyTemporaryDirectoryAudit(result()), null);
+  assert.equal(classifyTemporaryDirectoryAudit(result({ stdout: "ok\n" })), null);
+  const reasons = ["collector_error", "input_decode_failed", "identity_read_failed", "volume_inspection_failed", "path_attributes_failed",
+    "acl_read_failed", "descriptor_read_failed", "local_ntfs_required", "path_kind_changed", "untrusted_owner", "noncanonical_dacl",
+    "missing_dacl", "acl_entry_limit", "unsupported_ace", "ancestor_replacement_grant", "private_effective_grant", "private_future_child_grant"];
+  for (const reason of reasons) {
+    assert.equal(classifyTemporaryDirectoryAudit(result({ status: 1, stdout: `${reason}\r\n` })), reason);
+    assert.equal(classifyTemporaryDirectoryAudit(result({ status: 0, stdout: `${reason}\r\n` })), "collector_protocol_failed");
+    assert.equal(classifyTemporaryDirectoryAudit(result({ status: 2, stdout: `${reason}\r\n` })), "collector_exit_failed");
+  }
+  for (const stdout of ["", "ok", " ok\n", "ok\n\n", "private_future_child_grant", "private_future_child_grant\nfixture-secret", "fixture-secret\n", "$script:path='fixture-secret'\n"]) {
+    assert.equal(classifyTemporaryDirectoryAudit(result({ stdout })), "collector_protocol_failed");
+    assert.equal(classifyTemporaryDirectoryAudit(result({ status: 1, stdout })), "collector_exit_failed");
+  }
+  assert.equal(classifyTemporaryDirectoryAudit(result({ signal: "SIGTERM", stdout: "private_future_child_grant\n" })), "collector_signaled");
+  for (const [code, expected] of [["ETIMEDOUT", "collector_timeout"], ["ENOBUFS", "collector_output_limit"], ["EACCES", "collector_spawn_failed"]]) {
+    assert.equal(classifyTemporaryDirectoryAudit(result({ status: 1, signal: "SIGTERM", stdout: "private_future_child_grant\n",
+      error: { code, get message() { throw Error("Raw error messages must not be read."); } } })), expected);
+  }
+});
+
+test("temporary audit diagnostics distinguish actual subprocess timeout and nonzero exit from ACL rejection", () => {
+  const timed = spawnSync(process.execPath, ["-e", "process.stdout.write('private_future_child_grant\\n');setTimeout(()=>{},10000)"],
+    { encoding: "utf8", windowsHide: true, timeout: 500 });
+  assert.equal(timed.error?.code, "ETIMEDOUT");
+  assert.equal(classifyTemporaryDirectoryAudit(timed), "collector_timeout");
+  const failed = spawnSync(process.execPath, ["-e", "process.stdout.write('private_future_child_grant\\n');process.stderr.write('fixture-secret');process.exit(7)"],
+    { encoding: "utf8", windowsHide: true, timeout: 5000 });
+  assert.equal(failed.error, undefined); assert.equal(failed.status, 7); assert.equal(failed.signal, null);
+  assert.equal(classifyTemporaryDirectoryAudit(failed), "collector_exit_failed");
+});
+
+test("temporary directory selection is empty, physical and outside every agent root, then retains safe saved state", async t => {
+  const fixture = temporaryDirectoryFixture(t), roots = [fixture.workspace], value = temporary_directory => ({ version: 1, temporary_directory });
+  for (const path of ["relative", "", 42, `${fixture.temporaryDirectory}\n`, fixture.profiles])
+    assert.throws(() => validateTeamConfiguration(value(path), roots));
+  if (process.platform === "win32") assert.throws(() => validateTeamConfiguration(value("\\\\server\\share\\temporary"), roots), /local disk/);
+  if (process.platform === "win32") assert.equal(validateTeamConfiguration(value(fixture.temporaryDirectory.toUpperCase()), roots).temporary_directory,
+    fixture.temporaryDirectory, "Save the physical spelling required by the downstream private-context guard.");
+  assert.throws(() => validateTeamConfiguration(value(fixture.workspace), roots), /outside all agent/);
+  const inner = join(fixture.workspace, "temporary"); mkdirSync(inner);
+  assert.throws(() => validateTeamConfiguration(value(inner), roots), /outside all agent/);
+  const otherRoot = join(fixture.temporaryDirectory, "second-workspace"); mkdirSync(otherRoot, { mode: 0o700 });
+  assert.throws(() => validateTeamConfiguration(value(fixture.temporaryDirectory), [...roots, otherRoot]), /outside all agent/);
+  rmdirSync(otherRoot);
+  const alias = join(fixture.privateRoot, "alias"); symlinkSync(fixture.temporaryDirectory, alias, process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() => validateTeamConfiguration(value(alias), roots), /physical/);
+  const state = join(fixture.temporaryDirectory, "runtime-state"); writeFileSync(state, "synthetic state", { mode: 0o600 });
+  const options = { args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory, output: () => {} };
+  await assert.rejects(runCli(options), /newly selected temporary_directory must be empty/);
+  assert.equal(existsSync(join(fixture.state, "team-config.json")), false);
+  assert.equal(readFileSync(state, "utf8"), "synthetic state");
+  rmSync(state); await runCli(options);
+  assert.deepEqual(readdirSync(fixture.temporaryDirectory), []);
+  writeFileSync(state, "synthetic state", { mode: 0o600 });
+  chmodSync(state, 0o400); // Verification/research retain read-only private contexts.
+  await runCli(options);
+  assert.equal(JSON.parse(readFileSync(join(fixture.state, "team-config.json"), "utf8")).temporary_directory, fixture.temporaryDirectory);
+  const selected = managedConnectionEnvironment(connection(fixture.workspace), { tmp: "alias", TeMp: "alias", tmpdir: "alias" }, fixture.state, readRelease(fixture.packageDirectory));
+  assert.deepEqual(Object.keys(selected).filter(key => /^(?:TMP|TEMP|TMPDIR)$/i.test(key)).sort(), ["TEMP", "TMP", "TMPDIR"]);
+  for (const name of ["TMP", "TEMP", "TMPDIR"]) assert.equal(selected[name], fixture.temporaryDirectory);
+  writeFileSync(fixture.file, JSON.stringify({ version: 1 })); await runCli(options);
+  const inherited = { TMP: "old-tmp", TEMP: "old-temp", TMPDIR: "old-tmpdir", tmp: "old-alias" };
+  const cleared = managedConnectionEnvironment(connection(fixture.workspace), inherited, fixture.state, readRelease(fixture.packageDirectory));
+  for (const [name, content] of Object.entries(inherited)) assert.equal(cleared[name], content);
+  assert.equal(cleared.ARTOO_MANAGED_TEMPORARY_DIRECTORY, undefined);
+});
+
+test("saved temporary directory rejects links, hard links and oversized or unsafe runtime state on configuration and startup", async t => {
+  const fixture = temporaryDirectoryFixture(t);
+  const options = { args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory, output: () => {} };
+  await runCli(options);
+  const saved = readFileSync(join(fixture.state, "team-config.json"));
+  const load = () => managedConnectionEnvironment(connection(fixture.workspace), {}, fixture.state, readRelease(fixture.packageDirectory));
+  const alias = join(fixture.temporaryDirectory, "linked"); symlinkSync(fixture.control, alias, process.platform === "win32" ? "junction" : "dir");
+  assert.throws(load, /without links/); await assert.rejects(runCli(options), /without links/); rmSync(alias);
+  const outside = join(fixture.privateRoot, "source"), hard = join(fixture.temporaryDirectory, "hard");
+  writeFileSync(outside, "never read by admission", { mode: 0o600 }); linkSync(outside, hard);
+  assert.throws(load, /single-link/); rmSync(hard);
+  let deep = fixture.temporaryDirectory;
+  for (let i = 0; i < 33; i++) { deep = join(deep, "d"); mkdirSync(deep, { mode: 0o700 }); }
+  assert.throws(load, /bounded state inspection/);
+  const deepRoot = join(fixture.temporaryDirectory, "d"); assert.ok(deepRoot.startsWith(fixture.temporaryDirectory + sep)); rmSync(deepRoot, { recursive: true });
+  const wide = join(fixture.temporaryDirectory, "wide"); mkdirSync(wide, { mode: 0o700 });
+  for (let i = 0; i < 2048; i++) writeFileSync(join(wide, `state-${i}`), "", { mode: 0o600 });
+  assert.throws(load, /bounded state inspection/);
+  assert.ok(wide.startsWith(fixture.temporaryDirectory + sep)); rmSync(wide, { recursive: true });
+  const state = join(fixture.temporaryDirectory, "state"); writeFileSync(state, "{}", { mode: 0o600 });
+  if (process.platform !== "win32") {
+    chmodSync(state, 0o644); assert.throws(load, /private to the current user/);
+    await assert.rejects(runCli(options), /private to the current user/);
+    assert.equal(statSync(state).mode & 0o777, 0o644); chmodSync(state, 0o600);
+    chmodSync(fixture.privateRoot, 0o720); assert.throws(load, /ancestors/); chmodSync(fixture.privateRoot, 0o700);
+    chmodSync(fixture.temporaryDirectory, 0o750); assert.throws(load, /private to the current user/); chmodSync(fixture.temporaryDirectory, 0o700);
+  }
+  assert.deepEqual(readFileSync(join(fixture.state, "team-config.json")), saved);
+  assert.equal(existsSync(fixture.observation), false);
+  assert.equal(load().TEMP, fixture.temporaryDirectory);
+});
+
+// Mutates only the fresh test-owned directory's ACL and reports raw evidence.
+function temporaryFixtureAcl(path, descriptor) {
+  const script = "$ErrorActionPreference='Stop';" +
+    "$v=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))|ConvertFrom-Json;" +
+    "$owner=[Security.Principal.WindowsIdentity]::GetCurrent().User;" +
+    "if($null -ne $v.descriptor){$acl=[Security.AccessControl.DirectorySecurity]::new();" +
+    "if($v.descriptor -eq 'null'){$flags=[Security.AccessControl.ControlFlags]::DiscretionaryAclPresent -bor [Security.AccessControl.ControlFlags]::DiscretionaryAclProtected;" +
+    "$raw=[Security.AccessControl.RawSecurityDescriptor]::new($flags,$owner,$null,$null,$null);$bytes=[byte[]]::new($raw.BinaryLength);$raw.GetBinaryForm($bytes,0);" +
+    "$acl.SetSecurityDescriptorBinaryForm($bytes,[Security.AccessControl.AccessControlSections]::Access)}" +
+    "else{$acl.SetSecurityDescriptorSddlForm(('D:P(A;OICI;FA;;;'+$owner.Value+')'+$v.descriptor),[Security.AccessControl.AccessControlSections]::Access)};[IO.Directory]::SetAccessControl($v.path,$acl)};" +
+    "$acl=Get-Acl -LiteralPath $v.path;$raw=[Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0);" +
+    "$aces=@();foreach($ace in $raw.DiscretionaryAcl){$aces+=@{sid=$ace.SecurityIdentifier.Value;mask=([long]$ace.AccessMask -band [long]4294967295);flags=[int]$ace.AceFlags}};" +
+    "@{sddl=$acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All);nullDacl=($null -eq $raw.DiscretionaryAcl);aces=$aces}|ConvertTo-Json -Depth 4 -Compress";
+  const result = spawnSync(join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe"),
+    ["-NoProfile", "-NonInteractive", "-Command", script], { input: Buffer.from(JSON.stringify({ path, descriptor: descriptor ?? null })).toString("base64"),
+      encoding: "utf8", windowsHide: true, timeout: 15_000,
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath")) });
+  assert.ifError(result.error); assert.equal(result.status, 0, result.stderr); assert.equal(result.signal, null);
+  return JSON.parse(result.stdout);
+}
+
+test("Windows temporary admission rejects future-child, generic, null DACL and ancestor replacement grants without repairing ACLs", { skip: process.platform !== "win32", timeout: 120_000 }, async t => {
+  const fixture = temporaryDirectoryFixture(t);
+  const options = { args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory, output: () => {} };
+  const load = () => managedConnectionEnvironment(connection(fixture.workspace), {}, fixture.state, readRelease(fixture.packageDirectory));
+  for (const [flags, rights, expectedFlags] of [["", "0x1", 0], ["OIIO", "0x1", 9], ["CIIO", "0x1", 10], ["OICIIO", "GX", 11], ["OICIIO", "GA", 11]]) {
+    const before = temporaryFixtureAcl(fixture.temporaryDirectory, `(A;${flags};${rights};;;WD)`);
+    const grant = before.aces.find(ace => ace.sid === "S-1-1-0");
+    assert.equal(grant.flags, expectedFlags); assert.ok(grant.mask > 0);
+    if (rights === "GX") assert.ok((grant.mask & 0x20000020) !== 0, "Retain raw generic execute or the OS-mapped execute right.");
+    assert.deepEqual(readdirSync(fixture.temporaryDirectory), [], "Rejection must cover future children of an empty directory.");
+    await assert.rejects(runCli(options), expectedFlags === 0 ? /Audit: private_effective_grant\./ : /Audit: private_future_child_grant\./);
+    assert.equal(temporaryFixtureAcl(fixture.temporaryDirectory).sddl, before.sddl);
+    assert.equal(existsSync(join(fixture.state, "team-config.json")), false);
+  }
+  temporaryFixtureAcl(fixture.temporaryDirectory, ""); await runCli(options);
+  for (const descriptor of ["(A;OICIIO;GR;;;WD)", "null"]) {
+    const before = temporaryFixtureAcl(fixture.temporaryDirectory, descriptor);
+    if (descriptor === "null") assert.equal(before.nullDacl, true);
+    const reason = descriptor === "null" ? /Audit: missing_dacl\./ : /Audit: private_future_child_grant\./;
+    assert.throws(load, reason);
+    await assert.rejects(runCli(options), reason);
+    assert.equal(temporaryFixtureAcl(fixture.temporaryDirectory).sddl, before.sddl);
+  }
+  temporaryFixtureAcl(fixture.temporaryDirectory, "");
+  // Sibling creation on an ancestor is permitted; replacing descendants is not.
+  temporaryFixtureAcl(fixture.privateRoot, "(A;;0x4;;;WD)"); assert.equal(load().TMP, fixture.temporaryDirectory);
+  const parentAcl = temporaryFixtureAcl(fixture.privateRoot, "(A;;0x40;;;WD)");
+  assert.throws(load, /Audit: ancestor_replacement_grant\./);
+  assert.equal(temporaryFixtureAcl(fixture.privateRoot).sddl, parentAcl.sddl);
+  assert.equal(existsSync(fixture.observation), false);
+});
+
+test("selected temporary directory reaches actual daemon tmpdir and children after background restart and foreground start", { timeout: 90_000 }, async t => {
+  const fixture = temporaryDirectoryFixture(t, { stop: true }), before = tmpdir();
+  const env = { ...process.env, ARTOO_HOME: fixture.state, TMP: fixture.root, TEMP: fixture.root, TMPDIR: fixture.root };
+  await runCli({ args: ["configure", "--file", fixture.file], env, packageDirectory: fixture.packageDirectory, output: () => {} });
+  assert.equal(tmpdir(), before);
+  const check = () => {
+    const observed = JSON.parse(readFileSync(fixture.observation, "utf8"));
+    assert.equal(observed.temporary, fixture.temporaryDirectory);
+    assert.equal(observed.modelEnvironment.temporary, fixture.temporaryDirectory);
+    assert.deepEqual(observed.modelEnvironment.temporaryVariables, Array(3).fill(fixture.temporaryDirectory));
+    return observed;
+  };
+  const first = await startManaged({ directory: fixture.state, packageDirectory: fixture.packageDirectory, env });
+  const retained = dirname(dirname(fileURLToPath(check().entry))); await stopManaged(fixture.state);
+  writeFileSync(join(fixture.temporaryDirectory, "safe-runtime-state"), "{}", { mode: 0o600 });
+  const second = await startManaged({ directory: fixture.state, packageDirectory: retained, env });
+  assert.notEqual(first.pid, second.pid); check(); await stopManaged(fixture.state);
+  const child = spawn(process.execPath, [join(retained, "bin", "artood.mjs"), "start", "--foreground"], { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  let output = ""; child.stdout.on("data", bytes => { output += bytes; }); child.stderr.on("data", bytes => { output += bytes; });
+  const closed = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal })); });
+  let ready = false;
+  for (let attempt = 0; attempt < 150; attempt++) {
+    if ((await managedStatus(fixture.state)).status === "running") { ready = true; break; }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(ready, true, output); check(); await stopManaged(fixture.state); assert.deepEqual(await closed, { code: 0, signal: null });
+  assert.equal(tmpdir(), before);
+  assert.equal(env.TMP, fixture.root);
+});
+
+test("daemon temporary environment restores aliases and absence after startup failure, normal stop and failed stop", async t => {
+  const pattern = /^(?:TMP|TEMP|TMPDIR)$/i, snapshot = () => Object.fromEntries(Object.entries(process.env).filter(([name]) => pattern.test(name)));
+  const reset = values => { for (const name of Object.keys(process.env)) if (pattern.test(name)) delete process.env[name]; Object.assign(process.env, values); };
+  const original = snapshot(), fixture = temporaryDirectoryFixture(t), selected = fixture.temporaryDirectory;
+  t.after(() => reset(original));
+  for (const prior of [{}, { tMp: fixture.root, Temp: fixture.root, tMpDiR: fixture.root }]) {
+    reset(prior); const before = snapshot(), previousTmpdir = tmpdir();
+    const check = () => {
+      assert.equal(tmpdir(), selected);
+      for (const name of ["TMP", "TEMP", "TMPDIR"]) assert.equal(process.env[name], selected);
+      assert.deepEqual(Object.keys(snapshot()).sort(), ["TEMP", "TMP", "TMPDIR"]);
+    };
+    await assert.rejects(launchManagedRuntime({ ARTOO_MANAGED_TEMPORARY_DIRECTORY: selected }, async () => { check(); throw Error("temporary startup failure"); }), /temporary startup failure/);
+    assert.deepEqual(snapshot(), before); assert.equal(tmpdir(), previousTmpdir);
+    for (const fail of [false, true]) {
+      const node = await launchManagedRuntime({ ARTOO_MANAGED_TEMPORARY_DIRECTORY: selected }, async () => { check(); return { stop: async () => { check(); if (fail) throw Error("temporary stop failure"); } }; });
+      if (fail) await assert.rejects(node.stop(), /temporary stop failure/); else await node.stop();
+      assert.deepEqual(snapshot(), before); assert.equal(tmpdir(), previousTmpdir);
+    }
+    await launchManagedRuntime({}, async () => { assert.deepEqual(snapshot(), before); return {}; });
+    assert.deepEqual(snapshot(), before);
+  }
+});
+
+test("actual process exit restores the temporary environment before later exit observers", t => {
+  const fixture = temporaryDirectoryFixture(t), cli = pathToFileURL(join(source, "cli.mjs")).href;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import assert from 'node:assert/strict'; import {tmpdir} from 'node:os';
+    import {launchManagedRuntime} from ${JSON.stringify(cli)};
+    const snapshot=()=>Object.fromEntries(Object.entries(process.env).filter(([key])=>/^(?:TMP|TEMP|TMPDIR)$/i.test(key)));
+    const before=snapshot(), previous=tmpdir();
+    await launchManagedRuntime({ARTOO_MANAGED_TEMPORARY_DIRECTORY:${JSON.stringify(fixture.temporaryDirectory)}},async()=>({stop:async()=>{}}));
+    assert.equal(tmpdir(),${JSON.stringify(fixture.temporaryDirectory)});
+    process.on('exit',()=>{assert.deepEqual(snapshot(),before);assert.equal(tmpdir(),previous);process.stdout.write('temporary environment restored on exit');});
+    process.exit(0);
+  `], { encoding: "utf8", windowsHide: true, timeout: 15_000 });
+  assert.ifError(result.error); assert.equal(result.status, 0, result.stderr); assert.equal(result.signal, null);
+  assert.equal(result.stdout, "temporary environment restored on exit");
+});
 
 test("Codex home selection requires an empty protected physical directory outside all agent roots", async t => {
   const fixture = codexHomeFixture(t), roots = [fixture.workspace];
