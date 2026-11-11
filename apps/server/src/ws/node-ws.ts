@@ -159,6 +159,7 @@ export function registerNodeWsRoute(
           qualifiedRunEventReceiptsReady: () => qualifiedReceiptsReady && raw.readyState === 1 && !terminated && registered
             && registry.get(computerId) === binding && (!gated || managed?.active === true),
         } : undefined, message.product_source_routing, message.application_publication_profiles);
+      if (message.workspace_roots) binding.workspaceRoots = Object.freeze({ version: 1, paths: Object.freeze([...message.workspace_roots.paths]) });
     }
     async function initializeManaged(message: NodeHello): Promise<void> {
       const request = message.managed_receipts!;
@@ -235,6 +236,7 @@ export function registerNodeWsRoute(
         close(1008, "managed application frame before current session activation"); return;
       }
       if (message.kind === "node.heartbeat") {
+        if (!registered || registry.get(nodeId!) !== binding) { close(1008, "heartbeat from replaced node session"); return; }
         void touchHeartbeat(ctx, nodeId!);
         void recordHeartbeatRuntimes(ctx, nodeId!, message.runtimes).catch(() => {});
         if (currentAuth.mode === "device") void recordDeviceActivity(ctx, currentAuth.deviceId, "node").catch(() => {});

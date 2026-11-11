@@ -121,6 +121,7 @@ export interface DaemonPresence {
   status: "online" | "reconnecting" | "offline" | "stale" | "disabled";
   connected: boolean; last_heartbeat_at: string | null; heartbeat_age_ms: number | null;
   active_runs: number; runtimes: AgentRuntime[];
+  workspace_roots?: { version: 1; paths: string[] };
 }
 
 export type { AssistantTurn } from "@artoo/domain";

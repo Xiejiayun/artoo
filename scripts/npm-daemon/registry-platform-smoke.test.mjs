@@ -11,8 +11,8 @@ const pins = { sha256: createHash("sha256").update(bytes).digest("hex"), integri
 const source = "a".repeat(40), evidence = join(tmpdir(), "registry-fixture-evidence");
 const args = ["--sha256", pins.sha256, "--integrity", pins.integrity, "--source-commit", source, "--platform", "linux-x64", "--evidence-directory", evidence];
 
-test("published verification fixes rc.2 and rejects package overrides, unpinned sources and unsupported hosts", () => {
-  assert.equal(releaseName, "@jiayunxie/artood"); assert.equal(releaseVersion, "0.1.0-rc.2");
+test("published verification fixes rc.3 and rejects package overrides, unpinned sources and unsupported hosts", () => {
+  assert.equal(releaseName, "@jiayunxie/artood"); assert.equal(releaseVersion, "0.1.0-rc.3");
   assert.equal(parseRegistryArguments(args).sourceCommit, source);
   for (const extra of [["--version", "latest"], ["--name", "other"], ["--registry", "https://mirror.invalid"], ["--sha256", pins.sha256]])
     assert.throws(() => parseRegistryArguments([...args, ...extra]));

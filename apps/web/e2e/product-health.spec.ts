@@ -1,3 +1,4 @@
+import { selectProject } from "./navigation.js";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -138,8 +139,9 @@ async function fixture(withPrevious = false) {
 async function openPublication(page: Page, item: Awaited<ReturnType<typeof fixture>>) {
   await item.authenticate(page);
   await page.goto(`${item.origin}/goals`);
-  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption("proj_artoo");
+  await selectProject(page, "plan");
   await page.getByRole("navigation", { name: "Goal list" }).getByRole("button", { name: /Controlled publication health/ }).click();
+  await page.getByText("Publication details", { exact: false }).click();
   const publication = page.getByLabel("Product publication", { exact: true });
   await expect(publication.getByRole("link", { name: "Open published product" })).toBeVisible();
   return publication;

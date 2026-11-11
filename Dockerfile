@@ -36,6 +36,8 @@ COPY --from=build /app/packages/db/migrations ./packages/db/migrations
 COPY --from=build /app/packages/domain/dist ./packages/domain/dist
 COPY --from=build /app/packages/protocol/dist ./packages/protocol/dist
 COPY --from=build /app/packages/storage/dist ./packages/storage/dist
+RUN SOURCE_REVISION="$SOURCE_REVISION" node --input-type=module -e \
+    'import { writeFileSync } from "node:fs"; const commit = process.env.SOURCE_REVISION; if (commit !== "unknown" && !/^[a-f0-9]{40}$/.test(commit)) throw Error("Invalid source revision"); writeFileSync("/app/apps/web/dist/artoo-release.json", JSON.stringify({ commit }) + "\n");'
 USER node
 EXPOSE 4000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \

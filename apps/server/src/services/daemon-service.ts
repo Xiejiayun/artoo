@@ -4,7 +4,8 @@ import type { ServerContext } from "../context.js";
 import { mapAgentRuntime } from "../mappers.js";
 
 /** A live control client is never evidence that an execution daemon is online. */
-export async function listDaemons(ctx: ServerContext, isLive: (computerId: string) => boolean, reconnecting: (computerId: string) => boolean) {
+export async function listDaemons(ctx: ServerContext, isLive: (computerId: string) => boolean, reconnecting: (computerId: string) => boolean,
+  workspaceRoots: (computerId: string) => { readonly version: 1; readonly paths: readonly string[] } | undefined = () => undefined) {
   const [nodes, runtimes, active] = await Promise.all([
     ctx.db.db.select().from(computers).where(eq(computers.organizationId, ctx.organizationId)).orderBy(asc(computers.displayName)),
     ctx.db.db.select().from(agentRuntimes).where(eq(agentRuntimes.organizationId, ctx.organizationId)),
@@ -18,6 +19,7 @@ export async function listDaemons(ctx: ServerContext, isLive: (computerId: strin
     return { computer_id: node.id, display_name: node.displayName, status, connected,
       last_heartbeat_at: Number.isFinite(last) ? new Date(last).toISOString() : null, heartbeat_age_ms: age,
       active_runs: active.filter((run) => run.computerId === node.id).length,
+      ...(connected && workspaceRoots(node.id) ? { workspace_roots: workspaceRoots(node.id) } : {}),
       runtimes: runtimes.filter((runtime) => runtime.computerId === node.id).map(mapAgentRuntime) };
   });
 }

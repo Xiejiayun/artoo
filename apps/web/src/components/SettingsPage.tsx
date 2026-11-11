@@ -2,6 +2,7 @@ import { ContentManagementSettings } from "./ContentManagement.js";
 import { MyContentReports } from "./ContentReporting.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { FolderKanban, Laptop, Link2, Monitor, Smartphone } from "lucide-react";
 import type { DevicePlatform } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
@@ -12,13 +13,16 @@ import { Badge, Button, EmptyState, Input, Modal, Select } from "../ui/index.js"
 import { ActionError } from "./ActionError.js";
 import { AIDataSharingSettings } from "./AIDataSharing.js";
 import { DesktopSettings } from "./DesktopSetup.js";
+import { ConnectNodeDialog } from "./ConnectNodeDialog.js";
 import "../ui/settings.css";
 
 export function SettingsPage(): React.ReactNode {
   const api = useApi();
   const query = useQueryClient();
+  const navigate = useNavigate();
   const { bootstrap, project, setSelectedProjectId } = useProject();
   const [creating, setCreating] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [platform, setPlatform] = useState<DevicePlatform>("windows");
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
   const [confirmEnroll, setConfirmEnroll] = useState<string | null>(null);
@@ -44,12 +48,13 @@ export function SettingsPage(): React.ReactNode {
     </section>
     {window.artooDesktop?.getConnection && <DesktopSettings />}
     <section id="pairing-settings" className="settings-section" aria-label="Device pairing"><header className="settings-section__heading"><div><h2>Connect a device</h2><p>Take your conversations and work with you.</p></div><Link2 size={20} aria-hidden="true" /></header>
-      <div className="settings-section__body u-stack"><ol className="pairing-steps"><li><span>1</span><div><strong>Choose your device</strong><p>Generate a single-use code for your Mac, Windows or iOS app, or a Windows, macOS or Linux daemon.</p></div></li><li><span>2</span><div><strong>Complete device pairing</strong><p>Enter the code in the app, or follow the daemon guide below. The device signs in with your account. Keep the code private; teammates should generate their own.</p></div></li></ol>
-      <p>For an npm daemon, follow the <a href="https://github.com/Xiejiayun/artoo/blob/main/docs/npm-daemon-setup.zh-CN.md" target="_blank" rel="noopener noreferrer">Daemon setup guide</a> to install, pair and configure it, then run <code>artood start</code>.</p>
+      <div className="settings-section__body u-stack"><p>Connect a computer with one command, then choose an existing Agent to create an instance.</p>
+      <div className="action-row"><Button variant="primary" onClick={() => setConnecting(true)}>Connect Local Node</Button><Button onClick={() => navigate("/computers")}>Manage machines & agents</Button></div>
+      <details className="resource-details"><summary>Pair a desktop or mobile app</summary><p>Generate a single-use code and enter it in your Artoo app. Keep the code private; teammates should generate their own.</p>
       <div className="pairing-controls">
       <Select label="Device platform" value={platform} onChange={(event) => { setPlatform(event.target.value as DevicePlatform); pairing.reset(); }}><option value="windows">Windows</option><option value="ios">iOS</option><option value="macos">macOS</option><option value="linux">Linux</option></Select>
       <Button variant="primary" loading={pairing.isPending} onClick={() => pairing.mutate()}>Generate pairing code</Button></div><ActionError error={pairing.error} />
-      {pairing.data && <div className="pairing-result"><p>Pairing code: <output aria-label="Pairing code" className="t-mono">{pairing.data.code}</output></p><p>Expires {new Date(pairing.data.pairing.expires_at).toLocaleString()}. Keep the code private.</p><Button size="sm" onClick={() => pairing.reset()}>Hide code</Button></div>}</div>
+      {pairing.data && <div className="pairing-result"><p>Pairing code: <output aria-label="Pairing code" className="t-mono">{pairing.data.code}</output></p><p>Expires {new Date(pairing.data.pairing.expires_at).toLocaleString()}. Keep the code private.</p><Button size="sm" onClick={() => pairing.reset()}>Hide code</Button></div>}</details></div>
     </section>
     <section id="device-settings" className="settings-section" aria-label="Devices"><header className="settings-section__heading"><div><h2>Devices{devices.data ? <span className="settings-count">{devices.data.devices.length}</span> : null}</h2><p>Review access and manage the computers available for team tasks.</p></div></header><div className="settings-section__body u-stack"><ActionError error={devices.error ?? revoke.error} />{devices.isError && <Button size="sm" onClick={() => void devices.refetch()}>Reload devices</Button>}{devices.isLoading && <p role="status">Loading devices…</p>}{devices.data?.devices.length === 0 && <EmptyState icon={Laptop} title="No devices paired yet." description="Connect a device above to bring Artoo to your desktop or phone." />}
       {devices.data?.devices.map((device) => <article key={device.id} className="settings-device"><div className="settings-device__identity"><span className="settings-device__icon">{["ios", "android"].includes(device.platform) ? <Smartphone size={20} aria-hidden="true" /> : <Laptop size={20} aria-hidden="true" />}</span><div><h3>{device.display_name || device.id}</h3><p>Last seen: {device.last_seen_at ? new Date(device.last_seen_at).toLocaleString() : "Never"}</p></div><div className="settings-device__badges"><Badge>{device.platform === "macos" ? "macOS" : device.platform === "ios" ? "iOS" : device.platform === "windows" ? "Windows" : device.platform}</Badge><Badge tone={device.trust === "active" ? "success" : "danger"}>{device.trust}</Badge></div></div>{device.computer_id && <p className="t-subtle">Computer: {bootstrap.data?.computers.find((computer) => computer.id === device.computer_id)?.display_name ?? device.computer_id}</p>}
@@ -62,6 +67,7 @@ export function SettingsPage(): React.ReactNode {
         {device.trust === "active" && (confirmRevoke === device.id ? <div className="u-stack-sm"><p>Revoke this device and disconnect its sessions immediately?</p><div className="action-row"><Button variant="danger" loading={revoke.isPending} disabled={enroll.isPending} onClick={() => revoke.mutate(device.id)}>Confirm revoke</Button><Button disabled={revoke.isPending} onClick={() => setConfirmRevoke(null)}>Keep device</Button></div></div> : <Button variant="danger" size="sm" disabled={enroll.isPending || revoke.isPending} onClick={() => { setConfirmRevoke(device.id); setConfirmEnroll(null); }}>Revoke device</Button>)}
         </div></article>)}</div>
     </section>
+    <ConnectNodeDialog open={connecting} onClose={() => setConnecting(false)} onCreateInstance={(id) => navigate(`/computers?create=${encodeURIComponent(id)}`)} onViewMachines={() => navigate("/computers")} />
   </section>;
 }
 

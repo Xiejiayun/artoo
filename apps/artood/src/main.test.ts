@@ -73,7 +73,11 @@ describe("Windows process bootstrap (controlled installation admission, not nati
     createNodeFromConfig(config);
     expect(create.mock.calls[0]![0].windowsProcessBackend).toBe(backend);
     expect(create.mock.calls[0]![0].workspace?.allowedRoots).toEqual(roots);
-    const wire = JSON.stringify(helloFor(config));
+    const { workspace_roots, ...identity } = helloFor(config);
+    expect(workspace_roots).toEqual({ version: 1, paths: roots });
+    // The allowlist is now an explicit UI advertisement. Native installation
+    // handles, digests and protected verifier configuration remain private.
+    const wire = JSON.stringify(identity);
     for (const privateValue of ["windowsProcessBackend", "manifestSha256", "writableWorkspaceRoots", bundle]) expect(wire).not.toContain(privateValue);
   });
 
@@ -135,6 +139,13 @@ describe("explicit prepared configuration loading (controlled loader results)", 
 });
 
 describe("loadConfigFromEnv", () => {
+  it("can connect without advertising runtimes when none are installed", () => {
+    const config = loadConfigFromEnv({ ...baseEnv, ARTOO_RUNTIMES: "none" });
+    expect(config.runtimes).toEqual([]);
+    expect(() => buildRegistry(config)).not.toThrow();
+    expect(loadConfigFromEnv(baseEnv).runtimes).toEqual(["codex", "claude-code"]);
+    expect(() => loadConfigFromEnv({ ...baseEnv, ARTOO_RUNTIMES: "none,codex" })).toThrow(/cannot be combined/);
+  });
   it("requires local opt-in and protected storage configuration for research and repository initialization", () => {
     expect(loadConfigFromEnv(baseEnv).research).toBeUndefined();
     expect(loadConfigFromEnv(baseEnv).initializeRepository).toBeUndefined();
@@ -255,6 +266,7 @@ describe("helloFor", () => {
     expect(hello.node_id).toBe("computer_9");
     expect(hello.machine.hostname.length).toBeGreaterThan(0);
     expect(hello.machine.os.length).toBeGreaterThan(0);
+    expect(hello.workspace_roots).toEqual({ version: 1, paths: ["/ws"] });
   });
 });
 

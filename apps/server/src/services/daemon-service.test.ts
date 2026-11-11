@@ -24,4 +24,11 @@ describe("daemon presence comes from live execution connection and heartbeat", (
     expect((await listDaemons(server.ctx, () => true, () => true))[0]?.status).toBe("disabled");
     expect(await listDaemons({ ...server.ctx, organizationId: "foreign" }, () => true, () => true)).toEqual([]);
   });
+  it("only offers workspace folders from a current connection in the caller's organization", async () => {
+    const workspace = { version: 1 as const, paths: ["C:/ArtooWorkspaces"] };
+    expect((await listDaemons(server.ctx, () => true, () => false, () => workspace))[0]?.workspace_roots).toEqual(workspace);
+    expect((await listDaemons(server.ctx, () => false, () => false, () => workspace))[0]?.workspace_roots).toBeUndefined();
+    expect((await listDaemons(server.ctx, () => true, () => false))[0]?.workspace_roots).toBeUndefined();
+    expect(await listDaemons({ ...server.ctx, organizationId: "foreign" }, () => true, () => false, () => workspace)).toEqual([]);
+  });
 });

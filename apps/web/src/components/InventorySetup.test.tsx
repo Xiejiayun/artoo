@@ -49,22 +49,45 @@ describe("Resource setup", () => {
     const user = userEvent.setup();
     const registerAgent = vi.fn(async () => ({}));
     renderWithProviders(<AgentRegistration computerId="computer_local_mock" computerName="Local Mock" runtimes={[runtime]} />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), registerAgent }) });
-    await user.click(await screen.findByRole("button", { name: "Register an agent workspace" }));
+    await user.click(await screen.findByRole("button", { name: "Create instance" }));
+    await user.selectOptions(screen.getByLabelText("Agent"), "__new__");
     await user.type(screen.getByLabelText("Agent display name"), " Code reviewer ");
     await user.selectOptions(screen.getByLabelText("Agent runtime"), "mock");
     await user.type(screen.getByLabelText("Agent workspace path"), " C:/workspace/team ");
-    await user.click(screen.getByRole("button", { name: "Register agent" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create instance" }));
     await waitFor(() => expect(registerAgent).toHaveBeenCalledWith("computer_local_mock", { runtime: "mock", workspace_root: "C:/workspace/team", display_name: "Code reviewer" }, expect.any(String)));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(screen.getByText("Agent workspace registered. It is available on the Agents page.")).toBeInTheDocument();
+    expect(screen.getByText("Instance created. Find it in your Agent Squad.")).toBeInTheDocument();
   });
 
   it("explains missing runtimes and prevents registration", async () => {
     const user = userEvent.setup();
     renderWithProviders(<AgentRegistration computerId="computer_local_mock" runtimes={[]} />, { client: fakeApi({ bootstrap: async () => bootstrapFixture() }) });
-    await user.click(await screen.findByRole("button", { name: "Register an agent workspace" }));
+    await user.click(await screen.findByRole("button", { name: "Create instance" }));
     expect(screen.getByText(/No runtimes reported yet/)).toBeInTheDocument();
     await user.type(screen.getByLabelText("Agent workspace path"), "C:/workspace/team");
-    expect(screen.getByRole("button", { name: "Register agent" })).toBeDisabled();
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Create instance" })).toBeDisabled();
+  });
+
+  it("reuses an existing Agent and its capabilities with a machine-advertised workspace", async () => {
+    const user = userEvent.setup();
+    const registerAgent = vi.fn(async () => ({}));
+    renderWithProviders(<AgentRegistration computerId="computer_local_mock" runtimes={[{ ...runtime, capabilities: ["code.modify", "test.run"] }]} allowedRoots={["C:/ArtooWorkspaces"]} />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), registerAgent }) });
+    await user.click(await screen.findByRole("button", { name: "Create instance" }));
+    expect(screen.getByLabelText("Agent")).toHaveValue("agent_mock_coder");
+    expect(screen.getByLabelText("Agent workspace path")).toHaveValue("C:/ArtooWorkspaces");
+    expect(screen.queryByLabelText("Agent display name")).not.toBeInTheDocument();
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create instance" }));
+    await waitFor(() => expect(registerAgent).toHaveBeenCalledWith("computer_local_mock", { agent_id: "agent_mock_coder", runtime: "mock", workspace_root: "C:/ArtooWorkspaces" }, expect.any(String)));
+  });
+
+  it("prevents assigning an existing Agent to an incompatible runtime", async () => {
+    const user = userEvent.setup();
+    const registerAgent = vi.fn(async () => ({}));
+    renderWithProviders(<AgentRegistration computerId="computer_local_mock" runtimes={[runtime]} allowedRoots={["C:/ArtooWorkspaces"]} />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), registerAgent }) });
+    await user.click(await screen.findByRole("button", { name: "Create instance" }));
+    expect(screen.getByRole("option", { name: /mock · incompatible capabilities/ })).toBeDisabled();
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Create instance" })).toBeDisabled();
+    expect(registerAgent).not.toHaveBeenCalled();
   });
 });

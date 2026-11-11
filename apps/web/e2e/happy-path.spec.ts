@@ -1,3 +1,4 @@
+import { selectProject as selectProjectView } from "./navigation.js";
 import { expect, test, type APIRequestContext, type Page, type Request, type Response } from "@playwright/test";
 
 const PROJECT_ID = "proj_artoo";
@@ -139,7 +140,7 @@ async function mockExecute(
 }
 
 async function selectTask(page: Page, title: string): Promise<void> {
-  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption(PROJECT_ID);
+  await selectProjectView(page);
   await page.getByRole("heading", { name: "artoo", level: 1 }).waitFor();
   await page.getByRole("button", { name: title, exact: false }).click();
   await expect(page.getByRole("heading", { name: title, level: 2 })).toBeVisible();
@@ -267,7 +268,7 @@ test("create → ready → assign → mock run → review → accept → done", 
 
   // The server is shared across specs, which may create projects that sort
   // before the seed. Keep UI creation and API assertions in the same project.
-  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption(PROJECT_ID);
+  await selectProjectView(page);
   await expect(page.getByRole("heading", { name: "artoo", level: 1 })).toBeVisible();
 
   // Create a uniquely-titled task.
@@ -318,7 +319,7 @@ test("request changes returns ready, and retry recovers a failed run", async ({ 
   page.on("requestfailed", onFailed);
   try {
   await page.goto("/");
-  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption(PROJECT_ID);
+  await selectProjectView(page);
   await expect(page.getByRole("heading", { name: "artoo", level: 1 })).toBeVisible();
 
   const title = uniqueTitle("E2E retry path");
@@ -412,7 +413,7 @@ test("approval gate moves a running task to awaiting approval and back to runnin
   request,
 }) => {
   await page.goto("/");
-  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption(PROJECT_ID);
+  await selectProjectView(page);
   await expect(page.getByRole("heading", { name: "artoo", level: 1 })).toBeVisible();
 
   const title = uniqueTitle("E2E approval gate");

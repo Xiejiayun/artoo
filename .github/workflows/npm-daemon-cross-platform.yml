@@ -31,7 +31,7 @@ on:
       version:
         description: Exact universal candidate version to build on main
         required: true
-        default: 0.1.0-rc.2
+        default: 0.1.0-rc.3
         type: string
 
 permissions:
@@ -51,7 +51,7 @@ jobs:
         shell: pwsh
     env:
       PACKAGE_NAME: '@jiayunxie/artood'
-      PACKAGE_VERSION: ${{ inputs.version || '0.1.0-rc.2' }}
+      PACKAGE_VERSION: ${{ inputs.version || '0.1.0-rc.3' }}
       NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
       NPM_CONFIG_LOGS_MAX: '0'
     outputs:
@@ -74,7 +74,7 @@ jobs:
       - name: Build the server, daemon and referenced packages once
         run: npm run build --workspace @artoo/server
       - name: Check CLI contracts, controlled fixture isolation and registry pins
-        run: node --test scripts/npm-daemon/cli.test.mjs scripts/npm-daemon/controlled-cli-smoke.test.mjs scripts/npm-daemon/registry-platform-smoke.test.mjs
+        run: node --test scripts/npm-daemon/cli.test.mjs scripts/npm-daemon/onboarding.test.mjs scripts/npm-daemon/bootstrap.test.mjs scripts/npm-daemon/controlled-cli-smoke.test.mjs scripts/npm-daemon/registry-platform-smoke.test.mjs
       - name: Build a fresh Windows host and one universal tarball
         id: pack
         run: |
@@ -122,6 +122,7 @@ jobs:
             runAttempt = $env:GITHUB_RUN_ATTEMPT
             buildPlatform = 'win32-x64'
             tarball = $expectedFilename
+            size = (Get-Item -LiteralPath $tarball).Length
             sha256 = $sha256
             integrity = $integrity
             nativeManifestSha256 = $nativeManifestSha
@@ -188,6 +189,8 @@ jobs:
           path: ${{ runner.temp }}/artoo-npm-candidate
       - name: Install fixture dependencies
         run: npm ci --no-audit --no-fund
+      - name: Verify the native-host bootstrap and local configuration contracts
+        run: node --test scripts/npm-daemon/onboarding.test.mjs scripts/npm-daemon/bootstrap.test.mjs
       - name: Build the server, daemon and referenced packages once
         run: npm run build --workspace @artoo/server
       - name: Install identical tarball and verify actual platform behavior
@@ -294,14 +297,19 @@ jobs:
             assert.equal(report.checkoutCommit, process.env.PACKAGE_SOURCE_COMMIT);
             assert.equal(report.installation.force, false);
             assert.equal(report.installation.ignoreScripts, false);
+            assert.equal(report.managed.status, 'passed');
+            assert.equal(report.managed.restartWithoutSource, true);
+            assert.equal(report.managed.sameIdentityAfterRestart, true);
+            assert.equal(report.managed.allProcessesAbsent, true);
           }
           const summary = { status: 'passed', sourceCommit: process.env.PACKAGE_SOURCE_COMMIT,
             sourceRef: process.env.GITHUB_REF, eventName: process.env.GITHUB_EVENT_NAME,
+            runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
             name: '@jiayunxie/artood', version: process.env.PACKAGE_VERSION,
             sha256: process.env.PACKAGE_SHA256, platforms: expected, requiredPlatforms: expected,
             optionalMac: { platforms: ['darwin-arm64', 'darwin-x64'], requiredForRelease: false,
               qualification: 'deferred', validation: 'Separate optional jobs; not evaluated by this aggregate.' },
-            scope: 'Windows x64 and Linux x64/arm64 release scope: one tarball installed without force or ignored scripts on three real OS/architecture pairs; controlled CLI tasks and separate POSIX source fixtures. Mac implementation remains in the package but release qualification is deferred. No publication or live-provider qualification.' };
+            scope: 'Windows x64 and Linux x64/arm64 release scope: one tarball installed without force or ignored scripts on three real OS/architecture pairs; managed connection/status/stop/restart, controlled CLI tasks and separate POSIX source fixtures. Mac implementation remains in the package but release qualification is deferred. No publication or live-provider qualification.' };
           writeFileSync(join(process.env.REPORTS_ROOT, 'cross-platform-summary.json'), JSON.stringify(summary, null, 2) + '\n');
           appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'All three required Windows/Linux platforms passed for the same tarball. Optional Mac jobs are separate and do not establish Mac release qualification here.\n\n'
             + JSON.stringify(summary, null, 2) + '\n\nPR merge-ref artifacts are validation only; deliver candidates built and validated from main.\n');

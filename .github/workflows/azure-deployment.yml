@@ -34,6 +34,8 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - name: Production release gate, backup encryption and recovery contracts
+        run: node --test scripts/azure-release/*.test.mjs
       - run: npm run build:preview
       - name: Real PostgreSQL migrations, transactions, ownership and disconnect fencing
         env:
@@ -51,15 +53,20 @@ jobs:
         run: docker build --build-arg SOURCE_REVISION=${{ github.sha }} --tag artoo:ci .
       - name: Import production dependencies and verify bundled runtime files
         shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
         run: |
           docker run --rm --memory=512m --memory-swap=512m --cpus=0.25 \
+            --env EXPECTED_SOURCE_SHA \
             --entrypoint node artoo:ci --input-type=module -e '
-              import { access } from "node:fs/promises";
+              import { access, readFile } from "node:fs/promises";
               await import("./apps/server/dist/main.js");
               const { loadMigrationStatements } = await import("@artoo/db");
               const migrations = await loadMigrationStatements();
               if (migrations.length === 0) throw new Error("Missing runtime migrations");
               await access("./apps/web/dist/index.html");
+              const release = JSON.parse(await readFile("./apps/web/dist/artoo-release.json", "utf8"));
+              if (release.commit !== process.env.EXPECTED_SOURCE_SHA) throw new Error("Web build identity differs from image source");
               console.log(`Production imports and ${migrations.length} migration statements available`);
             '
       - name: Require external storage rather than silently using container disk

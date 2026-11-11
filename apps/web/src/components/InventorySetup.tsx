@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Bot, Check, FileCheck2, Plus, ShieldCheck } from "lucide-react";
 import { SkillManifestSchema, summarizeSkillPermissions, type AgentInstance, type AgentRuntime, type PermissionSummary } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
@@ -11,7 +11,10 @@ import { ActionError } from "./ActionError.js";
 import { CAPABILITY_LABELS } from "./taskPresentation.js";
 import "../ui/resource-management.css";
 
-export function AgentRegistration({ computerId, computerName, runtimes }: { computerId: string; computerName?: string; runtimes: AgentRuntime[] }): React.ReactNode {
+export function AgentRegistration({ computerId, computerName, runtimes, allowedRoots = [], preferredAgentId, openRequest = false, onOpened }: {
+  computerId: string; computerName?: string; runtimes: AgentRuntime[]; allowedRoots?: string[];
+  preferredAgentId?: string; openRequest?: boolean; onOpened?: () => void;
+}): React.ReactNode {
   const api = useApi();
   const query = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -19,19 +22,49 @@ export function AgentRegistration({ computerId, computerName, runtimes }: { comp
   const [workspace, setWorkspace] = useState("");
   const [name, setName] = useState("");
   const [capabilities, setCapabilities] = useState("");
+  const [agentId, setAgentId] = useState("");
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
-  const mutation = useMutation({ mutationFn: () => api.registerAgent(computerId, { runtime, workspace_root: workspace.trim(), display_name: name.trim() || undefined, ...(capabilities.trim() ? { capabilities: capabilities.split(",").map((item) => item.trim()).filter(Boolean) } : {}) }, newIdempotencyKey()), onSuccess: async () => { await query.invalidateQueries({ queryKey: queryKeys.bootstrap }); setOpen(false); setWorkspace(""); setName(""); setCapabilities(""); } });
+  const agents = bootstrap.data?.agents ?? [];
+  const selectedAgent = agents.find((agent) => agent.id === agentId);
+  const creatingAgent = agentId === "__new__";
+  const compatible = (item: AgentRuntime): boolean => item.status === "available" && (!selectedAgent || selectedAgent.capabilities.every((capability) => item.capabilities.includes(capability)));
+  const mutation = useMutation({ mutationFn: () => api.registerAgent(computerId, {
+    runtime, workspace_root: workspace.trim(),
+    ...(creatingAgent ? { display_name: name.trim() || undefined, ...(capabilities.trim() ? { capabilities: capabilities.split(",").map((item) => item.trim()).filter(Boolean) } : {}) } : { agent_id: agentId }),
+  }, newIdempotencyKey()), onSuccess: async () => { await query.invalidateQueries({ queryKey: queryKeys.bootstrap }); setOpen(false); setName(""); setCapabilities(""); } });
+  const openForm = (): void => {
+    mutation.reset();
+    const agent = agents.find((item) => item.id === preferredAgentId) ?? agents[0];
+    setAgentId(agent?.id ?? "__new__");
+    setRuntime(runtimes.find((item) => item.status === "available" && (!agent || agent.capabilities.every((capability) => item.capabilities.includes(capability))))?.runtime ?? "");
+    setWorkspace(allowedRoots[0] ?? "");
+    setOpen(true);
+  };
+  useEffect(() => {
+    if (openRequest && bootstrap.data) { openForm(); onOpened?.(); }
+    // A request is consumed once; ordinary heartbeat refreshes must not reset a form.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openRequest, !!bootstrap.data]);
   if (!["owner", "admin"].includes(bootstrap.data?.user.role ?? "")) return null;
-  const validRuntime = runtimes.some((item) => item.runtime === runtime);
-  return <><Button iconLeft={Plus} size="sm" onClick={() => { mutation.reset(); setOpen(true); }}>Register an agent workspace</Button>{mutation.isSuccess && <p className="resource-success" role="status"><Check size={15} aria-hidden="true" />Agent workspace registered. It is available on the Agents page.</p>}
-    <Modal open={open} onClose={() => { if (!mutation.isPending) setOpen(false); }} title="Register agent workspace"><form aria-label="Register agent" className="resource-form" onSubmit={(event) => { event.preventDefault(); if (!mutation.isPending && validRuntime && workspace.trim()) mutation.mutate(); }}>
-      <div className="resource-form__intro"><Bot size={22} aria-hidden="true" /><div><strong>{computerName ?? "New agent workspace"}</strong><p>Give the agent a name and choose the folder where it will work.</p></div></div>
-      {runtimes.length === 0 && <p className="resource-form__notice" role="status">No runtimes reported yet. Start the worker on this computer, then return here to choose its installed runtime.</p>}
-      <Input label="Agent display name" placeholder="e.g. Frontend engineer" disabled={mutation.isPending} value={name} onChange={(event) => setName(event.target.value)} helperText="Optional. A clear name makes this agent easier to assign." />
-      <Select label="Agent runtime" required disabled={mutation.isPending} value={runtime} onChange={(event) => setRuntime(event.target.value)}><option value="">Choose runtime</option>{runtimes.map((item) => <option key={item.id} value={item.runtime}>{item.runtime} ({item.status})</option>)}</Select>
-      <Input label="Agent workspace path" required disabled={mutation.isPending} value={workspace} onChange={(event) => setWorkspace(event.target.value)} helperText="Use an absolute folder path allowed by this computer's worker configuration." />
-      <details className="resource-details"><summary>Advanced configuration</summary><Input label="Agent capabilities (optional)" disabled={mutation.isPending} helperText="Comma-separated; leave empty to use the runtime's capabilities" value={capabilities} onChange={(event) => setCapabilities(event.target.value)} /></details>
-      <ActionError error={mutation.error} /><div className="resource-form__actions"><Button disabled={mutation.isPending} onClick={() => setOpen(false)}>Cancel</Button><Button type="submit" variant="primary" loading={mutation.isPending} disabled={!validRuntime || !workspace.trim()}>Register agent</Button></div>
+  const validRuntime = runtimes.some((item) => item.runtime === runtime && compatible(item));
+  const validAgent = creatingAgent || !!selectedAgent;
+  return <><Button iconLeft={Plus} size="sm" onClick={openForm}>Create instance</Button>{mutation.isSuccess && <p className="resource-success" role="status"><Check size={15} aria-hidden="true" />Instance created. Find it in your Agent Squad.</p>}
+    <Modal open={open} onClose={() => { if (!mutation.isPending) setOpen(false); }} title="Create agent instance"><form aria-label="Create agent instance" className="resource-form" onSubmit={(event) => { event.preventDefault(); if (!mutation.isPending && validAgent && validRuntime && workspace.trim()) mutation.mutate(); }}>
+      <div className="resource-form__intro"><Bot size={22} aria-hidden="true" /><div><strong>{computerName ?? "This machine"}</strong><p>An instance gives an Agent a runtime and workspace on this machine.</p></div></div>
+      <Select label="Agent" required disabled={mutation.isPending} value={agentId} onChange={(event) => {
+        const id = event.target.value, agent = agents.find((item) => item.id === id);
+        setAgentId(id);
+        setRuntime(runtimes.find((item) => item.status === "available" && (!agent || agent.capabilities.every((capability) => item.capabilities.includes(capability))))?.runtime ?? "");
+      }}>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name}</option>)}<option value="__new__">+ Create a new Agent</option></Select>
+      {selectedAgent && <p className="resource-form__notice">Uses <strong>{selectedAgent.display_name}</strong> from your Agent library. Its identity and capabilities stay the same across instances.</p>}
+      {creatingAgent && <Input label="Agent display name" placeholder="e.g. Frontend engineer" disabled={mutation.isPending} value={name} onChange={(event) => setName(event.target.value)} helperText="A reusable identity for this Agent across machines." />}
+      {runtimes.length === 0 && <p className="resource-form__notice" role="status">No runtimes reported yet. Connect this machine and install a supported CLI to continue.</p>}
+      <Select label="Agent runtime" required disabled={mutation.isPending} value={runtime} onChange={(event) => setRuntime(event.target.value)}><option value="">Choose runtime</option>{runtimes.map((item) => <option key={item.id} value={item.runtime} disabled={!compatible(item)}>{item.runtime} · {compatible(item) ? "available" : item.status !== "available" ? item.status : "incompatible capabilities"}</option>)}</Select>
+      {selectedAgent && runtimes.length > 0 && !runtimes.some(compatible) && <p className="resource-form__notice" role="status">No available runtime on this machine supports all of {selectedAgent.display_name}'s capabilities. Choose another Agent or connect a compatible runtime.</p>}
+      <Input label="Agent workspace path" required disabled={mutation.isPending} value={workspace} onChange={(event) => setWorkspace(event.target.value)} helperText={allowedRoots.length ? `Allowed folders: ${allowedRoots.join(", ")}` : "An absolute folder path allowed by this machine. Reconnect with the latest daemon to choose its reported folders."} />
+      {allowedRoots.length > 1 && <div className="action-row" aria-label="Allowed workspace folders">{allowedRoots.map((root) => <Button key={root} size="sm" disabled={mutation.isPending} onClick={() => setWorkspace(root)}>{root}</Button>)}</div>}
+      {creatingAgent && <details className="resource-details"><summary>Advanced configuration</summary><Input label="Agent capabilities (optional)" disabled={mutation.isPending} helperText="Comma-separated; leave empty to use the runtime's capabilities" value={capabilities} onChange={(event) => setCapabilities(event.target.value)} /></details>}
+      <ActionError error={mutation.error} /><div className="resource-form__actions"><Button disabled={mutation.isPending} onClick={() => setOpen(false)}>Cancel</Button><Button type="submit" variant="primary" loading={mutation.isPending} disabled={!validAgent || !validRuntime || !workspace.trim()}>Create instance</Button></div>
     </form></Modal>
   </>;
 }

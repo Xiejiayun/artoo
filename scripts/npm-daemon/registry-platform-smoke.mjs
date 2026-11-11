@@ -1,4 +1,4 @@
-// Post-publication verification only. Fixed public rc.2 package, no publication
+// Post-publication verification only. Fixed public rc.3 package, no publication
 // credential, alternate registry, local corporate-network workaround or model.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { packageSmoke } from "./package-smoke.mjs";
 
-export const releaseName = "@jiayunxie/artood", releaseVersion = "0.1.0-rc.2";
+export const releaseName = "@jiayunxie/artood", releaseVersion = "0.1.0-rc.3";
 export const registry = "https://registry.npmjs.org/";
 export const metadataUrl = `${registry}@jiayunxie%2fartood/${releaseVersion}`;
 export const tarballUrl = `${registry}@jiayunxie/artood/-/artood-${releaseVersion}.tgz`;

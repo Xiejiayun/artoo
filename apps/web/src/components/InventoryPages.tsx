@@ -1,6 +1,6 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Bot, Box, Laptop, Monitor, Plus, SearchX, ShieldCheck, type LucideIcon } from "lucide-react";
 import { CAPABILITIES, PERMISSION_CATEGORIES, SKILL_API_VERSION } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
@@ -9,8 +9,10 @@ import { Badge, Button, EmptyState, ErrorState, Icon, SearchInput, Select, Skele
 import { AgentEnabledControl, AgentRegistration, SkillInstallForm, SkillPermissionSummary } from "./InventorySetup.js";
 import { AgentWorkspaceAllocation } from "./AgentWorkspaceAllocation.js";
 import { DaemonBadge } from "./DaemonBadge.js";
+import { ConnectNodeDialog } from "./ConnectNodeDialog.js";
 import { CAPABILITY_LABELS } from "./taskPresentation.js";
 import "../ui/resource-management.css";
+import "./machine-management.css";
 
 const matches = (search: string, ...values: (string | undefined | null)[]): boolean => values.join(" ").toLocaleLowerCase().includes(search.trim().toLocaleLowerCase());
 const value = (input: string | null | undefined): string => input || "Not configured";
@@ -40,38 +42,56 @@ function InventoryLoading({ label }: { label: string }): React.ReactNode {
 }
 export function ComputersPage(): React.ReactNode {
   const api = useApi();
+  const [params, setParams] = useSearchParams();
+  const connectOpen = params.get("connect") === "1";
+  const [createOnMachine, setCreateOnMachine] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(), refetchInterval: 10000 });
+  const presence = useQuery({ queryKey: queryKeys.daemons, queryFn: () => api.listDaemons(), refetchInterval: 5000 });
   const computers = bootstrap.data?.computers ?? [];
   const runtimeQueries = useQueries({ queries: computers.map((computer) => ({ queryKey: queryKeys.computerRuntimes(computer.id), queryFn: () => api.listComputerRuntimes(computer.id), enabled: bootstrap.data !== undefined, refetchInterval: 10000 })) });
   if (bootstrap.isLoading) return <InventoryLoading label="Loading computers" />;
   if (bootstrap.isError || !bootstrap.data) return <section className="inventory-page resources-page" aria-label="Computers"><ErrorState title="Failed to load computers" action={<Button onClick={() => void bootstrap.refetch()}>Try again</Button>} /></section>;
   const filtered = computers.map((computer, index) => ({ computer, runtimes: runtimeQueries[index] })).filter(({ computer, runtimes }) => matches(search, computer.display_name, computer.hostname, computer.os, computer.arch, ...computer.capabilities, ...(runtimes?.data?.runtimes.map((runtime) => runtime.runtime) ?? [])));
-  return <section className="inventory-page resources-page" aria-label="Computers">
-    <ResourceHeader title="Computers" description="The machines that bring your team's work to life." icon={Laptop}><Link className="ui-btn ui-btn--primary ui-btn--md" to="/settings"><Plus size={16} aria-hidden="true" />Connect a computer</Link></ResourceHeader>
-    <div className="resources-guide"><Monitor size={18} aria-hidden="true" /><p><strong>Your execution fleet</strong> Connect the desktop app or a Windows npm daemon, enroll its computer in Settings, then register an agent workspace below. <a href="https://github.com/Xiejiayun/artoo/blob/main/docs/web-deployment-plan.zh-CN.md" target="_blank" rel="noopener noreferrer">Windows daemon setup guide</a></p><span>{computers.length} registered</span></div>
+  const openConnect = (): void => { const next = new URLSearchParams(params); next.set("connect", "1"); setParams(next); };
+  const closeConnect = (): void => { const next = new URLSearchParams(params); next.delete("connect"); setParams(next, { replace: true }); };
+  const onlineCount = presence.data?.daemons.filter((machine) => machine.status === "online" && machine.connected).length;
+  return <section className="inventory-page resources-page machines-page" aria-label="Computers">
+    <ResourceHeader title="Machines & agents" description="Connect your computers. Give your agents a place to work." icon={Laptop}><Button variant="primary" iconLeft={Plus} onClick={openConnect}>Connect Local Node</Button></ResourceHeader>
+    <div className="machines-summary"><span>{computers.length} machines</span><span>{onlineCount === undefined ? "Checking connections…" : `${onlineCount} online`}</span><span>{bootstrap.data.agent_instances.length} instances</span></div>
+    <div className="machines-runtime-summary" aria-label="Installed runtimes">{["codex", "claude-code"].map((kind) => <div key={kind}><span className={`runtime-dot runtime-dot--${kind}`} /><span>{kind === "codex" ? "Codex" : "Claude Code"}</span><strong>{runtimeQueries.filter((result) => result.data?.runtimes.some((runtime) => runtime.runtime === kind && runtime.status === "available")).length}</strong><small>machines</small></div>)}</div>
     <ResourceSearch title="computers" search={search} onSearch={setSearch} count={filtered.length} />
-    {computers.length === 0 ? <EmptyState icon={Laptop} title="No computers registered." description="Connect a Mac or Windows computer to run tasks with your team." /> : filtered.length === 0 ? <NoMatches onClear={() => setSearch("")} /> : <div className="resources-grid">
+    {computers.length === 0 ? <EmptyState icon={Laptop} title="Bring your first machine online" description="Run one command locally, then choose an Agent to create its first instance." action={<Button variant="primary" onClick={openConnect}>Connect Local Node</Button>} /> : filtered.length === 0 ? <NoMatches onClear={() => setSearch("")} /> : <div className="machines-list">
       {filtered.map(({ computer, runtimes: runtimeQuery }) => {
         const runtimes = runtimeQuery?.data?.runtimes ?? [];
-        return <article key={computer.id} aria-label={computer.display_name} className="resource-card">
-          <header className="resource-card__header"><span className="resource-avatar resource-avatar--computer"><Monitor size={22} aria-hidden="true" /></span><div><h2>{computer.display_name}</h2><p>{computer.hostname} · {computer.os} / {computer.arch}</p></div></header>
-          <DaemonBadge computerId={computer.id} />
+        const instances = bootstrap.data!.agent_instances.filter((instance) => instance.computer_id === computer.id);
+        const folders = presence.data?.daemons.find((machine) => machine.computer_id === computer.id)?.workspace_roots?.paths ?? [];
+        return <article key={computer.id} aria-label={computer.display_name} className="resource-card machine-card">
+          <header className="resource-card__header"><span className="resource-avatar resource-avatar--computer"><Monitor size={22} aria-hidden="true" /></span><div><h2>{computer.display_name}</h2><p>{computer.hostname} · {computer.os} / {computer.arch}</p></div><DaemonBadge computerId={computer.id} compact /></header>
           <section className="resource-runtimes" aria-label={`${computer.display_name} runtimes`}><div className="resource-section-heading"><h3>Installed runtimes</h3><span>{runtimes.length}</span></div>
             {runtimeQuery?.isLoading && <p role="status">Loading runtimes...</p>}
             {runtimeQuery?.isError && <div className="resource-inline-error" role="alert"><span>Failed to load runtimes.</span><Button size="sm" onClick={() => void runtimeQuery.refetch()}>Retry runtimes</Button></div>}
             {!runtimeQuery?.isLoading && !runtimeQuery?.isError && runtimes.length === 0 && <p className="resource-muted">No runtimes reported yet. Start the worker on this computer to discover them.</p>}
             <ul className="resource-runtime-list">{runtimes.map((runtime) => <li key={runtime.id}><div><strong>{runtime.runtime}</strong><span>{runtime.version || "Version not reported"}</span></div><Badge tone={invTone(runtime.status)}>{runtime.status}</Badge></li>)}</ul>
           </section>
+          <section className="machine-instances" aria-label={`${computer.display_name} instances`}><div className="resource-section-heading"><h3>Agent instances</h3><span>{instances.length}</span></div>
+            {instances.length === 0 ? <p className="resource-muted">No instances yet. Choose an Agent below to get started.</p> : <ul>{instances.map((instance) => {
+              const agent = bootstrap.data!.agents.find((item) => item.id === instance.agent_id);
+              return <li key={instance.id}><span className="machine-instance-avatar"><Bot size={16} aria-hidden="true" /></span><div><Link to={`/agents?instance=${encodeURIComponent(instance.id)}`}>{agent?.display_name ?? "Agent"}</Link><span>{instance.runtime} · {instance.workspace_root || "Workspace not set"}</span></div><Badge tone={invTone(instance.status)}>{instance.status}</Badge></li>;
+            })}</ul>}
+          </section>
           <details className="resource-details"><summary>Computer details</summary><dl className="inv-meta"><Row label="Computer ID"><code>{computer.id}</code></Row><Row label="Capabilities">{list(computer.capabilities)}</Row>{runtimes.map((runtime) => <Row key={runtime.id} label={`${runtime.runtime} last seen`}><time dateTime={runtime.last_seen_at ?? undefined}>{timestamp(runtime.last_seen_at)}</time><p>{list(runtime.capabilities)}</p></Row>)}</dl></details>
-          <footer className="resource-card__footer"><AgentRegistration computerId={computer.id} computerName={computer.display_name} runtimes={runtimes} /></footer>
+          <footer className="resource-card__footer"><AgentRegistration computerId={computer.id} computerName={computer.display_name} runtimes={runtimes} allowedRoots={folders} preferredAgentId={params.get("agent") ?? undefined} openRequest={createOnMachine === computer.id || params.get("create") === computer.id} onOpened={() => { setCreateOnMachine(null); if (params.has("create")) { const next = new URLSearchParams(params); next.delete("create"); setParams(next, { replace: true }); } }} /></footer>
         </article>;
       })}
     </div>}
+    <ConnectNodeDialog open={connectOpen} onClose={closeConnect} onCreateInstance={(id) => { setSearch(""); setCreateOnMachine(id); }} />
   </section>;
 }
 export function AgentsPage(): React.ReactNode {
   const api = useApi();
+  const [params, setParams] = useSearchParams();
+  const selectedInstance = params.get("instance");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(), refetchInterval: 10000 });
@@ -84,13 +104,15 @@ export function AgentsPage(): React.ReactNode {
   const efforts = new Map(bootstrap.data.effort_profiles.map((profile) => [profile.id, profile]));
   const instances = bootstrap.data.agent_instances;
   const disabled = (instance: typeof instances[number]): boolean => instance.config.enabled === false || instance.status === "disabled";
-  const filtered = instances.filter((instance) => (filter === "all" || (filter === "disabled" ? disabled(instance) : filter === "enabled" ? !disabled(instance) : ["running", "queued", "stopping"].includes(instance.status))) && matches(search, agents.get(instance.agent_id)?.display_name, computers.get(instance.computer_id)?.display_name, instance.id, instance.runtime, instance.workspace_root, ...(agents.get(instance.agent_id)?.capabilities ?? [])));
+  const filtered = instances.filter((instance) => (!selectedInstance || instance.id === selectedInstance) && (filter === "all" || (filter === "disabled" ? disabled(instance) : filter === "enabled" ? !disabled(instance) : ["running", "queued", "stopping"].includes(instance.status))) && matches(search, agents.get(instance.agent_id)?.display_name, computers.get(instance.computer_id)?.display_name, instance.id, instance.runtime, instance.workspace_root, ...(agents.get(instance.agent_id)?.capabilities ?? [])));
   return <section className="inventory-page resources-page" aria-label="Agents">
-    <ResourceHeader title="Agents" description="Find the right teammate for the next piece of work." icon={Bot}><Link className="ui-btn ui-btn--primary ui-btn--md" to="/computers"><Plus size={16} aria-hidden="true" />Register an agent</Link></ResourceHeader>
+    <ResourceHeader title="Agents" description="Reusable teammates, with an instance wherever they work." icon={Bot}>{["owner", "admin"].includes(role) && <Link className="ui-btn ui-btn--primary ui-btn--md" to="/computers"><Plus size={16} aria-hidden="true" />Create an instance</Link>}</ResourceHeader>
     {bootstrap.isError && <div className="resource-inline-error" role="alert"><span>Agent settings could not be refreshed. Showing the last loaded settings.</span><Button size="sm" onClick={() => void bootstrap.refetch()}>Retry agent settings</Button></div>}
     <div className="resources-stats"><div><strong>{instances.length}</strong><span>Agent workspaces</span></div><div><strong>{instances.filter((instance) => !disabled(instance)).length}</strong><span>Enabled for work</span></div><div><strong>{instances.filter((instance) => ["running", "queued", "stopping"].includes(instance.status)).length}</strong><span>Work in progress</span></div></div>
+    <section className="agent-library" aria-label="Agent library"><div className="resource-section-heading"><h2>Agent library</h2><span>{agents.size} identities</span></div><p className="resource-muted">Choose an existing Agent to create an instance on another machine or workspace.</p><div className="agent-library__list">{[...agents.values()].map((agent) => <div key={agent.id}><span className="machine-instance-avatar"><Bot size={17} aria-hidden="true" /></span><div><strong>{agent.display_name}</strong><span>{instances.filter((instance) => instance.agent_id === agent.id).length} instances · {agent.kind}</span></div>{["owner", "admin"].includes(role) && <Link className="ui-btn ui-btn--sm" to={`/computers?agent=${encodeURIComponent(agent.id)}`}>Create instance</Link>}</div>)}</div></section>
     <ResourceSearch title="agents" search={search} onSearch={setSearch} count={filtered.length}><Select label="Agent state" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">All states</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="working">Working</option></Select></ResourceSearch>
-    {instances.length === 0 ? <EmptyState icon={Bot} title="No agent instances registered." description="Open Computers to register a runtime and workspace for your first agent." /> : filtered.length === 0 ? <NoMatches onClear={() => { setSearch(""); setFilter("all"); }} /> : <div className="resources-grid">
+    {selectedInstance && <div className="action-row"><p>Showing the selected instance.</p><Button onClick={() => { const next = new URLSearchParams(params); next.delete("instance"); setParams(next, { replace: true }); }}>Show all instances</Button></div>}
+    {instances.length === 0 ? <EmptyState icon={Bot} title="No agent instances registered." description="Open Machines to create an instance for your first Agent." /> : filtered.length === 0 ? <NoMatches onClear={() => { setSearch(""); setFilter("all"); const next = new URLSearchParams(params); next.delete("instance"); setParams(next, { replace: true }); }} /> : <div className="resources-grid">
       {filtered.map((instance) => {
         const agent = agents.get(instance.agent_id), computer = computers.get(instance.computer_id), model = models.get(instance.model_profile_id ?? ""), effort = efforts.get(instance.effort_profile_id ?? "");
         return <article key={instance.id} aria-label={agent?.display_name ?? instance.id} className="resource-card">

@@ -4,15 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       source_commit:
-        description: Exact validated rc.2 source commit already in main history
+        description: Exact validated rc.3 source commit already in main history
         required: true
         type: string
       sha256:
-        description: SHA-256 of the validated and published rc.2 tarball
+        description: SHA-256 of the validated and published rc.3 tarball
         required: true
         type: string
       integrity:
-        description: SHA-512 integrity of the same validated rc.2 tarball
+        description: SHA-512 integrity of the same validated rc.3 tarball
         required: true
         type: string
 
@@ -71,7 +71,7 @@ jobs:
         run: npm run build --workspace @artoo/server
       - name: Check fixed release pin contracts without network
         run: node --test scripts/npm-daemon/registry-platform-smoke.test.mjs
-      - name: Install the exact public rc.2 version and validate actual platform behavior
+      - name: Install the exact public rc.3 version and validate actual platform behavior
         env:
           EVIDENCE_DIRECTORY: ${{ runner.temp }}/artoo-published-registry-evidence
         run: |
@@ -123,15 +123,15 @@ jobs:
           assert.equal(reports.length, 3);
           assert.deepEqual(reports.map(r => r.platform).sort(), ['linux-arm64', 'linux-x64', 'win32-x64']);
           for (const r of reports) {
-            assert.equal(r.status, 'passed'); assert.equal(r.name, '@jiayunxie/artood'); assert.equal(r.version, '0.1.0-rc.2');
+            assert.equal(r.status, 'passed'); assert.equal(r.name, '@jiayunxie/artood'); assert.equal(r.version, '0.1.0-rc.3');
             assert.equal(r.sourceCommit, process.env.RELEASE_SOURCE_COMMIT); assert.equal(r.checkoutCommit, r.sourceCommit);
             assert.equal(r.registry.sha256, process.env.RELEASE_SHA256); assert.equal(r.registry.integrity, process.env.RELEASE_INTEGRITY);
-            assert.equal(r.registry.tarballUrl, 'https://registry.npmjs.org/@jiayunxie/artood/-/artood-0.1.0-rc.2.tgz');
+            assert.equal(r.registry.tarballUrl, 'https://registry.npmjs.org/@jiayunxie/artood/-/artood-0.1.0-rc.3.tgz');
             assert.equal(r.packageSmoke.status, 'passed'); assert.equal(r.packageSmoke.checkoutCommit, r.sourceCommit);
             assert.equal(r.packageSmoke.installation.source, 'registry');
             assert.equal(r.packageSmoke.installation.force, false); assert.equal(r.packageSmoke.installation.ignoreScripts, false);
           }
-          const summary = { status: 'passed', name: '@jiayunxie/artood', version: '0.1.0-rc.2',
+          const summary = { status: 'passed', name: '@jiayunxie/artood', version: '0.1.0-rc.3',
             sourceCommit: process.env.RELEASE_SOURCE_COMMIT, sha256: process.env.RELEASE_SHA256, integrity: process.env.RELEASE_INTEGRITY,
             platforms: reports.map(r => r.platform).sort(),
             scope: 'Fresh normal installation from the official public npm registry; installed CLI, manifest, paired transport, controlled Codex/Claude tasks and normal stop. No local mirror, live provider, production OAuth or native-supervisor qualification.' };

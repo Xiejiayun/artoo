@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Draft release containing the validated npm daemon tarball
+        description: Published or draft release containing the validated npm daemon tarball
         required: true
         type: string
       version:
@@ -80,7 +80,7 @@ jobs:
           npm install --global npm@11.20.0 --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/
           npm --version
 
-      - name: Download the exact asset from this repository's draft release
+      - name: Download the exact asset from this repository's verified release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -90,7 +90,7 @@ jobs:
           import { appendFileSync, readFileSync } from 'node:fs';
           import { join } from 'node:path';
           const release = JSON.parse(readFileSync(join(process.env.STAGING_ROOT, 'release.json'), 'utf8'));
-          assert.equal(release.isDraft, true, 'Source release must still be a draft');
+          assert.equal(typeof release.isDraft, 'boolean');
           assert.equal(release.tagName, process.env.RELEASE_TAG);
           assert.equal(release.assets.filter(asset => asset.name === process.env.PACKAGE_ASSET).length, 1);
           assert.match(release.targetCommitish, /^[A-Za-z0-9._/-]+$/);
@@ -98,7 +98,7 @@ jobs:
           NODE
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$PACKAGE_ASSET" --dir "$STAGING_ROOT"
 
-      - name: Bind the draft release to main history and verify package bytes
+      - name: Bind the release to main history and verify package bytes
         run: |
           if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
             git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}" > "$STAGING_ROOT/source-commit.txt"

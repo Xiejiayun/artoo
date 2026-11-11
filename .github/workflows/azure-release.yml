@@ -1,0 +1,135 @@
+name: Publish Web portal to Azure
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full current main commit, after its required checks pass
+        required: true
+        type: string
+      maintenance_confirmed:
+        description: Stop the single server briefly for a verified backup and deployment
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: artoo-production-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main' && inputs.maintenance_confirmed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: production
+      url: ${{ vars.ARTOO_ORIGIN }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      MAINTENANCE_CONFIRMED: ${{ inputs.maintenance_confirmed }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_CONTAINER_APP: ${{ vars.AZURE_CONTAINER_APP }}
+      AZURE_CONTAINER_REGISTRY: ${{ vars.AZURE_CONTAINER_REGISTRY }}
+      AZURE_REGISTRY_HOST: ${{ vars.AZURE_REGISTRY_HOST }}
+      ARTOO_ORIGIN: ${{ vars.ARTOO_ORIGIN }}
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Bind paths to this run
+        run: |
+          echo "RELEASE_EVIDENCE_DIRECTORY=$RUNNER_TEMP/artoo-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/evidence" >> "$GITHUB_ENV"
+      - name: Verify the exact main commit passed required checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/azure-release/gates.mjs
+      - run: npm ci --no-audit --no-fund
+      - name: Verify deployment and recovery contracts
+        run: node --test scripts/azure-release/*.test.mjs
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and push this exact source without application secrets
+        run: |
+          set -euo pipefail
+          az acr login --subscription "$AZURE_SUBSCRIPTION_ID" --name "$AZURE_CONTAINER_REGISTRY" --only-show-errors --output none
+          tag="artoo:${SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker build --build-arg "SOURCE_REVISION=$SOURCE_SHA" --tag "$AZURE_REGISTRY_HOST/$tag" .
+          docker push "$AZURE_REGISTRY_HOST/$tag"
+          digest=$(az acr repository show --subscription "$AZURE_SUBSCRIPTION_ID" --name "$AZURE_CONTAINER_REGISTRY" --image "$tag" --query digest --output tsv)
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "RELEASE_IMAGE=$AZURE_REGISTRY_HOST/artoo@$digest" >> "$GITHUB_ENV"
+          docker pull postgres:17
+      - name: Recheck main did not advance while the image was built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/azure-release/gates.mjs
+      - name: Stop the drained server, back up and rehearse database restore
+        id: prepare
+        env:
+          ARTOO_BACKUP_KEY: ${{ secrets.ARTOO_BACKUP_KEY }}
+        run: node scripts/azure-release/deploy.mjs prepare
+      - name: Retain the encrypted recovery point before migrations
+        id: backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-backup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.RELEASE_EVIDENCE_DIRECTORY }}/backup.tar.gz.enc
+            ${{ env.RELEASE_EVIDENCE_DIRECTORY }}/backup-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Deploy the immutable image and verify public health and source identity
+        id: deploy
+        env:
+          BACKUP_ARTIFACT_ID: ${{ steps.backup.outputs.artifact-id }}
+        run: node scripts/azure-release/deploy.mjs deploy
+      - name: Recover the previous image only when the database remains compatible
+        if: ${{ always() && steps.prepare.outcome != 'skipped' && steps.deploy.outcome != 'success' }}
+        run: node scripts/azure-release/deploy.mjs recover
+      - name: Record release result
+        if: always()
+        run: |
+          if [[ -f "$RELEASE_EVIDENCE_DIRECTORY/deployment.json" ]]; then
+            echo '### Production release' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat "$RELEASE_EVIDENCE_DIRECTORY/deployment.json" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ -f "$RELEASE_EVIDENCE_DIRECTORY/recovery.json" ]]; then
+            cat "$RELEASE_EVIDENCE_DIRECTORY/recovery.json" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: production-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.RELEASE_EVIDENCE_DIRECTORY }}/gates.json
+            ${{ env.RELEASE_EVIDENCE_DIRECTORY }}/deployment.json
+            ${{ env.RELEASE_EVIDENCE_DIRECTORY }}/recovery.json
+          if-no-files-found: ignore
+          retention-days: 90
+      - name: Remove runner-local plaintext backups and credentials
+        if: always()
+        run: node scripts/azure-release/deploy.mjs cleanup

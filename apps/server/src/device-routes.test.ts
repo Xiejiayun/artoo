@@ -70,6 +70,22 @@ describe("device HTTP flow (pairing → claim → enroll → list → revoke)", 
     expect(deviceId).toMatch(/^device_/);
   });
 
+  it("polls the exact pairing through claim and enrollment without returning secrets", async () => {
+    server = await buildTestServer();
+    const issued = (await server.app.inject({ method: "POST", url: "/api/v1/devices/pairings", payload: { intended_platform: "windows" } })).json();
+    const statusUrl = `/api/v1/devices/pairings/${issued.pairing.id}`;
+    const pending = await server.app.inject({ method: "GET", url: statusUrl });
+    expect(pending.statusCode).toBe(200);
+    expect(pending.json()).toMatchObject({ pairing: { id: issued.pairing.id, status: "pending" }, device: null });
+    const claimed = await claim(server, issued.code);
+    await server.app.inject({ method: "POST", url: `/api/v1/devices/${claimed.deviceId}/enroll`, payload: {} });
+    const enrolled = await server.app.inject({ method: "GET", url: statusUrl });
+    expect(enrolled.json()).toMatchObject({ pairing: { status: "claimed", claimed_by_device_id: claimed.deviceId },
+      device: { id: claimed.deviceId, computer_id: expect.stringMatching(/^computer_/) } });
+    for (const secret of [issued.code, claimed.nodeToken, claimed.controlToken, "codeHash", "secretHash"])
+      expect(enrolled.body).not.toContain(secret);
+  });
+
   it.each(["windows", "macos", "linux"])("enrolls the claimed %s device, links a computer, and lists it", async (platform) => {
     server = await buildTestServer();
     const code = await createPairing(server, { intended_platform: platform });
@@ -141,6 +157,7 @@ describe("device HTTP flow (pairing → claim → enroll → list → revoke)", 
     for (const r of [
       { method: "POST" as const, url: "/api/v1/devices/pairings", payload: {} },
       { method: "GET" as const, url: "/api/v1/devices" },
+      { method: "GET" as const, url: "/api/v1/devices/pairings/pairing_x" },
       { method: "POST" as const, url: "/api/v1/devices/device_x/enroll", payload: {} },
       { method: "POST" as const, url: "/api/v1/devices/device_x/revoke", payload: {} },
     ]) {

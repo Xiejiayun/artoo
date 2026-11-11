@@ -207,6 +207,7 @@ function configFromEnv(env: NodeJS.ProcessEnv,
     throw new Error(`artood: missing required env var(s): ${missing.join(", ")}`);
   }
   const runtimes = splitList(env.ARTOO_RUNTIMES, /,/);
+  if (runtimes.includes("none") && runtimes.length !== 1) throw Error("ARTOO_RUNTIMES=none cannot be combined with runtime names");
   const reportArtifacts = env.ARTOO_REPORT_ARTIFACTS?.trim() || undefined;
   if (reportArtifacts !== undefined && reportArtifacts !== "default" && reportArtifacts !== "none") {
     throw new Error("ARTOO_REPORT_ARTIFACTS must be default or none");
@@ -244,7 +245,7 @@ function configFromEnv(env: NodeJS.ProcessEnv,
   return {
     url,
     nodeId,
-    runtimes: runtimes.length > 0 ? runtimes : ["codex", "claude-code"],
+    runtimes: runtimes[0] === "none" ? [] : runtimes.length > 0 ? runtimes : ["codex", "claude-code"],
     allowedRoots,
     trustedExecution: env.ARTOO_TRUSTED_EXECUTION === "1",
     codex: codexSettingsFromEnv(env),
@@ -284,12 +285,16 @@ export function buildRegistry(config: ArtoodConfig): AdapterRegistry {
 
 /** Build the node.hello identity frame from config + this machine's os details. */
 export function helloFor(config: ArtoodConfig): NodeHello {
+  // Bounded UI suggestions must not prevent older manual configurations connecting.
+  // The execution allowlist remains config.allowedRoots, without truncation.
+  const paths = config.allowedRoots.filter((root) => root.length <= 4096 && /^(?:[A-Za-z]:[\\/]|\/|\\\\)/.test(root) && /^[^\u0000-\u001f\u007f]+$/u.test(root)).slice(0, 32);
   return {
     kind: "node.hello",
     node_id: config.nodeId,
     protocol_version: PROTOCOL_VERSION,
     artood_version: ARTOOD_VERSION,
-    machine: { hostname: hostname(), os: platform(), arch: osArch() }
+    machine: { hostname: hostname(), os: platform(), arch: osArch() },
+    ...(paths.length ? { workspace_roots: { version: 1 as const, paths } } : {})
   };
 }
 

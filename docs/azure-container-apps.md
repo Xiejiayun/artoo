@@ -87,6 +87,12 @@ the OAuth callback use explicit production configuration.
 
 ## Build and first deployment
 
+For subsequent production releases, use the repository's
+[GitHub Actions publication workflow](github-actions-production-release.md).
+It implements the backup, single-writer maintenance, immutable image and
+compatible-recovery sequence below. The manual commands remain useful for
+initial bootstrap and operator-led recovery.
+
 Run the repository checks in `AGENTS.md` and the PostgreSQL deployment workflow
 before deploying. Build from the reviewed commit, preserve its full SHA, and
 deploy an immutable **image digest**, not `latest`. Do not merge a PR merely to

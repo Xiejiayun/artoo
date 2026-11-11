@@ -414,6 +414,11 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     return result;
   });
 
+  app.get("/api/v1/devices/pairings/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    return deviceService.getPairingStatus(rc(req), id);
+  });
+
   // Claim a pairing code into a device + credentials. The CODE is the authority
   // here (the unpaired client has no session yet), so this route is exempt from
   // the #34 session guard. Because it is public, every attempt — right or wrong —
@@ -470,7 +475,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   // live connection is its registered daemon node (nodeRegistry); the service
   // gathers the rest from runs/tasks/runtime/computer/device facts.
   const isLive = (computerId: string): boolean => nodeRegistry.get(computerId) !== undefined;
-  app.get("/api/v1/daemons", async (req) => ({ daemons: await listDaemons(rc(req), isLive, (id) => graceWindow.isArmed(id)) }));
+  app.get("/api/v1/daemons", async (req) => ({ daemons: await listDaemons(rc(req), isLive, (id) => graceWindow.isArmed(id), (id) => nodeRegistry.get(id)?.workspaceRoots) }));
   app.get("/api/v1/agent-instances/presence", async (req) => ({
     presence: await presenceService.listAgentInstancePresence(rc(req), isLive),
   }));
