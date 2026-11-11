@@ -389,6 +389,23 @@ test("provider key permissions are inspected without changing the source ACL", t
       env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath")) });
     assert.ifError(nullDacl.error); assert.equal(nullDacl.status, 0, nullDacl.stderr);
     assert.throws(() => assertPrivateProviderKeyFile(nullDaclFile), /private, trusted Windows permissions/);
+    const genericFile = join(dirname(fixture.keyFile), "generic-allow-fixture");
+    writeFileSync(genericFile, "synthetic-nonsecret");
+    const generic = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';" +
+      "$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()));$owner=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;" +
+      "$acl=[Security.AccessControl.FileSecurity]::new();$acl.SetSecurityDescriptorSddlForm('D:P(A;;FA;;;'+$owner+')(A;;GA;;;WD)',[Security.AccessControl.AccessControlSections]::Access);" +
+      "[IO.File]::SetAccessControl($p,$acl);" +
+      "$observed=Get-Acl -LiteralPath $p;$actual=[Security.AccessControl.RawSecurityDescriptor]::new($observed.GetSecurityDescriptorBinaryForm(),0);" +
+      "$everyone=@($actual.DiscretionaryAcl | Where-Object {$_.AceType -eq 'AccessAllowed' -and $_.SecurityIdentifier.Value -eq 'S-1-1-0'});" +
+      "if($everyone.Count -ne 1){throw 'Fixture did not persist its Everyone allow ACE'};" +
+      "[pscustomobject]@{genericBitsRetained=(([long]$everyone[0].AccessMask -band 4026531840) -ne 0);accessMask=$everyone[0].AccessMask} | ConvertTo-Json -Compress"],
+    { input: Buffer.from(genericFile).toString("base64"), encoding: "utf8", windowsHide: true,
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath")) });
+    assert.ifError(generic.error); assert.equal(generic.status, 0, generic.stderr);
+    const persisted = JSON.parse(generic.stdout);
+    assert.equal(typeof persisted.genericBitsRetained, "boolean"); assert.equal(Number.isInteger(persisted.accessMask), true);
+    t.diagnostic(`Synthetic persisted Everyone GENERIC_ALL: raw generic bits ${persisted.genericBitsRetained ? "retained" : "mapped by Windows"}, mask ${persisted.accessMask}.`);
+    assert.throws(() => assertPrivateProviderKeyFile(genericFile), /private, trusted Windows permissions/);
   }
 });
 

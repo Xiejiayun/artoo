@@ -78,7 +78,11 @@ export function assertPrivateProviderKeyFile(path) {
       "if($trusted -notcontains $owner){throw 'Untrusted credential owner'};" +
       "$raw=[Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0);" +
       "if(-not ($raw.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -or $null -eq $raw.DiscretionaryAcl){throw 'Missing credential DACL'};" +
-      "foreach($ace in $raw.DiscretionaryAcl){if($ace.AceType -notin @([Security.AccessControl.AceType]::AccessAllowed,[Security.AccessControl.AceType]::AccessDenied)){throw 'Unsupported credential ACE'}};" +
+      "foreach($ace in $raw.DiscretionaryAcl){" +
+      "if($ace.AceType -notin @([Security.AccessControl.AceType]::AccessAllowed,[Security.AccessControl.AceType]::AccessDenied)){throw 'Unsupported credential ACE'};" +
+      // Generic permission bits are not represented by FileSystemRights masks.
+      "if($ace.AceType -eq [Security.AccessControl.AceType]::AccessAllowed -and -not ([int]$ace.AceFlags -band [int][Security.AccessControl.AceFlags]::InheritOnly) " +
+      "-and $trusted -notcontains $ace.SecurityIdentifier.Value -and ([long]$ace.AccessMask -band [long]4026531840)){throw 'Untrusted generic credential rights'}};" +
       "$mask=if($first){$fileMask}else{$parentMask};" +
       "foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){" +
       "if($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) " +
