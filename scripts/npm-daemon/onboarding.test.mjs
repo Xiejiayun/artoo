@@ -17,8 +17,10 @@ const source = dirname(fileURLToPath(import.meta.url));
 const connection = root => ({ version: 1, origin: "https://artoo.example.test", deviceId: "device_test", computerId: "computer_test",
   nodeToken: "fixture-node-token-123456789", controlToken: null, roots: [root], runtimes: ["codex"], codexBinary: null });
 function temporary(t, beforeRemove = async () => {}) {
-  const parent = realpathSync(tmpdir()), root = mkdtempSync(join(parent, "artoo-onboarding-"));
-  t.after(async () => { await beforeRemove(); assert.ok(realpathSync(root).startsWith(`${parent}${sep}artoo-onboarding-`)); rmSync(root, { recursive: true, force: true }); });
+  // Hosted Windows TEMP can use an 8.3 name. Prepare genuine physical paths for
+  // the same strict configuration admission that production uses.
+  const parent = realpathSync.native(tmpdir()), root = realpathSync.native(mkdtempSync(join(parent, "artoo-onboarding-")));
+  t.after(async () => { await beforeRemove(); assert.ok(realpathSync.native(root).startsWith(`${parent}${sep}artoo-onboarding-`)); rmSync(root, { recursive: true, force: true }); });
   return root;
 }
 
@@ -206,6 +208,39 @@ function teamFixture(t, { stop = false } = {}) {
   saveConnection(state, connection(workspace));
   return { root, state, workspace, control, receipts, profiles, file, configuration, observation, packageDirectory };
 }
+
+test("protected configuration fixtures use the physical temporary directory even through a Windows short name", async t => {
+  const outer = temporary(t), physical = join(outer, "long temporary directory"); mkdirSync(physical);
+  let selected = physical;
+  if (process.platform === "win32") {
+    // Read an existing 8.3 alias; never change the volume's short-name settings.
+    const script = 'Add-Type -TypeDefinition \'using System; using System.Text; using System.Runtime.InteropServices; public static class ArtooTempShortPath { [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true, EntryPoint="GetShortPathNameW")] public static extern uint Get(string path, StringBuilder output, uint length); }\'; '
+      + '$buffer=[Text.StringBuilder]::new(32768);$length=[ArtooTempShortPath]::Get($env:ARTOO_NPM_TEST_SHORT_PATH,$buffer,$buffer.Capacity);'
+      + 'if($length -eq 0 -or $length -ge $buffer.Capacity){throw "GetShortPathNameW failed"};[Console]::Write($buffer.ToString())';
+    const alias = spawnSync(join(process.env.SystemRoot ?? process.env.SYSTEMROOT, "System32/WindowsPowerShell/v1.0/powershell.exe"),
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      { env: { ...process.env, ARTOO_NPM_TEST_SHORT_PATH: physical }, encoding: "utf8", timeout: 15_000, windowsHide: true });
+    assert.ifError(alias.error); assert.equal(alias.status, 0, alias.stderr); assert.equal(alias.signal, null);
+    selected = alias.stdout;
+    assert.equal(realpathSync.native(selected), realpathSync.native(physical));
+    t.diagnostic(selected.toLowerCase() !== realpathSync.native(physical).toLowerCase()
+      ? "Actual Windows 8.3 temporary-directory alias exercised."
+      : "This volume returned its long path; physical temporary-directory preparation is still exercised.");
+  }
+  await t.test("the selected temporary path supports protected configuration without relaxing admission", async child => {
+    const variables = ["TMPDIR", "TEMP", "TMP"], original = new Map(variables.map(key => [key, process.env[key]]));
+    let fixture;
+    try {
+      for (const key of variables) process.env[key] = selected;
+      fixture = teamFixture(child);
+    } finally {
+      for (const [key, value] of original) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    }
+    await runCli({ args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory, output: () => {} });
+    assert.equal(fixture.root, realpathSync.native(fixture.root));
+    assert.deepEqual(JSON.parse(readFileSync(join(fixture.state, "team-config.json"), "utf8")), fixture.configuration);
+  });
+});
 
 test("configure saves only explicit local team settings after controlled preflight without changing identity", async t => {
   const fixture = teamFixture(t), before = readFileSync(join(fixture.state, "connection.dat"));
