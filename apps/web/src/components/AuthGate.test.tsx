@@ -219,6 +219,60 @@ describe("sanitizeReturnTo", () => {
 });
 
 describe("LogoutButton", () => {
+  it("returns AuthGate to login after logout and clears the previous account's cache", async () => {
+    let signedIn = true;
+    const getSession = vi.fn(async () => {
+      if (signedIn) return { user: { id: "u1", email: "a@b.c" } };
+      throw new ApiClientError("unknown", "unauthorized", 401);
+    });
+    const logout = vi.fn(async () => { signedIn = false; });
+    const queryClient = createQueryClient();
+    queryClient.setQueryData(["private-project"], { name: "Previous account project" });
+    await queryClient.getMutationCache().build(queryClient, {
+      mutationFn: async () => ({ message: "Previous account message" }),
+    }).execute(undefined);
+    const view = renderWithProviders(
+      <AuthGate enabled><div>PROTECTED APP</div><LogoutButton /></AuthGate>,
+      { client: fakeApi({ getSession, logout }), queryClient },
+    );
+
+    expect(await screen.findByText("PROTECTED APP")).toBeInTheDocument();
+    // JSDOM does not implement the dialog API used to cancel AI consent.
+    view.container.querySelector("dialog")!.close = vi.fn();
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(await screen.findByRole("button", { name: "Sign in with Google" })).toBeInTheDocument();
+    expect(screen.queryByText("PROTECTED APP")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
+    expect(logout).toHaveBeenCalledOnce();
+    expect(getSession).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryData(queryKeys.session)).toBeUndefined();
+    expect(queryClient.getQueryData(["private-project"])).toBeUndefined();
+    expect(queryClient.getMutationCache().getAll()).toEqual([]);
+  });
+
+  it("keeps AuthGate signed in and reports a failed logout", async () => {
+    const getSession = vi.fn(async () => ({ user: { id: "u1", email: "a@b.c" } }));
+    const logout = vi.fn(async () => { throw new ApiClientError("network_error", "Sign out failed", 0); });
+    const queryClient = createQueryClient();
+    queryClient.setQueryData(["private-project"], { name: "Current account project" });
+    const view = renderWithProviders(
+      <AuthGate enabled><div>PROTECTED APP</div><LogoutButton /></AuthGate>,
+      { client: fakeApi({ getSession, logout }), queryClient },
+    );
+
+    const signOut = await screen.findByRole("button", { name: "Sign out" });
+    view.container.querySelector("dialog")!.close = vi.fn();
+    await userEvent.click(signOut);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Sign out failed");
+    expect(screen.getByText("PROTECTED APP")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Sign in with Google" })).toBeNull();
+    expect(getSession).toHaveBeenCalledOnce();
+    expect(queryClient.getQueryData(["private-project"])).toEqual({ name: "Current account project" });
+  });
+
   it("discards queued commands before logging out", async () => {
     let commands!: ApiCommandQueue;
     function QueueProbe() { commands = useCommands(); return <LogoutButton />; }

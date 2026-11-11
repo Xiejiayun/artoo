@@ -64,6 +64,50 @@ Always install an explicit version. Prereleases use `next`; do not rely on an un
 
 Linux pairing and enrollment require the matching server/Web upgrade and its new ordered database migration. Back up the existing server data before upgrading; installing this npm package alone does not add Linux support to an older server. Follow the server runbook for migration and recovery, and keep each computer's own credentials.
 
+## Configure a managed node for Agent Team
+
+After connecting, an operator can save explicit local research and verification settings with the durable launcher:
+
+```powershell
+& "$env:USERPROFILE\.artoo\daemon\artood.cmd" configure --file 'C:\ArtooControl\team.json'
+```
+
+The JSON must contain only these version 1 fields. All paths must already exist, use physical absolute paths without links, and stay outside every allowed agent workspace root:
+
+```json
+{
+  "version": 1,
+  "research_receipts_directory": "C:\\ArtooControl\\research-receipts",
+  "verification_profiles_file": "C:\\ArtooControl\\verification-profiles.json",
+  "initialize_repository": true
+}
+```
+
+The three settings after `version` are optional. A receipts directory enables public HTTPS research fetch; this interface does not configure a search-provider key. Repository initialization applies only to empty autonomous product directories. A verifier selection enables existing node-owned verification; it does not provision its profile, browser or evidence directories. Prepare those using the [Agent Team guide](https://github.com/Xiejiayun/artoo/blob/main/docs/agent-team-development.md). On POSIX, restrict the input JSON to its owner (mode 0600). Keep the selected profiles, verifier programs and evidence directories protected from agent writes.
+
+An optional `codex` object selects a model and a Responses API provider for this daemon without editing the user's global Codex configuration:
+
+```json
+{
+  "version": 1,
+  "codex": {
+    "model": "your-provider-model",
+    "provider_url": "http://127.0.0.1:18181/v1",
+    "provider_key_file": "C:\\ArtooControl\\private\\provider-key"
+  }
+}
+```
+
+Add this object to the same JSON as the research/verifier settings; `configure` replaces the saved selections. The model name and URL above are examples, not defaults. A provider URL requires an explicit model and HTTPS or loopback HTTP without embedded credentials, query or fragment. The optional key file requires an explicit URL and must be an existing physical single-link file outside every agent workspace, contain one nonempty ASCII token (at most 4096 bytes), and have private permissions. POSIX requires current-user ownership and mode 0600; Windows inspects the owner and DACL, trusting the current user, SYSTEM, Administrators and TrustedInstaller, and rejects unsafe parent permissions. Artoo does not change the source key file's ACL. Prepare a private operator-owned copy if the original application's file is shared with other users.
+
+Only the key file's path is saved. `configure` checks its metadata and permissions without reading the key or contacting the provider. The worker reads it on each start and passes the selected credential through `ARTOO_CODEX_PROVIDER_KEY` for the existing runtime's environment-key authentication and output redaction. The key is never a command argument or part of the task context; it is cleared from the daemon environment after startup failure or normal/failed shutdown. Node connection credentials remain outside the model environment. Missing or invalid selected credentials fail startup. With no `codex` object, the local CLI keeps its existing login, model and provider configuration; `codex login status` alone does not establish whether a custom provider is authenticated.
+
+`configure` validates the selections and the runtime's local helper/profile configuration before saving a private `team-config.json` alongside the existing connection. It does not connect, start a model, change the machine identity or restart a running daemon. Stop and start Artoo to apply the saved settings; both background and `--foreground` starts use them. A JSON containing only `{"version":1}` clears these optional selections on the next start. Invalid or missing configured resources fail startup; Artoo does not silently drop verification or research. Inherited `ARTOO_*` settings do not override the saved choices, and this interface accepts no inline credential, environment map, command arguments, `CODEX_HOME`, release profile or source-recovery configuration.
+
+On Windows x64, selecting verification uses the current package's pinned native helper and retains all native installation/profile admission checks. This is ordinary paired execution and does not select `--windows-supervised` or managed journal execution. A static-Web profile must invoke this worker's actual Node executable, the retained package's `runtime\web-acceptance-cli.js`, and its protected browser JSON. The browser JSON must opt into `windows_browser_process: { "version": 1 }`; the profile subject must cover `product` and `.artoo/product`. Pin the actual installed paths when preparing the profile. After a package or Node upgrade, review and refresh those profile paths and their protected bindings before restarting; old profiles are not silently redirected to a different verifier version.
+
+An online configured node still requires an authorized project, two distinct Agent identities, matching project/workspace/profile bindings, AI data-sharing consent and authenticated model runtimes. Successful configuration alone does not establish a completed real-model team task or product publication.
+
 ## Existing manual installations
 
 The explicit environment interface below remains supported and runs in the foreground. Before switching an existing daemon to managed connection, stop it through its original launcher and confirm it is offline. The new installer does not inspect arbitrary private configuration files, kill old processes or revoke devices. To preserve an existing computer identity, an operator must migrate its protected device/computer IDs, node token and workspace roots into the new protected connection format. Otherwise revoke the old device in Web before creating a replacement, and reassign agent workspaces to the new computer. Never run two daemons using the same node credential.

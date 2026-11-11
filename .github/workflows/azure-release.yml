@@ -46,6 +46,7 @@ jobs:
       AZURE_CONTAINER_REGISTRY: ${{ vars.AZURE_CONTAINER_REGISTRY }}
       AZURE_REGISTRY_HOST: ${{ vars.AZURE_REGISTRY_HOST }}
       ARTOO_ORIGIN: ${{ vars.ARTOO_ORIGIN }}
+      ARTOO_AI_DATA_SHARING_POLICY: ${{ vars.ARTOO_AI_DATA_SHARING_POLICY }}
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
