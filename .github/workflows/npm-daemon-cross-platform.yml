@@ -216,7 +216,11 @@ jobs:
         if: matrix.platform == 'linux-x64'
         timeout-minutes: 10
         run: |
-          export ARTOO_TEST_CHROMIUM="$(node --input-type=module -e 'import { chromium } from "playwright"; console.log(chromium.executablePath())')"
+          # Use the pinned Playwright distribution's headless executable. Full
+          # Chrome and headless-shell have different sizes; keep the verifier's
+          # existing file bounds and record both candidates for diagnosis.
+          export ARTOO_TEST_CHROMIUM="$(node --input-type=module -e 'import { registry } from "playwright-core/lib/coreBundle"; console.log(registry.registry.findExecutable("chromium-headless-shell").executablePath())')"
+          stat --format='browser path=%n bytes=%s links=%h type=%F' "$(node --input-type=module -e 'import { chromium } from "playwright"; console.log(chromium.executablePath())')" "$ARTOO_TEST_CHROMIUM"
           test -x "$ARTOO_TEST_CHROMIUM"
           node --test --test-concurrency=1 apps/artood/test-fixtures/verification-capabilities-real.test.mjs > "$RUNNER_TEMP/posix-browser-verification.log" 2>&1
       - name: Upload safe package evidence
