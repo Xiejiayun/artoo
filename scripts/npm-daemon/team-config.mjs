@@ -8,6 +8,27 @@ import { disableOptionalWebSocketAddons, packagedWindowsProcessEnvironment } fro
 const filename = "team-config.json";
 const fields = ["version", "research_receipts_directory", "verification_profiles_file", "temporary_directory", "initialize_repository", "codex"];
 const normalize = path => process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+const temporaryAuditCodes = new Set([
+  "collector_error", "input_decode_failed", "identity_read_failed", "volume_inspection_failed", "path_attributes_failed",
+  "acl_read_failed", "descriptor_read_failed", "local_ntfs_required", "path_kind_changed", "untrusted_owner",
+  "noncanonical_dacl", "missing_dacl", "acl_entry_limit", "unsupported_ace", "ancestor_replacement_grant",
+  "private_effective_grant", "private_future_child_grant",
+]);
+
+/** Fixed collector protocol only: never expose process errors, stderr or arbitrary stdout. */
+export function classifyTemporaryDirectoryAudit(result) {
+  if (result.error) {
+    if (result.error.code === "ETIMEDOUT") return "collector_timeout";
+    if (result.error.code === "ENOBUFS") return "collector_output_limit";
+    return "collector_spawn_failed";
+  }
+  if (result.signal !== null) return "collector_signaled";
+  const code = typeof result.stdout === "string" && /^[a-z_]+\r?\n$/.test(result.stdout)
+    ? result.stdout.replace(/\r?\n$/, "") : undefined;
+  if (result.status === 0) return code === "ok" ? null : "collector_protocol_failed";
+  if (result.status === 1 && temporaryAuditCodes.has(code)) return code;
+  return "collector_exit_failed";
+}
 
 function physicalPath(path, kind, roots) {
   if (typeof path !== "string" || !isAbsolute(path) || /[\u0000-\u001f\u007f]/u.test(path))
@@ -134,25 +155,32 @@ function temporaryDirectory(path, roots) {
   } else {
     // Raw ACEs include inherit-only grants: an empty directory must not grant
     // another principal access to the private context a future task creates.
-    const script = "$ErrorActionPreference='Stop';Set-StrictMode -Version Latest;" +
+    const script = "$ErrorActionPreference='Stop';Set-StrictMode -Version Latest;$script:code='collector_error';" +
+      "function Reject([string]$code){$script:code=$code;throw 'Rejected'};try{$script:code='input_decode_failed';" +
       "$v=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))|ConvertFrom-Json;" +
+      "$script:code='identity_read_failed';" +
       "$trusted=@([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');" +
-      "foreach($item in $v.paths){$drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($item.path));" +
-      "if($drive.DriveType -ne 'Fixed' -or $drive.DriveFormat -ne 'NTFS'){throw 'Local fixed NTFS disk required'};" +
-      "$attributes=[IO.File]::GetAttributes($item.path);if(([int]$attributes -band 1024) -or (([int]$attributes -band 16) -ne 0) -ne $item.directory){throw 'Physical path changed'};" +
-      "$acl=Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $item.path;" +
-      "if($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -or -not $acl.AreAccessRulesCanonical){throw 'Untrusted owner or DACL'};" +
+      "foreach($item in $v.paths){$script:code='volume_inspection_failed';$drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($item.path));" +
+      "if($drive.DriveType -ne 'Fixed' -or $drive.DriveFormat -ne 'NTFS'){Reject 'local_ntfs_required'};" +
+      "$script:code='path_attributes_failed';$attributes=[IO.File]::GetAttributes($item.path);" +
+      "if(([int]$attributes -band 1024) -or (([int]$attributes -band 16) -ne 0) -ne $item.directory){Reject 'path_kind_changed'};" +
+      "$script:code='acl_read_failed';$acl=Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $item.path;" +
+      "$script:code='descriptor_read_failed';if($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value){Reject 'untrusted_owner'};" +
+      "if(-not $acl.AreAccessRulesCanonical){Reject 'noncanonical_dacl'};" +
       "$raw=[Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0);" +
-      "if(-not ($raw.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -or $null -eq $raw.DiscretionaryAcl -or $raw.DiscretionaryAcl.Count -gt 256){throw 'Missing or oversized DACL'};" +
+      "if(-not ($raw.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -or $null -eq $raw.DiscretionaryAcl){Reject 'missing_dacl'};" +
+      "if($raw.DiscretionaryAcl.Count -gt 256){Reject 'acl_entry_limit'};" +
       "foreach($ace in $raw.DiscretionaryAcl){$flags=[int]$ace.AceFlags;" +
       "if(-not ($ace -is [Security.AccessControl.CommonAce]) -or $ace.IsCallback -or $flags -lt 0 -or $flags -gt 31 " +
-      "-or $ace.AceType -notin @([Security.AccessControl.AceType]::AccessAllowed,[Security.AccessControl.AceType]::AccessDenied)){throw 'Unsupported ACE'};" +
+      "-or $ace.AceType -notin @([Security.AccessControl.AceType]::AccessAllowed,[Security.AccessControl.AceType]::AccessDenied)){Reject 'unsupported_ace'};" +
       "if($ace.AceType -ne [Security.AccessControl.AceType]::AccessAllowed -or $trusted -contains $ace.SecurityIdentifier.Value){continue};" +
       "$mask=[long]$ace.AccessMask -band [long]4294967295;$effective=($flags -band 8) -eq 0;$futureChild=$item.directory -and ($flags -band 3) -ne 0;" +
       // Private FullControl + all generic rights; ancestor replacement matches
       // windows-local-acl.ts and permits ordinary read/sibling creation grants.
-      "if(($item.ancestor -and $effective -and ($mask -band [long]1343029586)) " +
-      "-or (-not $item.ancestor -and ($effective -or $futureChild) -and ($mask -band [long]4028563967))){throw 'Temporary permissions are not private'}}}";
+      "if($item.ancestor -and $effective -and ($mask -band [long]1343029586)){Reject 'ancestor_replacement_grant'};" +
+      "if(-not $item.ancestor -and ($mask -band [long]4028563967)){" +
+      "if($effective){Reject 'private_effective_grant'};if($futureChild){Reject 'private_future_child_grant'}}}};" +
+      "[Console]::Out.WriteLine('ok');exit 0}catch{[Console]::Out.WriteLine($script:code);exit 1}";
     const systemRoot = process.env.SystemRoot || "C:\\Windows";
     const result = spawnSync(join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       ["-NoProfile", "-NonInteractive", "-Command", script], {
@@ -161,8 +189,9 @@ function temporaryDirectory(path, roots) {
         env: { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: join(systemRoot, "System32"),
           PSModulePath: join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules") },
       });
-    if (result.error || result.status !== 0 || result.signal !== null)
-      throw Error("Team temporary_directory, contents and ancestors require local fixed NTFS storage and private, trusted Windows permissions; no ACL was changed.");
+    const failure = classifyTemporaryDirectoryAudit(result);
+    if (failure)
+      throw Error(`Team temporary_directory, contents and ancestors require local fixed NTFS storage and private, trusted Windows permissions; no ACL was changed. Audit: ${failure}.`);
   }
   for (const { path, stat } of entries) {
     const after = lstatSync(path);

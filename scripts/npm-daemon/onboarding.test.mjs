@@ -10,7 +10,7 @@ import { connectComputer, parseConnectArguments, savedConnectionEnvironment } fr
 import { assertPrivateProviderKeyFile, connectionEnvironment, loadConnection, prepareWorkspace, protectDirectory, saveConnection, serverOrigin, validateConnection } from "./local-config.mjs";
 import { managedStatus, startManaged, stopManaged } from "./managed.mjs";
 import { launchManagedRuntime, runCli } from "./cli.mjs";
-import { managedConnectionEnvironment, teamConfigurationEnvironment, validateTeamConfiguration } from "./team-config.mjs";
+import { classifyTemporaryDirectoryAudit, managedConnectionEnvironment, teamConfigurationEnvironment, validateTeamConfiguration } from "./team-config.mjs";
 import { readRelease } from "./verify.mjs";
 
 const source = dirname(fileURLToPath(import.meta.url));
@@ -394,6 +394,41 @@ function temporaryDirectoryFixture(t, options) {
   return { ...fixture, privateRoot, temporaryDirectory };
 }
 
+test("temporary audit diagnostics accept only the fixed complete collector protocol and never expose subprocess text", () => {
+  const result = overrides => ({ status: 0, signal: null, stdout: "ok\r\n", ...overrides,
+    get stderr() { throw Error("Raw subprocess text must not be read for diagnostics."); } });
+  assert.equal(classifyTemporaryDirectoryAudit(result()), null);
+  assert.equal(classifyTemporaryDirectoryAudit(result({ stdout: "ok\n" })), null);
+  const reasons = ["collector_error", "input_decode_failed", "identity_read_failed", "volume_inspection_failed", "path_attributes_failed",
+    "acl_read_failed", "descriptor_read_failed", "local_ntfs_required", "path_kind_changed", "untrusted_owner", "noncanonical_dacl",
+    "missing_dacl", "acl_entry_limit", "unsupported_ace", "ancestor_replacement_grant", "private_effective_grant", "private_future_child_grant"];
+  for (const reason of reasons) {
+    assert.equal(classifyTemporaryDirectoryAudit(result({ status: 1, stdout: `${reason}\r\n` })), reason);
+    assert.equal(classifyTemporaryDirectoryAudit(result({ status: 0, stdout: `${reason}\r\n` })), "collector_protocol_failed");
+    assert.equal(classifyTemporaryDirectoryAudit(result({ status: 2, stdout: `${reason}\r\n` })), "collector_exit_failed");
+  }
+  for (const stdout of ["", "ok", " ok\n", "ok\n\n", "private_future_child_grant", "private_future_child_grant\nfixture-secret", "fixture-secret\n", "$script:path='fixture-secret'\n"]) {
+    assert.equal(classifyTemporaryDirectoryAudit(result({ stdout })), "collector_protocol_failed");
+    assert.equal(classifyTemporaryDirectoryAudit(result({ status: 1, stdout })), "collector_exit_failed");
+  }
+  assert.equal(classifyTemporaryDirectoryAudit(result({ signal: "SIGTERM", stdout: "private_future_child_grant\n" })), "collector_signaled");
+  for (const [code, expected] of [["ETIMEDOUT", "collector_timeout"], ["ENOBUFS", "collector_output_limit"], ["EACCES", "collector_spawn_failed"]]) {
+    assert.equal(classifyTemporaryDirectoryAudit(result({ status: 1, signal: "SIGTERM", stdout: "private_future_child_grant\n",
+      error: { code, get message() { throw Error("Raw error messages must not be read."); } } })), expected);
+  }
+});
+
+test("temporary audit diagnostics distinguish actual subprocess timeout and nonzero exit from ACL rejection", () => {
+  const timed = spawnSync(process.execPath, ["-e", "process.stdout.write('private_future_child_grant\\n');setTimeout(()=>{},10000)"],
+    { encoding: "utf8", windowsHide: true, timeout: 500 });
+  assert.equal(timed.error?.code, "ETIMEDOUT");
+  assert.equal(classifyTemporaryDirectoryAudit(timed), "collector_timeout");
+  const failed = spawnSync(process.execPath, ["-e", "process.stdout.write('private_future_child_grant\\n');process.stderr.write('fixture-secret');process.exit(7)"],
+    { encoding: "utf8", windowsHide: true, timeout: 5000 });
+  assert.equal(failed.error, undefined); assert.equal(failed.status, 7); assert.equal(failed.signal, null);
+  assert.equal(classifyTemporaryDirectoryAudit(failed), "collector_exit_failed");
+});
+
 test("temporary directory selection is empty, physical and outside every agent root, then retains safe saved state", async t => {
   const fixture = temporaryDirectoryFixture(t), roots = [fixture.workspace], value = temporary_directory => ({ version: 1, temporary_directory });
   for (const path of ["relative", "", 42, `${fixture.temporaryDirectory}\n`, fixture.profiles])
@@ -487,13 +522,13 @@ test("Windows temporary admission rejects future-child, generic, null DACL and a
   const fixture = temporaryDirectoryFixture(t);
   const options = { args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory, output: () => {} };
   const load = () => managedConnectionEnvironment(connection(fixture.workspace), {}, fixture.state, readRelease(fixture.packageDirectory));
-  for (const [flags, rights, expectedFlags] of [["OIIO", "0x1", 9], ["CIIO", "0x1", 10], ["OICIIO", "GX", 11], ["OICIIO", "GA", 11]]) {
+  for (const [flags, rights, expectedFlags] of [["", "0x1", 0], ["OIIO", "0x1", 9], ["CIIO", "0x1", 10], ["OICIIO", "GX", 11], ["OICIIO", "GA", 11]]) {
     const before = temporaryFixtureAcl(fixture.temporaryDirectory, `(A;${flags};${rights};;;WD)`);
     const grant = before.aces.find(ace => ace.sid === "S-1-1-0");
     assert.equal(grant.flags, expectedFlags); assert.ok(grant.mask > 0);
     if (rights === "GX") assert.ok((grant.mask & 0x20000020) !== 0, "Retain raw generic execute or the OS-mapped execute right.");
     assert.deepEqual(readdirSync(fixture.temporaryDirectory), [], "Rejection must cover future children of an empty directory.");
-    await assert.rejects(runCli(options), /private, trusted Windows permissions; no ACL was changed/);
+    await assert.rejects(runCli(options), expectedFlags === 0 ? /Audit: private_effective_grant\./ : /Audit: private_future_child_grant\./);
     assert.equal(temporaryFixtureAcl(fixture.temporaryDirectory).sddl, before.sddl);
     assert.equal(existsSync(join(fixture.state, "team-config.json")), false);
   }
@@ -501,15 +536,16 @@ test("Windows temporary admission rejects future-child, generic, null DACL and a
   for (const descriptor of ["(A;OICIIO;GR;;;WD)", "null"]) {
     const before = temporaryFixtureAcl(fixture.temporaryDirectory, descriptor);
     if (descriptor === "null") assert.equal(before.nullDacl, true);
-    assert.throws(load, /private, trusted Windows permissions; no ACL was changed/);
-    await assert.rejects(runCli(options), /private, trusted Windows permissions; no ACL was changed/);
+    const reason = descriptor === "null" ? /Audit: missing_dacl\./ : /Audit: private_future_child_grant\./;
+    assert.throws(load, reason);
+    await assert.rejects(runCli(options), reason);
     assert.equal(temporaryFixtureAcl(fixture.temporaryDirectory).sddl, before.sddl);
   }
   temporaryFixtureAcl(fixture.temporaryDirectory, "");
   // Sibling creation on an ancestor is permitted; replacing descendants is not.
   temporaryFixtureAcl(fixture.privateRoot, "(A;;0x4;;;WD)"); assert.equal(load().TMP, fixture.temporaryDirectory);
   const parentAcl = temporaryFixtureAcl(fixture.privateRoot, "(A;;0x40;;;WD)");
-  assert.throws(load, /private, trusted Windows permissions; no ACL was changed/);
+  assert.throws(load, /Audit: ancestor_replacement_grant\./);
   assert.equal(temporaryFixtureAcl(fixture.privateRoot).sddl, parentAcl.sddl);
   assert.equal(existsSync(fixture.observation), false);
 });

@@ -47,7 +47,7 @@ test("selected temporary root admits real private contexts while unsafe inherite
       assert.throws(() => readWindowsBrowserPrivateContext(rejected.file, rejected.checksum), /another principal can read, modify or replace/);
       return {};
     });
-    assert.throws(() => validateTeamConfiguration({ version: 1, temporary_directory: inherited }, [workspace]), /private, trusted Windows permissions/);
+    assert.throws(() => validateTeamConfiguration({ version: 1, temporary_directory: inherited }, [workspace]), /Audit: ancestor_replacement_grant\./);
     const selected = teamConfigurationEnvironment(validateTeamConfiguration({ version: 1, temporary_directory: safe }, [workspace]));
     const node = await launchManagedRuntime(selected, async () => {
       assert.equal(tmpdir(), safe);
