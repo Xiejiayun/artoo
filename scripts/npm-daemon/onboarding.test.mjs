@@ -1,20 +1,26 @@
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { connectComputer, parseConnectArguments, savedConnectionEnvironment } from "./onboarding.mjs";
-import { connectionEnvironment, loadConnection, prepareWorkspace, protectDirectory, saveConnection, serverOrigin, validateConnection } from "./local-config.mjs";
+import { assertPrivateProviderKeyFile, connectionEnvironment, loadConnection, prepareWorkspace, protectDirectory, saveConnection, serverOrigin, validateConnection } from "./local-config.mjs";
 import { managedStatus, startManaged, stopManaged } from "./managed.mjs";
+import { launchManagedRuntime, runCli } from "./cli.mjs";
+import { managedConnectionEnvironment, teamConfigurationEnvironment, validateTeamConfiguration } from "./team-config.mjs";
+import { readRelease } from "./verify.mjs";
 
 const source = dirname(fileURLToPath(import.meta.url));
 const connection = root => ({ version: 1, origin: "https://artoo.example.test", deviceId: "device_test", computerId: "computer_test",
   nodeToken: "fixture-node-token-123456789", controlToken: null, roots: [root], runtimes: ["codex"], codexBinary: null });
 function temporary(t, beforeRemove = async () => {}) {
-  const parent = realpathSync(tmpdir()), root = mkdtempSync(join(parent, "artoo-onboarding-"));
-  t.after(async () => { await beforeRemove(); assert.ok(realpathSync(root).startsWith(`${parent}${sep}artoo-onboarding-`)); rmSync(root, { recursive: true, force: true }); });
+  // Hosted Windows TEMP can use an 8.3 name. Prepare genuine physical paths for
+  // the same strict configuration admission that production uses.
+  const parent = realpathSync.native(tmpdir()), root = realpathSync.native(mkdtempSync(join(parent, "artoo-onboarding-")));
+  t.after(async () => { await beforeRemove(); assert.ok(realpathSync.native(root).startsWith(`${parent}${sep}artoo-onboarding-`)); rmSync(root, { recursive: true, force: true }); });
   return root;
 }
 
@@ -120,15 +126,27 @@ test("interrupted enrollment retains one identity and resumes without another cl
 function controlledPackage(root, observation) {
   const packageDirectory = join(root, "npm-cache"), runtime = join(packageDirectory, "runtime"), bin = join(packageDirectory, "bin");
   mkdirSync(bin, { recursive: true }); mkdirSync(runtime);
-  for (const file of ["cli.mjs", "verify.mjs", "platforms.mjs", "local-config.mjs", "managed.mjs", "onboarding.mjs"])
+  for (const file of ["cli.mjs", "verify.mjs", "platforms.mjs", "local-config.mjs", "managed.mjs", "onboarding.mjs", "team-config.mjs"])
     copyFileSync(join(source, file), join(bin, file === "cli.mjs" ? "artood.mjs" : file));
-  const files = new Map([["artood.mjs", `import {writeFileSync} from 'node:fs';
-export function loadConfigFromEnv(env) { return env; }
+  const files = new Map([["artood.mjs", `import {readFileSync,writeFileSync} from 'node:fs';
+export function loadConfigFromEnv(env) {
+  if(env.ARTOO_VERIFICATION_PROFILES_FILE && readFileSync(env.ARTOO_VERIFICATION_PROFILES_FILE,'utf8')==='reject')
+    throw Error('Controlled profile qualification failed');
+  return env;
+}
 export async function runDaemonEntrypoint(env) {
-  writeFileSync(${JSON.stringify(observation)}, JSON.stringify({node:env.ARTOO_NODE_ID,inherited:process.env.ARTOO_NODE_URL??null,entry:import.meta.url}));
+  loadConfigFromEnv(env);
+  writeFileSync(${JSON.stringify(observation)}, JSON.stringify({node:env.ARTOO_NODE_ID,inherited:process.env.ARTOO_NODE_URL??null,entry:import.meta.url,
+    research:env.ARTOO_RESEARCH_ENABLED,receipts:env.ARTOO_RESEARCH_RECEIPTS_DIR,profiles:env.ARTOO_VERIFICATION_PROFILES_FILE,
+    initialize:env.ARTOO_INITIALIZE_REPOSITORY,native:env.ARTOO_WINDOWS_PROCESS_BUNDLE,pin:env.ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256,
+    model:env.ARTOO_CODEX_MODEL,provider:env.ARTOO_CODEX_PROVIDER_URL,providerSelected:!!env.ARTOO_CODEX_PROVIDER_KEY,
+    providerInherited:!!env.ARTOO_CODEX_PROVIDER_KEY && process.env.ARTOO_CODEX_PROVIDER_KEY===env.ARTOO_CODEX_PROVIDER_KEY,
+    providerInArgv:!!env.ARTOO_CODEX_PROVIDER_KEY && process.argv.some(arg=>arg.includes(env.ARTOO_CODEX_PROVIDER_KEY)),
+    inheritedSettings:Object.keys(process.env).filter(key=>/^ARTOO_|^(?:NODE_OPTIONS|NODE_PATH)$/i.test(key))}));
   const timer=setInterval(()=>{},1000);
-  process.on('SIGTERM',()=>{clearInterval(timer);process.exit(0)});
-  return {stop:async()=>clearInterval(timer)};
+  const node={stop:async()=>clearInterval(timer)};
+  process.on('SIGTERM',async()=>{await node.stop();writeFileSync(${JSON.stringify(observation + ".stopped")},JSON.stringify({providerPresent:!!process.env.ARTOO_CODEX_PROVIDER_KEY}));process.exit(0)});
+  return node;
 }`]]);
   const directories = ["node_modules"];
   for (const name of ["playwright", "playwright-core"]) {
@@ -139,7 +157,9 @@ export async function runDaemonEntrypoint(env) {
   for (const directory of directories) mkdirSync(join(runtime, directory), { recursive: true });
   for (const [file, contents] of files) writeFileSync(join(runtime, file), contents);
   const digest = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-  const manifest = JSON.stringify({format:"artoo.desktop-daemon.v1",node_target:"node24",playwright_version:"0.0.0-test",tree:{directories,files:[...files].map(([path,contents])=>({path,size:Buffer.byteLength(contents),sha256:digest(contents)}))}});
+  const manifest = JSON.stringify({format:"artoo.desktop-daemon.v1",node_target:"node24",playwright_version:"0.0.0-test",
+    windows_process:{directory:"native/windows-process",manifest_sha256:`sha256:${"b".repeat(64)}`},
+    tree:{directories,files:[...files].map(([path,contents])=>({path,size:Buffer.byteLength(contents),sha256:digest(contents)}))}});
   writeFileSync(join(runtime,"bundle-manifest.json"),manifest);
   writeFileSync(join(packageDirectory,"package.json"),JSON.stringify({name:"controlled-artood",version:"0.1.0-test.1",type:"module",artoo:{format:"artoo.npm-daemon.v1",runtimeManifestSha256:digest(manifest)}}));
   return packageDirectory;
@@ -172,4 +192,312 @@ test("background start retains installation, authenticates control, restarts wit
   const restarted = await startManaged({directory:state,packageDirectory:retained});
   assert.equal(restarted.status,"running"); assert.notEqual(restarted.pid,status.pid);
   await stopManaged(state);
+});
+
+function teamFixture(t, { stop = false } = {}) {
+  let state;
+  const root = temporary(t, async () => { if (stop && state) await stopManaged(state); });
+  state = join(root, "state");
+  const workspace = join(root, "workspace"), control = join(root, "control");
+  mkdirSync(workspace); mkdirSync(control);
+  const receipts = join(control, "receipts"), profiles = join(control, "profiles.json"), file = join(control, "team.json");
+  mkdirSync(receipts); writeFileSync(profiles, "[]", { mode: 0o600 });
+  const configuration = { version: 1, research_receipts_directory: receipts, verification_profiles_file: profiles, initialize_repository: true };
+  writeFileSync(file, JSON.stringify(configuration), { mode: 0o600 });
+  const observation = join(root, "observation.json"), packageDirectory = controlledPackage(root, observation);
+  saveConnection(state, connection(workspace));
+  return { root, state, workspace, control, receipts, profiles, file, configuration, observation, packageDirectory };
+}
+
+test("protected configuration fixtures use the physical temporary directory even through a Windows short name", async t => {
+  const outer = temporary(t), physical = join(outer, "long temporary directory"); mkdirSync(physical);
+  let selected = physical;
+  if (process.platform === "win32") {
+    // Read an existing 8.3 alias; never change the volume's short-name settings.
+    const script = 'Add-Type -TypeDefinition \'using System; using System.Text; using System.Runtime.InteropServices; public static class ArtooTempShortPath { [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true, EntryPoint="GetShortPathNameW")] public static extern uint Get(string path, StringBuilder output, uint length); }\'; '
+      + '$buffer=[Text.StringBuilder]::new(32768);$length=[ArtooTempShortPath]::Get($env:ARTOO_NPM_TEST_SHORT_PATH,$buffer,$buffer.Capacity);'
+      + 'if($length -eq 0 -or $length -ge $buffer.Capacity){throw "GetShortPathNameW failed"};[Console]::Write($buffer.ToString())';
+    const alias = spawnSync(join(process.env.SystemRoot ?? process.env.SYSTEMROOT, "System32/WindowsPowerShell/v1.0/powershell.exe"),
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      { env: { ...process.env, ARTOO_NPM_TEST_SHORT_PATH: physical }, encoding: "utf8", timeout: 15_000, windowsHide: true });
+    assert.ifError(alias.error); assert.equal(alias.status, 0, alias.stderr); assert.equal(alias.signal, null);
+    selected = alias.stdout;
+    assert.equal(realpathSync.native(selected), realpathSync.native(physical));
+    t.diagnostic(selected.toLowerCase() !== realpathSync.native(physical).toLowerCase()
+      ? "Actual Windows 8.3 temporary-directory alias exercised."
+      : "This volume returned its long path; physical temporary-directory preparation is still exercised.");
+  }
+  await t.test("the selected temporary path supports protected configuration without relaxing admission", async child => {
+    const variables = ["TMPDIR", "TEMP", "TMP"], original = new Map(variables.map(key => [key, process.env[key]]));
+    let fixture;
+    try {
+      for (const key of variables) process.env[key] = selected;
+      fixture = teamFixture(child);
+    } finally {
+      for (const [key, value] of original) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    }
+    await runCli({ args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory, output: () => {} });
+    assert.equal(fixture.root, realpathSync.native(fixture.root));
+    assert.deepEqual(JSON.parse(readFileSync(join(fixture.state, "team-config.json"), "utf8")), fixture.configuration);
+  });
+});
+
+test("configure saves only explicit local team settings after controlled preflight without changing identity", async t => {
+  const fixture = teamFixture(t), before = readFileSync(join(fixture.state, "connection.dat"));
+  let output = "";
+  const configured = await runCli({ args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state },
+    packageDirectory: fixture.packageDirectory, output: value => { output += value; } });
+  assert.deepEqual(configured, { configured: true });
+  assert.deepEqual(JSON.parse(readFileSync(join(fixture.state, "team-config.json"), "utf8")), fixture.configuration);
+  assert.deepEqual(readFileSync(join(fixture.state, "connection.dat")), before);
+  assert.equal(existsSync(fixture.observation), false, "Preflight must not start a node or model.");
+  assert.match(output, /Stop and start/); assert.doesNotMatch(output, /fixture-node-token/);
+  const release = readRelease(fixture.packageDirectory);
+  const env = managedConnectionEnvironment(connection(fixture.workspace), { PATH: "/bin", ARTOO_HOME: fixture.state,
+    ARTOO_RESEARCH_RECEIPTS_DIR: "untrusted", ARTOO_RELEASE_PROFILES_FILE: "untrusted", ARTOO_MANAGED_EXECUTION: "1",
+    ARTOO_TRUSTED_EXECUTION: "1", NODE_OPTIONS: "untrusted", NODE_PATH: "untrusted" }, fixture.state, release);
+  assert.equal(env.ARTOO_RESEARCH_RECEIPTS_DIR, fixture.receipts); assert.equal(env.ARTOO_VERIFICATION_PROFILES_FILE, fixture.profiles);
+  assert.equal(env.ARTOO_RESEARCH_ENABLED, "1"); assert.equal(env.ARTOO_INITIALIZE_REPOSITORY, "1");
+  for (const key of ["ARTOO_HOME", "ARTOO_RELEASE_PROFILES_FILE", "ARTOO_MANAGED_EXECUTION", "ARTOO_TRUSTED_EXECUTION", "NODE_OPTIONS", "NODE_PATH"])
+    assert.equal(env[key], undefined, key);
+  assert.equal(env.ARTOO_WINDOWS_PROCESS_BUNDLE, process.platform === "win32" ? join(release.runtime, "native/windows-process") : undefined);
+  assert.equal(env.ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256, process.platform === "win32" ? release.manifest.windows_process.manifest_sha256 : undefined);
+});
+
+test("team settings reject unknown fields, invalid paths and task-writable or linked configuration", async t => {
+  const fixture = teamFixture(t), roots = [fixture.workspace];
+  for (const value of [null, [], {}, { version: 2 }, { version: 1, initialize_repository: "1" },
+    { version: 1, env: {} }, { version: 1, argv: [] }, { version: 1, nodeToken: "fixture-secret" }])
+    assert.throws(() => validateTeamConfiguration(value, roots), /Invalid team configuration/);
+  for (const value of ["relative", "", 42, `${fixture.profiles}\n`])
+    assert.throws(() => validateTeamConfiguration({ version: 1, verification_profiles_file: value }, roots), /absolute local paths/);
+  assert.throws(() => validateTeamConfiguration({ version: 1, research_receipts_directory: fixture.root }, roots), /outside all agent/);
+  const taskFile = join(fixture.workspace, "team.json"); writeFileSync(taskFile, JSON.stringify(fixture.configuration), { mode: 0o600 });
+  await assert.rejects(runCli({ args: ["configure", "--file", taskFile], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory }), /outside all agent/);
+  const alias = join(fixture.root, "alias"); symlinkSync(fixture.control, alias, process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(runCli({ args: ["configure", "--file", join(alias, "team.json")], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory }), /physical files/);
+  assert.throws(() => validateTeamConfiguration({ version: 1, research_receipts_directory: alias }, roots), /physical files/);
+  assert.equal(existsSync(join(fixture.state, "team-config.json")), false);
+  for (const args of [["configure"], ["configure", "--env", fixture.file], ["configure", "--file", "relative"], ["configure", "--file", fixture.file, "extra"]])
+    await assert.rejects(runCli({ args, env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory }), /Usage: artood configure/);
+});
+
+test("failed profile qualification preserves saved settings, and explicit empty settings disable optional capabilities", async t => {
+  const fixture = teamFixture(t), options = { args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory, output: () => {} };
+  await runCli(options);
+  const path = join(fixture.state, "team-config.json"), before = readFileSync(path);
+  writeFileSync(fixture.profiles, "reject");
+  await assert.rejects(runCli(options), /Controlled profile qualification failed/);
+  assert.deepEqual(readFileSync(path), before);
+  writeFileSync(fixture.file, JSON.stringify({ version: 1 }));
+  await runCli(options);
+  const env = managedConnectionEnvironment(connection(fixture.workspace), { ARTOO_RESEARCH_ENABLED: "1" }, fixture.state, readRelease(fixture.packageDirectory));
+  for (const key of ["ARTOO_RESEARCH_ENABLED", "ARTOO_VERIFICATION_PROFILES_FILE", "ARTOO_INITIALIZE_REPOSITORY", "ARTOO_WINDOWS_PROCESS_BUNDLE"])
+    assert.equal(env[key], undefined);
+});
+
+test("native team selection uses the current release pin and rejects missing or unsafe helper metadata", t => {
+  const fixture = teamFixture(t), release = readRelease(fixture.packageDirectory);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    for (const native of [undefined, { directory: "../escape", manifest_sha256: `sha256:${"b".repeat(64)}` },
+      { directory: "native/windows-process", manifest_sha256: "wrong" }])
+      assert.throws(() => teamConfigurationEnvironment(fixture.configuration, { ...release, manifest: { windows_process: native } }), /valid Windows native/);
+    Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+    const env = teamConfigurationEnvironment(fixture.configuration, { ...release, manifest: {} });
+    assert.equal(env.ARTOO_VERIFICATION_PROFILES_FILE, fixture.profiles); assert.equal(env.ARTOO_WINDOWS_PROCESS_BUNDLE, undefined);
+  } finally { Object.defineProperty(process, "platform", platform); }
+});
+
+test("managed background and foreground starts retain team settings without inheriting credentials or arbitrary settings", { timeout: 60_000 }, async t => {
+  const fixture = teamFixture(t, { stop: true });
+  await runCli({ args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory, output: () => {} });
+  const base = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^ARTOO_|^(?:NODE_OPTIONS|NODE_PATH)$/i.test(key)));
+  const env = { ...base, ARTOO_HOME: fixture.state, ARTOO_RESEARCH_ENABLED: "0", ARTOO_TRUSTED_EXECUTION: "1", ARTOO_RELEASE_PROFILES_FILE: "untrusted" };
+  const check = () => {
+    const observed = JSON.parse(readFileSync(fixture.observation, "utf8"));
+    assert.equal(observed.node, "computer_test"); assert.equal(observed.inherited, null); assert.deepEqual(observed.inheritedSettings, []);
+    assert.equal(observed.research, "1"); assert.equal(observed.receipts, fixture.receipts); assert.equal(observed.profiles, fixture.profiles);
+    assert.equal(observed.initialize, "1");
+    assert.doesNotMatch(readFileSync(fixture.observation, "utf8"), /fixture-node-token|untrusted/);
+    return observed;
+  };
+  const first = await startManaged({ directory: fixture.state, packageDirectory: fixture.packageDirectory,
+    env: { ...env, NODE_OPTIONS: "--require must-not-load", NODE_PATH: "must-not-load" } });
+  const observed = check(); await stopManaged(fixture.state);
+  const retained = dirname(dirname(fileURLToPath(observed.entry)));
+  const second = await startManaged({ directory: fixture.state, packageDirectory: retained, env });
+  assert.notEqual(second.pid, first.pid); check(); await stopManaged(fixture.state);
+  const child = spawn(process.execPath, [join(retained, "bin", "artood.mjs"), "start", "--foreground"],
+    { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  let output = ""; child.stdout.on("data", bytes => { output += bytes; }); child.stderr.on("data", bytes => { output += bytes; });
+  const closed = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal })); });
+  let ready = false;
+  for (let attempt = 0; attempt < 150; attempt++) {
+    if ((await managedStatus(fixture.state)).status === "running") { ready = true; break; }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(ready, true, output); check(); await stopManaged(fixture.state);
+  assert.deepEqual(await closed, { code: 0, signal: null }); assert.doesNotMatch(output, /fixture-node-token/);
+  // Replacing saved settings with invalid data must fail startup, not fall back.
+  writeFileSync(join(fixture.state, "team-config.json"), JSON.stringify({ version: 1, env: {} }));
+  assert.throws(() => managedConnectionEnvironment(connection(fixture.workspace), env, fixture.state, readRelease(retained)), /Invalid team configuration/);
+  rmSync(fixture.observation);
+  const rejected = spawnSync(process.execPath, [join(retained, "bin", "artood.mjs"), "start", "--foreground"],
+    { env, windowsHide: true, encoding: "utf8", timeout: 15_000 });
+  assert.ifError(rejected.error); assert.equal(rejected.status, 1); assert.equal(rejected.signal, null);
+  assert.match(rejected.stderr, /Invalid team configuration/); assert.doesNotMatch(rejected.stdout + rejected.stderr, /fixture-node-token/);
+  assert.equal(existsSync(fixture.observation), false, "Invalid saved configuration must prevent runtime startup.");
+  assert.equal((await managedStatus(fixture.state)).status, "stopped");
+});
+
+function providerFixture(t, options) {
+  const fixture = teamFixture(t, options);
+  // Windows Temp/AppData may grant other local identities replacement rights.
+  // Exercise private credentials in a fresh owned home directory, not by
+  // weakening the production ancestor check to admit that test location.
+  const parent = realpathSync.native(homedir()), directory = protectDirectory(mkdtempSync(join(parent, ".artoo-provider-key-test-"))), keyFile = join(directory, "key");
+  t.after(() => {
+    assert.ok(realpathSync.native(directory).startsWith(`${parent}${sep}.artoo-provider-key-test-`));
+    rmSync(directory, { recursive: true });
+  });
+  writeFileSync(keyFile, "fixture-provider-credential", { mode: 0o600 });
+  fixture.configuration.codex = { model: "fixture-model", provider_url: "http://127.0.0.1:18181/v1", provider_key_file: keyFile };
+  writeFileSync(fixture.file, JSON.stringify(fixture.configuration));
+  return { ...fixture, keyFile };
+}
+
+test("Codex settings accept only an explicit safe provider and private credential reference", async t => {
+  const fixture = providerFixture(t), roots = [fixture.workspace];
+  for (const codex of [null, [], { env: {} }, { api_key: "fixture-secret" }, { model: "" }, { model: "bad\nmodel" },
+    { provider_url: "https://provider.test/v1" }, { model: "m", provider_url: "http://remote.test/v1" },
+    { model: "m", provider_url: "https://user:pass@provider.test/v1" }, { model: "m", provider_url: "https://provider.test/v1?key=hidden" },
+    { model: "m", provider_url: "https://provider.test/v1#hidden" }, { provider_key_file: fixture.keyFile },
+    { model: "m", provider_url: "https://provider.test/v1", CODEX_HOME: fixture.workspace }])
+    assert.throws(() => validateTeamConfiguration({ version: 1, codex }, roots), /Codex/);
+  assert.throws(() => validateTeamConfiguration({ version: 1, codex: { ...fixture.configuration.codex, provider_key_file: fixture.file.replace(fixture.control, fixture.workspace) } }, roots));
+  assert.deepEqual(validateTeamConfiguration({ version: 1, codex: { model: "existing-model" } }, roots).codex, { model: "existing-model" });
+  // Configure checks metadata/permissions without reading even invalid key bytes.
+  writeFileSync(fixture.keyFile, Buffer.from([255]));
+  await runCli({ args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory, output: () => {} });
+  const saved = readFileSync(join(fixture.state, "team-config.json"), "utf8");
+  assert.equal(JSON.parse(saved).codex.provider_key_file, fixture.keyFile); assert.doesNotMatch(saved, /fixture-provider-credential|selected-local-credential/);
+  assert.throws(() => managedConnectionEnvironment(connection(fixture.workspace), {}, fixture.state, readRelease(fixture.packageDirectory)), /UTF-8 text/);
+  writeFileSync(fixture.keyFile, "fixture-provider-credential\n");
+  const env = managedConnectionEnvironment(connection(fixture.workspace), { ARTOO_CODEX_PROVIDER_KEY: "untrusted" }, fixture.state, readRelease(fixture.packageDirectory));
+  assert.equal(env.ARTOO_CODEX_PROVIDER_KEY, "fixture-provider-credential"); assert.equal(env.ARTOO_CODEX_MODEL, "fixture-model");
+  assert.equal(env.ARTOO_CODEX_PROVIDER_URL, fixture.configuration.codex.provider_url);
+  rmSync(fixture.keyFile);
+  assert.throws(() => managedConnectionEnvironment(connection(fixture.workspace), {}, fixture.state, readRelease(fixture.packageDirectory)));
+});
+
+test("provider key permissions are inspected without changing the source ACL", t => {
+  const fixture = providerFixture(t);
+  assertPrivateProviderKeyFile(fixture.keyFile);
+  if (process.platform !== "win32") {
+    chmodSync(fixture.keyFile, 0o644);
+    assert.throws(() => assertPrivateProviderKeyFile(fixture.keyFile), /private to the current user/);
+    assert.equal(statSync(fixture.keyFile).mode & 0o777, 0o644);
+  } else {
+    const shell = join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const result = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';" +
+      "$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()));$acl=Get-Acl -LiteralPath $p;" +
+      "$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'),'Read','Allow'));" +
+      "[IO.File]::SetAccessControl($p,$acl)"], { input: Buffer.from(fixture.keyFile).toString("base64"), encoding: "utf8", windowsHide: true,
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath")) });
+    assert.ifError(result.error); assert.equal(result.status, 0, result.stderr);
+    assert.throws(() => assertPrivateProviderKeyFile(fixture.keyFile), /private, trusted Windows permissions/);
+    assert.throws(() => assertPrivateProviderKeyFile(fixture.keyFile), /no ACL was changed/);
+    const nullDaclFile = join(dirname(fixture.keyFile), "null-dacl-fixture");
+    writeFileSync(nullDaclFile, "synthetic-nonsecret");
+    const nullDacl = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';" +
+      "$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()));" +
+      "$owner=[Security.Principal.WindowsIdentity]::GetCurrent().User;" +
+      "$flags=[Security.AccessControl.ControlFlags]::DiscretionaryAclPresent -bor [Security.AccessControl.ControlFlags]::DiscretionaryAclProtected;" +
+      "$raw=[Security.AccessControl.RawSecurityDescriptor]::new($flags,$owner,$null,$null,$null);$bytes=[byte[]]::new($raw.BinaryLength);$raw.GetBinaryForm($bytes,0);" +
+      "$acl=[Security.AccessControl.FileSecurity]::new();$acl.SetSecurityDescriptorBinaryForm($bytes,[Security.AccessControl.AccessControlSections]::Access);" +
+      "[IO.File]::SetAccessControl($p,$acl);" +
+      "$observed=Get-Acl -LiteralPath $p;$actual=[Security.AccessControl.RawSecurityDescriptor]::new($observed.GetSecurityDescriptorBinaryForm(),0);" +
+      "if($null -ne $actual.DiscretionaryAcl){throw 'Fixture did not create an actual NULL DACL'}"],
+    { input: Buffer.from(nullDaclFile).toString("base64"), encoding: "utf8", windowsHide: true,
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath")) });
+    assert.ifError(nullDacl.error); assert.equal(nullDacl.status, 0, nullDacl.stderr);
+    assert.throws(() => assertPrivateProviderKeyFile(nullDaclFile), /private, trusted Windows permissions/);
+    const genericFile = join(dirname(fixture.keyFile), "generic-allow-fixture");
+    writeFileSync(genericFile, "synthetic-nonsecret");
+    const generic = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop';" +
+      "$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()));$owner=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;" +
+      "$acl=[Security.AccessControl.FileSecurity]::new();$acl.SetSecurityDescriptorSddlForm('D:P(A;;FA;;;'+$owner+')(A;;GA;;;WD)',[Security.AccessControl.AccessControlSections]::Access);" +
+      "[IO.File]::SetAccessControl($p,$acl);" +
+      "$observed=Get-Acl -LiteralPath $p;$actual=[Security.AccessControl.RawSecurityDescriptor]::new($observed.GetSecurityDescriptorBinaryForm(),0);" +
+      "$everyone=@($actual.DiscretionaryAcl | Where-Object {$_.AceType -eq 'AccessAllowed' -and $_.SecurityIdentifier.Value -eq 'S-1-1-0'});" +
+      "if($everyone.Count -ne 1){throw 'Fixture did not persist its Everyone allow ACE'};" +
+      "[pscustomobject]@{genericBitsRetained=(([long]$everyone[0].AccessMask -band 4026531840) -ne 0);accessMask=$everyone[0].AccessMask} | ConvertTo-Json -Compress"],
+    { input: Buffer.from(genericFile).toString("base64"), encoding: "utf8", windowsHide: true,
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath")) });
+    assert.ifError(generic.error); assert.equal(generic.status, 0, generic.stderr);
+    const persisted = JSON.parse(generic.stdout);
+    assert.equal(typeof persisted.genericBitsRetained, "boolean"); assert.equal(Number.isInteger(persisted.accessMask), true);
+    t.diagnostic(`Synthetic persisted Everyone GENERIC_ALL: raw generic bits ${persisted.genericBitsRetained ? "retained" : "mapped by Windows"}, mask ${persisted.accessMask}.`);
+    assert.throws(() => assertPrivateProviderKeyFile(genericFile), /private, trusted Windows permissions/);
+  }
+});
+
+test("selected model credential is cleared and redacted after in-process startup and stop failures", async t => {
+  const original = process.env.ARTOO_CODEX_PROVIDER_KEY;
+  t.after(() => { if (original === undefined) delete process.env.ARTOO_CODEX_PROVIDER_KEY; else process.env.ARTOO_CODEX_PROVIDER_KEY = original; });
+  const key = 'fixture-"private"-\\key';
+  const formats = [value => value, value => JSON.stringify(JSON.stringify({ value })), value => encodeURIComponent(value),
+    value => JSON.stringify({ value }).replaceAll("private", "\\u0070rivate")];
+  for (const format of formats) {
+    const env = { ARTOO_NODE_URL: "ws://fixture/?token=fixture-node-credential", ARTOO_CODEX_PROVIDER_KEY: key };
+    await assert.rejects(launchManagedRuntime(env, async () => {
+      assert.equal(process.env.ARTOO_CODEX_PROVIDER_KEY, key);
+      throw Error(`Controlled startup failure: ${format(key)}`);
+    }), error => { assert.doesNotMatch(error.message, /fixture-|private|u0070rivate/); return true; });
+    assert.equal(process.env.ARTOO_CODEX_PROVIDER_KEY, undefined); assert.equal(env.ARTOO_CODEX_PROVIDER_KEY, undefined);
+  }
+  for (const fail of [false, true]) {
+    const env = { ARTOO_CODEX_PROVIDER_KEY: key };
+    const node = await launchManagedRuntime(env, async () => ({ stop: async () => {
+      assert.equal(process.env.ARTOO_CODEX_PROVIDER_KEY, key);
+      if (fail) throw Error(`Controlled stop failure: ${JSON.stringify(key)}`);
+    } }));
+    if (fail) {
+      await assert.rejects(node.stop(), /Controlled stop failure: "\[redacted\]"/);
+      await assert.rejects(node.stop(), /Controlled stop failure: "\[redacted\]"/);
+    }
+    else await node.stop();
+    assert.equal(process.env.ARTOO_CODEX_PROVIDER_KEY, undefined); assert.equal(env.ARTOO_CODEX_PROVIDER_KEY, undefined);
+  }
+});
+
+test("managed provider selection survives background and foreground startup without copying the key into arguments or logs", { timeout: 60_000 }, async t => {
+  const fixture = providerFixture(t, { stop: true });
+  await runCli({ args: ["configure", "--file", fixture.file], env: { ARTOO_HOME: fixture.state }, packageDirectory: fixture.packageDirectory, output: () => {} });
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^ARTOO_|^(?:NODE_OPTIONS|NODE_PATH)$/i.test(key))), ARTOO_HOME: fixture.state };
+  const check = () => {
+    const observed = JSON.parse(readFileSync(fixture.observation, "utf8"));
+    assert.equal(observed.inherited, null); assert.equal(observed.providerSelected, true); assert.equal(observed.providerInherited, true);
+    assert.equal(observed.providerInArgv, false); assert.deepEqual(observed.inheritedSettings, ["ARTOO_CODEX_PROVIDER_KEY"]);
+    assert.equal(observed.model, "fixture-model"); assert.equal(observed.provider, fixture.configuration.codex.provider_url);
+    return observed;
+  };
+  await startManaged({ directory: fixture.state, packageDirectory: fixture.packageDirectory, env });
+  const observed = check(); await stopManaged(fixture.state);
+  assert.deepEqual(JSON.parse(readFileSync(fixture.observation + ".stopped", "utf8")), { providerPresent: false });
+  const retained = dirname(dirname(fileURLToPath(observed.entry)));
+  const child = spawn(process.execPath, [join(retained, "bin", "artood.mjs"), "start", "--foreground"], { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  let output = ""; child.stdout.on("data", bytes => { output += bytes; }); child.stderr.on("data", bytes => { output += bytes; });
+  const closed = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal })); });
+  let ready = false;
+  for (let attempt = 0; attempt < 150; attempt++) {
+    if ((await managedStatus(fixture.state)).status === "running") { ready = true; break; }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(ready, true, output); check(); await stopManaged(fixture.state);
+  assert.deepEqual(await closed, { code: 0, signal: null });
+  assert.deepEqual(JSON.parse(readFileSync(fixture.observation + ".stopped", "utf8")), { providerPresent: false });
+  assert.doesNotMatch(output + readFileSync(join(fixture.state, "daemon.log"), "utf8") + readFileSync(fixture.observation, "utf8"), /fixture-provider-credential|fixture-node-token/);
 });

@@ -1,6 +1,6 @@
 # artood 一键接入指南
 
-`0.1.0-rc.3` 增加安装、配对、登记和后台启动的一条命令。支持 Windows x64、Linux x64/arm64；macOS 实现保留，但本次发布资格延期。Windows arm64 不支持。以下 release URL 只有在对应版本完成验证并发布后才可用；本文本身不表示发布或生产验收已经完成。
+`0.1.0-rc.4` 提供安装、配对、登记和后台启动的一条命令，并增加受保护的本地团队配置入口。支持 Windows x64、Linux x64/arm64；macOS 实现保留，但本次发布资格延期。Windows arm64 不支持。以下 release URL 只有在对应版本完成验证并发布后才可用；本文本身不表示发布或生产验收已经完成。
 
 ## 从 Web 连接电脑
 
@@ -11,13 +11,13 @@
 Windows PowerShell 的命令形式：
 
 ```powershell
-& ([scriptblock]::Create((irm 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.3/install.ps1'))) -Server 'https://artoo.example.com' -Code 'XXXX-XXXX'
+& ([scriptblock]::Create((irm 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.4/install.ps1'))) -Server 'https://artoo.example.com' -Code 'XXXX-XXXX'
 ```
 
 Linux shell 的命令形式：
 
 ```sh
-curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.3/install.sh' | sh -s -- --server 'https://artoo.example.com' --code 'XXXX-XXXX'
+curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.4/install.sh' | sh -s -- --server 'https://artoo.example.com' --code 'XXXX-XXXX'
 ```
 
 请复制 Web 生成的实际地址和配对码。安装器从固定 GitHub release 下载同一份 tarball，并检查发布时固定的 SHA-256 和文件大小；不依赖 npm registry。已有 Node.js 24+ 时复用，否则从 nodejs.org 下载并校验官方 Node.js 24，安装在当前用户的私有目录，不需要管理员权限、仓库或 .NET。Linux 需要 curl、tar 和支持官方 Node.js 的 glibc 发行版；不支持直接在 Alpine/musl 上使用官方预编译 Node。
@@ -27,7 +27,7 @@ curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releas
 如果精确版本已经发布到 npm，且本机有 Node.js 24+、npm 11+，也可使用：
 
 ```sh
-npx --yes @jiayunxie/artood@0.1.0-rc.3 connect --server https://artoo.example.com --code XXXX-XXXX
+npx --yes @jiayunxie/artood@0.1.0-rc.4 connect --server https://artoo.example.com --code XXXX-XXXX
 ```
 
 owner/admin 会自动完成电脑登记。普通成员配对后会保存凭据并提示等待管理员在 Web 完成 **Enroll computer**，完成后运行下面的 `start` 即可。网络中断后重试会继续同一身份，不必生成第二个配对码；已有同一网站的保存配置时，再次 `connect` 不消耗新码。
@@ -54,7 +54,7 @@ Linux：
 
 `start` 在后台运行；`start --foreground` 在当前终端运行，Ctrl+C 正常停止。`stop` 等待任务按 daemon 原有退出流程停止，保留连接配置。无法认证或无响应的未知进程不会被强制杀死。受管理的启动使用同一份本地锁，避免重复 daemon。
 
-当前实现不注册系统服务、计划任务或登录自启；重启电脑后再次运行 `start`。GitHub 安装器和 npx 不会创建全局 PATH 命令，请使用终端打印的完整 launcher 路径。需要全局 `artood` 时，可在精确版本已发布到 npm 后，另行运行 `npm install --global @jiayunxie/artood@0.1.0-rc.3`。
+当前实现不注册系统服务、计划任务或登录自启；重启电脑后再次运行 `start`。GitHub 安装器和 npx 不会创建全局 PATH 命令，请使用终端打印的完整 launcher 路径。需要全局 `artood` 时，可在精确版本已发布到 npm 后，另行运行 `npm install --global @jiayunxie/artood@0.1.0-rc.4`。
 
 Windows 使用 DPAPI CurrentUser 加密凭据，并限制目录 ACL；POSIX 使用 0700 目录和 0600 文件。受管理的 daemon 不把长期 node token 放进命令行或模型子进程继承的环境变量。不要把状态目录发给别人、提交到 Git 或复制到另一台电脑。高级隔离配置可使用绝对路径 `ARTOO_HOME`。
 
@@ -71,6 +71,8 @@ Windows 使用 DPAPI CurrentUser 加密凭据，并限制目录 ACL；POSIX 使�
 客户端需要匹配的 server/Web。Linux 设备支持依赖历史迁移 `0056_linux_devices.sql`；管理员升级前按部署手册备份并确认恢复方案，daemon 安装不会替服务器迁移数据库。本次一键接入复用既有配对和登记接口，不新增数据库迁移。
 
 所有节点连接由本机主动发起出站 WebSocket，不需要开放电脑公网入站端口或配置路由器转发。生产连接使用 HTTPS/WSS，不能关闭 TLS 校验。电脑在线只是连接成功，应使用一项小任务验证实际模型登录和工作目录。未检测到模型 CLI 时，节点会在线但不注册模型 runtime；安装并登录后，运行 `stop` 和 `start` 重新发现。
+
+Agent Team 还需要不同 Agent 身份、同项目的专用工作目录、真实研究能力和受保护验证器。`configure --file` 的配置格式与重启步骤见 [npm 包说明](../scripts/npm-daemon/README.md)；保存配置或电脑在线不代表已经通过真实团队验收。
 
 `start --windows-supervised` 仍仅支持 Windows x64，需要显式配置配对身份、绝对路径 Codex binary、受保护的 source/verifier/release profiles 以及原生执行资格，不由一键普通接入自动启用。详见 [Windows 原生运行手册](windows-native-development.md)。普通连接、受监督执行、真实模型验收和产品发布各自验证，不能互相代替。
 

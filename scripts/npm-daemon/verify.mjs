@@ -37,6 +37,15 @@ export function readRelease(packageDirectory) {
   return { root, runtime, metadata, manifest };
 }
 
+/** Native selection always comes from the current release's pinned manifest. */
+export function packagedWindowsProcessEnvironment(release) {
+  const native = release.manifest.windows_process;
+  if (!native || !member(native.directory) || !hashPattern.test(native.manifest_sha256 ?? ""))
+    throw Error("This package does not contain a valid Windows native process host.");
+  return { ARTOO_WINDOWS_PROCESS_BUNDLE: join(release.runtime, native.directory),
+    ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256: native.manifest_sha256 };
+}
+
 /** Verify the installed files, including dependencies that npm can otherwise omit. */
 export async function verifyPackage(packageDirectory, { importRuntime = true } = {}) {
   disableOptionalWebSocketAddons();

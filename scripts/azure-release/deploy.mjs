@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import { randomBytes } from 'node:crypto';
 import { ReleaseError, check, sha256, sleep, command, fileDigest, encryptBackup, verifyEncryptedBackup,
   journalDigest, safeRecovery, validateTarget } from './support.mjs';
+import { readPolicyInput, planPolicyConfiguration, policyForPhase, imageUpdateArguments, verifyPolicyConfiguration } from './policy.mjs';
 
 const require = createRequire(import.meta.url);
 const { Client } = require('pg');
@@ -154,6 +155,7 @@ async function exportObjects(client, rawDir) {
 
 async function prepare() {
   check(process.env.MAINTENANCE_CONFIRMED === 'true', 'Explicit maintenance confirmation is required.');
+  const policyInput = readPolicyInput(process.env.ARTOO_AI_DATA_SHARING_POLICY);
   check(!existsSync(privateDir), 'This run already has deployment state; do not repeat preparation.');
   mkdirSync(privateDir, { recursive: true, mode: 0o700 }); chmodSync(privateDir, 0o700);
   mkdirSync(publicDir, { recursive: true, mode: 0o700 });
@@ -168,7 +170,8 @@ async function prepare() {
   const secrets = await azJson(['containerapp', 'secret', 'list', ...appArgs, '--show-values']);
   const runtime = runtimeConfiguration(snapshot, secrets), previousImage = snapshot.properties.template.containers[0].image;
   check(previousImage.startsWith(`${target.registryHost}/artoo@sha256:`), 'The current image must be an immutable image from the same registry.');
-  state = { version: 1, phase: 'preparing', target, snapshot, secrets, runtime, previousImage, previousRevision: active[0].name, stopped: false, deploymentStarted: false };
+  const policy = planPolicyConfiguration(snapshot, runtime.containerName, policyInput);
+  state = { version: 1, phase: 'preparing', target, snapshot, secrets, runtime, policy, previousImage, previousRevision: active[0].name, stopped: false, deploymentStarted: false };
   save();
   let client = await connect();
   try {
@@ -216,16 +219,17 @@ async function ready(expectedSha) {
     } catch { if (i === 59) throw new ReleaseError('Public TLS, readiness, portal, authorization or release identity verification failed.'); await sleep(5000); }
   }
 }
-async function switchImage(image, suffix, expectedSha) {
-  await az(['containerapp', 'update', ...appArgs, '--container-name', state.runtime.containerName, '--image', image,
-    '--revision-suffix', suffix, '--min-replicas', '1', '--max-replicas', '1']);
+async function switchImage(image, suffix, expectedSha, policy) {
+  await az(imageUpdateArguments(appArgs, state.runtime.containerName, image, suffix, policy.write));
   const changed = await app(), revision = changed.properties.latestRevisionName;
   check(changed.properties.template.containers[0].image === image, 'Azure selected a different image.');
+  verifyPolicyConfiguration(changed, state.runtime.containerName, policy.expected);
   await az(['containerapp', 'ingress', 'traffic', 'set', ...appArgs, '--revision-weight', `${revision}=100`]);
   await ready(expectedSha);
   const active = (await revisions()).filter(item => item.properties.active);
   check(active.length === 1 && active[0].name === revision && active[0].properties.healthState === 'Healthy', 'Expected exactly one healthy new revision.');
   await az(['containerapp', 'revision', 'set-mode', ...appArgs, '--mode', 'single']);
+  verifyPolicyConfiguration(await app(), state.runtime.containerName, policy.expected);
   return revision;
 }
 async function deploy() {
@@ -235,11 +239,12 @@ async function deploy() {
   try { await acquireLock(client); check(safeRecovery(state.beforeJournal, await journal(client)), 'Migration journal changed after the backup.'); }
   finally { await client.end(); }
   state.deploymentStarted = true; state.phase = 'deploying'; save();
-  const revision = await switchImage(target.image, `gh-${target.source.slice(0, 8)}-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`, target.source);
+  const revision = await switchImage(target.image, `gh-${target.source.slice(0, 8)}-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`, target.source, policyForPhase(state.policy, 'deploy'));
   state.phase = 'deployed'; state.newRevision = revision; save();
   writeReceipt('deployment.json', { status: 'deployed', source_sha: target.source, image: target.image, revision,
     previous_revision: state.previousRevision, previous_image: state.previousImage, backup_artifact_id: process.env.BACKUP_ARTIFACT_ID,
-    origin: target.origin, completed_at: new Date().toISOString(), checks: ['single-writer', 'encrypted-backup', 'isolated-database-restore', 'https-live', 'https-ready', 'web-portal', 'unauthenticated-api-rejected', 'public-build-sha'],
+    origin: target.origin, completed_at: new Date().toISOString(), checks: ['single-writer', 'encrypted-backup', 'isolated-database-restore', 'https-live', 'https-ready', 'web-portal', 'unauthenticated-api-rejected', 'public-build-sha', 'ai-sharing-policy-configuration'],
+    ai_data_sharing_policy: { action: state.policy.update ? 'updated' : 'preserved', ...(state.policy.version ? { version: state.policy.version } : {}) },
     remaining_acceptance: ['real Google sign-in', 'paired executor reconnect', 'agent instance creation and task', 'application artifact round trip'] });
   console.log(`Deployed ${target.source} as ${revision}. Complete the recorded signed-in acceptance checks.`);
 }
@@ -259,9 +264,9 @@ async function recover() {
       reason: 'A new migration completed. Reverting only the image would be unsafe; all revisions remain stopped.', source_sha: target.source });
     throw new ReleaseError('Database schema advanced. Keep maintenance active and use a validated forward fix or separately approved data/object restore.');
   }
-  const revision = await switchImage(state.previousImage, `rb-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`, undefined);
+  const revision = await switchImage(state.previousImage, `rb-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`, undefined, policyForPhase(state.policy, 'recover'));
   state.phase = 'recovered'; save();
-  writeReceipt('recovery.json', { status: 'previous-image-restored', image: state.previousImage, revision, migration_journal_unchanged: true });
+  writeReceipt('recovery.json', { status: 'previous-image-restored', image: state.previousImage, revision, migration_journal_unchanged: true, ai_data_sharing_policy_restored: true });
   console.log('Previous compatible image restored; original failure remains a failed deployment.');
 }
 

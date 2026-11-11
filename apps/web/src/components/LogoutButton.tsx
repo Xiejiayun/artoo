@@ -32,8 +32,12 @@ export function LogoutButton(): React.ReactNode {
       else await api.logout();
     },
     onSuccess: async () => {
-      queryClient.clear();
-      await queryClient.invalidateQueries({ queryKey: queryKeys.session });
+      await queryClient.cancelQueries();
+      // Keep AuthGate subscribed to the session query; removing it leaves its
+      // observer holding the old user and prevents the session re-probe.
+      queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== queryKeys.session[0] });
+      queryClient.getMutationCache().clear();
+      await queryClient.resetQueries({ queryKey: queryKeys.session, exact: true });
     },
   });
 

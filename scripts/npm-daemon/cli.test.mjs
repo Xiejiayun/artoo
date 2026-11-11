@@ -60,6 +60,7 @@ test("CLI only dispatches explicit supported entrypoints", () => {
   assert.equal(parseArguments(["--windows-supervised"]), "supervised");
   assert.equal(parseArguments(["--help"]), "help");
   assert.equal(parseArguments(["--version"]), "version");
+  assert.equal(parseArguments(["configure", "--file", "/absolute/team.json"]), "configure");
   for (const args of [["--windows-supervised-daemon"], ["--version", "start"], ["start", "--token", "secret"], ["pair"]])
     assert.throws(() => parseArguments(args), /Unknown arguments/);
 });
@@ -225,6 +226,14 @@ test("startup error reporting redacts configured secrets and URL query values", 
   const result = safeError(Error(`failed ${env.ARTOO_NODE_URL}; provider ${env.ARTOO_CODEX_PROVIDER_KEY}; token=unconfigured`), env);
   assert.doesNotMatch(result, /credential|model-key|unconfigured/);
   assert.match(result, /redacted/);
+});
+
+test("startup diagnostics redact decoded forms of keys containing literal percent escapes", () => {
+  for (const key of ["fixture%41private", 'fixture%41-"private"-\\key', "fixture%2541private"])
+    for (const [message, expected] of [[`startup: ${key}`, "startup: [redacted]"],
+      [`startup: ${JSON.stringify(key)}`, 'startup: "[redacted]"'], [`startup: ${encodeURIComponent(key)}`, "startup: [redacted]"]]) {
+      assert.equal(safeError(Error(message), { ARTOO_CODEX_PROVIDER_KEY: key }), expected);
+    }
 });
 
 test("release command requires a name/version/new absolute directory and native pin", () => {

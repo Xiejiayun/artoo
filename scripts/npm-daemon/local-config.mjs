@@ -57,6 +57,40 @@ export function readPrivateFile(path) {
   return readFileSync(path);
 }
 
+/** Inspect an operator-selected credential without reading it or changing its ACL. */
+export function assertPrivateProviderKeyFile(path) {
+  const stat = lstatSync(path);
+  const normalize = value => process.platform === "win32" ? resolve(value).toLowerCase() : resolve(value);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size < 1 || stat.size > 4096
+    || normalize(realpathSync.native(path)) !== normalize(path))
+    throw Error("Provider key requires a bounded physical single-link file.");
+  if (process.platform !== "win32") {
+    if (stat.uid !== process.getuid() || (stat.mode & 0o077)) throw Error("Provider key file must be private to the current user (mode 0600).");
+    return;
+  }
+  try {
+    powershell("$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()));" +
+      "$trusted=@([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');" +
+      "$fileMask=[Security.AccessControl.FileSystemRights]'Read,Write,ExecuteFile,Delete,ChangePermissions,TakeOwnership';" +
+      "$parentMask=[Security.AccessControl.FileSystemRights]'DeleteSubdirectoriesAndFiles,Delete,ChangePermissions,TakeOwnership,WriteAttributes,WriteExtendedAttributes';" +
+      "$cursor=[IO.FileInfo]::new($p);$first=$true;while($null -ne $cursor){" +
+      "$acl=Get-Acl -LiteralPath $cursor.FullName;$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;" +
+      "if($trusted -notcontains $owner){throw 'Untrusted credential owner'};" +
+      "$raw=[Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0);" +
+      "if(-not ($raw.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -or $null -eq $raw.DiscretionaryAcl){throw 'Missing credential DACL'};" +
+      "foreach($ace in $raw.DiscretionaryAcl){" +
+      "if($ace.AceType -notin @([Security.AccessControl.AceType]::AccessAllowed,[Security.AccessControl.AceType]::AccessDenied)){throw 'Unsupported credential ACE'};" +
+      // Generic permission bits are not represented by FileSystemRights masks.
+      "if($ace.AceType -eq [Security.AccessControl.AceType]::AccessAllowed -and -not ([int]$ace.AceFlags -band [int][Security.AccessControl.AceFlags]::InheritOnly) " +
+      "-and $trusted -notcontains $ace.SecurityIdentifier.Value -and ([long]$ace.AccessMask -band [long]4026531840)){throw 'Untrusted generic credential rights'}};" +
+      "$mask=if($first){$fileMask}else{$parentMask};" +
+      "foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){" +
+      "if($rule.AccessControlType -eq 'Allow' -and -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) " +
+      "-and $trusted -notcontains $rule.IdentityReference.Value -and ($rule.FileSystemRights -band $mask)){throw 'Credential permissions are not private'}};" +
+      "$cursor=if($first){$cursor.Directory}else{$cursor.Parent};$first=$false}", Buffer.from(path).toString("base64"));
+  } catch { throw Error("Provider key file and its parent paths must have private, trusted Windows permissions; no ACL was changed."); }
+}
+
 export function atomicPrivateFile(path, bytes) {
   const temporary = join(dirname(path), `.write-${randomUUID()}`);
   writeFileSync(temporary, bytes, { flag: "wx", mode: 0o600 });

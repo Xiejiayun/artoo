@@ -10,6 +10,14 @@ const pairing: PairingCode = { id: "pairing_exact", organization_id: "org_defaul
 const device: Device = { id: "device_exact", organization_id: "org_default", display_name: "My workstation", platform: "windows", app_version: "0.1.0-rc.3", computer_id: "computer_exact", enrolled_by_user_id: "user_1", trust: "active", last_seen_at: null, created_at: "2026-11-11T00:00:00Z", revoked_at: null };
 
 describe("one-command machine connection", () => {
+  it.each([
+    ["windows", "& ([scriptblock]::Create((irm 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.4/install.ps1'))) -Server 'https://artoo.example.com' -Code 'ABCD-1234'"],
+    ["linux", "curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.4/install.sh' | sh -s -- --server 'https://artoo.example.com' --code 'ABCD-1234'"],
+    ["macos", "curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.4/install.sh' | sh -s -- --server 'https://artoo.example.com' --code 'ABCD-1234'"],
+  ] as const)("pins the %s connection command to the rc.4 installer", (platform, expected) => {
+    expect(daemonConnectCommand("https://artoo.example.com", "ABCD-1234", platform)).toBe(expected);
+  });
+
   it("rejects unsafe command origins and codes", () => {
     expect(daemonConnectCommand("https://artoo.example.com", "ABCD-1234")).toContain("--server https://artoo.example.com --code ABCD-1234");
     for (const origin of ["http://remote.example.com", "https://user:pass@artoo.example.com", "https://artoo.example.com/path", "https://artoo.example.com?x=1", "https://artoo.example.com;echo"]) {

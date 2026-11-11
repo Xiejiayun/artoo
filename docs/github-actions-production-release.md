@@ -19,19 +19,26 @@ user-assigned managed identity with this federated credential:
 }
 ```
 
-Grant **Container Apps Contributor** only on the `artoo` Container App and
-**AcrPush** only on the existing `jiaxie` registry. The deployment identity must
-read the app's stored secrets to back up its external database and objects.
-It does not need subscription Contributor/Owner, role-assignment permissions,
-or access to `canvas`, the VPN VM or its networking. The existing app identity
-continues to pull images; this workflow does not modify that identity.
+The verified production deployment uses these assignments on individual
+resources in `jiaxie_group`:
 
+| Assignment | Exact resource scope | Purpose |
+| --- | --- | --- |
+| **Container Apps Contributor** | `Microsoft.App/containerApps/artoo` | Update the app and revision mode; read its stored secrets for backup. |
+| **AcrPush** | `Microsoft.ContainerRegistry/registries/jiaxie` | Push the versioned image. |
+| **Reader** | `Microsoft.ContainerRegistry/registries/jiaxie` | Read registry metadata during `az acr login`, including its actual login server. |
+| Custom role containing only `Microsoft.App/managedEnvironments/join/action` | `Microsoft.App/managedEnvironments/jiaxie` | Authorize the existing environment reference in the CLI's full app PUT when changing revision mode. |
+
+All scopes are beneath subscription `a79d7fcd-8b10-426b-82e2-6a1655a9096e`
+and resource group `jiaxie_group`; assign each role at the listed resource.
 `Container Apps Contributor` includes `containerApps/*/action`, including secret
-listing. Assign it at the app resource, not the resource group. The workflow does
-not change the workload profile; the reviewed CLI image-update path therefore
-does not read the sibling managed environment. Start with these two scoped
-assignments. If a future CLI/API version reports a specific linked-resource
-authorization error, review that exact action before granting another role.
+listing. The join-only role grants no environment read, write or delete actions.
+The workflow keeps the existing environment and workload profile. It does not
+need resource-group or subscription Contributor/Owner, role-assignment
+permissions, or access to `canvas`, the VPN VM or its networking. The existing
+app identity continues to pull images; this workflow does not modify that identity.
+Review any future linked-resource authorization failure before extending these
+specific grants.
 
 Add these **environment variables** in GitHub:
 
@@ -45,6 +52,17 @@ Add these **environment variables** in GitHub:
 | `AZURE_CONTAINER_REGISTRY` | `jiaxie` |
 | `AZURE_REGISTRY_HOST` | `jiaxie-gub0emb9hub9e4f5.azurecr.io` |
 | `ARTOO_ORIGIN` | `https://artoo.jeremyxie.com` |
+| `ARTOO_AI_DATA_SHARING_POLICY` | Optional reviewed public policy JSON; use the actual AI recipients and their public privacy URLs |
+
+The optional policy accepts the server's `mode` and `providers` schema from
+`apps/server/src/config/ai-data-sharing.ts`. It contains public disclosure
+metadata only, never provider credentials. Preparation validates it before
+stopping the server; invalid metadata is rejected without logging its contents.
+An unset or empty GitHub variable preserves the current Container App policy.
+A supplied policy updates only that named environment variable alongside the
+image, and Azure configuration is verified before traffic and after Single
+revision mode is restored. Users still grant the resulting policy consent in
+Web; supplying configuration does not grant consent on their behalf.
 
 Generate a cryptographically random 32-byte key and store its base64 encoding
 in the environment **secret** `ARTOO_BACKUP_KEY`. Retain another protected copy
@@ -101,6 +119,10 @@ Do not call a mock task or a successful image build a production acceptance run.
 If preparation or publication fails, the recovery step stops candidate
 revisions and obtains the database lock. It restores the previous image in a
 fresh revision **only if the complete ordered migration journal is unchanged**.
+This recovery also restores the policy's original literal bytes or secret
+reference, or removes the policy variable when it was previously absent. It
+does not replace other environment variables. Unsupported prior policy
+representations are rejected during preparation before maintenance begins.
 The original deployment stays failed even if this recovery succeeds.
 
 If a new migration completed, automatic image rollback is refused and all
@@ -131,20 +153,23 @@ database rehearsal does not prove a full Supabase/Google disaster recovery.
 ## Publish the computer installer before presenting it in Web
 
 1. Run **Build and verify cross-platform npm daemon** on the exact current main
-   SHA for `0.1.0-rc.3`. Require the build, all three Windows/Linux package jobs
+   SHA for `0.1.0-rc.4`. Require the build, all three Windows/Linux package jobs
    and their aggregate. Each package job performs a real loopback pairing and
    enrollment, managed start/status/stop/restart, workspace-root advertisement
    and identity reuse after the disposable installation is removed. No model is
    invoked by the connection fixture. Optional Mac jobs remain separate evidence.
 2. Dispatch `.github/workflows/daemon-github-release.yml` on that same `main`
-   with `source_sha`, the matrix `candidate_run_id` and `version=0.1.0-rc.3`.
+   with `source_sha`, the matrix `candidate_run_id` and `version=0.1.0-rc.4`.
    The workflow checks actual attempt-specific jobs, exact package hashes/size,
    source and platform receipts, and refuses an existing version tag. It renders
    both installers with the package version, SHA-256 and length before uploading
    all assets to a draft and making the complete release public.
-3. Confirm `artood-v0.1.0-rc.3` exposes `install.ps1`, `install.sh`, the exact tgz
+3. Confirm `artood-v0.1.0-rc.4` exposes `install.ps1`, `install.sh`, the exact tgz
    and verification receipts before the matching Web publication. The command
    supplied by Web contains only the server and short-lived pairing code.
+   `DAEMON_CONNECT_VERSION` in `ConnectNodeDialog.tsx` must select that published
+   version; do not deploy the corresponding Web image while its installers are
+   unavailable.
 4. npm publication is separate: follow
    [staged publishing](../scripts/npm-daemon/STAGED-PUBLISHING.md), then run the
    registry verification workflow. GitHub installer availability alone does not
