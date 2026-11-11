@@ -350,8 +350,10 @@ export function validateProductDevelopmentPlan(specs: readonly StagedSpec[]): st
   return [...new Set(errors)];
 }
 
-/** Checks traceability, not the truth of agent-authored claims. IO and measured checks belong to the node. */
-export function validateProductDevelopmentHandoff(research: ProductResearchReport, design: ProductDesign, validation?: ProductValidationReport): string[] {
+/** Checks traceability, not the truth of agent-authored claims. IO and measured checks belong to the node.
+ * Preview permits honest unfinished outcomes while retaining all coverage checks; acceptance defaults to final. */
+export function validateProductDevelopmentHandoff(research: ProductResearchReport, design: ProductDesign, validation?: ProductValidationReport,
+  validationScope: "preview" | "final" = "final"): string[] {
   const errors: string[] = [];
   const requirements = new Set(research.requirements.map((item) => item.id));
   for (const id of design.requirement_ids) if (!requirements.has(id)) errors.push(`Design references unknown requirement ${id}.`);
@@ -425,7 +427,7 @@ export function validateProductDevelopmentHandoff(research: ProductResearchRepor
           || canonicalReleaseJson([...actual.requirement_ids].sort()) !== canonicalReleaseJson([...planned.requirement_ids].sort())) {
           errors.push(`Validation case ${planned.id} changes its accepted method or criterion coverage.`);
         }
-        if (actual.method === "workspace-check" && actual.outcome !== "passed") errors.push(`Validation case ${planned.id} is ${actual.outcome}.`);
+        if (validationScope !== "preview" && actual.method === "workspace-check" && actual.outcome !== "passed") errors.push(`Validation case ${planned.id} is ${actual.outcome}.`);
         if (planned.method === "configured-static-release" && actual.method === "configured-static-release"
           && (canonicalReleaseJson(actual.release_binding) !== canonicalReleaseJson(planned.release_binding)
             || actual.claim_id !== planned.claim_id || actual.statement_digest !== planned.statement_digest)) {
@@ -441,7 +443,7 @@ export function validateProductDevelopmentHandoff(research: ProductResearchRepor
       const actual = validation.cases.find((item) => item.case_id === planned.id);
       if (!actual) errors.push(`Missing validation result for ${planned.id}.`);
       else {
-        if (actual.outcome !== "passed") errors.push(`Validation case ${planned.id} is ${actual.outcome}.`);
+        if (validationScope !== "preview" && actual.outcome !== "passed") errors.push(`Validation case ${planned.id} is ${actual.outcome}.`);
         if (planned.requirement_ids.some((id) => !actual.requirement_ids.includes(id))) errors.push(`Validation case ${planned.id} omits required coverage.`);
       }
     }

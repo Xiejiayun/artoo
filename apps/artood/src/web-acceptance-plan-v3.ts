@@ -1,8 +1,8 @@
 import { ProductResearchReportSchema, ProductDesignSchema, ProductValidationReportSchema, ProductBrowserProgramV3Schema,
-  deriveBrowserPageLifecycleV3, validateProductDevelopmentHandoff, ProductStorageChecksV1Schema, validateProductStorageChecksV1,
+  deriveBrowserPageLifecycleV3, ProductStorageChecksV1Schema, validateProductStorageChecksV1,
   ProductStoragePreconditionBindingV1Schema, validateProductStoragePreconditionV1,
   type ContextPack, type DevelopmentStage, type ProductBrowserProgramV3, type ProductBrowserStepV3,
-  type ProductStorageChecksV1, type ProductStoragePreconditionBindingV1, type StaticWebCapabilityBinding } from "@artoo/domain";
+  type ProductStorageChecksV1, type ProductStoragePreconditionBindingV1, type StaticWebCapabilityBinding, type VerificationObservation } from "@artoo/domain";
 import type { ExpectedBrowserProgramV3 } from "./browser-evidence.js";
 import type { NormalizedWebAcceptanceOptionsV3 } from "./web-acceptance-config.js";
 import { STATIC_WEB_MAX_CASES } from "./web-acceptance-config.js";
@@ -21,6 +21,7 @@ import { readImportedRecoveryValidationVerifierResearch, recheckImportedRecovery
 import { readImportedCleanValidationVerifierResearch, recheckImportedCleanValidationVerifierContext } from "./imported-clean-validation-verifier-context.js";
 import { readCleanValidationResearch } from "./windows-clean-validation-runtime.js";
 import { inspectProductDesignRevision, readProductDesignRevision } from "./product-design-revision.js";
+import { validateWebAcceptanceHandoff } from "./web-acceptance-handoff.js";
 
 export interface ExpectedWebAcceptanceV3 {
   stage: DevelopmentStage;
@@ -46,7 +47,7 @@ function expectedObservation(step: ProductBrowserStepV3): ExpectedBrowserProgram
 
 /** Fixed source and protected configuration determine page names/lifetimes; reports cannot select their own expected scope. */
 export function deriveWebAcceptanceV3Plan(workspace: string, context: ContextPack, options: NormalizedWebAcceptanceOptionsV3,
-  binding: StaticWebCapabilityBinding): ExpectedWebAcceptanceV3 {
+  binding: StaticWebCapabilityBinding, scope: VerificationObservation["scope"] = "final"): ExpectedWebAcceptanceV3 {
   const stage = context.product_development?.stage ?? context.review_subject?.development_stage;
   if (!stage) throw new Error("Static web acceptance requires a product stage or an explicitly bound review subject");
   if (readProductDesignRevision(context) && (!options.design_capture_cases || !options.windows_browser_process)) {
@@ -110,7 +111,7 @@ export function deriveWebAcceptanceV3Plan(workspace: string, context: ContextPac
     ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(designBytes) : designBytes.toString("utf8");
   const design = ProductDesignSchema.parse(JSON.parse(designText));
   const validation = stage === "validation" ? ProductValidationReportSchema.parse(json(".artoo/product/validation.json")) : undefined;
-  const missing = validateProductDevelopmentHandoff(research, design, validation);
+  const missing = validateWebAcceptanceHandoff(context, research, design, validation, scope);
   if (missing.length) throw new Error(missing.join(" "));
   const browserCases = design.version === 2
     ? workspaceCasesForMeasurementPlan(research, design, context, binding, options.browser_program.viewports)

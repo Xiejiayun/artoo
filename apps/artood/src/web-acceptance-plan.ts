@@ -1,10 +1,11 @@
-import { ProductResearchReportSchema, ProductDesignSchema, ProductValidationReportSchema, ProductBrowserProgramV2Schema, validateProductDevelopmentHandoff,
-  type ContextPack, type DevelopmentStage, type ProductBrowserProgramV2, type ProductBrowserStepV2, type StaticWebCapabilityBinding } from "@artoo/domain";
+import { ProductResearchReportSchema, ProductDesignSchema, ProductValidationReportSchema, ProductBrowserProgramV2Schema,
+  type ContextPack, type DevelopmentStage, type ProductBrowserProgramV2, type ProductBrowserStepV2, type StaticWebCapabilityBinding, type VerificationObservation } from "@artoo/domain";
 import type { ExpectedBrowserProgramV2 } from "./browser-evidence.js";
 import type { NormalizedWebAcceptanceOptionsV2 } from "./web-acceptance-config.js";
 import { STATIC_WEB_MAX_CASES } from "./web-acceptance-config.js";
 import { canonicalWebAcceptance as canonical, webAcceptanceDigest as sha } from "./web-acceptance-identity.js";
 import { readProductFile } from "./product-stage.js";
+import { validateWebAcceptanceHandoff } from "./web-acceptance-handoff.js";
 
 export interface ExpectedWebAcceptanceV2 {
   stage: DevelopmentStage;
@@ -28,7 +29,7 @@ function expectedObservation(step: ProductBrowserStepV2): ExpectedBrowserProgram
 
 /** Caller first validates the protected capability snapshot; no report-supplied program identity is consumed. */
 export function deriveWebAcceptanceV2Plan(workspace: string, context: ContextPack, options: NormalizedWebAcceptanceOptionsV2,
-  binding: StaticWebCapabilityBinding): ExpectedWebAcceptanceV2 {
+  binding: StaticWebCapabilityBinding, scope: VerificationObservation["scope"] = "final"): ExpectedWebAcceptanceV2 {
   const stage = context.product_development?.stage ?? context.review_subject?.development_stage;
   if (!stage) throw new Error("Static web acceptance requires a product stage or an explicitly bound review subject");
   const json = (path: string) => JSON.parse(readProductFile(workspace, path).toString("utf8")) as unknown;
@@ -37,7 +38,7 @@ export function deriveWebAcceptanceV2Plan(workspace: string, context: ContextPac
   const design = ProductDesignSchema.parse(json(".artoo/product/design.json"));
   if (design.version !== 1) throw new Error("Version 2 product design requires a protected browser program v3 check");
   const validation = stage === "validation" ? ProductValidationReportSchema.parse(json(".artoo/product/validation.json")) : undefined;
-  const missing = validateProductDevelopmentHandoff(research, design, validation);
+  const missing = validateWebAcceptanceHandoff(context, research, design, validation, scope);
   if (missing.length) throw new Error(missing.join(" "));
   if (design.validation_cases.length > STATIC_WEB_MAX_CASES) throw new Error("Browser acceptance supports at most 50 cases");
   for (const test of design.validation_cases) {

@@ -50,6 +50,9 @@ async function main(): Promise<void> {
     product_source_clean_validation_verification?: unknown; product_source_clean_validation_review_verification?: unknown;
   };
   if (envelope.version !== 1 || typeof envelope.request_id !== "string") throw new Error("Invalid node verification context");
+  // Legacy contexts remain final. Only the protected node envelope can select preview.
+  const verificationScope = envelope.scope === undefined ? "final" : envelope.scope;
+  if (verificationScope !== "preview" && verificationScope !== "final") throw new Error("Invalid node verification scope");
   const context = ContextPackSchema.parse(envelope.context);
   if (realpathSync.native(context.workspace.root) !== root) throw new Error("Verification context workspace differs from current directory");
   let options: WebAcceptanceOptions = configuredOptions;
@@ -202,7 +205,7 @@ async function main(): Promise<void> {
       research_provenance_digest: inspected.envelope.request.source_export.research_provenance_digest, command_id: binding.command_id };
   }
   const report = await runWebAcceptance(root, context, options, envelope.request_id, binding,
-    windowsProcessBackend ? { windowsProcessBackend } : undefined);
+    { verificationScope, ...(windowsProcessBackend ? { windowsProcessBackend } : {}) });
   if (productSourceMapping && (report.stage !== "research" || report.cases.length !== 0)) throw new Error("Foreign research cannot execute browser cases");
   if (productSourceDesignMapping && report.stage !== "design") throw new Error("Imported design verifier returned another stage");
   if (productSourceExecutionMapping && (report.stage !== "implementation" || !isDeepStrictEqual(productSourceExecutionMapping,

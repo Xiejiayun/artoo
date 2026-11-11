@@ -209,6 +209,16 @@ jobs:
         if: runner.os != 'Windows'
         timeout-minutes: 15
         run: node --test --test-concurrency=1 apps/artood/test-fixtures/verification-real.test.mjs > "$RUNNER_TEMP/posix-verification.log" 2>&1
+      - name: Install Chromium for protected browser verification fixtures
+        if: matrix.platform == 'linux-x64'
+        run: npx playwright install --with-deps chromium
+      - name: Verify protected CLI browser measurements and node evidence sealing
+        if: matrix.platform == 'linux-x64'
+        timeout-minutes: 10
+        run: |
+          export ARTOO_TEST_CHROMIUM="$(node --input-type=module -e 'import { chromium } from "playwright"; console.log(chromium.executablePath())')"
+          test -x "$ARTOO_TEST_CHROMIUM"
+          node --test --test-concurrency=1 apps/artood/test-fixtures/verification-capabilities-real.test.mjs > "$RUNNER_TEMP/posix-browser-verification.log" 2>&1
       - name: Upload safe package evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -224,7 +234,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: npm-daemon-posix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.qualification }}-${{ matrix.platform }}
-          path: ${{ runner.temp }}/posix-verification.log
+          path: |
+            ${{ runner.temp }}/posix-verification.log
+            ${{ runner.temp }}/posix-browser-verification.log
           if-no-files-found: warn
           retention-days: 14
 

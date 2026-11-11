@@ -117,6 +117,30 @@ describe("product development stage contracts", () => {
     const unsafe = validation(); unsafe.cases[0]!.evidence_paths = ["/etc/passwd"];
     expect(ProductValidationReportSchema.safeParse(unsafe).success).toBe(false);
   });
+
+  it.each(["blocked", "failed"] as const)("allows an honest %s draft only for preview without changing its claims", outcome => {
+    const actual = validation(); actual.cases[0]!.outcome = outcome;
+    const original = structuredClone(actual);
+    expect(validateProductDevelopmentHandoff(research(), design(), actual, "preview")).toEqual([]);
+    expect(actual).toEqual(original);
+    expect(validateProductDevelopmentHandoff(research(), design(), actual)).toEqual([`Validation case reload is ${outcome}.`]);
+    expect(validateProductDevelopmentHandoff(research(), design(), actual, "final")).toEqual([`Validation case reload is ${outcome}.`]);
+  });
+
+  it("keeps preview case coverage and report schema requirements", () => {
+    const actual = validation(); actual.cases[0]!.outcome = "blocked";
+    expect(validateProductDevelopmentHandoff(research(), design(), { ...actual, cases: [] }, "preview"))
+      .toContain("Missing validation result for reload.");
+    const changed = structuredClone(actual); changed.cases[0]!.requirement_ids = ["invented"];
+    expect(validateProductDevelopmentHandoff(research(), design(), changed, "preview"))
+      .toEqual(["Validation case reload omits required coverage.", "Validation case reload references unknown requirements."]);
+    changed.cases[0]!.case_id = "other";
+    expect(validateProductDevelopmentHandoff(research(), design(), changed, "preview")).toContain("Unknown validation case other.");
+    for (const evidence_paths of [[], ["../outside.txt"], ["/absolute.txt"]]) {
+      expect(ProductValidationReportSchema.safeParse({ ...actual, cases: [{ ...actual.cases[0], evidence_paths }] }).success).toBe(false);
+    }
+    expect(ProductValidationReportSchema.safeParse({ ...actual, cases: [actual.cases[0], actual.cases[0]] }).success).toBe(false);
+  });
 });
 
 describe("agent team stage graph", () => {
