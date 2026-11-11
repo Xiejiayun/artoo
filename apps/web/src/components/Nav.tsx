@@ -25,7 +25,7 @@ export function Nav({ onNavigate }: { onNavigate?: () => void } = {}): React.Rea
     onNavigate?.();
   }
   return <nav className="app-nav" id="primary-navigation" aria-label="Primary">
-    <NavLink to="/channels" className="brand" aria-label="Artoo home" onClick={onNavigate}><span className="brand-mark" aria-hidden="true">a</span><strong>artoo <span>OS</span></strong></NavLink>
+    <NavLink to="/channels" className="brand" aria-label="Artoo home" onClick={onNavigate}><span className="brand-mark" aria-hidden="true" /><strong>artoo <span>OS</span></strong></NavLink>
     <div className="os-nav-scroll">
       <section className="os-projects" aria-label="Projects">
         <div className="os-section-label"><span>Projects</span><Link to="/settings" className="os-icon-button" aria-label="Manage projects" onClick={onNavigate}><Plus size={14} aria-hidden="true" /></Link></div>
