@@ -109,7 +109,7 @@ describe("design revision CLI entrypoint with controlled private/native/browser 
     expect(state.run.mock.calls[0]?.[1]).toEqual(state.outer.context);
     expect(state.run.mock.calls[0]?.[2]).toEqual(state.bound);
     expect(state.run.mock.calls[0]?.[3]).toBe(state.outer.request_id);
-    expect(state.run.mock.calls[0]?.[5]).toEqual({ windowsProcessBackend: state.backend });
+    expect(state.run.mock.calls[0]?.[5]).toEqual({ verificationScope: "final", windowsProcessBackend: state.backend });
     expect(state.run.mock.calls[0]?.[5].windowsProcessBackend).toBe(state.backend);
     expect(JSON.parse(String(logs.mock.calls[0]?.[0])).product_design_revision).toEqual(expectedEcho());
     expect(state.importedBind).not.toHaveBeenCalled();
@@ -189,6 +189,7 @@ describe("design revision CLI entrypoint with controlled private/native/browser 
     const report = JSON.parse(String(logs.mock.calls[0]?.[0]));
     expect(report.controlled_report).toBe(true); expect(report).not.toHaveProperty("product_design_revision");
     expect(report).not.toHaveProperty("product_source_design_mapping"); expect(report).not.toHaveProperty("product_source_mapping");
-    expect(state.run.mock.calls[0]?.[5]).toEqual(mode === "native ordinary" ? { windowsProcessBackend: state.backend } : undefined);
+    expect(state.run.mock.calls[0]?.[5]).toEqual(mode === "native ordinary"
+      ? { verificationScope: "final", windowsProcessBackend: state.backend } : { verificationScope: "final" });
   });
 });
