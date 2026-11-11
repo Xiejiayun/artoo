@@ -1,5 +1,5 @@
 import { agentInstances, agents, applicationPublications, applicationPublicationSettlements, assistantRunDispatches, assistantTurns, autonomousReviews, computers, contextPacks, discussions, eventLog, goalAutomations, goals, runEvidence, runs, tasks } from "@artoo/db";
-import { AutonomousPlanningRequestV1Schema, ContextPackSchema, productStageHandoffPaths,
+import { AutonomousPlanningRequestV1Schema, ContextPackSchema, productStageHandoffPaths, PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE,
   type ProductReleaseReceipt, type RunVerificationPayload, type VerificationRequirement } from "@artoo/domain";
 import type { NodeTransport, RunEventMessage, ServerToNodeMessage } from "@artoo/protocol";
 import { and, asc, eq } from "drizzle-orm";
@@ -146,6 +146,8 @@ describe("Agent Team execution and independent source-bound review", () => {
       const [turn] = await server.db.db.select().from(assistantTurns).where(eq(assistantTurns.id, discussion!.activeTurnId!));
       expect(turn?.status, turn?.error ?? "planning should run").toBe("running");
       const [run] = await server.db.db.select().from(runs).where(eq(runs.id, turn!.runId!));
+      const [pack] = await server.db.db.select().from(contextPacks).where(eq(contextPacks.id, run!.contextPackId!));
+      expect(ContextPackSchema.parse(pack!.payload).conversation?.current_request).toContain(PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE);
       await complete(run!, step === 2 ? JSON.stringify(proposal) : `Planning contribution ${step}`);
       await assistant.pump();
     }
@@ -636,6 +638,11 @@ describe("Agent Team execution and independent source-bound review", () => {
     await server.db.db.update(runEvidence).set({ payload: { ...(evidence!.payload as RunVerificationPayload), subject_digest: changedDigest } })
       .where(eq(runEvidence.id, evidence!.id));
     const [reviewTask] = await server.db.db.select().from(tasks).where(eq(tasks.id, peer.review.reviewTaskId));
+    expect(reviewTask!.description).toContain(PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE);
+    expect(reviewTask!.description).toContain("Reject any blocking finding");
+    expect(reviewTask!.description).toContain(`"reviewed_run_id":"${author.id}"`);
+    expect(reviewTask!.description).toContain(`"verification_evidence_id":"${peer.review.evidenceId}"`);
+    for (const criterion of design!.acceptanceCriteria as string[]) expect(reviewTask!.description).toContain(criterion);
     await expect(buildRunContextPack(server.ctx, server.db.db, { runId: peer.run.id, assistantTurnId: peer.review.turnId,
       task: reviewTask!, workspaceRoot: peer.run.workspaceRoot })).rejects.toThrow("source verification is no longer qualified");
   });

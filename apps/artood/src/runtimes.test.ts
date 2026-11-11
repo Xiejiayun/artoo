@@ -17,6 +17,7 @@ import { createNodeClient } from "./node-client.js";
 import { claudeCodeRuntime, codexRuntime } from "./runtimes.js";
 import * as processAdapter from "./process-adapter.js";
 import type { PreparedProductBootstrapGit } from "./product-bootstrap-git.js";
+import { PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE } from "@artoo/domain";
 
 const mockAgent = fileURLToPath(new URL("../test-fixtures/mock-agent.mjs", import.meta.url));
 // Deterministic stand-in for the real CLI: same command both presets use in tests.
@@ -78,6 +79,25 @@ describe("runtime presets", () => {
         for (const argv of [options.command, options.discussionCommand!]) {
           expect(argv.some(arg => arg.startsWith("Read the file {{context_pack_path}}. If its payload contains conversation"))).toBe(true);
           expect(argv.join(" ")).not.toContain("artoo-context-text-page.v1");
+        }
+      }
+    } finally { create.mockRestore(); }
+  });
+
+  it("explains final evidence timing to authors and both review paths without changing manual prompts", () => {
+    const create = vi.spyOn(processAdapter, "createProcessAdapter");
+    try {
+      codexRuntime({ allowedRoots: ["/ws"] });
+      claudeCodeRuntime({ allowedRoots: ["/ws"] });
+      for (const [options] of create.mock.calls) {
+        for (const argv of [options.productCommand!, options.readOnlyCommand!, options.reviewCommand!]) {
+          const prompt = argv.find(arg => arg.startsWith("First call mcp__artoo_workspace__context"));
+          expect(prompt).toContain(PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE);
+          expect(prompt).toContain("preview evidence is diagnostic, not final acceptance");
+          expect(prompt).toContain("Missing coverage remains missing");
+        }
+        for (const argv of [options.command, options.discussionCommand!]) {
+          expect(argv.join(" ")).not.toContain(PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE);
         }
       }
     } finally { create.mockRestore(); }

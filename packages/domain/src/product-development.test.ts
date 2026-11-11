@@ -3,7 +3,7 @@ import { ContextPackSchema } from "./context-pack.js";
 import { TaskSpecSchema } from "./goal.js";
 import {
   AcceptedProductInputsSchema, DevelopmentStageSchema, ProductDesignSchema, ProductResearchReportSchema, ProductValidationReportSchema,
-  ProductDesignV1Schema, ProductDesignV2Schema, ProductValidationReportV1Schema,
+  ProductDesignV1Schema, ProductDesignV2Schema, ProductValidationReportV1Schema, PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE,
   productDevelopmentContext, validateProductDevelopmentHandoff, validateProductDevelopmentPlan,
 } from "./product-development.js";
 
@@ -36,6 +36,7 @@ describe("product development stage contracts", () => {
     for (const stage of DevelopmentStageSchema.options) {
       expect(ContextPackSchema.shape.product_development.parse(productDevelopmentContext(stage))!.stage).toBe(stage);
       expect(productDevelopmentContext(stage).deliverables[0]?.path).toMatch(/^\.artoo\/product\//);
+      expect(productDevelopmentContext(stage).instructions).toContain(PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE);
     }
   });
 
@@ -46,6 +47,15 @@ describe("product development stage contracts", () => {
     const second = productDevelopmentContext("research");
     expect(second.instructions.join(" ")).toContain("actual URL");
     expect(second.deliverables[0]!.path).toBe(".artoo/product/research.json");
+  });
+
+  it("preserves evidence lifecycle guidance when upgrading validation instructions to version 2", () => {
+    const context = productDevelopmentContext("validation", { checks: [], measurement_plan_policy: {
+      version: 2, coverage: "every-must-criterion", methods: ["workspace-check", "configured-static-release"],
+    } });
+    expect(context.instructions).toContain(PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE);
+    expect(context.instructions.join(" ")).toContain("Write validation.json with version:2");
+    expect(context.instructions.join(" ")).toContain("Your report does not replace node-run acceptance tests or independent review");
   });
 
   it("limits accepted inputs to unique fixed specification files and measured source bindings", () => {

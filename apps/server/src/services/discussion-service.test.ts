@@ -11,6 +11,7 @@ import { acceptPlan, validatePlanTaskSpecs } from "./plan-service.js";
 import { collectCatchUp, createEventPublisher, type EventFrame } from "../ws/event-publisher.js";
 import { createWsHub } from "../ws/ws-hub.js";
 import { getMessage, listMessagePage, postMessage } from "./message-service.js";
+import { PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE } from "@artoo/domain";
 
 const participants = [{ agent_instance_id: "instance_mock_coder", role: "Implementation design" }, { agent_instance_id: "instance_reviewer", role: "Test and risk review" }];
 const output = JSON.stringify({ rationale: "Separate implementation from verification", task_specs: [
@@ -63,6 +64,7 @@ describe("bounded agent discussion and reviewable task decomposition", () => {
     expect(pack).not.toHaveProperty("review_feedback");
     expect(pack.conversation.messages.some((message: any) => message.body === "Design proposal: implement the API first.")).toBe(true);
     expect(pack.conversation.thread_root_id).toBe(discussion.thread_root_id);
+    expect(pack.conversation.current_request).not.toContain(PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE);
     await restarted.pump();
     current = await getDiscussion(server.ctx, discussion.id);
     // The native planning screen subscribes to its project, before the human
@@ -83,6 +85,7 @@ describe("bounded agent discussion and reviewable task decomposition", () => {
     expect(rootSpec?.development_stage).toBeUndefined();
     expect(rootSpec?.expected_artifacts).toEqual([]);
     expect(synthesis!.body).toContain('For a later task depending on task 0, use dependencies: [{"ref":"0","type":"blocks"}].');
+    expect(synthesis!.body).not.toContain(PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE);
     // The message is fetched before the dispatcher marks the discussion ready.
     // A cursor-only client must receive its preview on this first delivery.
     expect((await getDiscussion(server.ctx, discussion.id)).current_step).toBe(2);
