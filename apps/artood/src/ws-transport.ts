@@ -46,6 +46,8 @@ export interface WebSocketTransportOptions {
   onFatalDisconnect?: () => void;
   /** Called after hello on every connection, including reconnects. */
   onConnected?: () => void;
+  /** Current socket close, including explicit close; stale sockets cannot revoke a newer session. */
+  onDisconnected?: () => void;
   /** Loss of the original publication connection revokes new work, not cleanup ownership. */
   onPublicationSessionEnded?: () => void;
 }
@@ -68,6 +70,12 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
   const handlers = new Set<(message: ServerToNodeMessage) => void>();
   const pending = new Map<string, { message: NodeToServerMessage; resolve: () => void; reject: (error: Error) => void; retentionTimer?: ReturnType<typeof setTimeout> }>();
   let socket: WebSocket;
+  const disconnectedSockets = new WeakSet<WebSocket>();
+  function notifyDisconnected(candidate: WebSocket): void {
+    if (candidate !== socket || disconnectedSockets.has(candidate)) return;
+    disconnectedSockets.add(candidate);
+    options.onDisconnected?.();
+  }
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let readySettled = false;
@@ -193,6 +201,7 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
     });
     thisSocket.addEventListener('close', (event: CloseEvent) => {
       if (thisSocket !== socket) return;
+      notifyDisconnected(thisSocket);
       revokePublicationSession();
       clearHeartbeat();
       if (closed) return;
@@ -287,6 +296,7 @@ export function createWebSocketTransport(options: WebSocketTransportOptions): We
     },
     async close(): Promise<void> {
       closed = true;
+      notifyDisconnected(socket);
       revokePublicationSession();
       clearHeartbeat();
       if (reconnectTimer) clearTimeout(reconnectTimer);

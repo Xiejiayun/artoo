@@ -136,6 +136,49 @@ class FakeClientWebSocket {
 }
 
 describe("createWebSocketTransport", () => {
+  it("notifies ordinary current-socket loss once and preserves reconnect identity", async () => {
+    let disconnected = 0;
+    const transport = createWebSocketTransport({ url: "ws://fixture.invalid", hello, reconnectDelayMs: 1,
+      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket,
+      onDisconnected: () => { disconnected++; } });
+    try {
+      const original = fakeClientSockets[0]!; original.open(); await transport.ready;
+      expect(transport.currentSessionIdentity()).toBe(original);
+      original.close(); expect(disconnected).toBe(1); expect(transport.currentSessionIdentity()).toBeUndefined();
+      await waitUntil(() => fakeClientSockets.length === 2);
+      const current = fakeClientSockets[1]!; current.open();
+      expect(transport.connected).toBe(true); expect(transport.currentSessionIdentity()).toBe(current);
+      // Delayed/repeated close from the old socket must not revoke new waiters.
+      original.close(); expect(disconnected).toBe(1); expect(transport.currentSessionIdentity()).toBe(current);
+      await transport.close(); expect(disconnected).toBe(2); expect(transport.currentSessionIdentity()).toBeUndefined();
+      await transport.close(); expect(disconnected).toBe(2);
+    } finally { await transport.close(); }
+  });
+
+  it("notifies a real ordinary socket close without requiring a publication session", async () => {
+    const harness = await startServer(); activeServer = harness.wss;
+    let disconnected = 0, publicationEnded = 0;
+    const transport = createWebSocketTransport({ url: harness.url, hello, reconnect: false,
+      onDisconnected: () => { disconnected++; }, onPublicationSessionEnded: () => { publicationEnded++; } });
+    try {
+      await transport.ready; const socket = await harness.connection;
+      socket.close(); await waitUntil(() => disconnected === 1);
+      expect(transport.currentSessionIdentity()).toBeUndefined(); expect(publicationEnded).toBe(0);
+      await transport.close(); expect(disconnected).toBe(1);
+    } finally { await transport.close(); }
+  });
+
+  it("explicit close invalidates pending-session observers even before the socket close event", async () => {
+    let disconnected = 0;
+    const transport = createWebSocketTransport({ url: "ws://fixture.invalid", hello,
+      WebSocketImpl: FakeClientWebSocket as unknown as typeof WebSocket,
+      onDisconnected: () => { disconnected++; expect(transport.currentSessionIdentity()).toBeUndefined(); } });
+    const socket = fakeClientSockets[0]!; socket.open(); await transport.ready;
+    socket.close = () => { socket.readyState = 2; }; // Deliberately withhold the close event.
+    await transport.close(); expect(disconnected).toBe(1);
+    await transport.close(); expect(disconnected).toBe(1);
+  });
+
   it("binds an ordinary publication session to its original socket and revokes it on close", async () => {
     const harness = await startServer(); activeServer = harness.wss;
     let ended = 0;

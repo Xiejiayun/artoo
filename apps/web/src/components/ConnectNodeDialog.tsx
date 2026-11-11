@@ -9,7 +9,7 @@ import { Button, Modal, Select } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
 import "./node-onboarding.css";
 
-export const DAEMON_CONNECT_VERSION = "0.1.0-rc.4";
+export const DAEMON_CONNECT_VERSION = "0.1.0-rc.5";
 
 export function daemonConnectCommand(origin: string, code: string, platform: DevicePlatform | "npm" = "npm"): string {
   const url = new URL(origin);

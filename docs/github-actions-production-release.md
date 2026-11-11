@@ -153,18 +153,18 @@ database rehearsal does not prove a full Supabase/Google disaster recovery.
 ## Publish the computer installer before presenting it in Web
 
 1. Run **Build and verify cross-platform npm daemon** on the exact current main
-   SHA for `0.1.0-rc.4`. Require the build, all three Windows/Linux package jobs
+   SHA for `0.1.0-rc.5`. Require the build, all three Windows/Linux package jobs
    and their aggregate. Each package job performs a real loopback pairing and
    enrollment, managed start/status/stop/restart, workspace-root advertisement
    and identity reuse after the disposable installation is removed. No model is
    invoked by the connection fixture. Optional Mac jobs remain separate evidence.
 2. Dispatch `.github/workflows/daemon-github-release.yml` on that same `main`
-   with `source_sha`, the matrix `candidate_run_id` and `version=0.1.0-rc.4`.
+   with `source_sha`, the matrix `candidate_run_id` and `version=0.1.0-rc.5`.
    The workflow checks actual attempt-specific jobs, exact package hashes/size,
    source and platform receipts, and refuses an existing version tag. It renders
    both installers with the package version, SHA-256 and length before uploading
    all assets to a draft and making the complete release public.
-3. Confirm `artood-v0.1.0-rc.4` exposes `install.ps1`, `install.sh`, the exact tgz
+3. Confirm `artood-v0.1.0-rc.5` exposes `install.ps1`, `install.sh`, the exact tgz
    and verification receipts before the matching Web publication. The command
    supplied by Web contains only the server and short-lived pairing code.
    `DAEMON_CONNECT_VERSION` in `ConnectNodeDialog.tsx` must select that published

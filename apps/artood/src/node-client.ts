@@ -62,6 +62,7 @@ import { applicationPublicationStartCommandSchema, applicationPublicationStopCom
 import { bindWorkspaceToolVerifier, bindWorkspaceToolEvidenceReader, bindWorkspaceToolCapabilities, bindWorkspaceToolReleaseCapabilities } from "./workspace-tools.js";
 import { bindWorkspaceReadOnlyTools, isAutonomousPlanningContext } from "./workspace-readonly.js";
 import { createSourceStartReplay, type SourceStartOutcome, type SourceStartScope } from "./source-start-replay.js";
+import { createPendingStartReplay } from "./pending-start-replay.js";
 import { createSourceCommandInflight, isOrdinarySourceResultReceipt } from "./source-command-inflight.js";
 import { createSourceCommandDiagnostics, recordSourceCommandPhase, type SourceCommandDiagnostic } from "./source-command-diagnostics.js";
 import { createProductSourceOperationClient } from "./product-source-operations.js";
@@ -153,6 +154,8 @@ export interface NodeClientOptions {
     onFailure?(error: Error): void; onReady?(): void };
   /** Node-runner-owned authenticated connection identity; reconnect cannot revive publication retry authority. */
   releaseRetrySession?: () => object | undefined;
+  /** Cheap local socket identity only; pending startup replay never grants execution. */
+  startupReplaySession?: () => object | undefined;
   /** Prepared local profiles and the actual device-authenticated socket session.
    * Session IDs or capabilities supplied in a command cannot install this controller. */
   applicationPublication?: { profiles: readonly PreparedApplicationPublicationProfile[];
@@ -175,6 +178,8 @@ export interface NodeClient {
   invalidateManagedStartupSession(session: ManagedSession | undefined, cause: Error): void;
   /** Stops original publication owners without reconstructing authority on reconnect. */
   invalidateApplicationPublicationSession(): void;
+  /** Wake pending startup retries when their original socket ends; retain process ownership. */
+  invalidatePendingStartupReplay?(): void;
   failManagedConnection(cause: Error): Promise<void>;
   requestManagedRunStop(runId: string): Promise<void>;
 }
@@ -479,11 +484,17 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   const inflight = new Set<Promise<void>>();
   let unsubscribe: Unsubscribe | undefined;
   const sourceStartReplay = createSourceStartReplay();
+  const pendingStartReplay = createPendingStartReplay();
+  const startupRuntimeIdentity = Object.freeze({});
+  function pendingStartupScope(): SourceStartScope | undefined {
+    const session = options.startupReplaySession?.();
+    return session && !healthStopped ? { runtime: recoveryRuntime ?? sourceRuntime ?? startupRuntimeIdentity, session } : undefined;
+  }
   const sourceCommandInflight = createSourceCommandInflight();
   const sourceCommandDiagnostics = createSourceCommandDiagnostics(options.sourceCommandDiagnostic ?? (() => {}));
   const pendingSourceReplaySends = new Map<string, symbol>();
-  // Clean lifecycle's ordinary-state reader performs its own audit. Keep that
-  // existing path until it has a separate local-fact replay capability.
+  // Clean lifecycle retains its full per-command source audit. Its verified
+  // startup waits use the separate pending-only scope, never retained approval.
   const sourceReplayEnabled = !!options.productSourceRecovery?.replaySession && !options.productSourceRecovery.cleanLifecycle;
   function sourceReplayScope(): SourceStartScope | undefined {
     const session = options.productSourceRecovery?.replaySession?.();
@@ -498,19 +509,21 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
   async function ackAccepted(commandId: string): Promise<void> {
     const observed = sourceStartReplay.observeAck(commandId, { status: "accepted" });
+    const pending = pendingStartReplay.observeAck(commandId, { status: "accepted" });
     try { await sendControl({
       kind: "command.ack",
       node_id: nodeId,
       command_id: commandId,
       status: "accepted",
       message: null
-    }); sourceStartReplay.finishAck(observed, true); }
-    catch (error) { sourceStartReplay.finishAck(observed, false); throw error; }
+    }); sourceStartReplay.finishAck(observed, true); pendingStartReplay.finishAck(pending, true); }
+    catch (error) { sourceStartReplay.finishAck(observed, false); pendingStartReplay.finishAck(pending, false); throw error; }
   }
 
   async function ackRejected(commandId: string, errorCode: NodeErrorCode, message: string): Promise<void> {
     const observed = sourceStartReplay.observeAck(commandId, { status: "rejected", error_code: errorCode, message });
-    const retained = observed?.outcome;
+    const pending = pendingStartReplay.observeAck(commandId, { status: "rejected", error_code: errorCode, message });
+    const retained = observed?.outcome ?? pendingStartReplay.outcome(pending);
     try { await sendControl({
       kind: "command.ack",
       node_id: nodeId,
@@ -518,8 +531,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       status: "rejected",
       error_code: errorCode,
       message: retained?.status === "rejected" ? retained.message : message
-    }); sourceStartReplay.finishAck(observed, true); }
-    catch (error) { sourceStartReplay.finishAck(observed, false); throw error; }
+    }); sourceStartReplay.finishAck(observed, true); pendingStartReplay.finishAck(pending, true); }
+    catch (error) { sourceStartReplay.finishAck(observed, false); pendingStartReplay.finishAck(pending, false); throw error; }
   }
 
   function track(task: Promise<void>): void {
@@ -1771,6 +1784,17 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
 
   async function dispatch(message: ServerToNodeMessage): Promise<void> {
     recordSourceCommandPhase("dispatch_admission");
+    if (message.type === "run.stop") pendingStartReplay.stopRun(message.payload.run_id);
+    if (!(sourceRecovery && sourceReplayEnabled) && options.startupReplaySession && !options.managedJournal
+      && message.type === "run.start" && (pendingStartReplay.has(message.payload.run_id)
+        || pendingStartReplay.ownsReply(message.id)
+        || message.payload.verification && !message.payload.workspace_allocation)) {
+      const runId = message.payload.run_id, commandId = message.id;
+      return pendingStartReplay.dispatch(message, pendingStartupScope, () => !planningToolRuns.get(runId)?.unsafe
+        && !verificationRuns.get(runId)?.unsafe && !mixedStopIntents.has(runId), dispatchFresh,
+      outcome => sendControl({ kind: "command.ack", node_id: nodeId, command_id: commandId,
+        ...(outcome.status === "accepted" ? { status: "accepted" as const, message: null } : outcome) }));
+    }
     if (sourceRecovery && sourceReplayEnabled && message.type === "run.stop") sourceStartReplay.stopRun(message.payload.run_id);
     if (sourceRecovery && sourceReplayEnabled) {
       const ordinary = sourceCommandInflight.run(message, sourceReplayScope, dispatchFresh);
@@ -2013,6 +2037,9 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
         return;
       }
       case "run.start":
+        if (pendingStartReplay.isStopped(message.payload.run_id)) {
+          return ackRejected(message.id, "process_start_failed", "Pending startup is fenced by Stop or disconnected session");
+        }
         if (sourceRecovery && sourceReplayEnabled && sourceStartReplay.isStopped(message.payload.run_id)) {
           return ackRejected(message.id, "process_start_failed", "Source startup is fenced by Stop");
         }
@@ -2034,6 +2061,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
   }
 
   const client: NodeClient = {
+    invalidatePendingStartupReplay(): void { pendingStartReplay.invalidate(); },
     invalidateApplicationPublicationSession(): void {
       applicationPublisher?.invalidate(); applicationAcceptance?.invalidate();
     },
@@ -2119,6 +2147,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       await flushHealth();
     },
     async stop(cancelRunning = false): Promise<void> {
+      pendingStartReplay.invalidate();
       client.invalidateApplicationPublicationSession();
       sourceCommandInflight.invalidate();
       sourceStartReplay.invalidate(); // Wake duplicate waiters before any synchronous shutdown audit.
