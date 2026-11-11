@@ -239,7 +239,6 @@ jobs:
     timeout-minutes: 20
     env:
       PACKAGE_SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
-      EVIDENCE_DIRECTORY: ${{ runner.temp }}/artoo-browser-verification
     steps:
       - uses: actions/checkout@v4
         with:
@@ -251,8 +250,10 @@ jobs:
       - name: Bind browser source fixtures to the candidate source
         run: |
           test "$(git rev-parse HEAD)" = "$PACKAGE_SOURCE_COMMIT"
+          export EVIDENCE_DIRECTORY="$RUNNER_TEMP/artoo-browser-verification"
           mkdir "$EVIDENCE_DIRECTORY"
           printf '%s\n' "$PACKAGE_SOURCE_COMMIT" > "$EVIDENCE_DIRECTORY/source-commit.txt"
+          printf 'EVIDENCE_DIRECTORY=%s\n' "$EVIDENCE_DIRECTORY" >> "$GITHUB_ENV"
       - name: Install fixture dependencies
         run: npm ci --no-audit --no-fund
       - name: Build the server, daemon and referenced packages
