@@ -1562,7 +1562,7 @@ async function executeVerification(profile: PreparedVerificationProfile, request
           if (!prepared || !isV3WebAcceptanceOptions(prepared.options) || !capabilityBinding || !context || !evidenceRoot) {
             fail("Version 3 browser evidence requires a protected configured program and evidence root");
           }
-          const expected = deriveExpectedWebAcceptanceV3(profile.workspace_root, context, prepared.options, capabilityBinding);
+          const expected = deriveExpectedWebAcceptanceV3(profile.workspace_root, context, prepared.options, capabilityBinding, scope);
           if (report.stage !== expected.stage || report.requirements !== expected.requirements) fail("Browser report differs from the measured product plan");
           const bundle = sealBrowserEvidence({ evidenceRoot, requestId, profileId: profile.id,
             profileDigest: profile.digest, subjectDigest: before.digest, checkId: command.id, scope, report, expectedPrograms: expected.programs });
@@ -1587,7 +1587,7 @@ async function executeVerification(profile: PreparedVerificationProfile, request
           }
           // Reconstruct from the unchanged, measured product and protected options.
           // The child report cannot choose which program the node seals.
-          const expected = deriveExpectedWebAcceptanceV2(profile.workspace_root, context, prepared.options, capabilityBinding);
+          const expected = deriveExpectedWebAcceptanceV2(profile.workspace_root, context, prepared.options, capabilityBinding, scope);
           if (report.stage !== expected.stage || report.requirements !== expected.requirements) fail("Browser report differs from the measured product plan");
           const bundle = sealBrowserEvidence({ evidenceRoot, requestId, profileId: profile.id,
             profileDigest: profile.digest, subjectDigest: before.digest, checkId: command.id, scope, report, expectedPrograms: expected.programs });

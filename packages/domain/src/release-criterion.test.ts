@@ -94,6 +94,36 @@ function publication() {
 }
 
 describe("explicit release measurement contracts", () => {
+  it.each(["blocked", "failed"] as const)("measures a v2 %s workspace draft only in preview while publication remains pending", outcome => {
+    const f = fixture(), workspace = f.validation.cases.find(item => item.method === "workspace-check")!;
+    workspace.outcome = outcome;
+    const before = structuredClone(f.validation);
+    expect(validateProductDevelopmentHandoff(f.research, f.design, f.validation, "preview")).toEqual([]);
+    expect(f.validation).toEqual(before);
+    expect(f.validation.cases.find(item => item.method === "configured-static-release")!.outcome).toBe("pending-release");
+    for (const scope of [undefined, "final"] as const) {
+      expect(validateProductDevelopmentHandoff(f.research, f.design, f.validation, scope)).toEqual([`Validation case visible is ${outcome}.`]);
+    }
+  });
+  it("preserves v2 method, criterion and release bindings during a draft preview", () => {
+    const f = fixture();
+    const actual = f.validation.cases.find(item => item.method === "workspace-check")!;
+    actual.outcome = "blocked"; actual.requirement_criteria[0]!.criterion_index = 1;
+    expect(validateProductDevelopmentHandoff(f.research, f.design, f.validation, "preview"))
+      .toContain("Validation case visible changes its accepted method or criterion coverage.");
+    actual.requirement_criteria[0]!.criterion_index = 0;
+    const release = f.validation.cases.find(item => item.method === "configured-static-release")!;
+    release.release_binding.release_profile_id = "other";
+    expect(validateProductDevelopmentHandoff(f.research, f.design, f.validation, "preview"))
+      .toContain("Validation case published changes its accepted release binding.");
+    const swapped = structuredClone(f.validation);
+    swapped.cases[0] = { ...release, case_id: "visible", requirement_ids: ["save"], requirement_criteria: [{ requirement_id: "save", criterion_index: 0 }] };
+    expect(validateProductDevelopmentHandoff(f.research, f.design, swapped, "preview"))
+      .toContain("Validation case visible changes its accepted method or criterion coverage.");
+    expect(validateProductDevelopmentHandoff(f.research, f.design, { ...f.validation, cases: [release] }, "preview"))
+      .toContain("Missing validation result for visible.");
+    expect(ProductValidationReportV2Schema.safeParse({ ...f.validation, cases: [{ ...actual, evidence_paths: [] }, release] }).success).toBe(false);
+  });
   it("pins the exact canonical statement, hash vector and bounded point-in-time scope", () => {
     const f = fixture();
     expect(hash(CONFIGURED_STATIC_PUBLICATION_STATEMENT)).toBe(CONFIGURED_STATIC_PUBLICATION_STATEMENT_DIGEST);

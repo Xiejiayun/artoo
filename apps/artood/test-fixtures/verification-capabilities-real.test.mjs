@@ -1,7 +1,7 @@
 // Run after building on POSIX. These are controlled product fixtures, not a live model acceptance run.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,7 +46,7 @@ function fixture(options = {}) {
     commands: [{ id: "browser", argv: [process.execPath, cli, config], timeout_ms: 60000,
       observation: { format: "static-web-acceptance.v1", evidence_root: evidence, capabilities: { version: 1 } } }],
     required_files: [], subject_paths: ["product", ".artoo/product"] };
-  return { root, workspace, evidence, config, privateOptions, raw, close: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, workspace, evidence, config, privateOptions, raw, research, design, close: () => rmSync(root, { recursive: true, force: true }) };
 }
 function request(f, profile, stage = "research") {
   const capabilities = profile.capabilities;
@@ -160,6 +160,89 @@ test("real CLI uses its protected snapshot and rejects inconsistent binding befo
       const wrong = structuredClone(envelope); wrong.request_id = "invalid_snapshot"; mutate(wrong); writeFileSync(contextFile, JSON.stringify(wrong));
       const failed = await execute(); assert.equal(failed.status, 1); assert.equal(failed.stdout.length, 0); assert.match(failed.stderr.toString(), /snapshot/i);
       assert.deepEqual(readdirSync(f.evidence).sort(), inventory);
+    }
+  } finally { f.close(); }
+});
+
+for (const version of [1, 2, 3]) test(`v${version} validation preview measures a blocked draft and seals only preview evidence`, chromium, async () => {
+  const f = fixture(version === 1 ? {} : { viewports: undefined, browser_program: { version,
+    viewports: [{ id: "compact", width: 512, height: 900 }, { id: "wide", width: 901, height: 900 }] } });
+  try {
+    if (version !== 1) {
+      delete f.privateOptions.viewports;
+      f.raw.commands[0].observation.format = `static-web-acceptance.v${version}`;
+      const prepared = prepareStaticWebCapabilities(f.privateOptions), planned = f.design.validation_cases[0];
+      planned.browser_program = { version, contract_digest: prepared.contract_digest,
+        steps: planned.browser_steps.map(step => ({ ...step, page: "main" })) };
+      delete planned.browser_steps;
+      writeFileSync(join(f.workspace, ".artoo/product/design.json"), JSON.stringify(f.design));
+    }
+    const report = { version: 1, cases: [{ case_id: "persist", requirement_ids: ["save"], outcome: "blocked",
+      observations: "The draft awaits actual protected browser measurements", evidence_paths: ["product/validation-evidence.txt"] }], known_limitations: [] };
+    const reportPath = join(f.workspace, ".artoo/product/validation.json");
+    writeFileSync(reportPath, JSON.stringify(report));
+    writeFileSync(join(f.workspace, "product/validation-evidence.txt"), "No browser measurement has run yet.");
+    writeFileSync(join(f.workspace, ".artoo/product/implementation.md"), "Controlled localStorage implementation.");
+    const [profile] = prepareVerificationProfiles([f.raw]), context = request(f, profile, "validation").context_pack.payload;
+    const before = subjectManifest(profile).digest, originalReport = readFileSync(reportPath);
+    const { verification: preview } = await runVerificationPreview(profile, "validation_preview", new AbortController().signal, context);
+    assert.equal(preview.outcome, "passed", preview.reason); assert.equal(preview.checks[0].exit_code, 0);
+    const observation = preview.checks[0].observation;
+    assert.equal(observation.version, version); assert.equal(observation.stage, "validation"); assert.equal(observation.scope, "preview");
+    assert.deepEqual(observation.capability_binding, checkBinding(profile));
+    assert.equal(observation.cases.length, 2); assert.ok(observation.cases.every(item => item.case_id === "persist" && item.assertions === 1));
+    assert.ok(observation.evidence_bundle);
+    const grant = { evidenceRoot: f.evidence, requestId: "validation_preview", profileId: profile.id, profileDigest: profile.digest,
+      subjectDigest: preview.subject_digest, checkId: "browser", scope: "preview", ...observation.evidence_bundle };
+    for (const item of observation.cases) {
+      const image = readBrowserEvidence(grant, version === 1 ? item.screenshot_ref : item.captures[0].screenshot_ref);
+      assert.equal(image.mime_type, "image/png"); assert.equal(image.provenance.scope, "preview");
+      const bytes = Buffer.from(image.data, "base64");
+      assert.equal(bytes.readUInt32BE(16), version === 1 ? item.viewport : item.viewport.width);
+      assert.equal(bytes.readUInt32BE(20), 900);
+      if (version !== 1) {
+        const trace = readBrowserEvidence(grant, item.trace_ref);
+        assert.equal(trace.mime_type, "application/json");
+        const operations = JSON.parse(trace.text).operations;
+        assert.equal(operations.length, 5); assert.equal(operations.at(-1).action, "assert_value");
+        assert.deepEqual(operations.at(-1).observation, { kind: "assertion", passed: true });
+      }
+      assert.throws(() => readBrowserEvidence({ ...grant, scope: "final" }, version === 1 ? item.screenshot_ref : item.captures[0].screenshot_ref), /binding/);
+    }
+    assert.equal(subjectManifest(profile).digest, before); assert.deepEqual(readFileSync(reportPath), originalReport);
+    const final = await runVerification(profile, "validation_final_blocked", new AbortController().signal, context);
+    assert.equal(final.outcome, "failed"); assert.equal(final.checks[0].exit_code, 1);
+    assert.equal(final.checks[0].observation, undefined); assert.equal(subjectManifest(profile).digest, before);
+
+    // Updating the authored report changes the measured source. A preview of the
+    // previous draft never substitutes for this new source's final browser run.
+    report.cases[0].outcome = "passed"; report.cases[0].observations = "Preview observed save and reload at both configured widths";
+    writeFileSync(reportPath, JSON.stringify(report));
+    writeFileSync(join(f.workspace, "product/validation-evidence.txt"), "Preview request validation_preview observed both configured viewports; final measurement still required.");
+    const accepted = await runVerification(profile, "validation_final_passed", new AbortController().signal, context);
+    assert.equal(accepted.outcome, "passed", accepted.reason); assert.equal(accepted.checks[0].exit_code, 0);
+    assert.equal(accepted.checks[0].observation.scope, "final"); assert.equal(accepted.checks[0].observation.cases.length, 2);
+    assert.notEqual(accepted.subject_digest, preview.subject_digest);
+  } finally { f.close(); }
+});
+
+test("installed CLI defaults missing scope to final and rejects malformed scope before measuring a draft", posix, async () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.workspace, ".artoo/product/validation.json"), JSON.stringify({ version: 1,
+      cases: [{ case_id: "persist", requirement_ids: ["save"], outcome: "blocked", observations: "Not measured",
+        evidence_paths: ["product/validation-evidence.txt"] }], known_limitations: [] }));
+    writeFileSync(join(f.workspace, "product/validation-evidence.txt"), "Not measured");
+    const [profile] = prepareVerificationProfiles([f.raw]), context = request(f, profile, "validation").context_pack.payload;
+    const prepared = prepareStaticWebCapabilities(f.privateOptions), contextFile = join(f.root, "context.json");
+    for (const [index, scope] of [undefined, "final", null, "PREVIEW", true, { scope: "preview" }].entries()) {
+      writeFileSync(contextFile, JSON.stringify({ version: 1, request_id: `scope_default_${index}`, profile_digest: profile.digest, context,
+        ...(scope === undefined ? {} : { scope }), static_web_capabilities: { version: 1, binding: checkBinding(profile), options: prepared.options } }));
+      const result = await runOwnedGit({ cwd: f.workspace, args: [cli, f.config], kind: "materialize", signal: new AbortController().signal },
+        { gitExecutable: process.execPath, readTimeoutMs: 30000, materializeTimeoutMs: 60000, guardParent: true, maxOutputBytes: 1024 * 1024,
+          environment: { PATH: process.env.PATH, LANG: "C.UTF-8", ARTOO_VERIFICATION_CONTEXT_FILE: contextFile } });
+      assert.equal(result.status, 1); assert.equal(result.stdout.length, 0);
+      assert.match(result.stderr.toString(), scope === undefined || scope === "final" ? /persist is blocked/ : /scope/i);
     }
   } finally { f.close(); }
 });

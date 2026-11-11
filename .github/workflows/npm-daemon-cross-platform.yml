@@ -224,9 +224,62 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: npm-daemon-posix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.qualification }}-${{ matrix.platform }}
-          path: ${{ runner.temp }}/posix-verification.log
+          path: |
+            ${{ runner.temp }}/posix-verification.log
           if-no-files-found: warn
           retention-days: 14
+
+  browser-verification:
+    name: Required sandboxed browser (Ubuntu 22.04)
+    needs: build
+    # Keep package/POSIX qualification on Ubuntu 24.04. Downloaded Chromium
+    # needs a compatible user-namespace policy; never disable its sandbox or
+    # change the runner's security policy to obtain browser fixture results.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      PACKAGE_SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.source_commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Bind browser source fixtures to the candidate source
+        run: |
+          test "$(git rev-parse HEAD)" = "$PACKAGE_SOURCE_COMMIT"
+          export EVIDENCE_DIRECTORY="$RUNNER_TEMP/artoo-browser-verification"
+          mkdir "$EVIDENCE_DIRECTORY"
+          printf '%s\n' "$PACKAGE_SOURCE_COMMIT" > "$EVIDENCE_DIRECTORY/source-commit.txt"
+          printf 'EVIDENCE_DIRECTORY=%s\n' "$EVIDENCE_DIRECTORY" >> "$GITHUB_ENV"
+      - name: Install fixture dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Build the server, daemon and referenced packages
+        run: npm run build --workspace @artoo/server
+      - name: Install and identify pinned Chromium
+        run: |
+          npx playwright install --with-deps chromium
+          # Keep the protected executable-size bound. Record full Chrome and
+          # the pinned distribution's smaller official headless executable.
+          browser="$(node --input-type=module -e 'import { registry } from "playwright-core/lib/coreBundle"; console.log(registry.registry.findExecutable("chromium-headless-shell").executablePath())')"
+          stat --format='browser path=%n bytes=%s links=%h type=%F' "$(node --input-type=module -e 'import { chromium } from "playwright"; console.log(chromium.executablePath())')" "$browser"
+          test -x "$browser"
+          printf 'ARTOO_TEST_CHROMIUM=%s\n' "$browser" >> "$GITHUB_ENV"
+      - name: Diagnose sandboxed blank-page startup with owned process closure
+        run: node scripts/npm-daemon/browser-sandbox-probe.mjs "$EVIDENCE_DIRECTORY"
+      - name: Verify protected CLI browser measurements and node evidence sealing
+        timeout-minutes: 10
+        run: node --test --test-concurrency=1 apps/artood/test-fixtures/verification-capabilities-real.test.mjs > "$EVIDENCE_DIRECTORY/posix-browser-verification.log" 2>&1
+      - name: Upload browser source qualification and bounded startup diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-daemon-browser-${{ github.run_id }}-${{ github.run_attempt }}-ubuntu-22.04
+          path: ${{ env.EVIDENCE_DIRECTORY }}/*
+          if-no-files-found: warn
+          retention-days: 30
 
   mac-platforms:
     name: Optional Mac package (${{ matrix.platform }})
@@ -254,19 +307,20 @@ jobs:
   cross-platform:
     name: Required Windows/Linux aggregate
     if: always()
-    needs: [build, platforms]
+    needs: [build, platforms, browser-verification]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     env:
       BUILD_RESULT: ${{ needs.build.result }}
       PLATFORM_RESULT: ${{ needs.platforms.result }}
+      BROWSER_RESULT: ${{ needs.browser-verification.result }}
       PACKAGE_VERSION: ${{ needs.build.outputs.version }}
       PACKAGE_SHA256: ${{ needs.build.outputs.sha256 }}
       PACKAGE_SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
     steps:
-      - name: Require build and all three Windows/Linux matrix legs
-        run: test "$BUILD_RESULT" = success && test "$PLATFORM_RESULT" = success
+      - name: Require build, all three package legs and sandboxed browser verification
+        run: test "$BUILD_RESULT" = success && test "$PLATFORM_RESULT" = success && test "$BROWSER_RESULT" = success
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -307,6 +361,9 @@ jobs:
             runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
             name: '@jiayunxie/artood', version: process.env.PACKAGE_VERSION,
             sha256: process.env.PACKAGE_SHA256, platforms: expected, requiredPlatforms: expected,
+            browserSourceVerification: { status: process.env.BROWSER_RESULT, runner: 'ubuntu-22.04',
+              sourceCommit: process.env.PACKAGE_SOURCE_COMMIT, chromiumSandbox: 'enabled',
+              scope: 'Protected CLI/browser fixture qualification against built source; not Ubuntu 24.04 browser qualification or live-provider acceptance.' },
             optionalMac: { platforms: ['darwin-arm64', 'darwin-x64'], requiredForRelease: false,
               qualification: 'deferred', validation: 'Separate optional jobs; not evaluated by this aggregate.' },
             scope: 'Windows x64 and Linux x64/arm64 release scope: one tarball installed without force or ignored scripts on three real OS/architecture pairs; managed connection/status/stop/restart, controlled CLI tasks and separate POSIX source fixtures. Mac implementation remains in the package but release qualification is deferred. No publication or live-provider qualification.' };

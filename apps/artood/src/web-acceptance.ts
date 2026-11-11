@@ -2,12 +2,12 @@ import { createServer } from "node:http";
 import { lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import type { Page } from "playwright";
-import { ProductResearchReportSchema, ProductDesignSchema, ProductValidationReportSchema, validateProductDevelopmentHandoff,
+import { ProductResearchReportSchema, ProductDesignSchema, ProductValidationReportSchema,
   StaticWebCapabilitiesSchema, StaticWebCapabilityBindingSchema, AllowedBrowserKeySchema, BrowserOperationTraceV2Schema,
   StaticWebAcceptanceReportV2Schema, StaticWebAcceptanceReportV3Schema, BrowserOperationTraceV3Schema, MAX_BROWSER_OPERATION_TRACE_BYTES,
   storageFaultCapabilitiesV1, storageFaultReportFromTraceV1, storagePreconditionCapabilitiesV1, storagePreconditionReportFromTraceV1,
   type ContextPack, type ProductBrowserStep, type ProductDesign, type StaticWebAcceptanceReportV1, type StaticWebAcceptanceReportV2, type StaticWebAcceptanceReportV3,
-  type StaticWebCapabilities, type StaticWebCapabilityBinding } from "@artoo/domain";
+  type StaticWebCapabilities, type StaticWebCapabilityBinding, type VerificationObservation } from "@artoo/domain";
 import { readProductFile } from "./product-stage.js";
 import { launchOwnedBrowser } from "./owned-browser.js";
 import { assertWindowsProcessBackend, type PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
@@ -22,6 +22,7 @@ import { STORAGE_FAULT_INITIALIZER_DIGEST } from "./web-acceptance-storage-sourc
 import { BROWSER_V3_ACTIONS, executeBrowserProgramV3 } from "./web-acceptance-pages.js";
 import { browserTraceV2Filename, browserCaptureV2Filename, browserTraceV3Filename, browserCaptureV3Filename } from "./browser-evidence.js";
 import { AcceptanceCleanupError, withAcceptanceCleanup } from "./web-acceptance-cleanup.js";
+import { validateWebAcceptanceHandoff } from "./web-acceptance-handoff.js";
 export type { NormalizedWebAcceptanceOptions, StaticWebCapabilitySnapshot, WebAcceptanceOptions } from "./web-acceptance-config.js";
 
 const inside = (path: string, root: string): boolean => { const tail = relative(root, path); return tail === "" || (tail !== ".." && !tail.startsWith(`..${sep}`) && !isAbsolute(tail)); };
@@ -170,17 +171,17 @@ export function validateStaticWebCapabilitySnapshot(input: unknown): StaticWebCa
 
 /** Independently derive case identities from fixed product files and the protected configuration. */
 export function deriveExpectedWebAcceptanceV2(workspace: string, context: ContextPack, options: NormalizedWebAcceptanceOptions,
-  binding: StaticWebCapabilityBinding): ExpectedWebAcceptanceV2 {
+  binding: StaticWebCapabilityBinding, scope: VerificationObservation["scope"] = "final"): ExpectedWebAcceptanceV2 {
   const snapshot = validateStaticWebCapabilitySnapshot({ version: 1, binding, options });
   if (!isV2WebAcceptanceOptions(snapshot.options)) throw new Error("Expected a protected browser_program v2 configuration");
-  return deriveWebAcceptanceV2Plan(workspace, context, snapshot.options, snapshot.binding);
+  return deriveWebAcceptanceV2Plan(workspace, context, snapshot.options, snapshot.binding, scope);
 }
 
 export function deriveExpectedWebAcceptanceV3(workspace: string, context: ContextPack, options: NormalizedWebAcceptanceOptions,
-  binding: StaticWebCapabilityBinding): ExpectedWebAcceptanceV3 {
+  binding: StaticWebCapabilityBinding, scope: VerificationObservation["scope"] = "final"): ExpectedWebAcceptanceV3 {
   const snapshot = validateStaticWebCapabilitySnapshot({ version: 1, binding, options });
   if (!isV3WebAcceptanceOptions(snapshot.options)) throw new Error("Expected a protected browser_program v3 configuration");
-  return deriveWebAcceptanceV3Plan(workspace, context, snapshot.options, snapshot.binding);
+  return deriveWebAcceptanceV3Plan(workspace, context, snapshot.options, snapshot.binding, scope);
 }
 
 export async function inspectPage(page: Page): Promise<void> {
@@ -203,7 +204,10 @@ export async function inspectPage(page: Page): Promise<void> {
 }
 
 /** In-process authority only; never part of the serializable measurement options. */
-export interface WebAcceptanceRuntime { readonly windowsProcessBackend?: PreparedWindowsProcessBackend }
+export interface WebAcceptanceRuntime {
+  readonly windowsProcessBackend?: PreparedWindowsProcessBackend;
+  readonly verificationScope?: VerificationObservation["scope"];
+}
 export async function runWebAcceptance(workspace: string, context: ContextPack, options: WebAcceptanceOptions = {}, requestId = "local",
   capabilityBinding?: StaticWebCapabilityBinding, runtime?: WebAcceptanceRuntime) {
   let binding: StaticWebCapabilityBinding | undefined;
@@ -212,7 +216,8 @@ export async function runWebAcceptance(workspace: string, context: ContextPack, 
       options: normalizeWebAcceptanceOptions(options) });
     options = snapshot.options; binding = snapshot.binding;
   }
-  const windowsProcessBackend = runtime?.windowsProcessBackend;
+  const windowsProcessBackend = runtime?.windowsProcessBackend, scope = runtime?.verificationScope ?? "final";
+  if (scope !== "preview" && scope !== "final") throw new Error("Invalid node verification scope");
   if (options.windows_browser_process !== undefined) {
     // Strictly parse this option even on the legacy unbound direct-call path.
     normalizeWebAcceptanceOptions(options);
@@ -223,13 +228,13 @@ export async function runWebAcceptance(workspace: string, context: ContextPack, 
     if (!binding) throw new Error("Browser program v3 requires a protected capability binding");
     const normalized = normalizeWebAcceptanceOptions(options);
     if (!isV3WebAcceptanceOptions(normalized)) throw new Error("Expected browser program v3 options");
-    return runWebAcceptanceV3(workspace, context, normalized, requestId, binding, windowsProcessBackend);
+    return runWebAcceptanceV3(workspace, context, normalized, requestId, binding, scope, windowsProcessBackend);
   }
   if (isV2WebAcceptanceOptions(options)) {
     if (!binding) throw new Error("Browser program v2 requires a protected capability binding");
     const normalized = normalizeWebAcceptanceOptions(options);
     if (!isV2WebAcceptanceOptions(normalized)) throw new Error("Expected browser program v2 options");
-    return runWebAcceptanceV2(workspace, context, normalized, requestId, binding, windowsProcessBackend);
+    return runWebAcceptanceV2(workspace, context, normalized, requestId, binding, scope, windowsProcessBackend);
   }
   const root = realpathSync.native(workspace);
   const timeout = options.action_timeout_ms ?? STATIC_WEB_DEFAULT_TIMEOUT;
@@ -260,7 +265,7 @@ export async function runWebAcceptance(workspace: string, context: ContextPack, 
   const design = ProductDesignSchema.parse(json(".artoo/product/design.json"));
   if (design.version !== 1) throw new Error("Version 2 product design requires a protected browser program v3 check");
   const validation = stage === "validation" ? ProductValidationReportSchema.parse(json(".artoo/product/validation.json")) : undefined;
-  const missing = validateProductDevelopmentHandoff(research, design, validation);
+  const missing = validateWebAcceptanceHandoff(context, research, design, validation, scope);
   if (missing.length) throw new Error(missing.join(" "));
   validateBrowserCases(design);
   if (!design.prototype.entrypoint.startsWith("product/")) throw new Error("Web prototype must be inside product/");
@@ -304,9 +309,9 @@ export async function runWebAcceptance(workspace: string, context: ContextPack, 
 }
 
 async function runWebAcceptanceV2(workspace: string, context: ContextPack, options: NormalizedWebAcceptanceOptionsV2,
-  requestId: string, binding: StaticWebCapabilityBinding, windowsProcessBackend?: PreparedWindowsProcessBackend): Promise<StaticWebAcceptanceReportV2> {
+  requestId: string, binding: StaticWebCapabilityBinding, scope: VerificationObservation["scope"], windowsProcessBackend?: PreparedWindowsProcessBackend): Promise<StaticWebAcceptanceReportV2> {
   const root = realpathSync.native(workspace), timeout = options.action_timeout_ms;
-  const plan = deriveExpectedWebAcceptanceV2(root, context, options, binding);
+  const plan = deriveExpectedWebAcceptanceV2(root, context, options, binding, scope);
   if (options.browser_executable && (!isAbsolute(options.browser_executable) || inside(realpathSync.native(options.browser_executable), root))) throw new Error("Browser executable must be outside the product workspace");
   let evidence: string | undefined;
   if (options.evidence_root) {
@@ -375,9 +380,9 @@ async function runWebAcceptanceV2(workspace: string, context: ContextPack, optio
 }
 
 async function runWebAcceptanceV3(workspace: string, context: ContextPack, options: NormalizedWebAcceptanceOptionsV3,
-  requestId: string, binding: StaticWebCapabilityBinding, windowsProcessBackend?: PreparedWindowsProcessBackend): Promise<StaticWebAcceptanceReportV3> {
+  requestId: string, binding: StaticWebCapabilityBinding, scope: VerificationObservation["scope"], windowsProcessBackend?: PreparedWindowsProcessBackend): Promise<StaticWebAcceptanceReportV3> {
   const root = realpathSync.native(workspace), timeout = options.action_timeout_ms;
-  const plan = deriveExpectedWebAcceptanceV3(root, context, options, binding);
+  const plan = deriveExpectedWebAcceptanceV3(root, context, options, binding, scope);
   if (options.browser_executable && (!isAbsolute(options.browser_executable) || inside(realpathSync.native(options.browser_executable), root))) throw new Error("Browser executable must be outside the product workspace");
   let evidence: string | undefined;
   if (options.evidence_root) {

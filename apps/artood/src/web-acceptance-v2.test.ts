@@ -43,6 +43,25 @@ function fixture(designCaptureCases = true) {
 }
 
 describe("protected browser program v2 planning", () => {
+  it("derives pending validation measurements only for a local author preview", () => {
+    const f = fixture(); f.context.product_development = productDevelopmentContext("validation");
+    const report = { version: 1, cases: [{ case_id: "keyboard", requirement_ids: ["entry"], outcome: "blocked",
+      observations: "Waiting for protected browser measurements", evidence_paths: ["product/evidence.txt"] }], known_limitations: [] };
+    f.write("product/evidence.txt", "No browser measurement yet."); f.write(".artoo/product/validation.json", report);
+    const preview = deriveExpectedWebAcceptanceV2(f.workspace, f.context, f.prepared.options, f.binding, "preview");
+    expect(preview.programs).toHaveLength(2); expect(preview.programs.every(item => item.case_id === "keyboard")).toBe(true);
+    for (const scope of [undefined, "final"] as const) {
+      expect(() => deriveExpectedWebAcceptanceV2(f.workspace, f.context, f.prepared.options, f.binding, scope)).toThrow("keyboard is blocked");
+    }
+    f.context.review_subject = { version: 1, task_id: "author", run_id: "author_run", evidence_id: "author_evidence",
+      subject_digest: digest, development_stage: "validation" };
+    expect(() => deriveExpectedWebAcceptanceV2(f.workspace, f.context, f.prepared.options, f.binding, "preview")).toThrow("keyboard is blocked");
+    delete f.context.product_development;
+    expect(() => deriveExpectedWebAcceptanceV2(f.workspace, f.context, f.prepared.options, f.binding, "preview")).toThrow("keyboard is blocked");
+    delete f.context.review_subject; f.context.product_development = productDevelopmentContext("validation");
+    report.cases[0]!.requirement_ids = ["unknown"]; f.write(".artoo/product/validation.json", report);
+    expect(() => deriveExpectedWebAcceptanceV2(f.workspace, f.context, f.prepared.options, f.binding, "preview")).toThrow("omits required coverage");
+  });
   it("advertises only the implemented actions and actual named width/height policy", () => {
     const f = fixture();
     expect(f.prepared.contract).toMatchObject({ version: 2, browser_steps_version: 2, legacy_browser_steps: "rejected",

@@ -63,12 +63,12 @@ describe("CLI integration ordering with controlled private reader, Job backend a
   it("checks private input before parsing and preserves the original backend for admitted design", async () => {
     await execute(); expect(errors).not.toHaveBeenCalled();
     expect(fixtureState.order).toEqual(["config", "private-read", "backend", "design-bind", "browser"]);
-    expect(fixtureState.run.mock.calls[0]?.[5]).toEqual({ windowsProcessBackend: fixtureState.backend });
+    expect(fixtureState.run.mock.calls[0]?.[5]).toEqual({ verificationScope: "final", windowsProcessBackend: fixtureState.backend });
     expect(JSON.parse(String(logs.mock.calls[0]?.[0])).product_source_design_mapping).toEqual({ version: 1, controlled_echo: true });
   });
   it("retains foreign-research mapping and the Job backend together", async () => {
     setup("research"); await execute(); expect(errors).not.toHaveBeenCalled(); expect(fixtureState.bind).not.toHaveBeenCalled();
-    expect(fixtureState.run.mock.calls[0]?.[5]).toEqual({ windowsProcessBackend: fixtureState.backend });
+    expect(fixtureState.run.mock.calls[0]?.[5]).toEqual({ verificationScope: "final", windowsProcessBackend: fixtureState.backend });
     expect(JSON.parse(String(logs.mock.calls[0]?.[0])).product_source_mapping).toHaveProperty("mapping_digest");
   });
   it.each(["private-reader", "design-mapping", "research-mapping", "mixed-envelope", "missing-envelope"])("rejects %s before browser execution", async change => {
