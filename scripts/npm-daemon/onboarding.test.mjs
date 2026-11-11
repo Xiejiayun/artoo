@@ -399,6 +399,8 @@ test("temporary directory selection is empty, physical and outside every agent r
   for (const path of ["relative", "", 42, `${fixture.temporaryDirectory}\n`, fixture.profiles])
     assert.throws(() => validateTeamConfiguration(value(path), roots));
   if (process.platform === "win32") assert.throws(() => validateTeamConfiguration(value("\\\\server\\share\\temporary"), roots), /local disk/);
+  if (process.platform === "win32") assert.equal(validateTeamConfiguration(value(fixture.temporaryDirectory.toUpperCase()), roots).temporary_directory,
+    fixture.temporaryDirectory, "Save the physical spelling required by the downstream private-context guard.");
   assert.throws(() => validateTeamConfiguration(value(fixture.workspace), roots), /outside all agent/);
   const inner = join(fixture.workspace, "temporary"); mkdirSync(inner);
   assert.throws(() => validateTeamConfiguration(value(inner), roots), /outside all agent/);

@@ -94,7 +94,9 @@ function codexHome(path, roots) {
 function temporaryDirectory(path, roots) {
   if (process.platform === "win32" && (typeof path !== "string" || !/^[a-z]:[\\/]/i.test(path)))
     throw Error("Team temporary_directory must be an absolute local disk directory.");
-  const directory = physicalPath(path, "directory", roots), entries = [];
+  // The downstream private-context guard binds the exact physical spelling,
+  // including Windows drive/name casing; save that spelling rather than input.
+  const directory = realpathSync.native(physicalPath(path, "directory", roots)), entries = [];
   let pathBytes = 0;
   const inspect = (path, ancestor = false) => {
     if (entries.length >= 2048 || (pathBytes += Buffer.byteLength(path)) > 1024 * 1024)
