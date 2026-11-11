@@ -93,6 +93,7 @@ export async function runInstalledMacPlanning({ page, workspace, configurationPa
     assert.ok(fixture.goal_room_id);
     writeFileSync(configurationPath, JSON.stringify(fixture), { mode: 0o600 });
     const planning = page.getByRole("region", { name: "Agent planning", exact: true });
+    await planning.getByText("Choose planning agents", { exact: true }).click();
     for (const name of names) await planning.getByRole("checkbox", { name: new RegExp(name) }).check();
     await planning.getByLabel(`${names[0]} discussion role`, { exact: true }).fill("Design and synthesis");
     await planning.getByLabel(`${names[1]} discussion role`, { exact: true }).fill("Review and verification");
