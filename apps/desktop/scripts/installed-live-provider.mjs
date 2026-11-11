@@ -219,6 +219,7 @@ export async function runInstalledLiveProvider({ page, workspace, userData, base
     await page.getByRole("button", { name: "Create goal", exact: true }).click();
     const { goal } = await consume(goalCreated);
     const planning = page.getByRole("region", { name: "Agent planning", exact: true });
+    await planning.getByText("Choose planning agents", { exact: true }).click();
     for (const name of names) await planning.getByRole("checkbox", { name: new RegExp(name) }).check();
     await planning.getByLabel(`${names[0]} discussion role`, { exact: true }).fill("Design and synthesis. Initially invent one code matching REVIEW_ plus 6 uppercase letters/digits. In synthesis reuse that original code.");
     await planning.getByLabel(`${names[1]} discussion role`, { exact: true }).fill("Review. Quote the exact REVIEW_ code in the first agent's answer and assess task order, dependency and acceptance criteria.");
