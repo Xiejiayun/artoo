@@ -123,7 +123,7 @@ export async function persistResearchDestinationPool(ctx: ServerContext, tx: Dri
   }
   const sourceRelease = intent.request.source_export.measurement_v2?.source_release;
   const [reviewRun] = await tx.select().from(runs).where(and(eq(runs.id, input.sourceReviewerRunId), eq(runs.organizationId, ctx.organizationId)));
-  const allInstances = await tx.select().from(agentInstances).where(eq(agentInstances.organizationId, ctx.organizationId));
+  const allInstances = await tx.select().from(agentInstances).where(and(eq(agentInstances.organizationId, ctx.organizationId), eq(agentInstances.projectId, goal.projectId)));
   const author = allInstances.find(instance => instance.id === sourceRun.agentInstanceId);
   const reviewer = allInstances.find(instance => instance.id === reviewRun?.agentInstanceId);
   if (!sourceRelease || !reviewRun || reviewRun.status !== "completed" || !author || !reviewer

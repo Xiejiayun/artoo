@@ -131,6 +131,7 @@ export async function seed(
     if (options.demoResources !== false) await tx.insert(agentInstances).values({
       id: ids.agentInstanceId,
       organizationId: ids.organizationId,
+      projectId: ids.projectId,
       computerId: ids.computerId,
       agentId: ids.agentId,
       runtime: "mock",

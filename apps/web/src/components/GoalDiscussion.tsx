@@ -30,8 +30,9 @@ export function GoalDiscussion({ goal }: { goal: Goal }): React.ReactNode {
   const action = useMutation({ mutationFn: ({ id, name }: { id: string; name: "cancel" | "propose" }) => name === "cancel"
     ? api.cancelDiscussion(id, newIdempotencyKey()) : api.proposeDiscussionPlan(id, newIdempotencyKey()), onSuccess: refresh, onError: refresh });
   const active = sessions.data?.discussions.some((discussion) => ["running", "stopping"].includes(discussion.status));
+  const instances = bootstrap.data?.agent_instances.filter((instance) => instance.project_id === goal.project_id) ?? [];
   const members = Object.entries(selected).map(([agent_instance_id, role]) => ({ agent_instance_id, role: role.trim() }));
-  const unavailable = members.some((member) => !bootstrap.data?.agent_instances.some((instance) => instance.id === member.agent_instance_id && instance.status !== "disabled" && instance.config.enabled !== false));
+  const unavailable = members.some((member) => !instances.some((instance) => instance.id === member.agent_instance_id && instance.status !== "disabled" && instance.config.enabled !== false));
   const invalidBounds = !Number.isInteger(rounds) || rounds < 1 || rounds > 3 || !Number.isInteger(minutes) || minutes < 2 || minutes > 60;
   return <section className="insights-agent-planning u-stack" aria-label="Agent planning">
     <div className="insights-section-heading"><Users size={17} aria-hidden="true" /><h3>Agent planning</h3></div>
@@ -42,19 +43,19 @@ export function GoalDiscussion({ goal }: { goal: Goal }): React.ReactNode {
       start.mutate({ participants: members, rounds, max_minutes: minutes, ...(roomId ? { room_id: roomId } : {}) });
     }}>
       <fieldset disabled={active || start.isPending}><legend>Choose 2–6 agents and their roles</legend>
-        {bootstrap.data?.agent_instances.map((instance) => {
+        {instances.map((instance) => {
           const checked = Object.hasOwn(selected, instance.id);
-          const name = bootstrap.data.agents.find((agent) => agent.id === instance.agent_id)?.display_name ?? instance.runtime;
-          const computer = bootstrap.data.computers.find((node) => node.id === instance.computer_id)?.display_name ?? instance.computer_id;
+          const name = bootstrap.data?.agents.find((agent) => agent.id === instance.agent_id)?.display_name ?? instance.runtime;
+          const computer = bootstrap.data?.computers.find((node) => node.id === instance.computer_id)?.display_name ?? instance.computer_id;
           const disabled = instance.status === "disabled" || instance.config.enabled === false;
-          const presence = bootstrap.data.computers.find((node) => node.id === instance.computer_id)?.status;
+          const presence = bootstrap.data?.computers.find((node) => node.id === instance.computer_id)?.status;
           return <div key={instance.id} className={`insights-participant${checked ? " is-selected" : ""}`}><label><input type="checkbox" checked={checked} disabled={!checked && (members.length >= 6 || disabled)} onChange={(event) => setSelected((current) => {
             const next = { ...current }; if (event.target.checked) next[instance.id] = Object.keys(current).length === 0 ? "Design and synthesis" : "Review and verification"; else delete next[instance.id]; return next;
           })} /><span><strong>{name}</strong><small>{computer} · {instance.runtime} · {disabled ? "disabled" : presence ?? instance.status}</small></span></label>
             {checked && <Input label={`${name} discussion role`} value={selected[instance.id]} required maxLength={200} onChange={(event) => setSelected({ ...selected, [instance.id]: event.target.value })} />}
           </div>;
         })}
-        {(bootstrap.data?.agent_instances.length ?? 0) < 2 && <p>Connect at least two agent instances to start a discussion.</p>}
+        {instances.length < 2 && <p>Assign at least two agent instances to this project's squad to start a discussion.</p>}
         <div className="insights-two-fields"><Input label="Discussion rounds" type="number" min={1} max={3} value={rounds} required onChange={(event) => setRounds(Number(event.target.value))} />
           <Input label="Discussion time limit (minutes)" type="number" min={2} max={60} value={minutes} required onChange={(event) => setMinutes(Number(event.target.value))} /></div>
         <Select label="Discussion location" value={roomId} onChange={(event) => setRoomId(event.target.value)}><option value="">This goal’s conversation</option>{channels.data?.channels.map((channel) => <option key={channel.id} value={channel.id}>#{channel.name}</option>)}</Select>

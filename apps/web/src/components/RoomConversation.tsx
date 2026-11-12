@@ -26,7 +26,7 @@ export function RoomSkeleton(): React.ReactNode {
 
 /** All room surfaces use the same ordered, paginated server history. Refetches
  * catch up from the newest cursor without replacing pages the user has opened. */
-export function RoomConversation({ roomId, taskId, goalId, threadRootId, onOpenThread, allowAssistant = true, hiddenMessageId }: { roomId: string; taskId?: string; goalId?: string; threadRootId?: string; onOpenThread?: (messageId: string) => void; allowAssistant?: boolean; hiddenMessageId?: string }): React.ReactNode {
+export function RoomConversation({ roomId, projectId, taskId, goalId, threadRootId, onOpenThread, allowAssistant = true, hiddenMessageId }: { roomId: string; projectId?: string | null; taskId?: string; goalId?: string; threadRootId?: string; onOpenThread?: (messageId: string) => void; allowAssistant?: boolean; hiddenMessageId?: string }): React.ReactNode {
   const api = useApi();
   const query = useQueryClient();
   const [followRequest, setFollowRequest] = useState(0);
@@ -96,7 +96,7 @@ export function RoomConversation({ roomId, taskId, goalId, threadRootId, onOpenT
     {messages.error && <Button size="sm" onClick={() => void messages.refetch()}>Retry message sync</Button>}
     {reporting && <ReportMessageModal key={reporting.id} message={reporting} onClose={() => setReporting(null)} />}
     <MessageTimeline onReport={setReporting} key={`${roomId}:${threadRootId ?? ""}`} items={items} identity={identity} people={people} hiddenMessageId={hiddenMessageId} threadRootId={threadRootId} onOpenThread={onOpenThread} followRequest={followRequest} hasEarlier={!!messages.data.has_more && !!messages.data.next_before} loadingEarlier={earlier.isPending} onLoadEarlier={() => earlier.mutate()}><AssistantTurns roomId={roomId} threadRootId={threadRootId} messages={items} allowActions={allowAssistant} /></MessageTimeline>
-    {storageKey && identity ? <MessageComposer key={`${storageKey}:${allowAssistant}`} roomId={roomId} threadRootId={threadRootId} storageKey={storageKey} bootstrap={identity} people={people} peopleError={members.error} allowAssistant={allowAssistant} onMessageSent={() => setFollowRequest((value) => value + 1)} /> : <div className="conversation__account"><ActionError error={bootstrap.error} /><p role="status">Loading your account before composing a message…</p>{bootstrap.error && <Button onClick={() => void bootstrap.refetch()}>Retry account</Button>}</div>}
+    {storageKey && identity ? <MessageComposer key={`${storageKey}:${allowAssistant}`} roomId={roomId} threadRootId={threadRootId} storageKey={storageKey} bootstrap={{ ...identity, agent_instances: identity.agent_instances.filter((instance) => !!projectId && instance.project_id === projectId) }} people={people} peopleError={members.error} allowAssistant={allowAssistant} onMessageSent={() => setFollowRequest((value) => value + 1)} /> : <div className="conversation__account"><ActionError error={bootstrap.error} /><p role="status">Loading your account before composing a message…</p>{bootstrap.error && <Button onClick={() => void bootstrap.refetch()}>Retry account</Button>}</div>}
     {!threadRootId && (taskId || goalId) && <CollaborationPanel key={`collaboration:${roomId}`} roomId={roomId} taskId={taskId} goalId={goalId} />}
   </section>;
 }

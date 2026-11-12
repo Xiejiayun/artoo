@@ -109,7 +109,7 @@ export async function mayAdministerRoute(
   const adminOnly = route === "/api/v1/devices/:id/enroll" || route === "/api/v1/skills/install" ||
     route === "/api/v1/projects" || route === "/api/v1/projects/:id" ||
     route === "/api/v1/computers/:id/instances" || route === "/api/v1/agent-instances/:id" ||
-    route === "/api/v1/agent-instances/:id/worktree-workspace-base";
+    route === "/api/v1/agent-instances/:id/worktree-workspace-base" || route === "/api/v1/agent-instances/:id/project";
   const ownDevice = route === "/api/v1/devices/:id/revoke";
   if (!adminOnly && !ownDevice) return true;
   if (principal.user.role === "owner" || principal.user.role === "admin") return true;

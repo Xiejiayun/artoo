@@ -104,6 +104,7 @@ async function workspaceFence(ctx:ServerContext,tx:DrizzleDb,payload:ProductSour
   const instanceId=payload.kind==="upload"?source?.agentInstanceId:payload.intent.destination_start.agent_instance_id;
   if(!instanceId)throw AppError.conflict("Source operation instance is missing");
   const [instance]=await tx.select().from(agentInstances).where(and(eq(agentInstances.id,instanceId),eq(agentInstances.organizationId,ctx.organizationId))).for("update");
+  if(instance&&instance.projectId!==base.project_id)throw AppError.conflict("Source operation instance no longer belongs to this project's squad");
   if(instance&&instance.computerId!==node.node_id)throw AppError.conflict("Source operation instance belongs to another computer");
   const [computer]=await tx.select().from(computers).where(and(eq(computers.id,node.node_id),eq(computers.organizationId,ctx.organizationId))).for("update");
   if(!computer||computer.status!=="online")throw AppError.conflict("Source operation computer is unavailable");

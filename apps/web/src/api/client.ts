@@ -265,7 +265,8 @@ export class ApiClient {
   listLeases(projectId: string): Promise<{ leases: FileLease[] }> { return this.request("GET", `/projects/${encodeURIComponent(projectId)}/leases`); }
   installSkill(body: InstallSkillRequest, key: string): Promise<{ skill: SkillInstall }> { return this.request("POST", "/skills/install", { body, idempotencyKey: key }); }
   listDevices(): Promise<{ devices: Device[] }> { return this.request("GET", "/devices"); }
-  registerAgent(computerId: string, body: { runtime: string; workspace_root: string; agent_id?: string; display_name?: string; capabilities?: string[] }, key: string): Promise<unknown> { return this.request("POST", `/computers/${encodeURIComponent(computerId)}/instances`, { body, idempotencyKey: key }); }
+  registerAgent(computerId: string, body: { project_id?: string | null; runtime: string; workspace_root: string; agent_id?: string; display_name?: string; capabilities?: string[] }, key: string): Promise<unknown> { return this.request("POST", `/computers/${encodeURIComponent(computerId)}/instances`, { body, idempotencyKey: key }); }
+  setAgentProject(id: string, projectId: string | null, key: string): Promise<{ agent_instance: AgentInstance }> { return this.request("PATCH", `/agent-instances/${encodeURIComponent(id)}/project`, { body: { project_id: projectId }, idempotencyKey: key }); }
   setAgentEnabled(id: string, enabled: boolean, key: string): Promise<unknown> { return this.request("PATCH", `/agent-instances/${encodeURIComponent(id)}`, { body: { enabled }, idempotencyKey: key }); }
   setAgentWorktreeBase(id: string, body: WorktreeBaseConfiguration): Promise<{ agent_instance: AgentInstance }> { return this.request("PATCH", `/agent-instances/${encodeURIComponent(id)}/worktree-workspace-base`, { body }); }
   clearAgentWorktreeBase(id: string): Promise<{ agent_instance: AgentInstance }> { return this.request("DELETE", `/agent-instances/${encodeURIComponent(id)}/worktree-workspace-base`); }

@@ -23,9 +23,20 @@ function chatApi(overrides: Partial<ApiClient> = {}): ApiClient {
 afterEach(() => { localStorage.clear(); });
 
 describe("RoomConversation", () => {
+  it("offers only the conversation project's agents for execution", async () => {
+    const data = bootstrapFixture();
+    data.agents.push({ ...data.agents[0]!, id: "foreign_agent", display_name: "Other project agent" });
+    data.agent_instances.push({ ...data.agent_instances[0]!, id: "foreign_instance", agent_id: "foreign_agent", project_id: "other_project" });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ bootstrap: async () => data }) });
+    await userEvent.selectOptions(await screen.findByLabelText("Message destination"), "assistant");
+    const select = within(screen.getByLabelText("Execution agent"));
+    expect(select.getByRole("option", { name: /Mock Coder/ })).toHaveValue("instance_mock_coder");
+    expect(select.queryByRole("option", { name: /Other project agent/ })).not.toBeInTheDocument();
+  });
+
   it("sends with Enter, keeps Shift+Enter as a new line, and returns focus to the composer", async () => {
     const sendMessage = vi.fn<ApiClient["sendMessage"]>().mockResolvedValue({ message: messageFixture({ id: "sent", kind: "text", body: "First line\nSecond line" }) });
-    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ sendMessage }) });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ sendMessage }) });
     const message = await screen.findByLabelText("Message");
     await userEvent.type(message, "First line{Shift>}{Enter}{/Shift}Second line");
     expect(message).toHaveValue("First line\nSecond line");
@@ -39,7 +50,7 @@ describe("RoomConversation", () => {
 
   it("does not send while committing IME composition or repeating a held Enter key", async () => {
     const sendMessage = vi.fn<ApiClient["sendMessage"]>().mockResolvedValue({ message: messageFixture({ id: "sent", kind: "text", body: "你好" }) });
-    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ sendMessage }) });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ sendMessage }) });
     const message = await screen.findByLabelText("Message");
     fireEvent.change(message, { target: { value: "你好" } });
     fireEvent.compositionStart(message);
@@ -60,7 +71,7 @@ describe("RoomConversation", () => {
     const second = messageFixture({ id: "second", kind: "text", body: "First arrival", sequence: 2 });
     const third = messageFixture({ id: "third", kind: "text", body: "Second arrival", sequence: 3 });
     const query = createTestQueryClient();
-    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ listMessages: async () => ({ messages: [first] }) }), queryClient: query });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ listMessages: async () => ({ messages: [first] }) }), queryClient: query });
     const history = await screen.findByRole("region", { name: "Message history" });
     let height = 1000;
     let top = 0;
@@ -86,7 +97,7 @@ describe("RoomConversation", () => {
   it("Home preserves the reader at the start and End resumes following arrivals", async () => {
     const first = messageFixture({ id: "first", kind: "text", body: "First message", sequence: 1 });
     const query = createTestQueryClient();
-    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ listMessages: async () => ({ messages: [first] }) }), queryClient: query });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ listMessages: async () => ({ messages: [first] }) }), queryClient: query });
     const history = await screen.findByRole("region", { name: "Message history" });
     let height = 1000, top = 700;
     Object.defineProperties(history, { scrollHeight: { get: () => height }, clientHeight: { get: () => 300 }, scrollTop: { get: () => top, set: (value: number) => { top = Math.min(value, height - 300); } } });
@@ -107,7 +118,7 @@ describe("RoomConversation", () => {
     const oldest = messageFixture({ id: "oldest", kind: "text", body: "Older message", sequence: 1 });
     let resolveEarlier!: (page: MessagesResponse) => void;
     const listMessages = vi.fn<ApiClient["listMessages"]>().mockResolvedValueOnce({ messages: [latest], has_more: true, next_before: "before", next_after: "after" }).mockImplementationOnce(() => new Promise((resolve) => { resolveEarlier = resolve; }));
-    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ listMessages }) });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ listMessages }) });
     const history = await screen.findByRole("region", { name: "Message history" });
     Object.defineProperties(history, { scrollHeight: { get: () => screen.queryByText("Older message") ? 1400 : 1000 }, clientHeight: { get: () => 300 } });
     Object.defineProperty(screen.getByText("Latest message").closest("li")!, "offsetTop", { get: () => screen.queryByText("Older message") ? 450 : 50 });
@@ -127,7 +138,7 @@ describe("RoomConversation", () => {
     let resolveEarlier!: (page: MessagesResponse) => void;
     const listMessages = vi.fn<ApiClient["listMessages"]>().mockResolvedValueOnce({ messages: [latest], has_more: true, next_before: "before", next_after: "after" }).mockImplementationOnce(() => new Promise((resolve) => { resolveEarlier = resolve; }));
     const query = createTestQueryClient();
-    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ listMessages }), queryClient: query });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ listMessages }), queryClient: query });
     const history = await screen.findByRole("region", { name: "Message history" });
     Object.defineProperties(history, { scrollHeight: { get: () => screen.queryByText("Older message") ? 1500 : screen.queryByText("New arrival") ? 1100 : 1000 }, clientHeight: { get: () => 300 } });
     Object.defineProperty(screen.getByText("Latest message").closest("li")!, "offsetTop", { get: () => screen.queryByText("Older message") ? 450 : 50 });
@@ -151,7 +162,7 @@ describe("RoomConversation", () => {
       messageFixture({ id: "third", kind: "text", body: "Next day", sequence: 3, created_at: "2026-09-29T10:00:00Z" }),
       messageFixture({ id: "fourth", kind: "text", body: "Agent response", sequence: 4, actor_type: "agent", actor_id: "agent_mock_coder", created_at: "2026-09-29T10:01:00Z" }),
     ];
-    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ listMessages: async () => ({ messages }) }) });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ listMessages: async () => ({ messages }) }) });
     expect((await screen.findByText("Morning")).closest("article")).not.toHaveClass("msg--compact");
     expect(screen.getByText("A quick follow-up").closest("article")).toHaveClass("msg--compact");
     expect(screen.getByText("Next day").closest("article")).not.toHaveClass("msg--compact");
@@ -164,7 +175,7 @@ describe("RoomConversation", () => {
     const thread = { ...base, id: "thread_turn", thread_root_id: "thread_1", error: "Thread waiting reason" };
     const listAssistantTurns = vi.fn<ApiClient["listAssistantTurns"]>().mockImplementation(async (_, rootId) => ({ turns: [rootId ? thread : base] }));
     const query = createTestQueryClient();
-    renderWithProviders(<><RoomConversation roomId="room_1" /><RoomConversation roomId="room_1" threadRootId="thread_1" /></>, { client: chatApi({ listAssistantTurns }), queryClient: query });
+    renderWithProviders(<><RoomConversation roomId="room_1" projectId="proj_artoo" /><RoomConversation roomId="room_1" threadRootId="thread_1" /></>, { client: chatApi({ listAssistantTurns }), queryClient: query });
     expect(await screen.findByText("Root waiting reason")).toBeInTheDocument();
     expect(await screen.findByText("Thread waiting reason")).toBeInTheDocument();
     expect(listAssistantTurns).toHaveBeenCalledWith("room_1", "thread_1");
@@ -202,14 +213,14 @@ describe("RoomConversation", () => {
     const sendToAssistant = vi.fn<ApiClient["sendToAssistant"]>().mockRejectedValueOnce(new ApiClientError("network_error", "Response lost", 0)).mockResolvedValueOnce({ turn, message: messageFixture({ id: "request", kind: "text", body: "Please continue", payload: { assistant_turn_id: "turn_1" } }) });
     const sendMessage = vi.fn<ApiClient["sendMessage"]>();
     const client = chatApi({ sendToAssistant, sendMessage });
-    const first = renderWithProviders(<RoomConversation roomId="room_1" />, { client });
+    const first = renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client });
     await userEvent.selectOptions(await screen.findByLabelText("Message destination"), "assistant");
     await userEvent.selectOptions(screen.getByLabelText("Execution agent"), "instance_mock_coder");
     await userEvent.type(screen.getByLabelText("Message"), "Please continue");
     await userEvent.click(screen.getByRole("button", { name: "Send to agent" }));
     expect(await screen.findByText(/Delivery is unconfirmed/)).toBeInTheDocument();
     first.unmount();
-    renderWithProviders(<RoomConversation roomId="room_1" />, { client });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client });
     expect(await screen.findByLabelText("Execution agent")).toHaveValue("instance_mock_coder");
     expect(screen.getByLabelText("Message destination")).toHaveValue("assistant");
     await userEvent.click(screen.getByRole("button", { name: "Retry sending message" }));
@@ -223,7 +234,7 @@ describe("RoomConversation", () => {
   it("shows waiting reasons and exposes explicit retry and cancel for agent execution", async () => {
     const turn: AssistantTurn = { id: "turn_waiting", room_id: "room_1", task_id: "task_execution", run_id: null, user_message_id: "request", response_message_id: null, status: "waiting", error: "Execution approval is required", created_at: "2026-09-29", updated_at: "2026-09-29" };
     const assistantTurnAction = vi.fn<ApiClient["assistantTurnAction"]>().mockResolvedValue({ turn });
-    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ listAssistantTurns: async () => ({ turns: [turn] }), assistantTurnAction }) });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ listAssistantTurns: async () => ({ turns: [turn] }), assistantTurnAction }) });
     expect(await screen.findByText("Execution approval is required")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Retry agent request" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Cancel agent request" })).toBeEnabled());
@@ -255,14 +266,14 @@ describe("RoomConversation", () => {
   it("keeps the same send key and text after a lost response and a page reload", async () => {
     const sendMessage = vi.fn<ApiClient["sendMessage"]>().mockRejectedValueOnce(new ApiClientError("network_error", "Response lost", 0)).mockResolvedValueOnce({ message: messageFixture({ id: "sent", kind: "text", body: "A durable message" }) });
     const client = chatApi({ sendMessage });
-    const first = renderWithProviders(<RoomConversation roomId="room_1" />, { client });
+    const first = renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client });
     await userEvent.type(await screen.findByLabelText("Message"), "A durable message");
     await userEvent.click(screen.getByRole("button", { name: "Send message" }));
     expect(await screen.findByText(/Delivery is unconfirmed/)).toBeInTheDocument();
     expect(screen.getByLabelText("Message")).toBeDisabled();
     const originalKey = sendMessage.mock.calls[0]![2];
     first.unmount();
-    renderWithProviders(<RoomConversation roomId="room_1" />, { client });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client });
     expect(await screen.findByLabelText("Message")).toHaveValue("A durable message");
     await userEvent.click(screen.getByRole("button", { name: "Retry sending message" }));
     expect(await screen.findByText("Message sent.")).toBeInTheDocument();
@@ -273,29 +284,29 @@ describe("RoomConversation", () => {
 
   it("isolates drafts by room, user and server and clears them on sign out", async () => {
     const client = chatApi({ logout: async () => undefined });
-    const first = renderWithProviders(<RoomConversation roomId="room_1" />, { client });
+    const first = renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client });
     await userEvent.type(await screen.findByLabelText("Message"), "Private draft");
     first.unmount();
     const otherRoom = renderWithProviders(<RoomConversation roomId="room_2" />, { client });
     expect(await screen.findByLabelText("Message")).toHaveValue(""); otherRoom.unmount();
-    const otherAccount = renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ bootstrap: async () => bootstrapFixture({ user: { id: "different", email: "other@example.test", display_name: "Other", role: "owner" } }) }) });
+    const otherAccount = renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ bootstrap: async () => bootstrapFixture({ user: { id: "different", email: "other@example.test", display_name: "Other", role: "owner" } }) }) });
     expect(await screen.findByLabelText("Message")).toHaveValue(""); otherAccount.unmount();
-    const otherServer = renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ getStorageScope: () => "https://other.example.test/api/v1" }) });
+    const otherServer = renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ getStorageScope: () => "https://other.example.test/api/v1" }) });
     expect(await screen.findByLabelText("Message")).toHaveValue(""); otherServer.unmount();
     const query = createTestQueryClient(); query.setQueryData(queryKeys.session, { user: { id: "user_1", email: "j@x.com" } });
-    const restored = renderWithProviders(<><LogoutButton /><RoomConversation roomId="room_1" /></>, { client, queryClient: query });
+    const restored = renderWithProviders(<><LogoutButton /><RoomConversation roomId="room_1" projectId="proj_artoo" /></>, { client, queryClient: query });
     expect(await screen.findByLabelText("Message")).toHaveValue("Private draft");
     await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(Object.keys(localStorage).filter((key) => key.startsWith("artoo:room-draft:"))).toEqual([]));
     restored.unmount();
-    renderWithProviders(<RoomConversation roomId="room_1" />, { client });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client });
     expect(await screen.findByLabelText("Message")).toHaveValue("");
   });
 
   it("does not restore a pending draft when its late failure arrives after logout", async () => {
     let reject!: (error: Error) => void;
     const sendMessage = vi.fn(() => new Promise<{ message: ReturnType<typeof messageFixture> }>((_, fail) => { reject = fail; }));
-    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ sendMessage }) });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ sendMessage }) });
     await userEvent.type(await screen.findByLabelText("Message"), "Pending old account");
     await userEvent.click(screen.getByRole("button", { name: "Send message" }));
     await act(async () => { clearRoomDrafts(); reject(new ApiClientError("network_error", "late", 0)); });
@@ -304,7 +315,7 @@ describe("RoomConversation", () => {
   });
 
   it("shows friendly bootstrap names for people and agents", async () => {
-    renderWithProviders(<RoomConversation roomId="room_1" />, { client: chatApi({ listMessages: async () => ({ messages: [messageFixture({ id: "human", kind: "text", body: "Hello" }), messageFixture({ id: "agent", kind: "text", actor_type: "agent", actor_id: "agent_mock_coder", body: "Hi" })] }) }) });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ listMessages: async () => ({ messages: [messageFixture({ id: "human", kind: "text", body: "Hello" }), messageFixture({ id: "agent", kind: "text", actor_type: "agent", actor_id: "agent_mock_coder", body: "Hi" })] }) }) });
     expect(await screen.findByText("J (you)")).toBeInTheDocument();
     expect(screen.getByText("Mock Coder")).toBeInTheDocument();
   });

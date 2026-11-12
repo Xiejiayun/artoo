@@ -136,10 +136,10 @@ export async function createAssistantFixture({ root, temporary, origin, projectI
   try {
     await changeNode(true);
     const created = await request(`/api/v1/computers/${fields.computer_id}/instances`, { runtime: fields.assistant_runtime,
-      workspace_root: workspace, display_name: fields.assistant_name, capabilities: ["code.read"] }, peerToken);
+      project_id: projectId, workspace_root: workspace, display_name: fields.assistant_name, capabilities: ["code.read"] }, peerToken);
     fields.assistant_instance_id = created.agent_instance.id; configuration.agent_instance_id = fields.assistant_instance_id;
     const collision = await request(`/api/v1/computers/${fields.computer_id}/instances`, { runtime: fields.assistant_runtime,
-      workspace_root: workspace, display_name: fields.assistant_name, capabilities: ["code.read"] }, peerToken);
+      project_id: projectId, workspace_root: workspace, display_name: fields.assistant_name, capabilities: ["code.read"] }, peerToken);
     fields.assistant_collision_instance_id = collision.agent_instance.id;
     assert.notEqual(fields.assistant_collision_instance_id, fields.assistant_instance_id);
     assert.deepEqual([collision.agent.display_name, collision.agent_instance.computer_id, collision.agent_instance.runtime, collision.agent_instance.workspace_root],

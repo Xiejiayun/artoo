@@ -53,7 +53,7 @@ test("a real discussion exposes a suggested plan in its thread and exact histori
     send({ kind: "node.heartbeat", node_id: nodeId, sequence: 0, resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 1 }, runtimes: [{ runtime: "mock", status: "available", version: marker, capabilities: ["code.read", "code.modify", "test.run"] }], running_instances: [] });
     await expect.poll(async () => (await (await request.get(`/api/v1/computers/${nodeId}/runtimes`)).json()).runtimes.some((runtime: { version: string }) => runtime.version === marker)).toBe(true);
     for (const name of ["Plan author", "Plan reviewer"]) {
-      const created = await post<{ agent_instance: { id: string } }>(request, `/computers/${nodeId}/instances`, { display_name: `${name} ${marker}`, runtime: "mock", workspace_root: "/tmp/artoo-plan-browser", capabilities: ["code.read"] });
+      const created = await post<{ agent_instance: { id: string } }>(request, `/computers/${nodeId}/instances`, { project_id: "proj_artoo", display_name: `${name} ${marker}`, runtime: "mock", workspace_root: "/tmp/artoo-plan-browser", capabilities: ["code.read"] });
       instances.push(created.agent_instance.id);
     }
     const { goal } = await post<{ goal: { id: string } }>(request, "/goals", { project_id: "proj_artoo", title: marker, objective: "Deliver a reviewable endpoint", acceptance_criteria: ["The endpoint is verified"] });

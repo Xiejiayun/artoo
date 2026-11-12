@@ -27,7 +27,12 @@ describe("Product shell", () => {
     expect(screen.getByLabelText("Current task")).toHaveTextContent("none");
     expect(screen.getByRole("button", { name: "Second project" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("link", { name: "Connect Local Node" })).toHaveAttribute("href", "/computers?connect=1");
-    expect(within(screen.getByRole("region", { name: "Agent Squad" })).getByText("Mock Coder")).toBeInTheDocument();
+    const squad = within(screen.getByRole("region", { name: "Agent Squad" }));
+    expect(squad.queryByText("Mock Coder")).not.toBeInTheDocument();
+    expect(squad.getByText("No agents assigned. Set up this project's squad.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "artoo" }));
+    expect(squad.getByText("Mock Coder")).toBeInTheDocument();
+    expect(squad.getByRole("link", { name: "Manage project squad" })).toHaveAttribute("href", "/agents?project=proj_artoo");
   });
 
   it("shows backed project views and marks Release active", async () => {

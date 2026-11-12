@@ -321,6 +321,7 @@ export const agentRuntimes = pgTable("agent_runtimes", {
 
 export const agentInstances = pgTable("agent_instances", {
   id: text("id").primaryKey(),
+  projectId: text("project_id").references(() => projects.id),
   organizationId: text("organization_id")
     .notNull()
     .references(() => organizations.id),
@@ -340,6 +341,7 @@ export const agentInstances = pgTable("agent_instances", {
 }, (t) => [
   check("agent_instances_status_chk", sql`${t.status} in ('idle','queued','running','stopping','failed','disabled')`),
   index("agent_instances_status_computer_idx").on(t.status, t.computerId),
+  index("agent_instances_org_project_idx").on(t.organizationId, t.projectId),
   index("agent_instances_profiles_idx").on(t.modelProfileId, t.effortProfileId, t.status),
 ]);
 
