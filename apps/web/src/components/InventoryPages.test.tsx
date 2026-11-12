@@ -7,6 +7,24 @@ import { bootstrapFixture, fakeApi, renderWithProviders } from "../test/utils.js
 import { AgentsPage, ComputersPage, SkillsPage } from "./InventoryPages.js";
 
 describe("Inventory pages", () => {
+  it("explains a missing selected instance and lets the user return to the inventory", async () => {
+    renderWithProviders(<AgentsPage />, { client: fakeApi({ bootstrap: async () => bootstrapFixture() }), route: "/agents?instance=removed" });
+    expect(await screen.findByText("This instance is no longer available")).toBeInTheDocument();
+    expect(screen.queryByText("No matching resources")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Selected instance:/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Show all instances" }));
+    expect(screen.getByRole("article", { name: "Mock Coder" })).toBeInTheDocument();
+  });
+
+  it("clears instance filters when returning from a selected instance to the full inventory", async () => {
+    renderWithProviders(<AgentsPage />, { client: fakeApi({ bootstrap: async () => bootstrapFixture() }), route: "/agents?instance=instance_mock_coder" });
+    expect(await screen.findByText(/Selected instance:/)).toHaveTextContent("Mock Coder");
+    await userEvent.type(screen.getByRole("searchbox", { name: "Search agents" }), "no such agent");
+    await userEvent.click(screen.getByRole("button", { name: "Show all instances" }));
+    expect(screen.getByRole("searchbox", { name: "Search agents" })).toHaveValue("");
+    expect(screen.getByRole("article", { name: "Mock Coder" })).toBeInTheDocument();
+  });
+
   it("helps an empty project choose an existing instance without inheriting another squad", async () => {
     const data = bootstrapFixture();
     data.projects.push({ id: "second", name: "Second project", default_workspace: "/second" });

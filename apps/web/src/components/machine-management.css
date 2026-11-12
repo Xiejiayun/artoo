@@ -34,18 +34,35 @@
 .machine-instances > ul > li + li { border-top: 1px solid var(--line); }
 .machine-instances .machine-instance-avatar { border: 0; background: transparent; }
 .machine-instance-avatar { width: 32px; height: 32px; display: grid; place-items: center; flex-shrink: 0; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
-.machine-instances li > div, .agent-library__list > div > div { flex: 1; min-width: 0; display: grid; gap: 4px; font-size: 13px; }
+.machine-instances li > div { flex: 1; min-width: 0; display: grid; gap: 4px; font-size: 13px; }
 .machine-instances li a { color: var(--fg); text-decoration: none; font-weight: 500; }
 .machine-instances li a:hover { color: var(--accent); }
-.machine-instances li > div > span, .agent-library__list > div > div > span { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.agent-library { margin-block: 22px; border: 1px solid var(--line); background: var(--elev); border-radius: 12px; padding: 20px; }
-.agent-library h2 { font-size: 15px; margin: 0; }
-.agent-library__list { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 14px; }
-.agent-library__list > div { display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.machine-instances li > div > span { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.inventory-page.resources-page.agents-page { max-width: 1080px; gap: 24px; }
+.agent-library h2, .agent-instances h2 { font-size: 15px; margin: 0; }
+.agent-library__list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; margin-top: 14px; align-items: start; }
+.agent-library__card { display: flex; flex-direction: column; align-items: start; gap: 14px; min-width: 0; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.agent-library__identity { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; }
+.agent-library__identity > div { display: grid; gap: 4px; flex: 1; min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
+.agent-library__identity > div > span { color: var(--text-muted); font-size: 11px; }
+.agent-library__details { width: 100%; }
+.agent-library__details[open] { display: grid; gap: 14px; }
+.agent-library__details[open] > summary { padding-bottom: 0; }
+.agent-library__details > .ui-btn { justify-self: start; }
+.agent-library__details .inv-row { display: grid; gap: 4px; }
+.agent-instances { display: grid; gap: 16px; padding-top: 24px; border-top: 1px solid var(--border); }
+.agent-instances > .resource-section-heading { margin: 0; flex-wrap: wrap; }
+.agents-page .resources-toolbar { align-items: center; gap: 10px 16px; }
+.agents-page .resources-toolbar .ui-search { flex: 1 1 220px; width: auto; }
+.agents-page .resources-toolbar .ui-field { flex-direction: row; }
+/* Result announcements must not inherit the global loading-state padding. */
+.agents-page .resources-count { padding: 0; white-space: nowrap; }
+.agent-selection { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.agent-selection p { margin: 0; color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.agent-selection strong { color: var(--text); font-weight: 500; }
+.agent-selection > .ui-btn { flex: none; }
 .resource-lifetime { display: grid; gap: 8px; min-width: 0; font-size: 12px; }
 .resource-lifetime .inv-meta { margin: 0; }
-.agent-library__list > div { flex-wrap: wrap; }
-.agent-library__list > div > .resource-lifetime { flex: 1 0 100%; }
 .resource-card__footer { flex-wrap: wrap; gap: 12px; }
 .resource-card__footer > .resource-enabled-control { flex: 1; }
 @media (max-width: 640px) {
@@ -57,4 +74,9 @@
   .machine-card .resource-runtimes { gap: 8px 12px; }
   .machine-expiry-notice { align-items: start; }
   .agent-library__list { grid-template-columns: 1fr; }
+  .agents-page .resources-toolbar .ui-search { flex-basis: calc(100% - 90px); }
+  .agents-page .resources-toolbar .ui-field { flex: 1 1 100%; justify-content: space-between; order: 2; }
+  .agents-page .resources-toolbar .ui-select { flex: 1; min-width: 0; max-width: 210px; }
+  .agents-page .resources-count { order: 1; }
+  .agent-selection { flex-wrap: wrap; }
 }

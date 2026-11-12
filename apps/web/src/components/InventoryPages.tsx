@@ -113,19 +113,38 @@ export function AgentsPage(): React.ReactNode {
   const models = new Map(bootstrap.data.model_profiles.map((profile) => [profile.id, profile]));
   const efforts = new Map(bootstrap.data.effort_profiles.map((profile) => [profile.id, profile]));
   const instances = bootstrap.data.agent_instances;
+  const selected = instances.find((instance) => instance.id === selectedInstance);
+  const clearInstanceFilters = (): void => {
+    setSearch("");
+    setFilter("all");
+    const next = new URLSearchParams(params);
+    next.delete("instance");
+    next.delete("project");
+    setParams(next, { replace: true });
+  };
   const disabled = (instance: typeof instances[number]): boolean => instance.config.enabled === false || instance.status === "disabled";
   const projectScope = params.get("project") ?? "all";
   const emptySquad = bootstrap.data.projects.some((project) => project.id === projectScope)
     && !instances.some((instance) => instance.project_id === projectScope);
   const filtered = instances.filter((instance) => (projectScope === "all" || (projectScope === "unassigned" ? !instance.project_id : instance.project_id === projectScope)) && (!selectedInstance || instance.id === selectedInstance) && (filter === "all" || (filter === "expired" ? instance.lifecycle?.state === "expired" : filter === "disabled" ? disabled(instance) : filter === "enabled" ? !disabled(instance) : ["running", "queued", "stopping"].includes(instance.status))) && matchesSkillSearch(search, agents.get(instance.agent_id)?.display_name, computers.get(instance.computer_id)?.display_name, instance.id, instance.runtime, instance.workspace_root, agentSkillSearchText(skillInventory, instance), ...(agents.get(instance.agent_id)?.capabilities ?? [])));
-  return <section className="inventory-page resources-page" aria-label="Agents">
+  return <section className="inventory-page resources-page agents-page" aria-label="Agents">
     <ResourceHeader title="Agents" description="Reusable teammates, with an instance wherever they work." icon={Bot}>{["owner", "admin"].includes(role) && <Link className="ui-btn ui-btn--primary ui-btn--md" to="/computers"><Plus size={16} aria-hidden="true" />Create an instance</Link>}</ResourceHeader>
     {bootstrap.isError && <div className="resource-inline-error" role="alert"><span>Agent settings could not be refreshed. Showing the last loaded settings.</span><Button size="sm" onClick={() => void bootstrap.refetch()}>Retry agent settings</Button></div>}
     <div className="resources-stats"><div><strong>{instances.length}</strong><span>Agent workspaces</span></div><div><strong>{instances.filter((instance) => !disabled(instance) && instance.lifecycle?.state !== "expired").length}</strong><span>Enabled for work</span></div><div><strong>{instances.filter((instance) => ["running", "queued", "stopping"].includes(instance.status)).length}</strong><span>Work in progress</span></div></div>
-    <section className="agent-library" aria-label="Agent library"><div className="resource-section-heading"><h2>Agent library</h2><span>{agents.size} identities</span></div><p className="resource-muted">Choose an existing Agent to create an instance on another machine or workspace.</p><div className="agent-library__list">{[...agents.values()].map((agent) => <div key={agent.id}><span className="machine-instance-avatar"><Bot size={17} aria-hidden="true" /></span><div><strong>{agent.display_name}</strong><span>{instances.filter((instance) => instance.agent_id === agent.id).length} instances · {agent.kind}</span></div><ResourceLifetime lifecycle={agent.lifecycle} />{["owner", "admin"].includes(role) && <Link className="ui-btn ui-btn--sm" to={`/computers?agent=${encodeURIComponent(agent.id)}`}>Create instance</Link>}<DeleteResource kind="agent" id={agent.id} name={agent.display_name} role={role} /></div>)}</div></section>
+    <section className="agent-library" aria-label="Agent library">
+      <div className="resource-section-heading"><h2>Agent library</h2><span>{agents.size} identities</span></div>
+      <p className="resource-muted">Choose an Agent to create an instance on a machine or workspace.</p>
+      <div className="agent-library__list">{[...agents.values()].map((agent) => <div key={agent.id} className="agent-library__card">
+        <div className="agent-library__identity"><span className="machine-instance-avatar"><Bot size={17} aria-hidden="true" /></span><div><strong>{agent.display_name}</strong><span>{instances.filter((instance) => instance.agent_id === agent.id).length} instances · {agent.kind}</span></div>{agent.lifecycle?.state === "expired" && <Badge tone="warning">Expired</Badge>}</div>
+        {["owner", "admin"].includes(role) && <Link className="ui-btn ui-btn--secondary ui-btn--sm" to={`/computers?agent=${encodeURIComponent(agent.id)}`}>Create instance</Link>}
+        {(agent.lifecycle || ["owner", "admin"].includes(role)) && <details className="resource-details agent-library__details"><summary>Agent details</summary><ResourceLifetime lifecycle={agent.lifecycle} /><DeleteResource kind="agent" id={agent.id} name={agent.display_name} role={role} /></details>}
+      </div>)}</div>
+    </section>
+    <section className="agent-instances" aria-label="Agent instances">
+    <div className="resource-section-heading"><h2>Instances</h2><span>Workspaces and runtime settings</span></div>
     <ResourceSearch title="agents" search={search} onSearch={setSearch} count={filtered.length}><Select label="Project scope" value={projectScope} onChange={(event) => { const next = new URLSearchParams(params); next.set("project", event.target.value); next.delete("instance"); setParams(next); }}><option value="all">All projects</option><option value="unassigned">Unassigned</option>{bootstrap.data.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</Select><Select label="Agent state" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">All states</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="working">Working</option><option value="expired">Expired</option></Select></ResourceSearch>
-    {selectedInstance && <div className="action-row"><p>Showing the selected instance.</p><Button onClick={() => { const next = new URLSearchParams(params); next.delete("instance"); setParams(next, { replace: true }); }}>Show all instances</Button></div>}
-    {emptySquad ? <EmptyState icon={Bot} title="This project's squad is empty" description="Create an instance for this project, or choose an existing instance and set its Project squad." action={<Button onClick={() => { const next = new URLSearchParams(params); next.delete("project"); next.delete("instance"); setParams(next); setSearch(""); setFilter("all"); }}>Choose an existing instance</Button>} /> : instances.length === 0 ? <EmptyState icon={Bot} title="No agent instances registered." description="Open Machines to create an instance for your first Agent." /> : filtered.length === 0 ? <NoMatches onClear={() => { setSearch(""); setFilter("all"); const next = new URLSearchParams(params); next.delete("instance"); next.delete("project"); setParams(next, { replace: true }); }} /> : <div className="resources-grid">
+    {selected && <div className="agent-selection"><p>Selected instance: <strong>{agents.get(selected.agent_id)?.display_name ?? selected.id}</strong></p><Button size="sm" onClick={clearInstanceFilters}>Show all instances</Button></div>}
+    {selectedInstance && !selected ? <EmptyState icon={Bot} title="This instance is no longer available" description="It may have been removed. Choose another instance from the list." action={<Button onClick={clearInstanceFilters}>Show all instances</Button>} /> : emptySquad ? <EmptyState icon={Bot} title="This project's squad is empty" description="Create an instance for this project, or choose an existing instance and set its Project squad." action={<Button onClick={clearInstanceFilters}>Choose an existing instance</Button>} /> : instances.length === 0 ? <EmptyState icon={Bot} title="No agent instances registered." description="Open Machines to create an instance for your first Agent." /> : filtered.length === 0 ? <NoMatches onClear={clearInstanceFilters} /> : <div className="resources-grid">
       {filtered.map((instance) => {
         const agent = agents.get(instance.agent_id), computer = computers.get(instance.computer_id), model = models.get(instance.model_profile_id ?? ""), effort = efforts.get(instance.effort_profile_id ?? "");
         return <article key={instance.id} aria-label={agent?.display_name ?? instance.id} className="resource-card">
@@ -142,6 +161,7 @@ export function AgentsPage(): React.ReactNode {
         </article>;
       })}
     </div>}
+    </section>
   </section>;
 }
 export function SkillsPage(): React.ReactNode {
