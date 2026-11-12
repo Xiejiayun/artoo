@@ -45,6 +45,7 @@ test("resource deletion confirms scope, refreshes inventory and closes the paire
     const library = page.getByRole("region", { name: "Agent library" });
     const identity = library.locator(".agent-library__list > div").filter({ hasText: agentName });
     await expect(identity).toContainText("1 instances");
+    await identity.locator("summary").click();
     await identity.getByRole("button", { name: "Delete agent", exact: true }).click();
     dialog = page.getByRole("dialog", { name: "Delete agent", exact: true });
     await expect(dialog).toContainText("all its instances");
