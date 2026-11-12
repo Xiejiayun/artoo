@@ -13,6 +13,8 @@ and administrators can select **Project squad** on an instance and save its
 membership. Moving it retains the existing workspace path, which is shown on its
 card; it does not move or create files. Registration defaults the project selector
 to the currently selected project.
+The iOS Team screen provides the same membership controls and project selector
+when creating an instance.
 
 `AgentInstance.project_id` is an additive nullable field. Older API snapshots may
 omit it; clients treat those instances as unassigned. Registration accepts an

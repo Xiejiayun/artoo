@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
 import { assistantRunDispatches, assistantTurns, messages, rooms, tasks } from "./schema.js";
-import { seed } from "./seed.js";
+import { seedPreProjectSquads as seed } from "./migration-test-support.js";
 
 it("preserves legacy assistant delivery uncertainty and appends constrained versioned dispatch intents", async () => {
   const before = await loadMigrationStatements("0028_product_releases.sql");

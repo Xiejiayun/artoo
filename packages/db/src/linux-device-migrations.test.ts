@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
 import { devices, deviceTokens, pairingCodes } from "./schema.js";
-import { seed } from "./seed.js";
+import { seedPreProjectSquads as seed } from "./migration-test-support.js";
 
 it("adds Linux devices without changing legacy records or migration history", async () => {
   const before = await loadMigrationStatements("0055_application_publication.sql");

@@ -5,7 +5,8 @@ import { createHash } from "node:crypto";
 import { sql, type SQL } from "drizzle-orm";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
-import { seed, type SeedIds } from "./seed.js";
+import type { SeedIds } from "./seed.js";
+import { seedPreProjectSquads as seed } from "./migration-test-support.js";
 
 const now = "2026-11-06T00:00:00.000Z", later = "2026-11-06T00:00:01.000Z";
 const digest = `sha256:${"a".repeat(64)}`, otherDigest = `sha256:${"b".repeat(64)}`;

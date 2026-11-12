@@ -2,7 +2,7 @@ import { PgliteDbClient } from "@artoo/storage";
 import { sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
-import { seed } from "./seed.js";
+import { seedPreProjectSquads as seed } from "./migration-test-support.js";
 
 it("appends H5 after unchanged H4, preserves data and replays idempotently", async () => {
   const before = await loadMigrationStatements("0039_goal_imported_design_reviews.sql"), after = await loadMigrationStatements("0040_goal_imported_executions.sql");

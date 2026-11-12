@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
 import { runs, tasks } from "./schema.js";
-import { seed } from "./seed.js";
+import { seedPreProjectSquads as seed } from "./migration-test-support.js";
 
 const now = "2026-11-05T00:00:00Z";
 const allocation = { version: 1, strategy: "per-run", base_path: "/owned" };

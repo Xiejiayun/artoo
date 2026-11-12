@@ -2,7 +2,7 @@ import { PgliteDbClient } from "@artoo/storage";
 import { sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
-import { seed } from "./seed.js";
+import { seedPreProjectSquads as seed } from "./migration-test-support.js";
 
 it("adds immutable semantic storage after unchanged v1 storage and preserves existing migration history", async () => {
   const before = await loadMigrationStatements("0033_product_source_transfers.sql");
