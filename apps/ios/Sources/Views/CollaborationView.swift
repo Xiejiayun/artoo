@@ -12,6 +12,7 @@ struct CollaborationView: View {
     @State private var blockers: [WorkspaceRecord] = []
     @State private var agents: [WorkspaceRecord] = []
     @State private var agentInstances: [WorkspaceRecord] = []
+    @State private var roomProjectId: String?
     @State private var computers: [WorkspaceRecord] = []
     @State private var inventoryLoaded = false
     @State private var members: [WorkspaceRecord] = []
@@ -540,14 +541,24 @@ struct CollaborationView: View {
     private func refreshInventory() async {
         inventoryLoaded = false
         do {
-            let bootstrap = try await model.client.resource(path: "/api/v1/bootstrap")
+            async let inventory = model.client.resource(path: "/api/v1/bootstrap")
+            async let metadata = model.client.resource(path: "/api/v1/rooms/\(apiPart(roomId))")
+            let bootstrap = try await inventory
+            let room = try await metadata
+            guard case let .string(projectId) = room["room"]["project_id"], !projectId.isEmpty else {
+                throw ApiError.decoding("Conversation project is missing")
+            }
+            roomProjectId = projectId
             agents = bootstrap["agents"].records; agentInstances = bootstrap["agent_instances"].records
             computers = bootstrap["computers"].records; inventoryLoaded = true
+        } catch is CancellationError {
+            return
         } catch { self.error = String(describing: error) }
     }
-    private var visibleAgentInstances: [WorkspaceRecord] { agentInstances.filter { $0.status != "disabled" } }
+    private var projectAgentInstances: [WorkspaceRecord] { ProjectSquad.instances(agentInstances, projectId: roomProjectId) }
+    private var visibleAgentInstances: [WorkspaceRecord] { projectAgentInstances.filter { $0.status != "disabled" } }
     private var selectedAgentAvailability: AgentSelectionAvailability {
-        .resolve(instanceId: chat.draft.agentInstanceId, instances: agentInstances, loaded: inventoryLoaded)
+        .resolve(instanceId: chat.draft.agentInstanceId, instances: projectAgentInstances, loaded: inventoryLoaded)
     }
     private var selectedAgent: AssigneeLabel? {
         agentInstances.first { $0.id == chat.draft.agentInstanceId }.map {

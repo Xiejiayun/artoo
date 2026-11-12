@@ -2,7 +2,7 @@ import { PgliteDbClient } from "@artoo/storage";
 import { sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
-import { seed } from "./seed.js";
+import { seedPreProjectSquads as seed } from "./migration-test-support.js";
 
 it("adds transfer storage after 0032 without modifying historical data or replaying existing migrations", async () => {
   const before = await loadMigrationStatements("0032_owned_result_assignment.sql"), after = await loadMigrationStatements("0033_product_source_transfers.sql");

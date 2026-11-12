@@ -55,7 +55,7 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
   const availabilityReasonId = useId();
   const approvalBlockReason = executionApprovalBlockReason(task.id, approvals);
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(), enabled: task.status === "ready" });
-  const instances = bootstrap.data?.agent_instances.filter((instance) => instance.status !== "disabled" && instance.config.enabled !== false) ?? [];
+  const instances = bootstrap.data?.agent_instances.filter((instance) => instance.project_id === task.project_id && instance.status !== "disabled" && instance.config.enabled !== false) ?? [];
   const assigneeUnavailable = !!assignee && !!bootstrap.data && !instances.some((instance) => instance.id === assignee);
   const assignmentLabel = (instance: (typeof instances)[number]): string => {
     const computer = bootstrap.data?.computers.find((item) => item.id === instance.computer_id);
@@ -137,7 +137,7 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
             </div>
             {bootstrap.isLoading ? <p className="work-help">Loading agents and computers…</p> : null}
             {bootstrap.isError ? <div className="work-assignment__feedback"><p className="work-help">Agent choices could not be loaded. Automatic assignment is still available.</p><Button size="sm" variant="ghost" onClick={() => void bootstrap.refetch()}>Reload agents</Button></div> : null}
-            {bootstrap.isSuccess && instances.length === 0 ? <p className="work-help">No enabled agents are registered. Add an agent in Agents before assigning work.</p> : null}
+            {bootstrap.isSuccess && instances.length === 0 ? <p className="work-help">No enabled agents are assigned to this project's squad. Configure its members in the Agent library before assigning work.</p> : null}
             {assignee && selectedComputer && selectedComputer.status !== "online" ? <p className="work-help">This computer is {selectedComputer.status}. Check its connection before assigning work.</p> : null}
             {assigneeUnavailable ? <p className="work-assignment__approval" id={availabilityReasonId} role="status">This agent is no longer available for assignment. Choose another agent or Automatic selection.</p> : null}
             {approvalBlockReason && <p className="work-assignment__approval" id={approvalReasonId} role="status">{approvalBlockReason}</p>}

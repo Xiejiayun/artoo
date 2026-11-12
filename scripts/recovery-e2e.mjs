@@ -138,7 +138,7 @@ async function main() {
     };
     const nodeOnline = async () => (await request("/api/v1/daemons")).daemons.some((item) => item.computer_id === computerId && item.connected && item.status === "online" && item.runtimes.some((runtime) => runtime.runtime === "recovery-fixture" && runtime.status === "available"));
     node = makeNode(); await node.start(); await until(nodeOnline, "Paired node did not advertise its runtime");
-    const instance = (await request(`/api/v1/computers/${computerId}/instances`, { body: { runtime: "recovery-fixture", workspace_root: workspace, display_name: "Recovery fixture agent", capabilities: ["code.modify"] }, status: 201 })).agent_instance;
+    const instance = (await request(`/api/v1/computers/${computerId}/instances`, { body: { project_id: "proj_artoo", runtime: "recovery-fixture", workspace_root: workspace, display_name: "Recovery fixture agent", capabilities: ["code.modify"] }, status: 201 })).agent_instance;
     check("Real persistent server enforces production auth; public pairing/enrollment connects an authenticated execution node");
 
     const taskKey = randomUUID(), messageKey = randomUUID();

@@ -157,7 +157,8 @@ struct AgentDiscussionView: View {
             async let bootstrap = model.client.resource(path: "/api/v1/bootstrap")
             async let projectChannels = model.client.resource(path: "/api/v1/channels?project_id=\(apiPart(projectId))")
             let inventory = try await bootstrap
-            instances = inventory["agent_instances"].records; agents = inventory["agents"].records; computers = inventory["computers"].records
+            instances = ProjectSquad.instances(inventory["agent_instances"].records, projectId: projectId)
+            agents = inventory["agents"].records; computers = inventory["computers"].records
             channels = try await projectChannels["channels"].records
             inventoryLoaded = true
             error = nil

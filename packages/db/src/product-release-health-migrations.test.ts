@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
 import { organizations, productReleaseHealthReports } from "./schema.js";
-import { seed } from "./seed.js";
+import { seedPreProjectSquads as seed } from "./migration-test-support.js";
 
 it("appends health observation storage without rewriting publication receipts or earlier migration history", async () => {
   const before = await loadMigrationStatements("0029_assistant_run_dispatches.sql");

@@ -49,7 +49,7 @@ export async function runControlledCliTasks({ request, computerId, workspace, en
   for (const runtime of controlledRuntimes) for (const outcome of ["success", "failure"]) {
     const root = join(workspace, `${runtime}-${outcome}`); mkdirSync(root);
     const instance = (await request(`/api/v1/computers/${computerId}/instances`, {
-      runtime, workspace_root: root, display_name: `Controlled npm fixture ${runtime} ${outcome}`, capabilities: ["code.modify"],
+      project_id: "proj_artoo", runtime, workspace_root: root, display_name: `Controlled npm fixture ${runtime} ${outcome}`, capabilities: ["code.modify"],
     })).agent_instance;
     const created = await request("/api/v1/tasks", {
       project_id: "proj_artoo", title: `Controlled npm CLI fixture: ${runtime} ${outcome}`,

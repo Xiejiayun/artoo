@@ -13,5 +13,5 @@ export function TaskRoom({ taskId }: { taskId: string }): React.ReactNode {
   if (snapshot.isError || snapshot.data === undefined) return <ErrorState title="Failed to load task" action={<Button onClick={() => void snapshot.refetch()}>Retry</Button>} />;
   const roomId = snapshot.data.room?.id;
   if (!roomId) return <div className="task-room task-room--empty"><EmptyState icon={Inbox} title="No room for this task" description="This task has no activity room yet." /></div>;
-  return <RoomConversation key={roomId} roomId={roomId} taskId={taskId} />;
+  return <RoomConversation key={roomId} roomId={roomId} projectId={snapshot.data.task.project_id} taskId={taskId} />;
 }

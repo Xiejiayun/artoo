@@ -544,7 +544,7 @@ private struct AssignSheet: View {
         inventoryLoaded = false
         do {
             let bootstrap = try await client.resource(path: "/api/v1/bootstrap")
-            instances = bootstrap["agent_instances"].records
+            instances = ProjectSquad.instances(bootstrap["agent_instances"].records, projectId: model.state.value?.task.projectId)
             agents = bootstrap["agents"].records
             computers = bootstrap["computers"].records
             inventoryLoaded = true; error = nil

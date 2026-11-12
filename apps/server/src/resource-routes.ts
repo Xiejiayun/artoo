@@ -1,7 +1,7 @@
-import { agentInstances, agentRuntimes, agents, appendEvent, computers, runs } from "@artoo/db";
+import { agentInstances, agentRuntimes, agents, appendEvent, computers, discussions, projects, runs } from "@artoo/db";
 import { ID_PREFIXES, WorktreeBaseConfigurationSchema, type WorktreeBaseConfiguration } from "@artoo/domain";
 import { validateWorktreeBaseConfiguration, WorkspaceAllocationError } from "@artoo/protocol";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { posix, win32 } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -11,7 +11,7 @@ import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import { buildEvent } from "./events.js";
 import { mapAgent, mapAgentInstance } from "./mappers.js";
-import { unconfirmedDisconnectRunIds } from "./services/execution-state.js";
+import { unconfirmedDisconnectRunIds, unsettledStandaloneExecutions } from "./services/execution-state.js";
 import { deleteResource } from "./services/resource-deletion-service.js";
 
 const WORKTREE_BASE_KEY = "worktree_workspace_base";
@@ -86,6 +86,40 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext,
       return { deleted: result.deleted, id: result.id };
     });
   }
+  app.patch("/api/v1/agent-instances/:id/project", async (request) => {
+    const c = requestContext(ctx, request);
+    await requireAdministrator(c);
+    const { id } = request.params as { id: string };
+    const projectId = readProjectId(request.body, true);
+    return c.db.transaction(async (tx) => {
+      // Assignment takes the same instance lock, then rechecks squad membership.
+      const [instance] = await tx.select().from(agentInstances).where(and(
+        eq(agentInstances.id, id), eq(agentInstances.organizationId, c.organizationId), isNull(agentInstances.deletedAt),
+      )).for("update");
+      if (!instance) throw AppError.notFound("agent instance not found");
+      if (projectId !== null) {
+        const [project] = await tx.select().from(projects).where(and(eq(projects.id, projectId), eq(projects.organizationId, c.organizationId)));
+        if (!project) throw AppError.notFound("project not found");
+      }
+      await requireAdministrator(c, tx);
+      if (instance.projectId === projectId) return { agent_instance: mapAgentInstance(instance) };
+      const active = await tx.select({ id: runs.id }).from(runs).where(and(eq(runs.organizationId, c.organizationId),
+        eq(runs.agentInstanceId, id), notInArray(runs.status, ["completed", "failed", "cancelled"])));
+      const planning = await tx.select({ participants: discussions.participants }).from(discussions).where(and(
+        eq(discussions.organizationId, c.organizationId), inArray(discussions.status, ["running", "stopping"])));
+      if (active.length || (await unconfirmedDisconnectRunIds(c, tx, { agentInstanceId: id })).length
+        || (await unsettledStandaloneExecutions(c, tx, { agentInstanceId: id })).length
+        || planning.some((row) => (row.participants as { agent_instance_id: string }[]).some((member) => member.agent_instance_id === id))) {
+        throw AppError.conflict("Stop active work and confirm processes have exited before changing this instance's project");
+      }
+      const [updated] = await tx.update(agentInstances).set({ projectId }).where(eq(agentInstances.id, id)).returning();
+      await appendEvent(tx, buildEvent(c, { type: "agent_instance.updated", actorType: "user", actorId: c.actorUserId,
+        correlationId: id, projectId: projectId ?? instance.projectId,
+        payload: { agent_instance_id: id, project_id: projectId, previous_project_id: instance.projectId } }));
+      return { agent_instance: mapAgentInstance(updated!) };
+    });
+  });
+
   app.patch("/api/v1/agent-instances/:id/worktree-workspace-base", async (request) => {
     const c = requestContext(ctx, request);
     await requireAdministrator(c);
@@ -111,6 +145,7 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext,
     await requireAdministrator(c);
     const { id: computerId } = request.params as { id: string };
     const input = (request.body ?? {}) as Record<string, unknown>;
+    const projectId = readProjectId(request.body, false);
     if (typeof input.runtime !== "string" || !input.runtime.trim()) throw AppError.validation("runtime is required");
     if (typeof input.workspace_root !== "string" || input.workspace_root.includes("\0") || input.workspace_root.length > 4096 || !(posix.isAbsolute(input.workspace_root) || win32.isAbsolute(input.workspace_root))) {
       throw AppError.validation("workspace_root must be an absolute path on the execution computer");
@@ -127,6 +162,10 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext,
     const displayName = typeof input.display_name === "string" ? input.display_name.trim() : runtime;
     if (!displayName || displayName.length > 160) throw AppError.validation("display_name must contain between 1 and 160 characters");
     const result = await c.db.transaction(async (tx) => {
+      if (projectId !== null) {
+        const [project] = await tx.select().from(projects).where(and(eq(projects.id, projectId), eq(projects.organizationId, c.organizationId)));
+        if (!project) throw AppError.notFound("project not found");
+      }
       const [computer] = await tx.select().from(computers).where(and(eq(computers.id, computerId), eq(computers.organizationId, c.organizationId), isNull(computers.deletedAt))).for("share");
       if (!computer) throw AppError.notFound("computer not found");
       if (computer.status === "disabled") throw AppError.conflict("computer is disabled");
@@ -152,12 +191,12 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext,
         status: "idle", capabilities: [...new Set(capabilities)], createdAt: now,
       }).returning())[0]!;
       const [instance] = await tx.insert(agentInstances).values({
-        id: c.idGen.generate(ID_PREFIXES.agentInstance), organizationId: c.organizationId,
+        id: c.idGen.generate(ID_PREFIXES.agentInstance), organizationId: c.organizationId, projectId,
         computerId, agentId: agent.id, runtime, status: "idle", workspaceRoot, config: {}, createdAt: now,
       }).returning();
       await appendEvent(tx, buildEvent(c, {
-        type: "agent_instance.created", actorType: "user", actorId: c.actorUserId, correlationId: instance!.id,
-        payload: { agent_instance_id: instance!.id, computer_id: computerId, runtime,
+        type: "agent_instance.created", actorType: "user", actorId: c.actorUserId, correlationId: instance!.id, projectId,
+        payload: { agent_instance_id: instance!.id, computer_id: computerId, runtime, project_id: projectId,
           ...(existingAgent ? { agent_id: existingAgent.id } : {}) },
       }));
       return { agent: mapAgent(agent!), agent_instance: mapAgentInstance(instance!) };
@@ -188,4 +227,13 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext,
       return { agent_instance: mapAgentInstance(updated!) };
     });
   });
+}
+
+/** Older clients may register inventory without a project; it remains unassigned. */
+function readProjectId(body: unknown, required: boolean): string | null {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) throw AppError.validation("project fields must be an object");
+  const value = (body as Record<string, unknown>).project_id;
+  if ((value === undefined && !required) || value === null) return null;
+  if (typeof value !== "string" || !value.trim() || value.length > 128) throw AppError.validation("project_id must identify a project or be null");
+  return value;
 }

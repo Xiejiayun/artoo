@@ -17,7 +17,7 @@ export function Nav({ onNavigate }: { onNavigate?: () => void } = {}): React.Rea
   const navigate = useNavigate();
   const data = bootstrap.data;
   const user = data?.user;
-  const instances = data?.agent_instances ?? [];
+  const instances = data?.agent_instances.filter((instance) => projectId !== undefined && instance.project_id === projectId) ?? [];
   const computers = data?.computers ?? [];
   function selectProject(id: string): void {
     setSelectedProjectId(id);
@@ -36,19 +36,18 @@ export function Nav({ onNavigate }: { onNavigate?: () => void } = {}): React.Rea
       </section>
       <section className="os-resources" aria-label="Workspace resources"><div className="os-section-label"><span>Workspace</span></div><ul className="app-nav__links">{RESOURCES.map(({ to, label, icon: ResourceIcon }) => <li key={to}><NavLink to={to} onClick={onNavigate} className={({ isActive }) => `os-nav-link${isActive ? " is-active" : ""}`}><ResourceIcon size={16} aria-hidden="true" /><span>{label}</span>{to === "/computers" && data && <span className="os-nav-count" aria-hidden="true">{computers.length}</span>}</NavLink></li>)}</ul></section>
       {project?.default_workspace && <div className="os-workspace-context"><FolderGit2 size={15} aria-hidden="true" /><div><strong>{project.name}</strong><code title={project.default_workspace}>{project.default_workspace}</code></div></div>}
-      <section className="os-squad" aria-label="Agent Squad"><div className="os-section-label"><span>Agent Squad</span><span>{instances.length}</span></div>
-        <p className="os-squad-description">Agents on your connected machines</p>
-        {computers.map((computer) => {
+      <section className="os-squad" aria-label="Agent Squad"><div className="os-section-label"><span>Agent Squad</span><span>{instances.length}</span>{projectId && <Link to={`/agents?project=${encodeURIComponent(projectId)}`} className="os-icon-button" aria-label="Manage project squad" onClick={onNavigate}><Settings2 size={14} aria-hidden="true" /></Link>}</div>
+        <p className="os-squad-description">{project ? `Agents assigned to ${project.name}` : "Select a project to see its squad"}</p>
+        {computers.filter((computer) => instances.some((instance) => instance.computer_id === computer.id)).map((computer) => {
           const members = instances.filter((instance) => instance.computer_id === computer.id);
           return <div className="os-squad-group" key={computer.id}><Link to="/computers" className="os-squad-machine" onClick={onNavigate}><span className="os-status-dot" data-status={computer.status} aria-label={computer.status} /><span>{computer.display_name}</span><small>{members.length}</small></Link>
             {members.map((instance) => {
               const agent = data?.agents.find((item) => item.id === instance.agent_id);
-              return <Link key={instance.id} to="/agents" className="os-squad-agent" onClick={onNavigate}><span className="os-agent-avatar" aria-hidden="true"><Bot size={13} /></span><span><strong>{agent?.display_name ?? instance.runtime}</strong><small>{instance.runtime}</small></span><span className="os-status-dot" data-status={computer.status === "online" ? instance.status : "offline"} title={computer.status === "online" ? instance.status : "Machine offline"} /></Link>;
+              return <Link key={instance.id} to={`/agents?instance=${encodeURIComponent(instance.id)}`} className="os-squad-agent" onClick={onNavigate}><span className="os-agent-avatar" aria-hidden="true"><Bot size={13} /></span><span><strong>{agent?.display_name ?? instance.runtime}</strong><small>{instance.runtime}</small></span><span className="os-status-dot" data-status={computer.status === "online" ? instance.status : "offline"} title={computer.status === "online" ? instance.status : "Machine offline"} /></Link>;
             })}
-            {members.length === 0 && <span className="os-squad-empty">No instances yet</span>}
           </div>;
         })}
-        {data && computers.length === 0 && <p className="os-nav-empty">Connect a machine to bring your agents online.</p>}
+        {data && projectId && instances.length === 0 && <Link to={`/agents?project=${encodeURIComponent(projectId)}`} className="os-nav-empty" onClick={onNavigate}>No agents assigned. Set up this project's squad.</Link>}
       </section>
     </div>
     <div className="os-nav-footer"><Link to="/computers?connect=1" className="os-connect-button" onClick={onNavigate}><Terminal size={15} aria-hidden="true" />Connect Local Node<Plus size={14} aria-hidden="true" /></Link>

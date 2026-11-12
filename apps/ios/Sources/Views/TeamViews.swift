@@ -49,9 +49,14 @@ struct TeamView: View {
                                     Text(identity).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                                 }
                                 if container.isAdministrator {
+                                    AgentProjectMembership(instance: instance, projects: data["projects"].records, model: model)
+                                        .id("\(instance.id):\(instance["project_id"].text)")
                                     Button(instance.status == "disabled" ? "Enable" : "Disable") { Task {
                                         await model.perform(path: "/api/v1/agent-instances/\(apiPart(instance.id))", method: "PATCH", body: .object(["enabled": .bool(instance.status == "disabled")]))
                                     } }.disabled(model.busy).frame(minHeight: 44)
+                                } else {
+                                    let project = data["projects"].records.first { $0.id == instance["project_id"].text }
+                                    Text("Project squad: \(project?.title ?? "Unassigned")").font(.caption)
                                 }
                             }
                         }
@@ -69,6 +74,32 @@ struct TeamView: View {
     }
 }
 
+private struct AgentProjectMembership: View {
+    let instance: WorkspaceRecord
+    let projects: [WorkspaceRecord]
+    @ObservedObject var model: WorkspaceViewModel
+    @State private var projectId: String
+
+    init(instance: WorkspaceRecord, projects: [WorkspaceRecord], model: WorkspaceViewModel) {
+        self.instance = instance; self.projects = projects; self.model = model
+        _projectId = State(initialValue: instance["project_id"].text)
+    }
+
+    var body: some View {
+        Picker("Project squad", selection: $projectId) {
+            Text("Unassigned").tag("")
+            ForEach(projects) { project in Text(project.title).tag(project.id) }
+        }.pickerStyle(.menu).disabled(model.busy).accessibilityIdentifier("agent.project.\(instance.id)")
+        Text("Changing the project keeps this workspace path. Stop active work before moving an instance.")
+            .font(.caption).foregroundStyle(.secondary)
+        Button("Save project squad") { Task {
+            await model.perform(path: "/api/v1/agent-instances/\(apiPart(instance.id))/project", method: "PATCH",
+                                body: .object(["project_id": projectId.isEmpty ? .null : .string(projectId)]))
+        } }.disabled(model.busy || projectId == instance["project_id"].text)
+            .frame(minHeight: 44).accessibilityIdentifier("agent.project.save.\(instance.id)")
+    }
+}
+
 private struct ComputerDetailView: View {
     @EnvironmentObject private var container: AppContainer
     let computer: WorkspaceRecord
@@ -77,6 +108,7 @@ private struct ComputerDetailView: View {
     @State private var runtime = ""
     @State private var name = ""
     @State private var workspace = ""
+    @State private var instanceProjectId: String?
     @State private var success = false
     init(computer: WorkspaceRecord, client: ApiClientProtocol) {
         self.computer = computer
@@ -103,6 +135,10 @@ private struct ComputerDetailView: View {
             }
             if container.isAdministrator {
                 Section("Configure an agent") {
+                    Picker("Project squad", selection: Binding(get: { instanceProjectId ?? container.projectId }, set: { instanceProjectId = $0 })) {
+                        Text("Unassigned").tag("")
+                        ForEach(container.bootstrap.value?.projects ?? []) { project in Text(project.name).tag(project.id) }
+                    }
                     Picker("Runtime", selection: $runtime) {
                         Text("Choose runtime").tag("")
                         ForEach((model.state.value?["runtimes"].records ?? []).filter { $0.status == "available" }) { item in Text(item["runtime"].text).tag(item["runtime"].text) }
@@ -112,7 +148,10 @@ private struct ComputerDetailView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                     Text("Tasks assigned to this agent run inside this folder on \(computer.title).").font(.footnote).foregroundStyle(.secondary)
                     Button("Create agent instance") { Task {
-                        success = await model.perform(path: "/api/v1/computers/\(apiPart(computer.id))/instances", body: .object(["runtime": .string(runtime), "display_name": .string(name), "workspace_root": .string(workspace)]))
+                        let projectId = instanceProjectId ?? container.projectId
+                        success = await model.perform(path: "/api/v1/computers/\(apiPart(computer.id))/instances", body: .object([
+                            "project_id": projectId.isEmpty ? .null : .string(projectId), "runtime": .string(runtime),
+                            "display_name": .string(name), "workspace_root": .string(workspace)]))
                     } }.disabled(model.busy || runtime.isEmpty || name.isEmpty || workspace.isEmpty).frame(minHeight: 44)
                     if success { Label("Agent configured", systemImage: "checkmark.circle") }
                 }

@@ -143,6 +143,8 @@ export const EffortProfileSchema = z.object({
 export type EffortProfile = z.infer<typeof EffortProfileSchema>;
 
 export const AgentInstanceSchema = z.object({
+  // Absent on older servers; null means the instance is not assigned to a squad.
+  project_id: z.string().nullish(),
   lifecycle: ResourceLifecycleSchema.optional(),
   id: z.string(),
   organization_id: z.string(),

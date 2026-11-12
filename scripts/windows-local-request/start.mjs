@@ -372,7 +372,7 @@ async function startCli(state, environment) {
   await waitFor(async () => (await server.ctx.db.db.select().from(schema.agentRuntimes))
     .some(row => row.computerId === computerId && row.runtime === 'codex' && row.status === 'available'), state.role + ' real heartbeat runtime');
   state.report.agents = await createSlotInstances({ role: state.role, computerId, slots: state.slots,
-    createInstance: body => request('/api/v1/computers/' + encodeURIComponent(computerId) + '/instances', body) });
+    createInstance: body => request('/api/v1/computers/' + encodeURIComponent(computerId) + '/instances', { ...body, project_id: projectId }) });
 }
 try {
   checkpoint(); await recheck(inputs); checkpoint();

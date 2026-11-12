@@ -11,7 +11,7 @@ import { createCorrectionFixture } from "./ios-ui-correction-fixture.mjs";
 import { exportCorrectionWorkspaceEvidence } from "./fixtures/execution-correction-scenario.mjs";
 import { verifyNativeCorrectionWorkspaceEvidence } from "./ios-ui-correction-evidence.mjs";
 import { expectedNativeScreenshots, getE2EReportContext, readXCTestScreenshots, writeE2EReport } from "./e2e-report.mjs";
-import { nativeUISuiteTimeouts } from "../apps/ios/scripts/ui-suite-contract.mjs";
+import { nativeUIFixtureSessionConfig, nativeUISuiteTimeouts } from "../apps/ios/scripts/ui-suite-contract.mjs";
 import { closeOwnedProcessGroup } from "./owned-process-group.mjs";
 import { selectNativeFixtureSimulator } from "./ios-ui-simulator.mjs";
 import { verifySimulatorClipboardEvidence } from "./ios-ui-clipboard-evidence.mjs";
@@ -65,7 +65,7 @@ async function main() {
     assert.equal((await fetch(`${origin}/api/v1/bootstrap`, { signal: AbortSignal.timeout(15_000) })).status, 401);
     assert.equal(server.persistent, true); assert.equal(server.ctx.deviceAuth.devControlEscape, false);
     assert.equal(server.ctx.deviceAuth.devNodeToken, null);
-    const owner = await createSession(server.ctx, { ttlMs: 3_600_000 }, { userId: "user_owner" });
+    const owner = await createSession(server.ctx, nativeUIFixtureSessionConfig("correction"), { userId: "user_owner" });
     const request = async (path, body, token = owner.raw) => {
       const response = await fetch(`${origin}${path}`, { method: body === undefined ? "GET" : "POST",
         headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json", "Idempotency-Key": randomUUID() }) },

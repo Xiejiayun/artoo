@@ -3,7 +3,7 @@ import { PgliteDbClient } from "@artoo/storage";
 import { sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
-import { seed } from "./seed.js";
+import { seedPreProjectSquads as seed } from "./migration-test-support.js";
 import { applicationPublications, applicationPublicationObservations, applicationPublicationSettlements, contextPacks, eventLog, goals, goalAutomations } from "./schema.js";
 
 const at = (seconds = 0) => new Date(Date.UTC(2026, 10, 9) + seconds * 1000).toISOString();

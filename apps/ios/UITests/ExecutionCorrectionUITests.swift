@@ -681,7 +681,8 @@ final class ExecutionCorrectionUITests: XCTestCase {
             liveValuesEqual = original == unique
         }
         stage = "original_value"
-        guard let originalValue = originalNativeValue as? String, uniqueNativeValue as? String == originalValue else {
+        guard let originalValue = NativePairingInput.comparableTextValue(originalNativeValue, placeholder: target.placeholderValue),
+              NativePairingInput.comparableTextValue(uniqueNativeValue, placeholder: initial.placeholderValue) == originalValue else {
             throw correctionError("The pairing-code input must expose its existing native value before input preparation")
         }
         stage = "foreground"
@@ -721,7 +722,8 @@ final class ExecutionCorrectionUITests: XCTestCase {
         finalLiveValueIsString = finalNativeValue is String
         stage = "final_target"
         try require(hittable && current.isEnabled
-                    && finalNativeValue as? String == originalValue && app.state == .runningForeground,
+                    && NativePairingInput.comparableTextValue(finalNativeValue, placeholder: current.placeholderValue) == originalValue
+                    && app.state == .runningForeground,
                     "Input preparation must preserve the same unique editable pairing-code field and its original value")
         stage = "final_deadline"
         try require(ProcessInfo.processInfo.systemUptime <= deadline, "Pairing-code target revalidation exceeded the ten-second preparation budget")

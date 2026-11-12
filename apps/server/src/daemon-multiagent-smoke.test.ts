@@ -83,6 +83,7 @@ async function seedNode(srv: TestServer, spec: NodeSpec, workspaceRoot: string):
   });
   await srv.db.db.insert(agentInstances).values({
     id: spec.instanceId, organizationId: org, computerId: spec.computerId, agentId: spec.agentId,
+    projectId: "proj_artoo",
     runtime: "mock", modelProfileId: "model_standard_coding", effortProfileId: "effort_standard_coding",
     status: "idle", workspaceRoot, config: {}, createdAt: ISO,
   });
