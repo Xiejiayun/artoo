@@ -1,6 +1,6 @@
 # artood 一键接入指南
 
-`0.1.0-rc.6` 提供安装、配对、登记和后台启动的一条命令，并增加受保护的本地团队配置入口。支持 Windows x64、Linux x64/arm64；macOS 实现保留，但本次发布资格延期。Windows arm64 不支持。以下 release URL 只有在对应版本完成验证并发布后才可用；本文本身不表示发布或生产验收已经完成。
+`0.1.0-rc.6` 提供安装、配对、登记和后台启动的一条命令，并增加受保护的本地团队配置入口。标准安装来源是官方 npm 包 [`@jiayunxie/artood`](https://www.npmjs.com/package/@jiayunxie/artood)。支持 Windows x64、Linux x64/arm64；macOS 实现保留，但本次发布资格延期。Windows arm64 不支持。上线连接入口前，须确认页面指定的精确版本已发布到官方 registry 并通过安装验证；本文本身不表示发布或生产验收已经完成。
 
 ## 从 Web 连接电脑
 
@@ -8,26 +8,21 @@
 2. 选择本机平台，复制页面上的完整命令，在本机终端运行。命令内只有短期单次配对码，不需要手工复制 node token、computer ID 或配置数据库。
 3. 等待 Web 显示电脑在线，选择该电脑已有的 Agent 创建实例。运行模型任务前，在同一个本地账号下安装并登录 Codex 或 Claude CLI。
 
-Windows PowerShell 的命令形式：
-
-```powershell
-& ([scriptblock]::Create((irm 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.6/install.ps1'))) -Server 'https://artoo.example.com' -Code 'XXXX-XXXX'
-```
-
-Linux shell 的命令形式：
+Windows PowerShell、Linux 和 macOS 终端使用相同命令，需要先安装 Node.js 24+ 和 npm 11+：
 
 ```sh
-curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.6/install.sh' | sh -s -- --server 'https://artoo.example.com' --code 'XXXX-XXXX'
+npx -y @jiayunxie/artood@0.1.0-rc.6 connect --server https://artoo.example.com --code XXXX-XXXX
 ```
 
-请复制 Web 生成的实际地址和配对码。安装器从固定 GitHub release 下载同一份 tarball，并检查发布时固定的 SHA-256 和文件大小；不依赖 npm registry。已有 Node.js 24+ 时复用，否则从 nodejs.org 下载并校验官方 Node.js 24，安装在当前用户的私有目录，不需要管理员权限、仓库或 .NET。Linux 需要 curl、tar 和支持官方 Node.js 的 glibc 发行版；不支持直接在 Alpine/musl 上使用官方预编译 Node。
+请复制 Web 生成的实际地址和配对码。`npx -y` 从 npm 安装指定版本并运行 `connect`，不需要仓库或 .NET。本机网络或组织 npm feed 无法访问官方包，只能说明本机的访问限制；不要据此把所有用户的安装入口改成 GitHub tarball 或下载脚本。先检查本机 npm registry 设置及网络权限，保持 TLS 校验开启。
 
-默认任务目录是当前用户主目录下的 `ArtooWorkspaces`。Windows 可附加 `-Workspace 'C:\ArtooWorkspaces'`，Linux 可附加 `--workspace '/home/user/ArtooWorkspaces'`。目录不能包含 Artoo 凭据或安装文件。Web 的 workspace roots 来自节点上报，执行时仍由节点本地检查允许范围。
+默认任务目录是当前用户主目录下的 `ArtooWorkspaces`。Windows 可附加 `--workspace 'C:\ArtooWorkspaces'`，Linux 可附加 `--workspace '/home/user/ArtooWorkspaces'`。目录不能包含 Artoo 凭据或安装文件。Web 的 workspace roots 来自节点上报，执行时仍由节点本地检查允许范围。
 
-如果精确版本已经发布到 npm，且本机有 Node.js 24+、npm 11+，也可使用：
+经常管理节点时，可选择一次全局安装，之后直接使用 `artood`：
 
 ```sh
-npx --yes @jiayunxie/artood@0.1.0-rc.6 connect --server https://artoo.example.com --code XXXX-XXXX
+npm install --global @jiayunxie/artood@0.1.0-rc.6
+artood connect --server https://artoo.example.com --code XXXX-XXXX
 ```
 
 owner/admin 会自动完成电脑登记。普通成员配对后会保存凭据并提示等待管理员在 Web 完成 **Enroll computer**，完成后运行下面的 `start` 即可。网络中断后重试会继续同一身份，不必生成第二个配对码；已有同一网站的保存配置时，再次 `connect` 不消耗新码。
@@ -54,13 +49,13 @@ Linux：
 
 `start` 在后台运行；`start --foreground` 在当前终端运行，Ctrl+C 正常停止。`stop` 等待任务按 daemon 原有退出流程停止，保留连接配置。无法认证或无响应的未知进程不会被强制杀死。受管理的启动使用同一份本地锁，避免重复 daemon。
 
-当前实现不注册系统服务、计划任务或登录自启；重启电脑后再次运行 `start`。GitHub 安装器和 npx 不会创建全局 PATH 命令，请使用终端打印的完整 launcher 路径。需要全局 `artood` 时，可在精确版本已发布到 npm 后，另行运行 `npm install --global @jiayunxie/artood@0.1.0-rc.6`。
+当前实现不注册系统服务、计划任务或登录自启；重启电脑后再次运行 `start`。`npx` 不会创建全局 PATH 命令，请使用终端打印的完整 launcher 路径。已全局安装同一版本时，可直接运行 `artood status`、`artood stop` 和 `artood start`。
 
 Windows 使用 DPAPI CurrentUser 加密凭据，并限制目录 ACL；POSIX 使用 0700 目录和 0600 文件。受管理的 daemon 不把长期 node token 放进命令行或模型子进程继承的环境变量。不要把状态目录发给别人、提交到 Git 或复制到另一台电脑。高级隔离配置可使用绝对路径 `ARTOO_HOME`。
 
 ## 已有手动 daemon 的迁移
 
-原来的 `ARTOO_NODE_URL`、`ARTOO_NODE_ID`、`ARTOO_ALLOWED_ROOTS`、`ARTOO_RUNTIMES` 和 `ARTOO_CODEX_BINARY` 环境接口继续支持。显式提供这些配置时，`artood start` 保持原来的前台行为。新安装器不会读取任意旧私密文件、停止旧进程或撤销旧设备。
+原来的 `ARTOO_NODE_URL`、`ARTOO_NODE_ID`、`ARTOO_ALLOWED_ROOTS`、`ARTOO_RUNTIMES` 和 `ARTOO_CODEX_BINARY` 环境接口继续支持。显式提供这些配置时，`artood start` 保持原来的前台行为。`connect` 不会读取任意旧私密文件、停止旧进程或撤销旧设备。
 
 迁移前，先通过旧 launcher 正常停止 daemon，并在 Web 确认离线。如果必须保留已有 computer 和 Agent 关联，由操作人员将旧配置中的真实 device ID、computer ID、node token 和允许目录写入新的受保护连接格式，然后使用新 launcher 启动；不要重新 claim，也不要同时运行同一凭据的两个 daemon。私密配置的格式由 `scripts/npm-daemon/local-config.mjs` 的校验及保存接口定义，不应手写明文 `connection.dat`。
 

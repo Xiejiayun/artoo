@@ -17,10 +17,13 @@ has passed its release gates.
 
 For the Web and Windows daemon delivery, see the
 [current feature and validation record](docs/release-convergence-2026-11-09.md),
-[Windows npm daemon](scripts/npm-daemon/README.md), and
-[Web deployment plan](docs/web-deployment-plan.zh-CN.md). The npm candidate is
-`@jiayunxie/artood@0.1.0-rc.1`; its publication status is recorded separately from
-local installation checks and experimental autonomous application publication.
+[npm daemon](scripts/npm-daemon/README.md), and
+[Web deployment plan](docs/web-deployment-plan.zh-CN.md). Connect computers using
+the official npm package `@jiayunxie/artood` and the command in Web; see the
+[connection guide](docs/npm-daemon-setup.zh-CN.md). The exact version must be
+published and registry-verified before rolling out its Web connection command.
+Publication status is separate from local checks and experimental autonomous
+application publication.
 
 Mac and iOS verification commands and screenshot-report locations are in
 [the Apple client E2E guide](docs/apple-client-e2e.md). Remaining commercial
