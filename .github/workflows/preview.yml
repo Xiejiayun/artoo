@@ -19,6 +19,7 @@ jobs:
       - run: npm ci
       - run: command -v xcodegen >/dev/null || brew install xcodegen
       - run: npm run build:preview
+      - run: node apps/ios/scripts/test-macos.mjs
       - run: node scripts/ios-ui-correction-e2e.mjs
       - uses: actions/upload-artifact@v4
         if: always()
