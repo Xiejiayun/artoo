@@ -1,5 +1,5 @@
 import { Link, NavLink, useNavigate } from "react-router-dom";
-import { Activity, Bot, Brain, ChevronDown, FolderGit2, Hash, Monitor, Plus, Puzzle, Settings2, Terminal } from "lucide-react";
+import { Activity, Bot, Brain, Check, ChevronDown, Folder, FolderOpen, Monitor, Plus, Puzzle, Settings2, Terminal } from "lucide-react";
 import { useProject } from "../app/useProject.js";
 import { LogoutButton } from "./LogoutButton.js";
 
@@ -25,17 +25,22 @@ export function Nav({ onNavigate }: { onNavigate?: () => void } = {}): React.Rea
     onNavigate?.();
   }
   return <nav className="app-nav" id="primary-navigation" aria-label="Primary">
-    <NavLink to="/channels" className="brand" aria-label="Artoo home" onClick={onNavigate}><span className="brand-mark" aria-hidden="true" /><strong>artoo <span>OS</span></strong></NavLink>
+    <NavLink to="/channels" className="brand" aria-label="ARTOO home" onClick={onNavigate}><span className="brand-mark" aria-hidden="true" /><strong>ARTOO</strong></NavLink>
     <div className="os-nav-scroll">
       <section className="os-projects" aria-label="Projects">
         <div className="os-section-label"><span>Projects</span><Link to="/settings" className="os-icon-button" aria-label="Manage projects" onClick={onNavigate}><Plus size={14} aria-hidden="true" /></Link></div>
-        <ul className="os-project-list">{data?.projects.map((item) => <li key={item.id}><button type="button" className={`os-project${item.id === projectId ? " is-active" : ""}`} aria-pressed={item.id === projectId} onClick={() => selectProject(item.id)}><Hash size={16} aria-hidden="true" /><span>{item.name}</span>{item.id === projectId && <span className="os-project-indicator" aria-hidden="true" />}</button></li>)}</ul>
+        <ul className="os-project-list">{data?.projects.map((item) => <li key={item.id}>
+          <button type="button" className={`os-project${item.id === projectId ? " is-active" : ""}`} aria-label={item.name} aria-describedby={`project-workspace-${item.id}`} aria-pressed={item.id === projectId} onClick={() => selectProject(item.id)}>
+            <span className="os-project-icon" aria-hidden="true">{item.id === projectId ? <FolderOpen size={18} /> : <Folder size={18} />}</span>
+            <span className="os-project-identity"><strong title={item.name}>{item.name}</strong><small id={`project-workspace-${item.id}`} title={item.default_workspace ?? undefined}>{item.default_workspace || "No default workspace"}</small></span>
+            {item.id === projectId && <Check className="os-project-check" size={14} aria-hidden="true" />}
+          </button>
+        </li>)}</ul>
         {bootstrap.isLoading && <p className="os-nav-empty">Loading projects…</p>}
         {bootstrap.error && <p className="os-nav-empty">Projects unavailable.</p>}
         {data && data.projects.length === 0 && <Link className="os-nav-empty" to="/settings" onClick={onNavigate}>Create your first project</Link>}
       </section>
       <section className="os-resources" aria-label="Workspace resources"><div className="os-section-label"><span>Workspace</span></div><ul className="app-nav__links">{RESOURCES.map(({ to, label, icon: ResourceIcon }) => <li key={to}><NavLink to={to} onClick={onNavigate} className={({ isActive }) => `os-nav-link${isActive ? " is-active" : ""}`}><ResourceIcon size={16} aria-hidden="true" /><span>{label}</span>{to === "/computers" && data && <span className="os-nav-count" aria-hidden="true">{computers.length}</span>}</NavLink></li>)}</ul></section>
-      {project?.default_workspace && <div className="os-workspace-context"><FolderGit2 size={15} aria-hidden="true" /><div><strong>{project.name}</strong><code title={project.default_workspace}>{project.default_workspace}</code></div></div>}
       <section className="os-squad" aria-label="Agent Squad"><div className="os-section-label"><span>Agent Squad</span><span>{instances.length}</span>{projectId && <Link to={`/agents?project=${encodeURIComponent(projectId)}`} className="os-icon-button" aria-label="Manage project squad" onClick={onNavigate}><Settings2 size={14} aria-hidden="true" /></Link>}</div>
         <p className="os-squad-description">{project ? `Agents assigned to ${project.name}` : "Select a project to see its squad"}</p>
         {computers.filter((computer) => instances.some((instance) => instance.computer_id === computer.id)).map((computer) => {

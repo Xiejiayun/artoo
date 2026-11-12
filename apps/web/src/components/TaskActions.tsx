@@ -133,7 +133,7 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
                 <Monitor size={17} aria-hidden="true" />
                 <div><strong>{selectedAgent?.display_name ?? (assigneeUnavailable ? "Selected agent unavailable" : assignee)}</strong><span>{selectedComputer?.display_name ?? selectedInstance?.computer_id ?? (assigneeUnavailable ? assigneeLabel : "Computer details unavailable")}{selectedInstance ? ` · ${selectedInstance.runtime}` : ""}</span></div>
                 {selectedComputer ? <PresenceBadge presence={selectedComputer.status} /> : null}
-              </> : <><Sparkles size={17} aria-hidden="true" /><div><strong>Let Artoo choose</strong><span>Match the task to an eligible agent and computer.</span></div></>}
+              </> : <><Sparkles size={17} aria-hidden="true" /><div><strong>Let ARTOO choose</strong><span>Match the task to an eligible agent and computer.</span></div></>}
             </div>
             {bootstrap.isLoading ? <p className="work-help">Loading agents and computers…</p> : null}
             {bootstrap.isError ? <div className="work-assignment__feedback"><p className="work-help">Agent choices could not be loaded. Automatic assignment is still available.</p><Button size="sm" variant="ghost" onClick={() => void bootstrap.refetch()}>Reload agents</Button></div> : null}

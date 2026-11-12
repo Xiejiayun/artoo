@@ -32,7 +32,7 @@ describe("prepared product request page", () => {
     const input = await screen.findByLabelText("Objective");
     expect(screen.queryByLabelText("Goal title")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Execution mode")).not.toBeInTheDocument();
-    expect(screen.queryByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Allow ARTOO to divide work across configured computers" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New goal" })).not.toBeInTheDocument();
     await userEvent.type(input, goal.objective);
     await userEvent.click(screen.getByRole("button", { name: "Start product" }));
@@ -69,7 +69,7 @@ describe("prepared product request page", () => {
       submission_owner: "console", goal_id: null }, { createAutonomousGoal }) });
     expect(await screen.findByText(/uses the request entered in the launcher/)).toBeInTheDocument();
     expect(screen.queryByLabelText("Objective")).not.toBeInTheDocument();
-    expect(screen.queryByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Allow ARTOO to divide work across configured computers" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New goal" })).not.toBeInTheDocument();
     expect(createAutonomousGoal).not.toHaveBeenCalled();
   });

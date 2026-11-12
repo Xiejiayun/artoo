@@ -1,4 +1,4 @@
-/* Shared surfaces for the artoo OS design. Existing server-backed controls keep
+/* Shared surfaces for the ARTOO design. Existing server-backed controls keep
    their contracts; the shell, typography, and content hierarchy are consistent. */
 body { font-size: 13px; }
 .os-eyebrow { display: flex; align-items: center; gap: 7px; color: var(--text-subtle); font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }

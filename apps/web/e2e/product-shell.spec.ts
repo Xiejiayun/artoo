@@ -5,6 +5,11 @@ test("project views, saved theme, and mobile navigation stay usable", async ({ p
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/channels");
   await selectProject(page, "thread");
+  await expect(page).toHaveTitle("ARTOO");
+  await expect(page.getByRole("link", { name: "ARTOO home", exact: true })).toHaveText("ARTOO");
+  await expect(page.getByRole("button", { name: "artoo", exact: true })).toHaveAccessibleDescription(/\S+/);
+  await expect(page.getByText("Conversations in artoo", { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("projects-dark-desktop.png"), fullPage: true });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   const views = page.getByRole("navigation", { name: "Project views", exact: true });
   for (const [label, pathname, heading] of [["Plan", "/goals", "Plan"], ["Board", "/board", /^Board/], ["Release", "/release", "Release"]] as const) {
