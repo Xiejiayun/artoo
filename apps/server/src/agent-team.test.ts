@@ -405,6 +405,15 @@ describe("Agent Team execution and independent source-bound review", () => {
     const reviews = await server.db.db.select().from(autonomousReviews).where(eq(autonomousReviews.subjectRunId, subject.id));
     expect(reviews).toHaveLength(1);
     const review = reviews[0]!;
+    const [subjectTask] = await server.db.db.select().from(tasks).where(eq(tasks.id, subject.taskId));
+    const listed = await server.app.inject({ method: "GET", url: `/api/v1/tasks?project_id=${subjectTask!.projectId}` });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().tasks.find((task: { id: string }) => task.id === review.reviewTaskId)).toMatchObject({
+      goal_id: review.goalId, source_plan_id: subjectTask!.sourcePlanId,
+    });
+    // Display linkage must not enlist the auxiliary task in goal scheduling.
+    const [reviewTask] = await server.db.db.select().from(tasks).where(eq(tasks.id, review.reviewTaskId));
+    expect(reviewTask?.goalId).toBeNull();
     await createAssistantDispatcher(server.ctx).pump();
     const [turn] = await server.db.db.select().from(assistantTurns).where(eq(assistantTurns.id, review.turnId));
     expect(turn?.status, turn?.error ?? "review should run").toBe("running");

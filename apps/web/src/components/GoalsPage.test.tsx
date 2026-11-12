@@ -11,7 +11,7 @@ import { GoalsPage } from "./GoalsPage.js";
 
 const goal = GoalSchema.parse({ id: "goal_1", organization_id: "org_default", project_id: "proj_artoo", room_id: null, owner_user_id: "user_1", title: "A reliable release", objective: "Make delivery repeatable", priority: "p2", status: "draft", acceptance_criteria: ["Evidence is reviewed"], stop_conditions: {}, budgets: {}, current_plan_id: null, running_since: null, elapsed_cost_usd: null, retry_count: 0, created_at: "2026-10-01", updated_at: "2026-10-01" });
 function api(overrides: Partial<ApiClient> = {}) {
-  return fakeApi({ bootstrap: async () => bootstrapFixture(), listGoals: async () => ({ goals: [goal] }), listPlans: async () => ({ plans: [] }), listCheckpoints: async () => ({ checkpoints: [] }), listDiscussions: async () => ({ discussions: [] }), listChannels: async () => ({ channels: [] }), ...overrides });
+  return fakeApi({ bootstrap: async () => bootstrapFixture(), listGoals: async () => ({ goals: [goal] }), listTasks: async () => ({ tasks: [] }), listPlans: async () => ({ plans: [] }), listCheckpoints: async () => ({ checkpoints: [] }), listDiscussions: async () => ({ discussions: [] }), listChannels: async () => ({ channels: [] }), ...overrides });
 }
 
 describe("GoalsPage", () => {
@@ -21,10 +21,9 @@ describe("GoalsPage", () => {
 
   it("takes an outcome into setup without starting agents before explicit confirmation", async () => {
     const createAutonomousGoal = vi.fn<ApiClient["createAutonomousGoal"]>().mockResolvedValue({ goal, automation });
-    renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal }) });
+    renderWithProviders(<GoalsPage />, { client: api({ createAutonomousGoal, listGoals: async () => ({ goals: [] }) }) });
     await waitFor(() => expect(screen.getByLabelText("Outcome to plan")).toBeEnabled());
     await userEvent.type(screen.getByLabelText("Outcome to plan"), "Build a journal with offline entries");
-    await userEvent.selectOptions(screen.getByLabelText("Planning approach"), "autonomous");
     await userEvent.click(screen.getByRole("button", { name: "Review setup" }));
     expect(createAutonomousGoal).not.toHaveBeenCalled();
     await userEvent.click(within(screen.getByRole("dialog", { name: "New goal" })).getByRole("button", { name: "Cancel" }));
@@ -33,6 +32,7 @@ describe("GoalsPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Review setup" }));
     const dialog = screen.getByRole("dialog", { name: "New goal" });
     expect(within(dialog).getByLabelText("Objective")).toHaveValue("Build a journal with offline entries");
+    await userEvent.selectOptions(within(dialog).getByLabelText("Execution mode"), "autonomous");
     expect(within(dialog).getByLabelText("Execution mode")).toHaveValue("autonomous");
     await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
     await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledWith(expect.objectContaining({ objective: "Build a journal with offline entries", execution_mode: "agent_team" }), expect.any(String)));

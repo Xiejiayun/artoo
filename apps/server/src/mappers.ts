@@ -71,6 +71,8 @@ export function mapTask(row: typeof tasks.$inferSelect): Task {
     organization_id: row.organizationId,
     project_id: row.projectId,
     parent_task_id: row.parentTaskId,
+    goal_id: row.goalId,
+    source_plan_id: row.sourcePlanId,
     room_id: row.roomId,
     title: row.title,
     description: row.description,

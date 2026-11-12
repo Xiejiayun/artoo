@@ -14,7 +14,7 @@ test("project views, saved theme, and mobile navigation stay usable", async ({ p
   const views = page.getByRole("navigation", { name: "Project views", exact: true });
   for (const [label, pathname, heading] of [["Plan", "/goals", "Plan"], ["Board", "/board", /^Board/], ["Release", "/release", "Release"]] as const) {
     await views.getByRole("link", { name: label, exact: true }).click();
-    await expect(page).toHaveURL(new RegExp(`${pathname}$`));
+    await expect(page).toHaveURL(new RegExp(`${pathname}(\\?.*)?$`));
     await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible();
     await expect(views.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
   }
@@ -49,7 +49,8 @@ test("Release shows a real goal without claiming it has been published", async (
   const overview = page.getByRole("region", { name: "Publication overview" });
   await expect(overview.getByRole("heading", { name: title })).toBeVisible();
   await expect(overview).toContainText("Not published");
-  await expect(page.getByRole("region", { name: "Release checks" }).getByText("Pending", { exact: true })).toHaveCount(3);
+  await expect(page.getByRole("region", { name: "Release checks" }).getByText("Not configured", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Release checks" }).getByText("Pending", { exact: true })).toHaveCount(0);
   await expect(overview.getByRole("link", { name: "Open published product" })).toHaveCount(0);
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
@@ -65,6 +66,8 @@ test("the outcome composer reviews setup before creating a goal and keeps releas
   const outcome = `A reviewable product ${Date.now()}`;
   let createRequests = 0;
   page.on("request", (item) => { if (item.method() === "POST" && new URL(item.url()).pathname === "/api/v1/goals") createRequests++; });
+  const composer = page.locator(".delivery-new-outcome");
+  if (!(await composer.getAttribute("open") !== null)) await composer.locator("summary").click();
   await page.getByLabel("Outcome to plan").fill(outcome);
   await page.getByRole("button", { name: "Review setup", exact: true }).click();
   const setup = page.getByRole("dialog", { name: "New goal", exact: true });

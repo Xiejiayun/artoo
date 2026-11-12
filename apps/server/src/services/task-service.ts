@@ -5,6 +5,7 @@ import {
   agents,
   approvals,
   artifacts,
+  autonomousReviews,
   computers,
   effortProfiles,
   eventLog,
@@ -162,7 +163,19 @@ export async function listTasks(ctx: ServerContext, projectId: string): Promise<
     .from(tasks)
     .where(and(eq(tasks.organizationId, ctx.organizationId), eq(tasks.projectId, projectId)))
     .orderBy(asc(tasks.createdAt), asc(tasks.id));
-  return rows.map(mapTask);
+  // Review tasks deliberately have no scheduling goalId. Expose their original
+  // task's provenance in this read model without changing reconciliation.
+  const reviewLinks = await ctx.db.db.select({
+    taskId: autonomousReviews.reviewTaskId, goalId: autonomousReviews.goalId, planId: tasks.sourcePlanId,
+  }).from(autonomousReviews).innerJoin(tasks, and(
+    eq(tasks.id, autonomousReviews.taskId), eq(tasks.goalId, autonomousReviews.goalId),
+    eq(tasks.organizationId, ctx.organizationId), eq(tasks.projectId, projectId),
+  )).where(eq(autonomousReviews.organizationId, ctx.organizationId));
+  const links = new Map(reviewLinks.map((link) => [link.taskId, link]));
+  return rows.map((row) => {
+    const task = mapTask(row), link = links.get(row.id);
+    return link && !row.goalId ? { ...task, goal_id: link.goalId, source_plan_id: link.planId } : task;
+  });
 }
 
 /**
