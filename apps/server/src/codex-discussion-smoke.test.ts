@@ -113,9 +113,10 @@ describe.skipIf(!enabled)("gated real Codex multi-agent discussion", () => {
     const instanceIds: string[] = [];
     for (const displayName of ["Live planner", "Live reviewer"]) {
       const response = await server.app.inject({ method: "POST", url: "/api/v1/computers/computer_local_mock/instances", payload: {
-        runtime: "codex", workspace_root: workspace, display_name: displayName, capabilities: ["code.read"],
+        project_id: "proj_artoo", runtime: "codex", workspace_root: workspace, display_name: displayName, capabilities: ["code.read"],
       } });
       expect(response.statusCode).toBe(201);
+      expect(response.json().agent_instance.project_id).toBe("proj_artoo");
       instanceIds.push(response.json().agent_instance.id as string);
     }
     expect(new Set(instanceIds).size).toBe(2);
