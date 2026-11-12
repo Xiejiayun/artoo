@@ -83,6 +83,7 @@ export function bootstrapFixture(partial: Partial<BootstrapResponse> = {}): Boot
     agent_instances: [
       {
         id: "instance_mock_coder",
+        project_id: "proj_artoo",
         organization_id: "org_default",
         computer_id: "computer_local_mock",
         agent_id: "agent_mock_coder",

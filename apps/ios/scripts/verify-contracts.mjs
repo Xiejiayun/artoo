@@ -51,9 +51,9 @@ const routes = ["/auth/session", "/auth/logout", "/api/v1/devices/claim", "/api/
   "/api/v1/goals/:id/audit-bundle", "/api/v1/goals/:id/audit-bundle/export", "/api/v1/goals/:id/reconcile",
   "/api/v1/rooms/:roomId/decisions", "/api/v1/rooms/:roomId/handoffs", "/api/v1/rooms/:roomId/blockers",
   "/api/v1/memories", "/api/v1/memories/:id/supersede", "/api/v1/skills/install", "/api/v1/computers/presence",
-  "/api/v1/computers/:id/runtimes", "/api/v1/computers/:id/instances", "/api/v1/agent-instances/:id", "/api/v1/artifacts/:id/content",
+  "/api/v1/computers/:id/runtimes", "/api/v1/computers/:id/instances", "/api/v1/agent-instances/:id", "/api/v1/agent-instances/:id/project", "/api/v1/artifacts/:id/content",
   "/api/v1/ws", "/api/v1/rooms/:id/assistant-turns", "/api/v1/assistant-turns/:id/cancel", "/api/v1/assistant-turns/:id/retry",
-  "/api/v1/channels", "/api/v1/members", "/api/v1/notifications", "/api/v1/notifications/:id/read", "/api/v1/rooms/:id/messages/:messageId", "/api/v1/daemons",
+  "/api/v1/channels", "/api/v1/members", "/api/v1/notifications", "/api/v1/notifications/:id/read", "/api/v1/rooms/:id", "/api/v1/rooms/:id/messages/:messageId", "/api/v1/daemons",
   "/api/v1/goals/:id/discussions", "/api/v1/discussions/:id", "/api/v1/discussions/:id/cancel", "/api/v1/discussions/:id/propose-plan", "/api/v1/runs/:id/usage"];
 for (const route of routes) assert.ok(server.includes(`"${route}"`), `Native contract requires a missing server route: ${route}`);
 assert.ok(source.includes('"depends_on_task_id"'), "Native dependency writes require depends_on_task_id");

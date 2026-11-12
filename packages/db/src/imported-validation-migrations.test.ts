@@ -2,7 +2,7 @@ import { PgliteDbClient } from "@artoo/storage";
 import { sql, type SQL } from "drizzle-orm";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
-import { seed } from "./seed.js";
+import { seedPreProjectSquads as seed } from "./migration-test-support.js";
 
 const h6Tables = [
   "goal_imported_execution_receipts",

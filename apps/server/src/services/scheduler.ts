@@ -219,7 +219,8 @@ export async function scheduleTask(
         eq(agentRuntimes.runtime, agentInstances.runtime),
       ),
     )
-    .where(and(eq(agentInstances.organizationId, ctx.organizationId), isNull(agentInstances.deletedAt), isNull(computers.deletedAt), isNull(agents.deletedAt)));
+    .where(and(eq(agentInstances.organizationId, ctx.organizationId), eq(agentInstances.projectId, opts.projectId),
+      isNull(agentInstances.deletedAt), isNull(computers.deletedAt), isNull(agents.deletedAt)));
 
   const now = ctx.clock.nowIso();
   const expiryMs = resourceExpiryMs();
@@ -350,13 +351,16 @@ export async function scheduleTask(
     if (permitted.length > 0 && supported.length === 0) {
       throw AppError.conflict("No eligible current node session supports the configured per-run workspace allocation");
     }
+    if (rows.length === 0) {
+      throw new AppError("runtime_unavailable", "This project's squad is empty; assign an agent instance before starting work", 409);
+    }
     const anyOnline = rows.some((r) => r.computerStatus === "online");
     if (!anyOnline) {
       throw new AppError("computer_offline", "no online computer is available", 409);
     }
     throw new AppError(
       "runtime_unavailable",
-      "no eligible idle agent instance for the required capabilities",
+      "no eligible idle agent instance in this project's squad for the required capabilities",
       409,
       { required_capabilities: required },
     );

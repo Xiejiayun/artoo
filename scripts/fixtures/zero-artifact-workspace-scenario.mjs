@@ -159,7 +159,7 @@ export async function createZeroArtifactWorkspaceScenario({ root, temporary, pro
     await until(async () => (await request("/api/v1/daemons")).daemons.some((daemon) => daemon.computer_id === fields.computer_id && daemon.status === "online" && daemon.connected
       && daemon.runtimes.some((runtime) => runtime.runtime === fields.runtime_id)), "Zero-artifact node did not publish its runtime", 30_000);
     const created = await request(`/api/v1/computers/${fields.computer_id}/instances`, { runtime: fields.runtime_id,
-      workspace_root: workspaceRoot, display_name: fields.instance_name, capabilities: ["code.modify"] });
+      project_id: projectId, workspace_root: workspaceRoot, display_name: fields.instance_name, capabilities: ["code.modify"] });
     fields.instance_id = created.agent_instance.id;
     observer = createZeroArtifactWorkspaceObserver({ setup, request, computerId: fields.computer_id,
       instanceId: fields.instance_id, until });

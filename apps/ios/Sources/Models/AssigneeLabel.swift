@@ -1,5 +1,13 @@
 import Foundation
 
+/// Missing legacy ownership is unassigned, never an organization-wide squad.
+enum ProjectSquad {
+    static func instances(_ inventory: [WorkspaceRecord], projectId: String?) -> [WorkspaceRecord] {
+        guard let projectId, !projectId.isEmpty else { return [] }
+        return inventory.filter { $0["project_id"] == .string(projectId) }
+    }
+}
+
 /// Inventory refresh never rewrites an explicit execution target as automatic.
 enum AgentSelectionAvailability: Equatable {
     case automatic, checking, available, unavailable

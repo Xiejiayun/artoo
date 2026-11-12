@@ -100,7 +100,7 @@ async function sourceAuthor(ctx: ServerContext, tx: DrizzleDb, operation: Produc
 async function reviewerAdmission(ctx: ServerContext, tx: DrizzleDb, request: ImportedProductReviewRequestV1) {
   const base = request.operation.intent.request.byte_request;
   const author = await sourceAuthor(ctx, tx, request.operation);
-  const [instance] = await tx.select().from(agentInstances).where(and(eq(agentInstances.id, request.reviewer.instance_id), eq(agentInstances.organizationId, ctx.organizationId))).for("update");
+  const [instance] = await tx.select().from(agentInstances).where(and(eq(agentInstances.id, request.reviewer.instance_id), eq(agentInstances.organizationId, ctx.organizationId), eq(agentInstances.projectId, base.project_id))).for("update");
   // Ordinary assignTask takes this same instance -> computer ordering and repeats its imported occupancy query afterwards.
   const [computer] = instance ? await tx.select().from(computers).where(and(eq(computers.id, instance.computerId), eq(computers.organizationId, ctx.organizationId))).for("update") : [];
   const [agent] = instance ? await tx.select().from(agents).where(and(eq(agents.id, instance.agentId), eq(agents.organizationId, ctx.organizationId))) : [];

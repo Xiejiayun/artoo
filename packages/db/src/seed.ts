@@ -2,6 +2,7 @@ import type { DbClient } from "@artoo/storage";
 import { sql } from "drizzle-orm";
 
 import {
+  agentInstances,
   agentRuntimes,
   effortProfiles,
   modelProfiles,
@@ -114,10 +115,20 @@ export async function seed(
       metadata: {},
     });
 
-    if (options.demoResources !== false) await tx.execute(sql`
-      INSERT INTO agent_instances (id, organization_id, computer_id, agent_id, runtime, model_profile_id, effort_profile_id, status, workspace_root, config, created_at)
-      VALUES (${ids.agentInstanceId}, ${ids.organizationId}, ${ids.computerId}, ${ids.agentId}, 'mock', 'model_standard_coding', 'effort_standard_coding', 'idle', ${workspaceRoot}, '{}'::jsonb, ${now})
-    `);
+    if (options.demoResources !== false) await tx.insert(agentInstances).values({
+      id: ids.agentInstanceId,
+      organizationId: ids.organizationId,
+      projectId: ids.projectId,
+      computerId: ids.computerId,
+      agentId: ids.agentId,
+      runtime: "mock",
+      modelProfileId: "model_standard_coding",
+      effortProfileId: "effort_standard_coding",
+      status: "idle",
+      workspaceRoot,
+      config: {},
+      createdAt: now,
+    });
   });
 
   return ids;

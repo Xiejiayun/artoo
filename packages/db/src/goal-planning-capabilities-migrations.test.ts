@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
 import { goalAutomations, goals } from "./schema.js";
-import { seed } from "./seed.js";
+import { seedPreProjectSquads as seed } from "./migration-test-support.js";
 
 const now = "2026-11-05T00:00:00Z";
 const unknownScope = { version: 1, computer_id: "computer_local_mock", project_id: "proj_artoo", workspace_root: "/product/草稿",

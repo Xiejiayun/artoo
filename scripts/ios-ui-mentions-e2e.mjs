@@ -14,6 +14,7 @@ import { expectedNativeScreenshots, getE2EReportContext, readXCTestScreenshots, 
 import { closeOwnedProcessGroup } from "./owned-process-group.mjs";
 import { closeOwnedBrowser } from "./owned-browser.mjs";
 import { hasCompletePNGPixelStream, MAX_PNG_BYTES } from "./png-evidence.mjs";
+import { nativeUIFixtureSessionConfig } from "../apps/ios/scripts/ui-suite-contract.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 if (process.argv.length !== 2) throw new Error("Usage: node scripts/ios-ui-mentions-e2e.mjs");
@@ -68,7 +69,7 @@ async function main() {
     const origin = `http://localhost:${address.port}`;
     assert.equal((await fetch(`${origin}/api/v1/bootstrap`, { signal: AbortSignal.any([interrupted.signal, AbortSignal.timeout(15_000)]) })).status, 401);
     assert.equal(server.persistent, true); assert.equal(server.ctx.deviceAuth.devControlEscape, false); assert.equal(server.ctx.deviceAuth.devNodeToken, null);
-    const owner = await createSession(server.ctx, { ttlMs: 3_600_000 }, { userId: "user_owner" });
+    const owner = await createSession(server.ctx, nativeUIFixtureSessionConfig("mentions"), { userId: "user_owner" });
     const ownerHeaders = { Authorization: `Bearer ${owner.raw}` };
     const request = async (path, body, token = owner.raw) => {
       const response = await fetch(`${origin}${path}`, { method: body === undefined ? "GET" : "POST",

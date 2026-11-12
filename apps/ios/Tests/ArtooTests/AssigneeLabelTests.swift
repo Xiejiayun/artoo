@@ -6,6 +6,24 @@ final class AssigneeLabelTests: XCTestCase {
         try XCTUnwrap(WorkspaceRecord(.object(fields)))
     }
 
+    func testProjectSquadsExcludeForeignNullAndLegacyOwnershipWithoutChangingSavedSelections() throws {
+        let current = try record(["id": .string("current"), "project_id": .string("one"), "status": .string("idle")])
+        let foreign = try record(["id": .string("foreign"), "project_id": .string("two"), "status": .string("idle")])
+        let unassigned = try record(["id": .string("unassigned"), "project_id": .null])
+        let legacy = try record(["id": .string("legacy")])
+        let inventory = [current, foreign, unassigned, legacy]
+        let squad = ProjectSquad.instances(inventory, projectId: "one")
+        XCTAssertEqual(squad, [current])
+        XCTAssertEqual(ProjectSquad.instances(inventory, projectId: "two"), [foreign])
+        let emptyProjects: [String?] = [nil, "", "new-project"]
+        for projectId in emptyProjects {
+            XCTAssertTrue(ProjectSquad.instances(inventory, projectId: projectId).isEmpty)
+        }
+        XCTAssertEqual(AgentSelectionAvailability.resolve(instanceId: foreign.id, instances: squad, loaded: true), .unavailable)
+        XCTAssertEqual(AgentSelectionAvailability.resolve(instanceId: nil, instances: squad, loaded: true), .automatic)
+        XCTAssertEqual(inventory.count, 4, "Filtering execution choices must preserve the identity directory for historical messages")
+    }
+
     func testExplicitAgentBecomesUnavailableWhenDisabledRemovedOrReplacedBySameName() throws {
         let selected = try record(["id": .string("ai_selected"), "display_name": .string("Coding agent"), "status": .string("idle")])
         let disabled = try record(["id": .string(selected.id), "display_name": .string("Coding agent"), "status": .string("disabled")])

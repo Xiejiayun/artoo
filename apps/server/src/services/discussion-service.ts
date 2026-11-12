@@ -69,8 +69,10 @@ export async function startDiscussion(ctx: ServerContext, goalId: string, reques
     const roomId = input.room_id ?? goal.roomId;
     const room = roomId ? (await tx.select().from(rooms).where(and(eq(rooms.id, roomId), eq(rooms.projectId, goal.projectId), eq(rooms.organizationId, ctx.organizationId))))[0] : undefined;
     if (!room || (room.id !== goal.roomId && room.type !== "project")) throw AppError.validation("Choose this goal's room or a channel in the same project");
-    const selected = await tx.select().from(agentInstances).where(and(eq(agentInstances.organizationId, ctx.organizationId), isNull(agentInstances.deletedAt), inArray(agentInstances.id, input.participants.map((p) => p.agent_instance_id)))).for("share");
-    if (selected.length !== input.participants.length) throw AppError.validation("Every participant must be an agent instance in this team");
+    const selected = await tx.select().from(agentInstances).where(and(eq(agentInstances.organizationId, ctx.organizationId),
+      eq(agentInstances.projectId, goal.projectId), isNull(agentInstances.deletedAt),
+      inArray(agentInstances.id, input.participants.map((p) => p.agent_instance_id)))).for("share");
+    if (selected.length !== input.participants.length) throw AppError.validation("Every participant must belong to this project's squad");
     const allowed = (goal.budgets as { allowed_runtimes?: string[] | null }).allowed_runtimes;
     if (allowed && selected.some((instance) => !allowed.includes(instance.runtime))) throw AppError.validation("A selected agent runtime is outside this goal's allowed runtimes");
     const now = ctx.clock.nowIso(), id = ctx.idGen.generate("discussion"), taskId = ctx.idGen.generate(ID_PREFIXES.task), rootId = ctx.idGen.generate(ID_PREFIXES.message);

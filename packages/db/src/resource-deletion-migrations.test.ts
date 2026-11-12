@@ -2,7 +2,7 @@ import { PgliteDbClient } from "@artoo/storage";
 import { sql } from "drizzle-orm";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
-import { seed } from "./seed.js";
+import { seedPreProjectSquads as seed } from "./migration-test-support.js";
 
 it("adds nullable resource tombstones without changing historical resources or replaying the upgrade", async () => {
   const before = await loadMigrationStatements("0056_linux_devices.sql");

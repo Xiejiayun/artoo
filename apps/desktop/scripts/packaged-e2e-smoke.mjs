@@ -684,8 +684,9 @@ ${isMac ? "}" : ""}
       zeroArtifactSetup = createZeroArtifactWorkspaceSetup({ temporary: tempRoot, projectId: "proj_artoo", suffix: zeroArtifactSuffix, runtimeId: "codex" });
       assert.equal(zeroArtifactSetup.configurationPath, zeroArtifactConfigurationPath);
       const zeroInstance = (await fixtureRequest(`/api/v1/computers/${connection.computerId}/instances`, { runtime: "codex",
-        workspace_root: zeroArtifactSetup.fields.workspace_root, display_name: zeroArtifactSetup.fields.instance_name, capabilities: ["code.modify"] })).agent_instance;
+        project_id: zeroArtifactSetup.fields.project_id, workspace_root: zeroArtifactSetup.fields.workspace_root, display_name: zeroArtifactSetup.fields.instance_name, capabilities: ["code.modify"] })).agent_instance;
       assert.equal(zeroInstance.computer_id, connection.computerId);
+      assert.equal(zeroInstance.project_id, zeroArtifactSetup.fields.project_id);
       zeroArtifactScenario = createZeroArtifactWorkspaceObserver({ setup: zeroArtifactSetup, request: correctionApi,
         computerId: connection.computerId, instanceId: zeroInstance.id });
       const restartArtifactConfiguration = async (value) => {

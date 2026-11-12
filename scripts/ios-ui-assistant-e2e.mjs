@@ -11,7 +11,7 @@ import { createAssistantFixture } from "./ios-ui-assistant-fixture.mjs";
 import { verifyAssistantConversationResults } from "./fixtures/assistant-conversation-results.mjs";
 import { expectedNativeScreenshots, getE2EReportContext, readXCTestScreenshots, writeE2EReport } from "./e2e-report.mjs";
 import { closeOwnedProcessGroup } from "./owned-process-group.mjs";
-import { nativeUISuiteTimeouts } from "../apps/ios/scripts/ui-suite-contract.mjs";
+import { nativeUIFixtureSessionConfig, nativeUISuiteTimeouts } from "../apps/ios/scripts/ui-suite-contract.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const assistantTimeouts = nativeUISuiteTimeouts("assistant");
@@ -59,7 +59,7 @@ async function main() {
     const origin = `http://localhost:${address.port}`;
     assert.equal((await fetch(`${origin}/api/v1/bootstrap`, { signal: AbortSignal.any([interrupted.signal, AbortSignal.timeout(15_000)]) })).status, 401);
     assert.equal(server.persistent, true); assert.equal(server.ctx.deviceAuth.devControlEscape, false); assert.equal(server.ctx.deviceAuth.devNodeToken, null);
-    const owner = await createSession(server.ctx, { ttlMs: 3_600_000 }, { userId: "user_owner" });
+    const owner = await createSession(server.ctx, nativeUIFixtureSessionConfig("assistant"), { userId: "user_owner" });
     const request = async (path, body, token = owner.raw) => {
       const response = await fetch(`${origin}${path}`, { method: body === undefined ? "GET" : "POST",
         headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json", "Idempotency-Key": randomUUID() }) },

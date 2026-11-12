@@ -67,6 +67,21 @@ describe("skill inventory and agent associations", () => {
     expect(screen.queryByText("No native skills discovered for this workspace.")).not.toBeInTheDocument();
   });
 
+  it("keeps skill searches inside the selected project squad", async () => {
+    const user = userEvent.setup(), { bootstrap, runtime } = fixture();
+    bootstrap.projects.push({ id: "second", name: "Second project", default_workspace: "/second" });
+    bootstrap.agents.push({ ...bootstrap.agents[0]!, id: "second_agent", display_name: "Second Coder" });
+    bootstrap.agent_instances.push({ ...bootstrap.agent_instances[0]!, id: "second_instance", agent_id: "second_agent", project_id: "second" });
+    renderWithProviders(<AgentsPage />, { client: fakeApi({ bootstrap: async () => bootstrap, listSkillInstalls: async () => ({ skills: [] }), listComputerRuntimes: async () => ({ runtimes: [runtime] }) }), route: "/agents?project=second" });
+    const card = await screen.findByRole("article", { name: "Second Coder" });
+    expect(await within(card).findByText("Browser testing")).toBeInTheDocument();
+    await user.type(screen.getByRole("searchbox", { name: "Search agents" }), "screenshots browser");
+    expect(screen.getByRole("article", { name: "Second Coder" })).toBeInTheDocument();
+    expect(screen.queryByRole("article", { name: "Mock Coder" })).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Project scope"), "all");
+    expect(screen.getAllByRole("article")).toHaveLength(2);
+  });
+
   it("reports discovery errors without presenting them as an empty successful scan", async () => {
     const { bootstrap } = fixture();
     renderWithProviders(<SkillsPage />, { client: fakeApi({ bootstrap: async () => bootstrap, listSkillInstalls: async () => ({ skills: [] }), listComputerRuntimes: async () => { throw new Error("offline"); } }) });

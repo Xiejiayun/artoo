@@ -7,6 +7,17 @@ import { bootstrapFixture, fakeApi, renderWithProviders } from "../test/utils.js
 import { AgentsPage, ComputersPage, SkillsPage } from "./InventoryPages.js";
 
 describe("Inventory pages", () => {
+  it("helps an empty project choose an existing instance without inheriting another squad", async () => {
+    const data = bootstrapFixture();
+    data.projects.push({ id: "second", name: "Second project", default_workspace: "/second" });
+    renderWithProviders(<AgentsPage />, { client: fakeApi({ bootstrap: async () => data }), route: "/agents?project=second" });
+    expect(await screen.findByText("This project's squad is empty")).toBeInTheDocument();
+    expect(screen.queryByRole("article", { name: "Mock Coder" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Choose an existing instance" }));
+    expect(screen.getByLabelText("Project scope")).toHaveValue("all");
+    expect(screen.getByRole("article", { name: "Mock Coder" })).toBeInTheDocument();
+  });
+
   it("filters enabled and disabled agents independently of connection and work state", async () => {
     const user = userEvent.setup();
     const bootstrap = bootstrapFixture();

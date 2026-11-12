@@ -45,7 +45,7 @@ describe("Resource setup", () => {
     expect(installSkill).not.toHaveBeenCalled();
   });
 
-  it("registers the selected runtime and trimmed workspace without changing the API contract", async () => {
+  it("registers the selected runtime and trimmed workspace in the current project's squad", async () => {
     const user = userEvent.setup();
     const registerAgent = vi.fn(async () => ({}));
     renderWithProviders(<AgentRegistration computerId="computer_local_mock" computerName="Local Mock" runtimes={[runtime]} />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), registerAgent }) });
@@ -55,7 +55,7 @@ describe("Resource setup", () => {
     await user.selectOptions(screen.getByLabelText("Agent runtime"), "mock");
     await user.type(screen.getByLabelText("Agent workspace path"), " C:/workspace/team ");
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create instance" }));
-    await waitFor(() => expect(registerAgent).toHaveBeenCalledWith("computer_local_mock", { runtime: "mock", workspace_root: "C:/workspace/team", display_name: "Code reviewer" }, expect.any(String)));
+    await waitFor(() => expect(registerAgent).toHaveBeenCalledWith("computer_local_mock", { project_id: "proj_artoo", runtime: "mock", workspace_root: "C:/workspace/team", display_name: "Code reviewer" }, expect.any(String)));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(screen.getByText("Instance created. Find it in your Agent Squad.")).toBeInTheDocument();
   });
@@ -78,7 +78,7 @@ describe("Resource setup", () => {
     expect(screen.getByLabelText("Agent workspace path")).toHaveValue("C:/ArtooWorkspaces");
     expect(screen.queryByLabelText("Agent display name")).not.toBeInTheDocument();
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create instance" }));
-    await waitFor(() => expect(registerAgent).toHaveBeenCalledWith("computer_local_mock", { agent_id: "agent_mock_coder", runtime: "mock", workspace_root: "C:/ArtooWorkspaces" }, expect.any(String)));
+    await waitFor(() => expect(registerAgent).toHaveBeenCalledWith("computer_local_mock", { project_id: "proj_artoo", agent_id: "agent_mock_coder", runtime: "mock", workspace_root: "C:/ArtooWorkspaces" }, expect.any(String)));
   });
 
   it("prevents assigning an existing Agent to an incompatible runtime", async () => {

@@ -151,7 +151,7 @@ export async function createCorrectionObserver({ root, setup, server, origin, re
     assert.equal(fields.instances.length, 0, "Instance fixture can only be provisioned once");
     for (let index = 0; index < 4; index++) {
       const created = await request(`/api/v1/computers/${computerId}/instances`, { runtime: runtimeId,
-        workspace_root: setup.workspaceRoots[index], display_name: fields.instance_names[index], capabilities: ["code.modify"] });
+        project_id: fields.project_id, workspace_root: setup.workspaceRoots[index], display_name: fields.instance_names[index], capabilities: ["code.modify"] });
       assert.equal(created.agent_instance.computer_id, computerId);
       fields.instances.push({ id: created.agent_instance.id, name: fields.instance_names[index], root: setup.workspaceRoots[index] });
     }

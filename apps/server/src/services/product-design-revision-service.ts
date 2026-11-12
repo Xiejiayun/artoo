@@ -68,7 +68,7 @@ export async function requestProductDesignRevision(ctx: ServerContext, tx: Drizz
     || subject.computerId !== baseline.computerId || subject.workspaceRoot !== baseline.workspaceRoot
     || [baseline, subject].some(run => run.requestedByUserId !== automation.actorUserId || run.aiDataSharingConsentId !== automation.consentId
       || run.aiDataSharingPolicyVersion !== automation.policyVersion)) throw AppError.conflict("Revision must reuse the exact accepted design and its original local owner");
-  const [author] = await tx.select().from(agentInstances).where(and(eq(agentInstances.id, authorId), eq(agentInstances.organizationId, ctx.organizationId))).for("update");
+  const [author] = await tx.select().from(agentInstances).where(and(eq(agentInstances.id, authorId), eq(agentInstances.organizationId, ctx.organizationId), eq(agentInstances.projectId, goal.projectId))).for("update");
   const [computer] = await tx.select().from(computers).where(and(eq(computers.id, baseline.computerId), eq(computers.organizationId, ctx.organizationId))).for("update");
   if (!author || author.runtime === "mock" || !computer || !["win32", "windows"].includes(computer.os)) throw AppError.conflict("Local design revision requires an ordinary native Windows author");
   const uncertain = await unconfirmedDisconnectRunIds(ctx, tx, { computerId: computer.id });

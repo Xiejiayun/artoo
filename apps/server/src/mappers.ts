@@ -154,6 +154,7 @@ export function mapEffortProfile(row: typeof effortProfiles.$inferSelect): Effor
 export function mapAgentInstance(row: typeof agentInstances.$inferSelect): AgentInstance {
   return AgentInstanceSchema.parse({
     id: row.id,
+    project_id: row.projectId,
     organization_id: row.organizationId,
     computer_id: row.computerId,
     agent_id: row.agentId,

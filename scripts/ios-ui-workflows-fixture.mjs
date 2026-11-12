@@ -84,6 +84,7 @@ export async function registerExecutorCollision({ original, request, peerToken }
   const instance = original.agent_instance;
   const created = await request(`/api/v1/computers/${instance.computer_id}/instances`, {
     runtime: instance.runtime, workspace_root: instance.workspace_root,
+    ...(instance.project_id === undefined ? {} : { project_id: instance.project_id }),
     display_name: original.agent.display_name, capabilities: original.agent.capabilities,
   }, peerToken);
   assert.ok(typeof created.agent_instance.id === "string" && created.agent_instance.id.length > 0);
@@ -167,7 +168,7 @@ export async function createWorkflowFixture({ root, temporary, origin, projectId
     let executorRegistration;
     for (const role of ["planner", "reviewer", "executor"]) {
       const created = await request(`/api/v1/computers/${fields.computer_id}/instances`, {
-        runtime: `ui-${role}`, workspace_root: workspaces[role], display_name: fields[`${role}_name`], capabilities: [role === "executor" ? "code.modify" : "code.read"],
+        project_id: projectId, runtime: `ui-${role}`, workspace_root: workspaces[role], display_name: fields[`${role}_name`], capabilities: [role === "executor" ? "code.modify" : "code.read"],
       }, peerToken);
       fields[`${role}_instance_id`] = created.agent_instance.id;
       fields[`${role}_agent_id`] = created.agent.id;

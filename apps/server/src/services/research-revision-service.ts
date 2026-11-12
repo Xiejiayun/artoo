@@ -112,7 +112,7 @@ export async function ensureGoalResearchRevision(ctx: ServerContext, tx: Drizzle
     throw AppError.conflict("Reserved research destination differs from the original frozen pool");
   const roles = [snapshot.source.writer, snapshot.source.reviewer, descriptor.writer, descriptor.reviewer];
   for (const role of [...roles].sort((a, b) => a.instance_id.localeCompare(b.instance_id))) {
-    const [instance] = await tx.select().from(agentInstances).where(and(eq(agentInstances.id, role.instance_id), eq(agentInstances.organizationId, ctx.organizationId))).for("update");
+    const [instance] = await tx.select().from(agentInstances).where(and(eq(agentInstances.id, role.instance_id), eq(agentInstances.organizationId, ctx.organizationId), eq(agentInstances.projectId, snapshot.project_id))).for("update");
     const sourceRole = role.instance_id === snapshot.source.writer.instance_id || role.instance_id === snapshot.source.reviewer.instance_id;
     if (!instance || instance.agentId !== role.agent_id || instance.runtime !== role.runtime || instance.runtime === "mock"
       || instance.modelProfileId !== role.model_profile_id || instance.effortProfileId !== role.effort_profile_id

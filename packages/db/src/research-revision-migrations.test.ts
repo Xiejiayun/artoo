@@ -4,7 +4,7 @@ import { sql } from "drizzle-orm";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { expect, it } from "vitest";
 import { loadMigrationStatements } from "./migrations.js";
-import { seed } from "./seed.js";
+import { seedPreProjectSquads as seed } from "./migration-test-support.js";
 import { goalResearchDestinationPools, goalResearchDestinationSlots, goalResearchRevisions } from "./schema.js";
 
 it("upgrades actual 0052 without rewriting existing rows or triggers and keeps the new research tables guarded", async () => {

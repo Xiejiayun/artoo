@@ -23,13 +23,14 @@ export function AgentRegistration({ computerId, computerName, runtimes, allowedR
   const [name, setName] = useState("");
   const [capabilities, setCapabilities] = useState("");
   const [agentId, setAgentId] = useState("");
-  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
+  const [instanceProjectId, setInstanceProjectId] = useState("");
+  const { bootstrap, projectId } = useProject();
   const agents = bootstrap.data?.agents ?? [];
   const selectedAgent = agents.find((agent) => agent.id === agentId);
   const creatingAgent = agentId === "__new__";
   const compatible = (item: AgentRuntime): boolean => item.status === "available" && (!selectedAgent || selectedAgent.capabilities.every((capability) => item.capabilities.includes(capability)));
   const mutation = useMutation({ mutationFn: () => api.registerAgent(computerId, {
-    runtime, workspace_root: workspace.trim(),
+    runtime, workspace_root: workspace.trim(), project_id: instanceProjectId || null,
     ...(creatingAgent ? { display_name: name.trim() || undefined, ...(capabilities.trim() ? { capabilities: capabilities.split(",").map((item) => item.trim()).filter(Boolean) } : {}) } : { agent_id: agentId }),
   }, newIdempotencyKey()), onSuccess: async () => { await query.invalidateQueries({ queryKey: queryKeys.bootstrap }); setOpen(false); setName(""); setCapabilities(""); } });
   const openForm = (): void => {
@@ -38,6 +39,7 @@ export function AgentRegistration({ computerId, computerName, runtimes, allowedR
     setAgentId(agent?.id ?? "__new__");
     setRuntime(runtimes.find((item) => item.status === "available" && (!agent || agent.capabilities.every((capability) => item.capabilities.includes(capability))))?.runtime ?? "");
     setWorkspace(allowedRoots[0] ?? "");
+    setInstanceProjectId(projectId ?? "");
     setOpen(true);
   };
   useEffect(() => {
@@ -51,6 +53,8 @@ export function AgentRegistration({ computerId, computerName, runtimes, allowedR
   return <><Button iconLeft={Plus} size="sm" onClick={openForm}>Create instance</Button>{mutation.isSuccess && <p className="resource-success" role="status"><Check size={15} aria-hidden="true" />Instance created. Find it in your Agent Squad.</p>}
     <Modal open={open} onClose={() => { if (!mutation.isPending) setOpen(false); }} title="Create agent instance"><form aria-label="Create agent instance" className="resource-form" onSubmit={(event) => { event.preventDefault(); if (!mutation.isPending && validAgent && validRuntime && workspace.trim()) mutation.mutate(); }}>
       <div className="resource-form__intro"><Bot size={22} aria-hidden="true" /><div><strong>{computerName ?? "This machine"}</strong><p>An instance gives an Agent a runtime and workspace on this machine.</p></div></div>
+      <Select label="Project squad" disabled={mutation.isPending} value={instanceProjectId} onChange={(event) => setInstanceProjectId(event.target.value)}><option value="">Unassigned</option>{bootstrap.data?.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select>
+      <p className="resource-form__notice">This instance only accepts work from its project. Create another instance with a separate workspace to use the same Agent in another project.</p>
       <Select label="Agent" required disabled={mutation.isPending} value={agentId} onChange={(event) => {
         const id = event.target.value, agent = agents.find((item) => item.id === id);
         setAgentId(id);

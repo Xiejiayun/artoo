@@ -1,6 +1,6 @@
 import { requireContentAllowed } from "./content-moderation-service.js";
 import { requireAiSharingAuthorization, requireRunAiSharingAuthorization } from "./ai-data-sharing-service.js";
-import { appendEvent, approvals, assistantTurns, autonomousReviews, contextPacks, discussions, goalAutomations, goals, messages, rooms, runs, tasks, users } from "@artoo/db";
+import { agentInstances, appendEvent, approvals, assistantTurns, autonomousReviews, contextPacks, discussions, goalAutomations, goals, messages, rooms, runs, tasks, users } from "@artoo/db";
 import { AssistantTurnSchema, ContextPackSchema, GoalBudgetsSchema, ID_PREFIXES, VerificationRequirementSchema, type AssistantTurn, type ContextPack, type SendAssistantTurnRequest } from "@artoo/domain";
 import { and, asc, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { ServerContext } from "../context.js";
@@ -71,6 +71,12 @@ export async function enqueueAssistantTurn(ctx: ServerContext, roomId: string, r
       const message = (await tx.select().from(messages).where(eq(messages.id, duplicate.userMessageId)))[0]!;
       if (message.body !== request.body || duplicate.agentInstanceId !== (request.agent_instance_id ?? null) || duplicate.threadRootId !== (request.thread_root_id ?? null)) throw AppError.conflict("This assistant request identity was already used for different content");
       return { turn: mapAssistantTurn(duplicate), message: mapMessage(message) };
+    }
+    if (request.agent_instance_id) {
+      const [instance] = await tx.select({ id: agentInstances.id }).from(agentInstances).where(and(
+        eq(agentInstances.id, request.agent_instance_id), eq(agentInstances.organizationId, ctx.organizationId),
+        eq(agentInstances.projectId, room.projectId), isNull(agentInstances.deletedAt)));
+      if (!instance) throw AppError.validation("Choose an agent from this project's squad");
     }
     await requireContentAllowed(ctx, request.body, tx);
     const sharing = await requireAiSharingAuthorization(ctx, tx);
