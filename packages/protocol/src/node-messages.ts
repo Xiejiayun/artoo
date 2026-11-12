@@ -18,6 +18,7 @@ import { applicationPublicationStartCommandSchema, applicationPublicationStopCom
   applicationPublicationSessionCommandSchema, applicationPublicationReceiptAckCommandSchema, applicationPublicationObservationAckCommandSchema } from "./application-publication.js";
 
 import {
+  NativeSkillInventoryV1Schema,
   ArtifactPayloadSchema,
   RunAnswerPayloadSchema,
   RunLifecyclePayloadSchema,
@@ -89,6 +90,8 @@ export const nodeSessionProbeSchema = z.object({ kind: z.literal("node.session.p
   node_id: sessionIdentifier, session_id: z.string().guid(), probe_id: z.string().guid() });
 
 export const runtimeStatusSchema = z.object({
+  // Absent means the daemon has not reported discovery, not an empty inventory.
+  native_skills: NativeSkillInventoryV1Schema.optional(),
   runtime: z.string().min(1),
   status: z.enum(["detected", "available", "missing", "disabled"]),
   version: z.string().nullable().optional(),

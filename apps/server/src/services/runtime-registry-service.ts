@@ -1,7 +1,7 @@
 import { agentRuntimes, computers } from "@artoo/db";
 import type { AgentRuntime } from "@artoo/domain";
 import type { RuntimeStatus } from "@artoo/protocol";
-import { and, eq, isNull, notInArray } from "drizzle-orm";
+import { and, eq, isNull, notInArray, sql } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { mapAgentRuntime } from "../mappers.js";
@@ -41,6 +41,7 @@ export async function recordHeartbeatRuntimes(
     ));
     for (const rt of runtimes) {
       const capabilities = Array.isArray(rt.capabilities) ? [...rt.capabilities] : [];
+      const metadata = rt.native_skills ? { native_skills: rt.native_skills } : {};
       await tx
         .insert(agentRuntimes)
         .values({
@@ -52,7 +53,7 @@ export async function recordHeartbeatRuntimes(
           status: rt.status,
           capabilities,
           lastSeenAt: now,
-          metadata: {},
+          metadata,
         })
         .onConflictDoUpdate({
           target: [agentRuntimes.computerId, agentRuntimes.runtime],
@@ -61,6 +62,8 @@ export async function recordHeartbeatRuntimes(
             status: rt.status,
             version: rt.version ?? null,
             capabilities,
+            // Preserve unrelated metadata; an old daemon's omission means unknown.
+            metadata: sql`(${agentRuntimes.metadata} - 'native_skills') || ${JSON.stringify(metadata)}::jsonb`,
             lastSeenAt: now,
           },
         });

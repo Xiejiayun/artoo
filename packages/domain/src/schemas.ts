@@ -4,6 +4,7 @@
  * of truth. Optional/nullable columns use `.nullish()`.
  */
 import { z } from "zod";
+import { NativeSkillInventoryV1Schema } from "./native-skills.js";
 import { ResourceLifecycleSchema } from "./resource-lifecycle.js";
 
 import { CapabilitySchema } from "./capabilities.js";
@@ -231,6 +232,7 @@ export type IntegrationQueueEntry = z.infer<typeof IntegrationQueueEntrySchema>;
 export const AgentRuntimeStatusSchema = z.enum(["detected", "available", "missing", "disabled"]);
 export type AgentRuntimeStatus = z.infer<typeof AgentRuntimeStatusSchema>;
 export const AgentRuntimeSchema = z.object({
+  native_skills: NativeSkillInventoryV1Schema.optional(),
   id: z.string(),
   organization_id: z.string(),
   computer_id: z.string(),

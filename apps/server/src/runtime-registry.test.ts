@@ -1,4 +1,5 @@
-import { computers, organizations } from "@artoo/db";
+import { agentRuntimes, computers, organizations } from "@artoo/db";
+import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { listComputerRuntimes, recordHeartbeatRuntimes } from "./services/runtime-registry-service.js";
@@ -88,6 +89,24 @@ describe("runtime registry (#15 Part 2)", () => {
     server = await buildTestServer();
     const computerId = await freshComputer(server);
     expect(await getRuntimes(server, computerId)).toEqual([]);
+  });
+
+  it("projects native inventories through HTTP, replaces snapshots and preserves unrelated metadata", async () => {
+    server = await buildTestServer();
+    const computerId = await freshComputer(server);
+    const native = { version: 1 as const, observed_at: "2026-11-12T00:00:00Z", skills: [{ id: "testing", name: "Testing", description: "Run tests", path: "/skills/testing/SKILL.md", scope: "user" as const }], truncated: false, unreadable_count: 0 };
+    const runtime = { runtime: "codex", status: "available" as const, capabilities: [] };
+    await recordHeartbeatRuntimes(server.ctx, computerId, [{ ...runtime, native_skills: native }]);
+    const response = await server.app.inject({ method: "GET", url: `/api/v1/computers/${computerId}/runtimes` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().runtimes[0].native_skills).toEqual(native);
+    await server.db.db.update(agentRuntimes).set({ metadata: { native_skills: native, existing: "retained" } }).where(eq(agentRuntimes.computerId, computerId));
+    await recordHeartbeatRuntimes(server.ctx, computerId, [{ ...runtime, native_skills: { ...native, skills: [] } }]);
+    expect((await listComputerRuntimes(server.ctx, computerId))[0]?.native_skills?.skills).toEqual([]);
+    await recordHeartbeatRuntimes(server.ctx, computerId, [runtime]);
+    expect((await listComputerRuntimes(server.ctx, computerId))[0]?.native_skills).toBeUndefined();
+    const [stored] = await server.db.db.select().from(agentRuntimes).where(eq(agentRuntimes.computerId, computerId));
+    expect(stored?.metadata).toEqual({ existing: "retained" });
   });
 
   it("reconciles omitted and empty runtime snapshots without refreshing historical observations", async () => {

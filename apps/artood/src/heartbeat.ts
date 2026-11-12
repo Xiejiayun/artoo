@@ -20,6 +20,7 @@ export interface RegistryHeartbeatOptions {
   /** Status reported for each registered runtime. Defaults to "available". */
   status?: RuntimeStatus["status"];
   statusForRuntime?: (runtime: string) => RuntimeStatus["status"];
+  nativeSkillsForRuntime?: (runtime: string) => RuntimeStatus["native_skills"];
   /** Resource sampler; defaults to zeros. */
   resources?: () => NodeHeartbeat["resources"];
   /** Active agent-instance ids; defaults to []. */
@@ -38,6 +39,7 @@ export function createRegistryHeartbeat(options: RegistryHeartbeatOptions): () =
       (rt): RuntimeStatus => ({
         runtime: rt.runtime,
         status: options.statusForRuntime?.(rt.runtime) ?? status,
+        ...(options.nativeSkillsForRuntime ? { native_skills: options.nativeSkillsForRuntime(rt.runtime) } : {}),
         capabilities: [...rt.capabilities]
       })
     ),
