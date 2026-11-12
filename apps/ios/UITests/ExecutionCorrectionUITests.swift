@@ -611,6 +611,7 @@ final class ExecutionCorrectionUITests: XCTestCase {
         var uniqueMatches: Int?
         var targetValueIsString: Bool?, initialValueIsString: Bool?, valuesEqual: Bool?
         var originalLiveValueIsString: Bool?, uniqueLiveValueIsString: Bool?, finalLiveValueIsString: Bool?, liveValuesEqual: Bool?
+        var originalEmpty: Bool?, uniqueEmpty: Bool?, originalPlaceholder: Bool?, uniquePlaceholder: Bool?
         var liveValueReads = 0
         var actionStarted: TimeInterval?, tapReturned: TimeInterval?
         var taps = 0, observations = 0, lastKeyboard = false, keyboardObservedInTime = false, prepared = false
@@ -631,6 +632,8 @@ final class ExecutionCorrectionUITests: XCTestCase {
                 "unique_live_value_is_string=\(uniqueLiveValueIsString.map { String($0) } ?? "not_observed"); " +
                 "final_live_value_is_string=\(finalLiveValueIsString.map { String($0) } ?? "not_observed"); " +
                 "live_values_equal=\(liveValuesEqual.map { String($0) } ?? "not_observed"); " +
+                "original_empty=\(originalEmpty.map { String($0) } ?? "not_observed"); unique_empty=\(uniqueEmpty.map { String($0) } ?? "not_observed"); " +
+                "original_placeholder=\(originalPlaceholder.map { String($0) } ?? "not_observed"); unique_placeholder=\(uniquePlaceholder.map { String($0) } ?? "not_observed"); " +
                 "keyboard_available=\(lastKeyboard); keyboard_observed_in_time=\(keyboardObservedInTime); prepared=\(prepared); " +
                 "precheck_seconds=\((actionStarted ?? ended) - started); tap_seconds=\(tapSeconds); " +
                 "action_seconds=\(actionStarted.map { String(ended - $0) } ?? "not_started"); total_seconds=\(ended - started)")
@@ -679,6 +682,9 @@ final class ExecutionCorrectionUITests: XCTestCase {
         uniqueLiveValueIsString = uniqueNativeValue is String
         if let original = originalNativeValue as? String, let unique = uniqueNativeValue as? String {
             liveValuesEqual = original == unique
+            originalEmpty = original.isEmpty; uniqueEmpty = unique.isEmpty
+            originalPlaceholder = original == target.placeholderValue
+            uniquePlaceholder = unique == initial.placeholderValue
         }
         stage = "original_value"
         guard let originalValue = originalNativeValue as? String, uniqueNativeValue as? String == originalValue else {
