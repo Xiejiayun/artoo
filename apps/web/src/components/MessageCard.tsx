@@ -12,7 +12,7 @@ import { planningInstructionTitle } from "./planningInstruction.js";
  * lifecycle state here (codex guardrail). Unknown kinds degrade to a system
  * notice via normalizeMessageKind.
  */
-export function MessageCard({ message, actorName, mentionNames = [], compact = false, onOpenThread, onReport }: { message: Message; actorName?: string; mentionNames?: string[]; compact?: boolean; onOpenThread?: () => void; onReport?: () => void }): React.ReactNode {
+export function MessageCard({ message, actorName, mentionNames = [], compact = false, onOpenThread, onReport, onPlan }: { message: Message; actorName?: string; mentionNames?: string[]; compact?: boolean; onOpenThread?: () => void; onReport?: () => void; onPlan?: () => void }): React.ReactNode {
   const kind = normalizeMessageKind(message.kind);
   const actor = actorName ?? `${message.actor_type}:${message.actor_id}`;
   return (
@@ -35,7 +35,7 @@ export function MessageCard({ message, actorName, mentionNames = [], compact = f
         {mentionNames.length > 0 && <p className="msg__mentions" aria-label="Mentioned people">{mentionNames.map((name) => `@${name}`).join(" ")}</p>}
         {onOpenThread && !!message.reply_count && <Button className="msg__thread" size="sm" variant="ghost" iconLeft={MessageSquare} onClick={onOpenThread}>{message.reply_count} {message.reply_count === 1 ? "reply" : "replies"}<span className="msg__thread-open" aria-hidden="true">View thread</span></Button>}
       </div>
-      {onOpenThread && <div className="msg__actions"><Button size="sm" variant="secondary" iconLeft={MessageSquare} onClick={onOpenThread} title="Reply in thread">Reply in thread</Button></div>}
+      {(onOpenThread || onPlan) && <div className="msg__actions">{onPlan && message.payload.moderation !== "removed" && <Button size="sm" variant="secondary" iconLeft={Flag} onClick={onPlan} title="Create an editable goal draft">Plan this</Button>}{onOpenThread && <Button size="sm" variant="secondary" iconLeft={MessageSquare} onClick={onOpenThread} title="Reply in thread">Reply in thread</Button>}</div>}
     </article>
   );
 }
@@ -85,6 +85,10 @@ const PLAN_DEPENDENCY_LABELS = [
 function renderBody(kind: ReturnType<typeof normalizeMessageKind>, message: Message): React.ReactNode {
   const payload = message.payload as Record<string, unknown>;
   if (payload.moderation === "removed") return <p className="msg__text">{message.body}</p>;
+  if (message.actor_type === "system" && message.actor_id === "goal_runner" && message.kind === "text"
+    && typeof payload.independent_review_id === "string" && payload.independent_review_id.trim()) {
+    return <section className="msg__plan" aria-label="Independent review instruction"><h3>Independent review</h3><p className="msg__text">Another agent checks the work against the verified source. Review instructions are kept here for reference.</p><details className="msg__plan-original"><summary>Show review instructions</summary><pre className="msg__code">{message.body}</pre></details></section>;
+  }
   const instructionTitle = planningInstructionTitle(message);
   if (instructionTitle !== null) {
     return <section className="msg__plan" aria-label="Planning instruction">

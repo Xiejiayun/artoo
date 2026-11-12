@@ -95,6 +95,10 @@
 .msg[data-actor]:hover .msg__gutter-time,
 .msg[data-actor]:focus-within .msg__gutter-time { opacity: 1; }
 .msg__actions { position: absolute; right: var(--space-4); top: calc(var(--space-3) * -1); z-index: 1; opacity: 0; pointer-events: none; }
+.msg__actions { display: flex; gap: 4px; }
+.delivery-thread-notice { margin: 0; padding: 16px 24px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
+.conversation-composer__scope { color: var(--text-muted); font-size: var(--text-caption); }
+@media (hover: none) { .msg__actions { position: static; opacity: 1; pointer-events: auto; flex-wrap: wrap; } .msg[data-actor] { flex-wrap: wrap; } .msg__actions { margin-left: 44px; } }
 .msg__actions .ui-btn { box-shadow: var(--e1); background: var(--surface); }
 .msg[data-actor]:hover .msg__actions,
 .msg[data-actor]:focus-within .msg__actions { opacity: 1; pointer-events: auto; }

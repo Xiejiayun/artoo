@@ -166,6 +166,9 @@ export const TaskSchema = z.object({
   organization_id: z.string(),
   project_id: z.string(),
   parent_task_id: z.string().nullish(),
+  // Optional linkage keeps older clients/payloads compatible with goal-scoped views.
+  goal_id: z.string().nullish(),
+  source_plan_id: z.string().nullish(),
   room_id: z.string().nullish(),
   title: z.string(),
   description: z.string().default(""),

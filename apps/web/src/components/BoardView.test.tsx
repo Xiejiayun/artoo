@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { bootstrapFixture, fakeApi, renderWithProviders, taskFixture } from "../test/utils.js";
 import { BoardView } from "./BoardView.js";
+import { GoalSchema } from "@artoo/domain";
 
 function boardClient() {
   return fakeApi({
@@ -21,6 +22,30 @@ function boardClient() {
 }
 
 describe("BoardView", () => {
+  it("scopes work by goal and current plan, retaining independent reviews and optional history", async () => {
+    const goal = GoalSchema.parse({ id: "goal_1", organization_id: "org_default", project_id: "proj_artoo", room_id: null, owner_user_id: "user_1", title: "Journal", objective: "Journal", priority: "p2", status: "running", budgets: {}, stop_conditions: {}, current_plan_id: "plan_new", running_since: null, elapsed_cost_usd: null, retry_count: 0, created_at: "2026-11-12", updated_at: "2026-11-12" });
+    const client = fakeApi({ bootstrap: async () => bootstrapFixture(), listGoals: async () => ({ goals: [goal] }), listTasks: async () => ({ tasks: [
+      taskFixture({ id: "new", status: "backlog", title: "Current implementation", goal_id: goal.id, source_plan_id: "plan_new" }),
+      taskFixture({ id: "old", status: "backlog", title: "Previous attempt", goal_id: goal.id, source_plan_id: "plan_old" }),
+      taskFixture({ id: "review", status: "review", title: "Independent review", goal_id: goal.id, source_plan_id: null }),
+      taskFixture({ id: "other", status: "backlog", title: "Other outcome", goal_id: "other" }),
+    ] }) });
+    renderWithProviders(<BoardView />, { client, route: "/board?goal=goal_1" });
+    expect(await screen.findByText("Current implementation")).toBeInTheDocument();
+    expect(screen.getByText("Independent review")).toBeInTheDocument();
+    expect(screen.queryByText("Previous attempt")).not.toBeInTheDocument();
+    expect(screen.queryByText("Other outcome")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Include work from earlier plans" }));
+    expect(screen.getByText("Previous attempt")).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("Goal scope"), "");
+    expect(screen.getByText("Other outcome")).toBeInTheDocument();
+  });
+
+  it("does not silently show project-wide work for an unavailable goal", async () => {
+    renderWithProviders(<BoardView />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), listGoals: async () => ({ goals: [] }), listTasks: async () => ({ tasks: [taskFixture({ id: "unrelated", status: "backlog", title: "Unrelated work" })] }) }), route: "/board?goal=foreign" });
+    await screen.findByRole("alert");
+    expect(screen.queryByText("Unrelated work")).not.toBeInTheDocument();
+  });
   it("announces loading while board columns are skeletonized", () => {
     const client = fakeApi({
       bootstrap: () => new Promise(() => undefined),

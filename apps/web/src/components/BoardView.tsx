@@ -9,6 +9,7 @@ import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { useSubscription } from "../app/RealtimeContext.js";
 import { useSelection } from "../app/SelectionContext.js";
+import { useGoalContext } from "../app/useGoalContext.js";
 import { Button, EmptyState, ErrorState, PriorityBadge, SearchInput, Select, Skeleton, StatusBadge } from "../ui/index.js";
 import { ListChecks, Plus, UserRound } from "lucide-react";
 import { CreateTaskModal } from "./CreateTaskModal.js";
@@ -64,6 +65,8 @@ export function BoardView(): React.ReactNode {
   const [search, setSearch] = useState("");
   const [creating, setCreating] = useState(false);
   const [attentionOnly, setAttentionOnly] = useState(false);
+  const [includeHistory, setIncludeHistory] = useState(false);
+  const { goals, items: goalOptions, goal, requested, selectGoal } = useGoalContext();
 
   const { bootstrap, projectId } = useProject();
   useSubscription(projectId === undefined ? [] : [`project:${projectId}`]);
@@ -85,7 +88,7 @@ export function BoardView(): React.ReactNode {
     );
   }
 
-  const all = tasks.data.tasks;
+  const all = tasks.data.tasks.filter((task) => !requested || !!goal && task.goal_id === goal.id && (includeHistory || !goal.current_plan_id || !task.source_plan_id || task.source_plan_id === goal.current_plan_id));
   const query = search.trim().toLowerCase();
   const visible = all.filter((task) => (priority === "all" || task.priority === priority) && (!query || task.title.toLowerCase().includes(query)) && (!attentionOnly || ["awaiting_approval", "blocked", "review"].includes(task.status)));
   const filtering = priority !== "all" || query !== "" || attentionOnly;
@@ -93,16 +96,17 @@ export function BoardView(): React.ReactNode {
 
   function openTask(taskId: string): void {
     setSelectedTaskId(taskId);
-    navigate("/");
+    navigate(goal ? `/?goal=${encodeURIComponent(goal.id)}` : "/");
   }
 
   return (
     <div className="board work-board">
       <header className="board-header">
-        <div className="work-board__heading"><span className="work-eyebrow">{bootstrap.data?.projects.find((project) => project.id === projectId)?.name ?? "Workspace"}</span><h1 className="t-h1">Board <span className="work-count">{all.length}</span></h1><p>Keep work moving, from the first brief to the final review.</p></div>
-        <div className="action-row"><Link className="os-secondary-link" to="/">Task list</Link><Button variant="primary" iconLeft={Plus} disabled={!projectId} onClick={() => setCreating(true)}>Create task</Button></div>
+        <div className="work-board__heading"><span className="work-eyebrow">{bootstrap.data?.projects.find((project) => project.id === projectId)?.name ?? "Workspace"}</span><h1 className="t-h1">Board <span className="work-count">{all.length}</span></h1><p>{goal ? goal.title : "Keep work moving, from the first brief to the final review."}</p></div>
+        <div className="action-row"><Link className="os-secondary-link" to={goal ? `/?goal=${encodeURIComponent(goal.id)}` : "/"}>Task list</Link>{goal ? <Link className="os-secondary-link" to={`/goals?goal=${encodeURIComponent(goal.id)}`}>Manage plan</Link> : <Button variant="primary" iconLeft={Plus} disabled={!projectId} onClick={() => setCreating(true)}>Create task</Button>}</div>
       </header>
       <div className="work-board__toolbar">
+        <Select label="Goal scope" value={requested ?? ""} onChange={(event) => { selectGoal(event.target.value || null); setIncludeHistory(false); }}><option value="">All project work</option>{requested && !goal && <option value={requested}>Goal unavailable</option>}{goalOptions.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</Select>
         <SearchInput aria-label="Search board" placeholder="Search tasks…" value={search} onChange={(event) => setSearch(event.target.value)} onClear={() => setSearch("")} />
         <Select
           label="Priority"
@@ -120,7 +124,8 @@ export function BoardView(): React.ReactNode {
         {filtering ? <Button size="sm" variant="ghost" onClick={() => { setSearch(""); setPriority("all"); setAttentionOnly(false); }}>Clear filters</Button> : null}
         <span className="work-board__summary">{filtering ? `${visible.length} of ${all.length} tasks` : needsAttention > 0 ? `${needsAttention} ${needsAttention === 1 ? "task needs" : "tasks need"} attention` : "No reviews or blockers"}</span>
       </div>
-      {all.length === 0 ? (
+      {goal?.current_plan_id && <label className="delivery-board-history"><input type="checkbox" checked={includeHistory} onChange={(event) => setIncludeHistory(event.target.checked)} /> Include work from earlier plans</label>}
+      {requested && goals.isLoading ? <p role="status">Loading this goal…</p> : requested && (goals.error || !goal) ? <ErrorState title="Goal unavailable" description="Choose a goal in this project or view all project work." action={<Button onClick={() => selectGoal(null)}>Show all project work</Button>} /> : all.length === 0 && goal ? <EmptyState icon={ListChecks} title="This goal has no linked tasks yet" description="Accept a plan to create work. Current tasks and independent reviews will appear here." action={<Link className="os-secondary-link" to={`/goals?goal=${encodeURIComponent(goal.id)}`}>Open plan</Link>} /> : all.length === 0 ? (
         <div className="board-empty">
           <EmptyState icon={ListChecks} title="No tasks yet" description="Give your team a clear outcome, then assign the work to an agent." action={<Button iconLeft={Plus} onClick={() => setCreating(true)}>Create your first task</Button>} />
         </div>

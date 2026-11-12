@@ -22,7 +22,10 @@ describe("ReleasePage", () => {
     expect(screen.queryByRole("link", { name: "Open published product" })).not.toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "Publication overview" })).queryByRole("button", { name: /Publish|Deploy/ })).not.toBeInTheDocument();
     const checks = screen.getByRole("region", { name: "Release checks" });
-    expect(within(checks).getAllByText("Pending")).toHaveLength(3);
+    await waitFor(() => expect(within(checks).queryByText("Pending")).not.toBeInTheDocument());
+    expect(within(checks).getByText("No record")).toBeInTheDocument();
+    expect(within(checks).getByText("Not configured")).toBeInTheDocument();
+    expect(within(checks).getByText("Not applicable")).toBeInTheDocument();
   });
 
   it("shows executor evidence and a confirmed publication endpoint", async () => {

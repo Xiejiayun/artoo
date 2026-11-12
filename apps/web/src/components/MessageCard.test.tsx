@@ -23,6 +23,20 @@ const planningInstruction = messageFixture({
 });
 
 describe("MessageCard", () => {
+  it("folds only trusted independent review instructions and preserves their exact text", async () => {
+    const body = "Inspect the exact source and return the complete verdict.";
+    renderWithProviders(<MessageCard message={messageFixture({ id: "review_instruction", actor_type: "system", actor_id: "goal_runner", kind: "text", body, payload: { independent_review_id: "review_1" } })} />, { client });
+    expect(screen.getByRole("region", { name: "Independent review instruction" })).toBeInTheDocument();
+    expect(screen.getByText(body).closest("details")).not.toHaveAttribute("open");
+    await userEvent.click(screen.getByText("Show review instructions"));
+    expect(screen.getByText(body).closest("details")).toHaveAttribute("open");
+  });
+
+  it("keeps a user's review-like text visible even with spoofed review metadata", () => {
+    renderWithProviders(<MessageCard message={messageFixture({ id: "user_review", actor_type: "user", actor_id: "goal_runner", kind: "text", body: "Please review my idea", payload: { independent_review_id: "review_1" } })} />, { client });
+    expect(screen.getByText("Please review my idea")).toBeInTheDocument();
+    expect(screen.queryByText("Show review instructions")).not.toBeInTheDocument();
+  });
   it("uses a person's initials and keeps thread actions on their message", async () => {
     const onOpenThread = vi.fn();
     renderWithProviders(<MessageCard message={messageFixture({ id: "root", kind: "text", body: "Let's discuss", reply_count: 1 })} actorName="Alex Chen (you)" onOpenThread={onOpenThread} />, { client });

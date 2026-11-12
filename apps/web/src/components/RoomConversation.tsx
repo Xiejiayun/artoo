@@ -1,6 +1,8 @@
 import { ReportMessageModal } from "./ContentReporting.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import type { DiscussionGoalDraft } from "../app/discussionGoalDraft.js";
 import type { Member, Message } from "@artoo/domain";
 import { ArrowDown, AtSign, ChevronDown, MessageSquare, Send } from "lucide-react";
 import { ApiClientError } from "../api/client.js";
@@ -26,9 +28,10 @@ export function RoomSkeleton(): React.ReactNode {
 
 /** All room surfaces use the same ordered, paginated server history. Refetches
  * catch up from the newest cursor without replacing pages the user has opened. */
-export function RoomConversation({ roomId, projectId, taskId, goalId, threadRootId, onOpenThread, allowAssistant = true, hiddenMessageId }: { roomId: string; projectId?: string | null; taskId?: string; goalId?: string; threadRootId?: string; onOpenThread?: (messageId: string) => void; allowAssistant?: boolean; hiddenMessageId?: string }): React.ReactNode {
+export function RoomConversation({ roomId, projectId, taskId, goalId, threadRootId, onOpenThread, allowAssistant = true, hiddenMessageId, composerHidden = false, allowGoalDraft = false }: { roomId: string; projectId?: string | null; taskId?: string; goalId?: string; threadRootId?: string; onOpenThread?: (messageId: string) => void; allowAssistant?: boolean; hiddenMessageId?: string; composerHidden?: boolean; allowGoalDraft?: boolean }): React.ReactNode {
   const api = useApi();
   const query = useQueryClient();
+  const navigate = useNavigate();
   const [followRequest, setFollowRequest] = useState(0);
   const [reporting, setReporting] = useState<Message | null>(null);
   const key = queryKeys.messages(roomId, threadRootId);
@@ -90,13 +93,18 @@ export function RoomConversation({ roomId, projectId, taskId, goalId, threadRoot
   const identity = bootstrap.data;
   const people = members.data?.members ?? (identity ? [{ id: identity.user.id, display_name: identity.user.display_name }] : []);
   const storageKey = identity ? roomDraftKey(api.getStorageScope(), identity.organization.id, identity.user.id, roomId, threadRootId) : null;
+  const planMessage = allowGoalDraft && projectId && identity && !identity.goal_entry ? (message: Message): void => {
+    if (message.room_id !== roomId || message.actor_type !== "user" || message.kind !== "text" || message.payload.moderation === "removed" || !message.body?.trim() || message.body.length > 10000) return;
+    const goalDraft: DiscussionGoalDraft = { version: 1, organizationId: identity.organization.id, userId: identity.user.id, projectId, roomId, messageId: message.thread_root_id ?? message.id, objective: message.body };
+    navigate("/goals", { state: { goalDraft } });
+  } : undefined;
   return <section className="task-room conversation" aria-label={threadRootId ? "Thread replies" : goalId ? "Goal conversation" : taskId ? "Task conversation" : "Channel conversation"}>
     <header className="conversation__header"><h2><Icon icon={MessageSquare} size={15} />{threadRootId ? "Replies" : "Conversation"}</h2><span>{visibleCount} {threadRootId ? visibleCount === 1 ? "reply" : "replies" : visibleCount === 1 ? "message" : "messages"}</span></header>
     <ActionError error={messages.error ?? earlier.error} />
     {messages.error && <Button size="sm" onClick={() => void messages.refetch()}>Retry message sync</Button>}
     {reporting && <ReportMessageModal key={reporting.id} message={reporting} onClose={() => setReporting(null)} />}
-    <MessageTimeline onReport={setReporting} key={`${roomId}:${threadRootId ?? ""}`} items={items} identity={identity} people={people} hiddenMessageId={hiddenMessageId} threadRootId={threadRootId} onOpenThread={onOpenThread} followRequest={followRequest} hasEarlier={!!messages.data.has_more && !!messages.data.next_before} loadingEarlier={earlier.isPending} onLoadEarlier={() => earlier.mutate()}><AssistantTurns roomId={roomId} threadRootId={threadRootId} messages={items} allowActions={allowAssistant} /></MessageTimeline>
-    {storageKey && identity ? <MessageComposer key={`${storageKey}:${allowAssistant}`} roomId={roomId} threadRootId={threadRootId} storageKey={storageKey} bootstrap={{ ...identity, agent_instances: identity.agent_instances.filter((instance) => !!projectId && instance.project_id === projectId) }} people={people} peopleError={members.error} allowAssistant={allowAssistant} onMessageSent={() => setFollowRequest((value) => value + 1)} /> : <div className="conversation__account"><ActionError error={bootstrap.error} /><p role="status">Loading your account before composing a message…</p>{bootstrap.error && <Button onClick={() => void bootstrap.refetch()}>Retry account</Button>}</div>}
+    <MessageTimeline onReport={setReporting} onPlan={planMessage} key={`${roomId}:${threadRootId ?? ""}`} items={items} identity={identity} people={people} hiddenMessageId={hiddenMessageId} threadRootId={threadRootId} onOpenThread={onOpenThread} followRequest={followRequest} hasEarlier={!!messages.data.has_more && !!messages.data.next_before} loadingEarlier={earlier.isPending} onLoadEarlier={() => earlier.mutate()}><AssistantTurns roomId={roomId} threadRootId={threadRootId} messages={items} allowActions={allowAssistant} /></MessageTimeline>
+    {composerHidden ? <p className="delivery-thread-notice">Reply in the open thread. Close it to message the channel.</p> : storageKey && identity ? <MessageComposer key={`${storageKey}:${allowAssistant}`} roomId={roomId} threadRootId={threadRootId} storageKey={storageKey} bootstrap={{ ...identity, agent_instances: identity.agent_instances.filter((instance) => !!projectId && instance.project_id === projectId) }} people={people} peopleError={members.error} allowAssistant={allowAssistant} onMessageSent={() => setFollowRequest((value) => value + 1)} /> : <div className="conversation__account"><ActionError error={bootstrap.error} /><p role="status">Loading your account before composing a message…</p>{bootstrap.error && <Button onClick={() => void bootstrap.refetch()}>Retry account</Button>}</div>}
     {!threadRootId && (taskId || goalId) && <CollaborationPanel key={`collaboration:${roomId}`} roomId={roomId} taskId={taskId} goalId={goalId} />}
   </section>;
 }
@@ -125,7 +133,7 @@ function isContinuation(previous: Message | undefined, message: Message): boolea
 
 /** Only follow arrivals while the reader is at the bottom. Loading history
  * preserves the visible offset; arriving messages get an explicit jump action. */
-function MessageTimeline({ onReport, items, identity, people, hiddenMessageId, threadRootId, onOpenThread, followRequest, hasEarlier, loadingEarlier, onLoadEarlier, children }: { onReport: (message: Message) => void; items: Message[]; identity?: BootstrapResponse; people: Member[]; hiddenMessageId?: string; threadRootId?: string; onOpenThread?: (messageId: string) => void; followRequest: number; hasEarlier: boolean; loadingEarlier: boolean; onLoadEarlier: () => void; children: React.ReactNode }): React.ReactNode {
+function MessageTimeline({ onReport, onPlan, items, identity, people, hiddenMessageId, threadRootId, onOpenThread, followRequest, hasEarlier, loadingEarlier, onLoadEarlier, children }: { onReport: (message: Message) => void; onPlan?: (message: Message) => void; items: Message[]; identity?: BootstrapResponse; people: Member[]; hiddenMessageId?: string; threadRootId?: string; onOpenThread?: (messageId: string) => void; followRequest: number; hasEarlier: boolean; loadingEarlier: boolean; onLoadEarlier: () => void; children: React.ReactNode }): React.ReactNode {
   const visible = useMemo(() => items.filter((item) => item.id !== hiddenMessageId), [items, hiddenMessageId]);
   const viewport = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -209,7 +217,7 @@ function MessageTimeline({ onReport, items, identity, people, hiddenMessageId, t
         const startsDate = !previous || dateKey(previous.created_at) !== dateKey(message.created_at);
         return <li key={message.id}>
           {startsDate && <div className="conversation__date" role="separator" aria-label={dateLabel(message.created_at)}><time dateTime={message.created_at}>{dateLabel(message.created_at)}</time></div>}
-          <MessageCard message={message} onReport={() => onReport(message)} {...messageIdentity(message, identity, people)} compact={isContinuation(previous, message)} onOpenThread={onOpenThread && !threadRootId ? () => onOpenThread(message.id) : undefined} />
+          <MessageCard message={message} onReport={() => onReport(message)} onPlan={onPlan && message.actor_type === "user" && message.kind === "text" && message.body?.trim() && message.body.length <= 10000 && message.payload.moderation !== "removed" ? () => onPlan(message) : undefined} {...messageIdentity(message, identity, people)} compact={isContinuation(previous, message)} onOpenThread={onOpenThread && !threadRootId ? () => onOpenThread(message.id) : undefined} />
         </li>;
       })}</ul>}
       {children}
@@ -288,7 +296,8 @@ function MessageComposer({ roomId, threadRootId, storageKey, bootstrap, people, 
   };
   return <form ref={form} className="message-composer conversation-composer" aria-label="Send room message" onSubmit={(event) => { event.preventDefault(); send(); }}>
     <div className="conversation-composer__surface">
-      {allowAssistant && <div className="conversation-composer__toolbar"><Select className="conversation-composer__destination" label="Message destination" value={draft.mode ?? "discussion"} disabled={mutation.isPending || draft.submission?.uncertain} onChange={(event) => { mutation.reset(); setSent(false); persist({ ...draft, mode: event.target.value as "discussion" | "assistant", submission: undefined }); }}><option value="discussion">Team discussion</option><option value="assistant">Send to agent</option></Select><Icon icon={ChevronDown} size={13} />
+      {(allowAssistant || threadRootId) && <div className="conversation-composer__toolbar">{allowAssistant && <><Select className="conversation-composer__destination" label="Message destination" value={draft.mode ?? "discussion"} disabled={mutation.isPending || draft.submission?.uncertain} onChange={(event) => { mutation.reset(); setSent(false); persist({ ...draft, mode: event.target.value as "discussion" | "assistant", submission: undefined }); }}><option value="discussion">Team discussion</option><option value="assistant">Send to agent</option></Select><Icon icon={ChevronDown} size={13} /></>}
+        {threadRootId && <span className="conversation-composer__scope">Replying in this thread</span>}
         {draft.mode === "assistant" && <Select className="conversation-composer__agent" label="Execution agent" value={draft.agentInstanceId ?? ""} disabled={mutation.isPending || draft.submission?.uncertain} onChange={(event) => { mutation.reset(); persist({ ...draft, agentInstanceId: event.target.value, submission: undefined }); }}><option value="">Choose automatically</option>{bootstrap.agent_instances.map((instance) => <option key={instance.id} value={instance.id}>{bootstrap.agents.find((agent) => agent.id === instance.agent_id)?.display_name ?? instance.runtime} · {bootstrap.computers.find((computer) => computer.id === instance.computer_id)?.display_name ?? instance.computer_id} · {instance.status}</option>)}</Select>}
       </div>}
       <Textarea className="conversation-composer__input" ref={textarea} label="Message" rows={2} value={draft.body} maxLength={20000} disabled={mutation.isPending || draft.submission?.uncertain} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => {

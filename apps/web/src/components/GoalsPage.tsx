@@ -1,11 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Flag, Plus, Download, ListChecks, MessageSquare, ArrowRight, Sparkles, ArrowUpRight } from "lucide-react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { PreparedGoalEntryV1Schema, canProposePlan, canTransitionGoal, type Goal, type GoalAutomation, type TaskSpec } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
 import { useProject } from "../app/useProject.js";
 import { useSelection } from "../app/SelectionContext.js";
+import { useGoalContext } from "../app/useGoalContext.js";
+import { readDiscussionGoalDraft, type DiscussionGoalDraft } from "../app/discussionGoalDraft.js";
+import { GoalOverview } from "./GoalOverview.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { Badge, Button, Input, Modal, Select, StatusBadge, Textarea } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
@@ -18,32 +21,38 @@ import "../ui/work-insights.css";
 const lines = (text: string): string[] => text.split("\n").map((line) => line.trim()).filter(Boolean);
 
 export function GoalsPage(): React.ReactNode {
-  const api = useApi();
   const { projectId, bootstrap } = useProject();
-  const [selected, setSelected] = useState<string | null>(null);
+  const { goals, items, goal: contextGoal, requested, selectGoal } = useGoalContext(true);
+  const location = useLocation();
+  const navigate = useNavigate();
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState({ objective: "", mode: "manual" });
-  const [params] = useSearchParams();
+  const [source, setSource] = useState<DiscussionGoalDraft>();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const entryResult = bootstrap.data?.goal_entry === undefined ? undefined : PreparedGoalEntryV1Schema.safeParse(bootstrap.data.goal_entry);
   const entry = entryResult?.success && entryResult.data.project_id === projectId ? entryResult.data : undefined;
   const entryError = entryResult && !entryResult.success ? new Error("This prepared product session has an unsupported configuration.") : null;
-  const goals = useQuery({ queryKey: ["goals", projectId], queryFn: () => api.listGoals(projectId!), enabled: !!projectId, refetchInterval: 10000 });
-  const goal = goals.data?.goals.find((item) => item.id === (selected ?? params.get("goal")))
-    ?? (entry?.goal_id ? goals.data?.goals.find((item) => item.id === entry.goal_id) : goals.data?.goals[0]);
-  const matching = goals.data?.goals.filter((item) => `${item.title} ${item.objective}`.toLowerCase().includes(search.trim().toLowerCase()) && (filter === "all" || (filter === "closed" ? ["completed", "cancelled", "archived"].includes(item.status) : !["completed", "cancelled", "archived"].includes(item.status)))) ?? [];
+  const goal = !requested && entry?.goal_id ? items.find((item) => item.id === entry.goal_id) : contextGoal;
+  useEffect(() => {
+    if (!bootstrap.data || !projectId || !location.state?.goalDraft) return;
+    const incoming = !entry && !entryError ? readDiscussionGoalDraft(location.state.goalDraft, { organizationId: bootstrap.data.organization.id, userId: bootstrap.data.user.id, projectId }) : undefined;
+    if (incoming) { setDraft({ objective: incoming.objective, mode: "manual" }); setSource(incoming); setCreating(true); }
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+  }, [bootstrap.data, projectId, location.state, location.pathname, location.search, navigate, entry, entryError]);
+  const matching = items.filter((item) => `${item.title} ${item.objective}`.toLowerCase().includes(search.trim().toLowerCase()) && (filter === "all" || (filter === "closed" ? ["completed", "cancelled", "archived"].includes(item.status) : !["completed", "cancelled", "archived"].includes(item.status))));
   return <section className="product-page insights-page insights-goals" aria-label="Goals">
-    <header className="insights-page__header"><div><span className="insights-eyebrow"><Flag size={15} aria-hidden="true" /> Step 02 · Requirement breakdown</span><h1 className="t-h1">Plan</h1><p>Describe the outcome. Review the approach. Give your agents clear work.</p></div>{!entry && !entryError && <Button iconLeft={Plus} disabled={!projectId} onClick={() => { setDraft({ objective: "", mode: "manual" }); setCreating(true); }}>New goal</Button>}</header>
+    <header className="insights-page__header"><div><span className="insights-eyebrow"><Flag size={15} aria-hidden="true" /> From an idea to a clear outcome</span><h1 className="t-h1">Plan</h1><p>One goal, a shared plan, and a clear next step.</p></div>{!entry && !entryError && <Button iconLeft={Plus} disabled={!projectId} onClick={() => { setDraft({ objective: "", mode: "manual" }); setSource(undefined); setCreating(true); }}>New goal</Button>}</header>
     <ActionError error={bootstrap.error ?? goals.error ?? entryError} />
     {(bootstrap.isLoading || goals.isLoading) && <p role="status">Loading goals…</p>}
     {entry && bootstrap.data && <PreparedGoalRequest key={`${bootstrap.data.user.id}:${entry.session_id}`} entry={entry}
-      organizationId={bootstrap.data.organization.id} userId={bootstrap.data.user.id} onCreated={setSelected} />}
-    {!entry && !entryError && <OutcomeComposer key={`composer:${projectId ?? "pending"}`} disabled={!projectId} onContinue={(objective, mode) => { setDraft({ objective, mode }); setCreating(true); }} />}
-    {creating && projectId && !entry && !entryError && <GoalForm key={`form:${projectId}`} projectId={projectId} initialObjective={draft.objective} initialMode={draft.mode} onClose={() => setCreating(false)} onCreated={(id) => { setSelected(id); setCreating(false); }} />}
+      organizationId={bootstrap.data.organization.id} userId={bootstrap.data.user.id} onCreated={selectGoal} />}
+    {!entry && !entryError && <details className="delivery-new-outcome" open={items.length === 0}><summary>Plan another outcome</summary><OutcomeComposer key={`composer:${projectId ?? "pending"}`} disabled={!projectId} onContinue={(objective, mode) => { setDraft({ objective, mode }); setSource(undefined); setCreating(true); }} /></details>}
+    {creating && projectId && !entry && !entryError && <GoalForm key={`form:${projectId}`} projectId={projectId} initialObjective={draft.objective} initialMode={draft.mode} source={source} onClose={() => setCreating(false)} onCreated={(id) => { selectGoal(id); setCreating(false); }} />}
+    {requested && goals.isSuccess && !goal && <p role="status">This goal is unavailable in the selected project. Choose a goal below.</p>}
     {goals.data?.goals.length === 0 && !entry && <p className="os-plan-empty">No goals yet. Start with the outcome above; your plans and progress will appear here.</p>}
     {(goals.data?.goals.length ?? 0) > 0 && <div className="insights-goal-layout">
-      <nav className="product-list insights-goal-picker" aria-label="Goal list"><div className="insights-picker-tools"><Input label="Search goals" placeholder="Find an outcome…" value={search} onChange={(event) => setSearch(event.target.value)} /><Select label="Goal view" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">All goals</option><option value="open">Open goals</option><option value="closed">Closed goals</option></Select></div>{matching.map((item) => <button key={item.id} aria-pressed={item.id === goal?.id} className={item.id === goal?.id ? "is-selected" : ""} onClick={() => setSelected(item.id)}><strong>{item.title}</strong><span className="insights-row-meta"><Badge>{item.status}</Badge><time dateTime={item.updated_at}>{taskUpdatedLabel(item.updated_at)}</time></span></button>)}{goals.data && matching.length === 0 && (search || filter !== "all") && <p className="insights-help">No goals match this view.</p>}</nav>
+      <nav className="product-list insights-goal-picker" aria-label="Goal list"><div className="insights-picker-tools"><Input label="Search goals" placeholder="Find an outcome…" value={search} onChange={(event) => setSearch(event.target.value)} /><Select label="Goal view" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">All goals</option><option value="open">Open goals</option><option value="closed">Closed goals</option></Select></div>{matching.map((item) => <button key={item.id} aria-pressed={item.id === goal?.id} className={item.id === goal?.id ? "is-selected" : ""} onClick={() => selectGoal(item.id)}><strong title={item.title}>{item.title}</strong><span className="insights-row-meta"><Badge>{item.status}</Badge><time dateTime={item.updated_at}>{taskUpdatedLabel(item.updated_at)}</time></span></button>)}{goals.data && matching.length === 0 && (search || filter !== "all") && <p className="insights-help">No goals match this view.</p>}</nav>
       {goal && <GoalDetail key={goal.id} goal={goal} />}
     </div>}
   </section>;
@@ -51,14 +60,14 @@ export function GoalsPage(): React.ReactNode {
 
 function OutcomeComposer({ disabled, onContinue }: { disabled: boolean; onContinue: (objective: string, mode: string) => void }): React.ReactNode {
   const [objective, setObjective] = useState("");
-  const [mode, setMode] = useState("manual");
-  return <section className="os-outcome-composer" aria-label="Plan an outcome"><div><h2>What should the team build?</h2><p>Start with the result you need. You’ll review the execution settings before anything starts.</p></div><form onSubmit={(event) => { event.preventDefault(); if (!disabled && objective.trim()) onContinue(objective.trim(), mode); }}><Textarea label="Outcome to plan" placeholder="Describe the feature, the problem it solves, and what a good result looks like…" value={objective} onChange={(event) => setObjective(event.target.value)} disabled={disabled} required rows={3} /><div className="os-outcome-composer__footer"><Select label="Planning approach" value={mode} onChange={(event) => setMode(event.target.value)} disabled={disabled}><option value="manual">Review each step</option><option value="autonomous">Agent Team · verified workspace</option><option value="publish">Agent Team · build and publish</option></Select><Button type="submit" variant="primary" iconLeft={Sparkles} iconRight={ArrowRight} disabled={disabled || !objective.trim()}>Review setup</Button></div></form></section>;
+  return <section className="os-outcome-composer" aria-label="Plan an outcome"><div><h2>What should the team build?</h2><p>Describe the result in your own words. Nothing starts until you confirm.</p></div><form onSubmit={(event) => { event.preventDefault(); if (!disabled && objective.trim()) onContinue(objective.trim(), "manual"); }}><Textarea label="Outcome to plan" placeholder="Describe the feature, the problem it solves, and what a good result looks like…" value={objective} onChange={(event) => setObjective(event.target.value)} disabled={disabled} required maxLength={10000} rows={3} /><div className="os-outcome-composer__footer"><span className="insights-help">Start with the outcome. Decide how to work next.</span><Button type="submit" variant="primary" iconLeft={Sparkles} iconRight={ArrowRight} disabled={disabled || !objective.trim()}>Review setup</Button></div></form></section>;
 }
 
-function GoalForm({ projectId, onCreated, onClose, initialObjective = "", initialMode = "manual" }: { projectId: string; onCreated: (id: string) => void; onClose: () => void; initialObjective?: string; initialMode?: string }): React.ReactNode {
+function GoalForm({ projectId, onCreated, onClose, initialObjective = "", initialMode = "manual", source }: { projectId: string; onCreated: (id: string) => void; onClose: () => void; initialObjective?: string; initialMode?: string; source?: DiscussionGoalDraft }): React.ReactNode {
   const api = useApi();
   const query = useQueryClient();
   const [title, setTitle] = useState(initialObjective.split("\n")[0]?.slice(0, 120) ?? "");
+  const [customTitle, setCustomTitle] = useState(false);
   const [objective, setObjective] = useState(initialObjective);
   const [criteria, setCriteria] = useState("");
   const [minutes, setMinutes] = useState("");
@@ -66,23 +75,24 @@ function GoalForm({ projectId, onCreated, onClose, initialObjective = "", initia
   const [sourceHandoff, setSourceHandoff] = useState(false);
   const [requestKey, setRequestKey] = useState(newIdempotencyKey);
   const autonomous = mode !== "manual";
+  const effectiveTitle = title.trim() || objective.trim().split("\n")[0]?.slice(0, 120) || "";
   const mutation = useMutation({ mutationFn: () => autonomous
     ? api.createAutonomousGoal({ project_id: projectId, objective: objective.trim(), verification_profile_id: "default", execution_mode: "agent_team", ...(mode === "publish" ? { release_profile_id: "default" } : {}), max_retries: 3,
       ...(mode === "publish" && sourceHandoff ? { source_handoff: { version: 1 as const, mode: "automatic" as const } } : {}) }, requestKey)
-    : api.createGoal({ project_id: projectId, title: title.trim(), objective: objective.trim(), priority: "p2", acceptance_criteria: lines(criteria), budgets: { max_elapsed_ms: minutes ? Number(minutes) * 60000 : null, max_cost_usd: null, max_retries: null, max_concurrent_runs: null, allowed_runtimes: null } }, requestKey),
+    : api.createGoal({ project_id: projectId, title: effectiveTitle, objective: objective.trim(), priority: "p2", acceptance_criteria: lines(criteria), budgets: { max_elapsed_ms: minutes ? Number(minutes) * 60000 : null, max_cost_usd: null, max_retries: null, max_concurrent_runs: null, allowed_runtimes: null } }, requestKey),
     onSuccess: async ({ goal }) => { await query.invalidateQueries({ queryKey: ["goals", projectId] }); onCreated(goal.id); } });
   return <Modal open onClose={() => { if (!mutation.isPending) onClose(); }} title="New goal"><form className="insights-goal-form u-stack" aria-label="Create goal" onChange={() => setRequestKey(newIdempotencyKey())} onSubmit={(event) => { event.preventDefault(); if (!mutation.isPending) mutation.mutate(); }}>
+    {source && <p className="delivery-draft-source">Draft from a conversation. Review and edit it before creating a goal. <Link to={`/channels?room=${encodeURIComponent(source.roomId)}&project=${encodeURIComponent(projectId)}&thread=${encodeURIComponent(source.messageId)}`}>Back to message</Link></p>}
+    <Textarea label="Objective" placeholder="Describe the result and why it matters." value={objective} required maxLength={10000} rows={4} disabled={mutation.isPending} onChange={(event) => { setObjective(event.target.value); if (!customTitle) setTitle(event.target.value.trim().split("\n")[0]?.slice(0, 120) ?? ""); }} />
     <Select label="Execution mode" value={mode} disabled={mutation.isPending} onChange={(event) => { setMode(event.target.value); setSourceHandoff(false); }}><option value="manual">Review each step</option><option value="autonomous">Agent Team — verified workspace</option><option value="publish">Agent Team — build and publish</option></Select>
     <p className="insights-help">{autonomous ? `Describe what you need. Your team handles research, design, implementation, tests and independent review, with up to three retries and an eight-hour scheduling budget. ${mode === "publish" ? "Publish to your team's configured destination after acceptance checks pass, then check the live product. A configured publishing destination is required." : "Deliver a verified workspace. Choose build and publish to include deployment."}` : "Describe the outcome first. You can build or discuss the plan after creating this goal."}</p>
     {mode === "publish" && <div className="u-stack-sm"><label><input type="checkbox" checked={sourceHandoff} disabled={mutation.isPending}
       onChange={(event) => setSourceHandoff(event.target.checked)} />Allow ARTOO to divide work across configured computers</label>
       <p className="insights-help">After research is accepted, ARTOO can choose another prepared Windows computer and its agents for the remaining work.</p></div>}
-    {!autonomous && <Input label="Goal title" placeholder="What do you want to achieve?" value={title} required maxLength={300} disabled={mutation.isPending} onChange={(event) => setTitle(event.target.value)} />}
-    <Textarea label="Objective" placeholder="Describe the result and why it matters." value={objective} required disabled={mutation.isPending} onChange={(event) => setObjective(event.target.value)} />
-    {!autonomous && <><Textarea label="Goal acceptance criteria" helperText="One criterion per line" value={criteria} required onChange={(event) => setCriteria(event.target.value)} />
-    <details className="insights-disclosure"><summary>Set a time budget</summary><Input label="Time budget (minutes, optional)" type="number" min="1" step="1" value={minutes} disabled={mutation.isPending} onChange={(event) => setMinutes(event.target.value)} /><p className="insights-help">Cost budgets are unavailable until runtimes report reliable usage costs.</p></details></>}
+    {!autonomous && <><Textarea label="Goal acceptance criteria" helperText="One criterion per line" value={criteria} required disabled={mutation.isPending} onChange={(event) => setCriteria(event.target.value)} />
+    <details className="insights-disclosure"><summary>Title & time budget · optional</summary><Input label="Goal title" placeholder="What do you want to achieve?" value={title} maxLength={300} disabled={mutation.isPending} onChange={(event) => { setCustomTitle(true); setTitle(event.target.value); }} /><Input label="Time budget (minutes, optional)" type="number" min="1" step="1" value={minutes} disabled={mutation.isPending} onChange={(event) => setMinutes(event.target.value)} /><p className="insights-help">The title is filled from your objective. Cost budgets are unavailable until runtimes report reliable usage costs.</p></details></>}
     <ActionError error={mutation.error} />
-    <div className="action-row"><Button variant="primary" type="submit" loading={mutation.isPending} disabled={!objective.trim() || (!autonomous && (!title.trim() || !lines(criteria).length))}>{autonomous ? "Start autonomous goal" : "Create goal"}</Button><Button onClick={onClose} disabled={mutation.isPending}>Cancel</Button></div>
+    <div className="action-row"><Button variant="primary" type="submit" loading={mutation.isPending} disabled={!objective.trim() || (!autonomous && !lines(criteria).length)}>{autonomous ? "Start autonomous goal" : "Create goal"}</Button><Button onClick={onClose} disabled={mutation.isPending}>Cancel</Button></div>
   </form></Modal>;
 }
 
@@ -103,14 +113,13 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
   const planAction = useMutation({ mutationFn: ({ id, name }: { id: string; name: "accept" | "reject" }) => api.planAction(id, name, newIdempotencyKey()), onSuccess: refresh });
   const audit = useMutation({ mutationFn: async () => { const result = await api.goalAuditExport(goal.id); const url = URL.createObjectURL(new Blob([JSON.stringify(result.export, null, 2)], { type: "application/json" })); const a = document.createElement("a"); a.href = url; a.download = `${goal.id}-audit.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } });
   const latestCheckpoint = checkpoints.data?.checkpoints.reduce<(NonNullable<typeof checkpoints.data>["checkpoints"])[number] | undefined>((latest, item) => !latest || item.created_at > latest.created_at ? item : latest, undefined);
-  const taskStates = latestCheckpoint?.state_refs.task_statuses ?? [];
   return <article className="insights-goal-detail u-stack">
-    <header className="insights-goal-title"><span className="insights-eyebrow">Outcome</span><div className="action-row"><h2>{goal.title}</h2><Badge tone={goal.status === "completed" ? "success" : goal.status === "blocked" ? "warning" : "neutral"}>{goal.status}</Badge></div><p className="insights-prose">{goal.objective}</p></header>
+    <header className="insights-goal-title"><span className="insights-eyebrow">Outcome</span><div className="action-row"><h2>{goal.title}</h2><Badge tone={goal.status === "completed" ? "success" : goal.status === "blocked" ? "warning" : "neutral"}>{goal.status}</Badge></div>{goal.objective !== goal.title && <details className="delivery-objective"><summary>Full objective</summary><p className="insights-prose">{goal.objective}</p></details>}</header>
+    <GoalOverview goal={goal} automation={automation.data?.automation} plans={plans.data?.plans} />
     <ActionError error={automation.error} />
     {automation.data?.automation && <AutonomousProgress goal={goal} automation={automation.data.automation} />}
-    <section className="insights-criteria" aria-label="Goal acceptance criteria"><h3><ListChecks size={16} aria-hidden="true" /> Success criteria</h3><ul>{goal.acceptance_criteria.map((item, i) => <li key={i}>{item}</li>)}</ul></section>
-    {latestCheckpoint && <div className="insights-goal-progress"><span><strong>{taskStates.filter((task) => task.status === "done").length}/{taskStates.length}</strong> tasks completed at checkpoint</span><span><strong>{latestCheckpoint.state_refs.active_runs.length}</strong> runs active at checkpoint</span><span><strong>{latestCheckpoint.state_refs.open_blockers.length}</strong> blockers at checkpoint</span><small>Last checkpoint · {taskUpdatedLabel(latestCheckpoint.created_at)}</small></div>}
-    <div className="action-row insights-goal-actions">
+    <details className="delivery-criteria"><summary><ListChecks size={16} aria-hidden="true" /> Success criteria <span>{goal.acceptance_criteria.length}</span></summary><section className="insights-criteria" aria-label="Goal acceptance criteria"><ul>{goal.acceptance_criteria.map((item, i) => <li key={i}>{item}</li>)}</ul></section></details>
+    <div className="action-row insights-goal-actions" id="goal-controls">
       {(canTransitionGoal(goal.status, "pause") || (autonomous && goal.status === "draft")) && <Button disabled={action.isPending} onClick={() => action.mutate("pause")}>Pause goal</Button>}
       {canTransitionGoal(goal.status, "resume") && <Button disabled={action.isPending} onClick={() => action.mutate("resume")}>Resume goal</Button>}
       {canTransitionGoal(goal.status, "cancel") && <Button variant="danger" disabled={action.isPending} onClick={() => setConfirmCancel(true)}>Cancel goal</Button>}
@@ -119,19 +128,19 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
     {(canTransitionGoal(goal.status, "pause") || canTransitionGoal(goal.status, "resume")) && <p className="insights-help">Pausing prevents new task scheduling; existing runs can finish. Resume allows new scheduling. Cancelling stops active runs before the goal is marked cancelled.</p>}
     {confirmCancel && <div className="product-card"><p>Cancel this goal and its remaining work?</p><div className="action-row"><Button variant="danger" loading={action.isPending} onClick={() => action.mutate("cancel")}>Confirm cancel goal</Button><Button onClick={() => setConfirmCancel(false)}>Keep goal</Button></div></div>}
     <ActionError error={action.error ?? planAction.error ?? audit.error} />
-    <section className="u-stack insights-plans" aria-label="Plans"><div className="insights-section-heading"><h3>Plans</h3><Badge>{plans.data?.plans.length ?? 0}</Badge></div><ActionError error={plans.error} />
+    <section className="u-stack insights-plans" aria-label="Plans" id="goal-plans"><div className="insights-section-heading"><h3>Plans</h3><Badge>{plans.data?.plans.length ?? 0}</Badge></div><ActionError error={plans.error} />
       {plans.isLoading && <p role="status">Loading plans…</p>}
       {manual && canProposePlan(goal.status, !!goal.current_plan_id) && <Button onClick={() => setProposing(!proposing)}>{proposing ? "Close plan editor" : "Propose plan"}</Button>}
       {goal.current_plan_id && (goal.status === "paused" || goal.status === "blocked") && <p className="t-subtle">To replace a plan, pause the goal and stop its active runs first. Accepted replacement tasks remain paused until you resume the goal; prior execution evidence is kept.</p>}
       {proposing && <PlanForm goalId={goal.id} onCreated={async () => { setProposing(false); await refresh(); }} />}
       {plans.data?.plans.length === 0 && <p>{autonomous ? "The plan will appear here when agent planning finishes." : "No plan proposed. Add tasks and acceptance criteria, then review the plan before creating its tasks."}</p>}
       {plans.data?.plans.map((plan) => <article key={plan.id} className="insights-plan u-stack-sm"><div className="action-row"><h4>Plan {plan.version}</h4><Badge tone={plan.status === "accepted" ? "success" : plan.status === "proposed" ? "info" : "neutral"}>{plan.status}</Badge><span className="insights-help">{plan.task_specs.length} tasks</span></div><p className="insights-prose">{plan.rationale}</p>
-        <ol className="insights-plan-tasks">{plan.task_specs.map((spec, i) => <li key={i}><span className="insights-step-number" aria-hidden="true">{i + 1}</span><div><strong>{spec.title}</strong>{spec.development_stage && <Badge>{stageLabels[spec.development_stage]}</Badge>}{spec.description && <p>{spec.description}</p>}<ul>{spec.acceptance_criteria.map((criterion, j) => <li key={j}>{criterion}</li>)}</ul>{spec.dependencies.length > 0 && <p className="insights-dependency">Depends on: {spec.dependencies.map((dep) => plan.task_specs[Number(dep.ref)]?.title ?? dep.ref).join(", ")}</p>}</div></li>)}</ol>
+        <ol className="insights-plan-tasks">{plan.task_specs.map((spec, i) => <li key={i}><span className="insights-step-number" aria-hidden="true">{i + 1}</span><details className="delivery-plan-task"><summary><strong>{spec.title}</strong>{spec.development_stage && <Badge>{stageLabels[spec.development_stage]}</Badge>}<span>{spec.acceptance_criteria.length} checks</span></summary>{spec.description && <p>{spec.description}</p>}<ul>{spec.acceptance_criteria.map((criterion, j) => <li key={j}>{criterion}</li>)}</ul>{spec.dependencies.length > 0 && <p className="insights-dependency">Depends on: {spec.dependencies.map((dep) => plan.task_specs[Number(dep.ref)]?.title ?? dep.ref).join(", ")}</p>}</details></li>)}</ol>
         {manual && plan.status === "proposed" && <div className="action-row"><Button variant="primary" disabled={planAction.isPending} onClick={() => planAction.mutate({ id: plan.id, name: "accept" })}>Accept plan and create tasks</Button><Button disabled={planAction.isPending} onClick={() => planAction.mutate({ id: plan.id, name: "reject" })}>Reject plan</Button></div>}
       </article>)}
     </section>
     {manual && <GoalDiscussion goal={goal} />}
-    <details className="os-goal-history"><summary>Checkpoints & evidence <span>{checkpoints.data?.checkpoints.length ?? 0} checkpoints</span></summary><section className="u-stack-sm insights-checkpoints" aria-label="Checkpoints"><p className="insights-help">Saved progress and decisions throughout this goal.</p><div className="action-row">{goal.current_plan_id && <Button disabled={action.isPending} onClick={() => action.mutate("reconcile")}>Refresh from checkpoint</Button>}<Button variant="ghost" iconLeft={Download} loading={audit.isPending} onClick={() => audit.mutate()}>Export goal evidence</Button></div><ActionError error={checkpoints.error} />{checkpoints.isLoading && <p role="status">Loading checkpoints…</p>}{checkpoints.data?.checkpoints.length === 0 && <p>No checkpoints yet.</p>}{checkpoints.data?.checkpoints.map((checkpoint) => <details className="insights-disclosure" key={checkpoint.id}><summary>{checkpoint.type.replaceAll("_", " ")} · {new Date(checkpoint.created_at).toLocaleString()}</summary><p>{checkpoint.summary}</p><p>{checkpoint.state_refs.active_runs.length} active runs · {checkpoint.state_refs.open_blockers.length} blockers · {checkpoint.state_refs.pending_approvals.length} approvals</p><ul>{checkpoint.state_refs.task_statuses.map((task) => <li key={task.task_id}><Button size="sm" onClick={() => { setSelectedTaskId(task.task_id); navigate("/"); }}>Open task {task.task_id}</Button><StatusBadge status={task.status} /></li>)}</ul></details>)}</section></details>
+    <details className="os-goal-history"><summary>Checkpoints & evidence <span>{checkpoints.data?.checkpoints.length ?? 0} checkpoints</span></summary><section className="u-stack-sm insights-checkpoints" aria-label="Checkpoints"><p className="insights-help">Historical snapshots, not current progress.{latestCheckpoint ? ` Last saved ${taskUpdatedLabel(latestCheckpoint.created_at)}.` : ""}</p><div className="action-row">{goal.current_plan_id && <Button disabled={action.isPending} onClick={() => action.mutate("reconcile")}>Refresh from checkpoint</Button>}<Button variant="ghost" iconLeft={Download} loading={audit.isPending} onClick={() => audit.mutate()}>Export goal evidence</Button></div><ActionError error={checkpoints.error} />{checkpoints.isLoading && <p role="status">Loading checkpoints…</p>}{checkpoints.data?.checkpoints.length === 0 && <p>No checkpoints yet.</p>}{checkpoints.data?.checkpoints.map((checkpoint) => <details className="insights-disclosure" key={checkpoint.id}><summary>{checkpoint.type.replaceAll("_", " ")} · {new Date(checkpoint.created_at).toLocaleString()}</summary><p>{checkpoint.summary}</p><p>{checkpoint.state_refs.active_runs.length} active runs · {checkpoint.state_refs.open_blockers.length} blockers · {checkpoint.state_refs.pending_approvals.length} approvals at this checkpoint</p><ul>{checkpoint.state_refs.task_statuses.map((task) => <li key={task.task_id}><Button size="sm" onClick={() => { setSelectedTaskId(task.task_id); navigate(`/?goal=${encodeURIComponent(goal.id)}`); }}>Open task {task.task_id}</Button><StatusBadge status={task.status} /></li>)}</ul></details>)}</section></details>
     {goal.room_id && <section className="insights-goal-conversation" aria-label="Goal conversation"><h3><MessageSquare size={16} aria-hidden="true" /> Goal conversation</h3><RoomConversation key={goal.room_id} roomId={goal.room_id} projectId={goal.project_id} goalId={goal.id} /></section>}
   </article>;
 }

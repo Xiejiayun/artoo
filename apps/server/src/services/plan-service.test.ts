@@ -74,6 +74,13 @@ describe("plan-service #115 P1d", () => {
     }
     const refs = taskRows.map((t) => t.sourcePlanSpecRef).sort();
     expect(refs).toEqual(["0", "1"]);
+    // The browser scopes current work using trusted DB linkage, never titles.
+    const listed = await server.app.inject({ method: "GET", url: "/api/v1/tasks?project_id=proj_artoo" });
+    expect(listed.statusCode).toBe(200);
+    for (const task of listed.json().tasks.filter((item: { id: string }) => result.task_ids.includes(item.id))) {
+      expect(task.goal_id).toBe(goalId);
+      expect(task.source_plan_id).toBe(plan.id);
+    }
 
     // One dependency edge: spec0 (prereq) → spec1 (dependent).
     const task0 = taskRows.find((t) => t.sourcePlanSpecRef === "0")!;

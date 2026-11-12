@@ -1,29 +1,26 @@
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { ArrowUpRight, Check, Clock3, FileCheck2, Rocket, ShieldCheck, X } from "lucide-react";
 import type { Goal, ProductRelease } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
 import { useProject } from "../app/useProject.js";
+import { useGoalContext } from "../app/useGoalContext.js";
 import { Badge, Button, EmptyState } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
 import { ApplicationPublicationProgress } from "./GoalsPage.js";
 
 /** A release is backed by executor evidence, never inferred from completed tasks. */
 export function ReleasePage(): React.ReactNode {
-  const api = useApi();
-  const { projectId, bootstrap } = useProject();
-  const [selectedId, setSelectedId] = useState<string>();
-  const [params] = useSearchParams();
-  const goals = useQuery({ queryKey: ["goals", projectId], queryFn: () => api.listGoals(projectId!), enabled: !!projectId, refetchInterval: 10000 });
-  const selected = goals.data?.goals.find((goal) => goal.id === (selectedId ?? params.get("goal"))) ?? goals.data?.goals[0];
+  const { bootstrap } = useProject();
+  const { goals, items, goal: selected, requested, selectGoal } = useGoalContext(true);
   return <section className="product-page os-release-page" aria-label="Releases">
     <header className="os-page-heading"><div><span className="os-eyebrow"><Rocket size={14} aria-hidden="true" />Deliver with confidence</span><h1>Release</h1><p>Verified output, publication checks, and the latest reported health.</p></div><Link className="os-secondary-link" to={selected ? `/goals?goal=${encodeURIComponent(selected.id)}` : "/goals"}>Manage in Plan<ArrowUpRight size={14} aria-hidden="true" /></Link></header>
     <ActionError error={bootstrap.error ?? goals.error} />
     {(bootstrap.isLoading || goals.isLoading) && <p role="status">Loading release goals…</p>}
     {(bootstrap.error || goals.error) && <Button onClick={() => { void bootstrap.refetch(); void goals.refetch(); }}>Retry release goals</Button>}
     {goals.data?.goals.length === 0 && <EmptyState icon={Rocket} title="Your first release starts with a plan" description="Create a goal in Plan and select a configured publishing destination. Release evidence will appear here as your team delivers." action={<Link className="os-primary-link" to="/goals">Open Plan<ArrowUpRight size={14} aria-hidden="true" /></Link>} />}
-    {selected && <div className="os-release-layout"><nav className="os-release-goals" aria-label="Release goals"><span className="os-section-label">Goals</span>{goals.data?.goals.map((goal) => <button key={goal.id} type="button" className={`os-release-goal${goal.id === selected.id ? " is-active" : ""}`} aria-pressed={goal.id === selected.id} onClick={() => setSelectedId(goal.id)}><strong>{goal.title}</strong><span>Goal · {goal.status.replaceAll("_", " ")}</span></button>)}</nav><ReleaseDetail key={selected.id} goal={selected} /></div>}
+    {requested && goals.isSuccess && !selected && <p role="status">This goal is unavailable in the selected project. <Button onClick={() => selectGoal(null)}>Show project goals</Button></p>}
+    {selected && <div className="os-release-layout"><nav className="os-release-goals" aria-label="Release goals"><span className="os-section-label">Goals</span>{items.map((goal) => <button key={goal.id} type="button" className={`os-release-goal${goal.id === selected.id ? " is-active" : ""}`} aria-pressed={goal.id === selected.id} onClick={() => selectGoal(goal.id)}><strong title={goal.title}>{goal.title}</strong><span>Goal · {goal.status.replaceAll("_", " ")}</span></button>)}</nav><ReleaseDetail key={selected.id} goal={selected} /></div>}
   </section>;
 }
 
@@ -42,6 +39,8 @@ function ReleaseDetail({ goal }: { goal: Goal }): React.ReactNode {
   const release = releaseQuery.data?.release;
   const receipt = release?.receipt;
   const health = release?.health;
+  const publicationConfigured = !!automation.data?.automation?.release_profile_id;
+  const unconfigured = automation.isSuccess && !publicationConfigured && !release && releaseQuery.isSuccess;
   const published = release?.status === "published" && receipt?.outcome === "published";
   const endpoint = safeEndpoint(release, releaseQuery.isError);
   const checks = health?.health_checks ?? receipt?.health_checks ?? [];
@@ -59,9 +58,9 @@ function ReleaseDetail({ goal }: { goal: Goal }): React.ReactNode {
     </section>
     {automation.data?.automation?.app_publication && <div className="os-card os-application-publication"><ApplicationPublicationProgress goalId={goal.id} /></div>}
     <section className="os-card os-release-gates" aria-label="Release checks"><div className="os-card-heading"><ShieldCheck size={16} aria-hidden="true" /><h3>Release checks</h3></div>
-      <Gate label="Verified version" detail={release ? "The request names an immutable verified artifact." : "Waiting for verification evidence."} state={release ? "passed" : "pending"} />
-      <Gate label="Publication receipt" detail={published ? "The executor confirmed publication." : receipt ? `Executor result: ${receipt.outcome.replaceAll("_", " ")}.` : "Waiting for the publishing executor."} state={published ? "passed" : receipt ? "failed" : "pending"} />
-      <Gate label="Endpoint health" detail={checks.length ? `${checks.filter((check) => check.passed).length} of ${checks.length} ${health ? "latest" : "publication-time"} checks passed.` : "No endpoint measurement received."} state={checks.length ? checkPassed ? "passed" : "failed" : "pending"} />
+      <Gate label="Verified version" detail={release ? "The request names an immutable verified artifact." : "No immutable release artifact is recorded here. Goal completion alone does not establish verification."} state={release ? "passed" : unconfigured ? "unrecorded" : "pending"} />
+      <Gate label="Publication receipt" detail={published ? "The executor confirmed publication." : receipt ? `Executor result: ${receipt.outcome.replaceAll("_", " ")}.` : unconfigured ? "Static publishing was not configured for this goal." : "Waiting for the publishing executor."} state={published ? "passed" : receipt ? "failed" : unconfigured ? "unconfigured" : "pending"} />
+      <Gate label="Endpoint health" detail={checks.length ? `${checks.filter((check) => check.passed).length} of ${checks.length} ${health ? "latest" : "publication-time"} checks passed.` : unconfigured ? "Endpoint checks start after a publication is requested." : "No endpoint measurement received."} state={checks.length ? checkPassed ? "passed" : "failed" : unconfigured ? "not_applicable" : "pending"} />
       {release?.request.acceptance_binding && <Gate label="Publication acceptance" detail={receipt?.acceptance ? `${receipt.acceptance.settled_criteria.length} configured criteria satisfied at publication time.` : "Configured publication criteria are still pending."} state={receipt?.acceptance ? "passed" : "pending"} />}
     </section>
     {checks.length > 0 && <section className="os-card" aria-label="Endpoint measurements"><div className="os-card-heading"><FileCheck2 size={16} aria-hidden="true" /><h3>Endpoint measurements</h3></div><div className="os-measurements">{checks.map((check) => <div key={check.path}><code>{check.path}</code><Badge tone={check.passed ? "success" : "danger"}>{check.status_code ?? "No response"}</Badge><time dateTime={check.checked_at}>{new Date(check.checked_at).toLocaleString()}</time></div>)}</div></section>}
@@ -69,6 +68,7 @@ function ReleaseDetail({ goal }: { goal: Goal }): React.ReactNode {
   </div>;
 }
 
-function Gate({ label, detail, state }: { label: string; detail: string; state: "passed" | "pending" | "failed" }): React.ReactNode {
-  return <div className="os-release-gate" data-state={state}><span className="os-gate-icon" aria-hidden="true">{state === "passed" ? <Check size={14} /> : state === "failed" ? <X size={14} /> : <Clock3 size={14} />}</span><div><strong>{label}</strong><p>{detail}</p></div><span>{state === "passed" ? "Passed" : state === "failed" ? "Failed" : "Pending"}</span></div>;
+function Gate({ label, detail, state }: { label: string; detail: string; state: "passed" | "pending" | "failed" | "unconfigured" | "not_applicable" | "unrecorded" }): React.ReactNode {
+  const labels = { passed: "Passed", failed: "Failed", pending: "Pending", unconfigured: "Not configured", not_applicable: "Not applicable", unrecorded: "No record" };
+  return <div className="os-release-gate" data-state={state}><span className="os-gate-icon" aria-hidden="true">{state === "passed" ? <Check size={14} /> : state === "failed" ? <X size={14} /> : <Clock3 size={14} />}</span><div><strong>{label}</strong><p>{detail}</p></div><span>{labels[state]}</span></div>;
 }

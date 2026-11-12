@@ -70,6 +70,7 @@ test("goals materialize a reviewed dependent plan and preserve pause/resume chec
   await selectProject(page, "plan");
   const title = unique("Preview goal");
   await page.getByRole("button", { name: "New goal" }).click();
+  await page.getByText("Title & time budget · optional", { exact: true }).click();
   await page.getByLabel("Goal title").fill(title);
   await page.getByLabel("Objective", { exact: true }).fill("Deliver an auditable preview");
   await page.getByRole("dialog", { name: "New goal", exact: true }).getByRole("textbox", { name: "Goal acceptance criteria", exact: true }).fill("Tests pass\nEvidence reviewed");
