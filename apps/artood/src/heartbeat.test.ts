@@ -33,6 +33,13 @@ describe("createRegistryHeartbeat", () => {
     }
   });
 
+  it("includes optional native skill observations without changing advertised capabilities", () => {
+    const native = { version: 1 as const, observed_at: "2026-11-12T00:00:00.000Z", skills: [], truncated: false, unreadable_count: 0 };
+    const hb = createRegistryHeartbeat({ nodeId: "n", registry, nativeSkillsForRuntime: () => native })();
+    expect(nodeHeartbeatSchema.parse(hb).runtimes[0]?.native_skills).toEqual(native);
+    expect(hb.runtimes[0]?.capabilities).toEqual(["code.read", "code.modify", "code.review", "test.run"]);
+  });
+
   it("generates a monotonically increasing sequence per process", () => {
     const beat = createRegistryHeartbeat({ nodeId: "n", registry });
     expect(beat().sequence).toBe(0);

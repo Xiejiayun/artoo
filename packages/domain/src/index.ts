@@ -39,6 +39,7 @@ export * from "./schemas.js";
 export * from "./api.js";
 export * from "./dag.js";
 export * from "./skill.js";
+export * from "./native-skills.js";
 export * from "./lease.js";
 export * from "./memory.js";
 export * from "./runtime.js";

@@ -14,6 +14,14 @@ import {
 } from "./node-messages.js";
 
 describe("structured runtime results", () => {
+  it("keeps native inventory optional and rejects unknown versions or ambiguous scopes", () => {
+    const base = { runtime: "codex", status: "available" };
+    expect(runtimeStatusSchema.parse(base).native_skills).toBeUndefined();
+    const native = { version: 1, observed_at: "2026-11-12T00:00:00Z", skills: [], truncated: false, unreadable_count: 0 };
+    expect(runtimeStatusSchema.safeParse({ ...base, native_skills: native }).success).toBe(true);
+    expect(runtimeStatusSchema.safeParse({ ...base, native_skills: { ...native, version: 2 } }).success).toBe(false);
+    expect(runtimeStatusSchema.safeParse({ ...base, native_skills: { ...native, skills: [{ id: "test", name: "Test", description: "Test code", path: "/skills/test/SKILL.md", scope: "workspace" }] } }).success).toBe(false);
+  });
   it("accepts final answers and partial provider usage while rejecting invalid quantities", () => {
     expect(runEventBodySchema.safeParse({ type: "run.answer", payload: { text: "Final answer" } }).success).toBe(true);
     expect(runEventBodySchema.safeParse({ type: "run.usage", payload: { input_tokens: 12 } }).success).toBe(true);

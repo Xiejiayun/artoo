@@ -1,13 +1,14 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Bot, Box, Laptop, Monitor, Plus, SearchX, ShieldCheck, type LucideIcon } from "lucide-react";
-import { CAPABILITIES, PERMISSION_CATEGORIES, SKILL_API_VERSION } from "@artoo/domain";
+import { Bot, Laptop, Monitor, Plus, SearchX, type LucideIcon } from "lucide-react";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { Badge, Button, EmptyState, ErrorState, Icon, SearchInput, Select, Skeleton, type Tone } from "../ui/index.js";
-import { AgentEnabledControl, AgentRegistration, SkillInstallForm, SkillPermissionSummary } from "./InventorySetup.js";
+import { AgentEnabledControl, AgentRegistration } from "./InventorySetup.js";
 import { AgentWorkspaceAllocation } from "./AgentWorkspaceAllocation.js";
+import { AgentSkills, SkillCatalogPage, agentSkillSearchText, useSkillInventory } from "./SkillInventory.js";
+import { matchesSkillSearch } from "./skill-inventory-model.js";
 import { DeleteResource, ResourceLifetime } from "./ResourceLifecycleControls.js";
 import { DaemonBadge } from "./DaemonBadge.js";
 import { ConnectNodeDialog } from "./ConnectNodeDialog.js";
@@ -97,6 +98,7 @@ export function AgentsPage(): React.ReactNode {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(), refetchInterval: 10000 });
+  const skillInventory = useSkillInventory(bootstrap.data);
   if (bootstrap.isLoading) return <InventoryLoading label="Loading agents" />;
   if (!bootstrap.data) return <section className="inventory-page resources-page" aria-label="Agents"><ErrorState title="Failed to load agents" action={<Button onClick={() => void bootstrap.refetch()}>Try again</Button>} /></section>;
   const role = bootstrap.data.user.role;
@@ -106,7 +108,7 @@ export function AgentsPage(): React.ReactNode {
   const efforts = new Map(bootstrap.data.effort_profiles.map((profile) => [profile.id, profile]));
   const instances = bootstrap.data.agent_instances;
   const disabled = (instance: typeof instances[number]): boolean => instance.config.enabled === false || instance.status === "disabled";
-  const filtered = instances.filter((instance) => (!selectedInstance || instance.id === selectedInstance) && (filter === "all" || (filter === "expired" ? instance.lifecycle?.state === "expired" : filter === "disabled" ? disabled(instance) : filter === "enabled" ? !disabled(instance) : ["running", "queued", "stopping"].includes(instance.status))) && matches(search, agents.get(instance.agent_id)?.display_name, computers.get(instance.computer_id)?.display_name, instance.id, instance.runtime, instance.workspace_root, ...(agents.get(instance.agent_id)?.capabilities ?? [])));
+  const filtered = instances.filter((instance) => (!selectedInstance || instance.id === selectedInstance) && (filter === "all" || (filter === "expired" ? instance.lifecycle?.state === "expired" : filter === "disabled" ? disabled(instance) : filter === "enabled" ? !disabled(instance) : ["running", "queued", "stopping"].includes(instance.status))) && matchesSkillSearch(search, agents.get(instance.agent_id)?.display_name, computers.get(instance.computer_id)?.display_name, instance.id, instance.runtime, instance.workspace_root, agentSkillSearchText(skillInventory, instance), ...(agents.get(instance.agent_id)?.capabilities ?? [])));
   return <section className="inventory-page resources-page" aria-label="Agents">
     <ResourceHeader title="Agents" description="Reusable teammates, with an instance wherever they work." icon={Bot}>{["owner", "admin"].includes(role) && <Link className="ui-btn ui-btn--primary ui-btn--md" to="/computers"><Plus size={16} aria-hidden="true" />Create an instance</Link>}</ResourceHeader>
     {bootstrap.isError && <div className="resource-inline-error" role="alert"><span>Agent settings could not be refreshed. Showing the last loaded settings.</span><Button size="sm" onClick={() => void bootstrap.refetch()}>Retry agent settings</Button></div>}
@@ -123,6 +125,7 @@ export function AgentsPage(): React.ReactNode {
           <DaemonBadge computerId={instance.computer_id} />
           <dl className="resource-highlights"><div><dt>Model</dt><dd>{model?.name ?? "Not configured"}</dd></div><div><dt>Effort</dt><dd>{effort ? `${effort.effort} · ${effort.max_runtime_minutes}m limit` : "Not configured"}</dd></div></dl>
           <ul className="resource-chips" aria-label="Agent capabilities">{agent?.capabilities.map((capability) => <li key={capability} title={capability}>{CAPABILITY_LABELS[capability] ?? capability}</li>)}</ul>
+          <AgentSkills inventory={skillInventory} instance={instance} />
           <details className="resource-details"><summary>Workspace & configuration</summary><dl className="inv-meta"><Row label="Instance"><code>{instance.id}</code></Row><Row label="Workspace root"><code>{value(instance.workspace_root)}</code></Row><Row label="Model profile">{model ? `${model.name} (${model.provider}/${model.model})` : "Not configured"}</Row><Row label="Effort profile">{effort?.name ?? "Not configured"}</Row></dl><AgentWorkspaceAllocation instance={instance} role={role} computerOs={computer?.os} /></details>
           <ResourceLifetime lifecycle={instance.lifecycle} />
           <footer className="resource-card__footer"><AgentEnabledControl instance={instance} /><DeleteResource kind="instance" id={instance.id} name={agent?.display_name ?? instance.id} role={role} /></footer>
@@ -132,29 +135,5 @@ export function AgentsPage(): React.ReactNode {
   </section>;
 }
 export function SkillsPage(): React.ReactNode {
-  const api = useApi();
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("all");
-  const skillsQuery = useQuery({ queryKey: queryKeys.skillInstalls, queryFn: () => api.listSkillInstalls() });
-  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
-  const skills = skillsQuery.data?.skills ?? [];
-  const filtered = skills.filter((skill) => (filter === "all" || (filter === "enabled" ? skill.enabled : filter === "disabled" ? !skill.enabled : skill.permission_summary.risk === "high")) && matches(search, skill.name, skill.skill_id, skill.manifest.description, ...skill.capabilities, ...skill.compatible_runtimes));
-  return <section className="inventory-page resources-page" aria-label="Skills">
-    <ResourceHeader title="Skills" description="Shared capabilities, with clear permissions and scope." icon={Box}><SkillInstallForm /></ResourceHeader>
-    <div className="resources-guide"><ShieldCheck size={19} aria-hidden="true" /><p><strong>Know what a skill can access</strong> Review its files, network destinations and approval requirements before installing.</p><span>{skills.length} installed</span></div>
-    <ResourceSearch title="skills" search={search} onSearch={setSearch} count={filtered.length}><Select label="Skill state" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">All skills</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="high">High risk</option></Select></ResourceSearch>
-    <section aria-label="Installed skills">
-      {skillsQuery.isLoading ? <div role="status" className="resource-card">Loading skills...</div> : skillsQuery.isError ? <ErrorState title="Failed to load skills." action={<Button onClick={() => void skillsQuery.refetch()}>Try again</Button>} /> : skills.length === 0 ? <EmptyState icon={Box} title="No skills installed." description="Install a skill to add capabilities to compatible agents in your workspace." /> : filtered.length === 0 ? <NoMatches onClear={() => { setSearch(""); setFilter("all"); }} /> : <div className="resources-grid">
-        {filtered.map((skill) => <article key={skill.id} aria-label={skill.name} className="resource-card">
-          <header className="resource-card__header"><span className="resource-avatar resource-avatar--skill"><Box size={22} aria-hidden="true" /></span><div><h2>{skill.name}</h2><p>Version {skill.version} · {skill.project_id ? bootstrap.data?.projects.find((project) => project.id === skill.project_id)?.name ?? "Project" : "Organization"}</p></div><Badge tone={skill.enabled ? "success" : "neutral"}>{skill.enabled ? "enabled" : "disabled"}</Badge></header>
-          <p className="resource-description">{skill.manifest.description || "Adds shared capabilities to compatible agent runtimes."}</p>
-          <ul className="resource-chips" aria-label="Skill capabilities">{skill.capabilities.map((capability) => <li key={capability} title={capability}>{CAPABILITY_LABELS[capability] ?? capability}</li>)}</ul>
-          <div className="resource-skill-meta"><span>Works with <strong>{list(skill.compatible_runtimes)}</strong></span><Badge tone={invTone(skill.permission_summary.risk)}>{skill.permission_summary.risk} risk</Badge></div>
-          <details className="resource-details"><summary>Permissions & access <span>{skill.permission_summary.categories.length} categories</span></summary><SkillPermissionSummary permissions={skill.permission_summary} /></details>
-          <details className="resource-details"><summary>Installation details</summary><dl className="inv-meta"><Row label="Scope">{skill.project_id ?? "organization"}</Row><Row label="Skill id"><code>{skill.skill_id}</code></Row><Row label="Capabilities">{list(skill.capabilities)}</Row><Row label="Permission categories">{list(skill.permission_summary.categories)}</Row><Row label="Installed by">{skill.installed_by_type}:{skill.installed_by_id}</Row><Row label="Updated"><time dateTime={skill.updated_at}>{timestamp(skill.updated_at)}</time></Row></dl></details>
-        </article>)}
-      </div>}
-    </section>
-    <details className="resource-reference"><summary>Manifest reference</summary><div><section aria-label="Skill manifest contract"><h2>Manifest contract</h2><p>API version <code>{SKILL_API_VERSION}</code>. Capabilities and compatible runtimes determine where a skill can be used.</p></section><section aria-label="Permission categories"><h2>Permission categories</h2><ul className="resource-chips">{PERMISSION_CATEGORIES.map((category) => <li key={category}>{category}</li>)}</ul></section><section aria-label="Known capabilities"><h2>Known capabilities</h2><ul className="resource-chips">{CAPABILITIES.map((capability) => <li key={capability}>{capability}</li>)}</ul></section></div></details>
-  </section>;
+  return <SkillCatalogPage />;
 }

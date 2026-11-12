@@ -1,0 +1,16 @@
+.skill-filters { flex-wrap: wrap; }
+.skill-filters > .ui-search { flex: 1 1 260px; }
+.skill-catalog-section { display: grid; gap: 16px; min-width: 0; }
+.skill-catalog-section .resource-section-heading { margin: 0; }
+.skill-catalog-section h2 { margin: 0; font-size: 15px; }
+.skill-agent-links { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; }
+.skill-agent-links > strong { flex-basis: 100%; font-weight: 550; }
+.skill-agent-links > span { color: var(--text-subtle); }
+.agent-skills { display: grid; gap: 10px; }
+.agent-skills .resource-section-heading { flex-wrap: wrap; margin: 0; }
+.agent-skills .resource-section-heading a { margin-left: auto; font-size: 12px; }
+.agent-skills__list { display: grid; gap: 10px; padding: 0; margin: 0; list-style: none; font-size: 12px; }
+.agent-skills__list li { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.agent-skills__list li > strong { overflow-wrap: anywhere; }
+.agent-skills__list p { flex-basis: 100%; margin: 0; color: var(--text-muted); line-height: 1.6; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .skill-filters > * { min-width: 0; max-width: 100%; } }

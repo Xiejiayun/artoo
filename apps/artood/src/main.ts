@@ -14,6 +14,7 @@ import { createAdapterRegistry, type AdapterRegistry, type RuntimeRegistration }
 import { createArtifactUploader } from "./artifact-upload.js";
 import { runtimeAvailable } from "./cli-resolver.js";
 import { createRegistryHeartbeat } from "./heartbeat.js";
+import { createNativeSkillSampler } from "./native-skills.js";
 import { createArtoodNode, type ArtoodNode, type ArtoodNodeOptions } from "./node-runner.js";
 import { claudeCodeRuntime, codexRuntime, type CodexSettings, type RuntimePresetOptions } from "./runtimes.js";
 import { createManagedBootstrap, validateManagedJournalBinding, validateManagedJournalPreparation,
@@ -324,6 +325,7 @@ export function createNodeFromConfig(config: ArtoodConfig, sourceCommandDiagnost
     registry,
     heartbeat: createRegistryHeartbeat({
       nodeId: config.nodeId, registry,
+      nativeSkillsForRuntime: createNativeSkillSampler({ workspaceRoots: config.allowedRoots }),
       statusForRuntime: (runtime) => runtimeAvailable(runtime, runtime === "codex" ? config.codex?.binaryPath : undefined) ? "available" : "missing",
     }),
     uploadArtifact: createArtifactUploader(config.url, config.nodeId),

@@ -292,6 +292,7 @@ export function mapFileLease(row: typeof fileLeases.$inferSelect): FileLease {
 
 export function mapAgentRuntime(row: typeof agentRuntimes.$inferSelect): AgentRuntime {
   return AgentRuntimeSchema.parse({
+    native_skills: (row.metadata as Record<string, unknown> | null)?.native_skills,
     id: row.id,
     organization_id: row.organizationId,
     computer_id: row.computerId,
