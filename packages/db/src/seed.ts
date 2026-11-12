@@ -1,10 +1,8 @@
 import type { DbClient } from "@artoo/storage";
+import { sql } from "drizzle-orm";
 
 import {
-  agentInstances,
   agentRuntimes,
-  agents,
-  computers,
   effortProfiles,
   modelProfiles,
   organizations,
@@ -79,19 +77,12 @@ export async function seed(
       createdAt: now,
     });
 
-    if (options.demoResources !== false) await tx.insert(computers).values({
-      id: ids.computerId,
-      organizationId: ids.organizationId,
-      displayName: "Local Mock",
-      hostname: "localhost",
-      os: "windows",
-      arch: "x64",
-      status: "online",
-      lastHeartbeatAt: now,
-      resources: {},
-      capabilities: ["code.modify", "test.run"],
-      createdAt: now,
-    });
+    // Historical migration fixtures also use this seed. Explicit original
+    // columns keep later schema additions out of their pre-upgrade inserts.
+    if (options.demoResources !== false) await tx.execute(sql`
+      INSERT INTO computers (id, organization_id, display_name, hostname, os, arch, status, last_heartbeat_at, resources, capabilities, created_at)
+      VALUES (${ids.computerId}, ${ids.organizationId}, 'Local Mock', 'localhost', 'windows', 'x64', 'online', ${now}, '{}'::jsonb, '["code.modify","test.run"]'::jsonb, ${now})
+    `);
 
     if (options.demoResources !== false) await tx.insert(modelProfiles).values([
       profile("model_fast_fix", "fast_fix", "low", "fast", ["code.modify"], now),
@@ -105,15 +96,10 @@ export async function seed(
       effort("effort_deep_architect", "deep_architect", "high", 120, now),
     ]);
 
-    if (options.demoResources !== false) await tx.insert(agents).values({
-      id: ids.agentId,
-      organizationId: ids.organizationId,
-      displayName: "Mock Coder",
-      kind: "mock",
-      status: "idle",
-      capabilities: ["code.modify", "test.run"],
-      createdAt: now,
-    });
+    if (options.demoResources !== false) await tx.execute(sql`
+      INSERT INTO agents (id, organization_id, display_name, kind, status, capabilities, created_at)
+      VALUES (${ids.agentId}, ${ids.organizationId}, 'Mock Coder', 'mock', 'idle', '["code.modify","test.run"]'::jsonb, ${now})
+    `);
 
     if (options.demoResources !== false) await tx.insert(agentRuntimes).values({
       id: "runtime_mock",
@@ -128,19 +114,10 @@ export async function seed(
       metadata: {},
     });
 
-    if (options.demoResources !== false) await tx.insert(agentInstances).values({
-      id: ids.agentInstanceId,
-      organizationId: ids.organizationId,
-      computerId: ids.computerId,
-      agentId: ids.agentId,
-      runtime: "mock",
-      modelProfileId: "model_standard_coding",
-      effortProfileId: "effort_standard_coding",
-      status: "idle",
-      workspaceRoot,
-      config: {},
-      createdAt: now,
-    });
+    if (options.demoResources !== false) await tx.execute(sql`
+      INSERT INTO agent_instances (id, organization_id, computer_id, agent_id, runtime, model_profile_id, effort_profile_id, status, workspace_root, config, created_at)
+      VALUES (${ids.agentInstanceId}, ${ids.organizationId}, ${ids.computerId}, ${ids.agentId}, 'mock', 'model_standard_coding', 'effort_standard_coding', 'idle', ${workspaceRoot}, '{}'::jsonb, ${now})
+    `);
   });
 
   return ids;

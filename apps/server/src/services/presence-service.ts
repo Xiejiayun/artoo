@@ -28,7 +28,7 @@ import {
   type DevicePresenceState,
   type PresenceWindows,
 } from "@artoo/domain";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { buildEvent } from "../events.js";
@@ -361,7 +361,7 @@ export async function agentInstancePresence(
     await ctx.db.db
       .select()
       .from(agentInstances)
-      .where(and(eq(agentInstances.id, instanceId), eq(agentInstances.organizationId, ctx.organizationId)))
+      .where(and(eq(agentInstances.id, instanceId), eq(agentInstances.organizationId, ctx.organizationId), isNull(agentInstances.deletedAt)))
   )[0];
   if (inst === undefined) return null;
   const facts = await instanceFacts(
@@ -380,7 +380,7 @@ export async function listAgentInstancePresence(
   const insts = await ctx.db.db
     .select()
     .from(agentInstances)
-    .where(eq(agentInstances.organizationId, ctx.organizationId));
+    .where(and(eq(agentInstances.organizationId, ctx.organizationId), isNull(agentInstances.deletedAt)));
   const out: AgentInstancePresence[] = [];
   for (const inst of insts) {
     const facts = await instanceFacts(
@@ -437,7 +437,7 @@ export async function computerPresence(
     await ctx.db.db
       .select()
       .from(computers)
-      .where(and(eq(computers.id, computerId), eq(computers.organizationId, ctx.organizationId)))
+      .where(and(eq(computers.id, computerId), eq(computers.organizationId, ctx.organizationId), isNull(computers.deletedAt)))
   )[0];
   if (computer === undefined) return null;
   const facts = await computerFacts(ctx, { id: computer.id, lastHeartbeatAt: computer.lastHeartbeatAt }, isLive);
@@ -449,7 +449,7 @@ export async function listComputerPresence(
   isLive: LiveConnection,
   config: PresenceConfig = DEFAULT_AGENT_PRESENCE_CONFIG,
 ): Promise<ComputerPresence[]> {
-  const rows = await ctx.db.db.select().from(computers).where(eq(computers.organizationId, ctx.organizationId));
+  const rows = await ctx.db.db.select().from(computers).where(and(eq(computers.organizationId, ctx.organizationId), isNull(computers.deletedAt)));
   const out: ComputerPresence[] = [];
   for (const computer of rows) {
     const facts = await computerFacts(ctx, { id: computer.id, lastHeartbeatAt: computer.lastHeartbeatAt }, isLive);

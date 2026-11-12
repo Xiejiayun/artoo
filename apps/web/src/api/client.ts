@@ -267,6 +267,9 @@ export class ApiClient {
   listDevices(): Promise<{ devices: Device[] }> { return this.request("GET", "/devices"); }
   registerAgent(computerId: string, body: { runtime: string; workspace_root: string; agent_id?: string; display_name?: string; capabilities?: string[] }, key: string): Promise<unknown> { return this.request("POST", `/computers/${encodeURIComponent(computerId)}/instances`, { body, idempotencyKey: key }); }
   setAgentEnabled(id: string, enabled: boolean, key: string): Promise<unknown> { return this.request("PATCH", `/agent-instances/${encodeURIComponent(id)}`, { body: { enabled }, idempotencyKey: key }); }
+  deleteComputer(id: string, key: string): Promise<{ deleted: boolean; id: string }> { return this.request("DELETE", `/computers/${encodeURIComponent(id)}`, { idempotencyKey: key }); }
+  deleteAgent(id: string, key: string): Promise<{ deleted: boolean; id: string }> { return this.request("DELETE", `/agents/${encodeURIComponent(id)}`, { idempotencyKey: key }); }
+  deleteAgentInstance(id: string, key: string): Promise<{ deleted: boolean; id: string }> { return this.request("DELETE", `/agent-instances/${encodeURIComponent(id)}`, { idempotencyKey: key }); }
   setAgentWorktreeBase(id: string, body: WorktreeBaseConfiguration): Promise<{ agent_instance: AgentInstance }> { return this.request("PATCH", `/agent-instances/${encodeURIComponent(id)}/worktree-workspace-base`, { body }); }
   clearAgentWorktreeBase(id: string): Promise<{ agent_instance: AgentInstance }> { return this.request("DELETE", `/agent-instances/${encodeURIComponent(id)}/worktree-workspace-base`); }
   createPairing(platform: DevicePlatform, key: string): Promise<{ code: string; pairing: { id?: string; expires_at: string } }> { return this.request("POST", "/devices/pairings", { body: { intended_platform: platform }, idempotencyKey: key }); }

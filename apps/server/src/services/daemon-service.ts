@@ -1,5 +1,5 @@
 import { agentRuntimes, computers, runs } from "@artoo/db";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import type { ServerContext } from "../context.js";
 import { mapAgentRuntime } from "../mappers.js";
 
@@ -7,7 +7,7 @@ import { mapAgentRuntime } from "../mappers.js";
 export async function listDaemons(ctx: ServerContext, isLive: (computerId: string) => boolean, reconnecting: (computerId: string) => boolean,
   workspaceRoots: (computerId: string) => { readonly version: 1; readonly paths: readonly string[] } | undefined = () => undefined) {
   const [nodes, runtimes, active] = await Promise.all([
-    ctx.db.db.select().from(computers).where(eq(computers.organizationId, ctx.organizationId)).orderBy(asc(computers.displayName)),
+    ctx.db.db.select().from(computers).where(and(eq(computers.organizationId, ctx.organizationId), isNull(computers.deletedAt))).orderBy(asc(computers.displayName)),
     ctx.db.db.select().from(agentRuntimes).where(eq(agentRuntimes.organizationId, ctx.organizationId)),
     ctx.db.db.select({ computerId: runs.computerId }).from(runs).where(and(eq(runs.organizationId, ctx.organizationId), inArray(runs.status, ["queued", "starting", "running", "paused", "awaiting_input"]))),
   ]);
