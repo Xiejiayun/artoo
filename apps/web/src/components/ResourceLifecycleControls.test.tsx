@@ -17,6 +17,7 @@ describe("resource lifecycle controls", () => {
     const client = fakeApi({ bootstrap: async () => snapshot, deleteComputer: remove, deleteAgent: remove, deleteAgentInstance: remove,
       listComputerRuntimes: async () => ({ runtimes: [] }), listDaemons: async () => ({ daemons: [] }) });
     renderWithProviders(kind === "computer" ? <ComputersPage /> : <AgentsPage />, { client });
+    if (kind === "computer") await user.click(await screen.findByText("Computer details", { exact: true }));
     await user.click(await screen.findByRole("button", { name: `Delete ${kind}` }));
     const dialog = screen.getByRole("dialog", { name: `Delete ${kind}` });
     expect(dialog).toHaveTextContent("Historical tasks and audit records are retained");
