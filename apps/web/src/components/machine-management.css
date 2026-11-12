@@ -23,4 +23,10 @@
 .agent-library h2 { font-size: 15px; margin: 0; }
 .agent-library__list { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 14px; }
 .agent-library__list > div { display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.resource-lifetime { display: grid; gap: 8px; min-width: 0; font-size: 12px; }
+.resource-lifetime .inv-meta { margin: 0; }
+.agent-library__list > div { flex-wrap: wrap; }
+.agent-library__list > div > .resource-lifetime { flex: 1 0 100%; }
+.resource-card__footer { flex-wrap: wrap; gap: 12px; }
+.resource-card__footer > .resource-enabled-control { flex: 1; }
 @media (max-width: 540px) { .machines-summary { flex-wrap: wrap; gap: 8px 14px; }.machines-runtime-summary small { display: none; }.agent-library__list { grid-template-columns: 1fr; } }

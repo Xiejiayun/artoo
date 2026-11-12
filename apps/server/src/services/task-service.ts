@@ -1,5 +1,6 @@
 import {
   appendEvent,
+  agentRuntimes,
   agentInstances,
   agents,
   approvals,
@@ -17,6 +18,7 @@ import {
 } from "@artoo/db";
 import {
   ID_PREFIXES,
+  deriveResourceLifecycle,
   type PreparedGoalEntryV1,
   type Agent,
   type AgentInstance,
@@ -28,10 +30,11 @@ import {
   type Task,
   type TaskReview,
 } from "@artoo/domain";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { preparedGoalEntrySnapshot } from "../config/goal-entry.js";
+import { resourceExpiryMs } from "../config/resource-lifecycle.js";
 import { effectiveTeamRole } from "../auth/request-auth.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
@@ -64,7 +67,7 @@ export interface BootstrapResponse {
 }
 
 /** GET /api/v1/bootstrap — organization resources and the authenticated actor. */
-export async function bootstrap(ctx: ServerContext): Promise<BootstrapResponse> {
+export async function bootstrap(ctx: ServerContext, isLive: (computerId: string) => boolean = () => false): Promise<BootstrapResponse> {
   const db = ctx.db.db;
   const orgRow = (await db.select().from(organizations).where(eq(organizations.id, ctx.organizationId)))[0];
   const userRow = (await db.select().from(users).where(eq(users.id, ctx.actorUserId)))[0];
@@ -79,17 +82,17 @@ export async function bootstrap(ctx: ServerContext): Promise<BootstrapResponse> 
   const computerRows = await db
     .select()
     .from(computers)
-    .where(eq(computers.organizationId, ctx.organizationId))
+    .where(and(eq(computers.organizationId, ctx.organizationId), isNull(computers.deletedAt)))
     .orderBy(asc(computers.displayName), asc(computers.id));
   const agentRows = await db
     .select()
     .from(agents)
-    .where(eq(agents.organizationId, ctx.organizationId))
+    .where(and(eq(agents.organizationId, ctx.organizationId), isNull(agents.deletedAt)))
     .orderBy(asc(agents.displayName), asc(agents.id));
   const instanceRows = await db
     .select()
     .from(agentInstances)
-    .where(eq(agentInstances.organizationId, ctx.organizationId))
+    .where(and(eq(agentInstances.organizationId, ctx.organizationId), isNull(agentInstances.deletedAt)))
     .orderBy(asc(agentInstances.id));
   const modelRows = await db
     .select()
@@ -102,6 +105,29 @@ export async function bootstrap(ctx: ServerContext): Promise<BootstrapResponse> 
     .where(eq(effortProfiles.organizationId, ctx.organizationId))
     .orderBy(asc(effortProfiles.name), asc(effortProfiles.id));
   const goalEntry = await preparedGoalEntrySnapshot(ctx);
+  const timeoutMs = resourceExpiryMs();
+  const now = ctx.clock.nowIso();
+  const runtimes = await db.select().from(agentRuntimes).where(eq(agentRuntimes.organizationId, ctx.organizationId));
+  const mappedComputers = computerRows.map((row) => ({ ...mapComputer(row),
+    lifecycle: deriveResourceLifecycle(row.lastHeartbeatAt, row.createdAt, now, isLive(row.id), timeoutMs) }));
+  const mappedInstances = instanceRows.map((row) => {
+    const computer = computerRows.find((item) => item.id === row.computerId);
+    const runtime = runtimes.find((item) => item.computerId === row.computerId && item.runtime === row.runtime);
+    // Older daemons without a runtime row retain computer-heartbeat compatibility.
+    const lastSeen = runtime ? runtime.lastSeenAt : computer?.lastHeartbeatAt ?? null;
+    return { ...mapAgentInstance(row), lifecycle: deriveResourceLifecycle(lastSeen, row.createdAt, now,
+      isLive(row.computerId) && (!runtime || runtime.status === "available"), timeoutMs) };
+  });
+  const mappedAgents = agentRows.map((row) => {
+    const instances = mappedInstances.filter((item) => item.agent_id === row.id);
+    const latest = instances.flatMap((item) => [item.lifecycle.last_seen_at, item.created_at]).filter((item): item is string => item !== null)
+      .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+    const lifecycle = deriveResourceLifecycle(latest, row.createdAt, now,
+      instances.some((item) => item.lifecycle.state === "active"), timeoutMs);
+    lifecycle.last_seen_at = instances.flatMap((item) => item.lifecycle.last_seen_at ? [item.lifecycle.last_seen_at] : [])
+      .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+    return { ...mapAgent(row), lifecycle };
+  });
   return {
     ...(goalEntry ? { goal_entry: goalEntry } : {}),
     organization: { id: orgRow.id, name: orgRow.name },
@@ -116,9 +142,9 @@ export async function bootstrap(ctx: ServerContext): Promise<BootstrapResponse> 
       name: p.name,
       default_workspace: p.defaultWorkspace,
     })),
-    computers: computerRows.map(mapComputer),
-    agents: agentRows.map(mapAgent),
-    agent_instances: instanceRows.map(mapAgentInstance),
+    computers: mappedComputers,
+    agents: mappedAgents,
+    agent_instances: mappedInstances,
     model_profiles: modelRows.map(mapModelProfile),
     effort_profiles: effortRows.map(mapEffortProfile),
     actor: { type: "user", id: userRow.id },

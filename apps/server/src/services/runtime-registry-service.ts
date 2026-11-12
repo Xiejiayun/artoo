@@ -1,7 +1,7 @@
 import { agentRuntimes, computers } from "@artoo/db";
 import type { AgentRuntime } from "@artoo/domain";
 import type { RuntimeStatus } from "@artoo/protocol";
-import { and, eq, notInArray } from "drizzle-orm";
+import { and, eq, isNull, notInArray } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { mapAgentRuntime } from "../mappers.js";
@@ -31,7 +31,7 @@ export async function recordHeartbeatRuntimes(
     // Serialize snapshots for this authorized computer, including its first
     // advertisement when there are no runtime rows to lock yet.
     const [computer] = await tx.select({ id: computers.id }).from(computers).where(and(
-      eq(computers.id, computerId), eq(computers.organizationId, ctx.organizationId),
+      eq(computers.id, computerId), eq(computers.organizationId, ctx.organizationId), isNull(computers.deletedAt),
     )).for("update");
     if (!computer) throw AppError.notFound("computer not found");
     const names = runtimes.map((runtime) => runtime.runtime);
@@ -77,6 +77,9 @@ export async function listComputerRuntimes(
   ctx: ServerContext,
   computerId: string,
 ): Promise<AgentRuntime[]> {
+  const [computer] = await ctx.db.db.select({ id: computers.id }).from(computers).where(and(
+    eq(computers.id, computerId), eq(computers.organizationId, ctx.organizationId), isNull(computers.deletedAt)));
+  if (!computer) throw AppError.notFound("computer not found");
   const rows = await ctx.db.db
     .select()
     .from(agentRuntimes)

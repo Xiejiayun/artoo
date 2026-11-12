@@ -1,7 +1,7 @@
 import { agentInstances, agentRuntimes, agents, appendEvent, computers, runs } from "@artoo/db";
 import { ID_PREFIXES, WorktreeBaseConfigurationSchema, type WorktreeBaseConfiguration } from "@artoo/domain";
 import { validateWorktreeBaseConfiguration, WorkspaceAllocationError } from "@artoo/protocol";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { posix, win32 } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -12,6 +12,7 @@ import { AppError } from "./errors.js";
 import { buildEvent } from "./events.js";
 import { mapAgent, mapAgentInstance } from "./mappers.js";
 import { unconfirmedDisconnectRunIds } from "./services/execution-state.js";
+import { deleteResource } from "./services/resource-deletion-service.js";
 
 const WORKTREE_BASE_KEY = "worktree_workspace_base";
 const WORKTREE_FEATURE = "workspace-allocation.per-run-v1";
@@ -21,7 +22,7 @@ async function changeWorktreeBase(c: ServerContext, id: string, setting: Worktre
     // Serializes configuration edits. Allocation assignment must share this lock
     // when that separate integration is enabled.
     const [instance] = await tx.select().from(agentInstances).where(and(
-      eq(agentInstances.id, id), eq(agentInstances.organizationId, c.organizationId),
+      eq(agentInstances.id, id), eq(agentInstances.organizationId, c.organizationId), isNull(agentInstances.deletedAt),
     )).for("update");
     if (!instance) throw AppError.notFound("agent instance not found");
     // Lock order: instance FOR UPDATE, then actor FOR SHARE. Recheck after any
@@ -75,7 +76,16 @@ async function changeWorktreeBase(c: ServerContext, id: string, setting: Worktre
   });
 }
 
-export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext): void {
+export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext,
+  disconnect: (computerId: string, deviceIds: string[]) => void = () => {}): void {
+  for (const [path, kind] of [["computers", "computer"], ["agents", "agent"], ["agent-instances", "agent_instance"]] as const) {
+    app.delete(`/api/v1/${path}/:id`, async (request) => {
+      const { id } = request.params as { id: string };
+      const result = await deleteResource(requestContext(ctx, request), kind, id);
+      if (result.computer_id) disconnect(result.computer_id, result.device_ids);
+      return { deleted: result.deleted, id: result.id };
+    });
+  }
   app.patch("/api/v1/agent-instances/:id/worktree-workspace-base", async (request) => {
     const c = requestContext(ctx, request);
     await requireAdministrator(c);
@@ -117,7 +127,7 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext)
     const displayName = typeof input.display_name === "string" ? input.display_name.trim() : runtime;
     if (!displayName || displayName.length > 160) throw AppError.validation("display_name must contain between 1 and 160 characters");
     const result = await c.db.transaction(async (tx) => {
-      const [computer] = await tx.select().from(computers).where(and(eq(computers.id, computerId), eq(computers.organizationId, c.organizationId)));
+      const [computer] = await tx.select().from(computers).where(and(eq(computers.id, computerId), eq(computers.organizationId, c.organizationId), isNull(computers.deletedAt))).for("share");
       if (!computer) throw AppError.notFound("computer not found");
       if (computer.status === "disabled") throw AppError.conflict("computer is disabled");
       const [registered] = await tx.select().from(agentRuntimes).where(and(
@@ -128,7 +138,7 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext)
       // Separate workspaces can retain the same logical contributor. Selecting
       // an existing identity never edits its declarations or crosses an org.
       const [existingAgent] = typeof existingAgentId === "string" ? await tx.select().from(agents).where(and(
-        eq(agents.id, existingAgentId), eq(agents.organizationId, c.organizationId),
+        eq(agents.id, existingAgentId), eq(agents.organizationId, c.organizationId), isNull(agents.deletedAt),
       )).for("share") : [];
       if (existingAgentId !== undefined && !existingAgent) throw AppError.notFound("agent not found");
       const capabilities = existingAgent?.capabilities ?? input.capabilities ?? available;
@@ -163,7 +173,7 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext)
     if (typeof input.enabled !== "boolean") throw AppError.validation("enabled must be a boolean");
     const enabled = input.enabled;
     return c.db.transaction(async (tx) => {
-      const [instance] = await tx.select().from(agentInstances).where(and(eq(agentInstances.id, id), eq(agentInstances.organizationId, c.organizationId)));
+      const [instance] = await tx.select().from(agentInstances).where(and(eq(agentInstances.id, id), eq(agentInstances.organizationId, c.organizationId), isNull(agentInstances.deletedAt))).for("update");
       if (!instance) throw AppError.notFound("agent instance not found");
       const active = await tx.select({ id: runs.id }).from(runs).where(and(
         eq(runs.agentInstanceId, id), eq(runs.organizationId, c.organizationId),

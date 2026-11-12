@@ -379,9 +379,15 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   // those bodies persisted by the idempotency store (#28 invariant) — exempt them.
   registerIdempotency(app, ctx, new Set(["/api/v1/devices/pairings", "/api/v1/devices/claim"]));
 
-  app.get("/api/v1/bootstrap", async (req) => taskService.bootstrap(rc(req)));
+  app.get("/api/v1/bootstrap", async (req) => taskService.bootstrap(rc(req), (id) => nodeRegistry.get(id) !== undefined));
   registerProjectRoutes(app, ctx);
-  registerResourceRoutes(app, ctx);
+  registerResourceRoutes(app, ctx, (computerId, deviceIds) => {
+    for (const id of deviceIds) deviceConnections.closeForDevice(id, 1008, "computer deleted");
+    const binding = nodeRegistry.get(computerId);
+    binding?.disconnect?.();
+    binding?.close();
+    nodeRegistry.unregister(computerId);
+  });
   app.get("/health/live", async () => ({ status: "ok" }));
   app.get("/health/ready", async (_req, reply) => {
     try {
