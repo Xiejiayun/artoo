@@ -1,19 +1,35 @@
-.inventory-page.resources-page.machines-page { max-width: 1080px; margin-inline: auto; gap: 20px; }
-.machines-summary { display: flex; gap: 20px; color: var(--muted); font-size: 13px; margin: -8px 0 0; }
-.machines-runtime-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.machines-runtime-summary > div { display: flex; align-items: center; gap: 9px; border: 1px solid var(--line); background: var(--elev); border-radius: 12px; padding: 18px; font-size: 13px; }
-.machines-runtime-summary strong { margin-left: auto; font-size: 22px; font-weight: 600; }
-.machines-runtime-summary small { color: var(--muted); }
-.runtime-dot { width: 7px; height: 7px; background: var(--success); border-radius: 50%; }
-.runtime-dot--claude-code { background: var(--warning); }
-.machines-list { display: grid; gap: 18px; }
-.machine-card { border-radius: 16px; }
-.machine-card .resource-card__header { padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.inventory-page.resources-page.machines-page { width: 100%; max-width: 1080px; margin-inline: auto; gap: 20px; }
+.machines-page .resources-icon { width: 32px; height: 32px; background: transparent; border: 0; color: var(--text-muted); }
+.inventory-page.machines-page .resources-header h1 { font-size: 23px; letter-spacing: -.4px; }
+.machines-overview { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 24px; color: var(--text-muted); font-size: 12px; }
+.machines-summary { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.machines-runtime-summary { display: flex; flex-wrap: wrap; gap: 16px; margin-left: auto; }
+.machines-runtime-summary > span { display: inline-flex; align-items: center; gap: 7px; }
+.machines-runtime-summary strong { color: var(--text-secondary); font-size: inherit; font-weight: 500; }
+.runtime-dot { width: 5px; height: 5px; background: var(--text-subtle); border-radius: 50%; }
+.machines-list { display: grid; gap: 12px; }
+.machine-card { border-radius: 10px; gap: 16px; box-shadow: none; }
+.machine-card .resource-card__header { padding-bottom: 0; border-bottom: 0; }
 .machine-card .resource-card__header > .daemon-presence--compact { flex: 0 1 auto; min-width: 0; border: 0; background: transparent; padding: 0; }
-.machine-card .resource-runtime-list { display: flex; flex-wrap: wrap; gap: 10px; }
-.machine-card .resource-runtime-list li { flex: 1 1 200px; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.machine-card .resource-avatar--computer { width: 36px; height: 36px; background: var(--surface-3); color: var(--text-muted); border-radius: 8px; }
+.machine-card .resource-runtimes { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 16px; }
+.machine-card .resource-runtimes .resource-section-heading { margin: 0; }
+.machine-card .resource-runtimes h3 { font-weight: 400; color: var(--text-muted); }
+.machine-card .resource-runtime-list { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.machine-card .resource-runtime-list li { border: 0; padding: 0; gap: 8px; }
+.machine-card .resource-runtime-list .ui-badge { background: transparent; padding-inline: 0; }
+.machine-instance-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.machine-instances .resource-section-heading { flex-wrap: wrap; margin-bottom: 4px; }
+.machine-expiry-notice { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+.machine-details__content { display: grid; gap: 20px; padding-top: 4px; }
+.machine-details__content > .inv-meta { margin: 0; }
+.machine-details__actions { display: flex; }
+.machine-details > summary { width: fit-content; }
+.machine-details > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
 .machine-instances > ul { list-style: none; margin: 0; padding: 0; }
-.machine-instances > ul > li { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-top: 1px solid var(--line); }
+.machine-instances > ul > li { display: flex; align-items: center; gap: 10px; padding: 9px 0; }
+.machine-instances > ul > li + li { border-top: 1px solid var(--line); }
+.machine-instances .machine-instance-avatar { border: 0; background: transparent; }
 .machine-instance-avatar { width: 32px; height: 32px; display: grid; place-items: center; flex-shrink: 0; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
 .machine-instances li > div, .agent-library__list > div > div { flex: 1; min-width: 0; display: grid; gap: 4px; font-size: 13px; }
 .machine-instances li a { color: var(--fg); text-decoration: none; font-weight: 500; }
@@ -29,4 +45,13 @@
 .agent-library__list > div > .resource-lifetime { flex: 1 0 100%; }
 .resource-card__footer { flex-wrap: wrap; gap: 12px; }
 .resource-card__footer > .resource-enabled-control { flex: 1; }
-@media (max-width: 540px) { .machines-summary { flex-wrap: wrap; gap: 8px 14px; }.machines-runtime-summary small { display: none; }.agent-library__list { grid-template-columns: 1fr; } }
+@media (max-width: 640px) {
+  .machines-runtime-summary { margin-left: 0; }
+  .machines-page .resources-header__identity { gap: 8px; }
+  .machines-page .resources-header__actions { padding-left: 40px; }
+  .machine-card .resource-card__header > div { min-width: 0; }
+  .machine-card .resource-card__header > .daemon-presence--compact { flex: 0 0 100%; padding-left: 46px; }
+  .machine-card .resource-runtimes { gap: 8px 12px; }
+  .machine-expiry-notice { align-items: start; }
+  .agent-library__list { grid-template-columns: 1fr; }
+}

@@ -87,10 +87,36 @@ describe("Inventory pages", () => {
     const computer = await screen.findByRole("article", { name: "Local Mock" });
     expect(await within(computer).findByText("Daemon: online")).toBeInTheDocument();
     expect(computer).toHaveTextContent("localhost");
-    expect(await within(computer).findByText("mock", { exact: true })).toBeInTheDocument();
+    expect(await within(within(computer).getByRole("region", { name: "Local Mock runtimes" })).findByText("mock", { exact: true })).toBeInTheDocument();
     expect(computer).toHaveTextContent("available");
     expect(computer).toHaveTextContent("code.modify");
     expect(listComputerRuntimes).toHaveBeenCalledWith("computer_local_mock");
+  });
+
+  it("keeps maintenance information behind details while creation and agent navigation stay available", async () => {
+    const data = bootstrapFixture();
+    data.computers[0]!.lifecycle = { version: 1, state: "active", last_seen_at: "2026-11-12T12:00:00Z", expires_at: "2026-12-12T12:00:00Z", inactivity_timeout_ms: 30 * 86400000 };
+    renderWithProviders(<ComputersPage />, { client: fakeApi({ bootstrap: async () => data, listComputerRuntimes: async () => ({ runtimes: [] }), listDaemons: async () => ({ daemons: [] }) }), route: "/computers" });
+    const computer = await screen.findByRole("article", { name: "Local Mock" });
+    expect(within(computer).getByRole("button", { name: "Create instance" })).toBeVisible();
+    expect(within(computer).getByRole("link", { name: "Mock Coder" })).toHaveAttribute("href", "/agents?instance=instance_mock_coder");
+    expect(within(computer).getByText("After 30 days offline")).not.toBeVisible();
+    expect(within(computer).getByText("C:/workspace/artoo")).not.toBeVisible();
+    expect(within(computer).getByRole("button", { name: "Delete computer", hidden: true })).not.toBeVisible();
+    await userEvent.click(within(computer).getByText("Computer details", { exact: true }));
+    expect(within(computer).getByText("After 30 days offline")).toBeVisible();
+    expect(within(computer).getByText("C:/workspace/artoo")).toBeVisible();
+    await userEvent.click(within(computer).getByRole("button", { name: "Delete computer" }));
+    expect(screen.getByRole("dialog", { name: "Delete computer" })).toBeVisible();
+  });
+
+  it("keeps an expired computer's recovery notice visible before opening details", async () => {
+    const data = bootstrapFixture();
+    data.computers[0]!.lifecycle = { version: 1, state: "expired", last_seen_at: null, expires_at: "2026-01-31T00:00:00Z", inactivity_timeout_ms: 30 * 86400000 };
+    renderWithProviders(<ComputersPage />, { client: fakeApi({ bootstrap: async () => data, listComputerRuntimes: async () => ({ runtimes: [] }), listDaemons: async () => ({ daemons: [] }) }), route: "/computers" });
+    const computer = await screen.findByRole("article", { name: "Local Mock" });
+    expect(within(computer).getByText("Reconnect this computer and its runtime to restore availability.")).toBeVisible();
+    expect(within(computer).getByText("Computer ID")).not.toBeVisible();
   });
 
   it.each(["online", "offline"] as const)("shows only the live %s daemon status when inventory data disagrees", async (status) => {

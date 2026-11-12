@@ -53,6 +53,9 @@ test("resource deletion confirms scope, refreshes inventory and closes the paire
     await expect(page.getByRole("article", { name: agentName, exact: true })).toHaveCount(0);
     await page.goto("/computers");
     const computer = page.getByRole("article", { name, exact: true });
+    await expect(computer.getByText("After 30 days offline")).toBeHidden();
+    await expect(computer.getByRole("button", { name: "Delete computer", exact: true })).toBeHidden();
+    await computer.getByText("Computer details", { exact: true }).click();
     await expect(computer.getByText("After 30 days offline")).toBeVisible();
     await computer.getByRole("button", { name: "Delete computer", exact: true }).click();
     dialog = page.getByRole("dialog", { name: "Delete computer", exact: true });
