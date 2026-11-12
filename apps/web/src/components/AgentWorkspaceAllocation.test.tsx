@@ -32,7 +32,8 @@ async function setup({ role = "owner", os = "darwin", setting }: { role?: string
   const user = userEvent.setup();
   const queryClient = createTestQueryClient();
   const rendered = renderWithProviders(<AgentsPage />, { queryClient, route: "/agents", client: fakeApi({ bootstrap, setAgentWorktreeBase, clearAgentWorktreeBase,
-    registerAgent, listDaemons: async () => ({ daemons: [] }) }) });
+    registerAgent, listDaemons: async () => ({ daemons: [] }),
+    listSkillInstalls: async () => ({ skills: [] }), listComputerRuntimes: async () => ({ runtimes: [] }) }) });
   const card = await screen.findByRole("article", { name: "Mock Coder" });
   await user.click(within(card).getByText("Workspace & configuration"));
   await waitFor(() => expect(queryClient.isFetching({ queryKey: queryKeys.bootstrap })).toBe(0));
