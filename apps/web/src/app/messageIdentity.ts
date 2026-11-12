@@ -4,7 +4,7 @@ import type { BootstrapResponse } from "../api/types.js";
 /** Use the same identity snapshot for timeline, thread-root and mentioned cards. */
 export function messageIdentity(message: Message, bootstrap?: BootstrapResponse, people: Member[] = []): { actorName: string; mentionNames: string[] } {
   const name = (actorType: string, actorId: string, annotateSelf = false): string => {
-    if (actorType === "system") return "Artoo";
+    if (actorType === "system") return "ARTOO";
     const fallback = `${actorType}:${actorId}`;
     if (actorType === "user" && bootstrap?.user.id === actorId) {
       const ownName = bootstrap.user.display_name.trim() || bootstrap.user.email.trim() || fallback;

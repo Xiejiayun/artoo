@@ -59,7 +59,7 @@ export function AgentWorkspaceAllocation({ instance, role, computerOs }: { insta
       mutation.reset(); setDraft({ enabled: event.target.checked, basePath });
     }} />Separate workspace for each task</label>
     {enabled && <Input label="Task workspace base folder" value={basePath} required disabled={mutation.isPending || !isMac}
-      placeholder="/Users/you/Artoo workspaces" errorText={basePath && !absolute ? "Enter an absolute folder path on the Mac, starting with /." : undefined}
+      placeholder="/Users/you/ARTOO workspaces" errorText={basePath && !absolute ? "Enter an absolute folder path on the Mac, starting with /." : undefined}
       helperText="Use a folder allowed by this Mac's worker configuration. The exact path is preserved."
       onChange={(event) => { mutation.reset(); setDraft({ enabled, basePath: event.target.value }); }} />}
     <p className="t-subtle">Applies to branch-backed task assignments. Prepare separate workspaces and allow new allocations in the Mac desktop settings first. This setting does not grant access to folders.</p>

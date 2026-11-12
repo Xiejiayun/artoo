@@ -44,7 +44,7 @@ describe("GoalsPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
     const dialog = screen.getByRole("dialog", { name: "New goal" });
     await userEvent.selectOptions(within(dialog).getByLabelText("Execution mode"), "autonomous");
-    expect(within(dialog).queryByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("checkbox", { name: "Allow ARTOO to divide work across configured computers" })).not.toBeInTheDocument();
     expect(within(dialog).queryByLabelText("Goal title")).not.toBeInTheDocument();
     expect(within(dialog).queryByLabelText("Goal acceptance criteria")).not.toBeInTheDocument();
     await userEvent.type(within(dialog).getByLabelText("Objective"), " Build a journal that preserves entries ");
@@ -71,7 +71,7 @@ describe("GoalsPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
     const dialog = screen.getByRole("dialog", { name: "New goal" });
     await userEvent.selectOptions(within(dialog).getByLabelText("Execution mode"), "publish");
-    expect(within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeChecked();
+    expect(within(dialog).getByRole("checkbox", { name: "Allow ARTOO to divide work across configured computers" })).not.toBeChecked();
     expect(within(dialog).queryByLabelText("Goal title")).not.toBeInTheDocument();
     await userEvent.type(within(dialog).getByLabelText("Objective"), "Publish an accessible journal");
     await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
@@ -84,7 +84,7 @@ describe("GoalsPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
     const dialog = screen.getByRole("dialog", { name: "New goal" });
     await userEvent.selectOptions(within(dialog).getByLabelText("Execution mode"), "publish");
-    const choice = within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" });
+    const choice = within(dialog).getByRole("checkbox", { name: "Allow ARTOO to divide work across configured computers" });
     expect(choice).not.toBeChecked();
     await userEvent.click(choice);
     if (!enabled) await userEvent.click(choice);
@@ -104,11 +104,11 @@ describe("GoalsPage", () => {
     const dialog = screen.getByRole("dialog", { name: "New goal" });
     const executionMode = within(dialog).getByLabelText("Execution mode");
     await userEvent.selectOptions(executionMode, "publish");
-    await userEvent.click(within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" }));
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: "Allow ARTOO to divide work across configured computers" }));
     await userEvent.selectOptions(executionMode, mode);
-    expect(within(dialog).queryByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("checkbox", { name: "Allow ARTOO to divide work across configured computers" })).not.toBeInTheDocument();
     await userEvent.selectOptions(executionMode, "publish");
-    expect(within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeChecked();
+    expect(within(dialog).getByRole("checkbox", { name: "Allow ARTOO to divide work across configured computers" })).not.toBeChecked();
     expect(createAutonomousGoal).not.toHaveBeenCalled();
     await userEvent.type(within(dialog).getByLabelText("Objective"), "Publish after changing mode");
     await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
@@ -122,14 +122,14 @@ describe("GoalsPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
     const first = screen.getByRole("dialog", { name: "New goal" });
     await userEvent.selectOptions(within(first).getByLabelText("Execution mode"), "publish");
-    await userEvent.click(within(first).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" }));
+    await userEvent.click(within(first).getByRole("checkbox", { name: "Allow ARTOO to divide work across configured computers" }));
     await userEvent.click(within(first).getByRole("button", { name: button }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(createAutonomousGoal).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "New goal" }));
     const next = screen.getByRole("dialog", { name: "New goal" });
     await userEvent.selectOptions(within(next).getByLabelText("Execution mode"), "publish");
-    expect(within(next).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" })).not.toBeChecked();
+    expect(within(next).getByRole("checkbox", { name: "Allow ARTOO to divide work across configured computers" })).not.toBeChecked();
     await userEvent.type(within(next).getByLabelText("Objective"), "Publish a new request");
     await userEvent.click(within(next).getByRole("button", { name: "Start autonomous goal" }));
     await waitFor(() => expect(createAutonomousGoal).toHaveBeenCalledWith({ project_id: "proj_artoo", objective: "Publish a new request",
@@ -145,7 +145,7 @@ describe("GoalsPage", () => {
       await userEvent.click(await screen.findByRole("button", { name: "New goal" }));
       const dialog = screen.getByRole("dialog", { name: "New goal" });
       await userEvent.selectOptions(within(dialog).getByLabelText("Execution mode"), "publish");
-      const choice = within(dialog).getByRole("checkbox", { name: "Allow Artoo to divide work across configured computers" });
+      const choice = within(dialog).getByRole("checkbox", { name: "Allow ARTOO to divide work across configured computers" });
       await userEvent.click(choice);
       await userEvent.type(within(dialog).getByLabelText("Objective"), "Keep the submitted choice");
       await userEvent.click(within(dialog).getByRole("button", { name: "Start autonomous goal" }));
@@ -165,7 +165,7 @@ describe("GoalsPage", () => {
       source_handoff: { version: 1, mode: "automatic" } });
     renderWithProviders(<GoalsPage />, { client: api({ getGoalAutomation: async () => ({ automation: state }), getGoalRelease: async () => ({ release: null }) }) });
     const permission = await screen.findByLabelText("Cross-computer authorization");
-    expect(permission).toHaveTextContent("Cross-computer work is allowed for this goal. Artoo selects a destination after the required checks pass.");
+    expect(permission).toHaveTextContent("Cross-computer work is allowed for this goal. ARTOO selects a destination after the required checks pass.");
     expect(screen.queryByLabelText("Team responsibilities")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Open published product" })).not.toBeInTheDocument();
     expect(within(screen.getByLabelText("Product publication")).getByText(/Waiting for implementation/)).toBeInTheDocument();

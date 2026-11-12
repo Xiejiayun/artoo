@@ -83,7 +83,7 @@ export function ConnectNodeDialog({ open, onClose, onCreateInstance, onViewMachi
       </ol>
       {!pairing.data && <>
         <Select label="Target operating system" value={platform} disabled={pairing.isPending} onChange={(event) => setPlatform(event.target.value as DevicePlatform)}><option value="windows">Windows</option><option value="linux">Linux</option><option value="macos">macOS</option></Select>
-        <p className="connect-node__hint">The installer gets Artoo from its official GitHub release, prepares Node.js if needed, discovers your installed Codex and Claude CLIs, and starts the daemon in the background.</p>
+        <p className="connect-node__hint">The installer gets ARTOO from its official GitHub release, prepares Node.js if needed, discovers your installed Codex and Claude CLIs, and starts the daemon in the background.</p>
         <p className="connect-node__access">This connects the machine to your account. Tasks can use its selected workspace; the default is <code>ArtooWorkspaces</code> in your home folder.</p>
         {!canEnroll && bootstrap.data && <p className="connect-node__hint">An administrator will need to approve this machine after you run the command.</p>}
         <Button variant="primary" loading={pairing.isPending} onClick={generate}>Generate connection command</Button>

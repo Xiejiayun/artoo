@@ -20,7 +20,7 @@ import { NotificationsPanel } from "./NotificationsPanel.js";
 export function ChannelsPage(): React.ReactNode {
   const api = useApi();
   const query = useQueryClient();
-  const { projectId, setSelectedProjectId, bootstrap } = useProject();
+  const { project, projectId, setSelectedProjectId, bootstrap } = useProject();
   const [search, setSearch] = useSearchParams();
   const [creating, setCreating] = useState(false);
   const [filter, setFilter] = useState("");
@@ -98,7 +98,7 @@ export function ChannelsPage(): React.ReactNode {
     </>}
     <div className={`channels-layout${threadRootId ? " has-thread" : ""}`}>
       <aside className="channel-directory">
-        <header className="channel-directory__heading"><div><h1>Channels</h1><p>A place for every conversation</p></div><Button variant="ghost" size="sm" iconLeft={Plus} aria-label="New channel" title="New channel" disabled={!projectId} onClick={() => setCreating(true)} /></header>
+        <header className="channel-directory__heading"><div><h1>Channels</h1><p>{project ? `Conversations in ${project.name}` : "A place for every conversation"}</p></div><Button variant="ghost" size="sm" iconLeft={Plus} aria-label="New channel" title="New channel" disabled={!projectId} onClick={() => setCreating(true)} /></header>
         <SearchInput aria-label="Find a channel" placeholder="Find a channel" value={filter} onChange={(event) => setFilter(event.target.value)} onClear={() => setFilter("")} />
         <NotificationsPanel onOpen={openNotification} />
         <div className="channel-directory__label"><span>Project channels</span><span>{channels.data?.channels.length ?? ""}</span></div>

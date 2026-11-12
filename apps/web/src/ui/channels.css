@@ -4,8 +4,9 @@
 .channels-page .channels-layout.has-thread { grid-template-columns: 210px minmax(0, 1fr) minmax(330px, 37%); }
 .channel-directory { display: flex; flex-direction: column; gap: 18px; padding: 24px 16px 16px; min-width: 0; min-height: 0; overflow-y: auto; background: var(--surface-2); border-right: 1px solid var(--border); }
 .channel-directory__heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.channel-directory__heading > div { min-width: 0; }
 .channel-directory__heading h1 { font-size: 20px; line-height: 28px; }
-.channel-directory__heading p { font-size: 11px; color: var(--text-muted); line-height: 1.5; margin: 4px 0 0; }
+.channel-directory__heading p { font-size: 11px; color: var(--text-muted); line-height: 1.5; margin: 4px 0 0; overflow-wrap: anywhere; }
 .channel-directory__heading > .ui-btn { flex: none; width: 30px; padding: 0; }
 .channel-directory .notifications-panel { border: 0; padding: 0; background: transparent; font-size: 12px; }
 .channel-directory .notifications-panel > summary { color: var(--text-muted); padding: 8px 0; }
