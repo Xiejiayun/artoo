@@ -1,6 +1,6 @@
 # Artoo Agent 协作能力设计与实现方案
 
-日期：2026 年 11 月 12 日。版本：0.1，初版设计提案。
+日期：2026 年 11 月 12 日。版本：0.2，执行契约与恢复语义复核版。
 
 本方案以 Artoo main 提交 `52c8214e99fe838a65f9ecaeb9cb2b1aa90a0c70` 为代码基线，结合已有 Multica、Paperclip、Codex 和 Claude Code 架构分析，设计可分批交付的团队协作增量。文中的新增表、接口和能力均为提议；文档合入不代表功能实现、测试通过或产品发布。
 
@@ -8,7 +8,7 @@
 
 ## 1 目标与范围
 
-首个交付目标：用户在项目 Thread 中明确请求某个 Agent 工作，发送前看到触发预览；请求持久化，重试不重复启动；排队后撤权能阻止后续执行；Task 能展示精确提交上的 PR 与 CI 状态。
+首个交付目标：用户在项目 Thread 中明确请求某个 Agent 工作，发送前看到触发预览；请求持久化，投递重试不新建 Run，进程身份不确定时阻塞重复启动；排队后撤权能阻止后续执行；Task 能展示精确提交上的 PR 与 CI 状态。
 
 后续目标：固定本次运行使用的 Skill 版本；在已接受计划中公开委派已有任务；按明确授权定时或因事件重新检查工作。
 
@@ -105,7 +105,7 @@ type ExecutionIntentRequestV1 = {
   client_request_id: string;
   source:
     | { kind: "conversation"; room_id: string; thread_root_id?: string; body: string }
-    | { kind: "task_assignment"; task_id: string; expected_task_version: number };
+    | { kind: "task_assignment"; task_id: string; expected_state_digest: string };
   target: { kind: "automatic" } | { kind: "instance"; agent_instance_id: string };
   delivery: "queue" | "merge_queued" | "assign_task";
 };
@@ -114,6 +114,10 @@ type ExecutionIntentRequestV1 = {
 实际 Zod schema 使用严格判别联合限制合法组合，例如 task_assignment 只能配 assign_task。组织、项目和授权人由认证与关联对象推导；浏览器不能自报 system 来源或任意 owner 绑定。
 
 预览返回规范化 `request_digest`、eligible/waiting/approval_required/denied、候选目标、稳定 reason_code 和支持方式。预览不写入任务、不预留资源、不产生授权；摘要只关联请求，提交时重新校验。
+
+当前 Task 没有通用递增 version，不能把并不存在的任务版本字段作为实现前提。新预览返回版本化 `task_precondition` 摘要：对任务状态、负责人、需求/验收、能力要求、执行策略来源、已接受计划引用和排序后的依赖引用进行规范化哈希。提交在现有任务锁内重读并比较；改变返回 `execution_precondition_changed`。容量、当前授权、审批有效性和依赖实际完成状态始终重新检查，不以摘要代替。该摘要不写入 Task、不把 updated_at 当作单调版本；旧指派 API 继续原有实时检查。
+
+所有摘要明确算法和格式：`sha256:` 加 64 位小写十六进制；规范化由同一 domain helper 定义对象键序、空值和有序/无序数组规则，输入使用 UTF-8。请求摘要覆盖解析后的 version、source、target、delivery，并绑定服务端组织和用户；不静默裁剪正文或做可能改变原意的 Unicode 归一化。
 
 新增表：
 
@@ -125,6 +129,10 @@ type ExecutionIntentRequestV1 = {
 | assistant_turn_inputs | 合并阶段增加 turn、message、intent、输入顺序和撤回记录；每条消息身份保持独立 |
 
 意图、消息、执行所有者、绑定与领域事件在同一事务提交；业务操作失败一起回滚。复用现有服务检查和 GoalRunner 的事务内编排方式，只提取必要的窄 helper。网络发送在事务提交后进行，恢复扫描重发相同身份，不能新建一条 Run 掩盖投递不确定。
+
+现有 `assignTask` 在事务结束后调用 `onRunQueued`，GoalRunner 的 `transactionContext` 会收集此类回调。新入口必须沿用这种延迟 I/O 的语义：事务内服务只积累待处理 Run ID；外层提交成功后再通知节点，回滚时不得发送。进程恰好在提交后退出时，扫描从数据库重建待发送工作，不能只依赖内存回调数组。
+
+幂等查重先限定组织和原始用户，返回历史绑定前仍检查当前读取权限；重复请求不能重启已取消或已完成对象。请求身份的墓碑与绑定保留到所属执行记录的保留期结束，不能短期清理后把旧网络重试当新工作。人工重试是新的操作授权，使用新的请求身份并关联前一次意图；原绑定不可改为一条无关的最新 Run。AssistantTurn 内既有重试关系、GoalRunner 自动纠正与原预算继续作为权威历史。
 
 旧 Assistant API、直接 assign、重试等入口继续有效并调用同一资源授权服务。旧请求保留原幂等规则；不回填会改变历史含义的意图。
 
@@ -142,6 +150,14 @@ ContextPack 创建时冻结有序消息清单与摘要。冻结后新输入进�
 
 等待不能只是一段不可处理的错误字符串。它应能定位审批、资源设置或运行详情；保留当前所有者和重试身份。恢复由所属 dispatcher/GoalRunner 对账，不能因点击“检查”又创建执行。
 
+### 5.5 启动确认与状态展示
+
+区分业务已排队、已建立 Run、节点确认启动和操作系统进程实际运行。现有 AssistantTurn 在绑定 Run 时即可能标为 running，UI 不能据此声称模型进程已经启动。新读模型同时返回 owner_status 和基于现有节点回执的 execution_observation，附 observed_at；后者是投影，不产生新的运行状态机。
+
+传输重放沿用固定 `run_id:start`、冻结上下文和原节点会话约束。节点 ACK、写入待处理行或收到命令均不是进程创建成功证据。复用现有 managed journal、pending-start-replay 和进程观察能力；必须逐运行模式验证其支持范围。节点重启后不能证明既有进程/启动结果时，进入 `process_exit_unconfirmed` 或 `startup_outcome_unknown`，等待现有恢复或人工处置，不盲目再发启动。真正重新执行建立新 Run 并扣除适用重试预算。
+
+取消通过所属服务持久化 stop intent，继续接收真实进程关闭和终态回执；控制请求超时不抹掉执行历史。批量授权撤销先提交策略变更，再按既有所有者逐个停止，不在策略事务内等待网络或反向持有所有 Run 锁。
+
 ## 6 资源使用授权
 
 ### 6.1 权限模型
@@ -149,6 +165,8 @@ ContextPack 创建时冻结有序消息清单与摘要。冻结后新输入进�
 区分 view、manage_metadata、use_agent、use_compute、manage_execution_grants。管理名称、停用或取消危险任务不隐含消耗机器和模型额度的权利。
 
 新增 `resource_access_policies` 和 `resource_access_grants`。Policy 保存组织、受控资源类型、资源 ID、所有者、ownership_state、兼容模式和 revision；首版所有权资源只有 Agent 与 Computer，Runtime 是计算资源 grant 的过滤条件。Grant 保存 user/organization 主体、操作、项目/runtime 范围、过期与撤销时间、授权人。
+
+每个组织内资源最多一个有效 policy；grant 的项目和主体也必须属于该组织。允许只来自当前生效 grant，过期或撤销项不参与；organization 主体只覆盖当前有效成员。resource_type、action 和 ownership_state 都是封闭枚举，数据库保留正常外键与约束。项目管理者可以收紧项目可用范围，但没有资源所有者授权时不能扩大资源共享。
 
 最终允许执行需要同时满足原始用户有效、Agent 使用权、计算资源使用权、实例项目归属、设备信任、runtime 状态、能力容量、AI 数据共享同意、原业务审批、Goal/Task 策略和节点本地边界。手工指定实例执行相同检查；自动 Scheduler 在评分前过滤未授权候选。预览不得泄露无 view 权限的资源详情。
 
@@ -160,11 +178,17 @@ ContextPack 创建时冻结有序消息清单与摘要。冻结后新输入进�
 
 撤销和发送授权提交通过资源策略锁序列化。撤销先提交则不产生新的发送授权；已经提交的启动可能在途，必须请求停止并等待节点确认。最终发送边界再查会话与当前策略，但不声称消除了网络竞态。停止未确认时保留必要租约和占用。
 
+每次发送授权固定 policy/grant 的 ID 与 revision、原始用户、当前会话、Run 和上下文摘要。修改 grant 同事务增加 policy revision，撤销、过期和成员移除都使旧决定失效；新一轮准入重新判定，不能把旧 dispatch authorization 当长期令牌。撤权后自动取消尚未启动的所有者或置为其原有阻塞状态；重新授予权限不会悄悄复活已取消请求。
+
+所有策略采用稳定资源排序加锁；A0 须记录与现有 Task/AssistantTurn/Goal 锁的兼容顺序。授权决定与关键业务写入共用事务；发送前检查属于最后一道防线，不能代替事务内的权限校验。
+
 ### 6.3 历史兼容
 
 新资源从认证的创建或配对流程固定所有者，默认私有。历史资源只有唯一可信 enrollment 证据才能推导所有者；无法确定时标为 unresolved，不能猜为管理员，也不能突然全部改成私有。
 
 显式 `legacy_team` 仅保留历史原组织、项目和操作语义；不扩大到新的周期规则或 Squad 委派。确认所有权后再迁入 enforced；既有授权历史不改写。克隆资源不能继承 legacy 特权。进入 enforced 后，关闭 UI 功能开关不能取消检查。
+
+legacy 兼容资格由服务端记录迁移批次、历史资源 ID 和原允许的入口类别，不能由请求填写。原有入口也不能借 legacy 代表不同用户或跨项目执行。Computer 与 Agent 所有权分别核对，配对管理员不自动等于机器实际所有者；证据不足进入待认领状态。认领必须具有现存受信节点/资源证明或显式转交，组织管理员单方选择“归我”不足以成立。
 
 节点和用户长期凭证不交给模型。未来回写凭证须绑定组织、项目、Goal、Run 和有限操作，短期、可撤销；不能用于授权、接受计划、提交验证证据或发布。
 
@@ -180,6 +204,12 @@ Webhook 先校验原始请求字节的 HMAC、大小和对应连接，再解析 
 
 Webhook 作为更新提示，按 PR 合并重复与乱序提示并重新读取当前状态。快照固定 repository_id、PR number、head_sha；旧 SHA 的 CI 成功不得覆盖新提交。受限退避、stale 状态和手动重查可见。
 
+并发 API 读取也可能乱序返回。每个 PR 持久化 requested_generation、applied_generation 和同步工作项；领取时固定 generation，落库仅接受仍为当前请求的 generation，旧结果丢弃并保留待重查。安装撤销、移除仓库或连接修订同样增加同步代数并停用连接，旧在途响应不能恢复其可用状态。网络失败不把旧成功冒充当前结果。
+
+CI 分别保存 Check Runs 与 commit statuses，展示 pending/failed/passed/unknown 以及数据时间。只有对应当前 head、读取完整且未 stale 的范围才可汇总；若未读取仓库必需检查规则，标签使用“已观察检查通过”，不能宣称“可合并”或“全部必需检查通过”。合并权限、评审和保护规则分别显示。
+
+首版单一 GitHub App 的全局 Webhook 密钥由部署配置选择，先验签再用 installation_id/repository_id 映射连接；不依赖未验签 JSON 选择组织或密钥。安装回调绑定登录用户、一次性 state 和目标组织/项目，服务端证明其有权连接所选安装与仓库。App 只申请 metadata、pull requests、checks、commit statuses 等所需读取权限；不申请内容写入。短期 installation token 只由服务端保管与缓存，撤销后失效；PR 正文和 CI 输出作为不可信外部内容，不成为授权或自动执行指令。
+
 合并只形成 integration_merged 投影。Task done、节点验证和 product publication 沿用原有门槛。首版不发表评论、提交代码、合并 PR 或部署，也不接受任意 API 主机和抓取 URL。
 
 ## 8 Skill 使用闭环
@@ -193,6 +223,10 @@ Webhook 作为更新提示，按 PR 合并重复与乱序提示并重新读取�
 节点将包准备到受保护的 Run 目录，位于受测源码外；通过 ContextPack 分页或受限只读资源接口提供内容。参考文件读取只接受被冻结清单中的逻辑路径。不得覆盖用户 AGENTS.md、CLI 配置、验证 profile 或源码，不安装脚本、hooks 或任意 MCP command/env。
 
 新增可选 `skills.v1` 上下文、`skill-instructions.v1` 节点能力与节点所有的 `run.skills.prepared` 回执。回执绑定 Run、请求、上下文摘要、会话和实测内容摘要，不进入 Adapter 输出白名单。要求技能的任务只有全部准备成功后才启动；缺包、摘要改变或旧节点明确阻塞。
+
+准备在模型子进程启动之前完成，读取令牌和文件清单绑定本次 Run，不能遍历其他 Run。断点下载在临时目录校验完整后原子切换；按清单重新验证路径与摘要，禁止覆盖已有不匹配内容。物化或只读交付失败阻塞，不能拿 native 发现结果代替。
+
+准备后启动前再次检查安装启用状态、批准来源与使用授权。版本字节不可变；新绑定只作用于新 Run，撤销批准则阻止后续启动并对在途运行走停止语义。Skill 正文属于不可信指令材料，不能提高工具权限或替代用户授权。超限、未批准来源，以及审核发现索取长期凭证的包明确拒绝；执行权限仍由节点强制，不能依赖正文审核识别所有恶意指令。
 
 未选技能的旧任务保持原语义；native metadata 不自动转为上传包或可信授权。作者与独立评审分别绑定所需只读技能，不继承可执行环境。真实 Codex/Claude 适配是否能在当前受限模式完成交付，需要实施前小范围技术验证。
 
@@ -214,11 +248,15 @@ Leader 输出结构化建议；节点信封固定真实 source_run_id。服务�
 
 Occurrence 以 rule+revision+UTC slot 或 source_event_id 唯一；持有 state、lease_owner、epoch、expires_at 和 intent 绑定。重启可重新领取，旧 epoch 不得写回。租约仅协调处理者，外部副作用仍靠固定意图和 Run 身份防重。
 
+领取、配额预留、意图创建与 occurrence 绑定在同一数据库事务完成；外部执行仍在提交后。事务重放复用固定请求身份，不能重复扣额度。规则编辑采用 expected_revision，并记录生效切点 effective_from；新版本只覆盖切点之后的槽位，切点前已接受的槽位不因 revision 改变而再次执行。DST 重复时间按本地日历槽位去重后映射一次 UTC，不能仅依靠两个不同 UTC 时间去重。
+
 使用成熟的时区库；秋季重复本地时刻执行一次，春季缺失时刻跳过；编辑器展示未来三次本地与 UTC 时间。错过多次计划合并为最近一次检查，不补发积压。修改或暂停规则使未提交意图的旧 occurrence 失效；已提交请求按真实状态显示并显式取消。
 
 事件只订阅同项目允许类型，游标与 occurrence 原子提交。事件保留期形成缺口时标明补偿扫描，不能静默跳过。人工暂停优先，不因规则重启自动解除。
 
 建议默认每天 10 次触发、最多一个非终态意图、连续 3 次实际执行失败后暂停。网络错误有界退避；鉴权、配额和配置问题等待人工；容量不足等待；进程关闭不确定阻塞冲突执行；产品验证失败走既有纠正策略。没有可靠费用数据时显示未知，以运行次数、时长、重试和并发实施硬限制。
+
+每日上限首版固定按 UTC 日计已接受意图，UI 标明统计窗口；扫描、投递重放和同 occurrence 的重领不增加计数。组织、原始用户、Goal 和规则共同实施上限，拆多条规则不能绕过上级限额。规则 owner、原始 authorizer、授权事件和授权范围分别持久化；修改目标、动作、参与者范围或扩大额度需要原始授权人重新授权，转移 owner 不转移使用权。
 
 无变化保持安静；只在完成、有意义变化、失败暂停或需要用户操作时通知。
 
@@ -228,14 +266,16 @@ Occurrence 以 rule+revision+UTC slot 或 source_event_id 唯一；持有 state�
 
 | 领域 | 主要接口 |
 | --- | --- |
-| 执行入口 | POST /execution-intents/preview、POST /execution-intents、GET /execution-intents/:id、POST /execution-intents/:id/cancel |
+| 执行入口 | POST /execution-intents/preview、POST /execution-intents、GET /execution-intents/:id、POST /execution-intents/:id/cancel、POST /execution-intents/:id/retry |
 | 资源使用权 | GET /resources/:type/:id/access、POST/DELETE /resources/:type/:id/grants |
-| GitHub | POST/GET /projects/:id/repositories、POST/GET /tasks/:id/pull-requests；签名入口 /integrations/github/webhooks |
+| GitHub | POST/GET /projects/:id/repositories、POST/GET /tasks/:id/pull-requests；独立签名入口 /integrations/github/webhooks（不带 /api/v1） |
 | Skills | POST /skills/:id/versions、PUT /projects/:id/agents/:agentId/skills、GET /runs/:id/skills |
 | Squad | GET/PUT /projects/:id/squad、POST /goals/:id/collaboration、GET /goals/:id/delegations |
 | 自动化 | POST/GET /projects/:id/automations、PATCH /automations/:id、POST /automations/:id/trigger |
 
 新增事件族 execution.intent、resource.access.changed、skill.binding.changed、run.skills.prepared、vcs.pull_request.updated、squad.delegation、automation.triggered/paused。事件只含标识、版本和必要摘要，不带密钥、技能正文或无权查看的资源元数据。读模型事件接入 event_log 和查询失效，关键副作用由持久化事实恢复。
+
+重试接口接收新的 client_request_id，并由服务端推导重试来源与前序意图；仅在原所有者允许、原进程已结清且当前权限满足时调用现有重试服务。新用户操作产生新意图，旧意图保持原始用户身份。自动纠正不调用此人工入口，继续由 GoalRunner 在原 grant 内处理。所有列表按组织/项目权限过滤并分页；跨租户对象不泄露其存在。
 
 | 代码位置 | 实施内容 |
 | --- | --- |
@@ -281,7 +321,11 @@ Occurrence 以 rule+revision+UTC slot 或 source_event_id 唯一；持有 state�
 | 自动化 | epoch 失效、DST、错过计划、重复事件、规则编辑、人工暂停、游标缺口 |
 | 多端 | 旧 strict parser、能力未开、重连缓存、原生状态准确性 |
 
-数据库约束与竞态使用真实 PostgreSQL/PGlite 事务验证；节点进程与文件边界用实际节点验证。涉及执行的代码增量集成后运行仓库四项检查：
+数据库约束与竞态使用真实 PostgreSQL/PGlite 事务验证；节点进程与文件边界用实际节点验证。
+
+额外故障注入必须覆盖：内部事务回滚后没有节点发送；提交后丢回调仍绑定同 Run；ACK 后节点重启且状态未知时阻塞；旧 GitHub 读取晚返回；安装撤销后旧响应抵达；Skill 准备后撤销批准；规则修改切点与配额并发。检查真实进程退出和读取结果，不能只断言 mock 函数调用次数。
+
+涉及执行的代码增量集成后运行仓库四项检查：
 
 ~~~text
 npm run typecheck
@@ -326,3 +370,4 @@ POSIX、Windows、本机客户端和发布路径使用相应平台门禁。触�
 - [Scheduler](../apps/server/src/services/scheduler.ts)、[任务策略](../apps/server/src/services/task-execution-policy.ts)、[节点验证判定](../apps/server/src/services/verification-service.ts)。
 - [费用支持边界](../apps/server/src/services/budget-policy.ts)、[PostgreSQL 单所有者约束](../packages/storage/src/db/postgres-db-client.ts)、[数据库 schema](../packages/db/src/schema.ts)。
 - [节点协议](../packages/protocol/src/node-messages.ts)、[Web 查询键](../apps/web/src/app/queryKeys.ts)、[生产发布流程](github-actions-production-release.md)。
+- [节点执行与启动恢复](../apps/artood/src/node-client.ts)、[启动重放](../apps/artood/src/pending-start-replay.ts)、[Server 节点绑定](../apps/server/src/node-binding.ts)。
