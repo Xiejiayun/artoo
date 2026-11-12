@@ -10,12 +10,10 @@ const pairing: PairingCode = { id: "pairing_exact", organization_id: "org_defaul
 const device: Device = { id: "device_exact", organization_id: "org_default", display_name: "My workstation", platform: "windows", app_version: "0.1.0-rc.3", computer_id: "computer_exact", enrolled_by_user_id: "user_1", trust: "active", last_seen_at: null, created_at: "2026-11-11T00:00:00Z", revoked_at: null };
 
 describe("one-command machine connection", () => {
-  it.each([
-    ["windows", "& ([scriptblock]::Create((irm 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.6/install.ps1'))) -Server 'https://artoo.example.com' -Code 'ABCD-1234'"],
-    ["linux", "curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.6/install.sh' | sh -s -- --server 'https://artoo.example.com' --code 'ABCD-1234'"],
-    ["macos", "curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releases/download/artood-v0.1.0-rc.6/install.sh' | sh -s -- --server 'https://artoo.example.com' --code 'ABCD-1234'"],
-  ] as const)("pins the %s connection command to the rc.6 installer", (platform, expected) => {
-    expect(daemonConnectCommand("https://artoo.example.com", "ABCD-1234", platform)).toBe(expected);
+  it.each(["windows", "linux", "macos", "npm"] as const)("uses the same pinned official npm package on %s", (platform) => {
+    expect(daemonConnectCommand("https://artoo.example.com", "ABCD-1234", platform)).toBe(
+      "npx -y @jiayunxie/artood@0.1.0-rc.6 connect --server https://artoo.example.com --code ABCD-1234",
+    );
   });
 
   it("rejects unsafe command origins and codes", () => {
@@ -24,6 +22,7 @@ describe("one-command machine connection", () => {
       expect(() => daemonConnectCommand(origin, "ABCD-1234")).toThrow();
     }
     expect(() => daemonConnectCommand("https://artoo.example.com", "ABCD-1234;echo")).toThrow();
+    expect(() => daemonConnectCommand("https://artoo.example.com", "ABCD-1234", "ios")).toThrow();
   });
 
   it("generates only on request, tracks the exact pairing, and copies a short-lived command", async () => {
@@ -34,9 +33,10 @@ describe("one-command machine connection", () => {
     const listDaemons = vi.fn(async () => ({ daemons: [] }));
     renderWithProviders(<ConnectNodeDialog open onClose={() => undefined} />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), createPairing, getPairingStatus, listDaemons }) });
     expect(createPairing).not.toHaveBeenCalled();
+    expect(screen.getByText(/Requires Node.js 24\+ and npm 11\+/)).toHaveTextContent("official npm package");
     await user.selectOptions(screen.getByLabelText("Target operating system"), "linux");
     await user.click(screen.getByRole("button", { name: "Generate connection command" }));
-    expect(await screen.findByLabelText("Connection command")).toHaveTextContent("ABCD-1234");
+    expect(await screen.findByLabelText("Connection command")).toHaveTextContent(daemonConnectCommand(window.location.origin, "ABCD-1234", "linux"));
     expect(createPairing).toHaveBeenCalledWith("linux", expect.any(String));
     await waitFor(() => expect(getPairingStatus).toHaveBeenCalledWith("pairing_exact"));
     expect(listDaemons).not.toHaveBeenCalled();

@@ -1,6 +1,6 @@
 # Artoo agent daemon
 
-Connect a Windows or Linux computer to an Artoo Web platform. One tarball contains the daemon, its JavaScript dependencies and the self-contained Windows x64 process host. macOS implementation is included, but its release qualification is deferred and is not guaranteed by this release. The GitHub installer provisions a private Node.js 24 runtime when needed; npm installation requires **Node.js 24 or later and npm 11 or later**. No repository checkout, administrator access or .NET installation is needed.
+Connect a Windows or Linux computer to an Artoo Web platform using the official npm package. One package contains the daemon, its JavaScript dependencies and the self-contained Windows x64 process host. macOS implementation is included, but its release qualification is deferred and is not guaranteed by this release. Install **Node.js 24 or later and npm 11 or later** first. No repository checkout or .NET installation is needed.
 
 | Operating system | Implemented architecture | Release validation scope |
 | --- | --- | --- |
@@ -12,26 +12,21 @@ Windows arm64 is not supported. npm's separate OS/CPU fields cannot express that
 
 ## Connect with one command
 
-In Web, open **Machines → Connect Local Node**, select this computer's platform and copy its connection command. Run it in your local terminal as the same user who runs Codex/Claude. The command downloads the fixed GitHub release, checks its package SHA-256 and size, claims the short-lived pairing code, enrolls the computer, saves its credentials and starts Artoo in the background. The matching server/Web release must be deployed first.
+In Web, open **Machines → Connect Local Node**, select this computer's platform and copy its connection command. Run it in your local terminal as the same user who runs Codex/Claude. The command installs the pinned official npm package, claims the short-lived pairing code, enrolls the computer, saves its credentials and starts Artoo in the background. Deploy the matching server/Web release only after its exact daemon version has been published to the official registry and passed registry installation checks.
 
-The release assets use this PowerShell form on Windows x64:
-
-```powershell
-& ([scriptblock]::Create((irm 'https://github.com/Xiejiayun/artoo/releases/download/artood-v{{PACKAGE_VERSION}}/install.ps1'))) -Server 'https://your-artoo-site' -Code 'XXXX-XXXX'
-```
-
-Linux x64/arm64 (requires curl, tar and a glibc-based distribution):
+Windows PowerShell, Linux and macOS terminals use the same command:
 
 ```sh
-curl -fsSL --proto '=https' --tlsv1.2 'https://github.com/Xiejiayun/artoo/releases/download/artood-v{{PACKAGE_VERSION}}/install.sh' | sh -s -- --server 'https://your-artoo-site' --code 'XXXX-XXXX'
+npx -y {{PACKAGE_NAME}}@{{PACKAGE_VERSION}} connect --server https://your-artoo-site --code XXXX-XXXX
 ```
 
-Replace the example address and code with the command from your own Web session. `-Workspace` (PowerShell) or `--workspace` (shell) selects an absolute directory; the default is `ArtooWorkspaces` in your user home. Workspaces cannot include Artoo's credentials or installed package. The GitHub installer uses immutable release assets and does not contact the npm registry.
+Replace the example address and code with the command from your own Web session. `--workspace` selects an absolute directory; the default is `ArtooWorkspaces` in your user home. Workspaces cannot include Artoo's credentials or installed package. A machine's blocked npm access or private registry configuration is a local connectivity issue; it does not change the standard installation source to GitHub assets. Check that machine's registry settings and network permissions while keeping TLS verification enabled.
 
-If the exact package version is also published to npm and Node/npm are already installed:
+For frequent use, install the same version globally once, then use the shorter `artood` command:
 
 ```sh
-npx --yes {{PACKAGE_NAME}}@{{PACKAGE_VERSION}} connect --server https://your-artoo-site --code XXXX-XXXX
+npm install --global {{PACKAGE_NAME}}@{{PACKAGE_VERSION}}
+artood connect --server https://your-artoo-site --code XXXX-XXXX
 ```
 
 An owner/admin is enrolled automatically. A member's device is saved while it waits for an administrator to enroll it in Web; run `start` afterward. An interrupted enrollment resumes the same saved identity. Repeating `connect` for the same website reuses that identity and leaves the new code unused.
@@ -58,7 +53,7 @@ The verified package is retained outside npm's disposable cache. The command pri
 
 Windows protects saved credentials with DPAPI CurrentUser and a private directory ACL. POSIX uses mode 0600 files in a mode 0700 directory. Long-lived node credentials are not passed as command arguments or inherited by model subprocesses in this managed flow. Do not copy the state directory between users or computers. `ARTOO_HOME` can select an absolute private state directory for advanced isolated installations.
 
-This is a background process, not an operating-system service: it does not register auto-start at login or boot. Run the printed `start` command after reboot. `npx` and the GitHub installer do not put a global `artood` command on PATH. An optional explicit `npm install --global {{PACKAGE_NAME}}@{{PACKAGE_VERSION}}` provides that command when the version is available on npm.
+This is a background process, not an operating-system service: it does not register auto-start at login or boot. Run the printed `start` command after reboot. `npx` does not put a global `artood` command on PATH. If you installed the same version globally, use `artood status`, `artood stop` and `artood start` directly.
 
 Always install an explicit version. Prereleases use `next`; do not rely on an unversioned install or assume that `latest` points to the current candidate. Published `0.1.0-rc.1` was Windows x64 only; the universal candidate begins with `0.1.0-rc.2` and is a separate artifact.
 

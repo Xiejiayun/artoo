@@ -17,11 +17,8 @@ export function daemonConnectCommand(origin: string, code: string, platform: Dev
       || url.origin !== origin || !/^(?:[a-z0-9.-]+|\[[0-9a-f:]+\])$/i.test(url.hostname) || !/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code)) {
     throw new Error("This connection command needs a trusted server address and a valid pairing code.");
   }
-  const release = `https://github.com/Xiejiayun/artoo/releases/download/artood-v${DAEMON_CONNECT_VERSION}`;
-  if (platform === "windows") return `& ([scriptblock]::Create((irm '${release}/install.ps1'))) -Server '${origin}' -Code '${code}'`;
-  if (platform === "linux" || platform === "macos") return `curl -fsSL --proto '=https' --tlsv1.2 '${release}/install.sh' | sh -s -- --server '${origin}' --code '${code}'`;
-  if (platform !== "npm") throw new Error("Choose Windows, Linux or macOS for a local node.");
-  return `npx --yes @jiayunxie/artood@${DAEMON_CONNECT_VERSION} connect --server ${origin} --code ${code}`;
+  if (!["windows", "linux", "macos", "npm"].includes(platform)) throw new Error("Choose Windows, Linux or macOS for a local node.");
+  return `npx -y @jiayunxie/artood@${DAEMON_CONNECT_VERSION} connect --server ${origin} --code ${code}`;
 }
 
 /** Codes stay in this dialog's memory. Progress belongs to this exact pairing. */
@@ -83,7 +80,7 @@ export function ConnectNodeDialog({ open, onClose, onCreateInstance, onViewMachi
       </ol>
       {!pairing.data && <>
         <Select label="Target operating system" value={platform} disabled={pairing.isPending} onChange={(event) => setPlatform(event.target.value as DevicePlatform)}><option value="windows">Windows</option><option value="linux">Linux</option><option value="macos">macOS</option></Select>
-        <p className="connect-node__hint">The installer gets ARTOO from its official GitHub release, prepares Node.js if needed, discovers your installed Codex and Claude CLIs, and starts the daemon in the background.</p>
+        <p className="connect-node__hint">Requires Node.js 24+ and npm 11+. The command installs the official npm package, discovers your Codex and Claude CLIs, and starts ARTOO in the background.</p>
         <p className="connect-node__access">This connects the machine to your account. Tasks can use its selected workspace; the default is <code>ArtooWorkspaces</code> in your home folder.</p>
         {!canEnroll && bootstrap.data && <p className="connect-node__hint">An administrator will need to approve this machine after you run the command.</p>}
         <Button variant="primary" loading={pairing.isPending} onClick={generate}>Generate connection command</Button>
