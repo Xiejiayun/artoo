@@ -17,6 +17,9 @@ test("machines keep routine work visible and reveal maintenance details on deman
     for (const theme of ["dark", "light"] as const) {
       if (theme === "light") await page.getByRole("button", { name: "Switch to light theme" }).click();
       await expect(computer.getByRole("button", { name: "Create instance", exact: true })).toBeVisible();
+      const searchBox = await page.getByRole("searchbox", { name: "Search computers" }).boundingBox();
+      const resultCount = await page.locator(".machines-page .resources-count").boundingBox();
+      expect(Math.abs(searchBox!.y - resultCount!.y)).toBeLessThan(10);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       await page.screenshot({ path: testInfo.outputPath(`machines-${theme}-${width}.png`), fullPage: true });
       await summary.focus();

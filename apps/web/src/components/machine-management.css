@@ -2,6 +2,9 @@
 .machines-page .resources-icon { width: 32px; height: 32px; background: transparent; border: 0; color: var(--text-muted); }
 .inventory-page.machines-page .resources-header h1 { font-size: 23px; letter-spacing: -.4px; }
 .machines-overview { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 24px; color: var(--text-muted); font-size: 12px; }
+/* Override the global loading-state padding for this inline announcement. */
+.machines-page .resources-count { padding: 0; }
+.machines-page .resources-toolbar .ui-search { flex: 1; max-width: 320px; }
 .machines-summary { display: flex; flex-wrap: wrap; gap: 6px 16px; }
 .machines-runtime-summary { display: flex; flex-wrap: wrap; gap: 16px; margin-left: auto; }
 .machines-runtime-summary > span { display: inline-flex; align-items: center; gap: 7px; }
