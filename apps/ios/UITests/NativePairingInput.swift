@@ -6,6 +6,15 @@ enum NativePairingInput {
     private static let visibilityTimeout: TimeInterval = 10
     private static let stableDuration: TimeInterval = 1
 
+    // XCTest can expose the same empty text field as "" through an Any query
+    // and as its observed placeholder through a TextField query. Compare those
+    // empty representations equally, while keeping missing values unknown and
+    // preserving every non-placeholder character of actual input.
+    static func comparableTextValue(_ value: Any?, placeholder: String?) -> String? {
+        guard let text = value as? String else { return nil }
+        return text == placeholder ? "" : text
+    }
+
     static func positionDeviceNameCaret(_ field: XCUIElement, in app: XCUIApplication, expected current: String) throws {
         var attempts: [[String: Any]] = [], prepared = false
         defer { if !prepared { retainFailureGeometry(attempts) } }
