@@ -38,6 +38,13 @@ export function nativeUISuiteTimeouts(suite) {
   return { xctest: minutes[0] * 60_000, parent: minutes[1] * 60_000, aggregate: minutes[2] * 60_000 };
 }
 
+/** Disposable Web sessions must survive the existing suite budget and its final
+ * server assertions. Keep the prior one-hour minimum for shorter suites, with
+ * five minutes of setup/verification margin for longer standalone runners. */
+export function nativeUIFixtureSessionConfig(suite) {
+  return { ttlMs: Math.max(60 * 60_000, nativeUISuiteTimeouts(suite).aggregate + 5 * 60_000) };
+}
+
 function sourceIdentity(source, issues) {
   if (typeof source?.commit !== "string" || !/^[a-f0-9]{40}$/.test(source.commit)
       || typeof source?.tracked_diff_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(source.tracked_diff_sha256)
