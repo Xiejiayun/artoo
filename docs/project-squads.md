@@ -22,7 +22,8 @@ before execution. `PATCH /api/v1/agent-instances/:id/project` accepts
 organization. Both automatic scheduling and manual pins require matching project
 membership. Goal planning participants and a conversation's explicit execution
 agent have the same restriction. Unassigned
-instances are not scheduling candidates.
+instances are not scheduling candidates. Browser, desktop and iOS execution,
+planning and conversation selectors show only the corresponding project's squad.
 
 Membership changes take the assignment instance lock and reject active runs,
 unconfirmed disconnected processes, unsettled standalone operations and active
