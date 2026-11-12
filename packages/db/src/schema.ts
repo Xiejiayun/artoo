@@ -85,6 +85,7 @@ export const memberSuspensions = pgTable("member_suspensions", {
 
 export const agents = pgTable("agents", {
   id: text("id").primaryKey(),
+  deletedAt: ts("deleted_at"),
   organizationId: text("organization_id")
     .notNull()
     .references(() => organizations.id),
@@ -283,6 +284,7 @@ export const effortProfiles = pgTable("effort_profiles", {
 
 export const computers = pgTable("computers", {
   id: text("id").primaryKey(),
+  deletedAt: ts("deleted_at"),
   organizationId: text("organization_id")
     .notNull()
     .references(() => organizations.id),
@@ -322,6 +324,7 @@ export const agentRuntimes = pgTable("agent_runtimes", {
 export const agentInstances = pgTable("agent_instances", {
   id: text("id").primaryKey(),
   projectId: text("project_id").references(() => projects.id),
+  deletedAt: ts("deleted_at"),
   organizationId: text("organization_id")
     .notNull()
     .references(() => organizations.id),

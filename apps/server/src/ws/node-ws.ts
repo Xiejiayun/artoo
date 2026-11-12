@@ -3,7 +3,7 @@ import { APPLICATION_PUBLICATION_FEATURE_V1 } from "@artoo/domain";
 import { parseDeviceToken, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1 } from "@artoo/domain";
 import { randomUUID } from "node:crypto";
 import type { NodeHello, NodeToServerMessage, NodeTransport } from "@artoo/protocol";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { ServerContext } from "../context.js";
@@ -93,9 +93,11 @@ export function registerNodeWsRoute(
     let initializationDeadline: number | undefined;
     let managed: { id: string; nonce: string; active: boolean; firstPongPending: boolean } | undefined;
     const earlyQueue: NodeToServerMessage[] = [];
+    let checkingComputer = false;
+    const computerQueue: NodeToServerMessage[] = [];
     const close = (code: number, reason: string): void => {
       if (terminated) return;
-      terminated = true; clearTimeout(initializationTimer); earlyQueue.length = 0;
+      terminated = true; clearTimeout(initializationTimer); earlyQueue.length = 0; computerQueue.length = 0;
       raw.close(code, reason);
     };
     function armManagedInitialization(): void {
@@ -160,6 +162,7 @@ export function registerNodeWsRoute(
             && registry.get(computerId) === binding && (!gated || managed?.active === true),
         } : undefined, message.product_source_routing, message.application_publication_profiles);
       if (message.workspace_roots) binding.workspaceRoots = Object.freeze({ version: 1, paths: Object.freeze([...message.workspace_roots.paths]) });
+      binding.disconnect = () => close(1008, "computer deleted");
     }
     async function initializeManaged(message: NodeHello): Promise<void> {
       const request = message.managed_receipts!;
@@ -197,6 +200,11 @@ export function registerNodeWsRoute(
     const handleMessage = (message: NodeToServerMessage): void => {
       const currentAuth = auth;
       if (terminated || currentAuth === undefined) return;
+      if (checkingComputer) {
+        computerQueue.push(message);
+        if (computerQueue.length > MAX_PREAUTH_FRAMES) close(1008, "too many frames before computer validation");
+        return;
+      }
       if (nodeId === undefined && message.kind !== "node.hello") { close(1008, "node.hello required"); return; }
       if (message.kind === "node.hello") {
         if (nodeId !== undefined) return;
@@ -204,15 +212,30 @@ export function registerNodeWsRoute(
         if (computerId === null) { close(1008, "node.hello node_id does not match credential"); return; }
         nodeId = computerId;
         managedRequested = message.managed_receipts !== undefined;
-        if (managedRequested) { armManagedInitialization(); void initializeManaged(message); }
-        else {
-          attach(message, false); activate();
-          if (currentAuth.mode === "device" && artifactStore && message.execution_features?.some(feature => [IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
+        if (managedRequested) armManagedInitialization();
+        checkingComputer = true;
+        void (async () => {
+          const [computer] = await ctx.db.db.select({ deletedAt: computers.deletedAt }).from(computers).where(and(
+            eq(computers.id, computerId), eq(computers.organizationId, ctx.organizationId)));
+          if (terminated) return;
+          if (computer?.deletedAt != null) { close(1008, "computer deleted"); return; }
+          checkingComputer = false;
+          if (managedRequested) void initializeManaged(message);
+          else {
+            attach(message, false); activate();
+            if (currentAuth.mode === "device" && artifactStore && message.execution_features?.some(feature => [IMPORTED_DESIGN_CONTINUATION_FEATURE_V1, IMPORTED_DESIGN_REVIEW_FEATURE_V1, IMPORTED_EXECUTION_FEATURE_V1, IMPORTED_EXECUTION_REVIEW_FEATURE_V1, IMPORTED_VALIDATION_FEATURE_V1,
             PRODUCT_SOURCE_RECOVERY_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_FEATURE_V1, IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1,
             APPLICATION_PUBLICATION_FEATURE_V1].includes(feature))) {
-            void initializeOrdinaryImportedDesignReceipts();
+              void initializeOrdinaryImportedDesignReceipts();
+            }
           }
-        }
+          for (const queued of computerQueue) {
+            if (terminated) break;
+            handleMessage(queued);
+            if (!terminated && !managedRequested) binding?.receive(queued);
+          }
+          computerQueue.length = 0;
+        })().catch(() => close(1008, "computer validation failed"));
         return;
       }
       if (message.kind === "node.session.probe") {
@@ -271,7 +294,7 @@ export function registerNodeWsRoute(
       earlyQueue.length = 0;
     })();
     raw.on("close", () => {
-      terminated = true; clearTimeout(initializationTimer); earlyQueue.length = 0;
+      terminated = true; clearTimeout(initializationTimer); earlyQueue.length = 0; computerQueue.length = 0;
       releaseDeviceConn?.(); unsubscribe(); binding?.close();
       // A failed private handshake must never unregister another live binding.
       if (registered && nodeId !== undefined && binding !== undefined && registry.unregister(nodeId, binding)) {
@@ -314,7 +337,7 @@ async function updatePresence(
     await ctx.db.db
       .update(computers)
       .set(patch)
-      .where(and(eq(computers.id, nodeId), eq(computers.organizationId, ctx.organizationId)));
+      .where(and(eq(computers.id, nodeId), eq(computers.organizationId, ctx.organizationId), isNull(computers.deletedAt)));
   } catch {
     // best-effort presence; ignore (e.g. db shutting down on disconnect)
   }

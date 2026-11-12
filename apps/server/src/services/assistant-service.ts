@@ -75,7 +75,7 @@ export async function enqueueAssistantTurn(ctx: ServerContext, roomId: string, r
     if (request.agent_instance_id) {
       const [instance] = await tx.select({ id: agentInstances.id }).from(agentInstances).where(and(
         eq(agentInstances.id, request.agent_instance_id), eq(agentInstances.organizationId, ctx.organizationId),
-        eq(agentInstances.projectId, room.projectId)));
+        eq(agentInstances.projectId, room.projectId), isNull(agentInstances.deletedAt)));
       if (!instance) throw AppError.validation("Choose an agent from this project's squad");
     }
     await requireContentAllowed(ctx, request.body, tx);

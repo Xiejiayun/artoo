@@ -8,6 +8,7 @@ export const ARTOO_DOMAIN_PACKAGE = "@artoo/domain";
 
 export * from "./ids.js";
 export * from "./clock.js";
+export * from "./resource-lifecycle.js";
 export * from "./capabilities.js";
 export * from "./state.js";
 export * from "./events.js";

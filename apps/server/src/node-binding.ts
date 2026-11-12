@@ -87,6 +87,8 @@ import {
 const FALLBACK_WORKSPACE_ROOT = join(tmpdir(), "artoo-workspace");
 
 export interface NodeBinding {
+  /** Close the underlying socket when its computer is explicitly removed. */
+  disconnect?(): void;
   /** Current session's folder suggestions, never a substitute for node authorization. */
   workspaceRoots?: { readonly version: 1; readonly paths: readonly string[] };
   getProductSourceRouting?(): ProductSourceRoutingV1 | undefined;

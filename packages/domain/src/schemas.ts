@@ -4,6 +4,7 @@
  * of truth. Optional/nullable columns use `.nullish()`.
  */
 import { z } from "zod";
+import { ResourceLifecycleSchema } from "./resource-lifecycle.js";
 
 import { CapabilitySchema } from "./capabilities.js";
 import { BlockerRecordSchema, DecisionRecordSchema, HandoffRecordSchema } from "./collaboration.js";
@@ -82,6 +83,7 @@ export const CostTierSchema = z.enum(["low", "medium", "high", "premium"]);
 export const LatencyTierSchema = z.enum(["fast", "normal", "slow"]);
 
 export const AgentSchema = z.object({
+  lifecycle: ResourceLifecycleSchema.optional(),
   id: z.string(),
   organization_id: z.string(),
   display_name: z.string(),
@@ -93,6 +95,7 @@ export const AgentSchema = z.object({
 export type Agent = z.infer<typeof AgentSchema>;
 
 export const ComputerSchema = z.object({
+  lifecycle: ResourceLifecycleSchema.optional(),
   id: z.string(),
   organization_id: z.string(),
   display_name: z.string(),
@@ -142,6 +145,7 @@ export type EffortProfile = z.infer<typeof EffortProfileSchema>;
 export const AgentInstanceSchema = z.object({
   // Absent on older servers; null means the instance is not assigned to a squad.
   project_id: z.string().nullish(),
+  lifecycle: ResourceLifecycleSchema.optional(),
   id: z.string(),
   organization_id: z.string(),
   computer_id: z.string(),

@@ -98,4 +98,17 @@ describe("project squad isolation", () => {
       .where(and(eq(runs.id, run.id), eq(runs.organizationId, server.ctx.organizationId)));
     expect((await move("proj_second")).statusCode).toBe(409);
   });
+
+  it("keeps deleted instances outside project membership edits and explicit conversation execution", async () => {
+    const goal = await createGoal(server.ctx, { project_id: "proj_artoo", title: "Project work", objective: "Work here", acceptance_criteria: ["done"] });
+    expect((await server.app.inject({ method: "DELETE", url: `/api/v1/agent-instances/${instanceId}` })).statusCode).toBe(200);
+    expect((await move("proj_second")).statusCode).toBe(404);
+    await expect(enqueueAssistantTurn(server.ctx, goal.room_id!, { body: "Please help", client_request_id: "deleted-agent", agent_instance_id: instanceId }))
+      .rejects.toThrow("this project's squad");
+    expect((await assign(await ready("proj_artoo"), "auto")).statusCode).toBe(409);
+    expect(await server.db.db.select().from(runs)).toHaveLength(0);
+    const [instance] = await server.db.db.select().from(agentInstances).where(eq(agentInstances.id, instanceId));
+    expect(instance).toMatchObject({ projectId: "proj_artoo" });
+    expect(new Date(instance!.deletedAt!).toISOString()).toBe(server.ctx.clock.nowIso());
+  });
 });

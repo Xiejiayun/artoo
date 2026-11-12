@@ -1,6 +1,7 @@
 import { agentInstances, agentRuntimes, agents, computers, devices, runs, skillInstalls } from "@artoo/db";
 import {
   SkillManifestSchema,
+  deriveResourceLifecycle,
   concurrencyLimitFromConfig,
   contributedCapabilities,
   hasSpareCapacity,
@@ -17,6 +18,7 @@ import { and, eq, isNull, or } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
+import { resourceExpiryMs } from "../config/resource-lifecycle.js";
 import { unsettledStandaloneExecutions } from "./execution-state.js";
 import { goalImportedDesignContinuations, goalImportedDesignReviews, goalImportedExecutions } from "@artoo/db";
 import { goalImportedExecutionReviews, goalImportedExecutionRepairs } from "@artoo/db";
@@ -197,6 +199,8 @@ export async function scheduleTask(
       instanceStatus: agentInstances.status,
       instanceConfig: agentInstances.config,
       computerStatus: computers.status,
+      computerLastHeartbeatAt: computers.lastHeartbeatAt,
+      computerCreatedAt: computers.createdAt,
       agentCaps: agents.capabilities,
       computerCaps: computers.capabilities,
       // Runtime row for this instance's runtime (LEFT JOIN: null when absent).
@@ -215,9 +219,11 @@ export async function scheduleTask(
         eq(agentRuntimes.runtime, agentInstances.runtime),
       ),
     )
-    .where(and(eq(agentInstances.organizationId, ctx.organizationId), eq(agentInstances.projectId, opts.projectId)));
+    .where(and(eq(agentInstances.organizationId, ctx.organizationId), eq(agentInstances.projectId, opts.projectId),
+      isNull(agentInstances.deletedAt), isNull(computers.deletedAt), isNull(agents.deletedAt)));
 
   const now = ctx.clock.nowIso();
+  const expiryMs = resourceExpiryMs();
 
   // #113 slice 5 — INTENTIONAL behavior change: busy/idle is now derived from
   // capacity (active non-terminal runs vs concurrency_limit), NOT from the
@@ -259,6 +265,7 @@ export async function scheduleTask(
   }
 
   const eligible = rows
+    .filter((r) => deriveResourceLifecycle(r.computerLastHeartbeatAt, r.computerCreatedAt, now, false, expiryMs).state !== "expired")
     .filter(
       (r) =>
         isInstanceAdminAvailable(r.instanceStatus) &&
