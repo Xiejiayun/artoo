@@ -3,6 +3,31 @@ import XCTest
 /// Snapshot fixtures test the observer only; they are not native UI evidence.
 @MainActor
 final class NativePairingSnapshotTests: XCTestCase {
+    func testNativeEmptyAndObservedPlaceholderRepresentTheSameInput() {
+        // The retained native run read "" from Any.firstMatch and the actual
+        // placeholder from TextField.element for the same unique empty field.
+        let placeholder = "One-time pairing code"
+        let original = NativePairingInput.comparableTextValue("", placeholder: placeholder)
+        let unique = NativePairingInput.comparableTextValue(placeholder, placeholder: placeholder)
+        XCTAssertEqual(original, "")
+        XCTAssertEqual(unique, original)
+    }
+
+    func testMissingInputCannotBecomeEmptyAndActualContentsRemainExact() {
+        let placeholder = "One-time pairing code"
+        let unreadable: [Any?] = [nil, NSNull(), 0, true]
+        for value in unreadable {
+            XCTAssertNil(NativePairingInput.comparableTextValue(value, placeholder: placeholder))
+        }
+        XCTAssertEqual(NativePairingInput.comparableTextValue("AB-123", placeholder: placeholder), "AB-123")
+        XCTAssertNotEqual(NativePairingInput.comparableTextValue("AB-123", placeholder: placeholder),
+                          NativePairingInput.comparableTextValue("AB-124", placeholder: placeholder))
+        XCTAssertNotEqual(NativePairingInput.comparableTextValue(" AB-123 ", placeholder: placeholder),
+                          NativePairingInput.comparableTextValue("AB-123", placeholder: placeholder))
+        XCTAssertEqual(NativePairingInput.comparableTextValue(placeholder, placeholder: nil), placeholder,
+                       "A placeholder must be observed before it can represent empty input")
+    }
+
     private final class SnapshotFixture: NSObject, XCUIElementSnapshot {
         var elementType: XCUIElement.ElementType
         var identifier: String
