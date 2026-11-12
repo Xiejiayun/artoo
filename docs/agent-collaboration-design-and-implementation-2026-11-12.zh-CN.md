@@ -1,0 +1,328 @@
+# Artoo Agent 协作能力设计与实现方案
+
+日期：2026 年 11 月 12 日。版本：0.1，初版设计提案。
+
+本方案以 Artoo main 提交 `52c8214e99fe838a65f9ecaeb9cb2b1aa90a0c70` 为代码基线，结合已有 Multica、Paperclip、Codex 和 Claude Code 架构分析，设计可分批交付的团队协作增量。文中的新增表、接口和能力均为提议；文档合入不代表功能实现、测试通过或产品发布。
+
+建议沿用现有控制面与节点执行架构，依次完成执行入口与资源授权、代码结果与技能交付、受约束的团队委派与自动化。先让用户看懂一次请求会启动谁、为什么等待、结果如何验证，再增加无人值守入口。
+
+## 1 目标与范围
+
+首个交付目标：用户在项目 Thread 中明确请求某个 Agent 工作，发送前看到触发预览；请求持久化，重试不重复启动；排队后撤权能阻止后续执行；Task 能展示精确提交上的 PR 与 CI 状态。
+
+后续目标：固定本次运行使用的 Skill 版本；在已接受计划中公开委派已有任务；按明确授权定时或因事件重新检查工作。
+
+保留以下约束：
+
+- `packages/domain` 定义契约，`packages/protocol` 定义传输，`packages/db` 定义 schema 与追加迁移；Server 负责授权与编排，artood 负责节点执行与证据。
+- GoalRunner 拥有持久化规划和目标任务调度；AssistantDispatcher 继续处理普通对话队列。新增入口连接已有所有者。
+- Agent、AgentInstance、Computer、Runtime 保持独立；实例最多属于一个项目的 Squad。
+- 原始用户授权与 system 决策归因分开保存；模型提案不能增加权限。
+- `run.verification` 由节点产生；验证命令来自受保护的本地 profile，保持请求、profile、Run、源码摘要与真实进程退出绑定。
+- 独立评审和产品发布保持各自的授权、证据与执行器。PR 合并只是代码集成事实。
+- 当前单 Server 所有者和数据库独占写入锁保持有效；本方案不引入多副本或 Redis。
+
+首版不实现运行中任意插入指令、停止后重开、任意 Skill 脚本和 MCP 配置分发、插件市场、大量 CLI 适配、自动合并或自动部署。没有可靠计量时不承诺美元费用硬上限。
+
+## 2 竞品机制与取舍
+
+以下事实来自用户已有分析快照，未将其描述为竞品的最新线上行为。
+
+| 资料 | 值得借鉴的机制 | Artoo 的落地选择 |
+| --- | --- | --- |
+| Multica，资料截至 2026-11-10 | 触发预览、Agent 与 Runtime 使用权、公开 Squad 委派、Skill 文件交付、PR/CI、定时唤醒 | 显式请求执行；委派走结构化提案与现有计划；技能先只读；外部 CI 与节点验证分别展示 |
+| Paperclip，2026-11 架构分析 | 持久化唤醒意图、原子签出、结构化等待、有界恢复、治理在服务端强制 | 请求来源可追溯；复用 Task/Run/Goal 状态；等待展示阻塞对象与动作；预算按可实施的次数和时长控制 |
+| Codex，2026-11 架构图 | 协议入口与核心运行时分离、Thread/Turn/Item、持久会话、权限与沙箱约束 | 保持 RuntimeAdapter 窄接口；按能力和版本协商；普通对话与产品阶段上下文分开 |
+| Claude Code，2026-11-10 架构图 | Harness 控制工具、上下文与权限；Skill 按需读取；子代理上下文隔离 | 平台权限由可信边界执行；技能准备与实际读取分开；独立评审不继承作者的可执行环境 |
+
+不照搬竞品的默认宽权限、评论隐式启动、去除数据库外键或只按模型输出推进任务。Paperclip 的费用治理启发预算设计，但 Artoo 目前没有对应的可靠费用计量，不能直接宣称具备同样能力。
+
+## 3 当前 main 的基础与缺口
+
+| 领域 | 已确认基础 | 设计增量 |
+| --- | --- | --- |
+| 对话 | AssistantTurn 持久队列、`client_request_id` 去重、串行 pump、重发同一 Run | 触发预览、统一来源绑定、稳定等待原因、未启动输入合并 |
+| 项目隔离 | 项目 Squad、显式实例和规划参与者项目检查已经合入 | 项目协调者配置与有界委派；不重复建设实例归属 |
+| 资源生命周期 | 到期、停用、墓碑删除；活跃或退出不确定时阻止删除 | 资源管理权与 Agent/机器使用权分离 |
+| Skills | 安装 manifest、本地元数据发现、搜索和实例匹配已经合入 | 固定内容版本、Agent 绑定、节点准备、逐 Run 追溯 |
+| Goal/Plan | 已有规划、接受、分阶段执行、预算、独立评审与恢复；main #47 改进 Web 入口 | 接入新入口并保留原执行模式；不创建平行的目标调度器 |
+| 结果 | patch/PR 产物与 integration_queue | 仓库绑定、可信 PR 关联、精确 head SHA 的外部状态 |
+| 基础设施 | event_log、游标回放、TanStack Query、单数据库所有者 | 增加领域事件和读模型；可靠副作用不依赖在线 WebSocket |
+
+现有 native skill 观察只读取元数据，不上传正文、不证明加载，也不贡献调度能力。安装 manifest 不等于安装工具或授予权限。`budget-policy.ts` 明确拒绝 `max_cost_usd`。
+
+## 4 总体架构
+
+~~~mermaid
+flowchart TB
+  UI[Thread / Plan / Board / Skills]
+  Intake[触发预览与请求解析]
+  Auth[资源使用授权与原始用户检查]
+  Intent[持久化请求来源和绑定]
+  AD[现有 AssistantDispatcher]
+  GR[现有 GoalRunner]
+  Life[现有生命周期与 Scheduler]
+  Node[artood / RuntimeAdapter]
+  Verify[节点验证与独立评审]
+  DB[业务表与 event_log]
+  GH[GitHub 同步]
+  Wake[时间与事件唤醒]
+  UI --> Intake --> Auth --> Intent
+  Wake --> Intake
+  Intent --> AD --> Life
+  Intent --> GR --> Life
+  Life --> Node --> Verify
+  Intent --> DB
+  Life --> DB
+  Verify --> DB
+  GH --> DB
+  DB --> UI
+~~~
+
+执行意图只持有请求来源、授权来源与已有执行对象的绑定。对话状态来自 AssistantTurn，任务与进程状态来自 Task/Run，目标状态来自 GoalRunner；不复制另一份运行状态机。
+
+## 5 执行意图与触发预览
+
+### 5.1 交互和投递方式
+
+Thread 保留“发送消息”，新增明确的“请求 Agent”。普通消息和旧 mention 继续只产生讨论与通知。请求预览显示目标、适用项目、投递方式、等待或拒绝原因，以及审批要求。自动选择只能显示候选和“提交时选择”，不承诺资源预留。
+
+| delivery | 语义 | 支持阶段 |
+| --- | --- | --- |
+| queue | 新建普通 AssistantTurn，按已有规则等待 | 第一批 |
+| assign_task | 尝试一次现有任务指派，保留 ready、审批、租约与容量门槛 | 第一批；不承诺通用任务等待队列 |
+| merge_queued | 将输入加入同一用户、线程、显式目标的未启动轮次 | 第二批独立增量 |
+
+不支持的投递方式明确返回 `unsupported_delivery_mode`，UI 不显示对应选项。普通入口不能插入规划讨论、独立评审或已运行进程。
+
+### 5.2 契约和提交
+
+新增版本化 ExecutionIntent 请求和只读预览契约：
+
+~~~ts
+type ExecutionIntentRequestV1 = {
+  version: 1;
+  client_request_id: string;
+  source:
+    | { kind: "conversation"; room_id: string; thread_root_id?: string; body: string }
+    | { kind: "task_assignment"; task_id: string; expected_task_version: number };
+  target: { kind: "automatic" } | { kind: "instance"; agent_instance_id: string };
+  delivery: "queue" | "merge_queued" | "assign_task";
+};
+~~~
+
+实际 Zod schema 使用严格判别联合限制合法组合，例如 task_assignment 只能配 assign_task。组织、项目和授权人由认证与关联对象推导；浏览器不能自报 system 来源或任意 owner 绑定。
+
+预览返回规范化 `request_digest`、eligible/waiting/approval_required/denied、候选目标、稳定 reason_code 和支持方式。预览不写入任务、不预留资源、不产生授权；摘要只关联请求，提交时重新校验。
+
+新增表：
+
+| 表 | 核心内容与约束 |
+| --- | --- |
+| execution_intents | organization_id、authorizer_user_id、client_request_id、source、project/thread、摘要、目标、delivery、authorization_origin；组织+用户+client_request_id 唯一，同键不同内容冲突 |
+| execution_intent_bindings | intent_id、owner_kind、owner_id；每个意图只绑定一个已有 AssistantTurn 或 Task Run；合并时多个意图可绑定同轮次 |
+| execution_dispatch_authorizations | 原执行来源、run_id、原始用户、策略版本、上下文摘要与发送序号；记录有权发送的决定，不替代节点回执 |
+| assistant_turn_inputs | 合并阶段增加 turn、message、intent、输入顺序和撤回记录；每条消息身份保持独立 |
+
+意图、消息、执行所有者、绑定与领域事件在同一事务提交；业务操作失败一起回滚。复用现有服务检查和 GoalRunner 的事务内编排方式，只提取必要的窄 helper。网络发送在事务提交后进行，恢复扫描重发相同身份，不能新建一条 Run 掩盖投递不确定。
+
+旧 Assistant API、直接 assign、重试等入口继续有效并调用同一资源授权服务。旧请求保留原幂等规则；不回填会改变历史含义的意图。
+
+### 5.3 合并与取消
+
+只合并尚未创建 Run/ContextPack 的普通对话，要求同组织、项目、房间、线程、原始用户、显式实例与执行策略。自动选实例、审批、规划和评审暂不合并。建议最多 10 条输入、总正文 20,000 字符；超限进入下一轮，不能截断。
+
+ContextPack 创建时冻结有序消息清单与摘要。冻结后新输入进入后续轮次。未冻结时可以撤回本意图的输入，保留原消息与审计；冻结后的取消明确作用于整个轮次并调用已有取消服务。取消或节点断线都不能被当作进程已退出。
+
+实施前检查 Room、Task、AssistantTurn 的现有锁顺序；并发提交、创建 Run、合并与取消必须用真实数据库竞态验证。
+
+### 5.4 结构化等待
+
+读模型至少返回 reason_code、blocking_object、required_action、next_check_at 和 observed_at。无容量、审批、原始用户撤权、技能未准备、进程退出未确认分别展示；无法计算下次时间时返回 null。
+
+等待不能只是一段不可处理的错误字符串。它应能定位审批、资源设置或运行详情；保留当前所有者和重试身份。恢复由所属 dispatcher/GoalRunner 对账，不能因点击“检查”又创建执行。
+
+## 6 资源使用授权
+
+### 6.1 权限模型
+
+区分 view、manage_metadata、use_agent、use_compute、manage_execution_grants。管理名称、停用或取消危险任务不隐含消耗机器和模型额度的权利。
+
+新增 `resource_access_policies` 和 `resource_access_grants`。Policy 保存组织、受控资源类型、资源 ID、所有者、ownership_state、兼容模式和 revision；首版所有权资源只有 Agent 与 Computer，Runtime 是计算资源 grant 的过滤条件。Grant 保存 user/organization 主体、操作、项目/runtime 范围、过期与撤销时间、授权人。
+
+最终允许执行需要同时满足原始用户有效、Agent 使用权、计算资源使用权、实例项目归属、设备信任、runtime 状态、能力容量、AI 数据共享同意、原业务审批、Goal/Task 策略和节点本地边界。手工指定实例执行相同检查；自动 Scheduler 在评分前过滤未授权候选。预览不得泄露无 view 权限的资源详情。
+
+管理员保留管理和紧急停止权，但不能给自己增加 grant 绕过所有者。所有权转移与恢复采用独立、留痕流程。
+
+### 6.2 执行边界与撤销
+
+创建、分配、延迟分发、重试、规划、独立评审、委派和自动化都接入统一授权。system 仅是事件归因，authorizer_user_id 继续指向原始用户；不能换成服务账号绕过撤权。
+
+撤销和发送授权提交通过资源策略锁序列化。撤销先提交则不产生新的发送授权；已经提交的启动可能在途，必须请求停止并等待节点确认。最终发送边界再查会话与当前策略，但不声称消除了网络竞态。停止未确认时保留必要租约和占用。
+
+### 6.3 历史兼容
+
+新资源从认证的创建或配对流程固定所有者，默认私有。历史资源只有唯一可信 enrollment 证据才能推导所有者；无法确定时标为 unresolved，不能猜为管理员，也不能突然全部改成私有。
+
+显式 `legacy_team` 仅保留历史原组织、项目和操作语义；不扩大到新的周期规则或 Squad 委派。确认所有权后再迁入 enforced；既有授权历史不改写。克隆资源不能继承 legacy 特权。进入 enforced 后，关闭 UI 功能开关不能取消检查。
+
+节点和用户长期凭证不交给模型。未来回写凭证须绑定组织、项目、Goal、Run 和有限操作，短期、可撤销；不能用于授权、接受计划、提交验证证据或发布。
+
+## 7 GitHub PR 与 CI 反馈
+
+首版只支持 github.com GitHub App，只读接入 PR、Check、Review 与安装撤销事件。Task 显示关联 PR、head SHA、CI、评审和同步新鲜度；Board 展示摘要，Release 分别展示代码集成与真实发布。
+
+新增 vcs_connections、project_repositories、vcs_event_receipts、pull_request_snapshots、task_pull_requests。连接保存 provider 与密钥引用，私钥不进入消息、ContextPack 或模型环境。
+
+安装与 repository_id 通过 GitHub API 校验，项目管理员只能连接获准仓库。分支、标题和 Task 字样只产生关联候选；确认关联需要当前仓库范围和可信产物中的提交身份，或有权用户显式确认。
+
+Webhook 先校验原始请求字节的 HMAC、大小和对应连接，再解析 JSON；校验安装与仓库。以 connection+delivery_id 防重，保存有保留期的必要收据。外部调用在事务外，持久工作项与补偿扫描保证回调丢失可恢复。
+
+Webhook 作为更新提示，按 PR 合并重复与乱序提示并重新读取当前状态。快照固定 repository_id、PR number、head_sha；旧 SHA 的 CI 成功不得覆盖新提交。受限退避、stale 状态和手动重查可见。
+
+合并只形成 integration_merged 投影。Task done、节点验证和 product publication 沿用原有门槛。首版不发表评论、提交代码、合并 PR 或部署，也不接受任意 API 主机和抓取 URL。
+
+## 8 Skill 使用闭环
+
+界面分别展示已发现、已选定、已准备和可信使用记录。模型自述只标为自述；prepared 证明约定字节已交付，不能证明模型阅读或遵循。
+
+首版 `instruction_only` 包含 SKILL.md、只读参考文件、manifest、来源与规范化文件清单。建议限制 2 MiB、128 文件、路径深度 8；拒绝链接、路径逃逸、重复及大小写碰撞。版本不可变，同版本换内容返回冲突；digest 证明字节相同，可信来源仍需批准。
+
+新增 skill_package_versions、agent_skill_bindings、run_skill_selections、run_skill_preparation_receipts。版本关联既有 skill_installs；绑定先采用 project+agent+version，校验安装范围、批准和运行时兼容性。创建 ContextPack 时冻结版本、摘要和顺序。
+
+节点将包准备到受保护的 Run 目录，位于受测源码外；通过 ContextPack 分页或受限只读资源接口提供内容。参考文件读取只接受被冻结清单中的逻辑路径。不得覆盖用户 AGENTS.md、CLI 配置、验证 profile 或源码，不安装脚本、hooks 或任意 MCP command/env。
+
+新增可选 `skills.v1` 上下文、`skill-instructions.v1` 节点能力与节点所有的 `run.skills.prepared` 回执。回执绑定 Run、请求、上下文摘要、会话和实测内容摘要，不进入 Adapter 输出白名单。要求技能的任务只有全部准备成功后才启动；缺包、摘要改变或旧节点明确阻塞。
+
+未选技能的旧任务保持原语义；native metadata 不自动转为上传包或可信授权。作者与独立评审分别绑定所需只读技能，不继承可执行环境。真实 Codex/Claude 适配是否能在当前受限模式完成交付，需要实施前小范围技术验证。
+
+## 9 有界 Squad 委派
+
+沿用现有项目实例归属，一个项目先配置一个协调者，不增加重叠的 Squad 组织。新增 project_squad_configs 保存 leader、允许参与者、revision 和委派限制。
+
+首版只在已有、已接受计划的 Goal 中选择已有任务。新增 goal_collaboration_sessions 和 delegation_requests，固定 Goal/Plan、原始用户、配置版本、source_run_id、所选任务、目标实例、父委派与服务端判定。
+
+Leader 输出结构化建议；节点信封固定真实 source_run_id。服务端检查运行、项目、计划、授权、角色、依赖和预算，再由 GoalRunner 接受。模型不能新增写入范围、替换受约束评审人或接受自己的产物。新增范围进入计划修订流程。
+
+委派、拒绝、成员回报和汇总显示在原 Goal 线程，复用 Handoff/Decision；普通 @ 字符串不触发任务。建议新会话最多 8 次成员委派、深度 2；每个任务同一时刻只有一个有效委派。终态按绑定 Run 去重，只唤醒协调者一次。计划改变或预算耗尽停止委派；原 Goal 重试、时长和并发上限继续有效。
+
+## 10 定时与事件唤醒
+
+自动化只产生重新检查已授权工作的入口，由 GoalRunner/既有 dispatcher 执行。周期或事件触发需要明确授权；一次性权限不能自动升级。首版动作是 reconcile_goal 或请求已接受计划中的待执行任务，不重开暂停、完成、取消或归档 Goal。
+
+支持顺序：指定时间、带 IANA 时区的周期/cron、内部事件，再到外部 Webhook。新增 automation_rules、automation_occurrences、automation_health。规则只存结构化动作与 grant，不存远程任意命令或验证 argv。
+
+Occurrence 以 rule+revision+UTC slot 或 source_event_id 唯一；持有 state、lease_owner、epoch、expires_at 和 intent 绑定。重启可重新领取，旧 epoch 不得写回。租约仅协调处理者，外部副作用仍靠固定意图和 Run 身份防重。
+
+使用成熟的时区库；秋季重复本地时刻执行一次，春季缺失时刻跳过；编辑器展示未来三次本地与 UTC 时间。错过多次计划合并为最近一次检查，不补发积压。修改或暂停规则使未提交意图的旧 occurrence 失效；已提交请求按真实状态显示并显式取消。
+
+事件只订阅同项目允许类型，游标与 occurrence 原子提交。事件保留期形成缺口时标明补偿扫描，不能静默跳过。人工暂停优先，不因规则重启自动解除。
+
+建议默认每天 10 次触发、最多一个非终态意图、连续 3 次实际执行失败后暂停。网络错误有界退避；鉴权、配额和配置问题等待人工；容量不足等待；进程关闭不确定阻塞冲突执行；产品验证失败走既有纠正策略。没有可靠费用数据时显示未知，以运行次数、时长、重试和并发实施硬限制。
+
+无变化保持安静；只在完成、有意义变化、失败暂停或需要用户操作时通知。
+
+## 11 API 事件与代码落点
+
+以下均为提议，路径使用 `/api/v1` 前缀及现有认证、错误信封、幂等和版本前置条件。
+
+| 领域 | 主要接口 |
+| --- | --- |
+| 执行入口 | POST /execution-intents/preview、POST /execution-intents、GET /execution-intents/:id、POST /execution-intents/:id/cancel |
+| 资源使用权 | GET /resources/:type/:id/access、POST/DELETE /resources/:type/:id/grants |
+| GitHub | POST/GET /projects/:id/repositories、POST/GET /tasks/:id/pull-requests；签名入口 /integrations/github/webhooks |
+| Skills | POST /skills/:id/versions、PUT /projects/:id/agents/:agentId/skills、GET /runs/:id/skills |
+| Squad | GET/PUT /projects/:id/squad、POST /goals/:id/collaboration、GET /goals/:id/delegations |
+| 自动化 | POST/GET /projects/:id/automations、PATCH /automations/:id、POST /automations/:id/trigger |
+
+新增事件族 execution.intent、resource.access.changed、skill.binding.changed、run.skills.prepared、vcs.pull_request.updated、squad.delegation、automation.triggered/paused。事件只含标识、版本和必要摘要，不带密钥、技能正文或无权查看的资源元数据。读模型事件接入 event_log 和查询失效，关键副作用由持久化事实恢复。
+
+| 代码位置 | 实施内容 |
+| --- | --- |
+| packages/domain | execution-intent、resource-access、skill-delivery、squad-delegation、scheduled-automation、vcs 契约与纯判定 |
+| packages/protocol | 可选版本上下文、节点能力、准备回执和委派提案；验证权威保持节点所有 |
+| packages/db | 新表、外键、唯一键、索引、schema 与新追加迁移 |
+| apps/server/src/services | 资源授权、入口绑定、GitHub 同步、技能交付、委派、自动化；在现有执行边界接入 |
+| apps/artood | 内容准备、只读交付与可信节点事件；保持进程关闭和验证逻辑 |
+| apps/web | Thread 预览、共享设置、PR 状态、技能准备记录、Squad 和规则编辑 |
+| packages/client 与原生客户端 | 共享读取契约；旧客户端准确读取状态并保留手工路径，新编辑单独验收 |
+
+未知展示枚举可显示“未知”；未知授权模式、必需能力和协议组合必须拒绝执行。可选新字段也要验证旧 strict parser，通过真实能力协商决定发送，不能假设 optional 天然兼容。
+
+## 12 实施拆分
+
+| 增量 | 可独立审查交付 | 依赖 | 完成标志 |
+| --- | --- | --- | --- |
+| A0 | 固定最新 main 的 Squad、生命周期、技能发现、Goal/Plan 基线 | 当前 main | 事实与拟建能力分清 |
+| A1 | 资源策略、grant、迁移与查询 | A0 | 历史语义兼容，新资源默认私有 |
+| A2 | 所有执行边界接入授权、撤销与恢复竞态 | A1 | 旧入口、规划、评审和恢复均不可绕过 |
+| A3 | 预览、意图、原子绑定、Thread 入口、等待展示 | A2 | 可解释、可恢复、幂等身份唯一 |
+| A4 | 未启动输入合并与取消 | A3 | 不丢输入、不改写冻结上下文 |
+| B1 | GitHub App、仓库绑定、精确提交投影与补偿 | A0；访问控制接 A1 | 新提交使旧 CI 失效，安装撤销有效 |
+| B2 | 不可变指令技能、绑定与节点回执 | A2、A3；能力协商 | 指定字节交付可核验，缺失阻塞 |
+| C1 | 已接受计划内 Squad 委派 | A2、A3 | 有界且公开，GoalRunner 仍为所有者 |
+| C2 | 时间与内部事件唤醒 | A2、A3 | 重启、暂停和重复事件处理正确 |
+| C3 | 外部 Webhook、更多运行时、原生编辑 | C2 真实验收 | 按独立支持范围扩展 |
+
+建议首个候选为 A0–A3+B1；第二个为 A4+B2；第三个为 C1+C2。每个增量按 schema/迁移、服务/协议、UI、验证审查；规模过大继续拆 PR。这里定义依赖和验收范围，不作未估算的工期承诺。
+
+## 13 验证与验收
+
+| 边界 | 必须覆盖的反例 |
+| --- | --- |
+| 预览/提交 | 预览后撤权、目标变更、任务版本变更；旧摘要不授权 |
+| 幂等/事务 | 同身份并发、同键不同内容、绑定回滚、提交后回调丢失 |
+| 资源 | 跨组织/项目、手工指定、管理员无使用权、原始用户移除、设备撤销 |
+| 恢复 | Server 重启、节点重连、在途启动、停止不回应；不得重复启动或提前放锁 |
+| 合并 | 创建 Run 并发、跨线程/目标、超限、撤回、冻结后取消 |
+| GitHub | 错签名、重复乱序、安装撤销、旧 SHA 成功、限流、同步重启 |
+| Skills | 同版本换内容、篡改、路径逃逸/链接/碰撞、超限、旧节点、模型伪造回执 |
+| Squad | 伪造来源、计划变更、循环、自评审、重复终态、重复委派 |
+| 自动化 | epoch 失效、DST、错过计划、重复事件、规则编辑、人工暂停、游标缺口 |
+| 多端 | 旧 strict parser、能力未开、重连缓存、原生状态准确性 |
+
+数据库约束与竞态使用真实 PostgreSQL/PGlite 事务验证；节点进程与文件边界用实际节点验证。涉及执行的代码增量集成后运行仓库四项检查：
+
+~~~text
+npm run typecheck
+npm run build
+npm test -- --maxWorkers=2
+npm run test:e2e --workspace @artoo/web
+~~~
+
+POSIX、Windows、本机客户端和发布路径使用相应平台门禁。触及存储超时或清理时，另跑仓库规定的 preview-storage-timeout 父夹具，区分其故意失败的子案例和父验证结果。
+
+真实使用验收应分别记录不可变源码、配置和证据：两个人两台机器的授权/撤销；连续对话在重启后身份唯一；真实测试仓库 PR 新提交与安装撤销；固定 Skill 的真实受限读取和篡改阻塞；已有计划内委派与独立评审；周期规则重复触发、暂停和安静通知。受控模型夹具、真实 provider、平台签名和产品发布分别记账，不能互相代替。
+
+本次只有文档变更，检查文本、引用和范围；上面的代码门禁属于后续功能实现，不在文档中宣称已执行。
+
+## 14 迁移与发布
+
+新增 schema 与追加 SQL 迁移同批交付，实施时使用最新迁移号之后的编号，不预占编号或修改历史迁移。采用 expand-first，保持旧入口和旧普通任务兼容。
+
+历史所有权回填可重复、可审计，未知保持未知。先部署识别新能力的节点和服务端；旧节点可继续普通手工路径，要求新技能等能力的请求阻塞。各功能使用服务端开关，enforced 授权检查不能随 UI 关闭。
+
+回退以关闭新入口、暂停新规则和排空/保留在途请求为主，保留审计记录。升级后不直接启动不理解新授权的旧 Server。需要旧版本恢复时，使用匹配备份恢复到独立数据库或目录，并核对迁移后写入，不能只回退镜像。
+
+实际发布遵循既有不可变版本、加密备份、独立恢复验证、单所有者切换和健康检查流程；本方案不增加部署授权。
+
+观察指标包括预览差异、等待原因、意图到启动延迟、幂等命中、发送补偿、授权拒绝、停止未确认、GitHub 同步年龄、技能准备失败、委派耗尽和规则暂停。标签使用低基数原因码，不放正文、凭证或任意文件路径。
+
+## 15 设计收敛标准
+
+方案定型前逐项复核：现状与 main 一致；每个请求有唯一执行所有者和原始授权人；所有异步边界可恢复；等待、取消与撤权可解释；新增能力与旧入口兼容；数据/协议/API/代码落点一致；每个增量有明确退出条件；不把受控测试或外部 CI 当产品验证。
+
+实施前做两项有界技术验证：现有事务和锁顺序能否支持原子意图绑定；Codex/Claude 受限执行能否在源码外交付固定指令技能。失败时缩小该增量支持范围并写明原因，不能静默降级。
+
+## 16 依据
+
+竞品依据为已有《Multica 技术架构方案》《Paperclip 技术架构方案》及 Codex、Claude Code 架构图。它们是指定时点的分析资料；本文不复述未独立复核的星数、默认工具数或最新版本结论。
+
+- [Multica 仓库](https://github.com/multica-ai/multica)与[官方文档](https://multica.ai/docs)。
+- [Paperclip 仓库](https://github.com/paperclipai/paperclip)；分析资料重点涉及 durable continuation、heartbeat protocol 和 execution policy。
+- [项目开发约定](../AGENTS.md)、[项目 Squad](project-squads.md)、[Skill 发现](skills-discovery.md)、[资源生命周期](resource-lifecycle.md)。
+- [Agent Team 与验证边界](agent-team-development.md)、[Goal/Plan Web 入口](../apps/web/src/components/GoalsPage.tsx)。
+- [Assistant 服务](../apps/server/src/services/assistant-service.ts)、[任务生命周期](../apps/server/src/services/lifecycle-service.ts)、[GoalRunner](../apps/server/src/services/goal-automation-service.ts)。
+- [Scheduler](../apps/server/src/services/scheduler.ts)、[任务策略](../apps/server/src/services/task-execution-policy.ts)、[节点验证判定](../apps/server/src/services/verification-service.ts)。
+- [费用支持边界](../apps/server/src/services/budget-policy.ts)、[PostgreSQL 单所有者约束](../packages/storage/src/db/postgres-db-client.ts)、[数据库 schema](../packages/db/src/schema.ts)。
+- [节点协议](../packages/protocol/src/node-messages.ts)、[Web 查询键](../apps/web/src/app/queryKeys.ts)、[生产发布流程](github-actions-production-release.md)。
