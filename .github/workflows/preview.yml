@@ -64,11 +64,6 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
-      - run: npx playwright install chromium
-        working-directory: apps/web
-        env:
-          # Retain installation until the isolated complete lanes are validated.
-          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/artoo-vitest-installer-${{ github.run_id }}-${{ github.run_attempt }}
       - run: npm run build:preview
       - run: node scripts/ci-vitest-coverage.mjs record parallel-${{ matrix.shard }} artifacts/preview-gate/vitest
       # list --filesOnly records discovery, not Vitest's shard allocation. The
