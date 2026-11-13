@@ -144,6 +144,12 @@ C1 Memories 的六个端点原序移入 `memory-routes.ts`，保留普通列表 
 
 当前方案指定的 app 内联领域已逐项提取；schema 和其余大文件仍需按依赖/实际边界评估，不能仅按行数宣布整个 C1 完成。#88 远程 shared-checks、Mac desktop、必需 Windows/Linux 打包聚合等成功；iOS/第二个 Vitest 分片尚未完成，不视为该轮完整 CI 通过。#86 两个 Vitest 分片、进程分区和 shared 聚合已成功，iOS 尚未结束，最终统一验收仍待后续集成。
 
+C1 Memories 通过 [PR #93](https://github.com/Xiejiayun/artoo/pull/93) 合并为 `6b27005`（实现 `a206daf`），再次拉取 main 后评估并开始 schema 身份领域提取。
+
+C1 schema 首步将组织、用户、AI 同意、内容规则、成员限制和 Agent 六张表原样移入 `schema/identity.ts`，三种原有列构造函数移至内部 `schema/columns.ts`。`schema.ts` 原地 re-export，保留所有公开表声明与调用方路径；身份模块无 root 反向依赖。AST 比对确认六张表、三个构造函数及还原后的 schema 全部非 import 声明一致，没有 DDL 或迁移变更。
+
+本步根 typecheck、DB build、3 文件 staged 质量、Node 24 单 worker 的迁移/seed/AI 同意升级/认证/内容治理 5 文件 18 项通过。构建后的完整公开 schema 经真实 drizzle-kit 导出，与基线 119 张表、815 条 SQL 逐条一致（仅忽略语句顺序；模块提取确实改变输出顺序，最初原始文件 hash 比较因此失败，未将它写成字节一致）。定义摘要 `9df3a12e8e57d616595673f2543adfff64f78de1e3a3858ce61f93cf3b3dcc80`，证据 `.git/opt-c1-schema-identity-*`。迁移文件完全未变，不运行生产迁移；C1 其余表组/大文件边界仍待评估。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
