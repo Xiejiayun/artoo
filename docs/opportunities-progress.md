@@ -6,6 +6,7 @@
 
 | 编号 | 状态 | 范围与验证 |
 | --- | --- | --- |
+| X5 | 已实现并验证 | 全局命令面板、单项目实体检索、键盘与项目/路由联动，复用确认表单；根 typecheck、Web build、6 文件 64 项及真实 Chromium 连续两轮 6 项通过。[范围](command-palette.md)。 |
 | F1 | 已有能力，无需重复 | 方案已更正 DAG 证据门控结论，保留现有行为。 |
 | P4 | 已实现并验证 | 集中查询键，补齐 Goal 相关事件失效与项目订阅；自动化和静态发布轮询在线退避。应用发布保留 5 秒轮询及本地健康时效判断。根 typecheck、Web build 通过；完整 Web 单元/组件回归 60 文件、574 项通过；新增实时事件/退避回归所在两文件 23 项通过。 |
 | X2 | 已实现并验证 | 按当前项目任务 ID 关联组织级审批，徽标可筛选并打开真实任务（包含 ready 执行审批）；合并重复缓存记录，支持显示全部及审批清空状态。根 typecheck、Web build 通过；LeftRail/TaskList/WorkspaceLayout/ApprovalInbox 4 文件、15 项通过。 |
@@ -188,6 +189,16 @@ E3 增加 `test:unit`（domain/protocol/Web 单元及组件）和 `test:server`�
 
 实际执行新 `npm run test:unit -- --maxWorkers=2`，Node 24 的 Vitest 进程路径经 CIM 确认；136 文件、1,497 项全部通过，无跳过或未完成用例。JSON reporter 的实际文件集合与 discovery 一致（`.git/opt-e3-unit-tests.log`、`.git/opt-e3-unit-results.json`、`.git/opt-e3-inventory.log`）。staged 质量通过，未改测试原文或依赖。`test:server` 本步核对完整发现集合，尚未重新执行其全部 157 文件；最终全工作区门禁仍待后续集成。本机单位入口耗时 591.84 秒，没有同版本全量对照，因此不声称量化提速。
 
+E3 通过 [PR #102](https://github.com/Xiejiayun/artoo/pull/102) 合并为 `a826fef`（实现 `5a7d4e2`），拉取 main 后开展 X5。
+
+X5 增加 Header 命令按钮和 Ctrl/Command+K 面板，复用现有 Modal、查询缓存、项目订阅及真实创建/连接表单。项目选择仅改变搜索范围，执行结果时才同步项目与任务选择；按需读取单个项目的 Task/Goal/Channel，保留组织匹配、失败重试、移除项目/迟到响应隔离及 prepared Goal 限制。支持页面、项目、实体与 Agent History 导航，最多显示 50 条结果；确认表单前不写入。行为与范围见 [Global commands](command-palette.md)。
+
+初轮 Chromium 三项均失败：两项在导航尚未提交时打开面板，被随后提交的路由关闭；另一项暴露共享 Modal 将 `tabIndex=-1` 的结果按钮仍算作 Tab 边界。结果改为 combobox 持焦点的 listbox 选项；打开加入路由 transition，关闭只作用于前一已提交页面上原已打开的面板。布局 effect 单独调整仍有失败，临时诊断日志确认 URL 变化与 React 提交的先后；诊断源码已按字节恢复。并发导航单元回归在修复前明确失败，之后与焦点回归通过，没有放宽断言或测试期限。
+
+最终根 typecheck、Web build、6 文件 staged 质量及相关 6 测试文件 64 项通过（Node 24，单 worker；`.git/opt-x5-typecheck-final3.log`、`.git/opt-x5-web-build-final3.log`、`.git/opt-x5-quality-final3.log`、`.git/opt-x5-focused-tests-accepted.log`）。GoalsPage/ProductHeader 按 C4 全文件格式化；AST 复核只排除新增创建入口/效果，并规范化 React children 的相邻同文本字面量，其余发射 JS 结构一致。早期 NodeList 迭代、测试 fixture/选项类型错误以及缓存通知断言时序失败均已修正并保留原日志；不以初轮失败充当最终结果。
+
+最终 Chromium 3 场景连续两轮共 6 项通过，覆盖真实项目/Task/Goal/Channel/Agent 导航、表单前零写入与确认后各一次写入、Connect Local Node、抽屉冲突和实际 Tab/Escape。320×568 暗/亮及 1440×900 截图人工检查通过，列表和面板保持内部滚动、无横向溢出。证据 `.git/opt-x5-e2e-final.log`、`.git/opt-x5-e2e-final-environment.json`，HTML/截图目录 `apps/web/{playwright-report,test-results}/workflows-2026-11-13T21-07-39-308Z`；初轮、修复中失败及临时诊断保留各自日志。本项不替代最终统一 E2E、原生或 live Provider 验收。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
@@ -196,7 +207,7 @@ P5 通过 [PR #67](https://github.com/Xiejiayun/artoo/pull/67) 合并为 `53b1d5
 
 恢复预检通过 [PR #68](https://github.com/Xiejiayun/artoo/pull/68) 合并为 `a455704`（实现 `03546d9`）。
 
-X5 → F5 → C5 → E1 完整分区重验。C1 本轮选定的职责拆分与其余候选边界评估如上。F2 保留待实现/验收；E4 的最终版本验收与未就绪环境并行跟进。
+F5 → C5 → E1 完整分区重验。C1 本轮选定的职责拆分与其余候选边界评估如上。F2 保留待实现/验收；E4 的最终版本验收与未就绪环境并行跟进。
 
 所有条目仍须以最新源码复核适用性。E1 必须在无浏览器缓存的真实 Windows 分片通过后才移除安装步骤；iOS 原生验收需要 macOS；E4 产品发布需具备已授权的环境、凭据、受保护 Profile、健康标准和恢复方案。当前未执行新的产品发布，尚未运行最终统一 E2E。
 
