@@ -3,7 +3,7 @@ import { access, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PgliteDbClient } from "@artoo/storage";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 
 import { backupStorage, restoreStorage } from "./storage-operations.js";
 
@@ -40,7 +40,13 @@ it("restores multiple large artifacts intact and never publishes a late corrupt 
     const corrupt = await open(join(backup, "artifacts", last), "r+");
     try { await corrupt.write(Buffer.from([255]), 0, 1, 0); } finally { await corrupt.close(); }
     const unpublished = join(root, "corrupt-restore");
-    await expect(restoreStorage(backup, unpublished)).rejects.toThrow("checksum mismatch");
+    const databaseOpen = vi.spyOn(PgliteDbClient, "create");
+    try {
+      await expect(restoreStorage(backup, unpublished)).rejects.toThrow("checksum mismatch");
+      // Invalid attachment bytes must be rejected before starting a restored
+      // database, even when the bad entry follows several valid large files.
+      expect(databaseOpen.mock.calls.length).toBe(0);
+    } finally { databaseOpen.mockRestore(); }
     await expect(access(unpublished)).rejects.toMatchObject({ code: "ENOENT" });
     expect((await readdir(root)).some((name) => name.startsWith("corrupt-restore.partial-"))).toBe(false);
     // A failed later restore also cannot affect the already published one.
