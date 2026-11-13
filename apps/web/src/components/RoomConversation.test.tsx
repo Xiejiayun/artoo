@@ -30,7 +30,7 @@ describe("RoomConversation", () => {
     expect(screen.getByRole("status", { name: "Loading messages" })).toBeInTheDocument();
     await waitFor(() => expect(listMessages).toHaveBeenCalledOnce());
     await act(async () => { resolveMessages({ messages: [messageFixture({ id: "goal_message", kind: "text", body: "Goal planning is ready" })] }); });
-    expect(await screen.findByRole("region", { name: "Goal conversation", exact: true })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Goal conversation" })).toBeInTheDocument();
     expect(screen.getByText("Goal planning is ready")).toBeInTheDocument();
   });
 
