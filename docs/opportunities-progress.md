@@ -178,6 +178,10 @@ C2 将六组已确认同构的阶段停止等待移入 `createPendingStopRegistr
 
 本步根 typecheck、server build、3 文件 staged 质量及 AST 有界替换复核通过。Node 24 单 worker 的注册表/节点绑定/验证/分配/源码重放/预览回归 6 文件 86 项通过，包含最终 11 项注册表边界用例（`.git/opt-c2-stops-tests.log`）。真实 H7/H3 绑定基线两例通过；改动后首轮 H7 30 秒超时、H3 通过，保留 `.git/opt-c2-stops-source-tests.log`。临时诊断包装下 H7 单例通过，但未得到阶段慢因；包装已按字节恢复。未包装、未改断言和时限的原两例复核均通过（`.git/opt-c2-stops-source-recheck.log`，2 通过/183 未选）。这些结果不能证明首轮超时根因或完整跨节点长链通过，后续 E1/统一验收仍需覆盖。
 
+C2 通过 [PR #100](https://github.com/Xiejiayun/artoo/pull/100) 合并为 `5535d38`（实现 `b3d821f`），已再次拉取 main。
+
+C3 合并并排序 `app.ts`、`node-binding.ts`、`context-pack-service.ts` 的重复导入，按内置、外部、工作区、相对路径分组。分别从 50/64/17 条变为 49/43/15 条；每个导入的来源、别名、type/runtime 标记及全部非 import AST 与 `5535d38` 一致。当前 app 的尾部导入已在 C1 领域移动时消除，本次不虚构额外删除。按 C4 规则格式化触及的上下文文件，其余业务语句仅格式变化；根 typecheck、server build、3 文件 staged 质量及 Node 24 单 worker 的装配/认证/上下文/节点绑定 5 文件 18 项回归通过（`.git/opt-c3-imports-*`）。没有新增业务或性能收益声明；最终集成门禁仍待后续执行。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
