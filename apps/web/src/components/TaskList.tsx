@@ -15,6 +15,8 @@ export interface TaskListProps {
   onSelectTask: (taskId: string) => void;
   /** Optional title filter from the rail search box. */
   filter?: string;
+  /** Explicit task IDs, e.g. tasks referenced by pending approval records. */
+  taskIds?: ReadonlySet<string> | undefined;
 }
 
 function TaskRowsSkeleton(): React.ReactNode {
@@ -68,7 +70,7 @@ export const TASK_PAGE_SIZE = 50;
 /** Left-rail task list (#71). Projection of `listTasks`; rows show semantic
  *  status/priority badges, support selection + keyboard focus, and filter by a
  *  title query with a distinct empty-match state. */
-export function TaskList({ projectId, selectedTaskId, onSelectTask, filter = "" }: TaskListProps): React.ReactNode {
+export function TaskList({ projectId, selectedTaskId, onSelectTask, filter = "", taskIds }: TaskListProps): React.ReactNode {
   const api = useApi();
   const [visibleLimit, setVisibleLimit] = useState(TASK_PAGE_SIZE);
   const { data, isLoading, isError, refetch } = useQuery({
@@ -78,11 +80,11 @@ export function TaskList({ projectId, selectedTaskId, onSelectTask, filter = "" 
   const q = filter.trim().toLowerCase();
   useEffect(() => {
     setVisibleLimit(TASK_PAGE_SIZE);
-  }, [projectId, q]);
+  }, [projectId, q, taskIds]);
   const tasks = useMemo(() => {
     if (!data) return [];
-    return q === "" ? data.tasks : data.tasks.filter((t) => t.title.toLowerCase().includes(q));
-  }, [data, q]);
+    return data.tasks.filter((task) => (!taskIds || taskIds.has(task.id)) && (q === "" || task.title.toLowerCase().includes(q)));
+  }, [data, q, taskIds]);
   const visibleTasks = useMemo(() => {
     if (tasks.length <= visibleLimit) return tasks;
     const selectedIndex = selectedTaskId ? tasks.findIndex((t) => t.id === selectedTaskId) : -1;
@@ -109,7 +111,7 @@ export function TaskList({ projectId, selectedTaskId, onSelectTask, filter = "" 
     return <EmptyState icon={ListTodo} title="No tasks yet" description="Create a task to start tracking work." />;
   }
   if (tasks.length === 0) {
-    return <EmptyState icon={Search} title="No matching tasks" description={`No tasks match "${filter.trim()}".`} />;
+    return <EmptyState icon={Search} title="No matching tasks" description={q ? `No tasks match "${filter.trim()}".` : "No tasks have pending approvals."} />;
   }
 
   const remaining = tasks.length - visibleTasks.length;
