@@ -50,3 +50,13 @@ Node 24 第一分片报告 `preview-storage.test.ts` 四项中的第一项失败
 不改源码、断言或时限，直接用绝对 Node 24 路径聚焦复核 `server-entry.test.ts`，仍为 1 失败、1 通过，错误相同，实际退出 1（`.git/opt-e1-server-entry-recheck.log` / `.json`）。当前证据尚不能区分开发入口首次启动还是直接入口重开超时，也不能证明内部变慢的根因。
 
 脚本在第一分片失败后停止，第二分片、windows-process 分区和覆盖聚合未执行。安装步骤保持。完整冷缓存验证推迟到后续集成源码；仍须先解决 readiness 失败，再重新执行全部实际分区和覆盖核验。聚焦复核不能替代失败的完整运行。
+
+## 2026-11-14 启动诊断与 CI 隔离候选
+
+从 C5 合并后的 `d46efae2be7ca48cb598329b9c43025e5cdf538b` 开始，入口失败现在记录具体入口、已过时间、最近 stdout/stderr 和实际 exit/close 状态。原断言、30 秒 readiness、90 秒完整案例及清理规则保持。聚焦复核仍为 1 失败/1 通过，明确失败发生在 `dev-server.mjs` 首次启动，30 秒时无输出且进程存活；日志 `.git/opt-e1-entry-diagnostics.log` / `.json`。
+
+一个只添加委托计时的真实编译模块/持久化启动采样为 34.669 秒到监听：导入 15.054 秒、数据库创建约 9 秒、迁移约 9.1 秒，最后确认实际关闭并安全删临时根（`.git/opt-e1-startup-profile.log`）。它是单次诊断，不证明全部超时同因。曾尝试路由加载与数据库初始化并行，采样仍为 33.078 秒；四文件回归 21 通过/2 超时（入口和进程内配置启动），原断言/期限未改。该尝试及仅针对它的控制测试已撤回，main.ts 恢复基线字节；失败证据 `.git/opt-e1-startup-tests.*` 和 profile-overlap 日志保留。继续测量迁移执行，不把未稳定的尝试记为修复。
+
+CI 候选为两个 parallel 分片和 windows-process 各设置独立、原本不存在的 Playwright 路径，并由 [缓存观察器](../scripts/gates/ci-vitest-browser-cache.mjs)在实际测试前后核对缓存、解析的 Chromium executable 均不存在，输出绑定 commit/lane/Node 的 JSON。观察器不创建、删除或替换浏览器缓存；现有 Chromium 安装暂时放到另一个路径保留。实际 Node 24 / Windows CLI 的前后正向及已有目录、路径变化、缺少前记录、重复记录、提交不匹配共 5 个拒绝场景通过（`.git/opt-e1-cache-probe.log`）；这只是观察器验证，没有执行完整分区。
+
+后续须取得该候选的三个完整 lane、实际 JSON 文件覆盖聚合及前后缓存记录，全部通过后才删除两个 parallel 安装步骤。shared-checks 与实际原生/桌面浏览器安装继续保留。当前尚未完成该轮完整验证，也没有删除安装步骤。

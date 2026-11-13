@@ -215,6 +215,8 @@ C5 新增 [文档地图](INDEX.md)与[脚本地图](../scripts/README.md)，从 
 
 本机校验 156 个本地链接、docs 根目录全部 90 篇文档的索引覆盖、14 个真实 package 命令和 preview 的 --list 分支；实际 `npm run verify:preview -- --list` 与 diff whitespace 检查通过（`.git/opt-c5-links.log`、`.git/opt-c5-preview-list.log`）。纯文档不新增镜像测试；完整类型/构建/运行门禁留在最终集成执行。
 
+C5 通过 [PR #105](https://github.com/Xiejiayun/artoo/pull/105) 合并为 `d46efae`（实现 `4de1396`），已拉取最新 main 后开展 E1。新增入口诊断确定本机失败发生在开发入口首次启动；并行加载实验仍有超时，已撤回，不放宽原时限。完整冷缓存分区将由带前后缓存观察记录的实际 Windows CI 验证；安装步骤尚保留，当前并未完成 E1 或最终统一门禁。详见[追加的诊断与候选说明](ci-vitest-browser-validation-2026-11-13.md#2026-11-14-启动诊断与-ci-隔离候选)。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
