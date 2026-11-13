@@ -29,6 +29,7 @@ import { unsettledGoalRunIds, unsettledStandaloneExecutions } from "./execution-
 import { transitionTask } from "./transition-service.js";
 import { propagateBlocked } from "./dag-service.js";
 import { supportedGoalPolicy } from "./budget-policy.js";
+import { wakeGoalBudgetMonitors } from "./budget-monitor-wake.js";
 import { assertSupportedPlanTaskControls } from "./plan-policy.js";
 
 /**
@@ -401,7 +402,7 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
  */
 export async function acceptPlan(ctx: ServerContext, planId: string): Promise<MaterializeResult> {
   const now = ctx.clock.nowIso();
-  return ctx.db.transaction(async (tx) => {
+  const result = await ctx.db.transaction(async (tx) => {
     const lookup = (await tx.select({ goalId: plans.goalId }).from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId))))[0];
     if (!lookup) throw AppError.notFound(`plan not found: ${planId}`, { plan_id: planId });
     const goal = await requireGoalInOrg(ctx, tx, lookup.goalId);
@@ -481,11 +482,15 @@ export async function acceptPlan(ctx: ServerContext, planId: string): Promise<Ma
     );
     return materializeInTx(ctx, tx, planId, now);
   });
+  wakeGoalBudgetMonitors(ctx.db);
+  return result;
 }
 
 /** Standalone retry entry point: materialize an accepted+current plan in its own
  *  transaction (idempotent). */
 export async function materializePlan(ctx: ServerContext, planId: string): Promise<MaterializeResult> {
   const now = ctx.clock.nowIso();
-  return ctx.db.transaction((tx) => materializeInTx(ctx, tx, planId, now));
+  const result = await ctx.db.transaction((tx) => materializeInTx(ctx, tx, planId, now));
+  wakeGoalBudgetMonitors(ctx.db);
+  return result;
 }

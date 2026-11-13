@@ -22,6 +22,7 @@ import { createCheckpointInTx } from "./checkpoint-service.js";
 import { transitionTask } from "./transition-service.js";
 import { propagateBlocked } from "./dag-service.js";
 import { supportedGoalPolicy } from "./budget-policy.js";
+import { wakeGoalBudgetMonitors } from "./budget-monitor-wake.js";
 import { unsettledGoalRunIds, unsettledGoalExecutionCount } from "./execution-state.js";
 import { stopGoalImportedDesignContinuations } from "./imported-design-continuation-service.js";
 import { stopGoalImportedDesignReviews } from "./imported-design-review-service.js";
@@ -193,7 +194,7 @@ export async function transitionGoal(
   trigger: Parameters<typeof applyGoalTransition>[1],
 ): Promise<Goal | null> {
   const now = ctx.clock.nowIso();
-  await ctx.db.transaction(async (tx) => {
+  const enteredRunning = await ctx.db.transaction(async (tx) => {
     const row = (await tx.select().from(goals).where(and(eq(goals.id, id), eq(goals.organizationId, ctx.organizationId))).for("update"))[0];
     if (!row) return;
     const existing = mapGoal(row);
@@ -237,7 +238,9 @@ export async function transitionGoal(
         summary: trigger === "pause" ? "Goal paused" : "Goal resumed",
       });
     }
+    return to === "running";
   });
+  if (enteredRunning) wakeGoalBudgetMonitors(ctx.db);
   return getGoal(ctx, id);
 }
 
