@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -50,6 +50,10 @@ describe("AppRoutes", () => {
     renderWithProviders(<AppRoutes />, { client: appClient(), route: "/" });
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "artoo", level: 1 })).toBeInTheDocument();
+    const views = within(screen.getByRole("navigation", { name: "Project views" }));
+    expect(views.getByRole("link", { name: "Workspace" })).toHaveAttribute("aria-current", "page");
+    expect(views.getByRole("link", { name: "Board" })).not.toHaveClass("is-active");
+    expect(views.getAllByRole("link").filter((link) => link.hasAttribute("aria-current"))).toHaveLength(1);
   });
 
   it("routes skills to the backed manifest contract view", async () => {
@@ -62,7 +66,14 @@ describe("AppRoutes", () => {
 
   it("board card click selects the task and returns to the workspace detail", async () => {
     renderWithProviders(<AppRoutes />, { client: appClient(), route: "/board" });
+    const views = within(screen.getByRole("navigation", { name: "Project views" }));
+    expect(views.getByRole("link", { name: "Board" })).toHaveAttribute("aria-current", "page");
+    expect(views.getByRole("link", { name: "Workspace" })).not.toHaveClass("is-active");
     await userEvent.click(await screen.findByText("Build inbox"));
+    expect(await screen.findByRole("heading", { name: "Build inbox", level: 2 })).toBeInTheDocument();
+    expect(views.getByRole("link", { name: "Workspace" })).toHaveAttribute("aria-current", "page");
+    await userEvent.click(views.getByRole("link", { name: "Board" }));
+    await userEvent.click(views.getByRole("link", { name: "Workspace" }));
     expect(await screen.findByRole("heading", { name: "Build inbox", level: 2 })).toBeInTheDocument();
   });
 });

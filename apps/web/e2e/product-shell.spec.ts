@@ -12,17 +12,29 @@ test("project views, saved theme, and mobile navigation stay usable", async ({ p
   await page.screenshot({ path: testInfo.outputPath("projects-dark-desktop.png"), fullPage: true });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   const views = page.getByRole("navigation", { name: "Project views", exact: true });
-  for (const [label, pathname, heading] of [["Plan", "/goals", "Plan"], ["Board", "/board", /^Board/], ["Release", "/release", "Release"]] as const) {
+  for (const [label, pathname, heading] of [["Plan", "/goals", "Plan"], ["Workspace", "/", "artoo"], ["Board", "/board", /^Board/], ["Release", "/release", "Release"]] as const) {
     await views.getByRole("link", { name: label, exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`${pathname}(\\?.*)?$`));
     await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible();
     await expect(views.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(views.locator('[aria-current="page"]')).toHaveCount(1);
   }
   await page.getByRole("button", { name: "Switch to light theme" }).click();
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.screenshot({ path: testInfo.outputPath("release-light-desktop.png"), fullPage: true });
   await page.getByRole("button", { name: "Switch to dark theme" }).click();
+  for (const width of [320, 390, 1024, 1180, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const workspace = views.getByRole("link", { name: "Workspace", exact: true });
+    await workspace.focus();
+    await page.keyboard.press("Enter");
+    await expect(workspace).toHaveAttribute("aria-current", "page");
+    await expect(workspace).toBeInViewport();
+    await expect(views.getByRole("link", { name: "Board", exact: true })).not.toHaveClass(/is-active/);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    if (width === 320 || width === 1440) await page.screenshot({ path: testInfo.outputPath(`workspace-dark-${width}.png`), fullPage: true });
+  }
   await page.setViewportSize({ width: 390, height: 844 });
   await openSidebar(page);
   const primary = page.getByRole("navigation", { name: "Primary", exact: true });
