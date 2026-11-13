@@ -19,6 +19,8 @@ import {
 } from "@artoo/db";
 import {
   ID_PREFIXES,
+  MAX_MESSAGE_VISIBILITY_BATCH_LIMIT,
+  type MessageSyncCapabilitiesV1,
   deriveResourceLifecycle,
   type PreparedGoalEntryV1,
   type Agent,
@@ -56,6 +58,7 @@ import {
 
 export interface BootstrapResponse {
   goal_entry?: PreparedGoalEntryV1;
+  message_sync?: MessageSyncCapabilitiesV1;
   organization: { id: string; name: string };
   user: { id: string; email: string; display_name: string; role: string };
   projects: { id: string; name: string; default_workspace: string | null }[];
@@ -131,6 +134,7 @@ export async function bootstrap(ctx: ServerContext, isLive: (computerId: string)
   });
   return {
     ...(goalEntry ? { goal_entry: goalEntry } : {}),
+    message_sync: { version: 1, visibility_batch_limit: MAX_MESSAGE_VISIBILITY_BATCH_LIMIT },
     organization: { id: orgRow.id, name: orgRow.name },
     user: {
       id: userRow.id,

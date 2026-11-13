@@ -8,6 +8,7 @@
  */
 import type {
   PreparedGoalEntryV1,
+  MessageSyncCapabilitiesV1,
   ApplicationPublicationRequestV1, ApplicationPublicationReceiptV1, ApplicationPublicationObservationV1,
   Agent,
   AgentInstance,
@@ -46,6 +47,7 @@ export interface ApplicationPublicationView {
 
 export interface BootstrapResponse {
   goal_entry?: PreparedGoalEntryV1;
+  message_sync?: MessageSyncCapabilitiesV1;
   organization: { id: string; name: string };
   user: { id: string; email: string; display_name: string; role: string };
   projects: Array<{ id: string; name: string; default_workspace: string | null }>;

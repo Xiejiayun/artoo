@@ -78,7 +78,16 @@ describe("team content filtering and private reports", () => {
     const other = await post("/api/v1/channels", { project_id: "proj_artoo", name: "another-report-room" });
     expect((await post(`/api/v1/rooms/${other.json().channel.id}/messages/visibility`, { message_ids: [id] }, member)).json().removed_message_ids).toEqual([]);
     expect((await post(`/api/v1/rooms/${roomId}/messages/visibility`, { message_ids: [id, "unknown"] }, member)).json().removed_message_ids).toEqual([id]);
-    expect((await post(`/api/v1/rooms/${roomId}/messages/visibility`, { message_ids: Array(101).fill(id) }, member)).statusCode).toBe(400);
+    expect((await get("/api/v1/bootstrap", member)).json().message_sync).toEqual({ version: 1, visibility_batch_limit: 500 });
+    expect((await post(`/api/v1/rooms/${roomId}/messages/visibility`, { message_ids: Array(500).fill(id) }, member)).json().removed_message_ids).toEqual([id]);
+    expect((await post(`/api/v1/rooms/${roomId}/messages/visibility`, { message_ids: Array(501).fill(id) }, member)).statusCode).toBe(400);
+    const additional = Array.from({ length: 499 }, (_, index) => ({ id: `visibility_${index}`, organizationId: "org_default", roomId,
+      actorType: "user", actorId: "user_owner", kind: "text", body: index === 498 ? REMOVED_MESSAGE : "Ordinary message", createdAt: server.ctx.clock.nowIso(),
+      ...(index === 498 ? { moderatedAt: server.ctx.clock.nowIso(), moderatedByUserId: "user_owner" } : {}) }));
+    await server.db.db.insert(messages).values(additional);
+    const bulk = await post(`/api/v1/rooms/${roomId}/messages/visibility`, { message_ids: [id, ...additional.map((item) => item.id)] }, member);
+    expect(bulk.statusCode).toBe(200);
+    expect(new Set(bulk.json().removed_message_ids)).toEqual(new Set([id, "visibility_498"]));
   });
   it("pages personal and staff reports without losing older reports or exposing staff-only fields", async () => {
     for (let n = 0; n < 55; n++) {

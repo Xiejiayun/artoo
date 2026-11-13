@@ -1,4 +1,5 @@
 import { appendEvent, contentReports, contentRules, discussions, messages, notifications, organizations, rooms, users } from "@artoo/db";
+import { MAX_MESSAGE_VISIBILITY_BATCH_LIMIT } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
 import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import { requireAdministrator } from "../auth/request-auth.js";
@@ -116,8 +117,8 @@ export async function resolveContentReport(ctx: ServerContext, id: string, actio
 
 /** Reconcile already-loaded history after missed realtime events, without resending message bodies. */
 export async function messageVisibility(ctx: ServerContext, roomId: string, ids: unknown) {
-  if (!Array.isArray(ids) || ids.length > 100 || ids.some((id) => typeof id !== "string" || !id || id.length > 160)) {
-    throw AppError.validation("Select at most 100 message identifiers.");
+  if (!Array.isArray(ids) || ids.length > MAX_MESSAGE_VISIBILITY_BATCH_LIMIT || ids.some((id) => typeof id !== "string" || !id || id.length > 160)) {
+    throw AppError.validation(`Select at most ${MAX_MESSAGE_VISIBILITY_BATCH_LIMIT} message identifiers.`);
   }
   const room = (await ctx.db.db.select({ id: rooms.id }).from(rooms).where(and(eq(rooms.id, roomId), eq(rooms.organizationId, ctx.organizationId))))[0];
   if (!room) throw AppError.notFound("Room not found in this team.");

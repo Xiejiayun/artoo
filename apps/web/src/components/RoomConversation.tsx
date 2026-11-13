@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate } from "react-router-dom";
 import type { DiscussionGoalDraft } from "../app/discussionGoalDraft.js";
 import type { Member, Message } from "@artoo/domain";
+import { messageVisibilityBatchLimit } from "@artoo/domain";
 import { ArrowDown, AtSign, ChevronDown, MessageSquare, Send } from "lucide-react";
 import { ApiClientError } from "../api/client.js";
 import type { BootstrapResponse, MessagesResponse } from "../api/types.js";
@@ -60,8 +61,12 @@ export function RoomConversation({ roomId, projectId, taskId, goalId, threadRoot
         received = mergeMessages(received, latest.messages);
       }
       const trackedIds = [...new Set([...(cached?.messages ?? []).map((message) => message.id), ...received.map((message) => message.id), ...[threadRootId, hiddenMessageId].filter((id): id is string => !!id)])];
-      for (let start = 0; start < trackedIds.length; start += 100) {
-        await api.messageVisibility(roomId, trackedIds.slice(start, start + 100));
+      // Negotiate the additive capability; an old/unavailable bootstrap keeps
+      // the original 100-id wire contract. Reconcile every cached ID, including
+      // reconnects with an empty delta, and surface any failed batch as before.
+      const visibilityLimit = messageVisibilityBatchLimit(query.getQueryData<BootstrapResponse>(queryKeys.bootstrap)?.message_sync);
+      for (let start = 0; start < trackedIds.length; start += visibilityLimit) {
+        await api.messageVisibility(roomId, trackedIds.slice(start, start + visibilityLimit));
       }
       for (const id of [threadRootId, hiddenMessageId].filter((id): id is string => !!id)) {
         query.setQueryData<{ message: Message }>(["message", roomId, id], (current) => current && current.message.payload.moderation !== "removed"
