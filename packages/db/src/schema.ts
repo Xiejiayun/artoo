@@ -561,6 +561,7 @@ export const runs = pgTable("runs", {
     sql`${t.status} in ('queued','starting','running','awaiting_input','paused','completed','failed','cancelled')`,
   ),
   index("runs_task_status_created_idx").on(t.taskId, t.status, t.createdAt),
+  index("runs_agent_history_idx").on(t.organizationId, t.agentInstanceId, t.createdAt.desc(), t.id.desc()),
   check("runs_owned_result_assignment_chk", sql`${t.ownedResultAssignment} IS NULL OR
     (jsonb_typeof(${t.ownedResultAssignment}) = 'object' AND ${t.ownedResultAssignment} -> 'version' = '1'::jsonb
       AND ${t.workspaceAllocation} IS NOT NULL AND ${t.verificationRequirement} IS NULL) IS TRUE`),
@@ -850,6 +851,7 @@ export const eventLog = pgTable("event_log", {
 }, (t) => [
   index("event_log_correlation_idx").on(t.correlationId, t.occurredAt),
   index("event_log_task_idx").on(t.taskId, t.occurredAt),
+  index("event_log_run_history_idx").on(t.organizationId, t.runId, t.position.desc()),
   index("event_log_goal_idx").on(t.goalId, t.occurredAt),
   index("event_log_workspace_retention_run_idx").on(t.organizationId, t.runId, t.position.desc())
     .where(sql`${t.type} = 'run.workspace.retained'`),

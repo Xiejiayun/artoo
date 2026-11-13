@@ -1,4 +1,6 @@
 import { assertPreparedManualGoal } from "./config/goal-entry.js";
+import { AgentHistoryQuerySchema, AgentHistoryEventsQuerySchema } from "@artoo/domain";
+import { listAgentHistory, getAgentHistoryRun } from "./services/agent-history-service.js";
 import { goalCleanValidations, goalCleanValidationReviews } from "@artoo/db";
 import { registerContentModerationRoutes } from "./content-moderation-routes.js";
 import { createSourceLifecycleRegistry } from "./services/source-clean-lifecycle-service.js";
@@ -485,6 +487,17 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   app.get("/api/v1/agent-instances/presence", async (req) => ({
     presence: await presenceService.listAgentInstancePresence(rc(req), isLive),
   }));
+  app.get("/api/v1/agents/:id/history", async (req) => {
+    const parsed = AgentHistoryQuerySchema.safeParse(req.query);
+    if (!parsed.success) throw AppError.validation("Invalid history query", { issues: parsed.error.issues });
+    return listAgentHistory(rc(req), (req.params as { id: string }).id, parsed.data);
+  });
+  app.get("/api/v1/agents/:id/history/:runId", async (req) => {
+    const parsed = AgentHistoryEventsQuerySchema.safeParse(req.query);
+    if (!parsed.success) throw AppError.validation("Invalid history events query", { issues: parsed.error.issues });
+    const { id, runId } = req.params as { id: string; runId: string };
+    return getAgentHistoryRun(rc(req), id, runId, parsed.data);
+  });
   app.get("/api/v1/agent-instances/:id/presence", async (req, reply) => {
     const { id } = req.params as { id: string };
     const presence = await presenceService.agentInstancePresence(rc(req), id, isLive);
