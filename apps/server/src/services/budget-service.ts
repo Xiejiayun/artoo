@@ -18,6 +18,7 @@ import type { DrizzleDb } from "@artoo/storage";
 import type { ServerContext } from "../context.js";
 import { buildEvent } from "../events.js";
 import { createCheckpointInTx } from "./checkpoint-service.js";
+import { observeGoalBudgetActivity } from "./budget-monitor-wake.js";
 
 /**
  * Pause scheduling when elapsed/retry budgets are exceeded, while allowing
@@ -136,25 +137,70 @@ export async function enforceGoalBudget(ctx: ServerContext, goalId: string): Pro
   });
 }
 
-/** One bounded, non-overlapping scan for all organizations. Shutdown drains it. */
+/** Non-overlapping scans across organizations; active budgets keep the short cadence. */
 export function startGoalBudgetMonitor(ctx: ServerContext, options: {
   intervalMs?: number;
+  idleMaxIntervalMs?: number;
   onError?: (error: unknown) => void;
 } = {}): { stop: () => Promise<void> } {
+  const intervalMs = options.intervalMs ?? 1000;
+  const idleMaxIntervalMs = options.idleMaxIntervalMs ?? Math.max(intervalMs, 30_000);
+  if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0 || !Number.isSafeInteger(idleMaxIntervalMs) || idleMaxIntervalMs < intervalMs || idleMaxIntervalMs > 2_147_483_647) {
+    throw new RangeError("budget monitor intervals must be positive timer durations, with idle maximum >= interval");
+  }
   let inFlight: Promise<void> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
-  const scan = async (): Promise<void> => {
-    const running = await ctx.db.db.select({ id: goals.id, organizationId: goals.organizationId }).from(goals).where(eq(goals.status, "running"));
+  let wakePending = false;
+  let delay = intervalMs;
+  const scan = async (): Promise<boolean> => {
+    const running = await ctx.db.db.select({ id: goals.id, organizationId: goals.organizationId, budgets: goals.budgets, stopConditions: goals.stopConditions }).from(goals).where(eq(goals.status, "running"));
+    let active = false;
     for (const goal of running) {
       if (stopped) break;
+      const parsed = GoalBudgetsSchema.safeParse(goal.budgets ?? {});
+      // Bad legacy data still reaches the authoritative path and its error
+      // reporting. Concurrency-only/unlimited goals need no periodic usage scan.
+      const validStops = StopConditionsSchema.safeParse(goal.stopConditions ?? { rules: [] }).success;
+      if (parsed.success && validStops && parsed.data.max_elapsed_ms === null && parsed.data.max_retries === null) continue;
+      active = true;
       try { await enforceGoalBudget({ ...ctx, organizationId: goal.organizationId }, goal.id); }
       catch (error) { options.onError?.(error); }
     }
+    return active;
   };
-  const timer = setInterval(() => {
-    if (stopped || inFlight) return;
-    inFlight = scan().catch((error: unknown) => options.onError?.(error)).finally(() => { inFlight = undefined; });
-  }, options.intervalMs ?? 1000);
-  timer.unref();
-  return { stop: async () => { stopped = true; clearInterval(timer); await inFlight; } };
+  const schedule = (nextDelay: number): void => {
+    if (stopped) return;
+    if (timer !== undefined) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = undefined;
+      inFlight = scan().then(active => {
+        delay = active ? intervalMs : Math.min(delay * 2, idleMaxIntervalMs);
+      }).catch((error: unknown) => {
+        delay = intervalMs;
+        options.onError?.(error);
+      }).finally(() => {
+        inFlight = undefined;
+        const nextDelay = wakePending ? 0 : delay;
+        wakePending = false;
+        schedule(nextDelay);
+      });
+    }, nextDelay);
+    timer.unref();
+  };
+  const unobserve = observeGoalBudgetActivity(ctx.db, () => {
+    if (stopped) return;
+    delay = intervalMs;
+    // A start may commit while a scan awaits the database. Do not lose that
+    // wake, overlap the scan, or wait through its newly calculated idle delay.
+    if (inFlight) wakePending = true;
+    else schedule(0);
+  });
+  schedule(intervalMs);
+  return { stop: async () => {
+    stopped = true;
+    unobserve();
+    if (timer !== undefined) clearTimeout(timer);
+    await inFlight;
+  } };
 }
