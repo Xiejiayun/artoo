@@ -10,6 +10,8 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "vitest run",
+    "test:unit": "vitest run packages/domain packages/protocol apps/web",
+    "test:server": "vitest run apps/server",
     "typecheck": "tsc -b",
     "check:changed": "node scripts/check-changed.mjs",
     "check:staged": "biome check --staged --error-on-warnings --no-errors-on-unmatched",
