@@ -1,12 +1,13 @@
 import { PgliteDbClient } from "@artoo/storage";
 import { getTableName, is, sql } from "drizzle-orm";
-import { PgTable } from "drizzle-orm/pg-core";
+import { getTableConfig, PgTable } from "drizzle-orm/pg-core";
 import * as schema from "./index.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { loadMigrationStatements } from "./migrations.js";
 import { appendEvent } from "./event-writer.js";
-import { organizations, projects, runs, tasks } from "./schema.js";
+import { messages, organizations, projects, runs, tasks } from "./schema.js";
+import { seed } from "./seed.js";
 
 const NOW = "2026-06-13T00:00:00.000Z";
 
@@ -39,6 +40,49 @@ describe("db migrations", () => {
       sql`select 1 as ok from information_schema.tables where table_name = 'event_log'`,
     );
     expect(res.rows.length).toBe(1);
+  });
+
+  it("adds query indexes on upgrade without replacing data or migration history", async () => {
+    client = await PgliteDbClient.create();
+    const baseline = await loadMigrationStatements("0060_list_query_indexes.sql");
+    await client.migrate(baseline);
+    await seed(client, NOW);
+    await client.db.insert(tasks).values({ id: "task_existing", organizationId: "org_default", projectId: "proj_artoo", title: "Retain", status: "ready",
+      createdByType: "user", createdById: "user_owner", createdAt: NOW, updatedAt: NOW });
+    await client.db.execute(sql`INSERT INTO rooms (id,organization_id,task_id,type,name,created_at)
+      VALUES ('room_existing','org_default','task_existing','task','Retain',${NOW})`);
+    await client.db.insert(messages).values({ id: "message_existing", organizationId: "org_default", roomId: "room_existing", taskId: "task_existing",
+      actorType: "user", actorId: "user_owner", kind: "text", body: "Original evidence", createdAt: NOW });
+    await client.db.insert(runs).values({ id: "run_existing", organizationId: "org_default", taskId: "task_existing", computerId: "computer_local_mock",
+      agentInstanceId: "instance_mock_coder", runtimeId: "mock", status: "paused", createdAt: NOW });
+    const originalMessages = await client.db.select().from(messages);
+    const originalRuns = await client.db.select().from(runs);
+    const originalJournal = (await client.db.execute(sql`SELECT * FROM artoo_meta.migrations ORDER BY position`)).rows;
+    const all = await loadMigrationStatements();
+    expect(all.slice(0, baseline.length)).toEqual(baseline);
+    await client.migrate(all);
+    expect(await client.db.select().from(messages)).toEqual(originalMessages);
+    expect(await client.db.select().from(runs)).toEqual(originalRuns);
+    const journal = (await client.db.execute(sql`SELECT * FROM artoo_meta.migrations ORDER BY position`)).rows;
+    expect(journal.slice(0, originalJournal.length)).toEqual(originalJournal);
+    const indexes = (await client.db.execute(sql`SELECT indexname,indexdef FROM pg_indexes WHERE schemaname='public'
+      AND indexname IN ('messages_org_task_created_idx','runs_org_task_created_idx','runs_org_active_idx') ORDER BY indexname`)).rows;
+    expect(indexes).toEqual([
+      { indexname: "messages_org_task_created_idx", indexdef: "CREATE INDEX messages_org_task_created_idx ON public.messages USING btree (organization_id, task_id, created_at, id)" },
+      { indexname: "runs_org_active_idx", indexdef: "CREATE INDEX runs_org_active_idx ON public.runs USING btree (organization_id, computer_id, agent_instance_id) WHERE (status <> ALL (ARRAY['completed'::text, 'failed'::text, 'cancelled'::text]))" },
+      { indexname: "runs_org_task_created_idx", indexdef: "CREATE INDEX runs_org_task_created_idx ON public.runs USING btree (organization_id, task_id, created_at DESC, id DESC)" },
+    ]);
+    for (const [table, name, columns] of [
+      [messages, "messages_org_task_created_idx", ["organization_id", "task_id", "created_at", "id"]],
+      [runs, "runs_org_task_created_idx", ["organization_id", "task_id", "created_at", "id"]],
+      [runs, "runs_org_active_idx", ["organization_id", "computer_id", "agent_instance_id"]],
+    ] as const) {
+      const index = getTableConfig(table).indexes.find((entry) => entry.config.name === name)!;
+      expect(index.config.columns.map((column) => "name" in column ? column.name : null)).toEqual(columns);
+      expect(Boolean(index.config.where)).toBe(name === "runs_org_active_idx");
+    }
+    await client.migrate(all);
+    expect((await client.db.execute(sql`SELECT * FROM artoo_meta.migrations ORDER BY position`)).rows).toEqual(journal);
   });
 
   it("defaults run sequence to 0 rather than a global generated counter", async () => {

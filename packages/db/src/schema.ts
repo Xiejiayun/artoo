@@ -563,6 +563,9 @@ export const runs = pgTable("runs", {
   ),
   index("runs_task_status_created_idx").on(t.taskId, t.status, t.createdAt),
   index("runs_agent_history_idx").on(t.organizationId, t.agentInstanceId, t.createdAt.desc(), t.id.desc()),
+  index("runs_org_task_created_idx").on(t.organizationId, t.taskId, t.createdAt.desc(), t.id.desc()),
+  index("runs_org_active_idx").on(t.organizationId, t.computerId, t.agentInstanceId)
+    .where(sql`${t.status} not in ('completed', 'failed', 'cancelled')`),
   check("runs_owned_result_assignment_chk", sql`${t.ownedResultAssignment} IS NULL OR
     (jsonb_typeof(${t.ownedResultAssignment}) = 'object' AND ${t.ownedResultAssignment} -> 'version' = '1'::jsonb
       AND ${t.workspaceAllocation} IS NOT NULL AND ${t.verificationRequirement} IS NULL) IS TRUE`),
@@ -653,6 +656,7 @@ export const messages = pgTable("messages", {
   check("messages_moderation_pair_chk", sql`(${t.moderatedAt} is null) = (${t.moderatedByUserId} is null)`),
   check("messages_actor_type_chk", sql`${t.actorType} in ('user','agent','system','bridge')`),
   index("messages_room_created_idx").on(t.roomId, t.createdAt),
+  index("messages_org_task_created_idx").on(t.organizationId, t.taskId, t.createdAt, t.id),
   index("messages_room_position_idx").on(t.roomId, t.position),
   index("messages_thread_position_idx").on(t.threadRootId, t.position),
   unique("messages_client_request_unique").on(t.organizationId, t.roomId, t.actorType, t.actorId, t.clientRequestId),
