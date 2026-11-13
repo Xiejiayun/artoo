@@ -8,9 +8,13 @@ import { queryKeys } from "./queryKeys.js";
 export function usePreparedGoalPolling(): boolean {
   const client = useQueryClient();
   const subscribe = useCallback((changed: () => void) => client.getQueryCache().subscribe(changed), [client]);
-  const snapshot = useSyncExternalStore(subscribe, () => client.getQueryData<BootstrapResponse>(queryKeys.bootstrap), () => undefined);
-  const entry = PreparedGoalEntryV1Schema.safeParse(snapshot?.goal_entry);
-  return entry.success && entry.data.progress_updates === "polling";
+  // Subscribe to the mode, not the bootstrap object: unrelated query observer
+  // changes during a child render must not update the owning shell.
+  const snapshot = useCallback(() => {
+    const entry = PreparedGoalEntryV1Schema.safeParse(client.getQueryData<BootstrapResponse>(queryKeys.bootstrap)?.goal_entry);
+    return entry.success && entry.data.progress_updates === "polling";
+  }, [client]);
+  return useSyncExternalStore(subscribe, snapshot, () => false);
 }
 
 /** Goal, automation, release, checkpoint and conversation views already poll.

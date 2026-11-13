@@ -5,7 +5,7 @@ import { RouteErrorBoundary } from "../components/RouteErrorBoundary.js";
 import { BoardView } from "../components/BoardView.js";
 import { Nav } from "../components/Nav.js";
 import { WorkspaceLayout } from "../components/WorkspaceLayout.js";
-import { ConnectionStatus } from "../components/ConnectionStatus.js";
+import { ConnectionStatusBanner, ConnectionStatusIndicator, useConnectionStatus } from "../components/ConnectionStatus.js";
 import { GoalsPage } from "../components/GoalsPage.js";
 import { ChannelsPage } from "../components/ChannelsPage.js";
 import { ProductHeader } from "../components/ProductHeader.js";
@@ -29,6 +29,7 @@ const ReleasePage = lazyPage(() => import("../components/ReleasePage.js"), "Rele
  */
 export function AppRoutes(): React.ReactNode {
   const location = useLocation();
+  const connection = useConnectionStatus();
   const [menuOpen, setMenuOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(true);
   useEffect(() => {
@@ -55,8 +56,8 @@ export function AppRoutes(): React.ReactNode {
       <Nav onNavigate={() => setMenuOpen(false)} />
       {menuOpen && <button className="os-nav-backdrop" type="button" aria-label="Close navigation" onClick={() => setMenuOpen(false)} />}
       <div className="app-content">
-      <ProductHeader onToggleMenu={() => setMenuOpen(!menuOpen)} menuOpen={menuOpen} detailsOpen={detailsOpen} onToggleDetails={() => setDetailsOpen(!detailsOpen)} />
-      <ConnectionStatus />
+      <ProductHeader onToggleMenu={() => setMenuOpen(!menuOpen)} menuOpen={menuOpen} detailsOpen={detailsOpen} onToggleDetails={() => setDetailsOpen(!detailsOpen)} connectionIndicator={<ConnectionStatusIndicator state={connection} />} />
+      <ConnectionStatusBanner state={connection} />
       <main className="app-main" id="main-content">
         <RouteErrorBoundary resetKey={location.pathname}>
         <Suspense fallback={<div role="status" aria-live="polite" className="os-page-loading">Loading…</div>}>
