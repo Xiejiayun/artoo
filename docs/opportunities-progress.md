@@ -172,6 +172,12 @@ C1 artood 将三个纯上下文文本渲染函数移入内部 `process-adapter-c
 
 C1 已完成方案明确列出的 app 装配/领域路由和五个 schema 领域提取；schema 的设备/auth、Memory 和手动 Goal 小块保留原入口。已评估其余 artood 示例：node-client 已挂载各阶段专用客户端，而 product-source-runtime、product-release、verification 与进程控制中的私有 WeakMap 身份、预留、Profile/命令绑定和关闭确认跨函数共享；继续拆分需要新状态接口，并非独立纯移动。本轮只选择已证明独立的文本渲染，不按行数强拆这些授权边界。模块地图已补入项目 AGENTS.md；下一步处理 C2 中已确认同构的六组 pending-stop 管理，保留各阶段接收/鉴权差异。
 
+C1 上下文渲染通过 [PR #99](https://github.com/Xiejiayun/artoo/pull/99) 合并为 `90f1486`（实现 `1d4cbb5`），随后重新拉取 main 开展 C2。该实现版本的远程 shared-checks 实际 Web Chromium 51 项、认证 E2E 6 项通过，日志 `.git/opt-c1-final-remote-shared.log`（run 43497326659）；这些结果绑定该提交，不代表最终版本或全部平台 CI 通过。
+
+C2 将六组已确认同构的阶段停止等待移入 `createPendingStopRegistry`：共享同 ID 等待、原 15 秒期限、requestStop → dispatch → 合格关闭回执、失败传播及断连清理。各阶段查询/权限、结果校验和错误文字仍在原绑定；整个 receive 处理器 AST 一致，ACK 仍不能替代关闭。普通 Run、产品发布及应用发布停止保持各自语义，没有引入阶段授权配置表。另明确关闭后拒绝迟到的登记，避免断连后发送新 stop。尚未完成的 dispatch 继续真实等待，不因超时或断连伪造其完成。
+
+本步根 typecheck、server build、3 文件 staged 质量及 AST 有界替换复核通过。Node 24 单 worker 的注册表/节点绑定/验证/分配/源码重放/预览回归 6 文件 86 项通过，包含最终 11 项注册表边界用例（`.git/opt-c2-stops-tests.log`）。真实 H7/H3 绑定基线两例通过；改动后首轮 H7 30 秒超时、H3 通过，保留 `.git/opt-c2-stops-source-tests.log`。临时诊断包装下 H7 单例通过，但未得到阶段慢因；包装已按字节恢复。未包装、未改断言和时限的原两例复核均通过（`.git/opt-c2-stops-source-recheck.log`，2 通过/183 未选）。这些结果不能证明首轮超时根因或完整跨节点长链通过，后续 E1/统一验收仍需覆盖。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
