@@ -108,6 +108,14 @@ C1 领域路由第一步：11 个决策/交接/阻塞/等待关系端点从 `app
 
 补充历史平台证据：已下载的 F4 [run 43473093909](https://github.com/Xiejiayun/artoo/actions/runs/43473093909) iOS job 日志证实 `a161b708d3bcec40c6fdfe7f66f4280fb36c6f10` 的原生编译及 199 项 XCTest 单元测试通过，包含 P7 两个类型化通知回归和 F3 Release 展示/停止回归。该 job 随后在 core 浏览器健康旧断言处失败，整体仍失败；这补充先前 Windows 本地未运行 XCTest 的证据，不代表最终版本原生 UI、真机或真实 Provider 验收通过。
 
+C1 协作路由通过 [PR #87](https://github.com/Xiejiayun/artoo/pull/87) 合并为 `124dcc6`（实现 `7f531d4`）。该版本的 shared-checks 与 iOS 在静态契约检查处失败：固定源码清单漏了新拆出的协作模块，并非端点消失；日志 `.git/opt-c1-remote-shared-checks.log`、`.git/opt-c1-remote-ios.log`。后续 Goals 提取一并补齐清单并重跑，不能将远程失败写成成功。
+
+补充 #86 的完整 shared-checks 证据：远程实际 Web Chromium 51 项、认证 E2E 6 项均通过，日志 `.git/opt-integration-remote-shared-success.log`。对应版本仍是 `73d7a77`，不替代最终集成版本的统一门禁，也不代表其他平台 job 已通过。
+
+C1 Goals/Plans/Checkpoints 的 16 个端点原序移入 `goal-routes.ts`，仍在原 Fastify scope 注册，逐请求绑定用户上下文；保留取消流程的真实停止确认、断连失败处理和完成竞态。共享的可选 limit 校验原样移入无状态 `route-input.ts`。AST 比对确认所有处理器、停止流程、校验及还原后的 app 非 import 语句/公开签名一致；没有协议或数据库变化。
+
+本步根 typecheck、server build、4 文件 staged 质量、Node 24 单 worker 的 Goal/审计/预算/预配置提交 4 文件 43 项通过。真实 WebSocket 暂停/取消与离线重连边界另 2 项通过，同文件其余 8 项因聚焦选择未运行。iOS 静态契约清单加入协作和 Goals 模块，22 个请求样本/58 个端点检查通过；这是静态检查，非原生通过。证据 `.git/opt-c1-goals-*`，C1 其余领域路由继续逐项处理。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。

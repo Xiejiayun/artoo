@@ -97,6 +97,8 @@ const routeFiles = [
   "assistant-routes.ts",
   "channel-routes.ts",
   "discussion-routes.ts",
+  "collaboration-routes.ts",
+  "goal-routes.ts",
   "product-release-routes.ts",
   "application-publication-routes.ts",
 ];

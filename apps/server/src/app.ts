@@ -1,5 +1,6 @@
+import { registerGoalRoutes } from "./goal-routes.js";
+import { parseOptionalLimit } from "./route-input.js";
 import { wireNodeDispatch, wireRunDispatch } from "./node-dispatch-wiring.js";
-import { assertPreparedManualGoal } from "./config/goal-entry.js";
 import { AgentHistoryQuerySchema, AgentHistoryEventsQuerySchema } from "@artoo/domain";
 import { listAgentHistory, getAgentHistoryRun } from "./services/agent-history-service.js";
 import { registerContentModerationRoutes } from "./content-moderation-routes.js";
@@ -12,7 +13,6 @@ import {
   apiError,
   AssignRequestSchema,
   CreateDependencyRequestSchema,
-  CreateGoalRequestSchema,
   CreateTaskRequestSchema,
   type DevicePlatform,
   DevicePlatformSchema,
@@ -23,7 +23,6 @@ import {
   MemoryTransitionRequestSchema,
   type MemoryTrigger,
   ProposeMemoryRequestSchema,
-  ProposePlanRequestSchema,
   ResolveApprovalRequestSchema,
   RetryRequestSchema,
   ReviewRequestSchema,
@@ -45,7 +44,6 @@ import { registerDiscussionRoutes } from "./discussion-routes.js";
 import { registerGoalAutomationRoutes } from "./goal-automation-routes.js";
 import { registerProductReleaseRoutes } from "./product-release-routes.js";
 import { registerApplicationPublicationRoutes } from "./application-publication-routes.js";
-import { stopAutonomousGoalPlanning } from "./services/goal-automation-service.js";
 import { listDaemons } from "./services/daemon-service.js";
 import { registerApiAuthGuard, registerAuthRoutes, requestContext } from "./auth/auth-routes.js";
 import { AppError } from "./errors.js";
@@ -53,20 +51,16 @@ import { createClaimLimiter, DEFAULT_CLAIM_LIMIT, type ClaimLimiter } from "./cl
 import { registerIdempotency } from "./idempotency-middleware.js";
 import * as auditService from "./services/audit-service.js";
 import * as approvalService from "./services/approval-service.js";
-import * as checkpointService from "./services/checkpoint-service.js";
 import { registerCollaborationRoutes } from "./collaboration-routes.js";
 import * as dagService from "./services/dag-service.js";
 import * as deviceService from "./services/device-service.js";
-import * as goalService from "./services/goal-service.js";
 import { startGoalBudgetMonitor } from "./services/budget-service.js";
 import { recoverInterruptedRuns } from "./services/execution-recovery-service.js";
 import * as leaseService from "./services/lease-service.js";
 import * as lifecycle from "./services/lifecycle-service.js";
 import * as memoryService from "./services/memory-service.js";
 import * as messageService from "./services/message-service.js";
-import * as planService from "./services/plan-service.js";
 import * as presenceService from "./services/presence-service.js";
-import * as resumeService from "./services/resume-service.js";
 import * as runService from "./services/run-service.js";
 import * as runtimeRegistry from "./services/runtime-registry-service.js";
 import * as skillService from "./services/skill-service.js";
@@ -392,154 +386,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   registerCollaborationRoutes(app, ctx);
 
-  // V3 #115 — persistent goals: a goal owns a versioned plan that materializes
-  // into a task DAG. Human overrides (pause/resume/cancel) and plan accept/reject
-  // are thin handlers over goal-service / plan-service; all state transitions and
-  // the single-tx idempotent materialization live in the services.
-  app.post("/api/v1/goals", async (req, reply) => {
-    const parsed = CreateGoalRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw AppError.validation("invalid goal payload", { issues: parsed.error.issues });
-    }
-    assertPreparedManualGoal(rc(req), parsed.data.project_id);
-    const goal = await goalService.createGoal(rc(req), parsed.data);
-    void reply.status(201);
-    return { goal };
-  });
-  const parseOptionalLimit = (raw: string | undefined): number | undefined => {
-    if (raw === undefined || raw === "") return undefined;
-    const limit = Number(raw);
-    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
-      throw AppError.validation("limit must be an integer between 1 and 1000", { limit: raw });
-    }
-    return limit;
-  };
-
-  app.get("/api/v1/goals", async (req) => {
-    const query = req.query as { project_id?: string; status?: string; limit?: string };
-    return {
-      goals: await goalService.listGoals(rc(req), {
-        projectId: query.project_id,
-        status: query.status,
-        limit: parseOptionalLimit(query.limit),
-      }),
-    };
-  });
-  app.get("/api/v1/goals/:id", async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const goal = await goalService.getGoal(rc(req), id);
-    if (goal === null) {
-      void reply.status(404);
-      throw AppError.notFound(`goal not found: ${id}`);
-    }
-    return { goal };
-  });
-  for (const action of ["pause", "resume", "cancel"] as const) {
-    app.post(`/api/v1/goals/:id/${action}`, async (req, reply) => {
-      const { id } = req.params as { id: string };
-      const requestCtx = rc(req);
-      if (action === "cancel") await stopAutonomousGoalPlanning(requestCtx, id, stopProcess);
-      const goal =
-        action === "cancel"
-          ? await goalService.cancelGoal(requestCtx, id, async (runId) => {
-              const run = await runService.getRun(requestCtx, runId);
-              if (run.status === "cancelled" || run.status === "completed") return;
-              const binding = nodeRegistry.get(run.computer_id);
-              if (!binding)
-                throw AppError.conflict(
-                  "goal paused: an execution computer is offline; reconnect it and retry cancellation",
-                );
-              if (run.status === "failed" && run.failure_reason === "daemon_disconnect") {
-                await binding.dispatchRunStop(runId);
-                await runService.failRunDaemonDisconnect(requestCtx, runId, run.computer_id, true);
-              } else {
-                try {
-                  await runService.cancelRun(requestCtx, runId, () => binding.dispatchRunStop(runId));
-                } catch (error) {
-                  const latest = await runService.getRun(requestCtx, runId);
-                  if (!["completed", "cancelled", "failed"].includes(latest.status)) throw error;
-                }
-              }
-            })
-          : await (action === "pause" ? goalService.pauseGoal : goalService.resumeGoal)(requestCtx, id);
-      if (goal === null) {
-        void reply.status(404);
-        throw AppError.notFound(`goal not found: ${id}`);
-      }
-      return { goal };
-    });
-  }
-
-  app.post("/api/v1/goals/:id/plans", async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const parsed = ProposePlanRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw AppError.validation("invalid plan payload", { issues: parsed.error.issues });
-    }
-    const plan = await planService.proposePlan(rc(req), id, parsed.data);
-    void reply.status(201);
-    return { plan };
-  });
-  app.get("/api/v1/goals/:id/plans", async (req) => {
-    const { id } = req.params as { id: string };
-    return { plans: await planService.listPlans(rc(req), id) };
-  });
-  app.get("/api/v1/plans/:id", async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const plan = await planService.getPlan(rc(req), id);
-    if (plan === null) {
-      void reply.status(404);
-      throw AppError.notFound(`plan not found: ${id}`);
-    }
-    return { plan };
-  });
-  app.post("/api/v1/plans/:id/accept", async (req) => {
-    const { id } = req.params as { id: string };
-    const result = await planService.acceptPlan(rc(req), id);
-    return { plan: result.plan, task_ids: result.task_ids };
-  });
-  app.post("/api/v1/plans/:id/reject", async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const plan = await planService.rejectPlan(rc(req), id);
-    if (plan === null) {
-      void reply.status(404);
-      throw AppError.notFound(`plan not found: ${id}`);
-    }
-    return { plan };
-  });
-
-  // V3 #115 P2-S1 — goal checkpoints (read-only surface; checkpoints are written
-  // by the materialize / pause / resume hooks, never directly via the API).
-  app.get("/api/v1/goals/:id/checkpoints", async (req) => {
-    const { id } = req.params as { id: string };
-    return { checkpoints: await checkpointService.listCheckpoints(rc(req), id) };
-  });
-  app.get("/api/v1/goals/:id/audit-bundle", async (req) => {
-    const { id } = req.params as { id: string };
-    return { bundle: await auditService.getGoalAuditBundle(rc(req), id) };
-  });
-  app.get("/api/v1/goals/:id/audit-bundle/export", async (req) => {
-    const { id } = req.params as { id: string };
-    return { export: await auditService.exportGoalAuditBundle(rc(req), id) };
-  });
-  app.get("/api/v1/checkpoints/:id", async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const checkpoint = await checkpointService.getCheckpoint(rc(req), id);
-    if (checkpoint === null) {
-      void reply.status(404);
-      throw AppError.notFound(`checkpoint not found: ${id}`);
-    }
-    return { checkpoint };
-  });
-
-  // V3 #115 P2-S2 — reconcile a goal against its latest checkpoint (resume
-  // evaluation: continue/complete runs, open blockers for failed/stale runs, and
-  // re-derive the goal to blocked while active blockers exist). The daemon/restart
-  // auto-trigger + run.resume protocol are the separate S3 gate.
-  app.post("/api/v1/goals/:id/reconcile", async (req) => {
-    const { id } = req.params as { id: string };
-    return resumeService.reconcileGoalFromCheckpoint(rc(req), id);
-  });
+  registerGoalRoutes(app, ctx, nodeRegistry, stopProcess);
 
   // Revoke a device: both its credentials flip to revoked AND every live socket
   // (node + control) it holds is closed — revocation is immediate, not just a
