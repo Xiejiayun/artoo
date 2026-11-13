@@ -671,6 +671,8 @@ private struct WorkspaceSettingsView: View {
                 }
                 Section("Work") {
                     NavigationLink { WorkspaceListView(kind: .goals, client: container.client, projectId: container.projectId, embedded: true) } label: { Label("Goals", systemImage: "target") }
+                    NavigationLink { ReleaseGoalsView(client: container.client, projectId: container.projectId).id(container.projectId) } label: { Label("Release", systemImage: "shippingbox") }
+                        .accessibilityIdentifier("workspace.release.open")
                     NavigationLink { MentionsView(client: container.client) } label: {
                         VStack(alignment: .leading) {
                             Text(container.mentionsTitle)

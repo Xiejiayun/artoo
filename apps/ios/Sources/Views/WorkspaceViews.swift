@@ -286,6 +286,10 @@ struct GoalDetailView: View {
                     Text(goalGuidance(goal["status"].text)).font(.subheadline).foregroundStyle(.secondary)
                 }
                 Section("Outcome") { Text(goal["objective"].text).textSelection(.enabled) }
+                Section("Delivery") {
+                    NavigationLink("Publication status and health") { GoalReleaseView(client: model.client, goalId: goalId, projectId: projectId) }
+                        .accessibilityIdentifier("goal.release.\(goalId)")
+                }
                 if !goal["acceptance_criteria"].array.isEmpty {
                     Section("Success looks like") {
                         ForEach(Array(goal["acceptance_criteria"].array.enumerated()), id: \.offset) { _, item in

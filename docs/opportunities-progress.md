@@ -64,6 +64,10 @@ C4 通过 [PR #79](https://github.com/Xiejiayun/artoo/pull/79) 合并为 `b2c0f6
 
 E2 已实现 `verify:ios:suites -- --suites=core,mentions`：一次 preview 构建、聚合器统一生成 Xcode 工程，子进程校验 v1 源码与 pbxproj/共享 schemes 指纹后复用。保留独立夹具、逐套件 build-for-testing、准确 XCTest/结果聚合、超时、清理及证据目录。新增聚合/原生分阶段计时；Simulator 启动包含在 XCTest 耗时中，尚无独立 boot 测量。根 typecheck、契约/工程绑定/证据隔离/Simulator 选择 71 项及 staged 代码质量 8 文件通过；Windows CLI 3 场景验证正确选择与 fail-closed，不属于原生通过。Mac 原生与实际 CI 耗时仍待验收，未启用矩阵并行。[使用与计时范围](apple-client-e2e.md)。日志 `.git/opt-e2-final-tests.log`、`.git/opt-e2-typecheck.log`、`.git/opt-e2-quality.log`、`.git/opt-e2-cli.log`；完整统一门禁待全部集成后执行。
 
+E2 通过 [PR #80](https://github.com/Xiejiayun/artoo/pull/80) 合并为 `8068041`（实现 `3d37f84`）。
+
+F3 已补 Tasks → Goals、Goal/More → Release 和 Team → Agent History；分开静态/本地发布、健康时效、确认停止、按需分页与工具证据。根 typecheck、Windows 58 端点静态契约、12 个 Swift 文件语法和服务端 2 文件 16 项回归通过；新增 8 个 XCTest 尚未执行，原生类型检查、小屏交互和 E2E 仍待 Mac。[行为、证据与验收缺口](ios-release-history-2026-11-14.md)。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
@@ -72,6 +76,6 @@ P5 通过 [PR #67](https://github.com/Xiejiayun/artoo/pull/67) 合并为 `53b1d5
 
 恢复预检通过 [PR #68](https://github.com/Xiejiayun/artoo/pull/68) 合并为 `a455704`（实现 `03546d9`）。
 
-F3 → F4 → F2 → C1 → C2 → C3 → E3 → X5 → F5 → C5 → E1 完整分区重验。E4 的最终版本验收与未就绪环境并行跟进。
+F4 → F2 → C1 → C2 → C3 → E3 → X5 → F5 → C5 → E1 完整分区重验。E4 的最终版本验收与未就绪环境并行跟进。
 
 所有条目仍须以最新源码复核适用性。E1 必须在无浏览器缓存的真实 Windows 分片通过后才移除安装步骤；iOS 原生验收需要 macOS；E4 产品发布需具备已授权的环境、凭据、受保护 Profile、健康标准和恢复方案。当前未执行新的产品发布，尚未运行最终统一 E2E。

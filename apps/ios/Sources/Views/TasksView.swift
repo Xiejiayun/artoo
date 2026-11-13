@@ -4,6 +4,7 @@ import SwiftUI
 public struct TasksView: View {
     @StateObject private var model: TasksViewModel
     private let client: ApiClientProtocol
+    private let projectId: String
     @State private var showingCreate = false
     @State private var searchText = ""
     @State private var selectedStatusRaw = "all"
@@ -13,6 +14,7 @@ public struct TasksView: View {
 
     public init(client: ApiClientProtocol, projectId: String) {
         self.client = client
+        self.projectId = projectId
         _model = StateObject(wrappedValue: TasksViewModel(client: client, projectId: projectId))
     }
 
@@ -61,6 +63,11 @@ public struct TasksView: View {
                 TaskDetailView(client: client, taskId: task.id)
             }
             .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    NavigationLink { WorkspaceListView(kind: .goals, client: client, projectId: projectId, embedded: true) } label: {
+                        Label("Goals", systemImage: "target")
+                    }.accessibilityIdentifier("tasks.goals.open")
+                }
                 ToolbarItem(placement: .navigationBarLeading) {
                     Menu {
                         Button("All statuses") { selectedStatusRaw = "all" }
