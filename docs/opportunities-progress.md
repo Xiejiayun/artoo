@@ -102,6 +102,12 @@ P4/U2/X3 验收后续：真实服务端发布事件为 `product.release.queued/c
 
 iOS `--self-check` 最终 8 项通过，资源关闭、临时目录删除及源码稳定均为 true；检查实际三次进程贡献的上下文/归因、接受前零任务及接受后两任务/blocks 依赖。证据 `artifacts/ios/ui-harness-2026-11-13T18-34-26-311Z.html`，接受计划截图已检查。前一轮失败 JSON/截图另存 `artifacts/ios/attempts/2026-11-13T18-22-10-199Z-core-harness-failure`。这是浏览器 harness，不是原生或 live Provider 验收。日志 `.git/opt-integration-invalidation-red.log`、`.git/opt-integration-final-regression.log`、`.git/opt-integration-browser.log`、`.git/opt-integration-browser-health-final.log`、`.git/opt-integration-ios-harness.log`、`.git/opt-integration-final-typecheck.log`。
 
+集成验收后续通过 [PR #86](https://github.com/Xiejiayun/artoo/pull/86) 合并为 `fe5707c`（实现 `73d7a77`）。合并后的远程 postgres/changed/image/进程分区成功；两个 Vitest 分片、shared-checks、iOS 仍运行，Mac queued，不能视为完整 CI 通过。
+
+C1 领域路由第一步：11 个决策/交接/阻塞/等待关系端点从 `app.ts` 原序移入 `collaboration-routes.ts`，仍在原 Fastify scope 注册，沿用认证、幂等与逐请求 `requestContext`。AST 对比确认处理器、上下文绑定及还原装配后的所有非 import 代码/公开签名一致。根 typecheck、server build、2 文件 staged 质量、Node 24 单 worker 的协作 HTTP/服务/认证 3 文件 21 项通过（`.git/opt-c1-collaboration-*`）。不重复创建或改写领域契约/数据库；C1 其余领域路由仍继续逐个提取。
+
+补充历史平台证据：已下载的 F4 [run 43473093909](https://github.com/Xiejiayun/artoo/actions/runs/43473093909) iOS job 日志证实 `a161b708d3bcec40c6fdfe7f66f4280fb36c6f10` 的原生编译及 199 项 XCTest 单元测试通过，包含 P7 两个类型化通知回归和 F3 Release 展示/停止回归。该 job 随后在 core 浏览器健康旧断言处失败，整体仍失败；这补充先前 Windows 本地未运行 XCTest 的证据，不代表最终版本原生 UI、真机或真实 Provider 验收通过。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
