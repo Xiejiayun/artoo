@@ -61,6 +61,14 @@ struct TeamView: View {
                             }
                         }
                     }
+                    Section("Agent history") {
+                        ForEach(data["agents"].records) { agent in
+                            NavigationLink { AgentHistoryView(client: model.client, agentId: agent.id, projectId: container.projectId).id("\(agent.id):\(container.projectId)") } label: {
+                                Label(agent.title, systemImage: "clock.arrow.circlepath")
+                            }.accessibilityIdentifier("agent.history.open.\(agent.id)")
+                        }
+                        if data["agents"].records.isEmpty { Text("History appears after an agent is configured.").foregroundStyle(.secondary) }
+                    }
                     if let message = daemons.error ?? model.actionError { Text(message).foregroundStyle(.red) }
                 }
                 .listStyle(.insetGrouped)

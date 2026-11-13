@@ -856,6 +856,95 @@ final class ApiClientTests: XCTestCase {
         XCTAssertEqual(submissions, 1, "The read-retry path must not repeat the accepted command")
     }
 
+    @MainActor
+    func testNativeReleaseStopUsesOnlyApplicationRouteAndRetainsRetryKey() async throws {
+        var keys: [String?] = []
+        var denied = true
+        APIProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer control-secret")
+            if request.httpMethod == "POST" {
+                XCTAssertEqual(request.url?.path, "/api/v1/goals/goal/application-publication/stop")
+                keys.append(request.value(forHTTPHeaderField: "Idempotency-Key"))
+                if keys.count == 1 { return (409, Data(#"{"error":{"message":"Original publisher unavailable"}}"#.utf8)) }
+                return (200, Data(#"{"publication":{"id":"pub","goal_id":"goal","status":"published","current_state":"closed-normal","latest_observation":{"closure":{}}}}"#.utf8))
+            }
+            if request.url?.path.hasSuffix("/release") == true {
+                return (200, Data(#"{"release":{"id":"release","goal_id":"goal","status":"published"}}"#.utf8))
+            }
+            if keys.count > 1 && denied { return (401, Data(#"{"error":{"message":"Session expired"}}"#.utf8)) }
+            return (200, Data(#"{"publication":{"id":"pub","goal_id":"goal","status":"published","current_state":"healthy"}}"#.utf8))
+        }
+        let api = client(), local = ReleaseViewModel(client: api, goalId: "goal", kind: .application)
+        await local.load(); XCTAssertTrue(local.canStop)
+        await local.stop(); XCTAssertNotNil(local.stopError); XCTAssertTrue(local.canStop)
+        XCTAssertNotNil(local.stoppedAt)
+        await local.stop(); XCTAssertNil(local.stopError); XCTAssertFalse(local.canStop)
+        XCTAssertEqual(keys.count, 2); XCTAssertNotNil(keys[0]); XCTAssertEqual(keys[0], keys[1])
+        await local.load(); XCTAssertNotNil(local.syncError)
+        denied = false; await local.load(); XCTAssertNil(local.syncError)
+        let site = ReleaseViewModel(client: api, goalId: "goal", kind: .staticSite)
+        await site.load(); XCTAssertFalse(site.canStop); await site.stop()
+        XCTAssertEqual(keys.count, 2, "Static-site status must never invoke application stop")
+    }
+
+    @MainActor
+    func testHistoryPagesStayAgentProjectScopedAndRejectForeignIdentityWithoutDiscardingRows() async throws {
+        let fixture = try Data(contentsOf: XCTUnwrap(Bundle(for: ApiClientTests.self).url(forResource: "agent-history-page", withExtension: "json")))
+        var calls = 0
+        APIProtocol.handler = { request in
+            calls += 1
+            XCTAssertEqual(request.url?.path, "/api/v1/agents/agent_1/history")
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first { $0.name == "project_id" }?.value, "project +/=&?")
+            XCTAssertEqual(query?.first { $0.name == "limit" }?.value, "20")
+            if calls == 1 { return (200, fixture) }
+            XCTAssertEqual(query?.first { $0.name == "before_run_id" }?.value, "run_assigned")
+            return (200, Data(#"{"version":1,"agent_id":"foreign","runs":[],"next_before_run_id":null}"#.utf8))
+        }
+        let model = AgentHistoryViewModel(client: client(), agentId: "agent_1", mode: .executions(projectId: "project +/=&?"))
+        await model.refresh(); XCTAssertEqual(model.rows.map(\.id), ["run_assigned"]); XCTAssertTrue(model.hasMore)
+        await model.loadEarlier(); XCTAssertNotNil(model.error); XCTAssertEqual(model.rows.map(\.id), ["run_assigned"])
+        XCTAssertTrue(model.hasMore, "A failed older page must remain retryable")
+    }
+
+    @MainActor
+    func testAgentEventHistoryUsesPositionCursorAndPreservesToolPayload() async throws {
+        let fixture = try Data(contentsOf: XCTUnwrap(Bundle(for: ApiClientTests.self).url(forResource: "agent-history-detail", withExtension: "json")))
+        var calls = 0
+        APIProtocol.handler = { request in
+            calls += 1
+            XCTAssertEqual(request.url?.path, "/api/v1/agents/agent_1/history/run_assigned")
+            if calls == 1 || calls == 3 { return (200, fixture) }
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first { $0.name == "before" }?.value, "21")
+            var value = try JSONSerialization.jsonObject(with: fixture) as! [String: Any]
+            var events = value["events"] as! [[String: Any]]
+            events[0]["id"] = "event_20"; events[0]["position"] = 20
+            value["events"] = events; value["next_before"] = NSNull()
+            return (200, try JSONSerialization.data(withJSONObject: value))
+        }
+        let model = AgentHistoryViewModel(client: client(), agentId: "agent_1", mode: .events(runId: "run_assigned"))
+        await model.refresh(); XCTAssertEqual(model.rows.map(\.id), ["event_21"])
+        XCTAssertEqual(model.rows[0].value["payload"]["activity"]["operations"].array.first?["response"], .string("tests passed"))
+        await model.loadEarlier(); XCTAssertNil(model.error); XCTAssertFalse(model.hasMore)
+        XCTAssertEqual(model.rows.map(\.id), ["event_21", "event_20"])
+        await model.refresh(); XCTAssertEqual(model.rows.map(\.id), ["event_21"], "Explicit refresh resets the window to its latest page")
+    }
+
+    @MainActor
+    func testNativeHistoryRejectsMalformedAndNonadvancingPages() async throws {
+        let fixture = try Data(contentsOf: XCTUnwrap(Bundle(for: ApiClientTests.self).url(forResource: "agent-history-detail", withExtension: "json")))
+        var calls = 0
+        APIProtocol.handler = { _ in calls += 1; return (200, calls == 1 ? fixture : Data(#"{"version":1,"agent_id":"agent_1","execution":{"run":{"id":"run_assigned"}},"events":"unknown","next_before":null}"#.utf8)) }
+        let model = AgentHistoryViewModel(client: client(), agentId: "agent_1", mode: .events(runId: "run_assigned"))
+        await model.refresh(); await model.loadEarlier()
+        XCTAssertNotNil(model.error); XCTAssertEqual(model.rows.map(\.id), ["event_21"])
+        APIProtocol.handler = { _ in (200, fixture) }
+        await model.loadEarlier()
+        XCTAssertNotNil(model.error, "The same position cannot satisfy an older-page request")
+        XCTAssertEqual(model.rows.count, 1)
+    }
+
     private static func body(_ request: URLRequest) throws -> JSONValue {
         if let data = request.httpBody { return try JSONDecoder().decode(JSONValue.self, from: data) }
         guard let stream = request.httpBodyStream else { throw ApiError.decoding("Missing test body") }
