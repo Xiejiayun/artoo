@@ -56,6 +56,10 @@ P6 通过 [PR #77](https://github.com/Xiejiayun/artoo/pull/77) 合并为 `1e3ce4
 
 P7 已实现类型化通知分页，徽标和收件箱直接解码，保留会话/认证、分页、全收件箱未读数和未知/失败/零语义。Windows 22 个请求/53 端点静态契约与 5 个修改 Swift 文件语法检查通过。全仓 parser 的两个诊断在原始 main 同样复现；Xcode/XCTest 和原生验收未运行，仍有平台验证缺口。[记录](ios-notification-decoding-2026-11-14.md)。
 
+P7 通过 [PR #78](https://github.com/Xiejiayun/artoo/pull/78) 合并为 `93e5bb7`（实现 `938617f`）。原生运行缺口保留。
+
+C4 引入固定 Biome 2.6.6，按暂存/已提交差异提供格式与五条基础正确性检查，PR 工作流校验准确基线；只格式化新补全模块。根 typecheck、Web build、原输入区 2 文件 34 项回归、真实 Git 门禁 3 项及暂存 check/lint/format（各 5 文件）通过。缺失基线先由 Git 验证，避免工具本身成功空跑；无全仓格式化。[规则、命令与证据](code-quality.md)。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
@@ -64,6 +68,6 @@ P5 通过 [PR #67](https://github.com/Xiejiayun/artoo/pull/67) 合并为 `53b1d5
 
 恢复预检通过 [PR #68](https://github.com/Xiejiayun/artoo/pull/68) 合并为 `a455704`（实现 `03546d9`）。
 
-C4 → E2 → F3 → F4 → F2 → C1 → C2 → C3 → E3 → X5 → F5 → C5 → E1 完整分区重验。E4 的最终版本验收与未就绪环境并行跟进。
+E2 → F3 → F4 → F2 → C1 → C2 → C3 → E3 → X5 → F5 → C5 → E1 完整分区重验。E4 的最终版本验收与未就绪环境并行跟进。
 
 所有条目仍须以最新源码复核适用性。E1 必须在无浏览器缓存的真实 Windows 分片通过后才移除安装步骤；iOS 原生验收需要 macOS；E4 产品发布需具备已授权的环境、凭据、受保护 Profile、健康标准和恢复方案。当前未执行新的产品发布，尚未运行最终统一 E2E。
