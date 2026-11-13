@@ -72,9 +72,17 @@ F3 通过 [PR #81](https://github.com/Xiejiayun/artoo/pull/81) 合并为 `a904ed
 
 F4 已增加任务/Memory/消息服务端 q，定义字面子串、过滤后 limit、房间根/回复范围和查询绑定游标；Web 搜索独立缓存、历史分页、验证深链和移除同步。测量后追加 0062 消息正文及任务标题/描述 GIN 索引，PGlite 显式加载 pg_trgm；Memory 候选索引未稳定改善命中查询，因此不加入迁移。根 typecheck、server/Web build、搜索/迁移/存储/消息/Memory 5 文件 32 项、最终搜索/真实移除 2 文件 12 项、完整 Web 67 文件 630 项及 Chromium 2 项通过。浏览器实测修复频道隐藏搜索入口与弹窗/时间线重复 key；320px/桌面截图已检查，覆盖分页、旧回复跳转、实时移除、字面查询、失败重试与 Escape/焦点恢复。[契约、测量与局限](server-search.md)。独立 Postgres 与真实 Provider 验收未运行，最终统一门禁待全部集成。
 
-F4 通过 [PR #82](https://github.com/Xiejiayun/artoo/pull/82) 合并为 `7aff640`（实现 `a161b70`）。随后该 PR 的远程 changed、postgres、image job 成功；其余 job 尚未完成，不视为整个 CI 已通过。postgres job 不替代真实 Provider 或生产迁移验收。
+F4 通过 [PR #82](https://github.com/Xiejiayun/artoo/pull/82) 合并为 `7aff640`（实现 `a161b70`）。随后该 PR 的远程 changed、postgres、image、build、shared-windows-process 与必需 Windows/Linux 打包聚合成功；mac-desktop 失败，其他部分 job 尚未完成，不视为整个 CI 已通过。Mac 失败来自 packaged smoke 仍断言可见的 `Live updates connected` 文字，U3 后页面已有具名健康 status 状态点；日志 `.git/opt-f4-remote-mac-desktop.log`，待独立修复验收脚本并重新运行。postgres job 不替代真实 Provider 或生产迁移验收。
 
 F2 前置设计已明确 [计量契约与启用门槛](cost-metering-contract.md)：绑定执行/Provider 会话/Profile 的精确累计计量、revision/修正、事务幂等、unknown 与恢复、全部 Goal 阶段覆盖和“暂停后续调度”语义。当前 Codex 无费用、Claude 终态观测及旧 Usage upsert 均不足以提供该保证；保留拒绝 max_cost_usd，不将未知计为 0。**F2 实际计量/账本/成本准入/UI 尚未完成**，不能用设计文档标记该功能完成；缺少已验证的完整来源能力时继续其他独立项。
+
+F2 前置设计通过 [PR #83](https://github.com/Xiejiayun/artoo/pull/83) 合并为 `1e5b28f`（文档提交 `9ea3a6b`），当前行为回归 3 文件 25 项通过，不改变功能启用状态。
+
+C1 首步将 `app.ts` 的节点能力/分派装配移到 `node-dispatch-wiring.ts`；普通 Run 装配仍在原生命周期位置调用。保留 `??=` 自定义覆盖、每阶段原有查询/错误、当前节点会话解析和制品 store 身份。语法 Token 对比确认移出的语句及还原后的所有非 import 代码一致，公开 buildApp/options 签名不变；根 typecheck、server build、staged 代码质量 2 文件通过。此步不抽象授权/回执、不改路由或数据库；C1 的领域路由拆分仍待后续小步完成。
+
+C1 的 Node 26 五文件实验已失败并中止：其余四文件完整通过，整轮实际记录 110 通过、3 个跨节点长链案例 30 秒超时，126 项未完成；终止已核实、无子进程的自有内存 DB worker 另产生 1 个预期退出错误，未删除临时夹具。日志 `.git/opt-c1-dispatch-tests.log` 与失败明细 `.git/opt-c1-observed-failures.json` 保留。曾对该 worker 采样 7 秒，样本 `.git/opt-c1-worker.cpuprofile` 仅用于定位，不能用该轮量化性能或宣称整套通过。
+
+三个失败案例用 Node 24.22.1、单 worker、无采样复核为 1 通过/2 超时；未改动 `1e5b28f` 的原 app 源码基线对照为 2 通过/1 超时（H8 发布重试），本次提取后的文件已按字节恢复并再次通过语法对比。随后当前代码 H7 单例复核通过（1 项，184 项因聚焦选择未运行）。证据 `.git/opt-c1-node24-failed-cases.log`、`.git/opt-c1-main-baseline-cases.log`、`.git/opt-c1-node24-h7-recheck.log`。这证明 H8 超时也存在于基线，不能证明其慢因或完整跨节点验收通过；最终统一门禁仍须重跑，时限和断言均保持。
 
 ## 后续顺序
 
