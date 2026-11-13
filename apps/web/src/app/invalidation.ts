@@ -44,7 +44,12 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
   if (event.type === "message.mention" || event.type.startsWith("notification.")) keys.push(queryKeys.notifications);
   if (event.type.startsWith("computer.") || event.type.startsWith("daemon.") || event.type.startsWith("agent."))
     keys.push(queryKeys.daemons);
-  if (event.type.startsWith("goal.") || event.type.startsWith("plan.") || event.type.startsWith("checkpoint.")) {
+  if (
+    event.type.startsWith("goal.") ||
+    event.type.startsWith("plan.") ||
+    event.type.startsWith("checkpoint.") ||
+    event.type.startsWith("product.release.")
+  ) {
     keys.push(
       queryKeys.goals(),
       queryKeys.plans(),

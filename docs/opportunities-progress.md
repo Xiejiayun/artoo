@@ -94,6 +94,14 @@ F4 的远程 [run 43473093909](https://github.com/Xiejiayun/artoo/actions/runs/4
 
 恢复负向 harness 另 1 项通过（`.git/opt-health-recovery-failure.log`）：先完成真实持久化任务/消息/子进程制品，再故意选择非法浏览器通道；父测试核验子流程失败、实际关闭和删除、CLI exit 1。该结果不计为额外一次成功恢复演练。当前本轮日志还包括 `.git/opt-health-unit-tests-final.log`、`.git/opt-health-browser.log`、`.git/opt-health-ios-harness.log`、`.git/opt-health-quality-final.log`。
 
+健康状态脚本修复通过 [PR #85](https://github.com/Xiejiayun/artoo/pull/85) 合并为 `a4f0a59`（实现 `82f040d`）。Mac/iOS 原生远程结果仍须绑定后续版本检查。
+
+P4/U2/X3 验收后续：真实服务端发布事件为 `product.release.queued/completed/health`，原 P4 回归误用了不存在的 `goal.release.health`。先以实际名称复现 3 项失败，再加入发布事件缓存失效；真实 RealtimeProvider 回归同时验证在线退避及立即重读。发布健康 E2E 的独立服务器原未启动 publisher，补齐生产使用的真实 publisher，保留原断言/时限；这两处问题均有证据，不将夹具遗漏当作唯一产品缺陷。
+
+计划编辑 E2E 显式选择目标所属项目，避免共享服务器上其他场景新增项目改变默认选择，重载后同样重选；保存反馈定位应用级 Toast。iOS browser self-check 使用真实摘要控件展开代理配置与任务条件。根 typecheck、preview 构建、7 文件 staged 质量、2 文件 27 项单元/组件回归通过。首轮浏览器 8 通过/3 发布健康失败；启动真实 publisher 后发布健康 3 项全部通过（分阶段共 11 项，尚非完整统一 E2E）。修改测试的语法树比对确认，发布健康仅增加 publisher 启动，受信预览仅改变保存反馈位置，其余原始断言不变。
+
+iOS `--self-check` 最终 8 项通过，资源关闭、临时目录删除及源码稳定均为 true；检查实际三次进程贡献的上下文/归因、接受前零任务及接受后两任务/blocks 依赖。证据 `artifacts/ios/ui-harness-2026-11-13T18-34-26-311Z.html`，接受计划截图已检查。前一轮失败 JSON/截图另存 `artifacts/ios/attempts/2026-11-13T18-22-10-199Z-core-harness-failure`。这是浏览器 harness，不是原生或 live Provider 验收。日志 `.git/opt-integration-invalidation-red.log`、`.git/opt-integration-final-regression.log`、`.git/opt-integration-browser.log`、`.git/opt-integration-browser-health-final.log`、`.git/opt-integration-ios-harness.log`、`.git/opt-integration-final-typecheck.log`。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
