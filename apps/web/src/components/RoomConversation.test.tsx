@@ -23,6 +23,17 @@ function chatApi(overrides: Partial<ApiClient> = {}): ApiClient {
 afterEach(() => { localStorage.clear(); });
 
 describe("RoomConversation", () => {
+  it("renders a goal conversation after its initial message request completes", async () => {
+    let resolveMessages!: (page: MessagesResponse) => void;
+    const listMessages = vi.fn<ApiClient["listMessages"]>().mockImplementationOnce(() => new Promise((resolve) => { resolveMessages = resolve; }));
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" goalId="goal_1" />, { client: chatApi({ listMessages }) });
+    expect(screen.getByRole("status", { name: "Loading messages" })).toBeInTheDocument();
+    await waitFor(() => expect(listMessages).toHaveBeenCalledOnce());
+    await act(async () => { resolveMessages({ messages: [messageFixture({ id: "goal_message", kind: "text", body: "Goal planning is ready" })] }); });
+    expect(await screen.findByRole("region", { name: "Goal conversation", exact: true })).toBeInTheDocument();
+    expect(screen.getByText("Goal planning is ready")).toBeInTheDocument();
+  });
+
   it("offers only the conversation project's agents for execution", async () => {
     const data = bootstrapFixture();
     data.agents.push({ ...data.agents[0]!, id: "foreign_agent", display_name: "Other project agent" });

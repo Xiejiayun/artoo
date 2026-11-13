@@ -86,13 +86,7 @@ export function RoomConversation({ roomId, projectId, taskId, goalId, threadRoot
       has_more: page.has_more,
     })),
   });
-  if (messages.isLoading) return <RoomSkeleton />;
-  if (!messages.data) return <ErrorState title="Failed to load messages" action={<Button onClick={() => void messages.refetch()}>Retry</Button>} />;
-  const items = messages.data.messages;
-  const visibleCount = items.filter((item) => item.id !== hiddenMessageId).length;
   const identity = bootstrap.data;
-  const people = members.data?.members ?? (identity ? [{ id: identity.user.id, display_name: identity.user.display_name }] : []);
-  const storageKey = identity ? roomDraftKey(api.getStorageScope(), identity.organization.id, identity.user.id, roomId, threadRootId) : null;
   const canPlan = Boolean(allowGoalDraft && projectId && identity && !identity.goal_entry);
   const orgId = identity?.organization.id;
   const userId = identity?.user.id;
@@ -102,6 +96,12 @@ export function RoomConversation({ roomId, projectId, taskId, goalId, threadRoot
     const goalDraft: DiscussionGoalDraft = { version: 1, organizationId: orgId, userId, projectId, roomId, messageId: message.thread_root_id ?? message.id, objective: message.body };
     navigate("/goals", { state: { goalDraft } });
   }, [canPlan, navigate, orgId, projectId, roomId, userId]);
+  if (messages.isLoading) return <RoomSkeleton />;
+  if (!messages.data) return <ErrorState title="Failed to load messages" action={<Button onClick={() => void messages.refetch()}>Retry</Button>} />;
+  const items = messages.data.messages;
+  const visibleCount = items.filter((item) => item.id !== hiddenMessageId).length;
+  const people = members.data?.members ?? (identity ? [{ id: identity.user.id, display_name: identity.user.display_name }] : []);
+  const storageKey = identity ? roomDraftKey(api.getStorageScope(), identity.organization.id, identity.user.id, roomId, threadRootId) : null;
   return <section className="task-room conversation" aria-label={threadRootId ? "Thread replies" : goalId ? "Goal conversation" : taskId ? "Task conversation" : "Channel conversation"}>
     <header className="conversation__header"><h2><Icon icon={MessageSquare} size={15} />{threadRootId ? "Replies" : "Conversation"}</h2><span>{visibleCount} {threadRootId ? visibleCount === 1 ? "reply" : "replies" : visibleCount === 1 ? "message" : "messages"}</span></header>
     <ActionError error={messages.error ?? earlier.error} />
