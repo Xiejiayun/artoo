@@ -100,6 +100,7 @@ const routeFiles = [
   "collaboration-routes.ts",
   "goal-routes.ts",
   "device-routes.ts",
+  "task-routes.ts",
   "product-release-routes.ts",
   "application-publication-routes.ts",
 ];

@@ -122,6 +122,12 @@ C1 Devices 的七个端点及私有平台/IP/TTL 校验原样移入 `device-rout
 
 本步根 typecheck、server build、3 文件 staged 质量、iOS 22 请求/58 端点静态契约通过。Node 24 单 worker 的设备 HTTP、真实 node/control WebSocket 撤销、在线状态与完整配对连接流程 4 文件 26 项通过（`.git/opt-c1-devices-*`）；不涉及新协议、迁移或生产发布，最终统一验收仍待后续集成。
 
+C1 Devices 通过 [PR #89](https://github.com/Xiejiayun/artoo/pull/89) 合并为 `a105711`（实现 `e6bc414`），已再次拉取 main 后开展 Tasks/DAG 提取。远程 #86 的 Mac desktop 门禁已成功；iOS 与第二个 Vitest 分片尚未完成，不视为该轮完整 CI 通过。
+
+C1 Tasks/DAG 的 14 个端点原序移入 `task-routes.ts`，包含任务/审计读取、依赖增删、准备/分派/重试/评审及 fixed-input result 分派；原 `readBaseVersion` 私有校验一起移动，保持非法值拒绝、过期版本冲突及旧客户端无版本语义。bootstrap 仍在原装配位置，开发 mock 执行与 Run 取消保持独立。AST 比对确认全部处理器、校验和还原后 app 的非 import 语句/公开签名一致。
+
+本步根 typecheck、server build、3 文件 staged 质量、iOS 22 请求/58 端点静态契约通过。Node 24 单 worker 的 DAG 增删、OCC、节点 owned-result 绑定、并发快照和任务审计 6 文件 25 项通过，日志 `.git/opt-c1-tasks-*`。owned-result 是受控协议证据，不是实际 Provider/进程验证；最终统一门禁待其余独立项完成。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
