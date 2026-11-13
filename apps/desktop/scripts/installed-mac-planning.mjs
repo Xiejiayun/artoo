@@ -83,11 +83,13 @@ export async function runInstalledMacPlanning({ page, workspace, configurationPa
     stage = "create goal and start discussion through installed UI";
     await selectInstalledProject(page, "artoo", "plan");
     await page.getByRole("button", { name: "New goal", exact: true }).click();
-    await page.getByLabel("Goal title", { exact: true }).fill(`Installed Mac planning verification ${suffix}`);
-    await page.getByLabel("Objective", { exact: true }).fill("Discuss an implementation and its dependent verification; a human reviews the proposal before work is created.");
-    await page.getByLabel("Goal acceptance criteria", { exact: true }).fill(`${fixture.task_1_criterion}\n${fixture.task_2_criterion}`);
+    const goalForm = page.getByRole("dialog", { name: "New goal", exact: true });
+    await goalForm.getByText("Title & time budget · optional", { exact: true }).click();
+    await goalForm.getByLabel("Goal title", { exact: true }).fill(`Installed Mac planning verification ${suffix}`);
+    await goalForm.getByLabel("Objective", { exact: true }).fill("Discuss an implementation and its dependent verification; a human reviews the proposal before work is created.");
+    await goalForm.getByLabel("Goal acceptance criteria", { exact: true }).fill(`${fixture.task_1_criterion}\n${fixture.task_2_criterion}`);
     const createdGoal = responseTo("/goals");
-    await page.getByRole("button", { name: "Create goal", exact: true }).click();
+    await goalForm.getByRole("button", { name: "Create goal", exact: true }).click();
     const { goal } = await consume(createdGoal);
     fixture.goal_id = goal.id; fixture.goal_room_id = goal.room_id; fixture.project_id = goal.project_id;
     assert.ok(fixture.goal_room_id);
