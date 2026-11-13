@@ -7,6 +7,8 @@ import {
   ID_PREFIXES,
   RunAnswerPayloadSchema,
   RunUsagePayloadSchema,
+  RunActivityPayloadSchema,
+  type RunActivityPayload,
   RunWorkspaceRetainedPayloadSchema,
   StoredWorkspaceRetainedPayloadSchema,
   type ArtifactType,
@@ -147,7 +149,7 @@ export async function cancelRun(ctx: ServerContext, runId: string, stopProcess: 
 
 export type RunIngestEvent =
   | { kind: "lifecycle"; phase: "started" | "completed" | "failed" | "cancelled"; failureReason?: string }
-  | { kind: "output"; stream: "stdout" | "stderr"; text: string }
+  | { kind: "output"; stream: "stdout" | "stderr"; text: string; activity?: RunActivityPayload }
   | { kind: "answer"; text: string }
   | { kind: "usage"; usage: RunUsagePayload }
   | { kind: "workspace_retained"; retention: RunWorkspaceRetainedPayload }
@@ -479,7 +481,9 @@ async function ingestRunEventInternal(
         .onConflictDoUpdate({ target: runUsage.runId, set: measured });
       eventId = await emit("run.usage", { ...value });
     } else if (ev.kind === "output") {
-      eventId = await emit("run.output", { stream: ev.stream, text: ev.text });
+      const activity = ev.activity === undefined ? undefined : RunActivityPayloadSchema.safeParse(ev.activity);
+      if (activity && !activity.success) throw AppError.validation("invalid run activity");
+      eventId = await emit("run.output", { stream: ev.stream, text: ev.text, ...(activity?.success ? { activity: activity.data } : {}) });
     } else if (ev.kind === "artifact") {
       const storedArtifact = (await tx.select().from(artifacts).where(and(
         eq(artifacts.organizationId, ctx.organizationId), eq(artifacts.runId, env.runId), eq(artifacts.uri, ev.uri),
@@ -785,7 +789,7 @@ function mapRunEvent(message: RunEventMessage): IngestEnvelope | null {
   const body = message.event;
   let event: RunIngestEvent | null;
   if (body.type === "run.output") {
-    event = { kind: "output", stream: body.payload.stream, text: body.payload.text };
+    event = { kind: "output", stream: body.payload.stream, text: body.payload.text, ...(body.payload.activity ? { activity: body.payload.activity } : {}) };
   } else if (body.type === "run.answer") {
     event = { kind: "answer", text: body.payload.text };
   } else if (body.type === "run.usage") {

@@ -39,6 +39,33 @@ Existing output may contain provider tool logs; older runs without structured
 activity cannot retroactively gain missing tool details. Plain/custom runtimes
 provide output unless they explicitly emit the supported activity contract.
 
+## Operation capture
+
+`run.output.payload.activity` is optional and versioned (`version: 1`). Its
+`operations` array contains up to 64 observations, each with a provider `call_id`,
+`name`, `phase` (started, updated, completed or failed), optional request/response
+text and exit code. Request/response limits are 16,000/32,000 characters, with
+explicit truncation flags. `omitted_operations` reports an oversized batch.
+Provider-reported tool failure does not itself mean the overall run failed.
+
+Codex command, MCP, file-change and search items and Claude tool_use/tool_result
+blocks are normalized. Results retain their original call IDs even when the
+start record is missing. Plain/custom JSONL may explicitly emit
+`{ "type": "run.activity", "payload": { "version": 1, "operations": [...] } }`.
+Unrecognized formats retain their ordinary output; internal reasoning is not
+normalized as activity. This is diagnostic history, not provider API tracing.
+
+The configured provider key is redacted before bounding structured fields and
+before log transport, reusing the process adapter's existing credential handling.
+Do not deliberately include other credentials in tool inputs or output. The
+feature does not promise generic secret detection. Normal node output transport,
+receipt identity, reconnect replay and server deduplication apply to activity.
+Older nodes omit it; older servers can retain output without structured activity.
+Update server and nodes together to obtain structured history.
+
+Local validation uses controlled provider JSONL and real local subprocesses;
+it does not claim live-provider or native product-development acceptance.
+
 Migration 0059 adds indexes only and changes no historical rows. Existing storage
 backup/restore procedures apply; application rollback can leave these indexes in
 place. This feature does not execute destructive data migrations or deploy Artoo.

@@ -1,5 +1,6 @@
-import { RunAnswerPayloadSchema, RunUsagePayloadSchema, type RunUsagePayload } from "@artoo/domain";
+import { RunAnswerPayloadSchema, RunUsagePayloadSchema, type RunActivityPayload, type RunUsagePayload } from "@artoo/domain";
 import type { RunEvent } from "@artoo/protocol";
+import { createStructuredActivity } from "./structured-activity.js";
 
 export type ProcessOutputFormat = "plain" | "codex-json" | "claude-json";
 type RecordValue = Record<string, unknown>;
@@ -10,7 +11,8 @@ const record = (value: unknown): RecordValue | undefined => value !== null && ty
  * https://code.claude.com/docs/en/headless. Intermediate assistant/tool messages
  * remain audit output; only the terminal provider answer becomes room chat.
  */
-export function createStructuredOutput(format: ProcessOutputFormat) {
+export function createStructuredOutput(format: ProcessOutputFormat, sanitize?: (text: string) => string) {
+  const activity = createStructuredActivity(format, sanitize);
   let candidate: string | undefined;
   let answer: string | undefined;
   let usage: RunUsagePayload | undefined;
@@ -34,11 +36,12 @@ export function createStructuredOutput(format: ProcessOutputFormat) {
   }
 
   return {
-    consume(line: string): void {
+    consume(line: string): RunActivityPayload | undefined {
       let parsed: unknown;
       try { parsed = JSON.parse(line); } catch { return; }
       const event = record(parsed);
       if (!event) return;
+      const observed = activity(event);
       if (format === "codex-json") {
         if (event.type === "thread.started" && typeof event.thread_id === "string" && event.thread_id.length <= 500) sessionId = event.thread_id;
         const item = record(event.item);
@@ -55,12 +58,12 @@ export function createStructuredOutput(format: ProcessOutputFormat) {
         }
       } else if (format === "claude-json") {
         if (typeof event.session_id === "string" && event.session_id.length <= 500) sessionId = event.session_id;
-        if (event.type !== "result") return;
+        if (event.type !== "result") return observed;
         saveUsage(record(event.usage), event.total_cost_usd);
         if (event.is_error === true || (typeof event.subtype === "string" && event.subtype !== "success")) {
           failure = typeof event.result === "string" && event.result !== "" ? event.result : "provider reported a failed turn";
           answer = undefined;
-          return;
+          return observed;
         }
         const valid = RunAnswerPayloadSchema.safeParse({ text: event.result });
         if (valid.success) answer = valid.data.text;
@@ -76,6 +79,7 @@ export function createStructuredOutput(format: ProcessOutputFormat) {
           if (valid.success) usage = valid.data;
         }
       }
+      return observed;
     },
     finish(success: boolean): RunEvent[] {
       const events: RunEvent[] = [];

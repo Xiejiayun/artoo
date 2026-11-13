@@ -8,6 +8,7 @@
  * redefines them, so run.start / run.event have a single source of truth.
  */
 import { z } from "zod";
+import { RunActivityPayloadSchema } from "./run-activity.js";
 
 import { ContextPackSchema } from "./context-pack.js";
 import { WorkspaceAllocationRecordSchema } from "./workspace-allocation.js";
@@ -74,6 +75,7 @@ export type RunStopPayload = z.infer<typeof RunStopPayloadSchema>;
 export const RunOutputPayloadSchema = z.object({
   stream: z.enum(["stdout", "stderr"]),
   text: z.string(),
+  activity: RunActivityPayloadSchema.optional(),
 });
 export type RunOutputPayload = z.infer<typeof RunOutputPayloadSchema>;
 

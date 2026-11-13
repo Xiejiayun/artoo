@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { buildTestServer, type TestServer } from "./test-support.js";
 import { getAgentHistoryRun, listAgentHistory } from "./services/agent-history-service.js";
-import { ingestRunEvent } from "./services/run-service.js";
+import { ingestRunEvent, ingestWireRunEvent } from "./services/run-service.js";
 
 let server: TestServer;
 beforeEach(async () => { server = await buildTestServer(); });
@@ -100,4 +100,19 @@ it("retains failed execution reasons and requires authentication when enabled", 
     expect((await authenticated.app.inject({ method: "GET", url: base })).statusCode).toBe(401);
     expect((await authenticated.app.inject({ method: "GET", url: `${base}/${run.id}` })).statusCode).toBe(401);
   } finally { await authenticated.close(); }
+});
+
+it("persists activity through qualified wire ingest and rejects changed replay bodies or another node", async () => {
+  const run = await execution("Tool history");
+  const activity = { version: 1, operations: [{ call_id: "call_1", name: "Bash", phase: "failed", request: "npm test", response: "assertion failed", exit_code: 1 }] };
+  const frame = { kind: "run.event", node_id: run.computer_id, run_id: run.id, sequence: 20,
+    event: { type: "run.output", payload: { stream: "stdout", text: "provider tool record", activity } } };
+  expect(await ingestWireRunEvent(server.ctx, frame)).toMatchObject({ deduped: false });
+  expect(await ingestWireRunEvent(server.ctx, frame)).toMatchObject({ deduped: true });
+  await expect(ingestWireRunEvent(server.ctx, { ...frame, event: { ...frame.event, payload: { ...frame.event.payload, activity: { ...activity, operations: [{ ...activity.operations[0], response: "changed" }] } } } })).rejects.toThrow("body mismatch");
+  await expect(ingestWireRunEvent(server.ctx, { ...frame, node_id: "foreign_node", sequence: 21 })).rejects.toThrow("not owned");
+  const detail = AgentHistoryDetailSchema.parse((await server.app.inject({ method: "GET", url: `${base}/${run.id}` })).json());
+  const entries = detail.events.filter(event => event.sequence === 20);
+  expect(entries).toHaveLength(1);
+  expect(entries[0]?.payload.activity).toEqual(activity);
 });

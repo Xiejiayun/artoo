@@ -343,6 +343,33 @@ describe("createProcessAdapter", () => {
       }
     } finally { vi.unstubAllEnvs(); rmSync(ws, { recursive: true, force: true }); }
   });
+  it("captures redacted bounded tool activity from an actual child process", async () => {
+    const ws = makeWorkspace();
+    const secret = 'tool-"private"-key';
+    vi.stubEnv("ARTOO_CODEX_PROVIDER_KEY", secret);
+    try {
+      const script = `const key=process.env.ARTOO_CODEX_PROVIDER_KEY; console.log(JSON.stringify({type:'item.started',item:{id:'cmd1',type:'command_execution',command:'echo '+key,status:'in_progress'}})); console.log(JSON.stringify({type:'item.completed',item:{id:'cmd1',type:'command_execution',command:'echo '+key,aggregated_output:'x'.repeat(31998)+key,exit_code:1,status:'failed'}}));`;
+      const adapter = createProcessAdapter({ command: [process.execPath, "-e", script], outputFormat: "codex-json", allowedRoots: [ws] });
+      const events = await drain(adapter.streamEvents(await adapter.start(makeConfig(ws))));
+      const observations = events.flatMap(event => event.type === "run.output" ? event.payload.activity?.operations ?? [] : []);
+      expect(observations).toHaveLength(2);
+      expect(observations[0]).toMatchObject({ call_id: "cmd1", phase: "started", request: "echo [redacted]" });
+      expect(observations[1]).toMatchObject({ call_id: "cmd1", phase: "failed", exit_code: 1, response_truncated: true });
+      expect(observations[1]!.response).toHaveLength(32_000);
+      expect(JSON.stringify(events)).not.toContain("private");
+      expect(events.at(-1)).toMatchObject({ type: "run.lifecycle", payload: { phase: "completed" } });
+    } finally { vi.unstubAllEnvs(); rmSync(ws, { recursive: true, force: true }); }
+  });
+  it("keeps large tool batches within the existing transport bound", async () => {
+    const ws = makeWorkspace();
+    try {
+      const script = `console.log(JSON.stringify({type:'assistant',message:{content:Array.from({length:20},(_,i)=>({type:'tool_use',id:'call'+i,name:'Read',input:{text:'中'.repeat(16000)}}))}}));`;
+      const adapter = createProcessAdapter({ command: [process.execPath, "-e", script], outputFormat: "claude-json", allowedRoots: [ws] });
+      const events = await drain(adapter.streamEvents(await adapter.start(makeConfig(ws))));
+      expect(events.flatMap(event => event.type === "run.output" ? event.payload.activity?.operations ?? [] : [])).toHaveLength(20);
+      for (const event of events) expect(Buffer.byteLength(JSON.stringify(event))).toBeLessThanOrEqual(1024 * 1024);
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+  });
   it("refuses discussion before writing context when the custom runtime has no restricted command", async () => {
     const ws = makeWorkspace();
     try {
