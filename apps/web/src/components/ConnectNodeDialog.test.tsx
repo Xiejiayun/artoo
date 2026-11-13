@@ -42,6 +42,7 @@ describe("one-command machine connection", () => {
     expect(listDaemons).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Copy command" }));
     expect(copy).toHaveBeenCalledWith(daemonConnectCommand(window.location.origin, "ABCD-1234", "linux"));
+    expect((await screen.findByText("Connection command copied.")).closest('[role="status"]')).toBeInTheDocument();
     copy.mockRestore();
   });
 

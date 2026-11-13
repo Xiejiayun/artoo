@@ -6,7 +6,7 @@ import { CAPABILITIES, type Capability, type CreateTaskRequest, type Task } from
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
-import { Button, Input, Modal, Select, Textarea } from "../ui/index.js";
+import { Button, Input, Modal, Select, Textarea, useToast } from "../ui/index.js";
 import { ListTodo, Plus } from "../ui/Icon.js";
 import { CAPABILITY_LABELS, PRIORITY_LABELS } from "./taskPresentation.js";
 import "../ui/work-management.css";
@@ -25,6 +25,7 @@ export function CreateTaskModal({
 }: CreateTaskModalProps): React.ReactNode {
   const api = useApi();
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [criteria, setCriteria] = useState("");
@@ -41,6 +42,7 @@ export function CreateTaskModal({
   const mutation = useMutation({
     mutationFn: (request: CreateTaskRequest) => api.createTask(request, newIdempotencyKey()),
     onSuccess: async (response) => {
+      toast.push({ tone: "success", message: "Task created." });
       await queryClient.invalidateQueries({ queryKey: queryKeys.tasks(projectId) });
       onCreated?.(response.task.id);
       onClose();

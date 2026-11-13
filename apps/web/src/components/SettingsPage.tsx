@@ -10,7 +10,7 @@ import { queryKeys } from "../app/queryKeys.js";
 import { usePollMs } from "../app/RealtimeContext.js";
 import { useProject } from "../app/useProject.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
-import { Badge, Button, EmptyState, Input, Modal, Select } from "../ui/index.js";
+import { Badge, Button, EmptyState, Input, Modal, Select, useToast } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
 import { AIDataSharingSettings } from "./AIDataSharing.js";
 import { DesktopSettings } from "./DesktopSetup.js";
@@ -74,10 +74,11 @@ export function SettingsPage(): React.ReactNode {
 
 function ProjectForm({ project, onSaved, onClose }: { project?: { id: string; name: string; default_workspace: string | null }; onSaved: (id: string) => void; onClose?: () => void }): React.ReactNode {
   const api = useApi();
+  const toast = useToast();
   const query = useQueryClient();
   const [name, setName] = useState(project?.name ?? "");
   const [workspace, setWorkspace] = useState(project?.default_workspace ?? "");
-  const mutation = useMutation({ mutationFn: () => project ? api.updateProject(project.id, { name: name.trim(), default_workspace: workspace.trim() || null }, newIdempotencyKey()) : api.createProject({ name: name.trim(), default_workspace: workspace.trim() || null }, newIdempotencyKey()), onSuccess: async ({ project: saved }) => { await query.invalidateQueries({ queryKey: queryKeys.bootstrap }); onSaved(saved.id); } });
-  const form = <form aria-label={project ? "Edit project" : "Create project"} className="u-stack settings-project-form" onSubmit={(event) => { event.preventDefault(); if (!mutation.isPending && name.trim()) mutation.mutate(); }}><Input label="Project name" value={name} required maxLength={200} disabled={mutation.isPending} onChange={(event) => setName(event.target.value)} /><Input label="Default workspace" value={workspace} disabled={mutation.isPending} helperText="Absolute path on the execution computer" onChange={(event) => setWorkspace(event.target.value)} /><ActionError error={mutation.error} />{mutation.isSuccess && <p role="status">Project saved.</p>}<div className="action-row"><Button variant="primary" type="submit" loading={mutation.isPending} disabled={!name.trim()}>{project ? "Save project" : "Create project"}</Button>{onClose && <Button disabled={mutation.isPending} onClick={onClose}>Cancel</Button>}</div></form>;
+  const mutation = useMutation({ mutationFn: () => project ? api.updateProject(project.id, { name: name.trim(), default_workspace: workspace.trim() || null }, newIdempotencyKey()) : api.createProject({ name: name.trim(), default_workspace: workspace.trim() || null }, newIdempotencyKey()), onSuccess: async ({ project: saved }) => { toast.push({ tone: "success", message: "Project saved." }); await query.invalidateQueries({ queryKey: queryKeys.bootstrap }); onSaved(saved.id); } });
+  const form = <form aria-label={project ? "Edit project" : "Create project"} className="u-stack settings-project-form" onSubmit={(event) => { event.preventDefault(); if (!mutation.isPending && name.trim()) mutation.mutate(); }}><Input label="Project name" value={name} required maxLength={200} disabled={mutation.isPending} onChange={(event) => setName(event.target.value)} /><Input label="Default workspace" value={workspace} disabled={mutation.isPending} helperText="Absolute path on the execution computer" onChange={(event) => setWorkspace(event.target.value)} /><ActionError error={mutation.error} /><div className="action-row"><Button variant="primary" type="submit" loading={mutation.isPending} disabled={!name.trim()}>{project ? "Save project" : "Create project"}</Button>{onClose && <Button disabled={mutation.isPending} onClick={onClose}>Cancel</Button>}</div></form>;
   return onClose ? <Modal open title="New project" onClose={() => { if (!mutation.isPending) onClose(); }}>{form}</Modal> : form;
 }

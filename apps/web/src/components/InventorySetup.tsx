@@ -6,7 +6,7 @@ import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { useProject } from "../app/useProject.js";
-import { Badge, Button, Input, Modal, Select, Textarea } from "../ui/index.js";
+import { Badge, Button, Input, Modal, Select, Textarea, useToast } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
 import { CAPABILITY_LABELS } from "./taskPresentation.js";
 import "../ui/resource-management.css";
@@ -75,12 +75,13 @@ export function AgentRegistration({ computerId, computerName, runtimes, allowedR
 
 export function AgentEnabledControl({ instance }: { instance: AgentInstance }): React.ReactNode {
   const api = useApi();
+  const toast = useToast();
   const query = useQueryClient();
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
   const disabled = instance.config.enabled === false || instance.status === "disabled";
-  const mutation = useMutation({ mutationFn: () => api.setAgentEnabled(instance.id, disabled, newIdempotencyKey()), onSuccess: async () => { await query.invalidateQueries({ queryKey: queryKeys.bootstrap }); } });
+  const mutation = useMutation({ mutationFn: (enabled: boolean) => api.setAgentEnabled(instance.id, enabled, newIdempotencyKey()), onSuccess: async (_, enabled) => { toast.push({ tone: "success", message: enabled ? "Agent enabled for future assignments." : "Agent disabled for future assignments." }); await query.invalidateQueries({ queryKey: queryKeys.bootstrap }); } });
   if (!["owner", "admin"].includes(bootstrap.data?.user.role ?? "")) return null;
-  return <div className="resource-enabled-control"><span>{disabled ? "Enable to accept new assignments" : "Enabled for future assignments"}</span><Button size="sm" loading={mutation.isPending} onClick={() => mutation.mutate()}>{disabled ? "Enable agent" : "Disable agent"}</Button><ActionError error={mutation.error} /></div>;
+  return <div className="resource-enabled-control"><span>{disabled ? "Enable to accept new assignments" : "Enabled for future assignments"}</span><Button size="sm" loading={mutation.isPending} onClick={() => mutation.mutate(disabled)}>{disabled ? "Enable agent" : "Disable agent"}</Button><ActionError error={mutation.error} /></div>;
 }
 
 export function SkillPermissionSummary({ permissions }: { permissions: PermissionSummary }): React.ReactNode {

@@ -7,7 +7,7 @@ import type { Approval, ResolveApprovalRequest } from "@artoo/domain";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
-import { Badge, Button, Textarea, toneFor } from "../ui/index.js";
+import { Badge, Button, Textarea, toneFor, useToast } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
 import "../ui/work-insights.css";
 
@@ -25,12 +25,14 @@ export interface ApprovalInboxProps {
  */
 export function ApprovalInbox({ taskId, taskStatus, approvals }: ApprovalInboxProps): React.ReactNode {
   const api = useApi();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const [comments, setComments] = useState<Record<string, string>>({});
   const mutation = useMutation({
     mutationFn: (input: { id: string; body: ResolveApprovalRequest }) =>
       api.resolveApproval(input.id, { ...input.body, ...(comments[input.id]?.trim() ? { comment: comments[input.id]!.trim() } : {}) }, newIdempotencyKey()),
-    onSuccess: async () => {
+    onSuccess: async (_, { body }) => {
+      toast.push({ tone: "success", message: body.decision === "approved" ? "Approval recorded." : body.decision === "rejected" ? "Rejection recorded." : "Request for more information recorded." });
       await queryClient.invalidateQueries({ queryKey: queryKeys.task(taskId) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.allApprovals });
     },

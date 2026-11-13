@@ -23,6 +23,7 @@ import { ApiClient } from "../api/client.js";
 import type { BootstrapResponse } from "../api/types.js";
 import { ApiProvider } from "../app/ApiContext.js";
 import { SelectionProvider } from "../app/SelectionContext.js";
+import { ToastProvider } from "../ui/index.js";
 
 // globals:false means @testing-library's automatic afterEach cleanup is not
 // registered; do it explicitly so each test starts with a fresh DOM.
@@ -289,7 +290,7 @@ export function renderWithProviders(
     <MemoryRouter initialEntries={[options.route ?? "/"]}>
       <QueryClientProvider client={queryClient}>
         <ApiProvider client={options.client}>
-          <SelectionProvider>{ui}</SelectionProvider>
+          <ToastProvider><SelectionProvider>{ui}</SelectionProvider></ToastProvider>
         </ApiProvider>
       </QueryClientProvider>
     </MemoryRouter>,

@@ -154,24 +154,24 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div className="ui-toast-viewport" aria-live="polite">
+      {items.length > 0 && <div className="ui-toast-viewport" role="region" aria-label="Notifications">
         {items.map((t) => (
-          <ToastAutoDismiss key={t.id} item={t} onClose={() => remove(t.id)} />
+          <ToastAutoDismiss key={t.id} item={t} onClose={remove} />
         ))}
-      </div>
+      </div>}
     </ToastContext.Provider>
   );
 }
 
-function ToastAutoDismiss({ item, onClose }: { item: ToastItem; onClose: () => void }): React.ReactNode {
+function ToastAutoDismiss({ item, onClose }: { item: ToastItem; onClose: (id: string) => void }): React.ReactNode {
   useEffect(() => {
     if (item.durationMs === undefined) {
       return;
     }
-    const h = setTimeout(onClose, item.durationMs);
+    const h = setTimeout(() => onClose(item.id), item.durationMs);
     return () => clearTimeout(h);
   }, [item, onClose]);
-  return <Toast tone={item.tone} message={item.message} onClose={onClose} />;
+  return <Toast tone={item.tone} message={item.message} onClose={() => onClose(item.id)} />;
 }
 
 export function useToast(): ToastApi {
@@ -241,9 +241,9 @@ export function Modal({ open, onClose, title, children, footer }: {
       >
         <div className="ui-modal__header">
           {title != null ? <span className="ui-modal__title" id={titleId}>{title}</span> : <span className="ui-modal__title" />}
-          <button type="button" className="ui-modal__close" aria-label="Close" onClick={onClose}>
+          <Tooltip label="Close dialog"><button type="button" className="ui-modal__close" aria-label="Close" onClick={onClose}>
             <Icon icon={X} size={16} />
-          </button>
+          </button></Tooltip>
         </div>
         <div className="ui-modal__body">{children}</div>
         {footer != null ? <div className="ui-modal__footer">{footer}</div> : null}

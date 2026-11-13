@@ -6,7 +6,7 @@ import { Download, History } from "lucide-react";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { useSubscription } from "../app/RealtimeContext.js";
-import { Button, EmptyState, ErrorState, Input, Select, StatusBadge } from "../ui/index.js";
+import { Button, EmptyState, ErrorState, Input, Select, StatusBadge, useToast } from "../ui/index.js";
 import { AuditBundleView } from "./AuditBundleView.js";
 import { ActionError } from "./ActionError.js";
 import { taskUpdatedLabel } from "./taskPresentation.js";
@@ -19,6 +19,7 @@ import "../ui/work-insights.css";
  */
 export function RunsAuditPage(): React.ReactNode {
   const api = useApi();
+  const toast = useToast();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
@@ -30,7 +31,7 @@ export function RunsAuditPage(): React.ReactNode {
     const url = URL.createObjectURL(new Blob([JSON.stringify(result.export, null, 2)], { type: "application/json" }));
     const link = document.createElement("a"); link.href = url; link.download = `${selectedTaskId}-audit.json`; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-  } });
+  }, onSuccess: () => toast.push({ tone: "success", message: "Task evidence download started." }) });
   useSubscription(projectId === undefined ? [] : [`project:${projectId}`]);
 
   const tasks = useQuery({
