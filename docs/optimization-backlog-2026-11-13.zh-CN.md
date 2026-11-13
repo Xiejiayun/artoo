@@ -58,7 +58,7 @@
   - 行为不变:`DaemonBadge.test.tsx`、`InventoryPages.test.tsx`、`ConnectNodeDialog.test.tsx` 通过。
   - 不改变 `DaemonBadge` 的快照判断语义。
 
-### [x] T3 `perf(web): memoize list rows for tasks, messages and run timeline`
+### [x] T3 `perf(web): memoize list rows for tasks, messages and run timeline` (`e516fac`)
 - **ROI**:中高。
 - **背景**:`TaskList`、`MessageCard`、`RunTimeline` 在数据量大时,每次 WS 事件都会引发整列重渲染。全仓库的 `memo`、`useMemo`、`useCallback` 总共只有约 14 处。
 - **做法**:
@@ -68,7 +68,7 @@
   4. 先用 React Profiler 或简单的渲染计数验证有收益,再提交。没有收益就不要提交。
 - **验收**:`MessageCard.test.tsx`、`TaskList.test.tsx`、`RunTimeline.test.tsx` 通过。
 
-### T4 `perf(web): paginate or virtualize long timelines`
+### [x] T4 `perf(web): paginate or virtualize long timelines`
 - **ROI**:中。依赖 T3 的结论。
 - **背景**:仓库里没有任何虚拟化或窗口化实现。
 - **做法**:

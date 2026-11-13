@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { screen } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { fakeApi, renderWithProviders, runFixture } from "../test/utils.js";
-import { RunTimeline } from "./RunTimeline.js";
+import { RUN_TIMELINE_PAGE_SIZE, RunTimeline } from "./RunTimeline.js";
 
 const client = fakeApi({});
 
@@ -61,5 +62,15 @@ describe("RunTimeline", () => {
     expect(corrected).toHaveTextContent(next.id);
     expect(corrected).toHaveTextContent("Uploaded corrected report");
     expect(corrected.querySelector("time")).toHaveAttribute("datetime", next.created_at);
+  });
+
+  it("caps initial rendered runs and expands on request", async () => {
+    const runs = Array.from({ length: RUN_TIMELINE_PAGE_SIZE + 5 }, (_, index) =>
+      runFixture({ id: `run_${index + 1}`, status: "completed", created_at: `2026-10-01T00:${String(index).padStart(2, "0")}:00Z` }),
+    );
+    renderWithProviders(<RunTimeline runs={runs} />, { client });
+    expect(screen.getAllByRole("listitem")).toHaveLength(RUN_TIMELINE_PAGE_SIZE);
+    await userEvent.click(screen.getByRole("button", { name: /Show older runs/i }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(RUN_TIMELINE_PAGE_SIZE + 5);
   });
 });

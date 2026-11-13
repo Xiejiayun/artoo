@@ -4,7 +4,7 @@ import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { fakeApi, renderWithProviders, taskFixture } from "../test/utils.js";
-import { TaskList } from "./TaskList.js";
+import { TASK_PAGE_SIZE, TaskList } from "./TaskList.js";
 
 function twoTaskClient() {
   return fakeApi({
@@ -81,5 +81,23 @@ describe("TaskList", () => {
       { client },
     );
     expect(await screen.findByRole("alert")).toHaveTextContent("Failed to load tasks");
+  });
+
+  it("caps initial rendered tasks and expands on request", async () => {
+    const client = fakeApi({
+      listTasks: async () => ({
+        tasks: Array.from({ length: TASK_PAGE_SIZE + 3 }, (_, index) =>
+          taskFixture({ id: `task_${index + 1}`, title: `Task ${index + 1}`, status: "ready", priority: "p1" }),
+        ),
+      }),
+    });
+    renderWithProviders(
+      <TaskList projectId="proj_artoo" selectedTaskId={null} onSelectTask={() => undefined} />,
+      { client },
+    );
+    expect(await screen.findByText("Task 1")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(TASK_PAGE_SIZE);
+    await userEvent.click(screen.getByRole("button", { name: /Show more tasks/i }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(TASK_PAGE_SIZE + 3);
   });
 });

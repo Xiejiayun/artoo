@@ -1,8 +1,10 @@
 import type { Run } from "@artoo/domain";
-import { memo, useMemo } from "react";
+import { memo, useMemo, useState } from "react";
 
-import { RunStatusBadge } from "../ui/index.js";
+import { Button, RunStatusBadge } from "../ui/index.js";
 import { WorkspaceRetention, type RetentionComputer } from "./WorkspaceRetention.js";
+
+export const RUN_TIMELINE_PAGE_SIZE = 20;
 
 export interface RunTimelineProps {
   runs: Run[];
@@ -60,23 +62,34 @@ const RunEntry = memo(function RunEntry({
  * stdout never floods the panel.
  */
 export function RunTimeline({ runs, outputsByRun = {}, renderUsage, computers }: RunTimelineProps): React.ReactNode {
+  const [visibleLimit, setVisibleLimit] = useState(RUN_TIMELINE_PAGE_SIZE);
   const ordered = useMemo(() => [...runs].sort((a, b) => b.created_at.localeCompare(a.created_at)), [runs]);
 
   if (runs.length === 0) {
     return <p className="no-runs">No runs yet.</p>;
   }
 
+  const visible = ordered.slice(0, visibleLimit);
+  const remaining = ordered.length - visible.length;
+
   return (
-    <ol aria-label="Run timeline" className="run-timeline">
-      {ordered.map((run) => (
-        <RunEntry
-          key={run.id}
-          run={run}
-          output={outputsByRun[run.id] ?? EMPTY_OUTPUT}
-          renderUsage={renderUsage}
-          computers={computers}
-        />
-      ))}
-    </ol>
+    <>
+      <ol aria-label="Run timeline" className="run-timeline">
+        {visible.map((run) => (
+          <RunEntry
+            key={run.id}
+            run={run}
+            output={outputsByRun[run.id] ?? EMPTY_OUTPUT}
+            renderUsage={renderUsage}
+            computers={computers}
+          />
+        ))}
+      </ol>
+      {remaining > 0 ? (
+        <Button size="sm" variant="ghost" onClick={() => setVisibleLimit((limit) => limit + RUN_TIMELINE_PAGE_SIZE)}>
+          Show older runs ({remaining} more)
+        </Button>
+      ) : null}
+    </>
   );
 }

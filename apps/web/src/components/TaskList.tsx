@@ -1,6 +1,6 @@
 import type { Task } from "@artoo/domain";
 import { useQuery } from "@tanstack/react-query";
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
@@ -63,20 +63,32 @@ const TaskRow = memo(function TaskRow({
   );
 });
 
+export const TASK_PAGE_SIZE = 50;
+
 /** Left-rail task list (#71). Projection of `listTasks`; rows show semantic
  *  status/priority badges, support selection + keyboard focus, and filter by a
  *  title query with a distinct empty-match state. */
 export function TaskList({ projectId, selectedTaskId, onSelectTask, filter = "" }: TaskListProps): React.ReactNode {
   const api = useApi();
+  const [visibleLimit, setVisibleLimit] = useState(TASK_PAGE_SIZE);
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: queryKeys.tasks(projectId),
     queryFn: () => api.listTasks(projectId),
   });
   const q = filter.trim().toLowerCase();
+  useEffect(() => {
+    setVisibleLimit(TASK_PAGE_SIZE);
+  }, [projectId, q]);
   const tasks = useMemo(() => {
     if (!data) return [];
     return q === "" ? data.tasks : data.tasks.filter((t) => t.title.toLowerCase().includes(q));
   }, [data, q]);
+  const visibleTasks = useMemo(() => {
+    if (tasks.length <= visibleLimit) return tasks;
+    const selectedIndex = selectedTaskId ? tasks.findIndex((t) => t.id === selectedTaskId) : -1;
+    const effectiveLimit = selectedIndex >= visibleLimit ? selectedIndex + 1 : visibleLimit;
+    return tasks.slice(0, effectiveLimit);
+  }, [tasks, visibleLimit, selectedTaskId]);
 
   if (isLoading) {
     return <TaskRowsSkeleton />;
@@ -100,16 +112,25 @@ export function TaskList({ projectId, selectedTaskId, onSelectTask, filter = "" 
     return <EmptyState icon={Search} title="No matching tasks" description={`No tasks match "${filter.trim()}".`} />;
   }
 
+  const remaining = tasks.length - visibleTasks.length;
+
   return (
-    <ul aria-label="Tasks" className="task-list work-task-list">
-      {tasks.map((task) => (
-        <TaskRow
-          key={task.id}
-          task={task}
-          selected={task.id === selectedTaskId}
-          onSelectTask={onSelectTask}
-        />
-      ))}
-    </ul>
+    <>
+      <ul aria-label="Tasks" className="task-list work-task-list">
+        {visibleTasks.map((task) => (
+          <TaskRow
+            key={task.id}
+            task={task}
+            selected={task.id === selectedTaskId}
+            onSelectTask={onSelectTask}
+          />
+        ))}
+      </ul>
+      {remaining > 0 ? (
+        <Button size="sm" variant="ghost" onClick={() => setVisibleLimit((limit) => limit + TASK_PAGE_SIZE)}>
+          Show more tasks ({remaining} remaining)
+        </Button>
+      ) : null}
+    </>
   );
 }
