@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { screen, within } from "@testing-library/react";
+import { act, screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   bootstrapFixture,
@@ -58,6 +58,9 @@ describe("AppRoutes", () => {
 
   it("routes skills to the backed manifest contract view", async () => {
     renderWithProviders(<AppRoutes />, { client: appClient(), route: "/skills" });
+    // This verifies the actual lazy route, after Vitest transforms its module.
+    // Cold module transformation is not the page's network/render deadline.
+    await act(async () => { await vi.dynamicImportSettled(); });
     expect(await screen.findByRole("heading", { name: "Skills", level: 1 })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Skill manifest contract" })).toHaveTextContent(
       "v1alpha1",

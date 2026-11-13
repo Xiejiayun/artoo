@@ -18,9 +18,14 @@ export function ApiProvider({
   client: ApiClient;
   children: ReactNode;
 }): ReactNode {
-  // One queue per provider instance; it owns the `online` reconnect-flush listener.
-  const commands = useMemo(() => createApiCommandQueue(), []);
-  useEffect(() => () => commands.dispose(), [commands]);
+  // Construction must be free of browser listeners: StrictMode can discard a
+  // render and replay effect setup/cleanup without recreating the active queue.
+  const commands = useMemo(() => createApiCommandQueue({ attachOnlineListener: false }), []);
+  useEffect(() => {
+    const online = (): void => { void commands.flush(); };
+    window.addEventListener("online", online);
+    return () => { window.removeEventListener("online", online); commands.dispose(); };
+  }, [commands]);
   const value = useMemo<ApiContextValue>(() => ({ client, commands }), [client, commands]);
   return <ApiContext.Provider value={value}>{children}</ApiContext.Provider>;
 }
