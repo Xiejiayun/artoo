@@ -40,3 +40,13 @@ Node 24 第一分片报告 `preview-storage.test.ts` 四项中的第一项失败
 真实多附件回归在四个约 8MB 文件的最后一个损坏后，断言不打开数据库。旧实现精确失败为 `expected 1 to be +0`（`.git/opt-storage-preflight-before.log`）；调整后与原四案例一同运行，2 文件、5 项全部通过（`.git/opt-storage-preflight-after.log`）。根 typecheck 和 server build 通过，未放宽测试时限或减少断言。这证明避免了一次无效数据库启动，未据此宣称完整分片失败已解决或量化恢复耗时改善。
 
 额外执行超时清理父 harness，通过核验子进程故意 5 失败、2 通过，实际 exit/close 均为 1，原输入不变，安全删除或保留目录及 25 秒 drain 行为符合预期。父 harness 本身 1 项通过，不能称为子套件通过，也不替代上述普通四案例。证据目录：`C:/Users/jiaxie/AppData/Local/Temp/artoo-storage-timeout-evidence-pQql6P`；日志：`.git/opt-storage-preflight-timeout.log`。保留该证据与未确认可删除的夹具。
+
+## 预检修复合并后的完整第一分片
+
+恢复预检经 PR #68 合并后，冻结 `a455704e74b6da27b9e5e86fec3ada48446b0979` 再次执行。CIM 进程记录确认实际 Vitest worker 使用 Node 24.22.1；本轮证据目录为 `.git/opt-e1-cold-65318cb900e447ca822f6461f73fc40c`，总日志为 `.git/opt-e1-cold-after-preflight.log`。每 lane 使用独立、原本不存在的浏览器缓存路径，第一分片执行前后均确认目录及解析的 Chromium executable 不存在。
+
+第一分片完整运行 2,988.43 秒并实际退出 1。JSON reporter 记录 296 文件（292 通过、1 失败、3 跳过），4,409 用例（4,385 通过、1 失败、23 跳过）。唯一失败是 `server-entry.test.ts` 的开发入口启动、优雅关闭并直接重开数据库案例，错误为 `Server did not emit readiness before its deadline`，来自内部 30 秒 readiness 期限。普通存储四案例及大附件预检回归均通过。终端 footer 受到 PowerShell/npm 包装输出污染，以上结论来自完整 `vitest-parallel-1/results.json`。
+
+不改源码、断言或时限，直接用绝对 Node 24 路径聚焦复核 `server-entry.test.ts`，仍为 1 失败、1 通过，错误相同，实际退出 1（`.git/opt-e1-server-entry-recheck.log` / `.json`）。当前证据尚不能区分开发入口首次启动还是直接入口重开超时，也不能证明内部变慢的根因。
+
+脚本在第一分片失败后停止，第二分片、windows-process 分区和覆盖聚合未执行。安装步骤保持。完整冷缓存验证推迟到后续集成源码；仍须先解决 readiness 失败，再重新执行全部实际分区和覆盖核验。聚焦复核不能替代失败的完整运行。

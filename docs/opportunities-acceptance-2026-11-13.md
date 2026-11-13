@@ -20,7 +20,8 @@
 - 约定位置 `%LOCALAPPDATA%/Artoo/windows-local-request/LOCAL-INSTALLATION.json` 在本次检查时不存在；这仅证明该路径缺失。
 - 当前进程未配置 `ARTOO_AGENT_TEAM_LIVE`、`ARTOO_AGENT_TEAM_RUNTIME`、`ARTOO_CODEX_BINARY`、`ARTOO_CODEX_MODEL`、`ARTOO_CODEX_PROVIDER_URL`、`ARTOO_CODEX_PROVIDER_KEY`、`ARTOO_AGENT_TEAM_BROWSER_EXECUTABLE`、`ARTOO_WINDOWS_PROCESS_BUNDLE`、`ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256`。这不代表其他应用或目录没有凭据；盘点未读取或输出密钥。
 - 原 live 入口需要真实 CLI/Provider、原生 Chromium、已构建 daemon，以及 Windows 上精确绑定的受保护 helper bundle 与摘要。未配置时继续 fail closed，不伪造能力或自动降低验收标准。
-- 已向操作者询问可沿用的已授权测试安装/配置目录。其他独立优化继续进行；真实模型数据共享和发布使用该环境已有的授权范围。
+- 已向操作者询问可沿用的已授权测试安装/配置目录，回复为“不清楚”。随后只读补查 `C:/workspace/artoo/artifacts` 及 `%LOCALAPPDATA%/Artoo`，未发现 `LOCAL-INSTALLATION.json`、`LOCAL-INSTALLATION-*.json` 或 `CANDIDATE.json`。此结论仅限已检查目录；不推断其他位置是否存在配置，也未读取密钥。
+- E4 暂记环境未就绪，继续其他独立优化及本机源码/E2E 验证；真实模型数据共享和发布仍须使用已授权的实际测试环境，不能以受控夹具补成产品验收通过。
 
 ## 最终版本的执行与证据要求
 
