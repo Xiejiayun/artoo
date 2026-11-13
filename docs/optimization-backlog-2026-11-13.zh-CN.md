@@ -86,13 +86,13 @@
 - **约束**:不得改变现有响应的字段含义。新增分页字段必须是可选的。
 - **验收**:对应的 `apps/server/src/*.test.ts` 通过。
 
-### [x] T6 `refactor(web): fold ad-hoc page CSS into modular ui/*.css`
+### [x] T6 `refactor(web): fold ad-hoc page CSS into modular ui/*.css` (`f611f9e`)
 - **ROI**:低中。
 - **背景**:`apps/web/src/styles.css` 约 1329 行,同时存在 `ui/*.css` 模块化样式,两者有重叠。
 - **做法**:每次只迁移一块(例如与 `ChannelsPage` 相关的规则)到对应的 `ui/*.css`,保持选择器和特异性不变。每迁移一块提交一次。
 - **验收**:`npx tsc -b apps/web` 通过;Playwright 截图或人工检查对应页面无视觉变化。
 
-### T7 `refactor(artood): split oversized modules by responsibility`
+### [x] T7 `refactor(artood): split oversized modules by responsibility`
 - **ROI**:低中(维护性)。风险较高,必须在已有测试保护下进行。
 - **候选文件**(行数为扫描时的近似值):
   - `apps/artood/src/product-source-runtime.ts`(约 2435 行)
