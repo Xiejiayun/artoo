@@ -17,16 +17,33 @@ function event(partial: Partial<EventEnvelope> & Pick<EventEnvelope, "type">): E
 }
 
 describe("invalidationsForEvent", () => {
-  it.each(["goal.automation.updated", "goal.release.health", "goal.application-publication.observation", "goal.plan_accepted", "goal.checkpoint_created"] as const)(
-    "refreshes every goal evidence cache on %s", (type) => {
-      const keys = invalidationsForEvent("project:proj_artoo", event({ type, project_id: "proj_artoo" }));
-      for (const prefix of ["goals", "plans", "checkpoints", "discussions", "goal-automation", "goal-release", "goal-application-publication"]) {
-        expect(keys).toContainEqual([prefix]);
-      }
-    },
-  );
+  it.each([
+    "goal.automation.updated",
+    "goal.release.health",
+    "goal.application-publication.observation",
+    "goal.plan_accepted",
+    "goal.checkpoint_created",
+  ] as const)("refreshes every goal evidence cache on %s", (type) => {
+    const keys = invalidationsForEvent("project:proj_artoo", event({ type, project_id: "proj_artoo" }));
+    for (const prefix of [
+      "goals",
+      "plans",
+      "checkpoints",
+      "discussions",
+      "goal-automation",
+      "goal-release",
+      "goal-application-publication",
+    ]) {
+      expect(keys).toContainEqual([prefix]);
+    }
+  });
   it("does not refetch room, task or collaboration snapshots for streamed output", () => {
-    expect(invalidationsForEvent("room:room_1", event({ type: "run.output", task_id: "task_1", room_id: "room_1", run_id: "run_1" }))).toEqual([]);
+    expect(
+      invalidationsForEvent(
+        "room:room_1",
+        event({ type: "run.output", task_id: "task_1", room_id: "room_1", run_id: "run_1" }),
+      ),
+    ).toEqual([]);
   });
   it("invalidates the task snapshot and its audit bundle for an event carrying task_id", () => {
     const keys = invalidationsForEvent("task:task_1", event({ type: "run.completed", task_id: "task_1" }));
@@ -34,7 +51,10 @@ describe("invalidationsForEvent", () => {
     expect(keys).toContainEqual(["auditBundle", "task_1"]);
   });
   it("refreshes persisted retention metadata without relying on the live output cache", () => {
-    const keys = invalidationsForEvent("task:task_1", event({ type: "run.workspace.retained", task_id: "task_1", run_id: "run_1" }));
+    const keys = invalidationsForEvent(
+      "task:task_1",
+      event({ type: "run.workspace.retained", task_id: "task_1", run_id: "run_1" }),
+    );
     expect(keys).toContainEqual(["task", "task_1"]);
     expect(keys).toContainEqual(["auditBundle", "task_1"]);
   });
@@ -45,11 +65,19 @@ describe("invalidationsForEvent", () => {
       event({ type: "message.created", room_id: "room_1", task_id: "task_1" }),
     );
     expect(keys).toContainEqual(["messages", "room_1"]);
+    expect(keys).toContainEqual(["message-search", "room_1"]);
     expect(keys).toContainEqual(["task", "task_1"]);
   });
 
   it("refreshes the goal's planning progress when a discussion changes", () => {
-    const keys = invalidationsForEvent("room:room_1", event({ type: "discussion.updated", room_id: "room_1", payload: { discussion_id: "discussion_1", status: "ready", current_step: 3 } }));
+    const keys = invalidationsForEvent(
+      "room:room_1",
+      event({
+        type: "discussion.updated",
+        room_id: "room_1",
+        payload: { discussion_id: "discussion_1", status: "ready", current_step: 3 },
+      }),
+    );
     expect(keys).toContainEqual(["discussions"]);
     expect(keys).toContainEqual(["messages", "room_1"]);
   });
@@ -62,9 +90,14 @@ describe("invalidationsForEvent", () => {
     expect(keys).toContainEqual(["tasks", "proj_artoo"]);
   });
 
-  it.each(["run.started", "run.completed", "run.failed", "run.cancelled"] as const)("refreshes the Board and rail when %s changes task state", (type) => {
-    expect(invalidationsForEvent("task:task_1", event({ type, task_id: "task_1", project_id: "proj_artoo" }))).toContainEqual(["tasks", "proj_artoo"]);
-  });
+  it.each(["run.started", "run.completed", "run.failed", "run.cancelled"] as const)(
+    "refreshes the Board and rail when %s changes task state",
+    (type) => {
+      expect(
+        invalidationsForEvent("task:task_1", event({ type, task_id: "task_1", project_id: "proj_artoo" })),
+      ).toContainEqual(["tasks", "proj_artoo"]);
+    },
+  );
 
   it("invalidates pending approvals for inbox topic or approval events", () => {
     expect(

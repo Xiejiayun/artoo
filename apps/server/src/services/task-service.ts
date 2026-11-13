@@ -33,7 +33,8 @@ import {
   type Task,
   type TaskReview,
 } from "@artoo/domain";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, isNull, or } from "drizzle-orm";
+import { literalSearchPattern, parseSearchQuery } from "./search-query.js";
 
 import type { ServerContext } from "../context.js";
 import { preparedGoalEntrySnapshot } from "../config/goal-entry.js";
@@ -71,7 +72,10 @@ export interface BootstrapResponse {
 }
 
 /** GET /api/v1/bootstrap — organization resources and the authenticated actor. */
-export async function bootstrap(ctx: ServerContext, isLive: (computerId: string) => boolean = () => false): Promise<BootstrapResponse> {
+export async function bootstrap(
+  ctx: ServerContext,
+  isLive: (computerId: string) => boolean = () => false,
+): Promise<BootstrapResponse> {
   const db = ctx.db.db;
   const orgRow = (await db.select().from(organizations).where(eq(organizations.id, ctx.organizationId)))[0];
   const userRow = (await db.select().from(users).where(eq(users.id, ctx.actorUserId)))[0];
@@ -112,24 +116,44 @@ export async function bootstrap(ctx: ServerContext, isLive: (computerId: string)
   const timeoutMs = resourceExpiryMs();
   const now = ctx.clock.nowIso();
   const runtimes = await db.select().from(agentRuntimes).where(eq(agentRuntimes.organizationId, ctx.organizationId));
-  const mappedComputers = computerRows.map((row) => ({ ...mapComputer(row),
-    lifecycle: deriveResourceLifecycle(row.lastHeartbeatAt, row.createdAt, now, isLive(row.id), timeoutMs) }));
+  const mappedComputers = computerRows.map((row) => ({
+    ...mapComputer(row),
+    lifecycle: deriveResourceLifecycle(row.lastHeartbeatAt, row.createdAt, now, isLive(row.id), timeoutMs),
+  }));
   const mappedInstances = instanceRows.map((row) => {
     const computer = computerRows.find((item) => item.id === row.computerId);
     const runtime = runtimes.find((item) => item.computerId === row.computerId && item.runtime === row.runtime);
     // Older daemons without a runtime row retain computer-heartbeat compatibility.
-    const lastSeen = runtime ? runtime.lastSeenAt : computer?.lastHeartbeatAt ?? null;
-    return { ...mapAgentInstance(row), lifecycle: deriveResourceLifecycle(lastSeen, row.createdAt, now,
-      isLive(row.computerId) && (!runtime || runtime.status === "available"), timeoutMs) };
+    const lastSeen = runtime ? runtime.lastSeenAt : (computer?.lastHeartbeatAt ?? null);
+    return {
+      ...mapAgentInstance(row),
+      lifecycle: deriveResourceLifecycle(
+        lastSeen,
+        row.createdAt,
+        now,
+        isLive(row.computerId) && (!runtime || runtime.status === "available"),
+        timeoutMs,
+      ),
+    };
   });
   const mappedAgents = agentRows.map((row) => {
     const instances = mappedInstances.filter((item) => item.agent_id === row.id);
-    const latest = instances.flatMap((item) => [item.lifecycle.last_seen_at, item.created_at]).filter((item): item is string => item !== null)
-      .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
-    const lifecycle = deriveResourceLifecycle(latest, row.createdAt, now,
-      instances.some((item) => item.lifecycle.state === "active"), timeoutMs);
-    lifecycle.last_seen_at = instances.flatMap((item) => item.lifecycle.last_seen_at ? [item.lifecycle.last_seen_at] : [])
-      .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+    const latest =
+      instances
+        .flatMap((item) => [item.lifecycle.last_seen_at, item.created_at])
+        .filter((item): item is string => item !== null)
+        .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+    const lifecycle = deriveResourceLifecycle(
+      latest,
+      row.createdAt,
+      now,
+      instances.some((item) => item.lifecycle.state === "active"),
+      timeoutMs,
+    );
+    lifecycle.last_seen_at =
+      instances
+        .flatMap((item) => (item.lifecycle.last_seen_at ? [item.lifecycle.last_seen_at] : []))
+        .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
     return { ...mapAgent(row), lifecycle };
   });
   return {
@@ -161,24 +185,49 @@ export async function bootstrap(ctx: ServerContext, isLive: (computerId: string)
  * rail. Stable order (created_at, id) so rendering is deterministic; web derives
  * no lifecycle, it just renders these snapshots.
  */
-export async function listTasks(ctx: ServerContext, projectId: string, limit?: number): Promise<Task[]> {
+export async function listTasks(
+  ctx: ServerContext,
+  projectId: string,
+  limit?: number,
+  searchQuery?: unknown,
+): Promise<Task[]> {
+  const search = parseSearchQuery(searchQuery);
+  const pattern = search === undefined ? undefined : literalSearchPattern(search);
   const baseQuery = ctx.db.db
     .select()
     .from(tasks)
-    .where(and(eq(tasks.organizationId, ctx.organizationId), eq(tasks.projectId, projectId)))
+    .where(
+      and(
+        eq(tasks.organizationId, ctx.organizationId),
+        eq(tasks.projectId, projectId),
+        pattern === undefined ? undefined : or(ilike(tasks.title, pattern), ilike(tasks.description, pattern)),
+      ),
+    )
     .orderBy(asc(tasks.createdAt), asc(tasks.id));
   const rows = limit !== undefined ? await baseQuery.limit(limit) : await baseQuery;
   // Review tasks deliberately have no scheduling goalId. Expose their original
   // task's provenance in this read model without changing reconciliation.
-  const reviewLinks = await ctx.db.db.select({
-    taskId: autonomousReviews.reviewTaskId, goalId: autonomousReviews.goalId, planId: tasks.sourcePlanId,
-  }).from(autonomousReviews).innerJoin(tasks, and(
-    eq(tasks.id, autonomousReviews.taskId), eq(tasks.goalId, autonomousReviews.goalId),
-    eq(tasks.organizationId, ctx.organizationId), eq(tasks.projectId, projectId),
-  )).where(eq(autonomousReviews.organizationId, ctx.organizationId));
+  const reviewLinks = await ctx.db.db
+    .select({
+      taskId: autonomousReviews.reviewTaskId,
+      goalId: autonomousReviews.goalId,
+      planId: tasks.sourcePlanId,
+    })
+    .from(autonomousReviews)
+    .innerJoin(
+      tasks,
+      and(
+        eq(tasks.id, autonomousReviews.taskId),
+        eq(tasks.goalId, autonomousReviews.goalId),
+        eq(tasks.organizationId, ctx.organizationId),
+        eq(tasks.projectId, projectId),
+      ),
+    )
+    .where(eq(autonomousReviews.organizationId, ctx.organizationId));
   const links = new Map(reviewLinks.map((link) => [link.taskId, link]));
   return rows.map((row) => {
-    const task = mapTask(row), link = links.get(row.id);
+    const task = mapTask(row),
+      link = links.get(row.id);
     return link && !row.goalId ? { ...task, goal_id: link.goalId, source_plan_id: link.planId } : task;
   });
 }
@@ -188,10 +237,7 @@ export async function listTasks(ctx: ServerContext, projectId: string, limit?: n
  * task.created + room.created in the SAME transaction. There is never a task
  * without a room (review gate); a rollback leaves neither row nor event.
  */
-export async function createTask(
-  ctx: ServerContext,
-  req: CreateTaskRequest,
-): Promise<{ task: Task; room: Room }> {
+export async function createTask(ctx: ServerContext, req: CreateTaskRequest): Promise<{ task: Task; room: Room }> {
   const now = ctx.clock.nowIso();
   const taskId = ctx.idGen.generate(ID_PREFIXES.task);
   const roomId = ctx.idGen.generate(ID_PREFIXES.room);
@@ -290,41 +336,61 @@ export interface TaskSnapshot {
 
 /** GET /api/v1/tasks/:id — one consistent task, review and artifact snapshot. */
 export async function getTaskSnapshot(ctx: ServerContext, id: string): Promise<TaskSnapshot> {
-  return ctx.db.db.transaction(async (db) => {
-    const taskRow = (
-      await db
+  return ctx.db.db.transaction(
+    async (db) => {
+      const taskRow = (
+        await db
+          .select()
+          .from(tasks)
+          .where(and(eq(tasks.id, id), eq(tasks.organizationId, ctx.organizationId)))
+      )[0];
+      if (taskRow === undefined) {
+        throw AppError.notFound(`task not found: ${id}`, { task_id: id });
+      }
+      const task = mapTask(taskRow);
+      const roomRow =
+        task.room_id != null
+          ? (
+              await db
+                .select()
+                .from(rooms)
+                .where(and(eq(rooms.id, task.room_id), eq(rooms.organizationId, ctx.organizationId)))
+            )[0]
+          : undefined;
+      // Consumers use the last entry as the latest run. Keep that contract
+      // independent of index selection, including runs sharing a timestamp.
+      const runRows = await db
         .select()
-        .from(tasks)
-        .where(and(eq(tasks.id, id), eq(tasks.organizationId, ctx.organizationId)))
-    )[0];
-    if (taskRow === undefined) {
-      throw AppError.notFound(`task not found: ${id}`, { task_id: id });
-    }
-    const task = mapTask(taskRow);
-    const roomRow =
-      task.room_id != null
-        ? (await db.select().from(rooms).where(and(eq(rooms.id, task.room_id), eq(rooms.organizationId, ctx.organizationId))))[0]
-        : undefined;
-    // Consumers use the last entry as the latest run. Keep that contract
-    // independent of index selection, including runs sharing a timestamp.
-    const runRows = await db.select().from(runs).where(and(eq(runs.taskId, id), eq(runs.organizationId, ctx.organizationId)))
-      .orderBy(asc(runs.createdAt), asc(runs.id));
-    const retention = await loadWorkspaceRetentions(db, ctx.organizationId, runRows);
-    const approvalRows = await db.select().from(approvals).where(and(eq(approvals.taskId, id), eq(approvals.organizationId, ctx.organizationId)));
-    const artifactRows = await db.select().from(artifacts).where(and(eq(artifacts.taskId, id), eq(artifacts.organizationId, ctx.organizationId)));
-    const reviews = await listTaskReviews(ctx, db, id, task.project_id);
-    const [version] = await db.select({ position: eventLog.position }).from(eventLog)
-      .where(and(eq(eventLog.organizationId, ctx.organizationId), eq(eventLog.taskId, id)))
-      .orderBy(desc(eventLog.position)).limit(1);
+        .from(runs)
+        .where(and(eq(runs.taskId, id), eq(runs.organizationId, ctx.organizationId)))
+        .orderBy(asc(runs.createdAt), asc(runs.id));
+      const retention = await loadWorkspaceRetentions(db, ctx.organizationId, runRows);
+      const approvalRows = await db
+        .select()
+        .from(approvals)
+        .where(and(eq(approvals.taskId, id), eq(approvals.organizationId, ctx.organizationId)));
+      const artifactRows = await db
+        .select()
+        .from(artifacts)
+        .where(and(eq(artifacts.taskId, id), eq(artifacts.organizationId, ctx.organizationId)));
+      const reviews = await listTaskReviews(ctx, db, id, task.project_id);
+      const [version] = await db
+        .select({ position: eventLog.position })
+        .from(eventLog)
+        .where(and(eq(eventLog.organizationId, ctx.organizationId), eq(eventLog.taskId, id)))
+        .orderBy(desc(eventLog.position))
+        .limit(1);
 
-    return {
-      task,
-      room: roomRow !== undefined ? mapRoom(roomRow) : null,
-      runs: runRows.map((run) => ({ ...mapRun(run), workspace_retention: retention.get(run.id) ?? null })),
-      approvals: approvalRows.map(mapApproval),
-      artifacts: artifactRows.map(mapArtifact),
-      reviews,
-      version_cursor: version?.position ?? 0,
-    };
-  }, { isolationLevel: "repeatable read", accessMode: "read only" });
+      return {
+        task,
+        room: roomRow !== undefined ? mapRoom(roomRow) : null,
+        runs: runRows.map((run) => ({ ...mapRun(run), workspace_retention: retention.get(run.id) ?? null })),
+        approvals: approvalRows.map(mapApproval),
+        artifacts: artifactRows.map(mapArtifact),
+        reviews,
+        version_cursor: version?.position ?? 0,
+      };
+    },
+    { isolationLevel: "repeatable read", accessMode: "read only" },
+  );
 }

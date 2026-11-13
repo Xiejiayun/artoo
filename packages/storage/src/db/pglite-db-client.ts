@@ -3,6 +3,7 @@ import { access, mkdir, realpath, readFile, rmdir, unlink, writeFile } from "nod
 import { basename, dirname, join, resolve } from "node:path";
 import { hostname } from "node:os";
 import { PGlite } from "@electric-sql/pglite";
+import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import { drizzle } from "drizzle-orm/pglite";
 
 import type { DbClient, DrizzleDb } from "./db-client.js";
@@ -33,17 +34,24 @@ export class PgliteDbClient implements DbClient {
 
   static async create(options: PgliteDbClientOptions = {}): Promise<PgliteDbClient> {
     if (options.archive !== undefined && options.dataDir !== undefined) {
-      const exists = await access(options.dataDir).then(() => true, () => false);
+      const exists = await access(options.dataDir).then(
+        () => true,
+        () => false,
+      );
       if (exists) throw new Error("Restore requires a new database directory; existing data will not be overwritten");
     }
     const lock = options.dataDir === undefined ? undefined : await acquireDataLock(options.dataDir);
     try {
-    const pg = await PGlite.create({
-      ...(lock === undefined ? {} : { dataDir: lock.directory }),
-      ...(options.archive === undefined ? {} : { loadDataDir: new Blob([Uint8Array.from(options.archive)]) }),
-    });
-    return new PgliteDbClient(pg, lock?.release);
-    } catch (error) { await lock?.release(); throw error; }
+      const pg = await PGlite.create({
+        extensions: { pg_trgm },
+        ...(lock === undefined ? {} : { dataDir: lock.directory }),
+        ...(options.archive === undefined ? {} : { loadDataDir: new Blob([Uint8Array.from(options.archive)]) }),
+      });
+      return new PgliteDbClient(pg, lock?.release);
+    } catch (error) {
+      await lock?.release();
+      throw error;
+    }
   }
 
   async transaction<T>(fn: (tx: DrizzleDb) => Promise<T>): Promise<T> {
@@ -55,10 +63,13 @@ export class PgliteDbClient implements DbClient {
     // Journal and DDL commit together: a failed upgrade cannot leave a partially
     // applied schema or mark an unapplied statement as successful.
     await this.#pg.transaction(async (tx) => {
-      await applyMigrationJournal({
-        execute: (statement) => tx.exec(statement),
-        query: (statement, parameters) => tx.query<Record<string, unknown>>(statement, parameters),
-      }, statements);
+      await applyMigrationJournal(
+        {
+          execute: (statement) => tx.exec(statement),
+          query: (statement, parameters) => tx.query<Record<string, unknown>>(statement, parameters),
+        },
+        statements,
+      );
     });
   }
 
@@ -76,23 +87,32 @@ export class PgliteDbClient implements DbClient {
   /** Explicit one-time adoption for an old unjournaled database. A disposable
    * reference schema must match exactly; data is neither replaced nor inferred. */
   async adoptLegacyMigrations(statements: readonly string[]): Promise<void> {
-    const reference = await PGlite.create();
+    const reference = await PGlite.create({ extensions: { pg_trgm } });
     try {
       for (const statement of statements) await reference.exec(statement);
       const expected = await schemaFingerprint(reference);
       await this.#pg.transaction(async (tx) => {
-        if (await schemaFingerprint(tx) !== expected) {
-          throw new Error("Legacy schema does not exactly match this release. Adoption refused; use its original release to migrate first");
+        if ((await schemaFingerprint(tx)) !== expected) {
+          throw new Error(
+            "Legacy schema does not exactly match this release. Adoption refused; use its original release to migrate first",
+          );
         }
-        await tx.exec("CREATE SCHEMA IF NOT EXISTS artoo_meta; CREATE TABLE IF NOT EXISTS artoo_meta.migrations (position integer PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())");
+        await tx.exec(
+          "CREATE SCHEMA IF NOT EXISTS artoo_meta; CREATE TABLE IF NOT EXISTS artoo_meta.migrations (position integer PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())",
+        );
         const existing = await tx.query("SELECT position FROM artoo_meta.migrations LIMIT 1");
         if (existing.rows.length > 0) throw new Error("Database already has a migration journal");
         for (const [position, statement] of statements.entries()) {
           const checksum = createHash("sha256").update(statement.replace(/\r\n/g, "\n").trim()).digest("hex");
-          await tx.query("INSERT INTO artoo_meta.migrations (position, checksum) VALUES ($1, $2)", [position, checksum]);
+          await tx.query("INSERT INTO artoo_meta.migrations (position, checksum) VALUES ($1, $2)", [
+            position,
+            checksum,
+          ]);
         }
       });
-    } finally { await reference.close(); }
+    } finally {
+      await reference.close();
+    }
   }
 
   async close(): Promise<void> {
@@ -107,22 +127,34 @@ export class PgliteDbClient implements DbClient {
 async function acquireDataLock(dataDir: string): Promise<{ directory: string; release: () => Promise<void> }> {
   const resolved = resolve(dataDir);
   await mkdir(dirname(resolved), { recursive: true });
-  const canonical = await realpath(resolved).catch(() => realpath(dirname(resolved)).then((parent) => join(parent, basename(resolved))));
+  const canonical = await realpath(resolved).catch(() =>
+    realpath(dirname(resolved)).then((parent) => join(parent, basename(resolved))),
+  );
   const lockDir = `${canonical}.artoo-lock`;
-  try { await mkdir(lockDir); }
-  catch (error) {
+  try {
+    await mkdir(lockDir);
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    throw new Error(`Database is locked: ${lockDir}. Stop the server before storage operations. After a crash, use storage unlock only after its recorded owner has exited.`);
+    throw new Error(
+      `Database is locked: ${lockDir}. Stop the server before storage operations. After a crash, use storage unlock only after its recorded owner has exited.`,
+    );
   }
   const owner = JSON.stringify({ pid: process.pid, hostname: hostname(), startedAt: new Date().toISOString() });
-  try { await writeFile(join(lockDir, "owner.json"), owner, { flag: "wx" }); }
-  catch (error) { await rmdir(lockDir).catch(() => {}); throw error; }
-  return { directory: canonical, release: async () => {
-    // Idempotent close; never remove a replacement lock owned by someone else.
-    if (await readFile(join(lockDir, "owner.json"), "utf8").catch(() => null) !== owner) return;
-    await unlink(join(lockDir, "owner.json"));
-    await rmdir(lockDir);
-  } };
+  try {
+    await writeFile(join(lockDir, "owner.json"), owner, { flag: "wx" });
+  } catch (error) {
+    await rmdir(lockDir).catch(() => {});
+    throw error;
+  }
+  return {
+    directory: canonical,
+    release: async () => {
+      // Idempotent close; never remove a replacement lock owned by someone else.
+      if ((await readFile(join(lockDir, "owner.json"), "utf8").catch(() => null)) !== owner) return;
+      await unlink(join(lockDir, "owner.json"));
+      await rmdir(lockDir);
+    },
+  };
 }
 
 async function schemaFingerprint(database: { query: PGlite["query"] }): Promise<string> {

@@ -14,6 +14,42 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 
+it("encodes literal search queries on messages, tasks and memories with optional bounds", async () => {
+  const q = "中文 100%_\\ &?";
+  server.use(
+    http.get(`${BASE}/rooms/:id/messages`, ({ params, request }) => {
+      expect(params.id).toBe("room/1");
+      expect(Object.fromEntries(new URL(request.url).searchParams)).toEqual({
+        q,
+        limit: "50",
+        before: "cursor+&",
+        thread_root_id: "root/1",
+      });
+      return HttpResponse.json({ messages: [], has_more: false, next_before: null, next_after: null });
+    }),
+    http.get(`${BASE}/tasks`, ({ request }) => {
+      expect(Object.fromEntries(new URL(request.url).searchParams)).toEqual({
+        project_id: "project & 1",
+        q,
+        limit: "2",
+      });
+      return HttpResponse.json({ tasks: [] });
+    }),
+    http.get(`${BASE}/memories`, ({ request }) => {
+      expect(Object.fromEntries(new URL(request.url).searchParams)).toEqual({
+        project_id: "project & 1",
+        q,
+        limit: "2",
+        tag: "tag & 1",
+      });
+      return HttpResponse.json({ memories: [] });
+    }),
+  );
+  await client.listMessages("room/1", { q, limit: 50, before: "cursor+&", thread_root_id: "root/1" });
+  await client.listTasks("project & 1", { q, limit: 2 });
+  await client.listMemories({ projectId: "project & 1", q, limit: 2, tag: "tag & 1" });
+});
+
 const createReq: CreateTaskRequest = {
   project_id: "proj_1",
   title: "Build inbox",
@@ -27,107 +63,187 @@ describe("ApiClient", () => {
   it("keeps removed-message tombstones after a successful large visibility reconciliation", async () => {
     const scoped = new ApiClient({ baseUrl: BASE });
     const ids = Array.from({ length: 500 }, (_, index) => `history_${index}`);
-    server.use(http.post(`${BASE}/rooms/:id/messages/visibility`, async ({ params, request }) => {
-      expect(params.id).toBe("room/history");
-      expect(await request.json()).toEqual({ message_ids: ids });
-      return HttpResponse.json({ removed_message_ids: [ids[499]] });
-    }));
+    server.use(
+      http.post(`${BASE}/rooms/:id/messages/visibility`, async ({ params, request }) => {
+        expect(params.id).toBe("room/history");
+        expect(await request.json()).toEqual({ message_ids: ids });
+        return HttpResponse.json({ removed_message_ids: [ids[499]] });
+      }),
+    );
     await expect(scoped.messageVisibility("room/history", ids)).resolves.toEqual([ids[499]]);
-    const stale = { id: ids[499]!, organization_id: "org_default", room_id: "room/history", actor_type: "user" as const, actor_id: "user_1",
-      kind: "text" as const, body: "Stale removed body", payload: {}, created_at: "2026-06-13T00:00:00Z" };
+    const stale = {
+      id: ids[499]!,
+      organization_id: "org_default",
+      room_id: "room/history",
+      actor_type: "user" as const,
+      actor_id: "user_1",
+      kind: "text" as const,
+      body: "Stale removed body",
+      payload: {},
+      created_at: "2026-06-13T00:00:00Z",
+    };
     expect(scoped.messageForDisplay(stale).payload.moderation).toBe("removed");
     expect(scoped.messageForDisplay(stale).body).not.toContain("Stale removed body");
   });
 
   it("encodes agent history paths and bounded cursor/filter queries without mutating requests", async () => {
-    server.use(http.get(`${BASE}/agents/:id/history`, ({ params, request }) => {
-      expect(params.id).toBe("agent/with space");
-      const query = new URL(request.url).searchParams;
-      expect(Object.fromEntries(query)).toEqual({ instance_id: "instance & 1", project_id: "project/1", status: "failed", before_run_id: "run/2", limit: "10" });
-      return HttpResponse.json({ version: 1, runs: [], next_before_run_id: null });
-    }), http.get(`${BASE}/agents/:id/history/:runId`, ({ params, request }) => {
-      expect(params.id).toBe("agent/with space"); expect(params.runId).toBe("run/1");
-      expect(Object.fromEntries(new URL(request.url).searchParams)).toEqual({ before: "42", limit: "25" });
-      return HttpResponse.json({ version: 1, events: [], next_before: null });
-    }));
-    await client.agentHistory("agent/with space", { instance_id: "instance & 1", project_id: "project/1", status: "failed", before_run_id: "run/2", limit: 10 });
+    server.use(
+      http.get(`${BASE}/agents/:id/history`, ({ params, request }) => {
+        expect(params.id).toBe("agent/with space");
+        const query = new URL(request.url).searchParams;
+        expect(Object.fromEntries(query)).toEqual({
+          instance_id: "instance & 1",
+          project_id: "project/1",
+          status: "failed",
+          before_run_id: "run/2",
+          limit: "10",
+        });
+        return HttpResponse.json({ version: 1, runs: [], next_before_run_id: null });
+      }),
+      http.get(`${BASE}/agents/:id/history/:runId`, ({ params, request }) => {
+        expect(params.id).toBe("agent/with space");
+        expect(params.runId).toBe("run/1");
+        expect(Object.fromEntries(new URL(request.url).searchParams)).toEqual({ before: "42", limit: "25" });
+        return HttpResponse.json({ version: 1, events: [], next_before: null });
+      }),
+    );
+    await client.agentHistory("agent/with space", {
+      instance_id: "instance & 1",
+      project_id: "project/1",
+      status: "failed",
+      before_run_id: "run/2",
+      limit: 10,
+    });
     await client.agentHistoryRun("agent/with space", "run/1", { before: 42, limit: 25 });
   });
   it("creates an autonomous goal with one objective and keeps the request identity on the wire", async () => {
-    const requestBody = { project_id: "proj_1", objective: "Build a journal\nKeep entries offline", verification_profile_id: "default", max_retries: 3 };
-    server.use(http.post(`${BASE}/autonomous-goals`, async ({ request }) => {
-      expect(request.headers.get("Idempotency-Key")).toBe("autonomy-request");
-      expect(await request.json()).toEqual(requestBody);
-      return HttpResponse.json({ goal: { id: "goal_auto" }, automation: { status: "planning", delivery: "verified_workspace" } }, { status: 201 });
-    }));
-    await expect(client.createAutonomousGoal(requestBody, "autonomy-request")).resolves.toMatchObject({ goal: { id: "goal_auto" }, automation: { delivery: "verified_workspace" } });
+    const requestBody = {
+      project_id: "proj_1",
+      objective: "Build a journal\nKeep entries offline",
+      verification_profile_id: "default",
+      max_retries: 3,
+    };
+    server.use(
+      http.post(`${BASE}/autonomous-goals`, async ({ request }) => {
+        expect(request.headers.get("Idempotency-Key")).toBe("autonomy-request");
+        expect(await request.json()).toEqual(requestBody);
+        return HttpResponse.json(
+          { goal: { id: "goal_auto" }, automation: { status: "planning", delivery: "verified_workspace" } },
+          { status: 201 },
+        );
+      }),
+    );
+    await expect(client.createAutonomousGoal(requestBody, "autonomy-request")).resolves.toMatchObject({
+      goal: { id: "goal_auto" },
+      automation: { delivery: "verified_workspace" },
+    });
   });
 
   it("keeps missing automation distinct from completed automation", async () => {
-    server.use(http.get(`${BASE}/goals/:id/automation`, ({ params }) => {
-      expect(params.id).toBe("goal/with space");
-      return HttpResponse.json({ automation: null });
-    }));
+    server.use(
+      http.get(`${BASE}/goals/:id/automation`, ({ params }) => {
+        expect(params.id).toBe("goal/with space");
+        return HttpResponse.json({ automation: null });
+      }),
+    );
     await expect(client.getGoalAutomation("goal/with space")).resolves.toEqual({ automation: null });
   });
 
   it("fetches publication evidence without treating an absent release as a success", async () => {
-    server.use(http.get(`${BASE}/goals/:id/release`, ({ params }) => {
-      expect(params.id).toBe("goal/with space");
-      return HttpResponse.json({ release: null });
-    }));
+    server.use(
+      http.get(`${BASE}/goals/:id/release`, ({ params }) => {
+        expect(params.id).toBe("goal/with space");
+        return HttpResponse.json({ release: null });
+      }),
+    );
     await expect(client.getGoalRelease("goal/with space")).resolves.toEqual({ release: null });
   });
   it("fetches application publication separately and preserves an absent publication", async () => {
-    server.use(http.get(`${BASE}/goals/:id/application-publication`, ({ params }) => {
-      expect(params.id).toBe("goal/with space"); return HttpResponse.json({ publication: null });
-    }));
+    server.use(
+      http.get(`${BASE}/goals/:id/application-publication`, ({ params }) => {
+        expect(params.id).toBe("goal/with space");
+        return HttpResponse.json({ publication: null });
+      }),
+    );
     await expect(client.getGoalApplicationPublication("goal/with space")).resolves.toEqual({ publication: null });
   });
   it("stops the selected application's original publication and preserves a rejected stop", async () => {
     let attempts = 0;
-    server.use(http.post(`${BASE}/goals/:id/application-publication/stop`, async ({ params, request }) => {
-      expect(params.id).toBe("goal/with space"); expect(request.headers.get("Idempotency-Key")).toBe("application-stop");
-      expect(await request.text()).toBe(""); attempts++;
-      return attempts === 1 ? HttpResponse.json({ error: { code: "conflict", message: "Original service closure remains unconfirmed" } }, { status: 409 })
-        : HttpResponse.json({ publication: { status: "published", current_state: "closed-normal" } });
-    }));
-    await expect(client.stopGoalApplicationPublication("goal/with space", "application-stop")).rejects.toMatchObject({ status: 409, code: "conflict" });
-    await expect(client.stopGoalApplicationPublication("goal/with space", "application-stop")).resolves.toMatchObject({ publication: { status: "published", current_state: "closed-normal" } });
+    server.use(
+      http.post(`${BASE}/goals/:id/application-publication/stop`, async ({ params, request }) => {
+        expect(params.id).toBe("goal/with space");
+        expect(request.headers.get("Idempotency-Key")).toBe("application-stop");
+        expect(await request.text()).toBe("");
+        attempts++;
+        return attempts === 1
+          ? HttpResponse.json(
+              { error: { code: "conflict", message: "Original service closure remains unconfirmed" } },
+              { status: 409 },
+            )
+          : HttpResponse.json({ publication: { status: "published", current_state: "closed-normal" } });
+      }),
+    );
+    await expect(client.stopGoalApplicationPublication("goal/with space", "application-stop")).rejects.toMatchObject({
+      status: 409,
+      code: "conflict",
+    });
+    await expect(client.stopGoalApplicationPublication("goal/with space", "application-stop")).resolves.toMatchObject({
+      publication: { status: "published", current_state: "closed-normal" },
+    });
   });
 
   it("enrolls the selected device with an idempotency key and preserves enrollment errors", async () => {
     let attempts = 0;
-    server.use(http.post(`${BASE}/devices/:id/enroll`, async ({ request, params }) => {
-      expect(params.id).toBe("device/with space");
-      expect(request.headers.get("Idempotency-Key")).toBe("enrollment-key");
-      expect(await request.json()).toEqual({});
-      attempts += 1;
-      return attempts === 1
-        ? HttpResponse.json({ error: { code: "permission_denied", message: "An administrator must enroll this computer" } }, { status: 403 })
-        : HttpResponse.json({ device_id: params.id, computer_id: "computer_1", created: true });
-    }));
-    await expect(client.enrollDevice("device/with space", "enrollment-key")).rejects.toMatchObject({ status: 403, code: "permission_denied" });
-    await expect(client.enrollDevice("device/with space", "enrollment-key")).resolves.toMatchObject({ computer_id: "computer_1", created: true });
+    server.use(
+      http.post(`${BASE}/devices/:id/enroll`, async ({ request, params }) => {
+        expect(params.id).toBe("device/with space");
+        expect(request.headers.get("Idempotency-Key")).toBe("enrollment-key");
+        expect(await request.json()).toEqual({});
+        attempts += 1;
+        return attempts === 1
+          ? HttpResponse.json(
+              { error: { code: "permission_denied", message: "An administrator must enroll this computer" } },
+              { status: 403 },
+            )
+          : HttpResponse.json({ device_id: params.id, computer_id: "computer_1", created: true });
+      }),
+    );
+    await expect(client.enrollDevice("device/with space", "enrollment-key")).rejects.toMatchObject({
+      status: 403,
+      code: "permission_denied",
+    });
+    await expect(client.enrollDevice("device/with space", "enrollment-key")).resolves.toMatchObject({
+      computer_id: "computer_1",
+      created: true,
+    });
   });
 
   it("preserves opaque notification cursors and the server's global unread count", async () => {
-    server.use(http.get(`${BASE}/notifications`, ({ request }) => {
-      const search = new URL(request.url).searchParams;
-      expect(search.get("limit")).toBe("50");
-      expect(search.get("before")).toBe("opaque/+= ?&");
-      return HttpResponse.json({ notifications: [], next_before: "next/+= ?&", has_more: true, unread_count: 127 });
-    }));
-    expect(await client.listNotifications({ limit: 50, before: "opaque/+= ?&" })).toEqual({ notifications: [], next_before: "next/+= ?&", has_more: true, unread_count: 127 });
+    server.use(
+      http.get(`${BASE}/notifications`, ({ request }) => {
+        const search = new URL(request.url).searchParams;
+        expect(search.get("limit")).toBe("50");
+        expect(search.get("before")).toBe("opaque/+= ?&");
+        return HttpResponse.json({ notifications: [], next_before: "next/+= ?&", has_more: true, unread_count: 127 });
+      }),
+    );
+    expect(await client.listNotifications({ limit: 50, before: "opaque/+= ?&" })).toEqual({
+      notifications: [],
+      next_before: "next/+= ?&",
+      has_more: true,
+      unread_count: 127,
+    });
   });
 
   it("requests assistant turn history for the selected thread instead of the room root", async () => {
     const seen: Array<string | null> = [];
-    server.use(http.get(`${BASE}/rooms/room_1/assistant-turns`, ({ request }) => {
-      const thread = new URL(request.url).searchParams.get("thread_root_id");
-      seen.push(thread);
-      return HttpResponse.json({ turns: [{ id: thread ? "thread_turn" : "room_turn", thread_root_id: thread }] });
-    }));
+    server.use(
+      http.get(`${BASE}/rooms/room_1/assistant-turns`, ({ request }) => {
+        const thread = new URL(request.url).searchParams.get("thread_root_id");
+        seen.push(thread);
+        return HttpResponse.json({ turns: [{ id: thread ? "thread_turn" : "room_turn", thread_root_id: thread }] });
+      }),
+    );
     expect((await client.listAssistantTurns("room_1")).turns[0]!.id).toBe("room_turn");
     expect((await client.listAssistantTurns("room_1", "root/+= ?&")).turns[0]!.id).toBe("thread_turn");
     expect(seen).toEqual([null, "root/+= ?&"]);
@@ -135,24 +251,38 @@ describe("ApiClient", () => {
 
   it("passes opaque room history cursors without changing their value", async () => {
     const seen: string[] = [];
-    server.use(http.get(`${BASE}/rooms/room_1/messages`, ({ request }) => {
-      const query = new URL(request.url).searchParams;
-      seen.push(query.get("before") ?? query.get("after") ?? "");
-      expect(query.get("limit")).toBe("50");
-      return HttpResponse.json({ messages: [], next_before: null, next_after: null, has_more: false });
-    }));
+    server.use(
+      http.get(`${BASE}/rooms/room_1/messages`, ({ request }) => {
+        const query = new URL(request.url).searchParams;
+        seen.push(query.get("before") ?? query.get("after") ?? "");
+        expect(query.get("limit")).toBe("50");
+        return HttpResponse.json({ messages: [], next_before: null, next_after: null, has_more: false });
+      }),
+    );
     await client.listMessages("room_1", { limit: 50, before: "opaque/+= cursor" });
     await client.listMessages("room_1", { limit: 50, after: "opaque?&:cursor" });
     expect(seen).toEqual(["opaque/+= cursor", "opaque?&:cursor"]);
   });
   it.each(["task", "session", "artifact"] as const)("refuses redirects for authenticated %s requests", async (kind) => {
     let redirected = 0;
-    const paths = { task: `${BASE}/tasks/task_redirect`, session: "http://localhost/auth/session", artifact: `${BASE}/artifacts/artifact_redirect/content` };
+    const paths = {
+      task: `${BASE}/tasks/task_redirect`,
+      session: "http://localhost/auth/session",
+      artifact: `${BASE}/artifacts/artifact_redirect/content`,
+    };
     server.use(
       http.get(paths[kind], () => HttpResponse.redirect("http://localhost/unexpected-target", 302)),
-      http.get("http://localhost/unexpected-target", () => { redirected += 1; return HttpResponse.json({}); }),
+      http.get("http://localhost/unexpected-target", () => {
+        redirected += 1;
+        return HttpResponse.json({});
+      }),
     );
-    const request = kind === "task" ? client.getTask("task_redirect") : kind === "session" ? client.getSession() : client.downloadArtifact("artifact_redirect");
+    const request =
+      kind === "task"
+        ? client.getTask("task_redirect")
+        : kind === "session"
+          ? client.getSession()
+          : client.downloadArtifact("artifact_redirect");
     await expect(request).rejects.toBeDefined();
     expect(redirected).toBe(0);
   });
@@ -168,9 +298,7 @@ describe("ApiClient", () => {
   });
 
   it("getSession throws ApiClientError(401) when unauthenticated", async () => {
-    server.use(
-      http.get("http://localhost/auth/session", () => new HttpResponse(null, { status: 401 })),
-    );
+    server.use(http.get("http://localhost/auth/session", () => new HttpResponse(null, { status: 401 })));
     await expect(client.getSession()).rejects.toMatchObject({ name: "ApiClientError", status: 401 });
   });
 

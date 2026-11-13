@@ -29,21 +29,31 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
   }
   if (typeof event.room_id === "string") {
     keys.push(queryKeys.messages(event.room_id));
+    keys.push(queryKeys.messageSearch(event.room_id));
     // Room-prefix invalidation also refreshes every independently cached thread.
     keys.push(queryKeys.assistantTurns(event.room_id));
     keys.push(queryKeys.collaboration(event.room_id));
   }
   if (event.type === "message.moderated") {
     keys.push(queryKeys.notifications);
-    if (event.room_id && typeof event.payload.message_id === "string") keys.push(queryKeys.message(event.room_id, event.payload.message_id));
+    if (event.room_id && typeof event.payload.message_id === "string")
+      keys.push(queryKeys.message(event.room_id, event.payload.message_id));
   }
   if (event.type.startsWith("channel.")) keys.push(queryKeys.channels());
   if (event.type === "discussion.updated") keys.push(queryKeys.discussions());
   if (event.type === "message.mention" || event.type.startsWith("notification.")) keys.push(queryKeys.notifications);
-  if (event.type.startsWith("computer.") || event.type.startsWith("daemon.") || event.type.startsWith("agent.")) keys.push(queryKeys.daemons);
+  if (event.type.startsWith("computer.") || event.type.startsWith("daemon.") || event.type.startsWith("agent."))
+    keys.push(queryKeys.daemons);
   if (event.type.startsWith("goal.") || event.type.startsWith("plan.") || event.type.startsWith("checkpoint.")) {
-    keys.push(queryKeys.goals(), queryKeys.plans(), queryKeys.checkpoints(), queryKeys.discussions(),
-      queryKeys.goalAutomation(), queryKeys.goalRelease(), queryKeys.goalApplicationPublication());
+    keys.push(
+      queryKeys.goals(),
+      queryKeys.plans(),
+      queryKeys.checkpoints(),
+      queryKeys.discussions(),
+      queryKeys.goalAutomation(),
+      queryKeys.goalRelease(),
+      queryKeys.goalApplicationPublication(),
+    );
   }
   if (event.type.startsWith("computer.") || event.type.startsWith("agent.") || event.type.startsWith("device.")) {
     keys.push(queryKeys.bootstrap, queryKeys.devices, queryKeys.allComputerRuntimes);
@@ -54,7 +64,8 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
   // task.updated event. Keep the rail and Board aligned with task detail.
   if (
     typeof event.project_id === "string" &&
-    (event.type === "task.created" || event.type === "task.updated" ||
+    (event.type === "task.created" ||
+      event.type === "task.updated" ||
       ["run.started", "run.completed", "run.failed", "run.cancelled", "approval.resolved"].includes(event.type))
   ) {
     keys.push(queryKeys.tasks(event.project_id));

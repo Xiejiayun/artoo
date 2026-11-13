@@ -13,7 +13,8 @@ import {
   type ProposeMemoryRequest,
 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
+import { literalSearchPattern, parseSearchQuery } from "./search-query.js";
 
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -82,19 +83,35 @@ export interface ListMemoriesFilters {
   taskId?: string;
   tag?: string;
   limit?: number;
+  q?: unknown;
 }
 
 /** GET /memories — list this org's memories, optionally filtered. */
-export async function listMemories(
-  ctx: ServerContext,
-  filters: ListMemoriesFilters,
-): Promise<Memory[]> {
+export async function listMemories(ctx: ServerContext, filters: ListMemoriesFilters): Promise<Memory[]> {
+  const search = parseSearchQuery(filters.q);
   const conditions = [eq(memories.organizationId, ctx.organizationId)];
   if (filters.scope) conditions.push(eq(memories.scope, filters.scope));
   if (filters.status) conditions.push(eq(memories.status, filters.status));
   if (filters.projectId) conditions.push(eq(memories.projectId, filters.projectId));
   if (filters.taskId) conditions.push(eq(memories.taskId, filters.taskId));
-  const rows = await ctx.db.db.select().from(memories).where(and(...conditions));
+  if (search !== undefined) {
+    const pattern = literalSearchPattern(search);
+    conditions.push(
+      sql`(${memories.text} ILIKE ${pattern} OR ${memories.payload}::text ILIKE ${pattern} OR ${memories.tags}::text ILIKE ${pattern})`,
+    );
+    if (filters.tag) conditions.push(sql`${memories.tags} @> ${JSON.stringify([filters.tag])}::jsonb`);
+    const query = ctx.db.db
+      .select()
+      .from(memories)
+      .where(and(...conditions))
+      .orderBy(asc(memories.createdAt), asc(memories.id));
+    const rows = filters.limit === undefined ? await query : await query.limit(filters.limit);
+    return rows.map(mapMemory);
+  }
+  const rows = await ctx.db.db
+    .select()
+    .from(memories)
+    .where(and(...conditions));
   const mapped = rows.map(mapMemory);
   const tag = filters.tag;
   const filtered = tag !== undefined && tag !== "" ? mapped.filter((m) => m.tags.includes(tag)) : mapped;
@@ -187,10 +204,9 @@ export async function supersedeMemory(
       throw AppError.notFound(`memory not found: ${oldId}`, { memory_id: oldId });
     }
     if (oldRow.status !== "accepted") {
-      throw AppError.invalidState(
-        `can only supersede an accepted memory (status '${oldRow.status}')`,
-        { status: oldRow.status },
-      );
+      throw AppError.invalidState(`can only supersede an accepted memory (status '${oldRow.status}')`, {
+        status: oldRow.status,
+      });
     }
 
     const newId = ctx.idGen.generate(ID_PREFIXES.memory);
@@ -218,10 +234,7 @@ export async function supersedeMemory(
     });
 
     const to = applyMemoryTransition("accepted", "supersede");
-    await tx
-      .update(memories)
-      .set({ status: to, supersededById: newId, updatedAt: now })
-      .where(eq(memories.id, oldId));
+    await tx.update(memories).set({ status: to, supersededById: newId, updatedAt: now }).where(eq(memories.id, oldId));
 
     await appendEvent(
       tx,
@@ -283,9 +296,5 @@ export async function selectForContext(
     project_id: input.projectId ?? null,
     task_id: input.taskId ?? null,
   };
-  return selectInjectableMemories(
-    candidates,
-    memoryContext,
-    limit !== undefined ? { limit } : {},
-  );
+  return selectInjectableMemories(candidates, memoryContext, limit !== undefined ? { limit } : {});
 }

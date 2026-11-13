@@ -43,8 +43,15 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import type { ServerContext } from "./context.js";
 import { resolveArtifactStore, type ArtifactStorageOptions } from "./content-addressed-blob.js";
 import { goalImportedProductReviews, goalProductHandoffOperations, goalProductHandoffs } from "@artoo/db";
-import { goalImportedDesignContinuations, goalImportedDesignReviews, goalImportedExecutions, goalImportedExecutionReviews, goalImportedExecutionRepairs,
-  goalImportedValidations, goalImportedValidationReviews } from "@artoo/db";
+import {
+  goalImportedDesignContinuations,
+  goalImportedDesignReviews,
+  goalImportedExecutions,
+  goalImportedExecutionReviews,
+  goalImportedExecutionRepairs,
+  goalImportedValidations,
+  goalImportedValidationReviews,
+} from "@artoo/db";
 import { and } from "drizzle-orm";
 import { registerProjectRoutes } from "./project-routes.js";
 import { registerResourceRoutes } from "./resource-routes.js";
@@ -135,30 +142,46 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   if (options.budgetMonitorIntervalMs !== false) {
     let budgetMonitor: ReturnType<typeof startGoalBudgetMonitor> | undefined;
     app.addHook("onReady", async () => {
-      budgetMonitor = startGoalBudgetMonitor(ctx, { intervalMs: options.budgetMonitorIntervalMs || 1000, onError: (error) => app.log.error(error, "goal budget monitor failed") });
+      budgetMonitor = startGoalBudgetMonitor(ctx, {
+        intervalMs: options.budgetMonitorIntervalMs || 1000,
+        onError: (error) => app.log.error(error, "goal budget monitor failed"),
+      });
     });
-    app.addHook("onClose", async () => { await budgetMonitor?.stop(); });
+    app.addHook("onClose", async () => {
+      await budgetMonitor?.stop();
+    });
   }
   const nodeRegistry = options.nodeRegistry ?? createNodeRegistry();
   const sourceLifecycle = createSourceLifecycleRegistry(ctx);
   ctx.sourceLifecycle = sourceLifecycle;
-  app.addHook("onClose", async () => { sourceLifecycle.close(); });
-  ctx.getPairedNodeSession = computerId => nodeRegistry.get(computerId)?.getPairedNodeSession?.();
+  app.addHook("onClose", async () => {
+    sourceLifecycle.close();
+  });
+  ctx.getPairedNodeSession = (computerId) => nodeRegistry.get(computerId)?.getPairedNodeSession?.();
   ctx.getApplicationPublicationCapabilities = (computerId, profileId, projectId) =>
     nodeRegistry.get(computerId)?.getApplicationPublicationCapabilities?.(profileId, projectId);
   ctx.onApplicationPublicationQueued ??= async (publicationId, control) => {
-    const [publication] = await ctx.db.db.select().from(applicationPublications).where(and(eq(applicationPublications.id, publicationId),
-      eq(applicationPublications.organizationId, ctx.organizationId)));
+    const [publication] = await ctx.db.db
+      .select()
+      .from(applicationPublications)
+      .where(
+        and(
+          eq(applicationPublications.id, publicationId),
+          eq(applicationPublications.organizationId, ctx.organizationId),
+        ),
+      );
     const binding = publication && nodeRegistry.get(publication.computerId);
-    if (!binding?.dispatchApplicationPublication) throw AppError.conflict("Original application publication node is unavailable");
+    if (!binding?.dispatchApplicationPublication)
+      throw AppError.conflict("Original application publication node is unavailable");
     await binding.dispatchApplicationPublication(publicationId, control);
   };
   ctx.redeliverImportedSourceReceipt = async (computerId, family, id) => {
     const binding = nodeRegistry.get(computerId);
-    if (!binding?.redeliverCommittedSourceReceipt) throw AppError.conflict("Original source receipt node is unavailable");
+    if (!binding?.redeliverCommittedSourceReceipt)
+      throw AppError.conflict("Original source receipt node is unavailable");
     await binding.redeliverCommittedSourceReceipt(family, id);
   };
-  ctx.getProductSourceRouting = computerId => nodeRegistry.get(computerId)?.getProductSourceRouting?.();
+  ctx.getProductSourceRouting = (computerId) => nodeRegistry.get(computerId)?.getProductSourceRouting?.();
   // Resolve every query through the current binding; never cache by computer.
   ctx.supportsExecutionFeature = (computerId, feature) =>
     nodeRegistry.get(computerId)?.supportsExecutionFeature(feature) ?? false;
@@ -181,11 +204,20 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   ctx.onProductReleaseCancel ??= async (releaseId) => {
     const [release] = await ctx.db.db.select().from(productReleases).where(eq(productReleases.id, releaseId));
     const binding = release && nodeRegistry.get(release.computerId);
-    if (!binding?.dispatchProductReleaseCancel) throw AppError.conflict("Publication node is offline; cancellation cannot be confirmed");
+    if (!binding?.dispatchProductReleaseCancel)
+      throw AppError.conflict("Publication node is offline; cancellation cannot be confirmed");
     await binding.dispatchProductReleaseCancel(releaseId);
   };
   ctx.onImportedProductReviewQueued ??= async (reviewId, control) => {
-    const [review] = await ctx.db.db.select().from(goalImportedProductReviews).where(and(eq(goalImportedProductReviews.id, reviewId), eq(goalImportedProductReviews.organizationId, ctx.organizationId)));
+    const [review] = await ctx.db.db
+      .select()
+      .from(goalImportedProductReviews)
+      .where(
+        and(
+          eq(goalImportedProductReviews.id, reviewId),
+          eq(goalImportedProductReviews.organizationId, ctx.organizationId),
+        ),
+      );
     const binding = review && nodeRegistry.get(review.computerId);
     if (!binding?.dispatchImportedProductReview) throw AppError.conflict("Destination review node is unavailable");
     await binding.dispatchImportedProductReview(reviewId, control);
@@ -193,81 +225,178 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   ctx.productSourceArtifactDir = options.artifactDir;
   ctx.artifactStore = artifactStore;
   ctx.onImportedExecutionReviewQueued ??= async (reviewId, control) => {
-    const [row] = await ctx.db.db.select().from(goalImportedExecutionReviews).where(and(eq(goalImportedExecutionReviews.id, reviewId), eq(goalImportedExecutionReviews.organizationId, ctx.organizationId)));
+    const [row] = await ctx.db.db
+      .select()
+      .from(goalImportedExecutionReviews)
+      .where(
+        and(
+          eq(goalImportedExecutionReviews.id, reviewId),
+          eq(goalImportedExecutionReviews.organizationId, ctx.organizationId),
+        ),
+      );
     const binding = row && nodeRegistry.get(row.computerId);
     if (!binding?.dispatchImportedExecutionReview) throw AppError.conflict("H6 review destination node is unavailable");
     await binding.dispatchImportedExecutionReview(reviewId, control);
   };
   ctx.onImportedExecutionRepairQueued ??= async (repairId, control) => {
-    const [row] = await ctx.db.db.select().from(goalImportedExecutionRepairs).where(and(eq(goalImportedExecutionRepairs.id, repairId), eq(goalImportedExecutionRepairs.organizationId, ctx.organizationId)));
+    const [row] = await ctx.db.db
+      .select()
+      .from(goalImportedExecutionRepairs)
+      .where(
+        and(
+          eq(goalImportedExecutionRepairs.id, repairId),
+          eq(goalImportedExecutionRepairs.organizationId, ctx.organizationId),
+        ),
+      );
     const binding = row && nodeRegistry.get(row.computerId);
     if (!binding?.dispatchImportedExecutionRepair) throw AppError.conflict("H6 repair destination node is unavailable");
     await binding.dispatchImportedExecutionRepair(repairId, control);
   };
   ctx.onImportedExecutionQueued ??= async (executionId, control) => {
-    const [row] = await ctx.db.db.select().from(goalImportedExecutions).where(and(eq(goalImportedExecutions.id, executionId), eq(goalImportedExecutions.organizationId, ctx.organizationId)));
+    const [row] = await ctx.db.db
+      .select()
+      .from(goalImportedExecutions)
+      .where(
+        and(eq(goalImportedExecutions.id, executionId), eq(goalImportedExecutions.organizationId, ctx.organizationId)),
+      );
     const binding = row && nodeRegistry.get(row.computerId);
     if (!binding?.dispatchImportedExecution) throw AppError.conflict("H5 destination node is unavailable");
     await binding.dispatchImportedExecution(executionId, control);
   };
   ctx.onImportedValidationQueued ??= async (validationId, control) => {
-    const [row] = await ctx.db.db.select().from(goalImportedValidations).where(and(eq(goalImportedValidations.id, validationId), eq(goalImportedValidations.organizationId, ctx.organizationId)));
+    const [row] = await ctx.db.db
+      .select()
+      .from(goalImportedValidations)
+      .where(
+        and(
+          eq(goalImportedValidations.id, validationId),
+          eq(goalImportedValidations.organizationId, ctx.organizationId),
+        ),
+      );
     const binding = row && nodeRegistry.get(row.computerId);
     if (!binding?.dispatchImportedValidation) throw AppError.conflict("H7 validation destination node is unavailable");
     await binding.dispatchImportedValidation(validationId, control);
   };
   ctx.onSourceRecoveryQueued ??= async (recoveryId, control) => {
-    const [row] = await ctx.db.db.select().from(goalSourceRecoveries).where(and(eq(goalSourceRecoveries.id, recoveryId), eq(goalSourceRecoveries.organizationId, ctx.organizationId)));
+    const [row] = await ctx.db.db
+      .select()
+      .from(goalSourceRecoveries)
+      .where(and(eq(goalSourceRecoveries.id, recoveryId), eq(goalSourceRecoveries.organizationId, ctx.organizationId)));
     const binding = row && nodeRegistry.get(row.computerId);
     if (!binding?.dispatchSourceRecovery) throw AppError.conflict("Recovery destination node is unavailable");
     await binding.dispatchSourceRecovery(recoveryId, control);
   };
   ctx.onRecoveryValidationQueued ??= async (validationId, control) => {
-    const [row] = await ctx.db.db.select().from(goalRecoveryValidations).where(and(eq(goalRecoveryValidations.id, validationId), eq(goalRecoveryValidations.organizationId, ctx.organizationId)));
+    const [row] = await ctx.db.db
+      .select()
+      .from(goalRecoveryValidations)
+      .where(
+        and(
+          eq(goalRecoveryValidations.id, validationId),
+          eq(goalRecoveryValidations.organizationId, ctx.organizationId),
+        ),
+      );
     const binding = row && nodeRegistry.get(row.computerId);
-    if (!binding?.dispatchRecoveryValidation) throw AppError.conflict("Recovery validation destination node is unavailable");
+    if (!binding?.dispatchRecoveryValidation)
+      throw AppError.conflict("Recovery validation destination node is unavailable");
     await binding.dispatchRecoveryValidation(validationId, control);
   };
   ctx.onRecoveryValidationReviewQueued ??= async (reviewId, control) => {
-    const [row] = await ctx.db.db.select().from(goalRecoveryValidationReviews).where(and(eq(goalRecoveryValidationReviews.id, reviewId), eq(goalRecoveryValidationReviews.organizationId, ctx.organizationId)));
+    const [row] = await ctx.db.db
+      .select()
+      .from(goalRecoveryValidationReviews)
+      .where(
+        and(
+          eq(goalRecoveryValidationReviews.id, reviewId),
+          eq(goalRecoveryValidationReviews.organizationId, ctx.organizationId),
+        ),
+      );
     const binding = row && nodeRegistry.get(row.computerId);
-    if (!binding?.dispatchRecoveryValidationReview) throw AppError.conflict("Recovery independent reviewer node is unavailable");
+    if (!binding?.dispatchRecoveryValidationReview)
+      throw AppError.conflict("Recovery independent reviewer node is unavailable");
     await binding.dispatchRecoveryValidationReview(reviewId, control);
   };
   ctx.onCleanValidationQueued ??= async (validationId, control) => {
-    const [row] = await ctx.db.db.select().from(goalCleanValidations).where(and(eq(goalCleanValidations.id, validationId), eq(goalCleanValidations.organizationId, ctx.organizationId)));
+    const [row] = await ctx.db.db
+      .select()
+      .from(goalCleanValidations)
+      .where(
+        and(eq(goalCleanValidations.id, validationId), eq(goalCleanValidations.organizationId, ctx.organizationId)),
+      );
     const binding = row && nodeRegistry.get(row.computerId);
-    if (!binding?.dispatchCleanValidation) throw AppError.conflict("Recovery validation destination node is unavailable");
+    if (!binding?.dispatchCleanValidation)
+      throw AppError.conflict("Recovery validation destination node is unavailable");
     await binding.dispatchCleanValidation(validationId, control);
   };
   ctx.onCleanValidationReviewQueued ??= async (reviewId, control) => {
-    const [row] = await ctx.db.db.select().from(goalCleanValidationReviews).where(and(eq(goalCleanValidationReviews.id, reviewId), eq(goalCleanValidationReviews.organizationId, ctx.organizationId)));
+    const [row] = await ctx.db.db
+      .select()
+      .from(goalCleanValidationReviews)
+      .where(
+        and(
+          eq(goalCleanValidationReviews.id, reviewId),
+          eq(goalCleanValidationReviews.organizationId, ctx.organizationId),
+        ),
+      );
     const binding = row && nodeRegistry.get(row.computerId);
-    if (!binding?.dispatchCleanValidationReview) throw AppError.conflict("Recovery independent reviewer node is unavailable");
+    if (!binding?.dispatchCleanValidationReview)
+      throw AppError.conflict("Recovery independent reviewer node is unavailable");
     await binding.dispatchCleanValidationReview(reviewId, control);
   };
   ctx.onImportedValidationReviewQueued ??= async (reviewId, control) => {
-    const [row] = await ctx.db.db.select().from(goalImportedValidationReviews).where(and(eq(goalImportedValidationReviews.id, reviewId), eq(goalImportedValidationReviews.organizationId, ctx.organizationId)));
+    const [row] = await ctx.db.db
+      .select()
+      .from(goalImportedValidationReviews)
+      .where(
+        and(
+          eq(goalImportedValidationReviews.id, reviewId),
+          eq(goalImportedValidationReviews.organizationId, ctx.organizationId),
+        ),
+      );
     const binding = row && nodeRegistry.get(row.computerId);
-    if (!binding?.dispatchImportedValidationReview) throw AppError.conflict("H7 final-product review destination node is unavailable");
+    if (!binding?.dispatchImportedValidationReview)
+      throw AppError.conflict("H7 final-product review destination node is unavailable");
     await binding.dispatchImportedValidationReview(reviewId, control);
   };
   ctx.onImportedDesignReviewQueued ??= async (reviewId, control) => {
-    const [row] = await ctx.db.db.select().from(goalImportedDesignReviews).where(and(eq(goalImportedDesignReviews.id, reviewId), eq(goalImportedDesignReviews.organizationId, ctx.organizationId)));
+    const [row] = await ctx.db.db
+      .select()
+      .from(goalImportedDesignReviews)
+      .where(
+        and(
+          eq(goalImportedDesignReviews.id, reviewId),
+          eq(goalImportedDesignReviews.organizationId, ctx.organizationId),
+        ),
+      );
     const binding = row && nodeRegistry.get(row.computerId);
     if (!binding?.dispatchImportedDesignReview) throw AppError.conflict("H4 destination review node is unavailable");
     await binding.dispatchImportedDesignReview(reviewId, control);
   };
   ctx.onImportedDesignContinuationQueued ??= async (continuationId, control) => {
-    const [row] = await ctx.db.db.select().from(goalImportedDesignContinuations).where(and(eq(goalImportedDesignContinuations.id, continuationId), eq(goalImportedDesignContinuations.organizationId, ctx.organizationId)));
+    const [row] = await ctx.db.db
+      .select()
+      .from(goalImportedDesignContinuations)
+      .where(
+        and(
+          eq(goalImportedDesignContinuations.id, continuationId),
+          eq(goalImportedDesignContinuations.organizationId, ctx.organizationId),
+        ),
+      );
     const binding = row && nodeRegistry.get(row.computerId);
     if (!binding?.dispatchImportedDesignContinuation) throw AppError.conflict("Imported design node is unavailable");
     await binding.dispatchImportedDesignContinuation(continuationId, control);
   };
   ctx.onProductSourceOperationQueued ??= async (operationId, control) => {
-    const [row] = await ctx.db.db.select({ computerId: goalProductHandoffOperations.computerId }).from(goalProductHandoffOperations)
+    const [row] = await ctx.db.db
+      .select({ computerId: goalProductHandoffOperations.computerId })
+      .from(goalProductHandoffOperations)
       .innerJoin(goalProductHandoffs, eq(goalProductHandoffs.id, goalProductHandoffOperations.handoffId))
-      .where(and(eq(goalProductHandoffOperations.id, operationId), eq(goalProductHandoffs.organizationId, ctx.organizationId)));
+      .where(
+        and(
+          eq(goalProductHandoffOperations.id, operationId),
+          eq(goalProductHandoffs.organizationId, ctx.organizationId),
+        ),
+      );
     const binding = row && nodeRegistry.get(row.computerId);
     if (!binding?.dispatchProductSourceOperation) throw AppError.conflict("Source operation node is unavailable");
     await binding.dispatchProductSourceOperation(operationId, control);
@@ -285,8 +414,12 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
         }
       },
     });
-  app.addHook("onReady", async () => { await recoverInterruptedRuns(ctx, graceWindow, { resetPresence: options.resetPresenceOnStart ?? true }); });
-  app.addHook("onClose", async () => { graceWindow.close?.(); });
+  app.addHook("onReady", async () => {
+    await recoverInterruptedRuns(ctx, graceWindow, { resetPresence: options.resetPresenceOnStart ?? true });
+  });
+  app.addHook("onClose", async () => {
+    graceWindow.close?.();
+  });
   const wsHub = options.wsHub ?? createWsHub();
   // Index of live device sockets (node + control) so a revoke can close them.
   // When a device's last live socket drops, emit a presence offline transition
@@ -311,7 +444,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   };
 
   void app.register(websocket, {
-    options: { handleProtocols: (protocols) => protocols.has("artoo") ? "artoo" : false },
+    options: { handleProtocols: (protocols) => (protocols.has("artoo") ? "artoo" : false) },
   });
   void app.register(async (instance) => {
     registerNodeWsRoute(instance, ctx, nodeRegistry, deviceConnections, graceWindow, artifactStore);
@@ -327,7 +460,8 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   // the /auth/* routes.
   registerApiAuthGuard(app, ctx, ctx.authConfig);
   registerAuthRoutes(app, ctx, {
-    config: ctx.authConfig, oidcHttp: ctx.oidcHttp,
+    config: ctx.authConfig,
+    oidcHttp: ctx.oidcHttp,
     onControlLogout: (deviceId) => deviceConnections.closeForDevice(deviceId, 1008, "signed out", "control"),
   });
 
@@ -360,28 +494,26 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   // Tolerate empty JSON bodies (no-body mutations like /ready send an empty body
   // with content-type: application/json) instead of 500; invalid JSON -> 400.
-  app.addContentTypeParser(
-    "application/json",
-    { parseAs: "string" },
-    (_req, raw, done) => {
-      const text = typeof raw === "string" ? raw.trim() : "";
-      if (text === "") {
-        done(null, undefined);
-        return;
-      }
-      try {
-        done(null, JSON.parse(text));
-      } catch {
-        done(AppError.validation("request body is not valid JSON"), undefined);
-      }
-    },
-  );
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, raw, done) => {
+    const text = typeof raw === "string" ? raw.trim() : "";
+    if (text === "") {
+      done(null, undefined);
+      return;
+    }
+    try {
+      done(null, JSON.parse(text));
+    } catch {
+      done(AppError.validation("request body is not valid JSON"), undefined);
+    }
+  });
 
   // Credential-issuance routes return raw codes/tokens once and must never have
   // those bodies persisted by the idempotency store (#28 invariant) — exempt them.
   registerIdempotency(app, ctx, new Set(["/api/v1/devices/pairings", "/api/v1/devices/claim"]));
 
-  app.get("/api/v1/bootstrap", async (req) => taskService.bootstrap(rc(req), (id) => nodeRegistry.get(id) !== undefined));
+  app.get("/api/v1/bootstrap", async (req) =>
+    taskService.bootstrap(rc(req), (id) => nodeRegistry.get(id) !== undefined),
+  );
   registerProjectRoutes(app, ctx);
   registerResourceRoutes(app, ctx, (computerId, deviceIds) => {
     for (const id of deviceIds) deviceConnections.closeForDevice(id, 1008, "computer deleted");
@@ -394,7 +526,9 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   app.get("/health/ready", async (_req, reply) => {
     try {
       if (await ctx.db.healthCheck()) return { status: "ready" };
-    } catch { /* A readiness response never exposes database details. */ }
+    } catch {
+      /* A readiness response never exposes database details. */
+    }
     return reply.status(503).send({ status: "unavailable" });
   });
 
@@ -483,7 +617,14 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   // live connection is its registered daemon node (nodeRegistry); the service
   // gathers the rest from runs/tasks/runtime/computer/device facts.
   const isLive = (computerId: string): boolean => nodeRegistry.get(computerId) !== undefined;
-  app.get("/api/v1/daemons", async (req) => ({ daemons: await listDaemons(rc(req), isLive, (id) => graceWindow.isArmed(id), (id) => nodeRegistry.get(id)?.workspaceRoots) }));
+  app.get("/api/v1/daemons", async (req) => ({
+    daemons: await listDaemons(
+      rc(req),
+      isLive,
+      (id) => graceWindow.isArmed(id),
+      (id) => nodeRegistry.get(id)?.workspaceRoots,
+    ),
+  }));
   app.get("/api/v1/agent-instances/presence", async (req) => ({
     presence: await presenceService.listAgentInstancePresence(rc(req), isLive),
   }));
@@ -650,7 +791,13 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   app.get("/api/v1/goals", async (req) => {
     const query = req.query as { project_id?: string; status?: string; limit?: string };
-    return { goals: await goalService.listGoals(rc(req), { projectId: query.project_id, status: query.status, limit: parseOptionalLimit(query.limit) }) };
+    return {
+      goals: await goalService.listGoals(rc(req), {
+        projectId: query.project_id,
+        status: query.status,
+        limit: parseOptionalLimit(query.limit),
+      }),
+    };
   });
   app.get("/api/v1/goals/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -666,24 +813,29 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       const { id } = req.params as { id: string };
       const requestCtx = rc(req);
       if (action === "cancel") await stopAutonomousGoalPlanning(requestCtx, id, stopProcess);
-      const goal = action === "cancel"
-        ? await goalService.cancelGoal(requestCtx, id, async (runId) => {
-          const run = await runService.getRun(requestCtx, runId);
-          if (run.status === "cancelled" || run.status === "completed") return;
-          const binding = nodeRegistry.get(run.computer_id);
-          if (!binding) throw AppError.conflict("goal paused: an execution computer is offline; reconnect it and retry cancellation");
-          if (run.status === "failed" && run.failure_reason === "daemon_disconnect") {
-            await binding.dispatchRunStop(runId);
-            await runService.failRunDaemonDisconnect(requestCtx, runId, run.computer_id, true);
-          } else {
-            try { await runService.cancelRun(requestCtx, runId, () => binding.dispatchRunStop(runId)); }
-            catch (error) {
-              const latest = await runService.getRun(requestCtx, runId);
-              if (!["completed", "cancelled", "failed"].includes(latest.status)) throw error;
-            }
-          }
-        })
-        : await (action === "pause" ? goalService.pauseGoal : goalService.resumeGoal)(requestCtx, id);
+      const goal =
+        action === "cancel"
+          ? await goalService.cancelGoal(requestCtx, id, async (runId) => {
+              const run = await runService.getRun(requestCtx, runId);
+              if (run.status === "cancelled" || run.status === "completed") return;
+              const binding = nodeRegistry.get(run.computer_id);
+              if (!binding)
+                throw AppError.conflict(
+                  "goal paused: an execution computer is offline; reconnect it and retry cancellation",
+                );
+              if (run.status === "failed" && run.failure_reason === "daemon_disconnect") {
+                await binding.dispatchRunStop(runId);
+                await runService.failRunDaemonDisconnect(requestCtx, runId, run.computer_id, true);
+              } else {
+                try {
+                  await runService.cancelRun(requestCtx, runId, () => binding.dispatchRunStop(runId));
+                } catch (error) {
+                  const latest = await runService.getRun(requestCtx, runId);
+                  if (!["completed", "cancelled", "failed"].includes(latest.status)) throw error;
+                }
+              }
+            })
+          : await (action === "pause" ? goalService.pauseGoal : goalService.resumeGoal)(requestCtx, id);
       if (goal === null) {
         void reply.status(404);
         throw AppError.notFound(`goal not found: ${id}`);
@@ -790,11 +942,11 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   });
 
   app.get("/api/v1/tasks", async (req) => {
-    const query = req.query as { project_id?: string; limit?: string };
+    const query = req.query as { project_id?: string; limit?: string; q?: unknown };
     if (query.project_id === undefined || query.project_id === "") {
       throw AppError.validation("project_id query parameter is required");
     }
-    return { tasks: await taskService.listTasks(rc(req), query.project_id, parseOptionalLimit(query.limit)) };
+    return { tasks: await taskService.listTasks(rc(req), query.project_id, parseOptionalLimit(query.limit), query.q) };
   });
 
   app.get("/api/v1/tasks/:id", async (req) => {
@@ -857,9 +1009,21 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   app.post("/api/v1/tasks/:id/assign-owned-result", async (req) => {
     const { id } = req.params as { id: string };
     const parsed = AssignOwnedResultRequestSchema.safeParse(req.body);
-    if (!parsed.success) throw AppError.validation("Invalid fixed-input result assignment", { issues: parsed.error.issues });
-    return lifecycle.assignTask(rc(req), id, { mode: "manual", agent_instance_id: parsed.data.agent_instance_id,
-      branch_backed: true, ...(parsed.data.write_paths ? { write_paths: parsed.data.write_paths } : {}) }, undefined, undefined, parsed.data);
+    if (!parsed.success)
+      throw AppError.validation("Invalid fixed-input result assignment", { issues: parsed.error.issues });
+    return lifecycle.assignTask(
+      rc(req),
+      id,
+      {
+        mode: "manual",
+        agent_instance_id: parsed.data.agent_instance_id,
+        branch_backed: true,
+        ...(parsed.data.write_paths ? { write_paths: parsed.data.write_paths } : {}),
+      },
+      undefined,
+      undefined,
+      parsed.data,
+    );
   });
 
   app.post("/api/v1/tasks/:id/retry", async (req) => {
@@ -883,15 +1047,20 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   });
 
   // Dev-only: simulate a node/adapter executing a queued run end to end.
-  if (options.enableDevRoutes === true) app.post("/api/v1/dev/runs/:id/mock-execute", async (req) => {
-    const { id } = req.params as { id: string };
-    const query = req.query as { outcome?: "completed" | "failed" };
-    return runService.mockExecuteRun(rc(req), id, query.outcome === "failed" ? "failed" : "completed");
-  });
+  if (options.enableDevRoutes === true)
+    app.post("/api/v1/dev/runs/:id/mock-execute", async (req) => {
+      const { id } = req.params as { id: string };
+      const query = req.query as { outcome?: "completed" | "failed" };
+      return runService.mockExecuteRun(rc(req), id, query.outcome === "failed" ? "failed" : "completed");
+    });
 
   app.get("/api/v1/rooms/:id/messages", async (req) => {
     const { id } = req.params as { id: string };
-    return messageService.listMessagePage(rc(req), id, req.query as { limit?: string; before?: string; after?: string; thread_root_id?: string });
+    return messageService.listMessagePage(
+      rc(req),
+      id,
+      req.query as { limit?: string; before?: string; after?: string; thread_root_id?: string; q?: unknown },
+    );
   });
 
   app.post("/api/v1/rooms/:id/messages", async (req, reply) => {
@@ -909,7 +1078,9 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     const { id } = req.params as { id: string };
     return { run: await runService.getRun(rc(req), id) };
   });
-  app.get("/api/v1/runs/:id/usage", async (req) => ({ usage: await runService.getRunUsage(rc(req), (req.params as { id: string }).id) }));
+  app.get("/api/v1/runs/:id/usage", async (req) => ({
+    usage: await runService.getRunUsage(rc(req), (req.params as { id: string }).id),
+  }));
 
   // Runtime registry (#15 Part 2): the runtimes a computer last advertised via
   // heartbeat, with status + last_seen_at for the scheduler to filter (Part 3).
@@ -954,14 +1125,18 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   app.post("/api/v1/runs/:id/cancel", async (req) => {
     const { id } = req.params as { id: string };
     const requestCtx = rc(req);
-    return { run: await runService.cancelRun(requestCtx, id, async () => {
-      const run = await runService.getRun(requestCtx, id);
-      const binding = nodeRegistry.get(run.computer_id);
-      if (binding) return binding.dispatchRunStop(id);
-      // Explicit dev mocks have no external process to stop.
-      if (options.enableDevRoutes === true && run.runtime_id === "mock") return;
-      throw AppError.conflict("execution computer is offline; cancellation cannot be confirmed and write leases remain active");
-    }) };
+    return {
+      run: await runService.cancelRun(requestCtx, id, async () => {
+        const run = await runService.getRun(requestCtx, id);
+        const binding = nodeRegistry.get(run.computer_id);
+        if (binding) return binding.dispatchRunStop(id);
+        // Explicit dev mocks have no external process to stop.
+        if (options.enableDevRoutes === true && run.runtime_id === "mock") return;
+        throw AppError.conflict(
+          "execution computer is offline; cancellation cannot be confirmed and write leases remain active",
+        );
+      }),
+    };
   });
 
   app.get("/api/v1/approvals", async (req) => {
@@ -972,8 +1147,12 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   app.post("/api/v1/tasks/:id/execution-approval", async (req, reply) => {
     const { id } = req.params as { id: string };
     const input = (req.body ?? {}) as Record<string, unknown>;
-    if (typeof input.summary !== "string" || !["low", "medium", "high"].includes(String(input.risk))) throw AppError.validation("summary and risk are required");
-    const approval = await approvalService.requestExecutionApproval(rc(req), id, { summary: input.summary, risk: input.risk as "low" | "medium" | "high" });
+    if (typeof input.summary !== "string" || !["low", "medium", "high"].includes(String(input.risk)))
+      throw AppError.validation("summary and risk are required");
+    const approval = await approvalService.requestExecutionApproval(rc(req), id, {
+      summary: input.summary,
+      risk: input.risk as "low" | "medium" | "high",
+    });
     return reply.status(201).send({ approval });
   });
 
@@ -1036,6 +1215,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       task_id?: string;
       tag?: string;
       limit?: string;
+      q?: unknown;
     };
     if (q.scope !== undefined && q.scope !== "") {
       const parsed = MemoryScopeSchema.safeParse(q.scope);
@@ -1057,6 +1237,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
         taskId: q.task_id,
         tag: q.tag,
         limit: parseOptionalLimit(q.limit),
+        q: q.q,
       }),
     };
   });
@@ -1071,11 +1252,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
         throw AppError.validation("limit must be a non-negative integer", { limit: q.limit });
       }
     }
-    return memoryService.selectForContext(
-      rc(req),
-      { projectId: q.project_id, taskId: q.task_id },
-      limit,
-    );
+    return memoryService.selectForContext(rc(req), { projectId: q.project_id, taskId: q.task_id }, limit);
   });
 
   app.get("/api/v1/memories/:id", async (req) => {
@@ -1108,24 +1285,25 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   });
 
   // Dev-only: the platform requesting a high-risk action approval on a running task.
-  if (options.enableDevRoutes === true) app.post("/api/v1/dev/tasks/:id/request-approval", async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const body = (req.body ?? {}) as {
-      action?: string;
-      risk?: "low" | "medium" | "high";
-      summary?: string;
-      run_id?: string;
-    };
-    const approval = await approvalService.requestApproval(rc(req), {
-      taskId: id,
-      runId: body.run_id ?? null,
-      action: body.action ?? "git.push",
-      risk: body.risk ?? "high",
-      summary: body.summary ?? "Push branch to remote",
+  if (options.enableDevRoutes === true)
+    app.post("/api/v1/dev/tasks/:id/request-approval", async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const body = (req.body ?? {}) as {
+        action?: string;
+        risk?: "low" | "medium" | "high";
+        summary?: string;
+        run_id?: string;
+      };
+      const approval = await approvalService.requestApproval(rc(req), {
+        taskId: id,
+        runId: body.run_id ?? null,
+        action: body.action ?? "git.push",
+        risk: body.risk ?? "high",
+        summary: body.summary ?? "Push branch to remote",
+      });
+      void reply.status(201);
+      return { approval };
     });
-    void reply.status(201);
-    return { approval };
-  });
 
   // Static web SPA last: the API/auth/WS routes above are matched first; this only
   if (artifactStore) {
@@ -1157,8 +1335,7 @@ function registerDesktopCors(app: FastifyInstance, options: DesktopCorsOptions):
     reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
     reply.header(
       "Access-Control-Allow-Headers",
-      firstHeader(req.headers["access-control-request-headers"]) ??
-        "Accept, Content-Type, Idempotency-Key",
+      firstHeader(req.headers["access-control-request-headers"]) ?? "Accept, Content-Type, Idempotency-Key",
     );
     reply.header("Access-Control-Max-Age", "600");
     reply.header("Vary", "Origin");
