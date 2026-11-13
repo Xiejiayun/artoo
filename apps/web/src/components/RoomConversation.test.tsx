@@ -23,6 +23,96 @@ function chatApi(overrides: Partial<ApiClient> = {}): ApiClient {
 afterEach(() => { localStorage.clear(); });
 
 describe("RoomConversation", () => {
+  it("uses complete compact state for empty-delta refreshes and preserves paginated history", async () => {
+    const query = createTestQueryClient();
+    const snapshot = bootstrapFixture({ message_sync: { version: 1, visibility_batch_limit: 500, reconciliation_version: 1 } });
+    query.setQueryData(queryKeys.bootstrap, snapshot);
+    const cached = Array.from({ length: 250 }, (_, index) => messageFixture({ id: `compact_${index}`, actor_type: "user", kind: "text",
+      body: `Compact history ${index}`, sequence: index + 1, reply_count: index === 0 ? 1 : 0 }));
+    query.setQueryData<MessagesResponse>(queryKeys.messages("room_1"), { messages: cached, next_after: "cursor", next_before: "older", has_more: true });
+    const listMessages = vi.fn<ApiClient["listMessages"]>().mockResolvedValue({ messages: [], next_after: "cursor" });
+    const client = chatApi({ bootstrap: async () => snapshot, listMessages });
+    const reconcile = vi.fn<ApiClient["reconcileMessages"]>().mockImplementation(async (room, ids) => {
+      client.noteMessageRemoved(room, "compact_249");
+      return { version: 1, states: ids.map((id) => ({ id, status: id === "compact_249" ? "removed" : "visible", reply_count: id === "compact_0" ? 7 : 0 })) };
+    });
+    client.reconcileMessages = reconcile;
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" onOpenThread={() => undefined} />, { client, queryClient: query });
+    await waitFor(() => expect(query.getQueryState(queryKeys.messages("room_1"))?.fetchStatus).toBe("idle"));
+    expect(listMessages.mock.calls.map((call) => call[1])).toEqual([{ limit: 50, after: "cursor" }]);
+    expect(reconcile.mock.calls.map((call) => call[1])).toEqual([cached.map((message) => message.id)]);
+    expect(await screen.findByRole("button", { name: "7 replies" })).toBeInTheDocument();
+    expect(screen.queryByText("Compact history 249")).not.toBeInTheDocument();
+    expect(query.getQueryData<MessagesResponse>(queryKeys.messages("room_1"))).toMatchObject({ next_before: "older", has_more: true });
+    listMessages.mockClear(); reconcile.mockClear();
+    await act(async () => { await query.invalidateQueries({ queryKey: queryKeys.messages("room_1") }); });
+    expect(listMessages).toHaveBeenCalledOnce();
+    expect(reconcile).toHaveBeenCalledOnce();
+    expect(query.getQueryData<MessagesResponse>(queryKeys.messages("room_1"))!.messages).toHaveLength(250);
+    expect(screen.queryByText("Compact history 249")).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])("redacts confirmed removals in every cache when a later batch fails (compact=%s)", async (compact) => {
+    const query = createTestQueryClient();
+    const snapshot = bootstrapFixture({ ...(compact ? { message_sync: { version: 1, visibility_batch_limit: 100, reconciliation_version: 1 } } : {}) });
+    query.setQueryData(queryKeys.bootstrap, snapshot);
+    const cached = Array.from({ length: 101 }, (_, index) => messageFixture({ id: `partial_${index}`, room_id: "room_1", actor_type: "user", kind: "text", body: `Partial history ${index}`, sequence: index + 1 }));
+    query.setQueryData<MessagesResponse>(queryKeys.messages("room_1"), { messages: cached, next_after: "cursor" });
+    query.setQueryData<MessagesResponse>(queryKeys.messages("room_1", "root"), { messages: [cached[0]!] });
+    query.setQueryData(queryKeys.message("room_1", cached[0]!.id), { message: cached[0] });
+    const client = chatApi({ bootstrap: async () => snapshot });
+    let fail = true;
+    const checked: string[][] = [];
+    const check = async (room: string, ids: string[]): Promise<void> => {
+      checked.push(ids);
+      if (fail && ids.includes("partial_100")) { fail = false; throw new Error("Second batch failed"); }
+      if (ids.includes("partial_0")) client.noteMessageRemoved(room, "partial_0");
+    };
+    client.messageVisibility = async (room, ids) => { await check(room, ids); return []; };
+    client.reconcileMessages = async (room, ids) => { await check(room, ids); return { version: 1, states: ids.map((id) => ({ id, status: id === "partial_0" ? "removed" : "visible", reply_count: 0 })) }; };
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client, queryClient: query });
+    expect(await screen.findByText("Second batch failed")).toBeInTheDocument();
+    expect(screen.queryByText("Partial history 0")).not.toBeInTheDocument();
+    for (const key of [queryKeys.messages("room_1"), queryKeys.messages("room_1", "root")]) {
+      expect(query.getQueryData<MessagesResponse>(key)!.messages[0]!.payload.moderation).toBe("removed");
+    }
+    expect(query.getQueryData<{ message: { payload: unknown } }>(queryKeys.message("room_1", "partial_0"))!.message.payload).toEqual({ moderation: "removed" });
+    await userEvent.click(screen.getByRole("button", { name: "Retry message sync" }));
+    await waitFor(() => expect(screen.queryByText("Second batch failed")).not.toBeInTheDocument());
+    expect(checked.flat()).toEqual([...cached.map((message) => message.id), ...cached.map((message) => message.id)]);
+  });
+
+  it("preserves history loaded during compact reconciliation and a newer realtime reply count", async () => {
+    const query = createTestQueryClient();
+    const snapshot = bootstrapFixture({ message_sync: { version: 1, visibility_batch_limit: 500, reconciliation_version: 1 } });
+    query.setQueryData(queryKeys.bootstrap, snapshot);
+    const root = messageFixture({ id: "root", actor_type: "user", kind: "text", body: "Root with newer replies", reply_count: 1, sequence: 2 });
+    const old = messageFixture({ id: "old", actor_type: "user", kind: "text", body: "Concurrent earlier page", sequence: 1 });
+    query.setQueryData<MessagesResponse>(queryKeys.messages("room_1"), { messages: [root], next_after: "cursor" });
+    const reconcile = vi.fn<ApiClient["reconcileMessages"]>().mockImplementation(async () => {
+      query.setQueryData<MessagesResponse>(queryKeys.messages("room_1"), { messages: [old, { ...root, reply_count: 9 }], next_after: "cursor", next_before: "earlier", has_more: true });
+      return { version: 1, states: [{ id: "root", status: "visible", reply_count: 7 }] };
+    });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" onOpenThread={() => undefined} />, { client: chatApi({ bootstrap: async () => snapshot, reconcileMessages: reconcile,
+      listMessages: async () => ({ messages: [{ ...root, reply_count: 2 }], next_after: "cursor" }) }), queryClient: query });
+    expect(await screen.findByRole("button", { name: "9 replies" })).toBeInTheDocument();
+    expect(screen.getByText("Concurrent earlier page")).toBeInTheDocument();
+    expect(query.getQueryData<MessagesResponse>(queryKeys.messages("room_1"))).toMatchObject({ next_before: "earlier", has_more: true });
+  });
+
+  it("retains the root projection snapshot for legacy agent text even with compact state", async () => {
+    const query = createTestQueryClient();
+    const snapshot = bootstrapFixture({ message_sync: { version: 1, visibility_batch_limit: 500, reconciliation_version: 1 } });
+    query.setQueryData(queryKeys.bootstrap, snapshot);
+    const legacy = messageFixture({ id: "legacy", actor_type: "agent", kind: "text", body: "Legacy response", payload: {} });
+    query.setQueryData<MessagesResponse>(queryKeys.messages("room_1"), { messages: [legacy], next_after: "cursor" });
+    const listMessages = vi.fn<ApiClient["listMessages"]>().mockResolvedValue({ messages: [] });
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" onOpenThread={() => undefined} />, { client: chatApi({ bootstrap: async () => snapshot, listMessages,
+      reconcileMessages: async () => ({ version: 1, states: [{ id: "legacy", status: "visible", reply_count: 0 }] }) }), queryClient: query });
+    await waitFor(() => expect(query.getQueryState(queryKeys.messages("room_1"))?.fetchStatus).toBe("idle"));
+    expect(listMessages.mock.calls.map((call) => call[1])).toEqual([{ limit: 50, after: "cursor" }, { limit: 50 }]);
+  });
+
   it.each([undefined, { version: 1 as const, visibility_batch_limit: 500 }])("reconciles all 250 cached messages and missed reply counts with capability %j", async (capability) => {
     const query = createTestQueryClient();
     const snapshot = bootstrapFixture({ ...(capability ? { message_sync: capability } : {}) });

@@ -39,3 +39,34 @@ it("preserves the planning identity when redacting a root, while removing other 
   const root = { ...message, payload: { discussion_id: "discussion_team", private_content: "Do not retain" } };
   expect(removedMessage(root).payload).toEqual({ moderation: "removed", discussion_id: "discussion_team" });
 });
+
+it("validates complete compact state and remembers removals across delayed reads", async () => {
+  let requestBody: unknown;
+  const client = new ApiClient({ fetch: async (_url, init) => {
+    requestBody = JSON.parse(String(init?.body));
+    return Response.json({ version: 1, states: [{ id: "msg_old", status: "removed", reply_count: 3 }] });
+  } });
+  expect((await client.reconcileMessages("room_team", ["msg_old", "msg_old"])).states).toHaveLength(1);
+  expect(requestBody).toEqual({ version: 1, message_ids: ["msg_old", "msg_old"] });
+  expect(client.messageForDisplay(message).body).toBe(REMOVED_MESSAGE);
+});
+
+it.each([
+  { version: 2, states: [] }, { version: 1, states: [] },
+  { version: 1, states: [{ id: "other", status: "removed", reply_count: 1 }] },
+  { version: 1, states: [{ id: "msg_old", status: "visible", reply_count: -1 }] },
+  { version: 1, states: [{ id: "msg_old", status: "visible", reply_count: 1.5 }] },
+  { version: 1, states: [{ id: "msg_old", status: "removed", reply_count: 1 }, { id: "msg_old", status: "removed", reply_count: 1 }] },
+])("rejects invalid/incomplete compact state %j without accepting tombstones", async (response) => {
+  const client = new ApiClient({ fetch: async () => Response.json(response) });
+  await expect(client.reconcileMessages("room_team", ["msg_old"])).rejects.toThrow("incomplete or invalid");
+  expect(client.messageForDisplay(message).body).toBe(message.body);
+});
+
+it("surfaces unavailable cached IDs while preserving confirmed removals", async () => {
+  const client = new ApiClient({ fetch: async () => Response.json({ version: 1, states: [
+    { id: "msg_old", status: "removed", reply_count: 1 }, { id: "unknown", status: "unavailable" },
+  ] }) });
+  await expect(client.reconcileMessages("room_team", ["msg_old", "unknown"])).rejects.toThrow("unavailable");
+  expect(client.messageForDisplay(message).body).toBe(REMOVED_MESSAGE);
+});

@@ -1,5 +1,5 @@
 import { WebSocket } from "ws";
-import { agentInstances, agents, contentReports, messages, notifications } from "@artoo/db";
+import { agentInstances, agents, contentReports, messages, notifications, organizations, rooms, users } from "@artoo/db";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createSession, provisionUser } from "./auth/auth-service.js";
@@ -78,7 +78,7 @@ describe("team content filtering and private reports", () => {
     const other = await post("/api/v1/channels", { project_id: "proj_artoo", name: "another-report-room" });
     expect((await post(`/api/v1/rooms/${other.json().channel.id}/messages/visibility`, { message_ids: [id] }, member)).json().removed_message_ids).toEqual([]);
     expect((await post(`/api/v1/rooms/${roomId}/messages/visibility`, { message_ids: [id, "unknown"] }, member)).json().removed_message_ids).toEqual([id]);
-    expect((await get("/api/v1/bootstrap", member)).json().message_sync).toEqual({ version: 1, visibility_batch_limit: 500 });
+    expect((await get("/api/v1/bootstrap", member)).json().message_sync).toEqual({ version: 1, visibility_batch_limit: 500, reconciliation_version: 1 });
     expect((await post(`/api/v1/rooms/${roomId}/messages/visibility`, { message_ids: Array(500).fill(id) }, member)).json().removed_message_ids).toEqual([id]);
     expect((await post(`/api/v1/rooms/${roomId}/messages/visibility`, { message_ids: Array(501).fill(id) }, member)).statusCode).toBe(400);
     const additional = Array.from({ length: 499 }, (_, index) => ({ id: `visibility_${index}`, organizationId: "org_default", roomId,
@@ -88,6 +88,35 @@ describe("team content filtering and private reports", () => {
     const bulk = await post(`/api/v1/rooms/${roomId}/messages/visibility`, { message_ids: [id, ...additional.map((item) => item.id)] }, member);
     expect(bulk.statusCode).toBe(200);
     expect(new Set(bulk.json().removed_message_ids)).toEqual(new Set([id, "visibility_498"]));
+    const url = `/api/v1/rooms/${roomId}/messages/reconcile`;
+    const ids = [id, ...additional.map((item) => item.id)];
+    const state = await post(url, { version: 1, message_ids: ids }, member);
+    expect(state.statusCode).toBe(200);
+    expect(state.json().states).toHaveLength(500);
+    expect(state.json().states.map((item: { id: string }) => item.id)).toEqual(ids);
+    expect(state.json().states.filter((item: { status: string }) => item.status === "removed").map((item: { id: string }) => item.id)).toEqual([id, "visibility_498"]);
+    expect(JSON.stringify(state.json())).not.toContain("body");
+    expect(JSON.stringify(state.json())).not.toContain("payload");
+    expect((await post(`/api/v1/rooms/${other.json().channel.id}/messages/reconcile`, { version: 1, message_ids: [id, "unknown", id] }, member)).json()).toEqual({
+      version: 1, states: [{ id, status: "unavailable" }, { id: "unknown", status: "unavailable" }],
+    });
+    expect((await post(`/api/v1/rooms/not-in-this-team/messages/reconcile`, { version: 1, message_ids: [] }, member)).statusCode).toBe(404);
+    await server.db.db.insert(organizations).values({ id: "org_foreign", name: "Foreign team", createdAt: server.ctx.clock.nowIso() });
+    await server.db.db.insert(users).values({ id: "foreign_actor", organizationId: "org_foreign", email: "foreign@example.test", displayName: "Foreign actor", role: "owner", createdAt: server.ctx.clock.nowIso() });
+    await server.db.db.insert(rooms).values({ id: "foreign_room", organizationId: "org_foreign", type: "project", name: "Foreign room", createdAt: server.ctx.clock.nowIso() });
+    await server.db.db.insert(messages).values({ id: "foreign_message", organizationId: "org_foreign", roomId: "foreign_room", actorType: "user", actorId: "foreign_actor", kind: "text",
+      body: "Foreign confidential body", replyCount: 123, moderatedAt: server.ctx.clock.nowIso(), moderatedByUserId: "foreign_actor", createdAt: server.ctx.clock.nowIso() });
+    expect((await post(url, { version: 1, message_ids: ["foreign_message", "unknown"] }, member)).json()).toEqual({ version: 1,
+      states: [{ id: "foreign_message", status: "unavailable" }, { id: "unknown", status: "unavailable" }] });
+    expect((await post("/api/v1/rooms/foreign_room/messages/reconcile", { version: 1, message_ids: ["foreign_message"] }, member)).statusCode).toBe(404);
+    expect((await server.app.inject({ method: "POST", url, payload: { version: 1, message_ids: ids } })).statusCode).toBe(401);
+    for (const payload of [{ version: 2, message_ids: ids }, { version: 1, message_ids: [...ids, id] }, { version: 1, message_ids: [""] },
+      { version: 1, message_ids: ["a".repeat(161)] }, { version: 1, message_ids: [1] }, { version: 1, message_ids: [], extra: true }]) {
+      expect((await post(url, payload, member)).statusCode).toBe(400);
+    }
+    const root = (await message("Count replies without new roots", owner)).json().message;
+    expect((await message("Reply during disconnection", member, { thread_root_id: root.id })).statusCode).toBe(201);
+    expect((await post(url, { version: 1, message_ids: [root.id] }, member)).json()).toEqual({ version: 1, states: [{ id: root.id, status: "visible", reply_count: 1 }] });
   });
   it("pages personal and staff reports without losing older reports or exposing staff-only fields", async () => {
     for (let n = 0; n < 55; n++) {

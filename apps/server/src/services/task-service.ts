@@ -134,7 +134,7 @@ export async function bootstrap(ctx: ServerContext, isLive: (computerId: string)
   });
   return {
     ...(goalEntry ? { goal_entry: goalEntry } : {}),
-    message_sync: { version: 1, visibility_batch_limit: MAX_MESSAGE_VISIBILITY_BATCH_LIMIT },
+    message_sync: { version: 1, visibility_batch_limit: MAX_MESSAGE_VISIBILITY_BATCH_LIMIT, reconciliation_version: 1 },
     organization: { id: orgRow.id, name: orgRow.name },
     user: {
       id: userRow.id,
