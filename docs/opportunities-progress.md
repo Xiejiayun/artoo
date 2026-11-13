@@ -166,6 +166,12 @@ C1 schema 运行领域通过 [PR #97](https://github.com/Xiejiayun/artoo/pull/97
 
 C1 schema 自治研发领域将 Goal 自动化、独立评审、发布、跨节点源码交接及后续设计/执行/验证/恢复/研究修订共 60 张表原样移入 `schema/autonomous-handoff.ts`，root 原地 re-export；已有 clean/restart 模块继续保持原边界。AST 对比确认全部表声明与外键回调一致、其余声明及顺序不变。根 typecheck、DB build、2 文件 staged 质量、Node 24 单 worker 的 schema/seed/源码传输/恢复契约/发布/Goal 自动化 6 文件 95 项通过（`.git/opt-c1-schema-autonomous-handoff-*`）。真实 drizzle-kit 导出的完整 119 张表、815 条 SQL 与基线逐条一致，仅忽略顺序；定义摘要保持 `9df3a12e8e57d616595673f2543adfff64f78de1e3a3858ce61f93cf3b3dcc80`。没有迁移变更或生产数据库操作；受控传输/发布契约不等同真实 Provider、Windows native helper 或目标产品发布验收。
 
+C1 schema 自治研发领域通过 [PR #98](https://github.com/Xiejiayun/artoo/pull/98) 合并为 `00dc11a`（实现 `42d338a`），拉取 main 后开始 artood 的上下文渲染提取。
+
+C1 artood 将三个纯上下文文本渲染函数移入内部 `process-adapter-context.ts`，仍由原适配器在原位置调用，包入口没有新增导出。AST 比对确认函数/字面量/类型及其余进程生命周期语句和公开签名一致；原文件按 C4 规则格式化，所以 diff 包含格式变化。根 typecheck、artood build、2 文件 staged 质量、Node 24 单 worker 的完整 process-adapter、只读上下文与恢复入口回归 3 文件 69 项通过、11 项按既有 Windows 条件跳过（POSIX symlink 范围，不报为通过）；日志 `.git/opt-c1-process-context-*`。现有真实子进程测试核对 legacy 文本字节、紧凑 UTF-8 分页与工具边界，不代表 live Provider 或 POSIX 验收。
+
+C1 已完成方案明确列出的 app 装配/领域路由和五个 schema 领域提取；schema 的设备/auth、Memory 和手动 Goal 小块保留原入口。已评估其余 artood 示例：node-client 已挂载各阶段专用客户端，而 product-source-runtime、product-release、verification 与进程控制中的私有 WeakMap 身份、预留、Profile/命令绑定和关闭确认跨函数共享；继续拆分需要新状态接口，并非独立纯移动。本轮只选择已证明独立的文本渲染，不按行数强拆这些授权边界。模块地图已补入项目 AGENTS.md；下一步处理 C2 中已确认同构的六组 pending-stop 管理，保留各阶段接收/鉴权差异。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
@@ -174,7 +180,7 @@ P5 通过 [PR #67](https://github.com/Xiejiayun/artoo/pull/67) 合并为 `53b1d5
 
 恢复预检通过 [PR #68](https://github.com/Xiejiayun/artoo/pull/68) 合并为 `a455704`（实现 `03546d9`）。
 
-C1 → C2 → C3 → E3 → X5 → F5 → C5 → E1 完整分区重验。F2 保留待实现/验收；E4 的最终版本验收与未就绪环境并行跟进。
+C2 → C3 → E3 → X5 → F5 → C5 → E1 完整分区重验。C1 本轮选定的职责拆分与其余候选边界评估如上。F2 保留待实现/验收；E4 的最终版本验收与未就绪环境并行跟进。
 
 所有条目仍须以最新源码复核适用性。E1 必须在无浏览器缓存的真实 Windows 分片通过后才移除安装步骤；iOS 原生验收需要 macOS；E4 产品发布需具备已授权的环境、凭据、受保护 Profile、健康标准和恢复方案。当前未执行新的产品发布，尚未运行最终统一 E2E。
 

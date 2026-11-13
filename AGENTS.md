@@ -4,6 +4,10 @@ Artoo is a TypeScript workspace monorepo. `packages/domain` owns versioned data 
 
 Read relevant code and tests before changing a contract. Preserve existing manual goals and runtime behavior. Add optional versioned fields for protocol/context extensions; do not silently reinterpret older payloads. Database changes require a new ordered SQL migration and matching schema. Never edit a previously released migration to pass a check.
 
+`apps/server/src/app.ts` composes domain `*-routes.ts` registrars and `node-dispatch-wiring.ts`; keep request identity resolution inside the original request scope. `packages/db/src/schema.ts` remains the compatible public entry for `schema/identity.ts`, `work.ts`, `messaging.ts`, `execution.ts` and `autonomous-handoff.ts`, plus the smaller device/auth, memory and manual Goal declarations. Preserve deferred cross-domain foreign-key callbacks and verify the full exported DDL when moving tables. Existing clean/restart schema modules retain their separate boundaries.
+
+`apps/artood/src/process-adapter-context.ts` only renders context text. Process admission, capability identity, protected verification and actual closure remain with their current owners; extracting text must not expose or serialize their private authority. The stage clients already used by `node-client.ts` are separate from its shared Run lifecycle.
+
 ## Autonomous development
 
 Agent Team execution and configured static-web publication are being implemented. See [the Agent Team guide](docs/agent-team-development.md) for current setup, validation and remaining work; [the original autonomous development guide](docs/autonomous-development.md) records the first milestone. Verified workspace delivery alone is not product publication, and controlled fixtures are not a live-provider product acceptance run.
