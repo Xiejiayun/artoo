@@ -1,8 +1,8 @@
 # Artoo Agent 协作能力设计与实现方案
 
-初稿日期：2026 年 11 月 12 日。更新日期：2026 年 11 月 13 日。版本：1.2，补齐高 ROI 顺序、结构化交接与协调开销控制，供分阶段实现。
+初稿日期：2026 年 11 月 12 日。更新日期：2026 年 11 月 13 日。版本：1.3，复核 main，补齐 Memory 复用、发言溯源和上下文批量读取，供分阶段实现。
 
-本方案以 Artoo main 提交 `6d1021e` 为复核基线，结合已有 Multica、Paperclip、Codex 和 Claude Code 架构分析，设计可分批交付的团队协作增量。相对 v1.0，已复核 #53–#55 的 Agent 历史 API、工具活动与 Web 历史界面，复用其持久记录，不重复建设日志系统。文中的新增表、接口和能力仍需代码实现；文档合入不代表功能实现、测试通过或产品发布。
+本方案以 Artoo main 提交 `f059225` 为复核基线，结合已有 Multica、Paperclip、Codex 和 Claude Code 架构分析，设计可分批交付的团队协作增量。该基线在 v1.2 后没有新增功能代码；本轮深入复核已有 Memory、多人对话来源和依赖上下文查询。相对 v1.0，#53–#55 的 Agent 历史 API、工具活动与 Web 历史界面已纳入复用范围。文中的新增表、接口和能力仍需代码实现；文档合入不代表功能实现、测试通过或产品发布。
 
 建议沿用现有控制面与节点执行架构。先复用现有记录完成上下文说明、结构化交接和负责人入口，再按技术门槛增加模型容量准入；新执行入口仍先落实资源授权，之后接代码结果、技能、有界委派和自动化。优先减少重复输入与无效协调调用，高 ROI 排序及收益验证见 12.3 和 13.2。
 
@@ -67,10 +67,13 @@
 | 基础设施 | event_log、游标回放、TanStack Query、单数据库所有者 | 增加领域事件和读模型；可靠副作用不依赖在线 WebSocket |
 | Agent 历史 | 跨实例 Run 历史、原 ContextPack 请求、分页事件与版本化工具活动 | 作为上下文来源索引和诊断入口，不把完整日志重复注入每个 Run |
 | 上下文 | 不可变 ContextPack，已有 goal/dependency/review 字段与受限分页 | 按模型预算选择、带来源的摘要、角色视图与遗漏说明 |
+| Memory | 已有提案、接受、拒绝、替代与确定性选择，Pack 保存 source_memory_ids | 复用生命周期，增加本次来源说明与统一预算；摘要不自动升格为已接受 Memory |
 
 现有 native skill 观察只读取元数据，不上传正文、不证明加载，也不贡献调度能力。安装 manifest 不等于安装工具或授予权限。`budget-policy.ts` 明确拒绝 `max_cost_usd`。
 
 现有普通对话历史按同组织、房间和 Thread 查询：最近最多 100 条文本，合计上限为 JavaScript 字符串长度 80,000，整条放不下则停止，并设置 `history_truncated`。当前请求另行携带。ModelProfile 虽有 `context_window`，此历史选择尚未据此计 token；不能将字符上限说成模型窗口适配。旧文件渲染同时展示部分字段和 Raw Payload，MCP 渲染则让各 payload 字段出现一次，预算必须区分实际渲染路径。
+
+上下文组装目前先加载同组织全部 accepted Memory，再用 domain selector 筛选；调用时未传数量限制。依赖读取对最多 100 条边逐项查询最新 Run，存在合格 Run 时再查其产物，依赖阶段最多产生 200 次循环内查询。对话 Pack 保留 message ID、role、body、actor_id，但没有逐条携带原 actor_type、position 和 source Run 绑定。以上是源码静态事实，尚未测量延迟或证明用户实际遇到发言混淆。
 
 ## 4 总体架构
 
@@ -309,6 +312,10 @@ Leader 输出结构化建议；节点信封固定真实 source_run_id。服务�
 
 新增可选版本化 `context_selection.v1`：保存 role、source_snapshot_digest、消息 position 边界与选中 ID、摘要版本、遗漏范围/原因、policy_revision 和预算说明。预算说明固定 runtime/实际 model、已验证窗口、tokenizer/估算器版本、renderer 版本、各类预留与选中输入计数；实际 API usage 另记，估算值不冒充计量值。
 
+H0c 在这个拟建扩展中补齐 `source_entries`，以 kind+source_id 关联本次选中的 message、memory、decision、handoff、artifact 或 summary，固定正文/结构摘要。消息来源带原 actor_type/actor_id、position、可可靠解析的 task_id/run_id/turn 关联与本次角色；请求、规划根消息和普通历史分别标识，无法证明的关联为 null。记录均由 Server 从原始行和关联推导，不能采信模型自报身份。显示名称只是有界标签，稳定 ID 和当次来源快照才用于追溯。
+
+旧 conversation.role 保留其兼容含义；新 renderer 明确将其他 Agent 发言作为带署名的历史材料，不把它当作当前模型此前亲自执行的事实，也不提升为 system 指令。原系统归因的自动化根消息仍须显示实际授权来源，system 标签本身不增加权限。新来源字段只解释已经选中的记录，不增加历史可见范围或引入跨 Thread 广播；旧 Pack 缺少来源时标未知，不用当前 Agent 名称、当前任务文本回填过去。
+
 输入预算为 `B = W - S - T - O - M`：W 是实际模型可用窗口；S 是系统/CLI 固定指令；T 是工具 schema 与后续工具结果的预留；O 是输出预留；M 是误差与包装余量。各预留不能为负，合计达到 W 时不启动。所有 ContextPack 正文、JSON/Markdown 包装、重复呈现、Skill 和必要证据的 token 都计入 B；图像采用目标模型对应的计量或保守上界，不能只数图片链接文字。
 
 1. 运行目标选定后，使用节点受保护配置所确认的实际模型/窗口和 runtime 能力计算。ModelProfile 元数据只作候选信息，不能假设 CLI 没有覆盖 model；最终节点再次匹配模型、renderer 与预算 revision。不一致在启动前拒绝，不在节点暗中裁剪已冻结输入。
@@ -359,6 +366,18 @@ pending 是已发现事件上界，active Run 的 Pack 固定其本批范围，c
 新 C1 会话默认最多 8 个控制 Run、2 个模型摘要 Run，人工重试和失败尝试也占用各自额度；计数在创建固定 Run 时预留，投递重放不再增加。达到上限停止这些附加调用并展示原因，原计划确定性执行只在原授权、预算与依赖均满足时继续；确需决策的任务保持阻塞。已有委派 8 次/深度 2 是另一组限制，不能将三类额度互相借用。
 
 这些是拟新增的 session 限额，不是声称当前 GoalBudgets 已有 max_runs。所有规划、协调、摘要、执行和评审 Run 均关联所属 Goal，纳入原时长/并发与各自重试边界；额度扩大需显式授权，计划修订或替换负责人不能静默重置同一授权范围内的已用额度。跨会话累计预留绑定原 collaboration grant，修订只收紧或沿用余额；只有新的授权记录才能增加额度。
+
+### 9.7 复用已有 Memory，区分知识与授权
+
+已有 `memories` 继续保存人工整理并接受的可复用知识；Decision 记录显式协作决策；`context_summaries` 只保存可重建的讨论压缩结果；Goal/Plan/Task 和受保护执行策略仍是任务及权限的权威来源。不建立平行的“Agent 长期记忆”库，不因摘要生成成功或被多个 Agent 引用就自动 accept Memory。
+
+普通旧路径保留当前 selector 的 eligibility 和次序：accepted，且 task 匹配 task_id、project/code 匹配 project_id、organization 匹配 organization_id；排序为 task、project、organization、code，再按 updated_at/created_at 降序和 ID 升序。scope 优先级是检索次序，confidence 是知识元数据，二者都不是指令等级或权限。code 范围始终绑定项目，不扩大到全组织。
+
+H0c 为新 Pack 固定本次实际注入的 Memory ID、scope、内容摘要和可证明的来源引用；source_memory_ids 与实际注入集合保持一致。H0a/H3 不改变选择结果；H0b 才在完整必需集之后按预算选择辅助 Memory，并显示未选原因。不能为节省 token 静默改变旧入口语义，也不能先截断候选再把关键任务记忆挤掉。
+
+Memory、摘要与当前任务要求出现冲突时显示原文及来源；受保护策略始终在可信边界执行，模型不能用知识记录覆盖它。明确的新任务要求可覆盖一般偏好，涉及验收、范围或已接受计划的冲突进入原澄清/修订流程；不按最新时间戳或最高 confidence 自动裁决。要成为必需约束的内容需进入相应任务/计划或受保护策略，不能仅依靠普通 Memory 字符串表达。
+
+Memory 被 supersede 后，新选择和依赖它的摘要缓存转用当前合格版本；历史 Pack 不改写。其来源消息被移除时，来源绑定摘要失效；人工整理的 Memory 是否保留由现有 curation/可见性规则显式决定，不能一律删除，也不能把被移除原文经摘要或引用重新带回。新可见性/替代检查失败时阻塞相关新输入，旧冻结记录按原读取与保留策略保护，不声称已从正在运行的模型中撤回信息。
 
 ## 10 定时与事件唤醒
 
@@ -413,7 +432,7 @@ Occurrence 以 rule+revision+UTC slot 或 source_event_id 唯一；持有 state�
 | 代码位置 | 实施内容 |
 | --- | --- |
 | packages/domain | execution-intent、resource-access、skill-delivery、squad-delegation、scheduled-automation、vcs 契约与纯判定 |
-| 上下文实现 | domain 的可选版本选择/简报契约；server 的 context-pack-service、简报与摘要投影；artood 的模型确认、实际 renderer 计数及校验 |
+| 上下文实现 | domain 的可选版本选择/来源/简报契约与原 Memory selector；server 的 context-pack-service、memory-service、批量读取、简报与摘要投影；artood 的来源展示、模型确认、实际 renderer 计数及校验 |
 | packages/protocol | 可选版本上下文、节点能力、准备回执和委派提案；验证权威保持节点所有 |
 | packages/db | 新表、外键、唯一键、索引、schema 与新追加迁移 |
 | apps/server/src/services | 资源授权、入口绑定、GitHub 同步、技能交付、委派、自动化；在现有执行边界接入 |
@@ -430,8 +449,10 @@ Occurrence 以 rule+revision+UTC slot 或 source_event_id 唯一；持有 state�
 | A0 | 固定最新 main 的 Squad、生命周期、技能发现、Goal/Plan 基线 | 当前 main | 事实与拟建能力分清 |
 | H0a | 现有路径上的选择说明、来源/遗漏标识与 usage 覆盖统计 | A0 | 不改变执行语义，不把字符计数或估算当容量保证 |
 | H0b | 角色视图、输入预算与节点渲染校验；H0 的容量准入部分 | H0a；T3 模型/renderer 能力确认 | 必需信息完整，溢出/未知容量可解释，不增加执行权限 |
+| H0c | 逐条发言/Memory 来源、上下文与 UI 的同源解释 | H0a；来源字段能力协商 | 其他 Agent 发言有署名，来源未知不猜测，不扩大历史范围 |
 | H1 | 来源绑定的讨论摘要、缓存失效与生成限额 | H0 | 摘要可回溯、当前原文约束保留、撤回来源不再注入 |
 | H2 | 确定性工作简报、交付引用和变化投影 | A0；复用冻结 Pack 与原有授权 | 无额外模型调用，必需输入自足，Handoff 不替代任务状态 |
+| H3 | Memory 候选 SQL 过滤与依赖批量读取 | A0；与旧 selector/交接的结果等价验证 | 消除随依赖数逐项查询，减少无关候选，不改 Pack 内容及顺序 |
 | C0 | 复用原规划入口的负责人偏好、实例固定和统一展示 | A0；沿用原授权与参与者要求 | 单一负责人入口，不新增调度循环 |
 | A1 | 资源策略、grant、迁移与查询 | A0 | 历史语义兼容，新资源默认私有 |
 | A2 | 所有执行边界接入授权、撤销与恢复竞态 | A1 | 旧入口、规划、评审和恢复均不可绕过 |
@@ -443,7 +464,7 @@ Occurrence 以 rule+revision+UTC slot 或 source_event_id 唯一；持有 state�
 | C2 | 指定时间、周期与内部事件的 reconcile_goal | A2、A3 | 重启、暂停、no-op 和本次 Run 结清正确 |
 | C3 | 外部 Webhook、独立任务动作、更多运行时、原生编辑 | C2 真实验收 | 按独立支持范围扩展 |
 
-H0 指 H0a+H0b。先以 H0a+H2+C0 改善现有手工/规划路径，再通过 T3 开启 H0b；H1 在确有超长历史需求且节省超过生成开销时接入。不必等待完整的新意图和自动化系统。新增执行入口的候选仍为 A0–A3+B1，其后 A4+B2，再到 C1+C2；C1 还须通过 H0b 的协调者模式验收、接入 C0 负责人绑定和 9.6 的持久调用计数。每个增量按 schema/迁移、服务/协议、UI、验证审查；规模过大继续拆 PR。这里定义依赖和验收范围，不作未估算的工期承诺。
+H0 指 H0a+H0b+H0c。先以 H0a+H2+C0 改善现有手工/规划路径；H3 可独立改善原路径，H0c 随来源展示模式验收上线，再通过 T3 开启 H0b；H1 在确有超长历史需求且节省超过生成开销时接入。不必等待完整的新意图和自动化系统。新增执行入口的候选仍为 A0–A3+B1，其后 A4+B2，再到 C1+C2；C1 还须通过 H0b 的协调者模式验收、接入 H0c/C0 负责人来源绑定和 9.6 的持久调用计数。每个增量按 schema/迁移、服务/协议、UI、验证审查；规模过大继续拆 PR。这里定义依赖和验收范围，不作未估算的工期承诺。
 
 ### 12.1 数据库实现约束
 
@@ -476,6 +497,7 @@ C1 另固定控制 Run 8 次、模型摘要 Run 2 次；这里的“创建时快
 | 优先级 | 增量 | 预期收益与已有复用 | 范围边界 |
 | --- | --- | --- | --- |
 | P0 | H0a+H2 | 用原 ContextPack/历史/事件解释“读了什么、缺什么、上游交付是什么”，避免先引入模型记忆服务 | 只做确定性投影；旧日志不足时标未知 |
+| P0 | H3、H0c | 批量读取减少数据库往返；来源署名帮助区分多人发言，复用现有消息/Memory/Run | H3 不改结果；H0c 不授予额外读取或执行权，性能收益须测量 |
 | P0 | C0 | 用户明确把任务交给一个负责人，直接复用现有规划参与者与计划流程 | 不新增模型循环，不降低原作者/评审要求 |
 | P0 门槛 | A1/A2、T1/T3 | 扩展执行前先补齐权限与原子边界；容量准入必须知道实际模型 | 在原手工路径内做独立技术验证，新入口未就绪不开放 |
 | P1 | H0b，按需 H1 | 不同窗口可执行同一协作任务，长历史减少重复传输与溢出 | 必需原文完整；摘要净收益为正后才扩大 |
@@ -484,6 +506,17 @@ C1 另固定控制 Run 8 次、模型摘要 Run 2 次；这里的“创建时快
 | 按真实需求 | A4/B2/C2/C3 | 高频追问、技能复用或无人值守才承担额外状态和兼容成本 | 不作为基本协作体验的前置；独立支持矩阵逐项验收 |
 
 暂缓全频道逐条广播给所有模型、无限长会话、向量数据库、通用多层 Agent 递归、模型决定每次调度、自动换模型和无上限“自我优化”。只有来源选择与简报无法解决的检索需求被实际任务证明后，才单独评估检索设施；不以新增组件数量衡量方案完整度。
+
+### 12.4 H3：不改变语义的上下文读取优化
+
+该增量只优化查询，先于模型压缩；兼容现有手工请求，不要求启用新授权或协调模式。先从当前四个 Memory scope 和依赖选择语义构造结果对照，再替换读法。
+
+1. Memory 在同组织、accepted 条件下，把 task_id 匹配、project/code 的 project_id 匹配和 organization scope 的原筛选条件下推到 SQL，再使用原 `selectInjectableMemories` 复核 eligibility、排序和 source_memory_ids。不能给所有 scope 加同一个 project_id 条件而丢失组织记忆，也不能统一加一个数量上限改变旧结果。`GET /memories/context` 与 Pack 组装共用该窄读取 helper，避免两份选择规则漂移。
+2. 依赖边仍按原顺序取最多 101 条，以前 100 条构建结果及截断标记；提取其中已 done 的唯一任务 ID，批量选每任务最新 Run，保持 created_at 降序、ID 降序的原并列规则。先取最新、再检查 completed；不能改成“最新 completed Run”而跳过更晚失败或未完成的执行。
+3. 仅对上述合格 Run，按 task_id+run_id 批量读产物；每组仍按产物 ID 取最多 101 项，输出前 100 项及 artifacts_truncated。使用窗口查询/受限分组而非全局 LIMIT，不能让一个任务占满结果导致其他任务丢输入。重复依赖类型可复用同一只读结果，但输出边的类型与顺序不变；跨组织/项目过滤和禁止注入原始 URI/metadata 的规则保持。
+4. 依赖阶段目标从随边数增加的逐项查询变成边、最新 Run、产物三类有界批量查询；若受数据库参数上限分块，记录块数并固定上限。不要在同一事务连接上盲目并行上百个查询来替代批量读取。空集合不发无意义查询，必需输入截断仍按 9.5 阻塞。
+
+所有读取沿用原事务和相关锁边界；“在同一事务”本身不证明多条查询是同一快照，冻结前仍按 T1/H2 校验相关读集。结果变更需拒绝或重新组装，不用进程级缓存绕过新授权、Memory supersede 或产物身份检查。先记录查询计划和读行数，再决定是否追加索引迁移；已有 runs、memories 索引不能仅凭命名认定足够，也不预先添加一批未经测量的索引。
 
 ## 13 验证与验收
 
@@ -500,6 +533,8 @@ C1 另固定控制 Run 8 次、模型摘要 Run 2 次；这里的“创建时快
 | 负责人 | 主规划偏好不满足两参与者要求、权限变更、实例更换、旧 revision 迟到提案；不能覆盖固定评审 |
 | 上下文 | 多模型窗口、实际模型覆盖、包装重复计数、中英文/代码、图像上界、必需集溢出、未知容量、旧节点、摘要源隐藏与跨 Thread 泄漏 |
 | 交接/协调 | 可变 Handoff 被旧 Pack 引用、模型伪造完成、依赖截断、只给 diff 丢当前要求、输出事件风暴、控制 Run 在途新事件、游标提前消费、换负责人/新 session 绕过累计限额 |
+| 来源/Memory | 同名不同 Agent、同 Agent 不同实例、system 根消息、无来源旧 Pack、新摘要误变 accepted、Memory supersede、知识偏好与当前验收冲突 |
+| 批量读取 | 最新 Run 失败却回退旧成功、created_at 并列、重复依赖、每任务 100/101 产物边界、全局 LIMIT 饿死其他任务、无 project_id 的组织 Memory 丢失 |
 | 自动化 | epoch 失效、DST、错过计划、重复事件、规则编辑、人工暂停、游标缺口 |
 | 多端 | 旧 strict parser、能力未开、重连缓存、原生状态准确性 |
 
@@ -543,12 +578,15 @@ POSIX、Windows、本机客户端和发布路径使用相应平台门禁。触�
 | 输入与生成开销 | 每个固定 Run 的完整 renderer token/上界、最终 provider usage、输出和 cached 字段分列；同时统计负责人、规划、摘要、执行、评审和失败尝试 |
 | 实际收益 | 可比任务的端到端时长、重复读取、澄清轮次、返工/人工修正和模型调用数；同时保留失败/阻塞样本，样本不足只报告案例 |
 | H2 | 不新增模型调用；完整简报能定位上游交付和阻塞，重启后可重建；先证明读取路径可用再宣称减少重复劳动 |
+| H0c/H3 | 来源与真实绑定相符；批量读取与原 selector/Pack 结果等价，查询数、读行数和组装耗时单独比较，不把模型响应时间差归因于 SQL |
 | H0b/H1 | 窗口准入与溢出可解释；长历史在质量前提下减少重复输入；将摘要生成、重算和额外输出计入总开销，未节省则保留 H2 而停用模型摘要 |
 | C1 | 事件重复/无状态变化时无新增模型调用，事件批次最多一个控制 Run，附加调用严格受限；协调开销高于收益时收窄触发或保留原确定性调度 |
 
 复用 `run.usage`/runUsage 的每 Run 最终已知快照汇总，不能对重放/累计 usage 事件逐条求和。缺失 usage 显示覆盖率和 unknown，不按 0 处理；provider 的 cached token 与 input token 包含关系按语义展示，不能重复扣减。估算 token、已报告 usage、货币费用分开；费用只有来源和币种可靠时汇总，不同模型/计价口径不得仅比较 token 就承诺省钱，更不能作为美元硬限额。
 
 附加调用与任务主流程共享时长和并发，不能为摘要/负责人另开不受 Goal 约束的后台循环。C1 限额耗尽、摘要失效或缺少容量信息时要展示可操作原因；恢复读取、人工查看历史和 Server 的停止对账不消耗模型调用额度。发布时给出实测样本与完整限制，再决定是否默认开启；本文不预填收益百分比。
+
+H3 实施前后用相同数据库夹具覆盖 0、1、10、100 条依赖，并保留第 101 条触发的截断结果；加入大量无关项目 Memory、多次执行和不同数量产物。比较完整有序 payload/source_memory_ids、实际 SQL 数与读行数，检查跨租户及 URI/metadata 隔离。PGlite 和 PostgreSQL 分别测量组装耗时与事务持有时间；不在单测里用脆弱的毫秒阈值代替结果等价和查询数断言。
 
 ## 14 迁移与发布
 
@@ -564,7 +602,7 @@ POSIX、Windows、本机客户端和发布路径使用相应平台门禁。触�
 
 ## 15 设计收敛标准
 
-本版完成了以下设计复核：现状与所列 main 基线一致；请求、原始授权与执行所有者分离；事务、投递、同步、技能准备和自动化的失败路径有明确处理；等待、取消、撤权和 no-op 有权威来源；负责人、模型容量、摘要、结构化交接和事件合并有实施路径；高 ROI 顺序、额外调用限额和净收益测量相互对应。此处“完成”指方案静态复核，不是运行或验收结果。
+本版完成了以下设计复核：现状与所列 main 基线一致；请求、原始授权与执行所有者分离；事务、投递、同步、技能准备和自动化的失败路径有明确处理；等待、取消、撤权和 no-op 有权威来源；负责人、模型容量、摘要、结构化交接和事件合并有实施路径；已有 Memory 复用、发言来源和批量读取保持兼容；高 ROI 顺序、额外调用限额和净收益测量相互对应。此处“完成”指方案静态复核，不是运行或验收结果。
 
 实施时保留三个必须先完成的技术门槛，处理方式已确定：
 
@@ -589,3 +627,4 @@ POSIX、Windows、本机客户端和发布路径使用相应平台门禁。触�
 - [节点执行与启动恢复](../apps/artood/src/node-client.ts)、[启动重放](../apps/artood/src/pending-start-replay.ts)、[Server 节点绑定](../apps/server/src/node-binding.ts)。
 - [Agent 历史](agent-history.md)、[上下文契约](../packages/domain/src/context-pack.ts)、[上下文组装](../apps/server/src/services/context-pack-service.ts)、[实际渲染](../apps/artood/src/process-adapter.ts)、[分页读取提示](../apps/artood/src/runtimes.ts)。
 - [现有协作记录](../apps/server/src/services/collaboration-service.ts)、[usage 与运行事件](../apps/server/src/services/run-service.ts)。
+- [Memory 选择契约](../packages/domain/src/memory.ts)、[Memory 服务](../apps/server/src/services/memory-service.ts)、[上下文回归](../apps/server/src/context-pack.test.ts)、[依赖交接回归](../apps/server/src/context-pack-handoff.test.ts)、[对话时序回归](../apps/server/src/services/assistant-service.test.ts)。
