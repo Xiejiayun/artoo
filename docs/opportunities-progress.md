@@ -116,6 +116,12 @@ C1 Goals/Plans/Checkpoints 的 16 个端点原序移入 `goal-routes.ts`，仍�
 
 本步根 typecheck、server build、4 文件 staged 质量、Node 24 单 worker 的 Goal/审计/预算/预配置提交 4 文件 43 项通过。真实 WebSocket 暂停/取消与离线重连边界另 2 项通过，同文件其余 8 项因聚焦选择未运行。iOS 静态契约清单加入协作和 Goals 模块，22 个请求样本/58 个端点检查通过；这是静态检查，非原生通过。证据 `.git/opt-c1-goals-*`，C1 其余领域路由继续逐项处理。
 
+C1 Goals 路由通过 [PR #88](https://github.com/Xiejiayun/artoo/pull/88) 合并为 `2727d6d`（实现 `a8c04c9`），已拉取最新 main 后开展 Devices 提取。远程该版本的后续 CI 尚未验收，不能用本地检查替代。
+
+C1 Devices 的七个端点及私有平台/IP/TTL 校验原样移入 `device-routes.ts`；配对读取与撤销分别在原位置注册。保留同一个早期创建的 claim limiter、认证与幂等豁免、逐请求身份、真实连接注册表，以及仅实际关闭连接时发出的撤销离线事件。AST 对比确认处理器、所有私有辅助函数和还原后的 app 非 import 语句/公开签名一致。
+
+本步根 typecheck、server build、3 文件 staged 质量、iOS 22 请求/58 端点静态契约通过。Node 24 单 worker 的设备 HTTP、真实 node/control WebSocket 撤销、在线状态与完整配对连接流程 4 文件 26 项通过（`.git/opt-c1-devices-*`）；不涉及新协议、迁移或生产发布，最终统一验收仍待后续集成。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
