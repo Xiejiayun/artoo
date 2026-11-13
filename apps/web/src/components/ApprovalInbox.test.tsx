@@ -39,6 +39,7 @@ describe("ApprovalInbox", () => {
     expect(body.decision).toBe("approved");
     expect(typeof key).toBe("string");
     expect(key.length).toBeGreaterThan(0);
+    expect(await screen.findByRole("status")).toHaveTextContent("Approval recorded.");
   });
 
   it("renders nothing when there are no pending approvals", () => {

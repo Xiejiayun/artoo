@@ -4,12 +4,21 @@ import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntime, SkillInstall } from "@artoo/domain";
 import { bootstrapFixture, fakeApi, renderWithProviders } from "../test/utils.js";
-import { AgentRegistration, SkillInstallForm } from "./InventorySetup.js";
+import { AgentEnabledControl, AgentRegistration, SkillInstallForm } from "./InventorySetup.js";
 
 const runtime: AgentRuntime = { id: "runtime_mock", organization_id: "org_default", computer_id: "computer_local_mock", runtime: "mock", version: "1.0", status: "available", capabilities: ["code.modify"], last_seen_at: "2026-10-01T00:00:00Z" };
 const manifest = { api_version: "v1alpha1", id: "review-kit", name: "Review kit", version: "1.0.0", capabilities: ["code.review"], compatible_runtimes: ["mock"], permissions: { filesystem: { read: ["src/**"], write: [] }, network: { outbound: ["docs.example.com"] }, secrets: ["REVIEW_SERVICE"], high_risk_actions: [{ action: "Publish review", risk: "high" }] }, approval_risks: [{ action: "Send report", risk: "medium", reason: "Shares the report with the team" }] };
 
 describe("Resource setup", () => {
+  it("confirms agent assignment availability only after the requested change succeeds", async () => {
+    const instance = bootstrapFixture().agent_instances[0]!;
+    const setAgentEnabled = vi.fn().mockResolvedValue({});
+    renderWithProviders(<AgentEnabledControl instance={instance} />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), setAgentEnabled }) });
+    await userEvent.click(await screen.findByRole("button", { name: "Disable agent" }));
+    expect(setAgentEnabled).toHaveBeenCalledWith(instance.id, false, expect.any(String));
+    expect(await screen.findByText("Agent disabled for future assignments.")).toBeInTheDocument();
+  });
+
   it("reviews readable access before installing the exact manifest and scope", async () => {
     const user = userEvent.setup();
     const installSkill = vi.fn(async () => ({ skill: {} as SkillInstall }));

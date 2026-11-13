@@ -12,7 +12,7 @@ import { useGoalContext } from "../app/useGoalContext.js";
 import { readDiscussionGoalDraft, type DiscussionGoalDraft } from "../app/discussionGoalDraft.js";
 import { GoalOverview } from "./GoalOverview.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
-import { Badge, Button, Input, Modal, Select, StatusBadge, Textarea } from "../ui/index.js";
+import { Badge, Button, Input, Modal, Select, StatusBadge, Textarea, useToast } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
 import { RoomConversation } from "./RoomConversation.js";
 import { PreparedGoalRequest } from "./PreparedGoalRequest.js";
@@ -118,8 +118,9 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
     queryKeys.goalApplicationPublication(goal.id), queryKeys.discussions(goal.id),
   ].map((key) => query.invalidateQueries({ queryKey: key }))); };
   const action = useMutation({ mutationFn: (name: "pause" | "resume" | "cancel" | "reconcile") => api.goalAction(goal.id, name, newIdempotencyKey()), onSuccess: async () => { setConfirmCancel(false); await refresh(); }, onError: refresh });
-  const planAction = useMutation({ mutationFn: ({ id, name }: { id: string; name: "accept" | "reject" }) => api.planAction(id, name, newIdempotencyKey()), onSuccess: refresh });
-  const audit = useMutation({ mutationFn: async () => { const result = await api.goalAuditExport(goal.id); const url = URL.createObjectURL(new Blob([JSON.stringify(result.export, null, 2)], { type: "application/json" })); const a = document.createElement("a"); a.href = url; a.download = `${goal.id}-audit.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } });
+  const toast = useToast();
+  const planAction = useMutation({ mutationFn: ({ id, name }: { id: string; name: "accept" | "reject" }) => api.planAction(id, name, newIdempotencyKey()), onSuccess: async (_, { name }) => { toast.push({ tone: "success", message: name === "accept" ? "Plan accepted." : "Plan rejected." }); await refresh(); } });
+  const audit = useMutation({ mutationFn: async () => { const result = await api.goalAuditExport(goal.id); const url = URL.createObjectURL(new Blob([JSON.stringify(result.export, null, 2)], { type: "application/json" })); const a = document.createElement("a"); a.href = url; a.download = `${goal.id}-audit.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }, onSuccess: () => toast.push({ tone: "success", message: "Goal evidence download started." }) });
   const latestCheckpoint = checkpoints.data?.checkpoints.reduce<(NonNullable<typeof checkpoints.data>["checkpoints"])[number] | undefined>((latest, item) => !latest || item.created_at > latest.created_at ? item : latest, undefined);
   return <article className="insights-goal-detail u-stack">
     <header className="insights-goal-title"><span className="insights-eyebrow">Outcome</span><div className="action-row"><h2>{goal.title}</h2><Badge tone={goal.status === "completed" ? "success" : goal.status === "blocked" ? "warning" : "neutral"}>{goal.status}</Badge></div>{goal.objective !== goal.title && <details className="delivery-objective"><summary>Full objective</summary><p className="insights-prose">{goal.objective}</p></details>}</header>

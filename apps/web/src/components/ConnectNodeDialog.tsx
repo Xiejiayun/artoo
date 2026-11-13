@@ -6,7 +6,7 @@ import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { useDaemons } from "../app/useDaemons.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
-import { Button, Modal, Select } from "../ui/index.js";
+import { Button, Modal, Select, useToast } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
 import "./node-onboarding.css";
 
@@ -27,6 +27,7 @@ export function ConnectNodeDialog({ open, onClose, onCreateInstance, onViewMachi
   open: boolean; onClose: () => void; onCreateInstance?: (computerId: string) => void; onViewMachines?: () => void;
 }): React.ReactNode {
   const api = useApi();
+  const toast = useToast();
   const query = useQueryClient();
   const [platform, setPlatform] = useState<DevicePlatform>("windows");
   const [copied, setCopied] = useState(false);
@@ -68,7 +69,7 @@ export function ConnectNodeDialog({ open, onClose, onCreateInstance, onViewMachi
   };
   const generate = (): void => { setCopied(false); setCopyError(null); pairing.mutate(); };
   const copy = async (): Promise<void> => {
-    try { await navigator.clipboard.writeText(command); setCopied(true); setCopyError(null); }
+    try { await navigator.clipboard.writeText(command); setCopied(true); setCopyError(null); toast.push({ tone: "success", message: "Connection command copied." }); }
     catch { setCopyError(new Error("Clipboard access is unavailable. Select and copy the command below.")); }
   };
   return <Modal open={open} onClose={close} title="Connect Local Node">

@@ -13,6 +13,21 @@ function device(patch: Partial<Device> = {}): Device {
 }
 
 describe("device enrollment in Settings", () => {
+  it("announces a project save exactly once after the server confirms it", async () => {
+    const project = bootstrapFixture().projects[0]!;
+    let finish!: (result: { project: typeof project }) => void;
+    const updateProject = vi.fn(() => new Promise<{ project: typeof project }>((resolve) => { finish = resolve; }));
+    renderWithProviders(<SettingsPage />, { client: fakeApi({ bootstrap: async () => bootstrapFixture(), listDevices: async () => ({ devices: [] }), updateProject }) });
+    const form = await screen.findByRole("form", { name: "Edit project" });
+    await userEvent.click(within(form).getByRole("button", { name: "Save project" }));
+    await waitFor(() => expect(updateProject).toHaveBeenCalledOnce());
+    expect(screen.queryByText("Project saved.")).not.toBeInTheDocument();
+    finish({ project });
+    const notifications = await screen.findByRole("region", { name: "Notifications" });
+    expect(within(notifications).getByRole("status")).toHaveTextContent("Project saved.");
+    expect(screen.getAllByText("Project saved.")).toHaveLength(1);
+  });
+
   it("keeps a pending project creation visible until it settles and preserves fields after failure", async () => {
     let rejectCreate!: (error: Error) => void;
     const createProject = vi.fn(() => new Promise<never>((_resolve, reject) => { rejectCreate = reject; }));
@@ -28,6 +43,7 @@ describe("device enrollment in Settings", () => {
     expect(within(dialog).getByLabelText("Project name")).toBeDisabled();
     rejectCreate(new Error("Could not save project"));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("Could not save project");
+    expect(screen.queryByText("Project saved.")).not.toBeInTheDocument();
     expect(within(dialog).getByLabelText("Project name")).toHaveValue("Launch workspace");
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();

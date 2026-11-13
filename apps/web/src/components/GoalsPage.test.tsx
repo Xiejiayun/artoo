@@ -2,7 +2,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { GoalSchema, GoalAutomationSchema, ProductReleaseSchema, ReleaseAcceptanceBindingV1Schema,
+import { GoalSchema, GoalAutomationSchema, PlanSchema, TaskSpecSchema, ProductReleaseSchema, ReleaseAcceptanceBindingV1Schema,
   canonicalReleaseAcceptanceBinding, type Plan } from "@artoo/domain";
 import { createHash } from "node:crypto";
 import type { ApiClient } from "../api/client.js";
@@ -15,6 +15,17 @@ function api(overrides: Partial<ApiClient> = {}) {
 }
 
 describe("GoalsPage", () => {
+  it("confirms plan acceptance only after the server records the decision", async () => {
+    const plan = PlanSchema.parse({ id: "plan_feedback", organization_id: goal.organization_id, goal_id: goal.id, version: 1,
+      author_type: "user", author_id: "user_1", status: "proposed", rationale: "A reviewable plan", task_specs: [TaskSpecSchema.parse({ title: "Implement", acceptance_criteria: ["Checks pass"] })],
+      materialized_at: null, materialization_event_id: null, created_at: goal.created_at, accepted_at: null });
+    const planAction = vi.fn<ApiClient["planAction"]>().mockResolvedValue({ plan: { ...plan, status: "accepted" }, task_ids: ["task_new"] });
+    renderWithProviders(<GoalsPage />, { client: api({ listPlans: async () => ({ plans: [plan] }), planAction }) });
+    await userEvent.click(await screen.findByRole("button", { name: "Accept plan and create tasks" }));
+    expect(planAction).toHaveBeenCalledWith(plan.id, "accept", expect.any(String));
+    expect(await screen.findByText("Plan accepted.")).toBeInTheDocument();
+  });
+
   const automation = GoalAutomationSchema.parse({ goal_id: goal.id, organization_id: "org_default", actor_user_id: "user_1",
     consent_id: null, policy_version: "local-v1", status: "planning", discussion_id: null, plan_id: null,
     agent_instance_id: null, computer_id: null, workspace_root: null, verification_profile_id: "default", last_error: null, created_at: goal.created_at, updated_at: goal.updated_at });

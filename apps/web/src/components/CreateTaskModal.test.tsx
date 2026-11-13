@@ -40,6 +40,7 @@ describe("CreateTaskModal", () => {
     expect(idempotencyKey.length).toBeGreaterThan(0);
     expect(onCreated).toHaveBeenCalledWith("task_new");
     expect(onClose).toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("Task created.");
   });
 
   it("disables submit until a title is entered", async () => {

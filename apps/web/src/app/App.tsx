@@ -10,6 +10,7 @@ import { AppRoutes } from "./AppRoutes.js";
 import { createQueryClient } from "./queryClient.js";
 import { RealtimeProvider } from "./RealtimeContext.js";
 import { SelectionProvider } from "./SelectionContext.js";
+import { ToastProvider } from "../ui/index.js";
 
 export interface AppProps {
   client?: ApiClient;
@@ -36,6 +37,7 @@ export function App({ client, queryClient, authEnabled }: AppProps = {}): React.
 
   return (
     <QueryClientProvider client={resolvedQueryClient}>
+      <ToastProvider>
       <ApiProvider client={apiClient}>
         <DesktopGate>
         <RealtimeProvider onMessageRemoved={(roomId, messageId) => apiClient.noteMessageRemoved(roomId, messageId)} url={desktop?.wsUrl} tokenProvider={desktop === undefined ? undefined : () => window.artooDesktop?.getToken?.()}>
@@ -49,6 +51,7 @@ export function App({ client, queryClient, authEnabled }: AppProps = {}): React.
         </RealtimeProvider>
         </DesktopGate>
       </ApiProvider>
+      </ToastProvider>
     </QueryClientProvider>
   );
 }

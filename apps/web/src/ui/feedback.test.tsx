@@ -106,6 +106,18 @@ describe("ui feedback + badges (#68)", () => {
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Failed");
   });
+
+  it("keeps each toast's original dismissal deadline when another arrives", () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<ToastProvider><ToastPusher key="first" tone="success" message="First saved" />{null}</ToastProvider>);
+    act(() => vi.advanceTimersByTime(2000));
+    rerender(<ToastProvider><ToastPusher key="first" tone="success" message="First saved" /><ToastPusher key="second" tone="success" message="Second saved" /></ToastProvider>);
+    expect(screen.getAllByRole("status")).toHaveLength(2);
+    expect(screen.getByRole("region", { name: "Notifications" })).not.toHaveAttribute("aria-live");
+    act(() => vi.advanceTimersByTime(2000));
+    expect(screen.queryByText("First saved")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Second saved");
+  });
 });
 
 function ToastPusher({ tone, message }: { tone: "success" | "danger"; message: string }): null {
