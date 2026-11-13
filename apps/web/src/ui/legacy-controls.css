@@ -1,0 +1,82 @@
+/* Transitional native controls. :where() exclusions keep the original
+ * specificity while shared form primitives own their visual states. */
+/* ---------------------------------------------------------------------------
+ * Buttons & form controls (legacy surface styling — superseded by ui/ in #67)
+ * ------------------------------------------------------------------------- */
+button:where(:not(.ui-btn)),
+.action:where(:not(.ui-btn)),
+.new-task:where(:not(.ui-btn)),
+.login-google:where(:not(.ui-btn)),
+.logout:where(:not(.ui-btn)) {
+  appearance: none;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-weight: 550;
+  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+button:where(:not(.ui-btn)):hover,
+.action:where(:not(.ui-btn)):hover {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+button:where(:not(.ui-btn)):disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+button:where(:not(.ui-btn)):focus-visible,
+a:focus-visible,
+select:where(:not(.ui-input)):focus-visible,
+input:where(:not(.ui-input)):focus-visible,
+textarea:where(:not(.ui-input)):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Primary actions */
+.new-task:where(:not(.ui-btn)),
+.login-google:where(:not(.ui-btn)),
+.task-actions button:where(:not(.ui-btn)),
+.approval-action button:where(:not(.ui-btn)),
+.review-actions button:where(:not(.ui-btn)):first-child,
+.memory-actions button:where(:not(.ui-btn)):first-child {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.new-task:where(:not(.ui-btn)):hover,
+.login-google:where(:not(.ui-btn)):hover,
+.task-actions button:where(:not(.ui-btn)):hover,
+.approval-action button:where(:not(.ui-btn)):hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+select:not(.ui-input),
+input[type="text"]:not(.ui-input),
+input[type="search"]:not(.ui-input),
+input:not([type]):not(.ui-input),
+textarea:not(.ui-input) {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 6px 9px;
+}
+textarea:not(.ui-input) {
+  width: 100%;
+  resize: vertical;
+}
+label:where(:not(.ui-field__label)) {
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-muted);
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+

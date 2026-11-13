@@ -34,6 +34,11 @@ test("successful writes and a real evidence download announce once without takin
     await expect(notifications.getByRole("status")).toHaveText("Project saved.");
     await expect(page.getByText("Project saved.", { exact: true })).toHaveCount(1);
     expect(await notifications.evaluate((element) => element.contains(document.activeElement))).toBe(false);
+    await expect(save).toBeEnabled();
+    await page.keyboard.press("Tab");
+    await save.focus();
+    await expect(save).toBeFocused();
+    await expect.poll(() => save.evaluate(element => getComputedStyle(element).boxShadow)).not.toBe("none");
     const bounds = await notifications.boundingBox();
     expect(bounds!.x).toBeGreaterThanOrEqual(0);
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
