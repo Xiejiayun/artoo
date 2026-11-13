@@ -1,0 +1,26 @@
+name: Changed code quality
+on:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: code-quality-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  changed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: node --test scripts/check-changed.test.mjs
+      - name: Check changed files against the actual PR base
+        env:
+          CODE_QUALITY_BASE: ${{ github.event.pull_request.base.sha }}
+        run: npm run check:changed -- --since="$CODE_QUALITY_BASE"

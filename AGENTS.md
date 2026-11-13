@@ -16,6 +16,8 @@ Agent Team execution and configured static-web publication are being implemented
 
 ## Checks
 
+For new/modified JS, TS, JSON and CSS files, stage the intended files and run `npm run check:staged` before committing. `npm run format` formats only staged paths; stage its resulting edits again. CI uses `npm run check:changed -- --since=<PR-base-SHA>` for committed differences. See [code quality](docs/code-quality.md) for the initial rule scope; keep unrelated files out of formatting changes.
+
 From the repository root run `npm run typecheck`, `npm run build`, `npm test -- --maxWorkers=2`, and `npm run test:e2e --workspace @artoo/web`. Use relevant focused suites during development; run broader checks after integration. POSIX verification subprocess tests live in `apps/artood/test-fixtures/verification-real.test.mjs` and require built modules plus Linux/macOS.
 
 For storage-test timeout and cleanup changes, run `node --test apps/server/test-fixtures/preview-storage-timeout.test.mjs`. Its child deliberately fails cases; the parent passes only after checking the exact failures, actual process closure, and safe directory deletion or retention. Keep the emitted evidence and distinguish that parent result from the ordinary four-case storage integration suite.

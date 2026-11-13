@@ -11,6 +11,11 @@
     "build": "npm run build --workspaces --if-present",
     "test": "vitest run",
     "typecheck": "tsc -b",
+    "check:changed": "node scripts/check-changed.mjs",
+    "check:staged": "biome check --staged --error-on-warnings --no-errors-on-unmatched",
+    "lint": "biome lint --staged --error-on-warnings --no-errors-on-unmatched",
+    "format": "biome format --write --staged --error-on-warnings --no-errors-on-unmatched",
+    "format:check": "biome format --staged --error-on-warnings --no-errors-on-unmatched",
     "build:preview": "node scripts/build-preview.mjs",
     "build:daemon:npm": "node scripts/npm-daemon/build.mjs",
     "test:daemon:npm": "node --test scripts/npm-daemon/cli.test.mjs scripts/npm-daemon/controlled-cli-smoke.test.mjs scripts/npm-daemon/onboarding.test.mjs scripts/npm-daemon/bootstrap.test.mjs",
@@ -37,6 +42,7 @@
     "dev:artood": "npm run dev --workspace @artoo/artood"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.6",
     "@types/node": "^24.0.0",
     "@vitejs/plugin-react": "^6.0.2",
     "typescript": "^5.9.0",
