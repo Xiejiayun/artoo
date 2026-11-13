@@ -6,6 +6,7 @@ import { BoardView } from "../components/BoardView.js";
 import { Nav } from "../components/Nav.js";
 import { WorkspaceLayout } from "../components/WorkspaceLayout.js";
 import { ConnectionStatusBanner, ConnectionStatusIndicator, useConnectionStatus } from "../components/ConnectionStatus.js";
+import { LoadingView } from "../components/LoadingView.js";
 import { GoalsPage } from "../components/GoalsPage.js";
 import { ChannelsPage } from "../components/ChannelsPage.js";
 import { ProductHeader } from "../components/ProductHeader.js";
@@ -60,7 +61,7 @@ export function AppRoutes(): React.ReactNode {
       <ConnectionStatusBanner state={connection} />
       <main className="app-main" id="main-content">
         <RouteErrorBoundary resetKey={location.pathname}>
-        <Suspense fallback={<div role="status" aria-live="polite" className="os-page-loading">Loading…</div>}>
+        <Suspense fallback={<LoadingView label="Loading…" shape="page" />}>
         <Routes>
           <Route path="/" element={<WorkspaceLayout />} />
           <Route path="/board" element={<BoardView />} />

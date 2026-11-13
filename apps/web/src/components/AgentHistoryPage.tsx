@@ -1,6 +1,7 @@
 import { RunActivityPayloadSchema, RunStatusSchema, type AgentHistoryEvent, type RunOperation } from "@artoo/domain";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router-dom";
+import { LoadingView } from "./LoadingView.js";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
 import { Badge, Button, EmptyState, ErrorState, RunStatusBadge, Select } from "../ui/index.js";
@@ -70,7 +71,7 @@ export function AgentHistoryPage(): React.ReactNode {
     </div>
     <div className="history-layout">
       <section className="history-executions" aria-label="Agent executions"><h2>Executions</h2>
-        {history.isLoading && <p role="status">Loading history…</p>}
+        {history.isLoading && <LoadingView label="Loading history…" shape="list" />}
         {history.isError && <ErrorState title="Could not load Agent history" action={<Button onClick={() => void history.refetch()}>Retry history</Button>} />}
         {!history.isLoading && !history.isError && !executions.length && <EmptyState title="No executions found" description="History appears when this Agent receives work. Check the filters if it has already run." />}
         <ol>{executions.map(({ run, task_title }) => <li key={run.id}><button className="history-execution" type="button" aria-pressed={runId === run.id} onClick={() => { const next = new URLSearchParams(params); next.set("run_id", run.id); setParams(next); }}><strong>{task_title}</strong><RunStatusBadge status={run.status} /><time dateTime={run.created_at}>{new Date(run.created_at).toLocaleString()}</time><code>{run.id}</code></button></li>)}</ol>
@@ -78,7 +79,7 @@ export function AgentHistoryPage(): React.ReactNode {
       </section>
       <section className="history-detail" aria-label="Execution history">
         {!runId && <EmptyState title="Select an execution" description="Choose a run to inspect its original request and recorded activity." />}
-        {runId && detail.isLoading && <p role="status">Loading execution…</p>}
+        {runId && detail.isLoading && <LoadingView label="Loading execution…" />}
         {runId && detail.isError && <ErrorState title="Could not load execution history" action={<Button onClick={() => void detail.refetch()}>Retry execution</Button>} />}
         {first && <>
           <h2>{first.execution.task_title}</h2><RunStatusBadge status={first.execution.run.status} />

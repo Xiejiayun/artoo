@@ -11,6 +11,7 @@ import { usePollMs } from "../app/RealtimeContext.js";
 import { useProject } from "../app/useProject.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { Badge, Button, EmptyState, Input, Modal, Select, useToast } from "../ui/index.js";
+import { LoadingView } from "./LoadingView.js";
 import { ActionError } from "./ActionError.js";
 import { AIDataSharingSettings } from "./AIDataSharing.js";
 import { DesktopSettings } from "./DesktopSetup.js";
@@ -45,7 +46,7 @@ export function SettingsPage(): React.ReactNode {
     <section id="project-settings" className="settings-section" aria-label="Projects"><header className="settings-section__heading"><div><h2>Projects</h2><p>Name your shared workspace and choose where agents work by default.</p></div>{canManage && <Button onClick={() => setCreating(true)}>New project</Button>}</header>
       {creating && <ProjectForm onSaved={(id) => { setSelectedProjectId(id); setCreating(false); }} onClose={() => setCreating(false)} />}
       <div className="settings-section__body">{project && canManage ? <ProjectForm key={project.id} project={project} onSaved={() => undefined} /> : project && <p>{project.name} · {project.default_workspace || "Workspace not configured"}</p>}
-      {bootstrap.isLoading && <p role="status">Loading project settings…</p>}</div>
+      {bootstrap.isLoading && <LoadingView label="Loading project settings…" shape="form" />}</div>
     </section>
     {window.artooDesktop?.getConnection && <DesktopSettings />}
     <section id="pairing-settings" className="settings-section" aria-label="Device pairing"><header className="settings-section__heading"><div><h2>Connect a device</h2><p>Take your conversations and work with you.</p></div><Link2 size={20} aria-hidden="true" /></header>
@@ -57,7 +58,7 @@ export function SettingsPage(): React.ReactNode {
       <Button variant="primary" loading={pairing.isPending} onClick={() => pairing.mutate()}>Generate pairing code</Button></div><ActionError error={pairing.error} />
       {pairing.data && <div className="pairing-result"><p>Pairing code: <output aria-label="Pairing code" className="t-mono">{pairing.data.code}</output></p><p>Expires {new Date(pairing.data.pairing.expires_at).toLocaleString()}. Keep the code private.</p><Button size="sm" onClick={() => pairing.reset()}>Hide code</Button></div>}</details></div>
     </section>
-    <section id="device-settings" className="settings-section" aria-label="Devices"><header className="settings-section__heading"><div><h2>Devices{devices.data ? <span className="settings-count">{devices.data.devices.length}</span> : null}</h2><p>Review access and manage the computers available for team tasks.</p></div></header><div className="settings-section__body u-stack"><ActionError error={devices.error ?? revoke.error} />{devices.isError && <Button size="sm" onClick={() => void devices.refetch()}>Reload devices</Button>}{devices.isLoading && <p role="status">Loading devices…</p>}{devices.data?.devices.length === 0 && <EmptyState icon={Laptop} title="No devices paired yet." description="Connect a device above to bring ARTOO to your desktop or phone." />}
+    <section id="device-settings" className="settings-section" aria-label="Devices"><header className="settings-section__heading"><div><h2>Devices{devices.data ? <span className="settings-count">{devices.data.devices.length}</span> : null}</h2><p>Review access and manage the computers available for team tasks.</p></div></header><div className="settings-section__body u-stack"><ActionError error={devices.error ?? revoke.error} />{devices.isError && <Button size="sm" onClick={() => void devices.refetch()}>Reload devices</Button>}{devices.isLoading && <LoadingView label="Loading devices…" shape="list" />}{devices.data?.devices.length === 0 && <EmptyState icon={Laptop} title="No devices paired yet." description="Connect a device above to bring ARTOO to your desktop or phone." />}
       {devices.data?.devices.map((device) => <article key={device.id} className="settings-device"><div className="settings-device__identity"><span className="settings-device__icon">{["ios", "android"].includes(device.platform) ? <Smartphone size={20} aria-hidden="true" /> : <Laptop size={20} aria-hidden="true" />}</span><div><h3>{device.display_name || device.id}</h3><p>Last seen: {device.last_seen_at ? new Date(device.last_seen_at).toLocaleString() : "Never"}</p></div><div className="settings-device__badges"><Badge>{device.platform === "macos" ? "macOS" : device.platform === "ios" ? "iOS" : device.platform === "windows" ? "Windows" : device.platform}</Badge><Badge tone={device.trust === "active" ? "success" : "danger"}>{device.trust}</Badge></div></div>{device.computer_id && <p className="t-subtle">Computer: {bootstrap.data?.computers.find((computer) => computer.id === device.computer_id)?.display_name ?? device.computer_id}</p>}
         <div className="settings-device__actions">
         {canManage && device.trust === "active" && ["macos", "windows", "linux"].includes(device.platform) && !device.computer_id && (confirmEnroll === device.id ? <div className="u-stack-sm">
