@@ -21,7 +21,7 @@ import {
   ApplicationPublicationGrantV1Schema, type ApplicationRequirementV1, type ApplicationPublicationVerificationBindingV1,
 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
-import { and, asc, desc, eq, isNull, lte, ne, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 
 import type { ServerContext } from "../context.js";
@@ -146,17 +146,36 @@ async function taskHandoff(ctx: ServerContext, tx: DrizzleDb, task: typeof tasks
     .where(and(eq(taskDependencies.toTaskId, task.id), eq(taskDependencies.organizationId, ctx.organizationId),
       eq(tasks.organizationId, ctx.organizationId), eq(tasks.projectId, task.projectId)))
     .orderBy(asc(taskDependencies.fromTaskId), asc(taskDependencies.type)).limit(101);
+  const selectedEdges = edges.slice(0, 100);
+  const doneTaskIds = [...new Set(selectedEdges.filter((edge) => edge.task.status === "done").map((edge) => edge.task.id))];
+  // Select the latest attempt before checking completion. Filtering completed
+  // in SQL here would silently fall back to old successful evidence.
+  const latestRuns = doneTaskIds.length ? await tx.selectDistinctOn([runs.taskId]).from(runs).where(and(
+    eq(runs.organizationId, ctx.organizationId), inArray(runs.taskId, doneTaskIds),
+  )).orderBy(asc(runs.taskId), desc(runs.createdAt), desc(runs.id)) : [];
+  const acceptedRuns = latestRuns.filter((run) => run.status === "completed");
+  const acceptedByTask = new Map(acceptedRuns.map((run) => [run.taskId, run]));
+  // LATERAL retains a separate 101-row limit per accepted run. A global limit
+  // would let one task consume another task's artifacts/truncation sentinel.
+  const produced = tx.select({ id: artifacts.id, taskId: artifacts.taskId, type: artifacts.type, checksum: artifacts.checksum }).from(artifacts).where(and(
+    eq(artifacts.organizationId, ctx.organizationId), eq(artifacts.taskId, runs.taskId), eq(artifacts.runId, runs.id),
+  )).orderBy(asc(artifacts.id)).limit(101).as("handoff_artifacts");
+  const artifactRows = acceptedRuns.length ? await tx.select({
+    id: produced.id, taskId: produced.taskId, type: produced.type, checksum: produced.checksum,
+  }).from(runs)
+    .innerJoinLateral(produced, sql`true`)
+    .where(and(eq(runs.organizationId, ctx.organizationId), inArray(runs.id, acceptedRuns.map((run) => run.id))))
+    .orderBy(asc(runs.taskId), asc(produced.id)) : [];
+  const artifactsByTask = new Map<string, (typeof artifactRows)[number][]>();
+  for (const artifact of artifactRows) {
+    const group = artifactsByTask.get(artifact.taskId) ?? [];
+    group.push(artifact);
+    artifactsByTask.set(artifact.taskId, group);
+  }
   const entries: NonNullable<ContextPack["dependency_context"]>["entries"] = [];
-  for (const edge of edges.slice(0, 100)) {
-    // Only the accepted task's latest execution contributes deliverables. Do
-    // not combine artifacts left by older failed attempts with current evidence.
-    const latest = edge.task.status === "done" ? (await tx.select().from(runs).where(and(
-      eq(runs.taskId, edge.task.id), eq(runs.organizationId, ctx.organizationId),
-    )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1))[0] : undefined;
-    const acceptedRun = latest?.status === "completed" ? latest : undefined;
-    const produced = acceptedRun ? await tx.select().from(artifacts).where(and(
-      eq(artifacts.organizationId, ctx.organizationId), eq(artifacts.taskId, edge.task.id), eq(artifacts.runId, acceptedRun.id),
-    )).orderBy(asc(artifacts.id)).limit(101) : [];
+  for (const edge of selectedEdges) {
+    const acceptedRun = acceptedByTask.get(edge.task.id);
+    const produced = artifactsByTask.get(edge.task.id) ?? [];
     entries.push({ task_id: edge.task.id, title: edge.task.title, dependency_type: edge.dependency.type,
       status: edge.task.status, acceptance_criteria: edge.task.acceptanceCriteria as string[],
       run_id: acceptedRun?.id ?? null, workspace_root: acceptedRun?.workspaceRoot ?? null,
