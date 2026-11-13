@@ -18,6 +18,7 @@ import { agentInstances, agentRuntimes, computers, devices, runs, tasks } from "
 import {
   derivePresenceState,
   isActiveRunStatus,
+  RUN_STATUSES,
   synthesizeAgentInstancePresence,
   synthesizeComputerPresence,
   type AgentInstancePresence,
@@ -28,7 +29,7 @@ import {
   type DevicePresenceState,
   type PresenceWindows,
 } from "@artoo/domain";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, notInArray } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { buildEvent } from "../events.js";
@@ -284,6 +285,25 @@ export async function devicePresence(
 // ---------------------------------------------------------------------------
 
 const ISO = (v: string | null): string | null => (v === null ? null : new Date(v).toISOString());
+// Derive the SQL exclusion from the same domain predicate as the read model.
+// New non-terminal statuses keep counting without a separate SQL whitelist.
+const TERMINAL_RUN_STATUSES = RUN_STATUSES.filter((status) => !isActiveRunStatus(status));
+
+type PresenceInstance = Pick<typeof agentInstances.$inferSelect, "id" | "agentId" | "computerId" | "runtime" | "config">;
+type RuntimeFact = Pick<typeof agentRuntimes.$inferSelect, "runtime" | "status" | "lastSeenAt">;
+type RunFact = { runStatus: string; taskStatus: string };
+
+function groupBy<T>(rows: T[], key: (row: T) => string | null): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const row of rows) {
+    const id = key(row);
+    if (id === null) continue;
+    const group = grouped.get(id);
+    if (group) group.push(row);
+    else grouped.set(id, [row]);
+  }
+  return grouped;
+}
 
 /** Live-connection predicate the app layer supplies (e.g. nodeRegistry.get(id) !== undefined). */
 export type LiveConnection = (computerId: string) => boolean;
@@ -298,17 +318,17 @@ async function activeRunsForInstance(
   ctx: ServerContext,
   agentInstanceId: string,
 ): Promise<Array<{ runStatus: string; taskStatus: string }>> {
-  const rows = await ctx.db.db
+  return ctx.db.db
     .select({ runStatus: runs.status, taskStatus: tasks.status })
     .from(runs)
     .innerJoin(tasks, eq(runs.taskId, tasks.id))
-    .where(and(eq(runs.organizationId, ctx.organizationId), eq(runs.agentInstanceId, agentInstanceId)));
-  return rows.filter((r) => isActiveRunStatus(r.runStatus));
+    .where(and(eq(runs.organizationId, ctx.organizationId), eq(runs.agentInstanceId, agentInstanceId),
+      eq(tasks.organizationId, ctx.organizationId), notInArray(runs.status, TERMINAL_RUN_STATUSES)));
 }
 
 async function instanceFacts(
   ctx: ServerContext,
-  inst: { id: string; agentId: string; computerId: string; runtime: string; config: Record<string, unknown> | null },
+  inst: PresenceInstance,
   isLive: LiveConnection,
 ): Promise<AgentInstancePresenceFacts> {
   const runtimeRow = (
@@ -332,7 +352,18 @@ async function instanceFacts(
     .from(devices)
     .where(and(eq(devices.computerId, inst.computerId), eq(devices.organizationId, ctx.organizationId)));
   const active = await activeRunsForInstance(ctx, inst.id);
-  const limitRaw = (inst.config ?? {})["concurrency_limit"];
+  return assembleInstanceFacts(inst, computer, runtimeRow, deviceRows, active, isLive);
+}
+
+function assembleInstanceFacts(
+  inst: PresenceInstance,
+  computer: { lastHeartbeatAt: string | null } | undefined,
+  runtimeRow: RuntimeFact | undefined,
+  deviceRows: Array<{ trust: string }>,
+  active: RunFact[],
+  isLive: LiveConnection,
+): AgentInstancePresenceFacts {
+  const limitRaw = ((inst.config ?? {}) as Record<string, unknown>)["concurrency_limit"];
   const concurrencyLimit = typeof limitRaw === "number" && limitRaw > 0 ? limitRaw : 1;
   return {
     agentInstanceId: inst.id,
@@ -381,16 +412,27 @@ export async function listAgentInstancePresence(
     .select()
     .from(agentInstances)
     .where(and(eq(agentInstances.organizationId, ctx.organizationId), isNull(agentInstances.deletedAt)));
-  const out: AgentInstancePresence[] = [];
-  for (const inst of insts) {
-    const facts = await instanceFacts(
-      ctx,
-      { id: inst.id, agentId: inst.agentId, computerId: inst.computerId, runtime: inst.runtime, config: inst.config as Record<string, unknown> | null },
-      isLive,
-    );
-    out.push(synthesizeAgentInstancePresence(facts, ctx.clock.nowIso(), config.windows));
-  }
-  return out;
+  if (insts.length === 0) return [];
+  const [computerRows, runtimeRows, deviceRows, runRows] = await Promise.all([
+    ctx.db.db.select({ id: computers.id, lastHeartbeatAt: computers.lastHeartbeatAt }).from(computers)
+      .where(eq(computers.organizationId, ctx.organizationId)),
+    ctx.db.db.select({ computerId: agentRuntimes.computerId, runtime: agentRuntimes.runtime, status: agentRuntimes.status, lastSeenAt: agentRuntimes.lastSeenAt })
+      .from(agentRuntimes).where(eq(agentRuntimes.organizationId, ctx.organizationId)),
+    ctx.db.db.select({ computerId: devices.computerId, trust: devices.trust }).from(devices)
+      .where(eq(devices.organizationId, ctx.organizationId)),
+    ctx.db.db.select({ agentInstanceId: runs.agentInstanceId, runStatus: runs.status, taskStatus: tasks.status })
+      .from(runs).innerJoin(tasks, eq(runs.taskId, tasks.id))
+      .where(and(eq(runs.organizationId, ctx.organizationId), eq(tasks.organizationId, ctx.organizationId), notInArray(runs.status, TERMINAL_RUN_STATUSES))),
+  ]);
+  const computerMap = new Map(computerRows.map((row) => [row.id, row]));
+  const runtimeKey = (row: { computerId: string; runtime: string }): string => JSON.stringify([row.computerId, row.runtime]);
+  const runtimeMap = new Map(runtimeRows.map((row) => [runtimeKey(row), row]));
+  const deviceMap = groupBy(deviceRows, (row) => row.computerId);
+  const runMap = groupBy(runRows, (row) => row.agentInstanceId);
+  return insts.map((inst) => synthesizeAgentInstancePresence(assembleInstanceFacts(
+    inst, computerMap.get(inst.computerId), runtimeMap.get(runtimeKey(inst)),
+    deviceMap.get(inst.computerId) ?? [], runMap.get(inst.id) ?? [], isLive,
+  ), ctx.clock.nowIso(), config.windows));
 }
 
 async function computerFacts(
@@ -409,8 +451,17 @@ async function computerFacts(
   const runRows = await ctx.db.db
     .select({ status: runs.status })
     .from(runs)
-    .where(and(eq(runs.organizationId, ctx.organizationId), eq(runs.computerId, computer.id)));
-  const active = runRows.filter((r) => isActiveRunStatus(r.status));
+    .where(and(eq(runs.organizationId, ctx.organizationId), eq(runs.computerId, computer.id), notInArray(runs.status, TERMINAL_RUN_STATUSES)));
+  return assembleComputerFacts(computer, deviceRows, rtRows, runRows, isLive);
+}
+
+function assembleComputerFacts(
+  computer: { id: string; lastHeartbeatAt: string | null },
+  deviceRows: Array<{ trust: string }>,
+  rtRows: RuntimeFact[],
+  runRows: Array<{ status: string }>,
+  isLive: LiveConnection,
+): ComputerPresenceFacts {
   const queueDepth = runRows.filter((r) => r.status === "queued" || r.status === "starting").length;
   return {
     computerId: computer.id,
@@ -422,7 +473,7 @@ async function computerFacts(
       status: r.status as ComputerPresenceFacts["runtimes"][number]["status"],
       lastSeenAt: ISO(r.lastSeenAt),
     })),
-    activeRuns: active.length,
+    activeRuns: runRows.length,
     queueDepth,
   };
 }
@@ -450,10 +501,18 @@ export async function listComputerPresence(
   config: PresenceConfig = DEFAULT_AGENT_PRESENCE_CONFIG,
 ): Promise<ComputerPresence[]> {
   const rows = await ctx.db.db.select().from(computers).where(and(eq(computers.organizationId, ctx.organizationId), isNull(computers.deletedAt)));
-  const out: ComputerPresence[] = [];
-  for (const computer of rows) {
-    const facts = await computerFacts(ctx, { id: computer.id, lastHeartbeatAt: computer.lastHeartbeatAt }, isLive);
-    out.push(synthesizeComputerPresence(facts, ctx.clock.nowIso(), config.windows));
-  }
-  return out;
+  if (rows.length === 0) return [];
+  const [deviceRows, runtimeRows, runRows] = await Promise.all([
+    ctx.db.db.select({ computerId: devices.computerId, trust: devices.trust }).from(devices).where(eq(devices.organizationId, ctx.organizationId)),
+    ctx.db.db.select({ computerId: agentRuntimes.computerId, runtime: agentRuntimes.runtime, status: agentRuntimes.status, lastSeenAt: agentRuntimes.lastSeenAt })
+      .from(agentRuntimes).where(eq(agentRuntimes.organizationId, ctx.organizationId)),
+    ctx.db.db.select({ computerId: runs.computerId, status: runs.status }).from(runs)
+      .where(and(eq(runs.organizationId, ctx.organizationId), notInArray(runs.status, TERMINAL_RUN_STATUSES))),
+  ]);
+  const deviceMap = groupBy(deviceRows, (row) => row.computerId);
+  const runtimeMap = groupBy(runtimeRows, (row) => row.computerId);
+  const runMap = groupBy(runRows, (row) => row.computerId);
+  return rows.map((computer) => synthesizeComputerPresence(assembleComputerFacts(
+    computer, deviceMap.get(computer.id) ?? [], runtimeMap.get(computer.id) ?? [], runMap.get(computer.id) ?? [], isLive,
+  ), ctx.clock.nowIso(), config.windows));
 }
