@@ -94,7 +94,7 @@ export function TaskActions({ task, approvals }: { task: Task; approvals: readon
 
   const requestApproval = useMutation({
     mutationFn: () => api.requestExecutionApproval(task.id, { summary: approvalSummary.trim(), risk: approvalRisk }, newIdempotencyKey()),
-    onSuccess: async () => { setApprovalSummary(""); await invalidate(); await queryClient.invalidateQueries({ queryKey: ["approvals"] }); },
+    onSuccess: async () => { setApprovalSummary(""); await invalidate(); await queryClient.invalidateQueries({ queryKey: queryKeys.allApprovals }); },
   });
 
   const busy = ready.isPending || assign.isPending || retry.isPending || requestApproval.isPending;

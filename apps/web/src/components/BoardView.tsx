@@ -72,7 +72,7 @@ export function BoardView(): React.ReactNode {
   useSubscription(projectId === undefined ? [] : [`project:${projectId}`]);
 
   const tasks = useQuery({
-    queryKey: projectId === undefined ? ["tasks", "pending"] : queryKeys.tasks(projectId),
+    queryKey: projectId === undefined ? queryKeys.tasks("pending") : queryKeys.tasks(projectId),
     queryFn: () => api.listTasks(projectId as string),
     enabled: projectId !== undefined,
   });

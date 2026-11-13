@@ -272,7 +272,7 @@ function MessageComposer({ roomId, threadRootId, storageKey, bootstrap, people, 
       onMessageSent();
       void query.invalidateQueries({ queryKey: queryKeys.messages(roomId) });
       void query.invalidateQueries({ queryKey: queryKeys.assistantTurns(roomId) });
-      if (threadRootId) void query.invalidateQueries({ queryKey: ["message", roomId, threadRootId] });
+      if (threadRootId) void query.invalidateQueries({ queryKey: queryKeys.message(roomId, threadRootId) });
     },
     onError: (error, { submission, generation }) => {
       if (!active.current || generation !== draftGeneration.current) return;

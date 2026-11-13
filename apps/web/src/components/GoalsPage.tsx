@@ -1,3 +1,4 @@
+import { queryKeys } from "../app/queryKeys.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Flag, Plus, Download, ListChecks, MessageSquare, ArrowRight, Sparkles, ArrowUpRight } from "lucide-react";
@@ -81,7 +82,7 @@ function GoalForm({ projectId, onCreated, onClose, initialObjective = "", initia
     ? api.createAutonomousGoal({ project_id: projectId, objective: objective.trim(), verification_profile_id: "default", execution_mode: "agent_team", ...(mode === "publish" ? { release_profile_id: "default" } : {}), max_retries: 3,
       ...(mode === "publish" && sourceHandoff ? { source_handoff: { version: 1 as const, mode: "automatic" as const } } : {}) }, requestKey)
     : api.createGoal({ project_id: projectId, title: effectiveTitle, objective: objective.trim(), priority: "p2", acceptance_criteria: lines(criteria), budgets: { max_elapsed_ms: minutes ? Number(minutes) * 60000 : null, max_cost_usd: null, max_retries: null, max_concurrent_runs: null, allowed_runtimes: null } }, requestKey),
-    onSuccess: async ({ goal }) => { await query.invalidateQueries({ queryKey: ["goals", projectId] }); onCreated(goal.id); } });
+    onSuccess: async ({ goal }) => { await query.invalidateQueries({ queryKey: queryKeys.goals(projectId) }); onCreated(goal.id); } });
   return <Modal open onClose={() => { if (!mutation.isPending) onClose(); }} title="New goal"><form className="insights-goal-form u-stack" aria-label="Create goal" onChange={() => setRequestKey(newIdempotencyKey())} onSubmit={(event) => { event.preventDefault(); if (!mutation.isPending) mutation.mutate(); }}>
     {source && <p className="delivery-draft-source">Draft from a conversation. Review and edit it before creating a goal. <Link to={`/channels?room=${encodeURIComponent(source.roomId)}&project=${encodeURIComponent(projectId)}&thread=${encodeURIComponent(source.messageId)}`}>Back to message</Link></p>}
     <Textarea label="Objective" placeholder="Describe the result and why it matters." value={objective} required maxLength={10000} rows={4} disabled={mutation.isPending} onChange={(event) => { setObjective(event.target.value); if (!customTitle) setTitle(event.target.value.trim().split("\n")[0]?.slice(0, 120) ?? ""); }} />
@@ -104,14 +105,18 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
   const { setSelectedTaskId } = useSelection();
   const [proposing, setProposing] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
-  const automation = useQuery({ queryKey: ["goal-automation", goal.id], queryFn: () => api.getGoalAutomation(goal.id), refetchInterval: 5000 });
+  const poll5s = usePollMs(5000);
+  const automation = useQuery({ queryKey: queryKeys.goalAutomation(goal.id), queryFn: () => api.getGoalAutomation(goal.id), refetchInterval: poll5s });
   const autonomous = !!automation.data?.automation;
   const manual = automation.data?.automation === null;
-  const poll5s = usePollMs(5000);
   const poll10s = usePollMs(10000);
-  const plans = useQuery({ queryKey: ["plans", goal.id], queryFn: () => api.listPlans(goal.id), refetchInterval: autonomous ? poll5s : false });
-  const checkpoints = useQuery({ queryKey: ["checkpoints", goal.id], queryFn: () => api.listCheckpoints(goal.id), refetchInterval: poll10s });
-  const refresh = async (): Promise<void> => { await Promise.all(["goals", "plans", "checkpoints", "tasks", "goal-automation"].map((key) => query.invalidateQueries({ queryKey: [key] }))); };
+  const plans = useQuery({ queryKey: queryKeys.plans(goal.id), queryFn: () => api.listPlans(goal.id), refetchInterval: autonomous ? poll5s : false });
+  const checkpoints = useQuery({ queryKey: queryKeys.checkpoints(goal.id), queryFn: () => api.listCheckpoints(goal.id), refetchInterval: poll10s });
+  const refresh = async (): Promise<void> => { await Promise.all([
+    queryKeys.goals(goal.project_id), queryKeys.plans(goal.id), queryKeys.checkpoints(goal.id),
+    queryKeys.tasks(goal.project_id), queryKeys.goalAutomation(goal.id), queryKeys.goalRelease(goal.id),
+    queryKeys.goalApplicationPublication(goal.id), queryKeys.discussions(goal.id),
+  ].map((key) => query.invalidateQueries({ queryKey: key }))); };
   const action = useMutation({ mutationFn: (name: "pause" | "resume" | "cancel" | "reconcile") => api.goalAction(goal.id, name, newIdempotencyKey()), onSuccess: async () => { setConfirmCancel(false); await refresh(); }, onError: refresh });
   const planAction = useMutation({ mutationFn: ({ id, name }: { id: string; name: "accept" | "reject" }) => api.planAction(id, name, newIdempotencyKey()), onSuccess: refresh });
   const audit = useMutation({ mutationFn: async () => { const result = await api.goalAuditExport(goal.id); const url = URL.createObjectURL(new Blob([JSON.stringify(result.export, null, 2)], { type: "application/json" })); const a = document.createElement("a"); a.href = url; a.download = `${goal.id}-audit.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } });
@@ -153,7 +158,7 @@ const stageLabels = { research: "Research", design: "Design", implementation: "I
 function AutonomousProgress({ goal, automation }: { goal: Goal; automation: GoalAutomation }): React.ReactNode {
   const api = useApi();
   const { bootstrap } = useProject();
-  const release = useQuery({ queryKey: ["goal-release", goal.id], queryFn: () => api.getGoalRelease(goal.id), enabled: !!automation.release_profile_id, refetchInterval: 5000 });
+  const release = useQuery({ queryKey: queryKeys.goalRelease(goal.id), queryFn: () => api.getGoalRelease(goal.id), enabled: !!automation.release_profile_id, refetchInterval: usePollMs(5000) });
   const publication = release.data?.release;
   const published = publication?.status === "published" && publication.receipt?.outcome === "published";
   const health = publication?.health;
@@ -193,7 +198,9 @@ function AutonomousProgress({ goal, automation }: { goal: Goal; automation: Goal
 }
 
 export function ApplicationPublicationProgress({ goalId }: { goalId: string }): React.ReactNode {
-  const api = useApi(), query = useQueryClient(), key = ["goal-application-publication", goalId];
+  const api = useApi(), query = useQueryClient(), key = queryKeys.goalApplicationPublication(goalId);
+  // Availability observations have their own freshness deadline; keep checking
+  // every 5s even with WS connected so a healthy link does not age out at 30s.
   const publicationQuery = useQuery({ queryKey: key, queryFn: () => api.getGoalApplicationPublication(goalId), refetchInterval: 5000 });
   const publication = publicationQuery.data?.publication, receipt = publication?.receipt, report = publication?.latest_observation;
   const published = publication?.status === "published" && receipt?.outcome === "published";

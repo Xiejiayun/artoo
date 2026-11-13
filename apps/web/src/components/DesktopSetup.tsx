@@ -1,3 +1,4 @@
+import { queryKeys } from "../app/queryKeys.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ExternalLink, Monitor, Play, RotateCcw, Square } from "lucide-react";
@@ -8,7 +9,7 @@ import "../ui/settings.css";
 
 export function DesktopGate({ children }: { children: React.ReactNode }): React.ReactNode {
   const bridge = window.artooDesktop;
-  const connection = useQuery({ queryKey: ["desktopConnection"], queryFn: () => bridge!.getConnection!(), enabled: !!bridge?.getConnection, retry: false });
+  const connection = useQuery({ queryKey: queryKeys.desktopConnection, queryFn: () => bridge!.getConnection!(), enabled: !!bridge?.getConnection, retry: false });
   if (!bridge?.getConnection) return children;
   if (connection.isLoading) return <div className="auth-state" role="status">Loading device connection…</div>;
   if (connection.error) return <DesktopSetup initialError={connection.error} />;
@@ -43,9 +44,9 @@ export function DesktopSetup({ initialError }: { initialError?: unknown } = {}):
 export function DesktopSettings(): React.ReactNode {
   const bridge = window.artooDesktop!;
   const query = useQueryClient();
-  const connection = useQuery({ queryKey: ["desktopConnection"], queryFn: () => bridge.getConnection!() });
-  const daemon = useQuery({ queryKey: ["desktopDaemon"], queryFn: () => bridge.daemonStatus!(), enabled: !!bridge.daemonStatus, refetchInterval: 3000 });
-  const action = useMutation({ mutationFn: (run: () => Promise<void>) => run(), onSettled: async () => { await query.invalidateQueries({ queryKey: ["desktopDaemon"] }); } });
+  const connection = useQuery({ queryKey: queryKeys.desktopConnection, queryFn: () => bridge.getConnection!() });
+  const daemon = useQuery({ queryKey: queryKeys.desktopDaemon, queryFn: () => bridge.daemonStatus!(), enabled: !!bridge.daemonStatus, refetchInterval: 3000 });
+  const action = useMutation({ mutationFn: (run: () => Promise<void>) => run(), onSettled: async () => { await query.invalidateQueries({ queryKey: queryKeys.desktopDaemon }); } });
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const locked = daemon.data?.configurationLocked ?? !["stopped", "failed"].includes(daemon.data?.state ?? "");
   const managed = daemon.data?.managedWorkspace;

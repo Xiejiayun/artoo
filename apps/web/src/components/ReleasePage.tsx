@@ -1,8 +1,10 @@
+import { queryKeys } from "../app/queryKeys.js";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { ArrowUpRight, Check, Clock3, FileCheck2, Rocket, ShieldCheck, X } from "lucide-react";
 import type { Goal, ProductRelease } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
+import { usePollMs } from "../app/RealtimeContext.js";
 import { useProject } from "../app/useProject.js";
 import { useGoalContext } from "../app/useGoalContext.js";
 import { Badge, Button, EmptyState } from "../ui/index.js";
@@ -34,8 +36,9 @@ function safeEndpoint(release: ProductRelease | null | undefined, syncFailed: bo
 
 function ReleaseDetail({ goal }: { goal: Goal }): React.ReactNode {
   const api = useApi();
-  const automation = useQuery({ queryKey: ["goal-automation", goal.id], queryFn: () => api.getGoalAutomation(goal.id), refetchInterval: 5000 });
-  const releaseQuery = useQuery({ queryKey: ["goal-release", goal.id], queryFn: () => api.getGoalRelease(goal.id), refetchInterval: 5000 });
+  const poll5s = usePollMs(5000);
+  const automation = useQuery({ queryKey: queryKeys.goalAutomation(goal.id), queryFn: () => api.getGoalAutomation(goal.id), refetchInterval: poll5s });
+  const releaseQuery = useQuery({ queryKey: queryKeys.goalRelease(goal.id), queryFn: () => api.getGoalRelease(goal.id), refetchInterval: poll5s });
   const release = releaseQuery.data?.release;
   const receipt = release?.receipt;
   const health = release?.health;

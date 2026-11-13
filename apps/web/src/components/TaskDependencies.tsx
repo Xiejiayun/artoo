@@ -13,10 +13,10 @@ export function TaskDependencies({ task }: { task: Task }): React.ReactNode {
   const query = useQueryClient();
   const [prerequisite, setPrerequisite] = useState("");
   const [type, setType] = useState<DependencyType>("blocks");
-  const dependencies = useQuery({ queryKey: ["dependencies", task.id], queryFn: () => api.listDependencies(task.id) });
+  const dependencies = useQuery({ queryKey: queryKeys.dependencies(task.id), queryFn: () => api.listDependencies(task.id) });
   const tasks = useQuery({ queryKey: queryKeys.tasks(task.project_id), queryFn: () => api.listTasks(task.project_id) });
-  const leases = useQuery({ queryKey: ["leases", task.project_id], queryFn: () => api.listLeases(task.project_id), refetchInterval: usePollMs(10000) });
-  const refresh = async (): Promise<void> => { await query.invalidateQueries({ queryKey: ["dependencies", task.id] }); };
+  const leases = useQuery({ queryKey: queryKeys.leases(task.project_id), queryFn: () => api.listLeases(task.project_id), refetchInterval: usePollMs(10000) });
+  const refresh = async (): Promise<void> => { await query.invalidateQueries({ queryKey: queryKeys.dependencies(task.id) }); };
   const add = useMutation({ mutationFn: () => api.createDependency(task.id, { depends_on_task_id: prerequisite, type }, newIdempotencyKey()), onSuccess: async () => { setPrerequisite(""); await refresh(); } });
   const remove = useMutation({ mutationFn: (id: string) => api.deleteDependency(task.id, id, newIdempotencyKey()), onSuccess: refresh });
   const title = (id: string): string => tasks.data?.tasks.find((item) => item.id === id)?.title ?? id;

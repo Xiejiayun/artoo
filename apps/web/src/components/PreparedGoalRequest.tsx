@@ -34,7 +34,7 @@ function PreparedBrowserGoalForm({ entry, organizationId, userId, onCreated }: P
     retryDelay: (count) => Math.min(1000 * 2 ** count, 8000),
     onSuccess: async ({ goal }) => {
       removePreparedGoalDraft(draftKey); onCreated(goal.id);
-      await Promise.all([query.invalidateQueries({ queryKey: ["goals", entry.project_id] }), query.invalidateQueries({ queryKey: queryKeys.bootstrap })]);
+      await Promise.all([query.invalidateQueries({ queryKey: queryKeys.goals(entry.project_id) }), query.invalidateQueries({ queryKey: queryKeys.bootstrap })]);
     },
   });
   // A refresh replays only the previously saved body and the same server-bound key.

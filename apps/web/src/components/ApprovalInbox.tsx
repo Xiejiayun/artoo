@@ -32,7 +32,7 @@ export function ApprovalInbox({ taskId, taskStatus, approvals }: ApprovalInboxPr
       api.resolveApproval(input.id, { ...input.body, ...(comments[input.id]?.trim() ? { comment: comments[input.id]!.trim() } : {}) }, newIdempotencyKey()),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.task(taskId) });
-      await queryClient.invalidateQueries({ queryKey: ["approvals"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.allApprovals });
     },
     onError: async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.task(taskId) }); },
   });

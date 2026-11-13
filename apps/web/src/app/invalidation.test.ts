@@ -17,6 +17,14 @@ function event(partial: Partial<EventEnvelope> & Pick<EventEnvelope, "type">): E
 }
 
 describe("invalidationsForEvent", () => {
+  it.each(["goal.automation.updated", "goal.release.health", "goal.application-publication.observation", "goal.plan_accepted", "goal.checkpoint_created"] as const)(
+    "refreshes every goal evidence cache on %s", (type) => {
+      const keys = invalidationsForEvent("project:proj_artoo", event({ type, project_id: "proj_artoo" }));
+      for (const prefix of ["goals", "plans", "checkpoints", "discussions", "goal-automation", "goal-release", "goal-application-publication"]) {
+        expect(keys).toContainEqual([prefix]);
+      }
+    },
+  );
   it("does not refetch room, task or collaboration snapshots for streamed output", () => {
     expect(invalidationsForEvent("room:room_1", event({ type: "run.output", task_id: "task_1", room_id: "room_1", run_id: "run_1" }))).toEqual([]);
   });

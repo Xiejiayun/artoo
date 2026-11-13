@@ -31,24 +31,25 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
     keys.push(queryKeys.messages(event.room_id));
     // Room-prefix invalidation also refreshes every independently cached thread.
     keys.push(queryKeys.assistantTurns(event.room_id));
-    keys.push(["collaboration", event.room_id]);
+    keys.push(queryKeys.collaboration(event.room_id));
   }
   if (event.type === "message.moderated") {
     keys.push(queryKeys.notifications);
-    if (event.room_id && typeof event.payload.message_id === "string") keys.push(["message", event.room_id, event.payload.message_id]);
+    if (event.room_id && typeof event.payload.message_id === "string") keys.push(queryKeys.message(event.room_id, event.payload.message_id));
   }
-  if (event.type.startsWith("channel.")) keys.push(["channels"]);
-  if (event.type === "discussion.updated") keys.push(["discussions"]);
+  if (event.type.startsWith("channel.")) keys.push(queryKeys.channels());
+  if (event.type === "discussion.updated") keys.push(queryKeys.discussions());
   if (event.type === "message.mention" || event.type.startsWith("notification.")) keys.push(queryKeys.notifications);
   if (event.type.startsWith("computer.") || event.type.startsWith("daemon.") || event.type.startsWith("agent.")) keys.push(queryKeys.daemons);
   if (event.type.startsWith("goal.") || event.type.startsWith("plan.") || event.type.startsWith("checkpoint.")) {
-    keys.push(["goals"], ["plans"], ["checkpoints"]);
+    keys.push(queryKeys.goals(), queryKeys.plans(), queryKeys.checkpoints(), queryKeys.discussions(),
+      queryKeys.goalAutomation(), queryKeys.goalRelease(), queryKeys.goalApplicationPublication());
   }
   if (event.type.startsWith("computer.") || event.type.startsWith("agent.") || event.type.startsWith("device.")) {
-    keys.push(queryKeys.bootstrap, ["devices"], ["computerRuntimes"]);
+    keys.push(queryKeys.bootstrap, queryKeys.devices, queryKeys.allComputerRuntimes);
   }
-  if (event.type.startsWith("lease.")) keys.push(["leases"]);
-  if (event.type.startsWith("dependency.")) keys.push(["dependencies"]);
+  if (event.type.startsWith("lease.")) keys.push(queryKeys.leases());
+  if (event.type.startsWith("dependency.")) keys.push(queryKeys.dependencies());
   // Runtime lifecycle events also transition tasks without a separate
   // task.updated event. Keep the rail and Board aligned with task detail.
   if (
@@ -67,8 +68,8 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
   // and the accepted-only ContextPack context preview. Prefix keys invalidate
   // every filtered list / context query.
   if (event.type.startsWith("memory.")) {
-    keys.push(["memories"]);
-    keys.push(["memoryContext"]);
+    keys.push(queryKeys.allMemories);
+    keys.push(queryKeys.allMemoryContext);
     const memoryId = event.payload["memory_id"];
     if (typeof memoryId === "string") {
       keys.push(queryKeys.memory(memoryId));

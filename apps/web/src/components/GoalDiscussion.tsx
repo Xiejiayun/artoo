@@ -20,11 +20,11 @@ export function GoalDiscussion({ goal }: { goal: Goal }): React.ReactNode {
   const [roomId, setRoomId] = useState("");
   const [openThread, setOpenThread] = useState<string | null>(null);
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
-  const channels = useQuery({ queryKey: ["channels", goal.project_id], queryFn: () => api.listChannels(goal.project_id) });
-  const sessions = useQuery({ queryKey: ["discussions", goal.id], queryFn: () => api.listDiscussions(goal.id), refetchInterval: usePollMs(5000) });
+  const channels = useQuery({ queryKey: queryKeys.channels(goal.project_id), queryFn: () => api.listChannels(goal.project_id) });
+  const sessions = useQuery({ queryKey: queryKeys.discussions(goal.id), queryFn: () => api.listDiscussions(goal.id), refetchInterval: usePollMs(5000) });
   useSubscription(goal.room_id ? [`room:${goal.room_id}`] : []);
   const refresh = async () => { await Promise.all([
-    query.invalidateQueries({ queryKey: ["discussions", goal.id] }), query.invalidateQueries({ queryKey: ["plans", goal.id] }),
+    query.invalidateQueries({ queryKey: queryKeys.discussions(goal.id) }), query.invalidateQueries({ queryKey: queryKeys.plans(goal.id) }),
   ]); };
   const start = useMutation({ mutationFn: (body: StartDiscussionRequest) => api.startDiscussion(goal.id, body, newIdempotencyKey()),
     onSuccess: async ({ discussion }) => { setOpenThread(discussion.id); await refresh(); }, onError: refresh });
