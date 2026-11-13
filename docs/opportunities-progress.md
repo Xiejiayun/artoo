@@ -12,7 +12,7 @@
 | F1 | 已有能力，无需重复 | 方案已更正 DAG 证据门控结论，保留现有行为。 |
 | P4 | 已实现并验证 | 集中查询键，补齐 Goal 相关事件失效与项目订阅；自动化和静态发布轮询在线退避。应用发布保留 5 秒轮询及本地健康时效判断。根 typecheck、Web build 通过；完整 Web 单元/组件回归 60 文件、574 项通过；新增实时事件/退避回归所在两文件 23 项通过。 |
 | X2 | 已实现并验证 | 按当前项目任务 ID 关联组织级审批，徽标可筛选并打开真实任务（包含 ready 执行审批）；合并重复缓存记录，支持显示全部及审批清空状态。根 typecheck、Web build 通过；LeftRail/TaskList/WorkspaceLayout/ApprovalInbox 4 文件、15 项通过。 |
-| E4 | 已发现测试安装，等待共享授权与最终验收 | [验收准备与证据要求](opportunities-acceptance-2026-11-13.md)。补查 `%USERPROFILE%/.artoo` 后找到 rc.8 安装及独立配置；当前源码 helper 生产准入和已安装 Chromium 本地页面/实际关闭预检通过。尚未读取凭据或调用 Provider；单次 45 分钟真实外部模型验收的共享授权仍待操作者回复，最终版本验收未完成。 |
+| E4 | 本机原生边界已验证，等待共享授权与最终验收 | [验收准备与证据要求](opportunities-acceptance-2026-11-13.md)。现有 rc.8 helper 与真实 Chromium 的嵌套 Job 三场景通过；使用已有准入私有 TEMP 后，真实节点→CLI→浏览器密封存储链及十个拒绝场景通过。旧夹具断言与权限失败分别保留。尚未读取凭据或调用 Provider；单次 45 分钟真实外部模型验收的共享授权仍待回复，最终版本产品验收未完成。 |
 | P1 | 已实现并验证 | 实例/电脑 Presence 批量查询，SQL 排除终态，保持组织/撤销/队列/状态语义。[测量](presence-performance-2026-11-13.md)：20 实例/4 电脑/1,020 Run，查询数 81→5、13→4；返回行 1,080→48、1,028→28。5 文件 52 项通过；根 typecheck、server build 通过。 |
 | P2 | 已实现并验证 | 追加 0061 迁移与匹配 schema，增加任务消息/最新 Run 排序索引及共用非终态部分索引。[查询计划与成本](presence-indexes-2026-11-13.md)及可复现脚本已记录；根 typecheck、server build、10 文件 53 项回归通过。独立 Postgres 与写入吞吐未测量。 |
 | P3 | 已实现并验证 | 最新 Run 批量读取、每 Run LATERAL 制品上限，Goal 审计按 20 任务批量装配；保持隔离、脱敏、排序与截断。[测量](evidence-query-batching-2026-11-13.md)：101 边交接 204→10 次查询，45 子任务审计 501→36 次。根 typecheck、server build、7 文件 27 项回归通过。 |
@@ -226,6 +226,14 @@ Goal 链接修复在当前项目列表找不到指定 Goal 时，按需调用现
 根 typecheck 及 Web build 通过，9 文件 staged 质量、Board/Release 除已声明的加载/错误/重试变化外的完整发射 JS AST 保持核验通过。首轮聚焦 7 文件为 108 通过/1 失败：Board 同时呈现新增错误和原 ErrorState，原唯一 alert 断言失败；改为沿用原 ErrorState 后，原 Board、导航与新增链接边界 3 文件 21 项全部通过（`.git/opt-goal-link-tests-recheck.{log,json}`）。新增 9 项覆盖组织/ID、失败重试、bootstrap 更新、缓存重验、账号变化和迟到响应。最初两个测试误用了 Playwright 的 exact 选项，修正为 Testing Library 的既有精确 name 匹配后根 typecheck 通过；未改业务断言、时限或跳过条件。
 
 真实 Chromium 按命令面板创建第二项目 → Goal 链接 → 原加载状态 → 原自然交付顺序完整执行，8 项全部通过（`.git/opt-goal-link-e2e.log`），包含先前 CI 的全部 3 项失败及新增 Plan/Release/Board 刷新归属回归。该聚焦结果仍不替代最终 main 的完整四门禁、完整 Web E2E 或真实 Provider 验收。
+
+Goal 链接修复通过 [PR #107](https://github.com/Xiejiayun/artoo/pull/107) 合并为 `e5a4915`（实现 `560ba3b`），拉取 main 后开展 E1 安装移除。完整三 lane、前后空缓存和文件覆盖聚合均通过，详见 [E1 证据](ci-vitest-browser-validation-2026-11-13.md#2026-11-14-完整-windows-ci-证据与安装移除)。仅删除 parallel installer，解析后的 YAML 除该步骤外完全一致；staged/changed 无适用 JS/TS/JSON/CSS 文件，均正常退出。通过 [PR #108](https://github.com/Xiejiayun/artoo/pull/108) 合并为 `061335e`（实现 `662b200`），再次拉取 main 后单独复核本机原生夹具；未称尚未完成的远程整套 CI 通过。
+
+本机 Node 24.22.1、Chromium 156.0.8078.80、现有 rc.8 pinned helper 的真实嵌套 Job 正常/中止/外层取消三项全部通过，实际退出、Job 清空及 EOF 均核验。随后节点→受保护 CLI→Job 浏览器存储夹具首次因复制 backend 的旧错误文字断言失败；改为精确匹配现行安装准入错误，并立即断言没有派发。完整 AST 复核保留其余流程、时限、关闭断言与全部十个拒绝场景；按 C4 格式化该 worker。
+
+第二轮在默认 TEMP 被生产私有上下文检查拒绝，原因为其他本地 principal 可修改；没有派发 CLI。使用已配置且通过完整准入的 `temporary_directory` 后，正向节点链产生真实密封 v3 存储观测，但旧 Zod getter 文案断言失败。现断言 CLI 现行安全诊断的事件/版本、单一 root ZodError 及省略 message，不要求生产执行不可信 getter；另在观察器断言前明确核对节点 outcome，保留原始失败原因。未修改生产权限、诊断、执行命令或截止时间。
+
+最终完整原生存储夹具 1 项通过、零跳过，内含全部十个实际 CLI 拒绝场景；正向种子只应用一次，真实存储写失败命中一次，源码不变、私有上下文清理、原始关闭回执及序列化副本拒绝均通过。实际子进程 close 为 0/null，运行前后源码 patch 和 4,762 个输入文件摘要一致；fixture 按原约定保留独立证据目录。完整证据 `.git/opt-native-recheck-2026-11-13T22-57-50.015Z/`；早期失败 `.git/opt-native-2026-11-13T22-44-39.073Z/`、`opt-native-recheck-2026-11-13T22-51-10.166Z/` 与 `opt-native-recheck-2026-11-13T22-53-15.627Z/` 保留。worker 语法、单文件 staged 质量及最终 AST 检查通过；这不是模型产品、跨实体电脑、原生客户端或发布验收。
 
 ## 后续顺序
 
