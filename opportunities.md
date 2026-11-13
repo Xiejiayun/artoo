@@ -2,6 +2,7 @@
 
 > - **报告更新日期**：2026-11-13
 > - **分析基线**：`main` 分支 @ `49c514d`（含 `T0`–`T9` 近期优化提交）
+> - **复核范围**：对照当前源码、契约、测试与 CI 入口做静态复核；DAG 与预算相关 4 个测试文件、30 项测试通过。未运行 UI 实测、性能基准、完整 CI 或真实 Provider 验收；收益、规模与风险为待验证估计。
 > - **项目定位**：Open-Source Agent Team Operating System（连接多台计算节点 Computer、多类 Agent Runtime、Agent-Native IM 协作、Scrum/Goal 任务编排、Skill 治理与可审计证据链的统一控制平面）
 > - **关联文档**：[design.md](./design.md) · [AGENTS.md](./AGENTS.md) · [docs/agent-team-development.md](./docs/agent-team-development.md) · [docs/optimization-backlog-2026-11-13.zh-CN.md](./docs/optimization-backlog-2026-11-13.zh-CN.md)
 
@@ -28,22 +29,22 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
 
 ### 1.1 代码库规模统计
 
-全仓共追踪 **1,984 个文件**，核心源码与测试代码（`.ts` / `.tsx` / `.mjs` / `.swift` / `.css`）共计 **257,901 行 (LOC)**，包含 **709 个测试文件**、**60 个有序追加的 SQL 迁移文件**、**113 篇设计/运维文档** 与 **9 条 GitHub Actions 工作流**：
+按 `git ls-files` 统计，全仓追踪 **1,988 个文件**。其中 `.ts` / `.tsx` / `.mjs` / `.swift` / `.css` 共 **1,629 个文件、270,183 个物理行**（包含空行、注释和已追踪的 vendor/fixture）；按 `.test` / `.spec` 的 TS/TSX/MJS 文件及 iOS `Tests` / `UITests` 下 Swift 文件计，共 **759 个测试文件**。另有 **61 个 SQL 迁移文件**（包含 `0000`）、`docs/` 下 **93 篇 Markdown** 与 **9 条 GitHub Actions 工作流**。这些是规模统计，不代表有效测试用例数或覆盖率：
 
-| 模块 / 目录 | 文件数 | 代码行数 (LOC) | 职责定位 |
+| 模块 / 目录 | 上述扩展名文件数 | 物理行数 (LOC) | 职责定位 |
 | --- | ---: | ---: | --- |
-| `apps/artood` | 545 | 104,354 | 本地执行守护进程（Runtime 适配器、受保护验证 Profile、Git Worktree 隔离、本地/静态发布执行器、Windows 进程守卫） |
-| `apps/server` | 325 | 57,742 | Fastify 控制平面服务端（认证授权、GoalRunner、DAG 调度、ContextPack 组装、节点绑定、WS Hub、审计导出） |
-| `apps/web` | 197 | 20,414 | React + Vite + TanStack Query 共享 Web / 桌面渲染层控制面 |
-| `apps/ios` | 81 | 18,991 | SwiftUI 原生 iOS/iPadOS 客户端及 XCTest UI 自动化套件 |
-| `packages/domain` | 145 | 15,811 | 版本化领域模型、状态机、Zod 契约、DAG 与预算纯函数 |
-| `apps/desktop` | 40 | 6,922 | Electron 桌面外壳与内置本地守护进程桥接 |
-| `validation/managed-workspaces` | 33 | 5,084 | 受管工作区验证夹具与快照 |
-| `packages/db` | 39 | 4,537 | Drizzle ORM Schema（60+ 张表）与只追加 SQL 迁移（PGlite / Postgres 双兼容） |
-| `scripts/*` | 136 | 14,500+ | 预览门禁、iOS/Mac/Windows E2E 编排、npm daemon 打包与发布脚本 |
-| `packages/protocol` | 42 | 2,308 | Server ↔ Node 双工传输信封与命令确认协议 |
-| `packages/storage` | 22 | 1,773 | 数据库连接池、事务包装与内容寻址 Blob 存储 |
-| `packages/node-supervisor` & `client` | 14 | 1,365 | 节点进程监管与轻量 API 客户端 |
+| `apps/artood` | 546 | 107,567 | 本地执行守护进程（Runtime 适配器、受保护验证 Profile、Git Worktree 隔离、本地/静态发布执行器、Windows 进程守卫） |
+| `apps/server` | 325 | 61,033 | Fastify 控制平面服务端（认证授权、GoalRunner、DAG 调度、ContextPack 组装、节点绑定、WS Hub、审计导出） |
+| `apps/web` | 199 | 21,897 | React + Vite + TanStack Query 共享 Web / 桌面渲染层控制面 |
+| `apps/ios` | 81 | 20,203 | SwiftUI 原生 iOS/iPadOS 客户端及 XCTest UI 自动化套件 |
+| `packages/domain` | 145 | 16,817 | 版本化领域模型、状态机、Zod 契约、DAG 与预算纯函数 |
+| `apps/desktop` | 40 | 7,231 | Electron 桌面外壳与内置本地守护进程桥接 |
+| `validation/managed-workspaces` | 33 | 5,243 | 受管工作区验证夹具与快照 |
+| `packages/db` | 39 | 4,782 | Drizzle ORM Schema（60+ 张表）与只追加 SQL 迁移（PGlite / Postgres 双兼容） |
+| `scripts/` | 129 | 18,924 | 预览门禁、iOS/Mac/Windows E2E 编排、npm daemon 打包与发布脚本 |
+| `packages/protocol` | 42 | 2,533 | Server ↔ Node 双工传输信封与命令确认协议 |
+| `packages/storage` | 22 | 1,950 | 数据库连接池、事务包装与内容寻址 Blob 存储 |
+| `packages/node-supervisor` & `client` | 14 | 1,516 | 节点进程监管与轻量 API 客户端 |
 
 ### 1.2 核心架构优势（演进中必须保持的不变量）
 
@@ -67,53 +68,54 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
 - **核心列表项 Memo 化与长列表折叠 (`e516fac`, `6546006`)**：对 `MessageCard`、`TaskList`、`RunTimeline` 增加 `React.memo` 与分页/展开控制。
 - **核心列表接口可选 `limit` 与复合索引补齐 (`3b8c239`, `626ebba`)**：为 `tasks`、`goals`、`approvals`、`memories` 补齐可选 `limit` 参数及对应排序索引。
 - **局部页面 CSS 收敛 (`f611f9e`)**：将部分散落在 `styles.css` 中的页面样式迁入模块化 `ui/*.css`。
-- **首轮大文件拆分与 i18n 脚手架 (`ca224f0`, `8102ee2`, `49c514d`)**：从 `node-client.ts` 拆出 `node-client-records.ts`，并在 `apps/web/src/app/i18n.ts` 建立轻量多语言脚手架（覆盖 `LoginPage` 与 `RouteErrorBoundary`）。
+- **首轮大文件拆分与 i18n 脚手架 (`ca224f0`, `8102ee2`)**：从 `node-client.ts` 拆出 `node-client-records.ts`，并在 `apps/web/src/app/i18n.ts` 建立轻量多语言脚手架（覆盖 `LoginPage` 与 `RouteErrorBoundary`）。
+- **DAG 证据门控注释更正 (`49c514d`)**：移除已过时的 Phase A TODO；服务端证据门控早已接入，此提交没有新增门控行为，见 F1 的复核结论。
 
-在此基础上，我们对全栈源码进行了穿透式扫描，识别出以下 **6 大维度、28 项具有明确代码证据的下一阶段持续优化机会**。
+以下按 **6 大维度**列出候选机会，区分已实现能力、可确认的问题与待测量假设。F1 保留编号用于记录更正，不再列入待办；E4 补充产品验收缺口。本文是候选清单，实施时仍需核对最新代码并遵循 `AGENTS.md` 的验证要求，不能将静态推断当作性能或产品验收结果。
 
 ---
 
 ## 3. 功能与产品完备度优化机会 (Feature & Product)
 
-### F1. 补齐 DAG 依赖中的证据门控 (`artifact_required` / `contract_required`) 闭环
-- **代码证据**：
-  - `packages/domain/src/dag.ts:51-98` 已定义了纯函数 `requiredEvidenceKind`、`gatingNeedsEvidence` 与 `hasRequiredEvidence`，并在第 89 行留有明确注释：`Phase A gates on prerequisite-done only — see gatingNeedsEvidence for the artifact/contract/review TODO`。
-  - `apps/server/src/services/dag-service.ts` 在计算任务解锁与自动就绪时，目前仅调用了 `isTaskUnlocked`（仅判断前置任务 `status === "done"`），未调用 `hasRequiredEvidence` 校验前置任务是否实际产出了 `artifact` 或 `contract` 类型制品。
-- **影响**：当用户在任务依赖或计划中选择 `artifact_required` 或 `contract_required` 边类型时，其实际运行语义退化成了普通的 `blocks` 边。
-- **优化建议**：
-  1. 先核对 `AGENTS.md` 中的自动评审与制品边界，在 `dag-service.ts` 的解锁评估中查询前置任务已落库的 `artifacts.type` 集合并构造 `evidenceByPrereq`。
-  2. 将 `isTaskUnlocked(incoming, statusById) && hasRequiredEvidence(incoming, evidenceByPrereq)` 组合作为完整的自动解锁条件，并补充对应的集成测试。
-- **优先级 / 规模**：P1 · S
+### F1. DAG 证据门控已实现（更正，不再列入待办）
 
-### F2. 打通 Goal 成本预算 (`max_cost_usd`) 自动累计与熔断闭环
+- **代码证据**：`apps/server/src/services/dag-service.ts` 的 `loadEvidenceMap` 查询组织内前置任务的制品，`isDependentSatisfied` 先调用 `isTaskUnlocked`，再调用 `hasRequiredEvidence`。`unlockDownstream` 和 `lifecycle-service.ts` 的手动就绪路径均使用完整门控。
+- **测试证据**：`apps/server/src/dag-evidence.test.ts` 覆盖缺少 artifact、普通 artifact 不满足 contract 要求、review 语义及自动解锁；本次与 `dag-unlock.test.ts`、`goal-budget-gates.test.ts`、`services/budget-service.test.ts` 一并运行，4 个文件、30 项测试全部通过。
+- **结论**：原报告根据过时注释推断“仅判断 done、尚未接入证据校验”不成立；`49c514d` 已更正该注释。保持现有行为，不重复实施。
+
+### F2. 先定义可信计费契约，再实现 Goal 成本预算 (`max_cost_usd`)
 - **代码证据**：
   - `packages/db/src/schema.ts` 的 `goals` 表已包含 `elapsed_cost_usd` 列，`apps/server/src/services/budget-service.ts:32-35, 68` 已读取 `cost_usd: goal.elapsedCostUsd`，但 `PAUSE_BUDGETS` 集合（第 32 行）仅包含 `"max_elapsed_ms"` 和 `"max_retries"`，未包含 `"max_cost_usd"`。
   - `apps/web/src/components/GoalsPage.tsx:94` 表单提示：`Cost budgets are unavailable until runtimes report reliable usage costs`。
   - 与此同时，服务端已有 `GET /api/v1/runs/:id/usage` (`run-service.ts:getRunUsage`) 与前端 `RunUsageSummary.tsx` 展示单次 Run 的 Token 及成本消耗。
-- **影响**：长时间运行的 Autonomous / Agent Team 目标缺乏成本上限熔断保护，当 Runtime 出现循环重试或高消耗调用时无法按美元预算自动暂停。
+  - `apps/server/src/services/budget-policy.ts:supportedGoalPolicy` 明确拒绝非空 `max_cost_usd`；`goal-budget-gates.test.ts` 覆盖 API 创建与恢复旧数据后的执行拒绝。`run-service.ts` 对 Usage 使用 upsert 更新当前快照，不能假定每条事件都是可直接累加的增量。
+- **影响**：当前不提供美元成本预算保障，并通过拒绝不支持的配置避免虚假承诺。已有单次 Usage 展示不代表所有 Runtime 都能持续提供完整、可靠的费用数据。
 - **优化建议**：
-  1. 在 `run-service.ts` 消费 `run.usage` / `run.completed` 事件时，将已确认的增量成本原子累加至所属 Goal 的 `elapsed_cost_usd`。
-  2. 将 `"max_cost_usd"` 纳入 `budget-service.ts` 的 `PAUSE_BUDGETS` 集合，并在 `GoalsPage.tsx` 的高级设置中开放可选的成本预算输入框（注明仅对上报 Usage 的 Runtime 生效）。
-- **优先级 / 规模**：P1 · M
+  1. 先定义按 Run / Provider Session 绑定的累计或增量语义、币种、重复/乱序事件、费用修正、缺失上报、重启恢复与未知费用策略；按兼容约定扩展契约，不能把未知费用计为 0。
+  2. 在事务中处理幂等计量与 Goal 汇总，并验证重放、并发上报和进程重启不会重复记账或漏记。
+  3. 明确“暂停后续调度”与“硬性支出上限”的区别：现有预算暂停允许在途 Run 继续完成，上报延迟也可能造成超额。可信计量和相应执行策略就绪后，才调整 `supportedGoalPolicy`、预算评估、调度准入及 UI；不支持的 Runtime 继续拒绝成本保障配置。
+- **优先级 / 规模**：P2 · L（计费契约与运行时能力为前置条件，风险中高）
 
-### F3. 弥合 iOS 客户端与 Web 控制面的核心业务视图差距
+### F3. 补齐 iOS 的 Release 管控与 Agent History，改善现有 Goals 入口发现性
 - **代码证据**：
   - Web 端顶部主导航 (`apps/web/src/components/ProductHeader.tsx:8-13`) 围绕四大核心研发流构建：`01 Thread (/channels)`、`02 Plan (/goals)`、`03 Board (/board)`、`04 Release (/release)`，外加 `/agents/:agentId/history` 执行历史浏览器。
-  - iOS 端主入口 (`apps/ios/Sources/App/ArtooApp.swift:232-250`) 的 `RootTab` 仅为 `channels`、`inbox`、`tasks`、`team`、`more` 五个 Tab，缺少独立的 **Goals (Plan) 视图**（查看/暂停/恢复 Goal、审阅接受 Plan、查看 Checkpoint）与 **Release 视图**（查看发布健康状态、停止本地应用发布），也无法按 Agent 维度浏览完整工具调用历史 (`AgentHistory`)。
-- **影响**：移动端用户在离席使用 iOS 客户端时，只能处理单任务审批和聊天，无法对高层级的 Goal 计划进行审批（Accept/Reject Plan）、暂停/恢复 Goal 或紧急停止正在运行的本地发布应用。
+  - iOS 的 `RootTab` 没有独立 Goals Tab，但 `ArtooApp.swift:WorkspaceSettingsView` 已有 **More → Goals** 入口；`Views/WorkspaceViews.swift:GoalDetailView` 已支持 Goal 暂停/恢复/取消、计划接受/拒绝、Checkpoint 查看与审计导出，`AgentDiscussionView` 也能进入计划审阅。
+  - 尚未发现与 Web Release 页对应的发布健康/停止面板，以及按 Agent 聚合工具调用的完整 Agent History 视图；现有 Run history 不能直接等同于该聚合视图。
+- **影响**：移动端具备 Goal/Plan 基础管理能力，剩余差距主要是发布管控和 Agent 维度历史。Goals 入口是否需要提升到一级导航，应结合使用路径评估，不能仅凭缺少独立 Tab 判断功能缺失。
 - **优化建议**：
-  1. 在 iOS `TasksView` 顶部或 `More` 中率先增补轻量级 **Goals & Plans 管控面板**（支持查看 Goal 进度、Accept/Reject 提议的 Plan、Pause/Resume Goal）。
-  2. 增补 **Release 状态卡片与紧急停止按钮**（复用 `GET /api/v1/goals/:id/release` 与 `POST /api/v1/goals/:id/application-publication/stop`）。
-- **优先级 / 规模**：P2 · L
+  1. 复用现有 GoalDetailView，评估从 Tasks 或频道增加上下文入口，避免重做 Goals/Plans 管理功能。
+  2. 分别补充静态站点发布与本地应用发布的状态/健康展示，核对各自的授权和停止语义；本地应用停止可复用 `POST /api/v1/goals/:id/application-publication/stop`，不能将它用作所有发布类型的统一停止接口。
+  3. 为 Agent History 增加按需加载和分页，验证鉴权、断线、停止失败及窄屏交互；原生 UI 验证需在 macOS/iOS 环境完成。
+- **优先级 / 规模**：P2 · L（分发布管控、历史浏览与入口优化实施）
 
 ### F4. 完善服务端全局检索与消息搜索能力
 - **代码证据**：
   - 目前 Web 端的所有搜索框——包括 `BoardView.tsx:93`、`TaskList.tsx`、`GoalsPage.tsx:44`、`InventoryPages.tsx:61,132`、`RunsAuditPage.tsx:67`、`MemoryPage.tsx`——全部是在前端内存对当前拉取的单批次数组执行 `.toLowerCase().includes(...)` 子串匹配。
-  - 随着 T5 为服务端接口引入 `limit` 分页，前端内存过滤将无法命中未加载页的数据；且 `RoomConversation.tsx`（频道与任务房间消息流）目前**没有任何消息搜索功能**。
-- **影响**：当项目历史任务、记忆或房间消息超过数百条后，用户无法检索早期讨论内容、决策上下文或未加载页的任务。
+  - T5 为若干列表增加的是**可选 `limit` 上限**，不等于已完成游标分页。Web 的 `api.listTasks(projectId)` 和 `api.listGoals(projectId)` 当前未传 `limit`，不能据此认定任务/目标搜索已经漏掉后续页。房间消息本身已分页，但 `RoomConversation.tsx` 尚无消息搜索入口。
+- **影响**：已有任务列表仍需全量拉取后过滤，随规模增长有成本；消息历史检索缺少入口。以后引入有界列表或分页时，需要同步设计全量范围的服务端搜索。
 - **优化建议**：
   1. 为 `GET /api/v1/rooms/:id/messages`、`GET /api/v1/tasks`、`GET /api/v1/memories` 增加可选的服务端 `q` 查询参数。
-  2. 通过新的追加式 SQL 迁移为 `messages.body`、`tasks(title, description)`、`memories.text` 建立 Postgres `GIN (to_tsvector(...))` 或 `pg_trgm` 索引（兼顾 PGlite 兼容性），并在 `RoomConversation` 头部提供消息搜索入口。
+  2. 先定义查询范围、排序、分页和搜索语言，再基于查询计划选择全文索引或 `pg_trgm`；验证 PGlite / Postgres 的实际支持，并使用新迁移。搜索必须复用组织、项目和房间授权，过滤已移除消息及不可见内容，不能通过摘要或命中计数泄露它们。
 - **优先级 / 规模**：P2 · M
 
 ### F5. 审计证据包数字签名 (`AuditBundleExport.signature`) 落地
@@ -124,22 +126,23 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
     signing: { status: "deferred", reason: "v1 does not manage signing keys yet" }
     ```
 - **影响**：导出的 `.json` 审计包虽有 `bundle_sha256` 摘要，但缺乏服务端非对称密钥签名（Ed25519），第三方或合规审计时无法独立验证该证据包确实由特定 Artoo Server 实例签发且未被篡改。
-- **优化建议**：支持通过环境变量（如 `ARTOO_AUDIT_SIGNING_PRIVATE_KEY`）可选注入 Ed25519 私钥，使用 Node.js 内置 `node:crypto` (`sign(null, Buffer.from(bundleSha256), privateKey)`) 生成签名并提供公钥验证端点 `/.well-known/artoo-audit-keys.json`；未配置密钥时保持现有 `deferred` 行为不变。
-- **优先级 / 规模**：P3 · S
+- **契约约束**：`packages/domain/src/schemas.ts:AuditBundleExportSchema` 与 `goal.ts:GoalAuditBundleExportSchema` 目前均固定 `signature: null` 和 `signing.status: deferred`，不能只在服务端填入字符串签名。
+- **优化建议**：先设计兼容的版本化签名元数据、确定性签名字节、算法与 key ID，再接入受保护的 Ed25519 密钥配置、公钥分发、轮换/撤销与离线验签。明确签名覆盖哪些包/导出字段；实例身份须由可信公钥锚定，不能仅凭同一服务端暴露的公钥自证。未配置密钥时保持原有 `deferred` 输出，并覆盖跨版本及篡改拒绝测试。
+- **优先级 / 规模**：P3 · M（涉及契约与密钥生命周期，风险中）
 
 ---
 
 ## 4. UI 与视觉一致性优化机会 (UI & Visual System)
 
-### U1. 彻底消除 `styles.css` 与模块化 `ui/*.css` 的双轨制冲突
+### U1. 分批收敛遗留 CSS 与全局选择器
 - **代码证据**：
-  - `apps/web/src/styles.css` 仍有 **1,233 行**，顶部注释（第 1–6 行）明确写着：`This file keeps the app-shell / surface styling over the existing markup until #69-#78 migrate each surface onto the ui/ component primitives`。
-  - `styles.css:11-86` 中仍保留了全局标签选择器（如裸 `button`、`label`、`select:not(.ui-input)`、`textarea:not(.ui-input)`）以及硬编码颜色值（如 `styles.css:1249` 的 `.connection-status[data-offline="true"] { background: var(--warning-bg, #fff4db); color: #79530a; }`，在暗色模式下对比度异常，且与 `ui/product-shell.css:89` 的 `.app-content > .connection-status[data-offline="true"]` 重复定义）。
+  - `apps/web/src/styles.css` 仍有 **1,263 行**，顶部注释说明仍在逐步迁移到 `ui/` 原语。
+  - 文件仍有裸 `button`、`label` 等全局选择器与硬编码颜色。连接横幅规则在 `ui/product-shell.css` 中也有定义，但后者选择器更具体且由 `main.tsx` 后加载，因此不能仅凭旧色值认定当前页面的暗色对比度异常；需检查实际计算样式。
 - **影响**：全局元素选择器（尤其是裸 `button` 和 `label`）容易污染新增组件样式，导致必须不断提高选择器特异性才能覆盖；两套 CSS 并存也增加了样式体积与维护心智负担。
 - **优化建议**：
-  1. 按组件域分批（每次一个 commit）将 `styles.css` 中剩余的 Workspace 三栏、LeftRail、TaskDetail、Approval、Artifact、Memory 等样式迁入对应的 `ui/*.css`。
-  2. 将残留在业务组件中的原生 `<button>` / `<input>` / `<select>` 全部替换为 `ui/` 原语（`<Button>`、`<Input>`、`<Select>`），最终移除 `styles.css` 顶部的全局标签样式规则。
-- **优先级 / 规模**：P1 · M
+  1. 按组件域迁移规则，先保持加载顺序和特异性不变，再逐步缩小全局选择器作用域；单纯移动文件不能自动消除级联冲突。
+  2. 在适用场景复用 `<Button>`、`<Input>`、`<Select>`，保留必要的原生控件语义。删除旧规则前检查全部调用方，并验证亮/暗主题、窄屏、键盘与焦点状态。
+- **优先级 / 规模**：P2 · M
 
 ### U2. 启用已建成但闲置的 UI 反馈原语 (`ToastProvider` / `OfflineBanner` / `Tooltip` / `SkeletonText`)
 - **代码证据**：
@@ -150,7 +153,8 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
 - **优化建议**：
   1. 在 `apps/web/src/app/App.tsx` 顶层挂载 `<ToastProvider>`。
   2. 在项目保存、配对码复制、任务创建、审批提交、审计包导出成功等场景接入 `useToast().push({ tone: "success", message: ... })`（同时保留现有的 `role="status"` DOM 文本或让 Toast 承载无障碍播报，确保现有测试断言完全兼容）。
-- **优先级 / 规模**：P1 · S
+  3. 按实际反馈缺口选择原语，避免重复播报。现有 `ConnectionStatus` 已承担连接状态、待发命令和重试提示，不能为启用闲置 `OfflineBanner` 而丢掉这些行为；Tooltip 也不能替代按钮可访问名称。
+- **优先级 / 规模**：P2 · S
 
 ### U3. 优化顶部常驻 `ConnectionStatus` 横幅，消除正常态下的空间浪费与视觉噪音
 - **代码证据**：
@@ -160,13 +164,13 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
 - **优化建议**：
   1. 当 `online === true && status === "connected" && pending === 0 && !preparedPolling`（完全健康状态）时，将连接状态收拢为 `ProductHeader` 右侧的一个紧凑绿点指示器（悬停显示 `"Live updates connected"`）。
   2. 仅当离线 (`!online`)、重连中 (`status !== "connected"`)、处于 `preparedPolling` 模式或存在待重放离线队列 (`pending > 0`) 时，才展开顶部横幅告警（保持 `role="status"` 与 `aria-label="Connection status"` 可访问性契约不变）。
-- **优先级 / 规模**：P1 · S
+- **优先级 / 规模**：P2 · S
 
-### U4. 统一全站骨架屏 (Skeleton)，消除低频/核心页面加载时的布局抖动 (CLS)
+### U4. 统一加载占位，减少页面切换时的布局跳动
 - **代码证据**：
   - `WorkspaceLayout.tsx`、`BoardView.tsx`、`InventoryPages.tsx`、`RoomConversation.tsx`、`TaskDetailPanel.tsx` 已实现贴合最终布局的 `<Skeleton>` 占位。
   - 但核心页面 `GoalsPage.tsx:48,135,146`、`ReleasePage.tsx:19,52`、`AgentHistoryPage.tsx:73,81`、`SettingsPage.tsx:48,60` 以及 `AppRoutes.tsx:62` 的 `<Suspense fallback={<div ...>Loading…</div>}>` 仍仅渲染纯文本 `"Loading…"`。
-- **影响**：从顶部 Tab 切换到 `Plan (/goals)` 或 `Release (/release)` 时，页面先渲染单行文字再突然撑开两栏布局，产生明显的视觉跳动。
+- **影响**：文本占位与最终布局差距较大，存在页面切换时视觉跳动的可能；实际体验及 CLS 指标需在运行中的界面测量。
 - **优化建议**：为 `GoalsPage`（左列表 + 右详情）、`ReleasePage`（左目标列表 + 右检查卡片）和 `AgentHistoryPage` 补充与 `BoardSkeleton` / `InventoryLoading` 风格一致的 `<Skeleton>` 组件，并在 `AppRoutes.tsx` 的 `Suspense fallback` 中使用通用页面骨架。
 - **优先级 / 规模**：P2 · S
 
@@ -197,7 +201,7 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
   2. 用户看到红色告警徽标后本能地点击它，却没有任何反应。
 - **优化建议**：
   1. 将左栏审批计数与当前项目的任务列表关联（或为 `/api/v1/approvals` 增加可选 `project_id` 过滤参数）。
-  2. 将该 `<Badge>` 改造为可交互按钮：点击后自动在左栏任务列表中筛选出 `awaiting_approval` / `blocked` 状态的任务并选中第一个待审批任务。
+  2. 将该 `<Badge>` 改造为可交互按钮，依据审批单的 `task_id` 筛选并跳转。不能只筛 `awaiting_approval` / `blocked`：`approval-service.ts:requestExecutionApproval` 允许 `ready` 任务在执行前等待审批。
 - **优先级 / 规模**：P1 · S
 
 ### X3. 增强手动计划编辑器 (`PlanForm`) 的编辑体验与草稿持久化
@@ -230,41 +234,44 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
 
 ## 6. 性能与可扩展性优化机会 (Performance & Scalability)
 
-### P1. 消除 `presence-service.ts` 中的 N+1 查询风暴与 `runs` 表全量历史扫描（高优！）
+### P1. 批量读取 Presence 数据，并在 SQL 层过滤历史 Run
 - **代码证据**：
   - `apps/server/src/services/presence-service.ts:375-394` 的 `listAgentInstancePresence` 先查出组织内所有 `agentInstances`，随后在 `for (const inst of insts)` 循环中串行调用 `instanceFacts(ctx, inst, isLive)`（第 309–352 行）。
   - 每次 `instanceFacts` 内部执行 **4 次独立数据库查询**：查 `agentRuntimes`、查 `computers`、查 `devices`、调用 `activeRunsForInstance`。当组织有 $N$ 个 Agent 实例时，单次请求触发 **$1 + 4N$ 次 SQL 查询**。
   - 更严重的是，第 297–307 行的 `activeRunsForInstance` 与第 409–415 行的 `computerFacts` 在查询 `runs` 表时**未在 SQL `WHERE` 子句中过滤运行状态**，而是把该实例/机器自创建以来的**所有历史 Run 记录**全量拉回 Node.js 内存，再执行 `rows.filter((r) => isActiveRunStatus(r.runStatus))`！
-  - 同理，`listComputerPresence`（第 447–459 行）对每台机器循环调用 `computerFacts`（每次 3 条 SQL 且全表拉取该机器所有历史 `runs`）。
-- **影响**：随着系统持续运行，`runs` 表累积数千至数万条已完成的历史记录后，每次调用 `/api/v1/agent-instances/presence` 或 `/api/v1/computers/presence` 都会反复把整张 `runs` 表的数据拉入内存并产生数十次串行 DB 往返，成为服务端最大的延迟与内存瓶颈。
+   - 同理，`listComputerPresence`（第 447–459 行）对每台机器循环调用 `computerFacts`（每次 3 条 SQL，并读取该组织内该机器的全部历史 `runs`）。
+- **影响**：请求会读取所选组织内各实例/机器的全部历史 Run，并产生随实例数量增长的串行 DB 往返。N+1 和历史行传输可由源码确认；是否发生物理全表扫描、是否为最大瓶颈及实际收益，需用查询计划和测量验证，不能等同于无组织过滤地读取整张表。
 - **优化建议**：
-  1. 在 SQL 层使用 `inArray(runs.status, ["queued", "starting", "running", "awaiting_approval"])` 直接过滤活跃状态，彻底杜绝将已完成/已取消的历史 `runs` 拉入内存。
+  1. 在 SQL 层保留 `packages/domain/src/presence.ts:isActiveRunStatus` 的语义，即排除 `completed`、`failed`、`cancelled`。当前非终态为 `queued`、`starting`、`running`、`awaiting_input`、`paused`；`awaiting_approval` 属于 Task 状态，不能放入 Run 状态过滤。新增状态时也须保持一致。
   2. 将 `listAgentInstancePresence` 与 `listComputerPresence` 重构为按 `organizationId` 批量查询一次 `computers`、`devices`、`agentRuntimes` 和活跃 `runs`，在内存中按 `computerId` / `agentInstanceId` 建立 `Map` 进行 $O(1)$ 组装，将 $1 + 4N$ 次查询降至固定 **4–5 次查询**。
-- **优先级 / 规模**：P0 · S
+  3. 保留撤销设备优先级、软删除实例、Task 审批状态和 queueDepth 语义；以多组织、共享机器及所有非终态回归用例验证，并对比查询次数、返回行数、p95 延迟与内存。
+- **优先级 / 规模**：P1 · M
 
 ### P2. 补齐数据库高频查询路径缺失的索引 (`messages.task_id` 与活跃 `runs` 索引)
 - **代码证据**：
   - 对照 `packages/db/src/schema.ts` 与各 Service 的 SQL 查询条件：
-    1. **`messages` 表缺少 `task_id` 索引**：`apps/server/src/services/audit-service.ts:72-76` 在生成任务审计包时执行 `WHERE organization_id = ? AND task_id = ? ORDER BY created_at ASC, id ASC`，但 `schema.ts:340-369` 中 `messages` 表仅有 `messages_room_position_idx` 和 `messages_thread_position_idx`，**完全没有 `task_id` 上的索引**，导致每次打开或导出任务审计包都会触发 `messages` 全表扫描。
-    2. **`runs` 表缺少按任务的最新运行排序索引**：`apps/server/src/services/context-pack-service.ts:107-108, 153-155` 在组装 ContextPack 时频繁执行 `WHERE organization_id = ? AND task_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`，而 `runs` 表目前仅有 `runs_task_status_idx (task_id, status)` 和 `runs_agent_history_idx (organization_id, agent_instance_id, created_at DESC, id DESC)`。
-    3. **`runs` 表缺少按机器/实例过滤活跃状态的索引**：`presence-service.ts` 与 `daemon-service.ts` 按 `(organization_id, computer_id, status)` 及 `(organization_id, agent_instance_id, status)` 查询活跃运行，缺少对应复合索引。
-- **影响**：在消息量和运行记录增长后，ContextPack 构建、任务审计包查看及在线状态合成的数据库 CPU 开销随表大小线性恶化。
+    1. **`messages` 表缺少 `task_id` 索引**：`audit-service.ts:getTaskAuditBundle` 按组织和任务过滤，再按 `(created_at, id)` 排序；当前索引主要围绕 room、thread 与客户端幂等键，缺少支撑该任务查询的索引。数据增长时存在额外扫描风险，具体执行计划待验证。
+    2. **`runs` 表缺少匹配最新任务运行的排序索引**：ContextPack 按 `(organization_id, task_id)` 过滤并按 `(created_at DESC, id DESC)` 取最新一次；现有 `runs_task_status_created_idx (task_id, status, created_at)` 和 `runs_agent_history_idx (organization_id, agent_instance_id, created_at DESC, id DESC)` 不能直接等同于该查询所需的索引。
+    3. **按机器/实例读取活跃运行的索引候选**：Presence 当前先读取历史运行再在内存筛选；P1 下推状态过滤后，需要结合 `(organization_id, computer_id/agent_instance_id, status)` 的实际查询形状评估索引，不能将建议中的新条件写成已存在的 SQL。
+- **影响**：这些查询存在索引与条件/排序不完全匹配的风险；是否选择顺序扫描、开销增长幅度及新增索引收益，应在代表性数据量下用 `EXPLAIN (ANALYZE, BUFFERS)` 和耗时测量确认，同时评估写入与存储成本。
 - **优化建议**：新增一个有序 SQL 迁移文件（如 `0061_*.sql`）并同步更新 `packages/db/src/schema.ts`：
   - `messages_org_task_created_idx ON messages (organization_id, task_id, created_at, id)`
   - `runs_org_task_created_idx ON runs (organization_id, task_id, created_at DESC, id DESC)`
   - `runs_org_computer_status_idx ON runs (organization_id, computer_id, status)`
-- **优先级 / 规模**：P0 · S
+  - 结合 P1 的最终查询形状评估是否还需实例非终态索引，避免与已有 `runs_agent_history_idx` 重复堆叠索引；迁移编号须以实施时最新序列为准。
+- **优先级 / 规模**：P1 · S
 
 ### P3. 优化 `audit-service.ts` 与 `context-pack-service.ts` 中的串行查询与 N+1 循环
 - **代码证据**：
   - `apps/server/src/services/audit-service.ts:63-124` 的 `getTaskAuditBundle` 在校验完 `taskRow` 后，依次**串行 `await`** 了 10 条完全独立的 `SELECT` 查询（`rooms`、`messages`、`runs`、`artifacts`、`approvals`、`schedulerDecisions`、`eventLog`、`decisionRecords`、`handoffs`、`blockers`）。
-  - 紧接着在 `getGoalAuditBundle`（第 206–209 行）中，又对 Goal 下的每个子任务执行 `for (const child of childTaskRows) { childBundles.push(await getTaskAuditBundle(ctx, child.id)); }`。一个包含 15 个子任务的 Goal 导出证据包时，会串行发起 **$5 + 15 \times 11 = 170$ 次数据库查询**！
+  - `getGoalAuditBundle` 又逐个等待子任务审计包，查询数量随子任务数增长；包含 room 查询时，单个任务包需要 11 次读取，具体总数取决于 Goal/Task 是否有 room。
   - `apps/server/src/services/context-pack-service.ts:150-169` 在遍历任务的 `edges`（最多 100 条依赖边）时，在 `for` 循环内对每条边串行查询 `runs` 和 `artifacts`（最多 200 次查询）。
 - **影响**：复杂 Goal 的审计包导出及多依赖任务的 ContextPack 构建耗时显著增加，在高延迟远程 Postgres（如云端托管库）环境下尤为明显。
 - **优化建议**：
-  1. 在 `getTaskAuditBundle` 中使用 `Promise.all` 并行执行 10 条无相互依赖的子表读取（保持各自的 `ORDER BY` 确定性排序完全不变）。
-  2. 在 `context-pack-service.ts:150` 中，先收集所有 `done` 状态前置任务的 ID，通过 `inArray` 批量查询其最新 completed run 与关联 artifacts，消除循环内单条查询。
-- **优先级 / 规模**：P1 · S
+  1. 评估查询批量化及有界并发，保持组织授权、字段脱敏、确定性排序和现有读取一致性要求；结合连接池容量限制 Goal 子任务并发，不能对所有子任务无界 `Promise.all`。PGlite 和远程 Postgres 的并行收益可能不同，需要分别测量。
+  2. ContextPack 必须先按任务取**最新一次 Run**（`created_at DESC, id DESC`），再判断其状态是否 `completed`，只读取该 Run 的制品。严禁先过滤 `completed` 再取最新：最新运行失败、取消或尚未完成时，不得退回旧成功 Run。保留组织/项目边界、每前置任务最多 100 条制品及截断标记，不能用全局 `LIMIT` 替代每组上限。
+  3. 增补“旧成功运行 + 新失败/运行中记录”、多任务排序与制品截断回归，记录优化前后的查询次数及延迟。
+- **优先级 / 规模**：P1 · M
 
 ### P4. 收敛 Web 端遗漏的固定 5s 轮询与散落的内联 QueryKey
 - **代码证据**：
@@ -282,7 +289,7 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
   3. 对 `goal-automation` 和 `goal-release` 改用 `usePollMs(5000)`（注：`ApplicationPublicationProgress` 因依赖 `health_freshness_ms` 本地倒计时窗口校验，需评估后再决定是否放大轮询间隔）。
 - **优先级 / 规模**：P1 · S
 
-### P5. 优化 `RoomConversation` 轮询时的重复快照拉取与可见性串行校验
+### P5. 在保留重连对账与移除校验的前提下减少消息刷新请求
 - **代码证据**：
   - `apps/web/src/components/RoomConversation.tsx:58-65`：
     ```ts
@@ -296,11 +303,12 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
     }
     ```
   - 每次增量轮询或 WS 触发 `messages` 失效重取时，不仅先拉取 `after: cached.next_after`，还会**额外再拉取一次最新 50 条消息**（为了同步 `reply_count`），紧接着对缓存中的所有消息 ID（若用户向上翻阅了 5 页共 250 条消息）每 100 条分批执行 `api.messageVisibility` 校验。
-- **影响**：当房间处于活跃讨论或用户加载了较多历史消息时，单次消息刷新会触发 $2 + \lceil M/100 \rceil$ 次 HTTP 请求。
+- **影响**：在需要根消息快照、且增量消息无需多页追赶时，一次刷新约需 $2 + \lceil M/100 \rceil$ 次请求；首次加载、线程视图和追赶多页的请求数不同。应按场景测量，不能把它当作每次刷新的固定值。
 - **优化建议**：
-  1. `RealtimeContext.tsx:57-62` 已经在 WS 事件包含 `thread_root_id` 与 `root_reply_count` 时直接在缓存中更新了 `reply_count`；因此第 58–61 行的全量 50 条重拉仅需在 **WebSocket 未连接 (`client?.getStatus() !== "connected"`)** 时作为降级兜底执行。
-  2. 对 `messageVisibility` 的分批请求使用 `Promise.all` 并行化，或仅在收到审核相关事件/降级轮询时全量校验已缓存消息。
-- **优先级 / 规模**：P1 · S
+  1. WS 的 `root_reply_count` 增量更新只能覆盖实际收到的事件。`RealtimeContext` 在重连成功后失效缓存，此时状态已经是 connected；若据此跳过最新根消息快照，断线期间新增的线程回复可能永久留在旧计数，因为根消息 `after` 查询不会返回旧根消息或其回复。保留首次/重连/`sync.required`/降级刷新对账，建立可验证的同步状态后再减少稳定在线期间的快照。
+  2. 优先对 `messageVisibility` 做有界并发或批量接口评估，保留失败处理和重连后全部已缓存消息的移除核对；不能仅依赖在线审核事件而让漏收事件的旧内容继续显示。
+  3. 覆盖断线时新增回复、消息被移除、重连后无新消息、分页与并发历史加载场景，测量每次刷新的请求数和耗时。
+- **优先级 / 规模**：P2 · M
 
 ### P6. 降低 `budget-service.ts` 空闲状态下的每秒数据库扫描频率
 - **代码证据**：
@@ -308,8 +316,8 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
   - `apps/server/src/services/budget-service.ts:146-158` 每秒执行 `SELECT id, organization_id FROM goals WHERE status = 'running'`，并对每个运行中的 Goal 开启事务执行 `SELECT ... FOR UPDATE`、查询 `tasks` 与活跃 `runs`。
 - **影响**：即使系统中没有任何 `running` 状态的 Goal，服务端也会以 86,400 次/天的频率持续查询 `goals` 表；在使用远程 Serverless Postgres（如 Neon / Supabase）时，每秒一次的查询会阻止数据库进入自动休眠 (Scale-to-Zero)。
 - **优化建议**：
-  1. 在 `goals` 表上确保 `(status)` 索引覆盖（或复用 `goals_project_status_idx`），并在 `enforceGoalBudget` 前先在内存检查该 Goal 是否配置了非空的 `max_elapsed_ms` / `max_retries` / `max_cost_usd`（未配置任何预算的 Goal 无需开启 `FOR UPDATE` 事务）。
-  2. 支持自适应轮询：当连续多次扫描发现 `running.length === 0` 时，将轮询间隔退避至 `5000ms`（或在 `goal.started` / `goal.resumed` 时立即唤醒 1s 扫描）。
+  1. 为仅按 status 的扫描检查实际计划；现有 `(project_id, status)` 复合索引不能直接当作等价的 status 索引。可在初始扫描时读取预算配置，跳过没有受支持预算的 Goal；有预算的执行路径仍须在事务内重读并校验，避免依赖过期内存配置。
+  2. 空闲时自适应退避，启动/恢复事件及时唤醒；存在运行中 Goal 时保留预算期限响应、调度事务检查与非重叠扫描。还需检查其他定时器及连接行为，不能仅凭该优化承诺数据库能够 Scale-to-Zero。
 - **优先级 / 规模**：P2 · S
 
 ### P7. 消除 iOS 客户端通知计数的双重 JSON 编解码
@@ -329,23 +337,23 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
 ## 7. 代码整洁度与架构解耦机会 (Code Cleanliness & Architecture)
 
 ### C1. 机械式拆分职责过载的千行级超大模块（延续并深化 T7）
-- **代码证据**：全仓非测试源码中超过 900 行的文件共有 15 个，其中前 8 名均超过 1,100 行：
-  1. `apps/artood/src/product-source-runtime.ts` (**2,435 行**)：混杂了产品源码运行时配置校验、工作区边界断言、研究修订声明、发布工作区预留、导出捕获 V1/V2 等多阶段逻辑。
+- **代码证据**：以下为当前基线中需要按职责评估的大文件示例，行数仅辅助定位，不作为全仓排名或拆分验收标准：
+   1. `apps/artood/src/product-source-runtime.ts` (**2,487 行**)：包含产品源码运行时配置校验、工作区边界断言、研究修订声明、发布工作区预留、导出捕获 V1/V2 等多阶段逻辑。
   2. `apps/artood/src/node-client.ts` (**2,181 行**)：同时承担普通 Run 启停、Worktree 准备、受管 Journal 交互、验证执行、产品发布、本地应用发布、H4–H7 跨机操作客户端挂载等全部职责。
   3. `packages/db/src/schema.ts` (**1,979 行**)：将身份、任务/DAG、房间/消息、运行/事件、记忆/技能、自治研发、跨节点源码交接、恢复与清洁验证等 **60+ 张表**全部堆叠在单文件中（注意第 2 行其实已经拆分出了 `source-clean-restart-schema.js`，证明按领域拆分 Schema 完全可行）。
-  4. `apps/artood/src/product-release.ts` (**1,629 行**)
-  5. `apps/artood/src/verification.ts` (**1,618 行**)
+   4. `apps/artood/src/product-release.ts` (**1,635 行**)
+   5. `apps/artood/src/verification.ts` (**1,665 行**)
   6. `apps/artood/src/process-adapter.ts` (**1,520 行**)
   7. `apps/server/src/node-binding.ts` (**1,438 行**)
   8. `apps/server/src/app.ts` (**1,232 行**)
-- **影响**：单文件体积过大导致 IDE 类型推导变慢、上下文理解成本高、多人或多 Agent 并行修改极易产生 Git 合并冲突。
+- **影响**：职责集中可能增加理解和并行修改成本；文件行数本身不能证明 IDE 类型推导慢或运行性能差。应优先依据实际冲突、依赖边界和修改频率选择拆分对象。
 - **优化建议**（严格遵循 `AGENTS.md` 安全边界与 `T7` 机械式拆分原则）：
   - **纯移动 + 原地 `re-export`**：每次仅拆分一个模块并独立提交，保持所有公开导出符号与类型签名 100% 不变。
   - **`packages/db/src/schema.ts`**：按领域拆分为 `schema/identity.ts`、`schema/work.ts`、`schema/messaging.ts`、`schema/execution.ts`、`schema/autonomous-handoff.ts`，在 `schema.ts` 中统一 `export *`。
   - **`apps/server/src/app.ts`**：
     1. 将第 146–274 行约 130 行的 `ctx.on*Queued` 节点派发绑定逻辑提取至 `apps/server/src/node-dispatch-wiring.ts`；
-    2. 将仍内联在 `app.ts` 中的 Devices (lines 408–480, 769–780)、Collaboration Decisions/Handoffs/Blockers (lines 527–626)、Goals & Plans & Checkpoints (lines 632–764)、Tasks & DAG (lines 782–884)、Skills (lines 922–952)、Approvals & Leases (lines 967–1018)、Memories (lines 1020–1108) 提取为独立的 `*-routes.ts`（与已拆出的 `project-routes.ts`、`channel-routes.ts`、`discussion-routes.ts` 保持一致），使 `app.ts` 收敛至 300 行以内的纯粹装配层。
-- **优先级 / 规模**：P1 · L（分多个独立小 commit 推进）
+    2. 将仍内联在 `app.ts` 中的 Devices、Collaboration、Goals/Plans/Checkpoints、Tasks/DAG、Skills、Approvals/Leases、Memories 按稳定职责提取为独立的 `*-routes.ts`（与已拆出的 `project-routes.ts`、`channel-routes.ts`、`discussion-routes.ts` 保持一致），使 `app.ts` 聚焦装配；不以压到某个行数为目标。
+- **优先级 / 规模**：P3 · L（分多个独立小 commit 推进；涉及安全边界时风险中高）
 
 ### C2. 抽象 H4–H7 跨节点阶段派发与回执处理的通用泛型底座
 - **代码证据**：
@@ -366,20 +374,20 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
   - 在 `apps/server/src/app.ts:187-266` 中，12 个 `ctx.on*Queued` 回调也是完全相同的“按 `(id, organizationId)` 查表 → `nodeRegistry.get(row.computerId)` → 判空抛 `409 Conflict` → 调用 `binding.dispatch*(id, control)`”模板。
 - **影响**：每新增一个自治研发或跨机验证子阶段，就需要在 `schema.ts`、`domain`、`protocol`、`server/services`、`node-binding.ts`、`app.ts`、`artood` 同步复制粘贴上千行样板代码，极易在某个分支漏掉 `stop` 超时清理或会话世代校验。
 - **优化建议**：
-  1. 先从最无风险的 `app.ts` 入手，提炼通用辅助函数 `bindNodeQueueDispatcher(ctx, nodeRegistry, table, errorMsg, pickMethod)`，将 `app.ts:187-266` 的 80 行重复代码压缩为 15 行配置表。
-  2. 在 `node-binding.ts` 中提炼通用的 `createPendingStopRegistry<TId>(timeoutMs)` 统一管理各阶段的 `pending*Stops` 生命周期与 `close()` 清理。
-- **优先级 / 规模**：P2 · M
+  1. 先机械提取 `app.ts` 的派发装配代码，再比较各阶段的授权、会话世代、回执绑定与停止确认差异；只有确认为同一不变量的部分才提炼辅助函数，不能以配置表或行数目标抹平阶段边界。
+  2. 评估提取 `createPendingStopRegistry<TId>(timeoutMs)`，保留每阶段的超时语义、实际退出确认与 `close()` 清理，并先运行相关全部回归。
+- **优先级 / 规模**：P3 · M
 
 ### C3. 清理散乱的 Import 语句（含文件末尾 Import 与重复模块导入）
 - **代码证据**：
   - `apps/server/src/app.ts`：
-    - 文件最底部第 **1232 行** 竟然有一条 `import { goalSourceRecoveries, goalRecoveryValidations, goalRecoveryValidationReviews } from "@artoo/db";`！
+    - 文件最底部第 **1232 行** 有 `import { goalSourceRecoveries, goalRecoveryValidations, goalRecoveryValidationReviews } from "@artoo/db";`。
     - 文件顶部第 4、10、45、46 行另有 4 处分开写的 `import { ... } from "@artoo/db"`，以及第 40 行和第 48 行分两次 `import { eq } from "drizzle-orm"` / `import { and } from "drizzle-orm"`。
   - `apps/server/src/node-binding.ts:1-56`：对 `@artoo/db` 分了 8 次 `import`，对 `@artoo/domain` 分了 13 次 `import`。
   - `apps/server/src/services/context-pack-service.ts:1-22`：对 `@artoo/db` 和 `@artoo/domain` 同样存在多次重复导入。
 - **影响**：高频追加特性时在文件首尾直接插入 `import` 导致头部与尾部杂乱，降低了模块依赖关系的清晰度。
 - **优化建议**：合并同一模块的重复 `import` 语句，将 `app.ts:1232` 的尾部导入移回文件顶部，并按“内置模块 → 外部依赖 → `@artoo/*` 工作区包 → 相对路径”统一排序。
-- **优先级 / 规模**：P1 · S
+- **优先级 / 规模**：P3 · S（低风险维护，不应先于业务正确性与产品验收）
 
 ### C4. 引入轻量级代码格式化与静态检查工具链 (Biome 或 ESLint + Prettier)
 - **代码证据**：
@@ -387,14 +395,14 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
   - 由于缺少单行长度与格式化约束，代码库中出现了大量单行 500–950 字符的“压缩式”JSX/TS 代码（例如 `apps/web/src/components/GoalsPage.tsx:146` 单行 950+ 字符、`InventoryPages.tsx:132` 单行 580+ 字符、`RoomConversation.tsx:111` 单行 620+ 字符）。
 - **影响**：超长单行代码在 Code Review 和 Git Diff 时极难定位具体修改点，任何一处微小的属性调整都会造成整行 800 字符的 diff 冲突。
 - **优化建议**：
-  1. 引入极速、零配置依赖负担的 **Biome**（或 Prettier + ESLint），配置 `lineWidth: 120`。
+  1. 评估 **Biome** 或 Prettier + ESLint，选择符合现有 TypeScript/React 约定的配置（如 `lineWidth: 120`），将工具版本固定在开发依赖中。
   2. 先对新增/修改文件启用 `npx biome check --changed`（避免一次性格式化全仓造成巨型 diff 冲击 blame 历史），并在拆解组件时逐步格式化存量超长行。
 - **优先级 / 规模**：P2 · S
 
 ### C5. 治理 `scripts/` 与 `docs/` 目录平铺膨胀
 - **代码证据**：
   - `scripts/` 目录下共有 **136 个文件**，其中 `scripts/` 根层级直接平铺了 **61 个 `.mjs` 脚本**（大量 `ios-ui-*`、`preview-*`、`recovery-*`、`v1-*` 混杂在一起）。
-  - `docs/` 目录下共有 **113 篇文档**（含 `docs/superpowers/` 下 27 篇阶段性过程文档及多篇按日期命名的快照文档）。
+  - `docs/` 包含多类设计、运维与历史文件，其中已追踪的 Markdown 为 **93 篇**；阶段性过程记录与当前指南共存。
 - **影响**：新加入的开发者或 Agent 难以快速分辨哪些脚本是当前 CI 门禁的主入口、哪些文档是现行有效规范 vs 历史归档记录。
 - **优化建议**：
   1. 在 `docs/` 根目录建立 `docs/INDEX.md`（文档地图），按“现行架构与契约”、“运维与发布 Runbook”、“客户端指南”、“历史里程碑归档”分类索引。
@@ -405,7 +413,7 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
 
 ## 8. 工程效率、开发者体验与 CI/CD 优化机会 (DX & CI/CD)
 
-### E1. 移除 CI `shared-vitest` 分片中冗余的 Playwright Chromium 安装步骤
+### E1. 验证并移除 `shared-vitest` 分片中可能冗余的 Chromium 安装
 - **代码证据**：
   - `.github/workflows/preview.yml:50-80` 定义了 `shared-vitest` 矩阵任务（`shard: [1, 2]`，运行在 `windows-latest` 上）。
   - 第 66–67 行在两个分片中均执行了：
@@ -413,19 +421,20 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
     - run: npx playwright install chromium
       working-directory: apps/web
     ```
-  - 然而 `shared-vitest` 仅运行 `vitest`（扫描 `{apps,packages}/**/*.test.{ts,tsx}`），所有的 Playwright E2E 测试（`test:e2e` 与 `e2e:auth`）实际上只在 `shared-checks` 任务（第 107–130 行）中执行！
-- **影响**：每次 Push 和 PR 都在两台 Windows Runner 上白白下载并解压数百 MB 的 Chromium 浏览器，浪费 CI 耗时与网络带宽。
-- **优化建议**：删除 `.github/workflows/preview.yml` 中 `shared-vitest` 任务的 `npx playwright install chromium` 步骤（保留 `shared-checks`、`ios`、`mac-desktop`、`windows-desktop` 中实际需要浏览器证据的步骤）。
-- **优先级 / 规模**：P0 · S
+  - Web Playwright E2E 与认证 E2E 由 `shared-checks` 入口执行；当前检查到的 Vitest 浏览器边界测试主要使用受控替身，但不能仅凭测试运行器名断定没有真实浏览器的间接依赖。`vitest.ci.config.mjs` 还按完整文件划分 parallel 与 windows-process 分区。
+- **影响**：若两个 parallel 分片确实不依赖浏览器安装，可减少安装耗时与网络传输；具体节省量尚未测量。
+- **优化建议**：在无 Playwright 浏览器缓存的 Windows 环境验证两个实际分片及文件覆盖聚合，再删除确认冗余的安装步骤。保留 `shared-checks`、iOS、Mac/Windows 桌面中真实需要浏览器的步骤，不跳过原有用例或改变分区来使其通过。
+- **优先级 / 规模**：P2 · S
 
-### E2. 优化本地与 CI 的 iOS 验证构建链路，减少重复 `build:preview`
+### E2. 支持本地 iOS 多 suite 子集，并测量 CI 的实际瓶颈
 - **代码证据**：
-  - `package.json:15-19` 中，`verify:ios:core`、`verify:ios:assistant`、`verify:ios:mentions`、`verify:ios:correction`、`verify:ios:retention` 五条命令均硬编码了前置 `npm run build:preview && ...`。
+  - `package.json` 中，`verify:ios:core`、`verify:ios:assistant`、`verify:ios:mentions`、`verify:ios:correction`、`verify:ios:retention` 五条独立命令均有前置 `npm run build:preview && ...`，本地依次调用它们会重复构建。
   - `.github/workflows/preview.yml:131-195` 的 `ios` 任务在单台 `macos-15` Runner 上串行运行全部检查与 5 个原生 UI 套件，超时阈值高达 **180 分钟**。
-- **影响**：本地调试多个 iOS UI 子套件时会反复触发全量 TypeScript + Vite 打包；CI 上单机串行执行使 PR 反馈周期拉长至 1.5–2 小时以上。
+  - CI 使用 `npm run verify:ios` → `preview-gate.mjs --suite=ios`，其中 `build:preview` 只执行一次；随后 `ios-ui-suites-e2e.mjs` 默认运行 all，并在循环前统一执行 XcodeGen。不能把本地五条命令的重复构建推断为 CI 当前行为。
+- **影响**：本地调试多个指定子套件可以减少重复构建；180 分钟是超时上限，不是实际耗时证据，CI 是否应并行需先测量构建、Simulator 启动、套件执行及清理各阶段。
 - **优化建议**：
-  1. 在 `scripts/ios-ui-suites-e2e.mjs` 中支持传入逗号分隔的多个 suite（如 `--suite=core,mentions`），实现一次 `build:preview` + 一次 `xcodegen` 连续跑完指定子集。
-  2. 中期可将 `.github/workflows/preview.yml` 中的 `ios` 任务仿照 `shared-vitest` 拆分为 `ios-build` + 按 suite 并行的矩阵任务（需注意遵守源码指纹一致性校验契约 `verifyUISuiteResults`）。
+  1. 在现有单 suite / all 契约上增加多个 suite 子集，明确由外层入口构建一次、聚合器统一生成工程；验证选择、去重、非法参数和完整结果聚合。
+  2. 有计时依据后再评估矩阵并行；保持每套件独立夹具、超时/清理与证据目录，并验证跨 Runner 的构建产物、工具链和原始源码指纹一致，不能直接绕过 `verifyUISuiteResults`。
 - **优先级 / 规模**：P2 · M
 
 ### E3. 优化 Vitest 本地开发反馈速度（区分纯单元测试与 PGlite 重型集成测试）
@@ -435,59 +444,64 @@ Artoo 采用 TypeScript Monorepo 架构（Node.js `>=24.0.0`，npm workspaces）
 - **优化建议**：在根 `package.json` 中补充快捷脚本（如 `test:unit` 指向 `packages/domain`、`packages/protocol`、`apps/web` 等无 DB 测试，`test:server` 指向服务端测试），保留 `npm test` 的全量语义不变，提升日常 TDD 循环速度。
 - **优先级 / 规模**：P3 · S
 
+### E4. 补齐真实 Provider 端到端验收与发布/恢复证据（交付前置）
+
+- **已有证据与缺口**：`docs/agent-team-development.md` 的 “Validation and unfinished acceptance” 及顶部增量记录区分了受控夹具、真实进程验证和失败的 Provider 尝试；当前仍需可重复的完整产品验收。工作区交付、Artoo 自身 CI 或 publisher 站点均不构成目标产品发布成功证据。
+- **优化建议**：
+  1. 先整理现有失败记录、尚未通过的集成/客户端检查和目标能力范围，冻结待验收提交、构建、节点本地 Profile 与工具链指纹。将已通过、失败、未运行和平台条件跳过分别记录。
+  2. 在操作者已授权的 Provider/数据共享、发布环境及凭据就绪后，按既有 runbook 执行从空仓库、规划、独立评审、节点验证到实际发布端点的完整流程，并验证承诺范围内的失败/重启恢复；若依赖尚未就绪，明确记录阻碍，不以 mock 或缩减验收标准替代。
+  3. 发布前具备独立的已验证执行器、不可变输入版本、健康标准和恢复方案；记录真实退出/关闭、证据绑定、清理结果及未覆盖能力。涉及生产或不可逆数据变更时另按授权与备份/恢复要求执行，更新本文不代表已获得这些执行授权。
+- **验收标准**：可复现运行记录和独立证据支持所声称的产品能力，失败与范围限制完整保留；不能仅凭模型回答、CLI exit 或 fixture 成功宣称验收通过。
+- **优先级 / 规模**：P1 · L（交付前置，依赖环境与授权；不要求为其他独立优化等待外部条件）
+
 ---
 
 ## 9. 分阶段持续优化路线图与 ROI 矩阵
 
-为便于团队与 Coding Agent 按 **“一个任务 = 一个独立可验证 Commit”** 的节奏持续推进，以下将全部优化机会按 **ROI（投入产出比）与紧迫度** 划分为四个阶段：
+以下优先级是结合正确性、交付依赖和实施成本给出的建议，不是已测得的 ROI。**P0 保留给已确认的阻断性事故或发布阻断；当前静态证据不足以把 P1/P2/E1 直接定为 P0。** 大文件和 import 整理低于业务正确性及验收缺口。F1 已完成，不参与待办排序。
 
 ### 9.1 汇总优先级矩阵
 
 | 编号 | 类别 | 优化事项 | 核心文件定位 | 收益 (Impact) | 规模 | 风险 | 优先级 |
 | --- | --- | --- | --- | --- | :---: | :---: | :---: |
-| **P1** | 性能 (Server) | 消除 `presence-service.ts` 的 N+1 查询与 `runs` 全表内存过滤 | `apps/server/src/services/presence-service.ts:297-459` | 极高（消除随历史运行增长的 O(N) 全表扫描） | S | 低 | **P0** |
-| **P2** | 性能 (DB) | 为 `messages.task_id` 与 `runs` 高频过滤排序路径补齐复合索引 | `packages/db/src/schema.ts`, `packages/db/migrations/` | 极高（消除审计包与 ContextPack 全表扫描） | S | 低 | **P0** |
-| **E1** | CI/CD | 移除 `preview.yml` 中 `shared-vitest` 分片冗余的 Playwright 安装 | `.github/workflows/preview.yml:66-67` | 高（每次 CI 节省双分片浏览器下载耗时） | S | 极低 | **P0** |
-| **P3** | 性能 (Server) | 并行化 `getTaskAuditBundle` 内部查询并批量化 `context-pack` 依赖查询 | `apps/server/src/services/audit-service.ts`, `context-pack-service.ts` | 高（大幅降低复杂 Goal 审计导出与任务启动延迟） | S | 低 | **P1** |
-| **P4** | 性能 (Web) | 将 `GoalsPage` / `ReleasePage` 剩余 5s 轮询接入 `usePollMs` 并收口 `queryKeys` | `apps/web/src/components/GoalsPage.tsx`, `ReleasePage.tsx`, `app/queryKeys.ts`, `app/invalidation.ts` | 高（减少后台冗余请求，修复 WS 事件下缓存不失效） | S | 低 | **P1** |
-| **P5** | 性能 (Web) | 优化 `RoomConversation` 轮询时的重复快照请求与可见性校验 | `apps/web/src/components/RoomConversation.tsx:58-65` | 中高（减少活跃房间请求放大） | S | 低 | **P1** |
-| **X1** | 交互 (UX) | 消除 `/` (三栏工作台) 与 `/board` 在 `ProductHeader` 中的 Tab 高亮歧义 | `apps/web/src/components/ProductHeader.tsx:31`, `Nav.tsx` | 高（理顺核心导航心智模型，提供直达工作台入口） | S | 低 | **P1** |
-| **X2** | 交互 (UX) | 修正 `LeftRail` 待审批徽标的项目作用域并支持点击筛选待审批任务 | `apps/web/src/components/LeftRail.tsx:29-45` | 中高（消除多项目误导，打通告警到处理的动作闭环） | S | 低 | **P1** |
-| **U2** | UI 系统 | 挂载 `ToastProvider` 并在关键写操作中启用闲置的 `Toast` / `Tooltip` 原语 | `apps/web/src/app/App.tsx`, `ui/feedback.tsx` | 中高（统一全站操作成功/失败反馈体验） | S | 低 | **P1** |
-| **U3** | UI 系统 | 优化顶部 `ConnectionStatus` 横幅：正常态收起为状态指示点，异常态展开 | `apps/web/src/components/ConnectionStatus.tsx`, `ui/product-shell.css` | 中高（释放纵向空间，降低正常态视觉噪音） | S | 低 | **P1** |
-| **C3** | 代码整洁 | 清理 `app.ts`（含第 1232 行底部 import）与 `node-binding.ts` 的散乱重复导入 | `apps/server/src/app.ts`, `node-binding.ts`, `context-pack-service.ts` | 中（零风险提升代码整洁度） | S | 极低 | **P1** |
-| **F1** | 功能 (Domain) | 打通 DAG `artifact_required` / `contract_required` 边的证据门控闭环 | `packages/domain/src/dag.ts:89`, `apps/server/src/services/dag-service.ts` | 中高（兑现设计文档中的强类型依赖证据契约） | S | 中 | **P1** |
-| **C1** | 架构解耦 | 机械式拆分超大模块（`app.ts`、`schema.ts`、`node-client.ts` 等，延续 T7） | `apps/server/src/app.ts`, `packages/db/src/schema.ts`, `apps/artood/src/*` | 高（显著提升可维护性与多 Agent 并行开发效率） | L | 中 | **P1** |
-| **U1** | UI 系统 | 持续迁移 `styles.css` 剩余 1,233 行规则至模块化 `ui/*.css`（延续 T6） | `apps/web/src/styles.css`, `apps/web/src/ui/*.css` | 中（消除全局标签选择器污染与双轨制） | M | 低 | **P1** |
-| **F2** | 功能 (Budget) | 打通 Run Usage 成本汇总至 `goals.elapsed_cost_usd` 与 `max_cost_usd` 熔断 | `apps/server/src/services/run-service.ts`, `budget-service.ts`, `GoalsPage.tsx` | 中高（补齐自治研发的成本安全护栏） | M | 低 | **P2** |
-| **U4** | UI 系统 | 为 `GoalsPage`、`ReleasePage`、`AgentHistoryPage` 补齐 `<Skeleton>` 占位 | `apps/web/src/components/GoalsPage.tsx`, `ReleasePage.tsx`, `AgentHistoryPage.tsx` | 中（消除页面切换布局抖动 CLS） | S | 极低 | **P2** |
+| **E4** | 产品验收 | 冻结版本并完成真实 Provider 产品端到端验收、发布与恢复证据 | `docs/agent-team-development.md`、既有 runbook | 高（验证交付承诺） | L | 高 | **P1** |
+| **P4** | 性能 / 正确性 | 补齐 Goal 缓存失效，再评估固定轮询退避 | `GoalsPage.tsx`, `ReleasePage.tsx`, `invalidation.ts` | 中高（状态及时性与请求减少） | S | 低 | **P1** |
+| **X2** | 交互 / 正确性 | 审批计数按项目隔离，依据真实审批单跳转 | `LeftRail.tsx`, `approval-service.ts` | 中高（消除跨项目误导） | S | 低 | **P1** |
+| **P1** | 性能 (Server) | 批量读取 Presence 并保留全部非终态语义 | `presence-service.ts`, `domain/src/presence.ts` | 中高（查询次数与历史行传输减少，延迟待测） | M | 中 | **P1** |
+| **P2** | 性能 (DB) | 按查询计划补齐消息/运行索引 | `packages/db/src/schema.ts`, 新迁移 | 待测（取决于数据与计划） | S | 中 | **P1** |
+| **P3** | 性能 (Server) | 有界并发审计读取，批量获取最新 Run 及其制品 | `audit-service.ts`, `context-pack-service.ts` | 中高（查询往返减少，延迟待测） | M | 中 | **P1** |
+| **X1** | 交互 (UX) | 明确 Workspace / Board 导航及激活态 | `ProductHeader.tsx`, `Nav.tsx` | 中（导航一致性） | S | 低 | **P1** |
+| **F2** | 功能 (Budget) | 定义可信计量、未知费用与超额策略后实现成本预算 | `budget-policy.ts`, `run-service.ts`, `budget-service.ts` | 中高（前提满足后提供预算能力） | L | 中高 | **P2** |
+| **P5** | 性能 / 同步 | 保留重连对账与移除核对，减少消息请求 | `RoomConversation.tsx`, `RealtimeContext.tsx` | 待测（活跃房间请求数） | M | 中 | **P2** |
+| **E1** | CI/CD | 无浏览器缓存验证分片后移除冗余安装 | `.github/workflows/preview.yml`, `vitest.ci.config.mjs` | 待测（安装耗时与流量） | S | 低 | **P2** |
+| **U2** | UI 系统 | 按反馈缺口接入 Toast / Tooltip，保留无障碍与队列反馈 | `App.tsx`, `ui/feedback.tsx` | 中（反馈一致性） | S | 低 | **P2** |
+| **U3** | UI 系统 | 正常连接态紧凑展示，异常/待发队列保留横幅 | `ConnectionStatus.tsx`, `ui/product-shell.css` | 中（空间与信息层级） | S | 低 | **P2** |
+| **U1** | UI 系统 | 分批收敛 CSS 级联与全局选择器 | `styles.css`, `ui/*.css` | 中（维护性，视觉收益待实测） | M | 中 | **P2** |
+| **U4** | UI 系统 | 为 `GoalsPage`、`ReleasePage`、`AgentHistoryPage` 补齐 `<Skeleton>` 占位 | `apps/web/src/components/GoalsPage.tsx`, `ReleasePage.tsx`, `AgentHistoryPage.tsx` | 中（布局稳定性，实际指标待测） | S | 低 | **P2** |
 | **X3** | 交互 (UX) | 增强 `PlanForm`：支持任意位置任务删除/重排与 `localStorage` 草稿持久化 | `apps/web/src/components/GoalsPage.tsx:259-277` | 中（大幅改善手动编写多任务计划的体验） | M | 低 | **P2** |
 | **X4** | 交互 (UX) | 为 `MessageComposer` 增加输入 `@` 时的内联成员自动补全浮层 | `apps/web/src/components/RoomConversation.tsx:301-320` | 中（对齐现代 IM 的 `@mention` 交互直觉） | M | 低 | **P2** |
-| **P6** | 性能 (Server) | 优化 `budget-service` 空闲时的每秒 DB 轮询，支持自适应退避 | `apps/server/src/services/budget-service.ts:140-160` | 中（降低空闲 DB 负载，友好支持 Serverless PG） | S | 低 | **P2** |
+| **P6** | 性能 (Server) | 空闲预算监视退避，保留期限响应与事务检查 | `budget-service.ts` | 中（减少空闲查询，休眠能力待测） | S | 中 | **P2** |
 | **P7** | 性能 (iOS) | 消除 `ArtooApp.swift` 中通知计数的双重 JSON 编解码 | `apps/ios/Sources/App/ArtooApp.swift:191-193` | 中低（提升代码整洁度与解码效率） | S | 极低 | **P2** |
-| **C2** | 架构解耦 | 提炼 H4–H7 跨机阶段派发与 `pending*Stops` 的通用泛型辅助函数 | `apps/server/src/app.ts:187-266`, `node-binding.ts`, `services/imported-*` | 中高（消减数千行同构样板代码） | M | 中 | **P2** |
 | **C4** | 工程工具 | 引入 Biome / Prettier + ESLint 并逐步治理 500+ 字符的超长单行代码 | `package.json`, `apps/web/src/components/*` | 中（大幅提升 Git Diff 可读性与代码规范性） | S | 低 | **P2** |
-| **E2** | CI/CD | 支持 `ios-ui-suites-e2e.mjs` 多 suite 批量组合执行并评估 CI 矩阵并行化 | `scripts/ios-ui-suites-e2e.mjs`, `.github/workflows/preview.yml` | 中高（缩短 Apple 客户端 E2E 验证等待时间） | M | 中 | **P2** |
-| **F3** | 功能 (iOS) | 在 iOS 客户端增补轻量级 Goals/Plans 管控与 Release 状态/紧急停止面板 | `apps/ios/Sources/Views/*`, `ArtooApp.swift` | 中高（补齐移动端对自治目标与发布的管控闭环） | L | 低 | **P2** |
-| **F4** | 功能 (Search) | 为 Messages / Tasks / Memories 增加服务端全文检索接口与索引 | `apps/server/src/services/*`, `packages/db/src/schema.ts` | 中（突破前端单页内存过滤限制） | M | 低 | **P2** |
+| **E2** | CI/CD | 本地多 suite 子集，按计时评估 CI 并行化 | `ios-ui-suites-e2e.mjs`, `preview-gate.mjs` | 待测（本地重复构建与 CI 瓶颈） | M | 中 | **P2** |
+| **F3** | 功能 (iOS) | Release 管控、Agent History 与现有 Goals 入口优化 | `WorkspaceViews.swift`, `ArtooApp.swift` | 中（补齐明确的客户端差距） | L | 中 | **P2** |
+| **F4** | 功能 (Search) | 设计服务端搜索、分页及可见性契约 | 消息/任务/记忆服务、新迁移 | 中（历史检索与规模演进） | M | 中 | **P2** |
+| **C1** | 架构解耦 | 按实际职责与冲突机械拆分模块 | `app.ts`, `schema.ts`, `apps/artood/src/*` | 中（维护性，依赖实际痛点） | L | 中高 | **P3** |
+| **C2** | 架构解耦 | 核对阶段差异后提取共用装配与停止管理 | `app.ts`, `node-binding.ts`, `services/imported-*` | 中（减少已确认的重复） | M | 中高 | **P3** |
+| **C3** | 代码整洁 | 合并重复导入并整理位置 | `app.ts`, `node-binding.ts`, `context-pack-service.ts` | 低（可读性） | S | 低 | **P3** |
+| **E3** | 开发效率 | 增加聚焦单元/服务端测试入口，保留全量门禁 | `package.json`, `vitest.config.ts` | 中（缩短本地反馈） | S | 低 | **P3** |
 | **X5** | 交互 (UX) | 引入全局命令面板 (`Cmd/Ctrl + K`) 支持跨项目/任务/频道快速跳转 | `apps/web/src/components/*` | 中（提升高频用户与管理员操作效率） | M | 低 | **P3** |
-| **F5** | 功能 (Security) | 实现审计证据包 `AuditBundleExport` 的可选 Ed25519 数字签名 | `apps/server/src/services/audit-service.ts:150,243` | 中低（增强导出证据的防篡改可信度） | S | 低 | **P3** |
+| **F5** | 功能 (Security) | 兼容的审计签名契约、密钥生命周期与验签 | `audit-service.ts`, domain 审计契约 | 中低（可验证的签发来源与完整性） | M | 中 | **P3** |
 | **C5** | 仓库整洁 | 建立 `docs/INDEX.md` 文档地图与 `scripts/` 分类索引 | `docs/`, `scripts/` | 中低（降低新成员与 Agent 的上下文检索成本） | S | 极低 | **P3** |
 
 ### 9.2 推荐执行路径
 
-1. **第一波（立竿见影 · 性能与 CI 止血，预计 3–5 个独立 Commit）**：
-   - 执行 **E1**（移除 `preview.yml` 冗余 Playwright 安装）；
-   - 执行 **P1 + P2**（修复 `presence-service.ts` N+1 与 `runs` 全量加载，新增 `messages.task_id` 与 `runs` 复合索引迁移）；
-   - 执行 **P3 + P4**（并行化 `getTaskAuditBundle` 查询，收敛 Web 端剩余 5s 轮询与 `queryKeys`）。
-2. **第二波（体验跃升 · UI/UX 与整洁度快赢，预计 5–8 个独立 Commit）**：
-   - 执行 **C3**（清理 `app.ts` 尾部及重复 import）；
-   - 执行 **X1 + X2**（修复 `ProductHeader` Tab 高亮歧义与 `LeftRail` 待审批徽标交互）；
-   - 执行 **U2 + U3 + U4**（启用 `ToastProvider`、收起正常态 `ConnectionStatus`、补齐 `GoalsPage` / `ReleasePage` 骨架屏）。
-3. **第三波（深度解耦与核心功能闭环，按模块稳步推进）**：
-   - 执行 **F1 + F2**（DAG 证据门控与成本预算闭环）；
-   - 执行 **C1 + C2 + U1**（分批拆解 `app.ts`、`schema.ts`、`artood` 大文件，收敛 `styles.css`）；
-   - 执行 **X3 + X4 + F3 + F4**（升级计划编辑器、内联 `@mention`、服务端搜索与 iOS 端 Goal/Release 管控）。
+1. **先处理正确性和验收依赖**：推进 **P4、X2**，修复缓存失效与跨项目审批计数；按 **E4** 整理已有失败、确认环境/授权并冻结验收版本。外部条件未就绪时记录阻碍，继续独立任务。
+2. **再做有数据支撑的性能优化**：为 **P1、P2、P3** 记录查询次数、代表性数据量、查询计划和耗时；保持原有状态、最新 Run、组织隔离与制品截断语义后实施。**E1** 经无缓存分片验证后可作为独立小改动；**P5、P6** 先证明同步/预算时效不退化。
+3. **按实际使用改进客户端体验**：推进 **X1、U2–U4、X3、X4、F3、F4**；复用已有 iOS Goals 能力，新增持久化草稿需区分账号/组织/服务端作用域并处理退出清理。**U1、C4、E2** 随相关模块调整和测量推进。
+4. **在契约明确后扩展能力，再做维护性整理**：**F2、F5** 先评审计费/签名契约和故障语义；**C1–C3、C5、E3、X5、P7** 按实际痛点实施，不以行数或格式整理替代产品验收。能力或发布版本发生变化后，重新绑定并执行相应验收。
+
+每项保持独立、可审阅的提交；先运行相关回归，再按 `AGENTS.md` 完成集成后的必要检查。本文不继承旧 backlog 中“只跑聚焦检查”的概括性限制。文档修订本身不改变实现或验收状态，也不授权生产发布。
 
 ---
 
