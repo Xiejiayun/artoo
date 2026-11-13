@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { usePollMs } from "../app/RealtimeContext.js";
 import { useState } from "react";
 import type { ContentReport, ContentRules, ModerationMember } from "../api/contentModeration.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
@@ -23,7 +24,7 @@ function ReportQueue(): React.ReactNode {
   const api = useApi();
   const [before, setBefore] = useState<string>();
   const [review, setReview] = useState<{ report: ContentReport; action: "remove" | "dismiss" }>();
-  const reports = useQuery({ queryKey: ["moderation", "reports", before], queryFn: () => api.contentReports(before), refetchInterval: 15000 });
+  const reports = useQuery({ queryKey: ["moderation", "reports", before], queryFn: () => api.contentReports(before), refetchInterval: usePollMs(15000) });
   return <div className="u-stack"><p>Reports and their original content are private to team administrators. Review incoming reports regularly and respond through your team's support channel.</p>
     <ActionError error={reports.error} />{reports.isPending && <p role="status">Loading reports…</p>}
     {reports.data?.reports.length === 0 && <p>No reports on this page.</p>}
@@ -81,7 +82,7 @@ function MemberAccess(): React.ReactNode {
   const api = useApi();
   const { bootstrap } = useProject();
   const [selected, setSelected] = useState<ModerationMember>();
-  const members = useQuery({ queryKey: ["moderation", "members"], queryFn: () => api.moderationMembers(), refetchInterval: 15000 });
+  const members = useQuery({ queryKey: ["moderation", "members"], queryFn: () => api.moderationMembers(), refetchInterval: usePollMs(15000) });
   return <div className="u-stack"><ActionError error={members.error} />{members.isPending && <p role="status">Loading members…</p>}
     {members.data?.members.map((member) => {
       const suspended = !!member.suspended_at && !member.reinstated_at;

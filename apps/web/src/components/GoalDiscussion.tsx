@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { usePollMs } from "../app/RealtimeContext.js";
 import { useState } from "react";
 import { Users, Sparkles } from "lucide-react";
 import { canProposePlan, type Goal, type StartDiscussionRequest } from "@artoo/domain";
@@ -20,7 +21,7 @@ export function GoalDiscussion({ goal }: { goal: Goal }): React.ReactNode {
   const [openThread, setOpenThread] = useState<string | null>(null);
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
   const channels = useQuery({ queryKey: ["channels", goal.project_id], queryFn: () => api.listChannels(goal.project_id) });
-  const sessions = useQuery({ queryKey: ["discussions", goal.id], queryFn: () => api.listDiscussions(goal.id), refetchInterval: 5000 });
+  const sessions = useQuery({ queryKey: ["discussions", goal.id], queryFn: () => api.listDiscussions(goal.id), refetchInterval: usePollMs(5000) });
   useSubscription(goal.room_id ? [`room:${goal.room_id}`] : []);
   const refresh = async () => { await Promise.all([
     query.invalidateQueries({ queryKey: ["discussions", goal.id] }), query.invalidateQueries({ queryKey: ["plans", goal.id] }),

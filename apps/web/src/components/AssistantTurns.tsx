@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { usePollMs } from "../app/RealtimeContext.js";
 import { useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Message } from "@artoo/domain";
@@ -16,7 +17,7 @@ export function AssistantTurns({ roomId, threadRootId, messages, allowActions = 
   const navigate = useNavigate();
   const { setSelectedTaskId } = useSelection();
   const keys = useRef(new Map<string, string>());
-  const turns = useQuery({ queryKey: queryKeys.assistantTurns(roomId, threadRootId), queryFn: () => api.listAssistantTurns(roomId, threadRootId), refetchInterval: 8000 });
+  const turns = useQuery({ queryKey: queryKeys.assistantTurns(roomId, threadRootId), queryFn: () => api.listAssistantTurns(roomId, threadRootId), refetchInterval: usePollMs(8000) });
   const action = useMutation({
     mutationFn: ({ id, name }: { id: string; name: "cancel" | "retry" }) => {
       const logicalAction = `${id}:${name}`;

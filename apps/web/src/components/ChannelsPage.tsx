@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { usePollMs } from "../app/RealtimeContext.js";
 import { useEffect, useRef, useState } from "react";
 import type { Member, Notification } from "@artoo/domain";
 import { useSearchParams } from "react-router-dom";
@@ -64,7 +65,7 @@ export function ChannelsPage(): React.ReactNode {
       void query.invalidateQueries({ queryKey: queryKeys.members });
     }
   }, [destinationProject, requestedRoomId, projectKnown, projectId, setSelectedProjectId, query]);
-  const channels = useQuery({ queryKey: ["channels", projectId], queryFn: () => api.listChannels(projectId!), enabled: !!projectId && projectReady, refetchInterval: 10000 });
+  const channels = useQuery({ queryKey: ["channels", projectId], queryFn: () => api.listChannels(projectId!), enabled: !!projectId && projectReady, refetchInterval: usePollMs(10000) });
   useSubscription(projectId ? [`project:${projectId}`] : []);
   const roomId = requestedRoomId ?? channels.data?.channels[0]?.id;
   const selected = channels.data?.channels.find((channel) => channel.id === roomId);
@@ -141,7 +142,7 @@ export function ThreadPanel({ roomId, projectId, threadRootId, focusedMessageId,
   const bootstrap = useQuery<BootstrapResponse>({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(), enabled: false });
   const members = useQuery<{ members: Member[] }>({ queryKey: queryKeys.members, queryFn: () => api.listMembers(), enabled: false });
   const readAttempts = useRef(new Set<string>());
-  const root = useQuery({ queryKey: ["message", roomId, threadRootId], queryFn: () => api.getMessage(roomId, threadRootId), refetchInterval: 8000 });
+  const root = useQuery({ queryKey: ["message", roomId, threadRootId], queryFn: () => api.getMessage(roomId, threadRootId), refetchInterval: usePollMs(8000) });
   const focused = useQuery({ queryKey: ["message", roomId, focusedMessageId], queryFn: () => api.getMessage(roomId, focusedMessageId!), enabled: !!focusedMessageId && focusedMessageId !== threadRootId });
   const target = focusedMessageId === threadRootId ? root.data?.message : focused.data?.message;
   const rootValid = root.data?.message.id === threadRootId && root.data.message.room_id === roomId && !root.data.message.thread_root_id;

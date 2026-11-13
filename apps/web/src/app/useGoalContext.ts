@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { usePollMs } from "./RealtimeContext.js";
 import { useSearchParams } from "react-router-dom";
 import { useApi } from "./ApiContext.js";
 import { useProject } from "./useProject.js";
@@ -8,7 +9,7 @@ export function useGoalContext(defaultToFirst = false, enabled = true) {
   const api = useApi();
   const { projectId } = useProject();
   const [params, setParams] = useSearchParams();
-  const goals = useQuery({ queryKey: ["goals", projectId], queryFn: () => api.listGoals(projectId!), enabled: !!projectId && enabled, refetchInterval: 10000 });
+  const goals = useQuery({ queryKey: ["goals", projectId], queryFn: () => api.listGoals(projectId!), enabled: !!projectId && enabled, refetchInterval: usePollMs(10000) });
   const requested = params.get("goal");
   const items = goals.data?.goals.filter((goal) => goal.project_id === projectId) ?? [];
   const goal = requested ? items.find((item) => item.id === requested) : defaultToFirst ? items[0] : undefined;

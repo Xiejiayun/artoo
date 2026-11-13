@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { usePollMs } from "../app/RealtimeContext.js";
 import { useState } from "react";
 import { BlockerTypeSchema, type BlockerType } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
@@ -14,7 +15,7 @@ export function CollaborationPanel({ roomId, taskId, goalId }: { roomId: string;
   const records = useQuery({ queryKey: ["collaboration", roomId], queryFn: async () => {
     const [decisions, handoffs, blockers] = await Promise.all([api.listDecisions(roomId), api.listHandoffs(roomId), api.listBlockers(roomId)]);
     return { ...decisions, ...handoffs, ...blockers };
-  }, refetchInterval: 10000 });
+  }, refetchInterval: usePollMs(10000) });
   const [kind, setKind] = useState<"decision" | "handoff" | "blocker">("decision");
   const [summary, setSummary] = useState("");
   const [detail, setDetail] = useState("");

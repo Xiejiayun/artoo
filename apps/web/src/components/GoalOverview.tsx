@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { usePollMs } from "../app/RealtimeContext.js";
 import { ArrowRight, Flag, ListChecks, ShieldCheck } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { Goal, GoalAutomation, Plan } from "@artoo/domain";
@@ -9,7 +10,7 @@ import { ActionError } from "./ActionError.js";
 /** Counts come from current tasks, never a historical checkpoint or model output. */
 export function GoalOverview({ goal, automation, plans }: { goal: Goal; automation?: GoalAutomation | null; plans?: Plan[] }): React.ReactNode {
   const api = useApi();
-  const tasks = useQuery({ queryKey: queryKeys.tasks(goal.project_id), queryFn: () => api.listTasks(goal.project_id), refetchInterval: 10000 });
+  const tasks = useQuery({ queryKey: queryKeys.tasks(goal.project_id), queryFn: () => api.listTasks(goal.project_id), refetchInterval: usePollMs(10000) });
   const linked = tasks.data?.tasks.filter((task) => task.project_id === goal.project_id && task.goal_id === goal.id && (!goal.current_plan_id || task.source_plan_id === goal.current_plan_id)) ?? [];
   const done = linked.filter((task) => task.status === "done").length;
   const attention = linked.filter((task) => ["blocked", "awaiting_approval", "review"].includes(task.status)).length;

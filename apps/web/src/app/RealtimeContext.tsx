@@ -1,7 +1,7 @@
 import { removedMessage } from "../api/messageModeration.js";
 import type { Message } from "@artoo/domain";
 import { useQueryClient } from "@tanstack/react-query";
-import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 
 import { RealtimeClient, type SocketFactory } from "../ws/realtimeClient.js";
 import { invalidationsForEvent } from "./invalidation.js";
@@ -114,6 +114,21 @@ export function useSubscription(topics: string[]): void {
     // topics are tracked via their stable joined `key`.
 
   }, [client, key]);
+}
+
+/**
+ * Polling interval that backs off while the realtime WS is connected (pushes
+ * already invalidate the relevant queries); polling remains the fallback when
+ * the socket is down or absent.
+ */
+export function usePollMs(baseMs: number, connectedFactor = 6): number {
+  const client = useRealtime();
+  const connected = useSyncExternalStore(
+    (listener) => client?.subscribeStatus(listener) ?? (() => undefined),
+    () => client?.getStatus() === "connected",
+    () => false,
+  );
+  return connected ? baseMs * connectedFactor : baseMs;
 }
 
 function resolveWsUrl(path: string): string {
