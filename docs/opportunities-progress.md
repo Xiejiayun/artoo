@@ -132,6 +132,12 @@ C1 Tasks/DAG 通过 [PR #90](https://github.com/Xiejiayun/artoo/pull/90) 合并�
 
 C1 Skills 的三个安装/读取端点原序移入 `skill-routes.ts`，保留逐请求身份、项目作用域、启用过滤及 manifest 校验。AST 对比确认处理器、上下文与还原后的 app 非 import 语句/公开签名一致。根 typecheck、server build、3 文件 staged 质量、iOS 22 请求/58 端点静态契约通过；Node 24 单 worker 的完整 Skills HTTP/调度能力贡献回归 1 文件 7 项通过，覆盖禁用、不兼容 Runtime 和其他项目的技能拒绝（`.git/opt-c1-skills-*`）。
 
+C1 Skills 通过 [PR #91](https://github.com/Xiejiayun/artoo/pull/91) 合并为 `6c88bdd`（实现 `8da580c`），再次拉取 main 后开展 Approvals/Leases 提取。
+
+C1 Approvals/Leases 的六个正式端点和一个开发审批端点原样移入 `approval-routes.ts`，分别在原位置注册。开发入口仍由 app 的 `options.enableDevRoutes === true` 判断控制，逐请求身份、limit/状态校验、响应与服务调用保持。AST 对比确认原 guard、七个处理器及还原后的 app 非 import 语句/公开签名一致。
+
+本步根 typecheck、server build、3 文件 staged 质量、iOS 22 请求/58 端点静态契约通过。Node 24 单 worker 的审批、执行前门控和租约完整回归 3 文件 19 项通过，覆盖替换/并发决策/实际分派、历史与 blocker 关联、路径冲突/释放/过期与非法输入（`.git/opt-c1-approvals-*`）。最终统一门禁仍待后续集成。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。

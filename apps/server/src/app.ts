@@ -1,3 +1,4 @@
+import { registerApprovalAndLeaseRoutes, registerDevelopmentApprovalRoutes } from "./approval-routes.js";
 import { registerSkillRoutes } from "./skill-routes.js";
 import { registerTaskRoutes } from "./task-routes.js";
 import { registerDeviceRoutes, registerDeviceRevocationRoutes } from "./device-routes.js";
@@ -11,15 +12,12 @@ import { createSourceLifecycleRegistry } from "./services/source-clean-lifecycle
 import { registerSourceLifecycleWsRoute } from "./ws/source-lifecycle-ws.js";
 import { registerAiDataSharingRoutes } from "./ai-data-sharing-routes.js";
 import {
-  AcquireLeaseRequestSchema,
   apiError,
-  LeaseStatusSchema,
   MemoryScopeSchema,
   MemoryStatusSchema,
   MemoryTransitionRequestSchema,
   type MemoryTrigger,
   ProposeMemoryRequestSchema,
-  ResolveApprovalRequestSchema,
   SendMessageRequestSchema,
 } from "@artoo/domain";
 import websocket from "@fastify/websocket";
@@ -43,11 +41,9 @@ import { registerApiAuthGuard, registerAuthRoutes, requestContext } from "./auth
 import { AppError } from "./errors.js";
 import { createClaimLimiter, DEFAULT_CLAIM_LIMIT, type ClaimLimiter } from "./claim-rate-limit.js";
 import { registerIdempotency } from "./idempotency-middleware.js";
-import * as approvalService from "./services/approval-service.js";
 import { registerCollaborationRoutes } from "./collaboration-routes.js";
 import { startGoalBudgetMonitor } from "./services/budget-service.js";
 import { recoverInterruptedRuns } from "./services/execution-recovery-service.js";
-import * as leaseService from "./services/lease-service.js";
 import * as memoryService from "./services/memory-service.js";
 import * as messageService from "./services/message-service.js";
 import * as presenceService from "./services/presence-service.js";
@@ -368,62 +364,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     };
   });
 
-  app.get("/api/v1/approvals", async (req) => {
-    const { status, limit } = req.query as { status?: string; limit?: string };
-    return { approvals: await approvalService.listApprovals(rc(req), status, parseOptionalLimit(limit)) };
-  });
-
-  app.post("/api/v1/tasks/:id/execution-approval", async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const input = (req.body ?? {}) as Record<string, unknown>;
-    if (typeof input.summary !== "string" || !["low", "medium", "high"].includes(String(input.risk)))
-      throw AppError.validation("summary and risk are required");
-    const approval = await approvalService.requestExecutionApproval(rc(req), id, {
-      summary: input.summary,
-      risk: input.risk as "low" | "medium" | "high",
-    });
-    return reply.status(201).send({ approval });
-  });
-
-  app.post("/api/v1/approvals/:id/resolve", async (req) => {
-    const { id } = req.params as { id: string };
-    const parsed = ResolveApprovalRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw AppError.validation("invalid approval resolution payload", {
-        issues: parsed.error.issues,
-      });
-    }
-    return { approval: await approvalService.resolveApproval(rc(req), id, parsed.data) };
-  });
-
-  // Concurrency control (#12): file leases over workspace paths.
-  app.post("/api/v1/leases", async (req, reply) => {
-    const parsed = AcquireLeaseRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw AppError.validation("invalid lease payload", { issues: parsed.error.issues });
-    }
-    const lease = await leaseService.acquireLease(rc(req), parsed.data);
-    void reply.status(201);
-    return { lease };
-  });
-
-  app.delete("/api/v1/leases/:id", async (req) => {
-    const { id } = req.params as { id: string };
-    return { lease: await leaseService.releaseLease(rc(req), id) };
-  });
-
-  app.get("/api/v1/projects/:id/leases", async (req) => {
-    const { id } = req.params as { id: string };
-    const { status } = req.query as { status?: string };
-    if (status !== undefined && status !== "") {
-      const parsed = LeaseStatusSchema.safeParse(status);
-      if (!parsed.success) {
-        throw AppError.validation("invalid lease status filter", { status });
-      }
-      return { leases: await leaseService.listLeases(rc(req), id, parsed.data) };
-    }
-    return { leases: await leaseService.listLeases(rc(req), id) };
-  });
+  registerApprovalAndLeaseRoutes(app, ctx);
 
   // Memory (#14 Phase B): propose/curate memories + accepted-only retrieval.
   app.post("/api/v1/memories", async (req, reply) => {
@@ -514,25 +455,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   });
 
   // Dev-only: the platform requesting a high-risk action approval on a running task.
-  if (options.enableDevRoutes === true)
-    app.post("/api/v1/dev/tasks/:id/request-approval", async (req, reply) => {
-      const { id } = req.params as { id: string };
-      const body = (req.body ?? {}) as {
-        action?: string;
-        risk?: "low" | "medium" | "high";
-        summary?: string;
-        run_id?: string;
-      };
-      const approval = await approvalService.requestApproval(rc(req), {
-        taskId: id,
-        runId: body.run_id ?? null,
-        action: body.action ?? "git.push",
-        risk: body.risk ?? "high",
-        summary: body.summary ?? "Push branch to remote",
-      });
-      void reply.status(201);
-      return { approval };
-    });
+  if (options.enableDevRoutes === true) registerDevelopmentApprovalRoutes(app, ctx);
 
   // Static web SPA last: the API/auth/WS routes above are matched first; this only
   if (artifactStore) {
