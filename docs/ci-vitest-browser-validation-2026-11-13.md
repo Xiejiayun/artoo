@@ -60,3 +60,20 @@ Node 24 第一分片报告 `preview-storage.test.ts` 四项中的第一项失败
 CI 候选为两个 parallel 分片和 windows-process 各设置独立、原本不存在的 Playwright 路径，并由 [缓存观察器](../scripts/gates/ci-vitest-browser-cache.mjs)在实际测试前后核对缓存、解析的 Chromium executable 均不存在，输出绑定 commit/lane/Node 的 JSON。观察器不创建、删除或替换浏览器缓存；现有 Chromium 安装暂时放到另一个路径保留。实际 Node 24 / Windows CLI 的前后正向及已有目录、路径变化、缺少前记录、重复记录、提交不匹配共 5 个拒绝场景通过（`.git/opt-e1-cache-probe.log`）；这只是观察器验证，没有执行完整分区。
 
 后续须取得该候选的三个完整 lane、实际 JSON 文件覆盖聚合及前后缓存记录，全部通过后才删除两个 parallel 安装步骤。shared-checks 与实际原生/桌面浏览器安装继续保留。当前尚未完成该轮完整验证，也没有删除安装步骤。
+
+## 2026-11-14 完整 Windows CI 证据与安装移除
+
+[PR #106](https://github.com/Xiejiayun/artoo/pull/106) 的 [run 43515163808](https://github.com/Xiejiayun/artoo/actions/runs/43515163808) 已完成三个 Vitest lane。PR head 为 `119db1281fbaad338579f41b56c904722f6d5e1b`，实际 checkout 为 `05622d4b4fb3473cbb9ec412611abe538ba70a67`；GitHub Git API 与本地 Git 均确认它和 main 合并 `a1c4bf205af4720e43ea3fa42a41fd3b6e3d268c` 的 tree 相同：`59d599c09ea30a152262420111ced19676ab98ae`。各 lane 为 Windows、Node 24.22.2。
+
+| lane | 实际 reporter 文件数 | 通过用例 | 失败 | 既有条件跳过 |
+| --- | ---: | ---: | ---: | ---: |
+| parallel-1 | 303 | 4,500 | 0 | 23 |
+| parallel-2 | 303 | 4,250 | 0 | 67 |
+| windows-process | 4 | 88 | 0 | 0 |
+| 合计 | 610 | 8,838 | 0 | 90 |
+
+实际下载三份 artifacts 后，以原 checkout SHA 执行 `node scripts/ci-vitest-coverage.mjs verify .git/opt-e1-remote-43515163808`，核对完整发现集合、三个实际 JSON 文件集合、终态用例、零遗漏及零重叠，通过并生成 `coverage.json`。文件数来自 `testResults.length`，没有将 Vitest 的嵌套 suite 数当作文件数。每 lane 的 `browser-cache-before.json` / `browser-cache-after.json` 均绑定同一提交、lane、Node 与独立路径，并确认缓存目录及解析的 Chromium executable 在测试前后不存在；机器复核汇总为该目录的 `verified-evidence.json`。
+
+这证明上述版本的全部 Vitest 分区在保留原平台/opt-in 条件的情况下不需要安装的 Chromium。现在从 `shared-vitest` 矩阵删除 installer step（实际对应两个 parallel job）；测试命令、分区、断言、时限、条件跳过和覆盖聚合保持，缓存观察器继续防止依赖回流。shared-checks、iOS、Mac 和 Windows desktop 的真实浏览器安装保持。未测量这项删除对 CI 总耗时或流量的影响。
+
+该旧 run 的 shared-checks 曾有三个 Web 失败，shared 聚合因此失败；不能称整个 run 通过。随后 [PR #107](https://github.com/Xiejiayun/artoo/pull/107) 修复 Goal 链接刷新项目归属并合并为 `e5a4915d19095413175c30fa2b34af43d45073c5`。该改动的新 jsdom Goal-link 文件在实现 `560ba3baf9a6333ec9c5f51380c34334c0199976` 下独立空缓存执行 9 项通过，前后缓存及 executable 不存在（`.git/opt-goal-link-cold{,-results}.json`）；已有 API client 测试扩展复用 fetch fixture，未增加浏览器依赖。聚焦真实 Chromium 8 项通过，包含原三项失败。不同版本和范围的证据分别保留；这些补充不将旧分区结果改称最终 main 全量验证。安装移除后的最终四门禁仍须独立执行。
