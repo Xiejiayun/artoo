@@ -15,6 +15,8 @@ export const queryKeys = {
   assistantTurns: (roomId: string, threadRootId?: string) => threadRootId ? ["assistantTurns", roomId, "thread", threadRootId] as const : ["assistantTurns", roomId] as const,
   runOutputs: (taskId: string) => ["runOutputs", taskId] as const,
   runUsage: (runId: string) => ["runUsage", runId] as const,
+  agentHistory: (agentId: string, filters: Record<string, string>) => ["agentHistory", agentId, filters] as const,
+  agentHistoryRun: (agentId: string, runId: string) => ["agentHistoryRun", agentId, runId] as const,
   computerRuntimes: (computerId: string) => ["computerRuntimes", computerId] as const,
   skillInstalls: ["skillInstalls"] as const,
   approvals: (status: string) => ["approvals", status] as const,

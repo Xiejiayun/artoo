@@ -29,6 +29,7 @@ import type {
   DecisionRecord, HandoffRecord, BlockerRecord, CreateDecisionRequest, CreateHandoffRequest, CreateBlockerRequest,
   UpdateDecisionRequest, UpdateHandoffRequest, UpdateBlockerRequest,
   AgentInstance, WorktreeBaseConfiguration,
+  AgentHistoryQuery, AgentHistoryEventsQuery, AgentHistoryPage, AgentHistoryDetail,
 } from "@artoo/domain";
 
 import type {
@@ -214,6 +215,17 @@ export class ApiClient {
 
   bootstrap(): Promise<BootstrapResponse> {
     return this.request<BootstrapResponse>("GET", "/bootstrap");
+  }
+
+  agentHistory(agentId: string, options: Partial<AgentHistoryQuery> = {}): Promise<AgentHistoryPage> {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(options)) if (value !== undefined) query.set(key, String(value));
+    return this.request("GET", `/agents/${encodeURIComponent(agentId)}/history?${query}`);
+  }
+  agentHistoryRun(agentId: string, runId: string, options: Partial<AgentHistoryEventsQuery> = {}): Promise<AgentHistoryDetail> {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(options)) if (value !== undefined) query.set(key, String(value));
+    return this.request("GET", `/agents/${encodeURIComponent(agentId)}/history/${encodeURIComponent(runId)}?${query}`);
   }
 
   /** Non-secret identity for scoping local drafts to this server. */

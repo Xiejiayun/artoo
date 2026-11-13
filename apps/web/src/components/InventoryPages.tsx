@@ -137,6 +137,7 @@ export function AgentsPage(): React.ReactNode {
       <div className="agent-library__list">{[...agents.values()].map((agent) => <div key={agent.id} className="agent-library__card">
         <div className="agent-library__identity"><span className="machine-instance-avatar"><Bot size={17} aria-hidden="true" /></span><div><strong>{agent.display_name}</strong><span>{instances.filter((instance) => instance.agent_id === agent.id).length} instances · {agent.kind}</span></div>{agent.lifecycle?.state === "expired" && <Badge tone="warning">Expired</Badge>}</div>
         {["owner", "admin"].includes(role) && <Link className="ui-btn ui-btn--secondary ui-btn--sm" to={`/computers?agent=${encodeURIComponent(agent.id)}`}>Create instance</Link>}
+        <Link className="ui-btn ui-btn--secondary ui-btn--sm" to={`/agents/${encodeURIComponent(agent.id)}/history`}>View history</Link>
         {(agent.lifecycle || ["owner", "admin"].includes(role)) && <details className="resource-details agent-library__details"><summary>Agent details</summary><ResourceLifetime lifecycle={agent.lifecycle} /><DeleteResource kind="agent" id={agent.id} name={agent.display_name} role={role} /></details>}
       </div>)}</div>
     </section>
@@ -157,7 +158,7 @@ export function AgentsPage(): React.ReactNode {
           <details className="resource-details"><summary>Workspace & configuration</summary><dl className="inv-meta"><Row label="Instance"><code>{instance.id}</code></Row><Row label="Workspace root"><code>{value(instance.workspace_root)}</code></Row><Row label="Model profile">{model ? `${model.name} (${model.provider}/${model.model})` : "Not configured"}</Row><Row label="Effort profile">{effort?.name ?? "Not configured"}</Row></dl><AgentWorkspaceAllocation instance={instance} role={role} computerOs={computer?.os} /></details>
           <AgentProjectControl key={`${instance.id}:${instance.project_id ?? ""}`} instance={instance} projects={bootstrap.data!.projects} role={role} />
           <ResourceLifetime lifecycle={instance.lifecycle} />
-          <footer className="resource-card__footer"><AgentEnabledControl instance={instance} /><DeleteResource kind="instance" id={instance.id} name={agent?.display_name ?? instance.id} role={role} /></footer>
+          <footer className="resource-card__footer"><Link className="ui-btn ui-btn--secondary ui-btn--sm" to={`/agents/${encodeURIComponent(instance.agent_id)}/history?instance_id=${encodeURIComponent(instance.id)}`}>Instance history</Link><AgentEnabledControl instance={instance} /><DeleteResource kind="instance" id={instance.id} name={agent?.display_name ?? instance.id} role={role} /></footer>
         </article>;
       })}
     </div>}

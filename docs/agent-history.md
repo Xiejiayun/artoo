@@ -66,6 +66,21 @@ Update server and nodes together to obtain structured history.
 Local validation uses controlled provider JSONL and real local subprocesses;
 it does not claim live-provider or native product-development acceptance.
 
+## Browser use
+
+Open **Agents → View history**, or **Instance history** on an instance card.
+Filter executions by instance, project or status, then select a run. The URL
+retains filters and the selected run across reload. Expand tool activity to see
+its request, response, call ID and exit code; raw output remains separately
+expandable. Use **Load older events/executions** for pagination and **Refresh
+history** for newly committed records. Reads work while the execution node is
+offline. Direct history URLs remain readable after resource deletion.
+
+The original request is labeled unavailable when a legacy context pack cannot
+establish it. Final answers use current message moderation. Truncated tool
+details and omitted batch observations are labeled explicitly. The page never
+substitutes current task text for a missing original request.
+
 Migration 0059 adds indexes only and changes no historical rows. Existing storage
 backup/restore procedures apply; application rollback can leave these indexes in
 place. This feature does not execute destructive data migrations or deploy Artoo.

@@ -3,6 +3,7 @@ import { Route, Routes } from "react-router-dom";
 
 import { BoardView } from "../components/BoardView.js";
 import { AgentsPage, ComputersPage, SkillsPage } from "../components/InventoryPages.js";
+import { AgentHistoryPage } from "../components/AgentHistoryPage.js";
 import { MemoryPage } from "../components/MemoryPage.js";
 import { Nav } from "../components/Nav.js";
 import { RunsAuditPage } from "../components/RunsAuditPage.js";
@@ -58,6 +59,7 @@ export function AppRoutes(): React.ReactNode {
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/computers" element={<ComputersPage />} />
           <Route path="/agents" element={<AgentsPage />} />
+          <Route path="/agents/:agentId/history" element={<AgentHistoryPage />} />
           <Route path="/skills" element={<SkillsPage />} />
           <Route path="/memory" element={<MemoryPage />} />
           <Route path="/runs" element={<RunsAuditPage />} />
