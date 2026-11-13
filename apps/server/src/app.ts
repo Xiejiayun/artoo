@@ -1,54 +1,59 @@
-import { registerMemoryRoutes } from "./memory-routes.js";
-import { registerApprovalAndLeaseRoutes, registerDevelopmentApprovalRoutes } from "./approval-routes.js";
-import { registerSkillRoutes } from "./skill-routes.js";
-import { registerTaskRoutes } from "./task-routes.js";
-import { registerDeviceRoutes, registerDeviceRevocationRoutes } from "./device-routes.js";
-import { registerGoalRoutes } from "./goal-routes.js";
-import { wireNodeDispatch, wireRunDispatch } from "./node-dispatch-wiring.js";
-import { AgentHistoryQuerySchema, AgentHistoryEventsQuerySchema } from "@artoo/domain";
-import { listAgentHistory, getAgentHistoryRun } from "./services/agent-history-service.js";
-import { registerContentModerationRoutes } from "./content-moderation-routes.js";
-import { createSourceLifecycleRegistry } from "./services/source-clean-lifecycle-service.js";
-import { registerSourceLifecycleWsRoute } from "./ws/source-lifecycle-ws.js";
-import { registerAiDataSharingRoutes } from "./ai-data-sharing-routes.js";
-import { apiError, SendMessageRequestSchema } from "@artoo/domain";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 
+import {
+  AgentHistoryEventsQuerySchema,
+  AgentHistoryQuerySchema,
+  SendMessageRequestSchema,
+  apiError,
+} from "@artoo/domain";
+
+import { registerAiDataSharingRoutes } from "./ai-data-sharing-routes.js";
+import { registerApplicationPublicationRoutes } from "./application-publication-routes.js";
+import { registerApprovalAndLeaseRoutes, registerDevelopmentApprovalRoutes } from "./approval-routes.js";
+import { registerArtifactRoutes } from "./artifact-routes.js";
+import { registerAssistantRoutes } from "./assistant-routes.js";
+import { registerApiAuthGuard, registerAuthRoutes, requestContext } from "./auth/auth-routes.js";
+import { registerChannelRoutes } from "./channel-routes.js";
+import { type ClaimLimiter, DEFAULT_CLAIM_LIMIT, createClaimLimiter } from "./claim-rate-limit.js";
+import { registerCollaborationRoutes } from "./collaboration-routes.js";
+import { type ArtifactStorageOptions, resolveArtifactStore } from "./content-addressed-blob.js";
+import { registerContentModerationRoutes } from "./content-moderation-routes.js";
 import type { ServerContext } from "./context.js";
-import { resolveArtifactStore, type ArtifactStorageOptions } from "./content-addressed-blob.js";
+import { registerDeviceRevocationRoutes, registerDeviceRoutes } from "./device-routes.js";
+import { registerDiscussionRoutes } from "./discussion-routes.js";
+import { AppError } from "./errors.js";
+import { registerGoalAutomationRoutes } from "./goal-automation-routes.js";
+import { registerGoalRoutes } from "./goal-routes.js";
+import { registerIdempotency } from "./idempotency-middleware.js";
+import { registerMemoryRoutes } from "./memory-routes.js";
+import { wireNodeDispatch, wireRunDispatch } from "./node-dispatch-wiring.js";
+import { registerProductReleaseRoutes } from "./product-release-routes.js";
+import { registerProductSourceSemanticTransferRoutes } from "./product-source-semantic-transfer-routes.js";
+import { registerProductSourceTransferRoutes } from "./product-source-transfer-routes.js";
 import { registerProjectRoutes } from "./project-routes.js";
 import { registerResourceRoutes } from "./resource-routes.js";
-import { registerArtifactRoutes } from "./artifact-routes.js";
-import { registerProductSourceTransferRoutes } from "./product-source-transfer-routes.js";
-import { registerProductSourceSemanticTransferRoutes } from "./product-source-semantic-transfer-routes.js";
-import { registerAssistantRoutes } from "./assistant-routes.js";
-import { registerChannelRoutes } from "./channel-routes.js";
-import { registerDiscussionRoutes } from "./discussion-routes.js";
-import { registerGoalAutomationRoutes } from "./goal-automation-routes.js";
-import { registerProductReleaseRoutes } from "./product-release-routes.js";
-import { registerApplicationPublicationRoutes } from "./application-publication-routes.js";
-import { listDaemons } from "./services/daemon-service.js";
-import { registerApiAuthGuard, registerAuthRoutes, requestContext } from "./auth/auth-routes.js";
-import { AppError } from "./errors.js";
-import { createClaimLimiter, DEFAULT_CLAIM_LIMIT, type ClaimLimiter } from "./claim-rate-limit.js";
-import { registerIdempotency } from "./idempotency-middleware.js";
-import { registerCollaborationRoutes } from "./collaboration-routes.js";
+import { getAgentHistoryRun, listAgentHistory } from "./services/agent-history-service.js";
 import { startGoalBudgetMonitor } from "./services/budget-service.js";
+import { listDaemons } from "./services/daemon-service.js";
 import { recoverInterruptedRuns } from "./services/execution-recovery-service.js";
 import * as messageService from "./services/message-service.js";
 import * as presenceService from "./services/presence-service.js";
 import * as runService from "./services/run-service.js";
 import * as runtimeRegistry from "./services/runtime-registry-service.js";
+import { createSourceLifecycleRegistry } from "./services/source-clean-lifecycle-service.js";
 import * as syncService from "./services/sync-service.js";
 import * as taskService from "./services/task-service.js";
-import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
-import { createGraceWindowManager, type GraceWindowManager } from "./ws/grace-window.js";
-import { createDeviceConnectionRegistry } from "./ws/device-connections.js";
-import { registerNodeWsRoute } from "./ws/node-ws.js";
-import { registerClientWsRoute, type ClientWsHooks } from "./ws/client-ws.js";
-import { createWsHub, type WsHub } from "./ws/ws-hub.js";
+import { registerSkillRoutes } from "./skill-routes.js";
+import { registerTaskRoutes } from "./task-routes.js";
 import { registerWebStatic } from "./web-static.js";
+import { type ClientWsHooks, registerClientWsRoute } from "./ws/client-ws.js";
+import { createDeviceConnectionRegistry } from "./ws/device-connections.js";
+import { type GraceWindowManager, createGraceWindowManager } from "./ws/grace-window.js";
+import { type NodeRegistry, createNodeRegistry } from "./ws/node-registry.js";
+import { registerNodeWsRoute } from "./ws/node-ws.js";
+import { registerSourceLifecycleWsRoute } from "./ws/source-lifecycle-ws.js";
+import { type WsHub, createWsHub } from "./ws/ws-hub.js";
 
 export interface BuildAppOptions extends ArtifactStorageOptions {
   assistantDispatcher?: boolean;

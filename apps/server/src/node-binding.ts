@@ -1,100 +1,71 @@
-import { createPendingStopRegistry } from "./pending-stop-registry.js";
-import { createCleanValidationBinding } from "./services/clean-validation-service.js";
-import { createCleanValidationReviewBinding } from "./services/clean-validation-review-service.js";
-import { goalCleanValidations } from "@artoo/db";
-import {
-  IMPORTED_CLEAN_VALIDATION_FEATURE_V1,
-  IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1,
-  PRODUCT_RELEASE_CLEAN_FEATURE_V1,
-  ImportedCleanValidationResultV1Schema,
-} from "@artoo/domain";
-import { assertSourceLineageDispatch } from "./services/source-lineage-fence.js";
-import { createImportedExecutionReviewBinding } from "./services/imported-execution-review-service.js";
-import { createImportedValidationBinding } from "./services/imported-validation-service.js";
-import { createImportedValidationReviewBinding } from "./services/imported-validation-review-service.js";
-import { createSourceRecoveryBinding } from "./services/source-recovery-service.js";
-import { SOURCE_CLEAN_RESTART_FEATURE_V1 } from "@artoo/domain";
-import { createRecoveryValidationBinding } from "./services/recovery-validation-service.js";
-import { createRecoveryValidationReviewBinding } from "./services/recovery-validation-review-service.js";
-import { goalRecoveryValidations } from "@artoo/db";
-import {
-  PRODUCT_SOURCE_RECOVERY_FEATURE_V1,
-  IMPORTED_RECOVERY_VALIDATION_FEATURE_V1,
-  IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1,
-  ImportedRecoveryValidationResultV1Schema,
-} from "@artoo/domain";
-import { inspectImportedValidationPublicationDispatch } from "./services/imported-validation-release-service.js";
-import { inspectRecoveryValidationPublicationDispatch } from "./services/recovery-validation-release-service.js";
-import { inspectCleanValidationPublicationDispatch } from "./services/clean-validation-release-service.js";
-import { goalImportedValidations } from "@artoo/db";
-import { IMPORTED_VALIDATION_FEATURE_V1, ImportedValidationResultV1Schema } from "@artoo/domain";
-import { createImportedExecutionRepairBinding } from "./services/imported-execution-repair-service.js";
-import { goalImportedExecutionRepairs } from "@artoo/db";
-import { IMPORTED_EXECUTION_REVIEW_FEATURE_V1, ImportedExecutionRepairResultV1Schema } from "@artoo/domain";
-import { requireRunAiSharingAuthorization } from "./services/ai-data-sharing-service.js";
-import { createGoalImportedProductReviewBinding } from "./services/imported-product-review-service.js";
-import { createGoalProductHandoffBinding } from "./services/goal-product-handoff-service.js";
-import type { ArtifactStorageOptions } from "./content-addressed-blob.js";
-import { createImportedDesignContinuationBinding } from "./services/imported-design-continuation-service.js";
-import { createImportedDesignReviewBinding } from "./services/imported-design-review-service.js";
-import { createImportedExecutionBinding } from "./services/imported-execution-service.js";
-import { goalImportedExecutions } from "@artoo/db";
-import { IMPORTED_EXECUTION_FEATURE_V1, ImportedExecutionResultV1Schema } from "@artoo/domain";
-import { IMPORTED_DESIGN_REVIEW_FEATURE_V1 } from "@artoo/domain";
-import { goalImportedDesignContinuations } from "@artoo/db";
-import { ImportedDesignContinuationResultV1Schema, IMPORTED_DESIGN_CONTINUATION_FEATURE_V1 } from "@artoo/domain";
-import { goalProductHandoffs, goalProductHandoffOperations } from "@artoo/db";
-import type { AuthenticatedTransferNode } from "./services/product-source-transfer-service.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { ProductSourceRoutingV1Schema, type ProductSourceRoutingV1 } from "@artoo/domain";
-import {
-  APPLICATION_PUBLICATION_FEATURE_V1,
-  ApplicationPublicationProfileAdvertisementsV1Schema,
-  type ApplicationPublicationProfileAdvertisementV1,
-  type ApplicationPublicationCapabilitiesV1,
-  type ApplicationPublicationVerificationAckV1,
-} from "@artoo/domain";
-import { committedApplicationVerificationReceipt } from "./services/application-publication-receipt.js";
-import { applicationPublications } from "@artoo/db";
-import { ApplicationPublicationRequestV1Schema } from "@artoo/domain";
-import {
-  applicationPublicationDigest,
-  assertApplicationPublicationDispatch,
-  ingestApplicationPublicationReceipt,
-  ingestApplicationPublicationObservation,
-} from "./services/application-publication-service.js";
+
+import { and, eq } from "drizzle-orm";
 
 import {
   agentInstances,
+  applicationPublications,
   assistantRunDispatches,
   assistantTurns,
   computers,
   contextPacks,
   goalAutomations,
+  goalCleanValidations,
+  goalImportedDesignContinuations,
+  goalImportedExecutionRepairs,
+  goalImportedExecutions,
+  goalImportedValidations,
+  goalProductHandoffOperations,
+  goalProductHandoffs,
+  goalRecoveryValidations,
   goals,
   productReleases,
   runs,
   tasks,
 } from "@artoo/db";
 import {
-  assertDesignRevisionRunAdmission,
-  assertNoActiveDesignRevision,
-} from "./services/product-design-revision-guard.js";
-import {
+  APPLICATION_PUBLICATION_FEATURE_V1,
+  APPLICATION_VERIFICATION_FEATURE_V1,
+  type ApplicationPublicationCapabilitiesV1,
+  type ApplicationPublicationProfileAdvertisementV1,
+  ApplicationPublicationProfileAdvertisementsV1Schema,
+  ApplicationPublicationRequestV1Schema,
+  type ApplicationPublicationVerificationAckV1,
   ContextPackSchema,
   ID_PREFIXES,
-  VerificationRequirementSchema,
-  VerificationProfileAdvertisementsSchema,
-  type VerificationProfileAdvertisement,
-  ReleaseProfileAdvertisementsSchema,
+  IMPORTED_CLEAN_VALIDATION_FEATURE_V1,
+  IMPORTED_CLEAN_VALIDATION_REVIEW_FEATURE_V1,
+  IMPORTED_DESIGN_CONTINUATION_FEATURE_V1,
+  IMPORTED_DESIGN_REVIEW_FEATURE_V1,
+  IMPORTED_EXECUTION_FEATURE_V1,
+  IMPORTED_EXECUTION_REVIEW_FEATURE_V1,
+  IMPORTED_RECOVERY_VALIDATION_FEATURE_V1,
+  IMPORTED_RECOVERY_VALIDATION_REVIEW_FEATURE_V1,
+  IMPORTED_VALIDATION_FEATURE_V1,
+  ImportedCleanValidationResultV1Schema,
+  ImportedDesignContinuationResultV1Schema,
+  ImportedExecutionRepairResultV1Schema,
+  ImportedExecutionResultV1Schema,
+  ImportedRecoveryValidationResultV1Schema,
+  ImportedValidationResultV1Schema,
+  type NodeOwnedResultProfileDescriptorV1,
+  NodeOwnedResultProfileDescriptorsV1Schema,
+  PRODUCT_RELEASE_CLEAN_FEATURE_V1,
+  PRODUCT_SOURCE_RECOVERY_FEATURE_V1,
   ProductReleaseRequestSchema,
-  type ReleaseProfileAdvertisement,
-  type VerificationCapabilities,
+  type ProductSourceRoutingV1,
+  ProductSourceRoutingV1Schema,
   type ReleaseCapabilitiesV1,
+  type ReleaseProfileAdvertisement,
+  ReleaseProfileAdvertisementsSchema,
+  SOURCE_CLEAN_RESTART_FEATURE_V1,
+  type VerificationCapabilities,
+  type VerificationProfileAdvertisement,
+  VerificationProfileAdvertisementsSchema,
+  VerificationRequirementSchema,
 } from "@artoo/domain";
-import { NodeOwnedResultProfileDescriptorsV1Schema, type NodeOwnedResultProfileDescriptorV1 } from "@artoo/domain";
 import type {
   NodeToServerMessage,
   NodeTransport,
@@ -104,25 +75,56 @@ import type {
   RunStopCommand,
   Unsubscribe,
 } from "@artoo/protocol";
-import { and, eq } from "drizzle-orm";
 
+import type { ArtifactStorageOptions } from "./content-addressed-blob.js";
 import type { ImportedSourceReceiptFamily, ServerContext } from "./context.js";
-import { canDispatchAssistantRun } from "./services/assistant-service.js";
 import { AppError } from "./errors.js";
+import { createPendingStopRegistry } from "./pending-stop-registry.js";
 import { validatePersistedAllocationStart } from "./persisted-allocation-start.js";
-import { ingestProductReleaseReceipt, ingestProductReleaseHealthReport } from "./services/product-release-service.js";
-import { assertProductReleaseRetryDispatch } from "./services/product-release-retry-service.js";
-import { verificationCapabilityBinding } from "./services/verification-capabilities.js";
-import { APPLICATION_VERIFICATION_FEATURE_V1 } from "@artoo/domain";
+import { requireRunAiSharingAuthorization } from "./services/ai-data-sharing-service.js";
+import { committedApplicationVerificationReceipt } from "./services/application-publication-receipt.js";
+import {
+  applicationPublicationDigest,
+  assertApplicationPublicationDispatch,
+  ingestApplicationPublicationObservation,
+  ingestApplicationPublicationReceipt,
+} from "./services/application-publication-service.js";
 import { applicationRequirement } from "./services/application-verification.js";
+import { canDispatchAssistantRun } from "./services/assistant-service.js";
 import { canonicalAutomationWorkspace } from "./services/automation-workspace.js";
+import { inspectCleanValidationPublicationDispatch } from "./services/clean-validation-release-service.js";
+import { createCleanValidationReviewBinding } from "./services/clean-validation-review-service.js";
+import { createCleanValidationBinding } from "./services/clean-validation-service.js";
+import { createGoalProductHandoffBinding } from "./services/goal-product-handoff-service.js";
+import { createImportedDesignContinuationBinding } from "./services/imported-design-continuation-service.js";
+import { createImportedDesignReviewBinding } from "./services/imported-design-review-service.js";
+import { createImportedExecutionRepairBinding } from "./services/imported-execution-repair-service.js";
+import { createImportedExecutionReviewBinding } from "./services/imported-execution-review-service.js";
+import { createImportedExecutionBinding } from "./services/imported-execution-service.js";
+import { createGoalImportedProductReviewBinding } from "./services/imported-product-review-service.js";
+import { inspectImportedValidationPublicationDispatch } from "./services/imported-validation-release-service.js";
+import { createImportedValidationReviewBinding } from "./services/imported-validation-review-service.js";
+import { createImportedValidationBinding } from "./services/imported-validation-service.js";
 import {
   OWNED_RESULT_FEATURE,
-  parseOwnedResultAssignment,
-  assertOwnedResultStoredContext,
   assertOwnedResultDispatchInput,
+  assertOwnedResultStoredContext,
+  parseOwnedResultAssignment,
 } from "./services/owned-result-service.js";
+import {
+  assertDesignRevisionRunAdmission,
+  assertNoActiveDesignRevision,
+} from "./services/product-design-revision-guard.js";
+import { assertProductReleaseRetryDispatch } from "./services/product-release-retry-service.js";
+import { ingestProductReleaseHealthReport, ingestProductReleaseReceipt } from "./services/product-release-service.js";
+import type { AuthenticatedTransferNode } from "./services/product-source-transfer-service.js";
+import { inspectRecoveryValidationPublicationDispatch } from "./services/recovery-validation-release-service.js";
+import { createRecoveryValidationReviewBinding } from "./services/recovery-validation-review-service.js";
+import { createRecoveryValidationBinding } from "./services/recovery-validation-service.js";
 import { cancelRun, failRunDaemonDisconnect, failRunStart, ingestWireRunEvent } from "./services/run-service.js";
+import { assertSourceLineageDispatch } from "./services/source-lineage-fence.js";
+import { createSourceRecoveryBinding } from "./services/source-recovery-service.js";
+import { verificationCapabilityBinding } from "./services/verification-capabilities.js";
 
 const FALLBACK_WORKSPACE_ROOT = join(tmpdir(), "artoo-workspace");
 
