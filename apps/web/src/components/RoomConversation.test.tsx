@@ -23,6 +23,52 @@ function chatApi(overrides: Partial<ApiClient> = {}): ApiClient {
 afterEach(() => { localStorage.clear(); });
 
 describe("RoomConversation", () => {
+  it.each([undefined, { version: 1 as const, visibility_batch_limit: 500 }])("reconciles all 250 cached messages and missed reply counts with capability %j", async (capability) => {
+    const query = createTestQueryClient();
+    const snapshot = bootstrapFixture({ ...(capability ? { message_sync: capability } : {}) });
+    query.setQueryData(queryKeys.bootstrap, snapshot);
+    const cached = Array.from({ length: 250 }, (_, index) => messageFixture({ id: `cached_${index}`, kind: "text", sequence: index + 1,
+      body: `History ${index}`, reply_count: index === 0 ? 1 : 0 }));
+    query.setQueryData<MessagesResponse>(queryKeys.messages("room_1"), { messages: cached, next_after: "latest-cursor", has_more: true, next_before: "older-cursor" });
+    const listMessages = vi.fn<ApiClient["listMessages"]>().mockImplementation(async (_room, options) => options?.after
+      ? { messages: [], next_after: "latest-cursor" }
+      : { messages: [{ ...cached[0]!, reply_count: 7 }] });
+    const client = chatApi({ bootstrap: async () => snapshot, listMessages });
+    const visibility = vi.fn<ApiClient["messageVisibility"]>().mockImplementation(async (room, ids) => {
+      if (ids.includes("cached_249")) client.noteMessageRemoved(room, "cached_249");
+      return ids.includes("cached_249") ? ["cached_249"] : [];
+    });
+    client.messageVisibility = visibility;
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" onOpenThread={() => undefined} />, { client, queryClient: query });
+    await waitFor(() => expect(query.getQueryState(queryKeys.messages("room_1"))?.fetchStatus).toBe("idle"));
+    expect(listMessages.mock.calls.map((call) => call[1])).toEqual([{ limit: 50, after: "latest-cursor" }, { limit: 50 }]);
+    expect(visibility.mock.calls).toHaveLength(capability ? 1 : 3);
+    expect(visibility.mock.calls.flatMap((call) => call[1])).toEqual(cached.map((message) => message.id));
+    expect(await screen.findByRole("button", { name: /7 replies/ })).toBeInTheDocument();
+    expect(screen.queryByText("History 249")).not.toBeInTheDocument();
+    const updated = query.getQueryData<MessagesResponse>(queryKeys.messages("room_1"))!;
+    expect(updated.messages).toHaveLength(250);
+    expect(updated.messages.at(-1)!.payload.moderation).toBe("removed");
+    expect(updated.next_before).toBe("older-cursor");
+    expect(updated.has_more).toBe(true);
+    listMessages.mockClear(); visibility.mockClear();
+    await act(async () => { await query.invalidateQueries({ queryKey: queryKeys.messages("room_1") }); });
+    expect(listMessages).toHaveBeenCalledTimes(2);
+    expect(visibility.mock.calls.flatMap((call) => call[1])).toEqual(cached.map((message) => message.id));
+    expect(query.getQueryData<MessagesResponse>(queryKeys.messages("room_1"))!.messages.at(-1)!.payload.moderation).toBe("removed");
+  });
+
+  it("surfaces a visibility batch failure and retries all cached identifiers", async () => {
+    const query = createTestQueryClient();
+    query.setQueryData<MessagesResponse>(queryKeys.messages("room_1"), { messages: [messageFixture({ id: "old", kind: "text", body: "Old history" })], next_after: "cursor" });
+    const visibility = vi.fn<ApiClient["messageVisibility"]>().mockRejectedValueOnce(new Error("Removal sync unavailable")).mockResolvedValue([]);
+    renderWithProviders(<RoomConversation roomId="room_1" projectId="proj_artoo" />, { client: chatApi({ messageVisibility: visibility }), queryClient: query });
+    expect(await screen.findByText("Removal sync unavailable")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Retry message sync" }));
+    await waitFor(() => expect(screen.queryByText("Removal sync unavailable")).not.toBeInTheDocument());
+    expect(visibility.mock.calls.map((call) => call[1])).toEqual([["old"], ["old"]]);
+  });
+
   it("renders a goal conversation after its initial message request completes", async () => {
     let resolveMessages!: (page: MessagesResponse) => void;
     const listMessages = vi.fn<ApiClient["listMessages"]>().mockImplementationOnce(() => new Promise((resolve) => { resolveMessages = resolve; }));

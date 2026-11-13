@@ -124,7 +124,12 @@ test("channels and threads synchronize between independent browser clients and s
   await page.getByRole("button", { name: "New channel", exact: true }).click();
   await page.getByLabel("Channel name", { exact: true }).fill(name);
   await page.getByLabel("Channel description").fill("Cross-client planning discussion");
+  // The refreshed list can briefly select the new channel before navigation
+  // verifies its room. Wait for that check before typing into its composer.
+  const openedRoom = page.waitForResponse((response) => response.request().method() === "GET"
+    && /^\/api\/v1\/rooms\/[^/]+$/.test(new URL(response.url()).pathname));
   await page.getByRole("button", { name: "Create channel", exact: true }).click();
+  expect((await openedRoom).ok()).toBe(true);
   await expect(page.getByRole("heading", { name: `# ${name}`, exact: true })).toBeVisible();
   const main = page.getByRole("region", { name: "Channel conversation", exact: true });
   await main.getByLabel("Message", { exact: true }).fill("Split the release into implementation and verification.");

@@ -24,6 +24,21 @@ const createReq: CreateTaskRequest = {
 };
 
 describe("ApiClient", () => {
+  it("keeps removed-message tombstones after a successful large visibility reconciliation", async () => {
+    const scoped = new ApiClient({ baseUrl: BASE });
+    const ids = Array.from({ length: 500 }, (_, index) => `history_${index}`);
+    server.use(http.post(`${BASE}/rooms/:id/messages/visibility`, async ({ params, request }) => {
+      expect(params.id).toBe("room/history");
+      expect(await request.json()).toEqual({ message_ids: ids });
+      return HttpResponse.json({ removed_message_ids: [ids[499]] });
+    }));
+    await expect(scoped.messageVisibility("room/history", ids)).resolves.toEqual([ids[499]]);
+    const stale = { id: ids[499]!, organization_id: "org_default", room_id: "room/history", actor_type: "user" as const, actor_id: "user_1",
+      kind: "text" as const, body: "Stale removed body", payload: {}, created_at: "2026-06-13T00:00:00Z" };
+    expect(scoped.messageForDisplay(stale).payload.moderation).toBe("removed");
+    expect(scoped.messageForDisplay(stale).body).not.toContain("Stale removed body");
+  });
+
   it("encodes agent history paths and bounded cursor/filter queries without mutating requests", async () => {
     server.use(http.get(`${BASE}/agents/:id/history`, ({ params, request }) => {
       expect(params.id).toBe("agent/with space");
