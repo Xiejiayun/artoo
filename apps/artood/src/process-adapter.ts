@@ -891,7 +891,6 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
       let guardianCloseObserved = false, guardianSpawned = false, guardianSpawnFailed = false;
       let guardianAttempted = false, guardianExitObserved = false, guardianGroupAbsent = false;
       let guardianStatus: number | null = null, guardianSignal: NodeJS.Signals | null = null;
-      const structured = createStructuredOutput(options.outputFormat ?? "plain");
       // CLI diagnostics may echo authentication headers. Parse original JSON
       // first: a short key such as "type" must not alter protocol field names.
       // Redact log text separately and redact parsed values before publishing.
@@ -920,6 +919,7 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
           return safe === normalized ? redact(raw) : safe;
         } catch { return redact(raw); }
       };
+      const structured = createStructuredOutput(options.outputFormat ?? "plain", redact);
       const emit = (event: RunEvent): void => {
         if (event.type === "run.answer") event = { ...event, payload: { ...event.payload, text: redact(event.payload.text) } };
         else if (event.type === "run.lifecycle" && typeof event.payload.reason === "string") event = { ...event, payload: { ...event.payload, reason: redact(event.payload.reason) } };
@@ -929,8 +929,17 @@ export function createProcessAdapter(options: ProcessAdapterOptions): OwnedWorkt
 
       const stdout = makeLineEmitter((raw) => {
         const text = redactLine(raw);
-        queue.push({ type: "run.output", payload: { stream: "stdout", text } });
-        structured.consume(raw);
+        // Parsed values are redacted before truncation, including secrets crossing a size boundary.
+        const activity = structured.consume(raw);
+        const output = { type: "run.output" as const, payload: { stream: "stdout" as const, text, ...(activity ? { activity } : {}) } };
+        if (!activity || Buffer.byteLength(JSON.stringify(output)) <= 1024 * 1024) queue.push(output);
+        else {
+          // Preserve an otherwise admissible raw line when adding a tool batch would exceed the transport bound.
+          queue.push({ type: "run.output", payload: { stream: "stdout", text } });
+          activity.operations.forEach((operation, index) => queue.push({ type: "run.output", payload: { stream: "stdout", text: "",
+            activity: { version: 1, operations: [operation],
+              ...(index === 0 && activity.omitted_operations ? { omitted_operations: activity.omitted_operations } : {}) } } }));
+        }
       });
       const stderr = makeLineEmitter((text) =>
         queue.push({ type: "run.output", payload: { stream: "stderr", text: redactLine(text) } })
