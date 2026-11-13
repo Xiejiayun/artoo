@@ -1,4 +1,5 @@
 import type { Run } from "@artoo/domain";
+import { memo, useMemo } from "react";
 
 import { RunStatusBadge } from "../ui/index.js";
 import { WorkspaceRetention, type RetentionComputer } from "./WorkspaceRetention.js";
@@ -11,6 +12,47 @@ export interface RunTimelineProps {
   computers?: readonly RetentionComputer[];
 }
 
+const EMPTY_OUTPUT: string[] = [];
+
+const RunEntry = memo(function RunEntry({
+  run,
+  output,
+  renderUsage,
+  computers,
+}: {
+  run: Run;
+  output: readonly string[];
+  renderUsage?: (run: Run) => React.ReactNode;
+  computers?: readonly RetentionComputer[];
+}): React.ReactNode {
+  const failed = run.failure_reason !== null && run.failure_reason !== undefined;
+  return (
+    <li className="run-entry" data-status={run.status} data-run-id={run.id} aria-label={`Run ${run.id}`}>
+      <header className="run-header">
+        <span className="run-label">Run</span>
+        <RunStatusBadge status={run.status} />
+      </header>
+      <code className="run-id">{run.id}</code>
+      <time className="t-subtle" dateTime={run.created_at} title={run.created_at}>{new Date(run.created_at).toLocaleString()}</time>
+      {failed ? <p className="run-failure">{run.failure_reason}</p> : null}
+      <WorkspaceRetention run={run} computers={computers} />
+      {renderUsage?.(run)}
+      {output.length > 0 ? (
+        <details className="run-output">
+          <summary>{output.length} output lines</summary>
+          <pre>{output.join("\n")}</pre>
+        </details>
+      ) : null}
+    </li>
+  );
+}, (prev, next) =>
+  prev.run === next.run &&
+  prev.renderUsage === next.renderUsage &&
+  prev.computers === next.computers &&
+  prev.output.length === next.output.length &&
+  prev.output.every((line, index) => line === next.output[index]),
+);
+
 /**
  * Right-pane run timeline (#74). A task has 1..N runs (retry creates a new run);
  * newest first. Each run is a step card with a semantic status badge; failure
@@ -18,37 +60,23 @@ export interface RunTimelineProps {
  * stdout never floods the panel.
  */
 export function RunTimeline({ runs, outputsByRun = {}, renderUsage, computers }: RunTimelineProps): React.ReactNode {
+  const ordered = useMemo(() => [...runs].sort((a, b) => b.created_at.localeCompare(a.created_at)), [runs]);
+
   if (runs.length === 0) {
     return <p className="no-runs">No runs yet.</p>;
   }
 
-  const ordered = [...runs].sort((a, b) => b.created_at.localeCompare(a.created_at));
-
   return (
     <ol aria-label="Run timeline" className="run-timeline">
-      {ordered.map((run) => {
-        const output = outputsByRun[run.id] ?? [];
-        const failed = run.failure_reason !== null && run.failure_reason !== undefined;
-        return (
-          <li key={run.id} className="run-entry" data-status={run.status} data-run-id={run.id} aria-label={`Run ${run.id}`}>
-            <header className="run-header">
-              <span className="run-label">Run</span>
-              <RunStatusBadge status={run.status} />
-            </header>
-            <code className="run-id">{run.id}</code>
-            <time className="t-subtle" dateTime={run.created_at} title={run.created_at}>{new Date(run.created_at).toLocaleString()}</time>
-            {failed ? <p className="run-failure">{run.failure_reason}</p> : null}
-            <WorkspaceRetention run={run} computers={computers} />
-            {renderUsage?.(run)}
-            {output.length > 0 ? (
-              <details className="run-output">
-                <summary>{output.length} output lines</summary>
-                <pre>{output.join("\n")}</pre>
-              </details>
-            ) : null}
-          </li>
-        );
-      })}
+      {ordered.map((run) => (
+        <RunEntry
+          key={run.id}
+          run={run}
+          output={outputsByRun[run.id] ?? EMPTY_OUTPUT}
+          renderUsage={renderUsage}
+          computers={computers}
+        />
+      ))}
     </ol>
   );
 }

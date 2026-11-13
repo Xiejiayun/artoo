@@ -1,9 +1,24 @@
 import { DiscussionPlanPreviewSchema, normalizeMessageKind, type Message } from "@artoo/domain";
 import { Bot, Flag, MessageSquare, Sparkles } from "lucide-react";
+import { memo } from "react";
 
 import { Badge, Button, type Tone } from "../ui/index.js";
 import { Icon } from "../ui/Icon.js";
 import { planningInstructionTitle } from "./planningInstruction.js";
+
+export interface MessageCardProps {
+  message: Message;
+  actorName?: string;
+  mentionNames?: string[];
+  compact?: boolean;
+  onOpenThread?: (messageId: string) => void;
+  onReport?: (message: Message) => void;
+  onPlan?: (message: Message) => void;
+}
+
+function sameStrings(a: readonly string[] = [], b: readonly string[] = []): boolean {
+  return a.length === b.length && a.every((item, index) => item === b[index]);
+}
 
 /**
  * Renders a single task-room message as an activity-feed row (#73): actor
@@ -12,7 +27,7 @@ import { planningInstructionTitle } from "./planningInstruction.js";
  * lifecycle state here (codex guardrail). Unknown kinds degrade to a system
  * notice via normalizeMessageKind.
  */
-export function MessageCard({ message, actorName, mentionNames = [], compact = false, onOpenThread, onReport, onPlan }: { message: Message; actorName?: string; mentionNames?: string[]; compact?: boolean; onOpenThread?: () => void; onReport?: () => void; onPlan?: () => void }): React.ReactNode {
+export const MessageCard = memo(function MessageCard({ message, actorName, mentionNames = [], compact = false, onOpenThread, onReport, onPlan }: MessageCardProps): React.ReactNode {
   const kind = normalizeMessageKind(message.kind);
   const actor = actorName ?? `${message.actor_type}:${message.actor_id}`;
   return (
@@ -29,16 +44,24 @@ export function MessageCard({ message, actorName, mentionNames = [], compact = f
           <time className="msg__time" dateTime={message.created_at} title={formatTime(message.created_at, true)}>
             {formatTime(message.created_at)}
           </time>
-          {onReport && message.payload.moderation !== "removed" && <Button size="sm" variant="ghost" aria-label="Report message" title="Report message" onClick={onReport}><Flag size={14} aria-hidden="true" /></Button>}
+          {onReport && message.payload.moderation !== "removed" && <Button size="sm" variant="ghost" aria-label="Report message" title="Report message" onClick={() => onReport(message)}><Flag size={14} aria-hidden="true" /></Button>}
         </header>
         {renderBody(kind, message)}
         {mentionNames.length > 0 && <p className="msg__mentions" aria-label="Mentioned people">{mentionNames.map((name) => `@${name}`).join(" ")}</p>}
-        {onOpenThread && !!message.reply_count && <Button className="msg__thread" size="sm" variant="ghost" iconLeft={MessageSquare} onClick={onOpenThread}>{message.reply_count} {message.reply_count === 1 ? "reply" : "replies"}<span className="msg__thread-open" aria-hidden="true">View thread</span></Button>}
+        {onOpenThread && !!message.reply_count && <Button className="msg__thread" size="sm" variant="ghost" iconLeft={MessageSquare} onClick={() => onOpenThread(message.id)}>{message.reply_count} {message.reply_count === 1 ? "reply" : "replies"}<span className="msg__thread-open" aria-hidden="true">View thread</span></Button>}
       </div>
-      {(onOpenThread || onPlan) && <div className="msg__actions">{onPlan && message.payload.moderation !== "removed" && <Button size="sm" variant="secondary" iconLeft={Flag} onClick={onPlan} title="Create an editable goal draft">Plan this</Button>}{onOpenThread && <Button size="sm" variant="secondary" iconLeft={MessageSquare} onClick={onOpenThread} title="Reply in thread">Reply in thread</Button>}</div>}
+      {(onOpenThread || onPlan) && <div className="msg__actions">{onPlan && message.payload.moderation !== "removed" && <Button size="sm" variant="secondary" iconLeft={Flag} onClick={() => onPlan(message)} title="Create an editable goal draft">Plan this</Button>}{onOpenThread && <Button size="sm" variant="secondary" iconLeft={MessageSquare} onClick={() => onOpenThread(message.id)} title="Reply in thread">Reply in thread</Button>}</div>}
     </article>
   );
-}
+}, (prev, next) =>
+  prev.message === next.message &&
+  prev.actorName === next.actorName &&
+  prev.compact === next.compact &&
+  prev.onOpenThread === next.onOpenThread &&
+  prev.onReport === next.onReport &&
+  prev.onPlan === next.onPlan &&
+  sameStrings(prev.mentionNames, next.mentionNames),
+);
 
 function initials(actorId: string, actorType: string): string {
   const source = actorId.replace(/\s*\(you\)$/, "").trim() || actorType;

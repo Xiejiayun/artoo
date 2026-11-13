@@ -1,5 +1,7 @@
+import type { Run } from "@artoo/domain";
 import { useQuery } from "@tanstack/react-query";
 import { Circle, ListChecks } from "lucide-react";
+import { useCallback, useMemo } from "react";
 
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
@@ -49,8 +51,12 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
     queryFn: () => api.getTask(taskId),
   });
   const outputs = useQuery<RunOutputChunk[]>({ queryKey: queryKeys.runOutputs(taskId), queryFn: async () => [], enabled: false });
-  const outputsByRun: Record<string, string[]> = {};
-  for (const chunk of outputs.data ?? []) (outputsByRun[chunk.runId] ??= []).push(chunk.text);
+  const outputsByRun = useMemo(() => {
+    const grouped: Record<string, string[]> = {};
+    for (const chunk of outputs.data ?? []) (grouped[chunk.runId] ??= []).push(chunk.text);
+    return grouped;
+  }, [outputs.data]);
+  const renderRunUsage = useCallback((run: Run) => <RunUsageSummary run={run} />, []);
 
   if (snapshot.isLoading) {
     return <DetailSkeleton />;
@@ -113,7 +119,7 @@ export function TaskDetailPanel({ taskId }: { taskId: string }): React.ReactNode
       <ApprovalInbox taskId={task.id} taskStatus={task.status} approvals={approvals} />
       <section className="task-detail__section" aria-label="Runs">
         <h3 className="task-detail__section-title">Runs <span className="work-count">{runs.length}</span></h3>
-        <RunTimeline runs={runs} computers={bootstrap.data?.computers} outputsByRun={outputsByRun} renderUsage={(run) => <RunUsageSummary run={run} />} />
+        <RunTimeline runs={runs} computers={bootstrap.data?.computers} outputsByRun={outputsByRun} renderUsage={renderRunUsage} />
       </section>
       <ArtifactReview key={`review:${task.id}`} task={task} artifacts={artifacts} reviews={snapshot.data.reviews} versionCursor={snapshot.data.version_cursor} />
       <TaskDependencies key={task.id} task={task} />

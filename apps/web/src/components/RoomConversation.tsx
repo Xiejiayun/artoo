@@ -1,6 +1,6 @@
 import { ReportMessageModal } from "./ContentReporting.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { DiscussionGoalDraft } from "../app/discussionGoalDraft.js";
 import type { Member, Message } from "@artoo/domain";
@@ -93,17 +93,21 @@ export function RoomConversation({ roomId, projectId, taskId, goalId, threadRoot
   const identity = bootstrap.data;
   const people = members.data?.members ?? (identity ? [{ id: identity.user.id, display_name: identity.user.display_name }] : []);
   const storageKey = identity ? roomDraftKey(api.getStorageScope(), identity.organization.id, identity.user.id, roomId, threadRootId) : null;
-  const planMessage = allowGoalDraft && projectId && identity && !identity.goal_entry ? (message: Message): void => {
+  const canPlan = Boolean(allowGoalDraft && projectId && identity && !identity.goal_entry);
+  const orgId = identity?.organization.id;
+  const userId = identity?.user.id;
+  const planMessage = useCallback((message: Message): void => {
+    if (!canPlan || !projectId || !orgId || !userId) return;
     if (message.room_id !== roomId || message.actor_type !== "user" || message.kind !== "text" || message.payload.moderation === "removed" || !message.body?.trim() || message.body.length > 10000) return;
-    const goalDraft: DiscussionGoalDraft = { version: 1, organizationId: identity.organization.id, userId: identity.user.id, projectId, roomId, messageId: message.thread_root_id ?? message.id, objective: message.body };
+    const goalDraft: DiscussionGoalDraft = { version: 1, organizationId: orgId, userId, projectId, roomId, messageId: message.thread_root_id ?? message.id, objective: message.body };
     navigate("/goals", { state: { goalDraft } });
-  } : undefined;
+  }, [canPlan, navigate, orgId, projectId, roomId, userId]);
   return <section className="task-room conversation" aria-label={threadRootId ? "Thread replies" : goalId ? "Goal conversation" : taskId ? "Task conversation" : "Channel conversation"}>
     <header className="conversation__header"><h2><Icon icon={MessageSquare} size={15} />{threadRootId ? "Replies" : "Conversation"}</h2><span>{visibleCount} {threadRootId ? visibleCount === 1 ? "reply" : "replies" : visibleCount === 1 ? "message" : "messages"}</span></header>
     <ActionError error={messages.error ?? earlier.error} />
     {messages.error && <Button size="sm" onClick={() => void messages.refetch()}>Retry message sync</Button>}
     {reporting && <ReportMessageModal key={reporting.id} message={reporting} onClose={() => setReporting(null)} />}
-    <MessageTimeline onReport={setReporting} onPlan={planMessage} key={`${roomId}:${threadRootId ?? ""}`} items={items} identity={identity} people={people} hiddenMessageId={hiddenMessageId} threadRootId={threadRootId} onOpenThread={onOpenThread} followRequest={followRequest} hasEarlier={!!messages.data.has_more && !!messages.data.next_before} loadingEarlier={earlier.isPending} onLoadEarlier={() => earlier.mutate()}><AssistantTurns roomId={roomId} threadRootId={threadRootId} messages={items} allowActions={allowAssistant} /></MessageTimeline>
+    <MessageTimeline onReport={setReporting} onPlan={canPlan ? planMessage : undefined} key={`${roomId}:${threadRootId ?? ""}`} items={items} identity={identity} people={people} hiddenMessageId={hiddenMessageId} threadRootId={threadRootId} onOpenThread={onOpenThread} followRequest={followRequest} hasEarlier={!!messages.data.has_more && !!messages.data.next_before} loadingEarlier={earlier.isPending} onLoadEarlier={() => earlier.mutate()}><AssistantTurns roomId={roomId} threadRootId={threadRootId} messages={items} allowActions={allowAssistant} /></MessageTimeline>
     {composerHidden ? <p className="delivery-thread-notice">Reply in the open thread. Close it to message the channel.</p> : storageKey && identity ? <MessageComposer key={`${storageKey}:${allowAssistant}`} roomId={roomId} threadRootId={threadRootId} storageKey={storageKey} bootstrap={{ ...identity, agent_instances: identity.agent_instances.filter((instance) => !!projectId && instance.project_id === projectId) }} people={people} peopleError={members.error} allowAssistant={allowAssistant} onMessageSent={() => setFollowRequest((value) => value + 1)} /> : <div className="conversation__account"><ActionError error={bootstrap.error} /><p role="status">Loading your account before composing a message…</p>{bootstrap.error && <Button onClick={() => void bootstrap.refetch()}>Retry account</Button>}</div>}
     {!threadRootId && (taskId || goalId) && <CollaborationPanel key={`collaboration:${roomId}`} roomId={roomId} taskId={taskId} goalId={goalId} />}
   </section>;
@@ -217,7 +221,7 @@ function MessageTimeline({ onReport, onPlan, items, identity, people, hiddenMess
         const startsDate = !previous || dateKey(previous.created_at) !== dateKey(message.created_at);
         return <li key={message.id}>
           {startsDate && <div className="conversation__date" role="separator" aria-label={dateLabel(message.created_at)}><time dateTime={message.created_at}>{dateLabel(message.created_at)}</time></div>}
-          <MessageCard message={message} onReport={() => onReport(message)} onPlan={onPlan && message.actor_type === "user" && message.kind === "text" && message.body?.trim() && message.body.length <= 10000 && message.payload.moderation !== "removed" ? () => onPlan(message) : undefined} {...messageIdentity(message, identity, people)} compact={isContinuation(previous, message)} onOpenThread={onOpenThread && !threadRootId ? () => onOpenThread(message.id) : undefined} />
+          <MessageCard message={message} onReport={onReport} onPlan={onPlan && message.actor_type === "user" && message.kind === "text" && message.body?.trim() && message.body.length <= 10000 && message.payload.moderation !== "removed" ? onPlan : undefined} {...messageIdentity(message, identity, people)} compact={isContinuation(previous, message)} onOpenThread={onOpenThread && !threadRootId ? onOpenThread : undefined} />
         </li>;
       })}</ul>}
       {children}

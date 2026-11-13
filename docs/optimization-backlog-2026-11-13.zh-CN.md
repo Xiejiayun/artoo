@@ -50,7 +50,7 @@
   - `npx vitest run apps/web/src/components/InventoryPages.test.tsx` 通过。
   - 只改间隔,不改任何 query key 或数据形状。
 
-### [x] T2 `perf(web): share a single daemons query across components`
+### [x] T2 `perf(web): share a single daemons query across components` (`060d394`)
 - **ROI**:高。
 - **背景**:`queryKeys.daemons` 被 `DaemonBadge`、`InventoryPages`、`ConnectNodeDialog` 各自注册了 `refetchInterval`。TanStack Query 会共用同一个缓存,但每个观察者的轮询定时器是独立的。
 - **做法**:抽一个 `useDaemons({ intervalMs, enabled })` hook(放在 `app/` 下)。统一 `queryFn`、`retry`、`refetchOnMount` 等选项,让各处调用同一个 hook。
@@ -58,7 +58,7 @@
   - 行为不变:`DaemonBadge.test.tsx`、`InventoryPages.test.tsx`、`ConnectNodeDialog.test.tsx` 通过。
   - 不改变 `DaemonBadge` 的快照判断语义。
 
-### T3 `perf(web): memoize list rows for tasks, messages and run timeline`
+### [x] T3 `perf(web): memoize list rows for tasks, messages and run timeline`
 - **ROI**:中高。
 - **背景**:`TaskList`、`MessageCard`、`RunTimeline` 在数据量大时,每次 WS 事件都会引发整列重渲染。全仓库的 `memo`、`useMemo`、`useCallback` 总共只有约 14 处。
 - **做法**:
