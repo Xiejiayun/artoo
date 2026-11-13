@@ -1,3 +1,4 @@
+import { registerSkillRoutes } from "./skill-routes.js";
 import { registerTaskRoutes } from "./task-routes.js";
 import { registerDeviceRoutes, registerDeviceRevocationRoutes } from "./device-routes.js";
 import { registerGoalRoutes } from "./goal-routes.js";
@@ -12,7 +13,6 @@ import { registerAiDataSharingRoutes } from "./ai-data-sharing-routes.js";
 import {
   AcquireLeaseRequestSchema,
   apiError,
-  InstallSkillRequestSchema,
   LeaseStatusSchema,
   MemoryScopeSchema,
   MemoryStatusSchema,
@@ -53,7 +53,6 @@ import * as messageService from "./services/message-service.js";
 import * as presenceService from "./services/presence-service.js";
 import * as runService from "./services/run-service.js";
 import * as runtimeRegistry from "./services/runtime-registry-service.js";
-import * as skillService from "./services/skill-service.js";
 import * as syncService from "./services/sync-service.js";
 import * as taskService from "./services/task-service.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
@@ -350,38 +349,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     return { runtimes: await runtimeRegistry.listComputerRuntimes(rc(req), id) };
   });
 
-  // Skill registry (#24): durable installs/read APIs over the v1alpha1 manifest contract.
-  app.post("/api/v1/skills/install", async (req, reply) => {
-    const parsed = InstallSkillRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw AppError.validation("invalid skill install payload", { issues: parsed.error.issues });
-    }
-    const skill = await skillService.installSkill(rc(req), parsed.data);
-    void reply.status(201);
-    return { skill };
-  });
-
-  app.get("/api/v1/skills", async (req) => {
-    const q = req.query as { project_id?: string; enabled?: string };
-    let enabled: boolean | undefined;
-    if (q.enabled !== undefined && q.enabled !== "") {
-      if (q.enabled !== "true" && q.enabled !== "false") {
-        throw AppError.validation("enabled filter must be 'true' or 'false'", { enabled: q.enabled });
-      }
-      enabled = q.enabled === "true";
-    }
-    return {
-      skills: await skillService.listSkillInstalls(rc(req), {
-        projectId: q.project_id,
-        enabled,
-      }),
-    };
-  });
-
-  app.get("/api/v1/skills/:id", async (req) => {
-    const { id } = req.params as { id: string };
-    return { skill: await skillService.getSkillInstall(rc(req), id) };
-  });
+  registerSkillRoutes(app, ctx);
 
   app.post("/api/v1/runs/:id/cancel", async (req) => {
     const { id } = req.params as { id: string };
