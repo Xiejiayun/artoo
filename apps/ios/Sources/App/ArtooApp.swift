@@ -188,8 +188,7 @@ public final class AppContainer: ObservableObject {
     public func refreshNotificationCount() async {
         guard isAuthenticated, let live = client as? ApiClient else { return }
         do {
-            let value = try await live.resource(path: "/api/v1/notifications?limit=1")
-            let page = try ArtooJSON.decoder().decode(NativeNotificationPage.self, from: JSONEncoder().encode(value))
+            let page = try await live.notificationPage(limit: 1)
             acceptNotificationCount(page.unreadCount, session: live.sessionID)
         } catch {
             if live.sessionID == (client as? ApiClient)?.sessionID { notificationCountError = String(describing: error) }

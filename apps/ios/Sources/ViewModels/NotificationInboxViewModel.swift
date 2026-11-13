@@ -1,13 +1,6 @@
 import Foundation
 import Combine
 
-public struct NativeNotificationPage: Decodable {
-    public let notifications: [JSONValue]
-    public let nextBefore: String?
-    public let hasMore: Bool
-    public let unreadCount: Int
-}
-
 @MainActor
 public final class NotificationInboxViewModel: ObservableObject {
     @Published public private(set) var notifications: [WorkspaceRecord] = []
@@ -63,9 +56,7 @@ public final class NotificationInboxViewModel: ObservableObject {
     }
 
     private func fetch(before: String? = nil) async throws -> NativeNotificationPage {
-        let cursor = before.map { "&before=\(apiPart($0))" } ?? ""
-        let value = try await client.resource(path: "/api/v1/notifications?limit=50\(cursor)")
-        return try ArtooJSON.decoder().decode(NativeNotificationPage.self, from: JSONEncoder().encode(value))
+        try await client.notificationPage(before: before, limit: 50)
     }
 
     private func merge(_ records: [WorkspaceRecord]) {

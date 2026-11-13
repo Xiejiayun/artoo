@@ -47,6 +47,7 @@ public protocol ApiClientProtocol: Sendable {
     func listMessages(roomId: String) async throws -> [Message]
     func messagePage(roomId: String, before: String?, after: String?, threadRootId: String?) async throws -> MessagesResponse
     func messageVisibility(roomId: String, messageIds: [String]) async throws -> [String]
+    func notificationPage(before: String?, limit: Int) async throws -> NativeNotificationPage
     func resource(path: String) async throws -> JSONValue
     func command(path: String, method: String, body: JSONValue) async throws -> JSONValue
     func command(path: String, method: String, body: JSONValue, idempotencyKey: String) async throws -> JSONValue
@@ -54,6 +55,9 @@ public protocol ApiClientProtocol: Sendable {
 }
 
 public extension ApiClientProtocol {
+    func notificationPage(before: String? = nil, limit: Int = 50) async throws -> NativeNotificationPage {
+        throw ApiError.notImplemented("This preview fixture has no notification pages")
+    }
     func messagePage(roomId: String, before: String? = nil, after: String? = nil, threadRootId: String? = nil) async throws -> MessagesResponse {
         MessagesResponse(messages: try await listMessages(roomId: roomId))
     }
@@ -263,6 +267,11 @@ public final class ApiClient: ApiClientProtocol, @unchecked Sendable {
         let revoker = ApiClient(baseURL: baseURL, authToken: authToken)
         defer { revoker.invalidate() }
         try await revoker.logout()
+    }
+
+    public func notificationPage(before: String? = nil, limit: Int = 50) async throws -> NativeNotificationPage {
+        let cursor = before.map { "&before=\(escape($0))" } ?? ""
+        return try await send(path: "/api/v1/notifications?limit=\(limit)\(cursor)", method: "GET")
     }
 
     public func resource(path: String) async throws -> JSONValue { try await send(path: path, method: "GET") }

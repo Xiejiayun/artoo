@@ -26,6 +26,35 @@ private final class APIProtocol: URLProtocol {
 final class ApiClientTests: XCTestCase {
     private var session: URLSession!
 
+    func testTypedNotificationPagePreservesCursorRecordsAndAuthentication() async throws {
+        APIProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/v1/notifications")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer control-secret")
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first { $0.name == "limit" }?.value, "1")
+            XCTAssertEqual(query?.first { $0.name == "before" }?.value, "opaque +/=&?#")
+            return (200, Data(#"{"notifications":[{"id":"n1","read_at":null,"body_preview":"你好","future_field":{"source_id":"keep"}}],"next_before":"next +/=","has_more":true,"unread_count":136}"#.utf8))
+        }
+        let page = try await client().notificationPage(before: "opaque +/=&?#", limit: 1)
+        XCTAssertEqual(page.unreadCount, 136)
+        XCTAssertEqual(page.nextBefore, "next +/=")
+        XCTAssertTrue(page.hasMore)
+        XCTAssertEqual(page.notifications.first?["body_preview"], .string("你好"))
+        XCTAssertEqual(page.notifications.first?["read_at"], .null)
+        XCTAssertEqual(page.notifications.first?["future_field"]["source_id"], .string("keep"))
+    }
+
+    func testTypedNotificationPageRejectsMalformedCountInsteadOfInventingZero() async throws {
+        APIProtocol.handler = { _ in (200, Data(#"{"notifications":[],"next_before":null,"has_more":false,"unread_count":"unknown"}"#.utf8)) }
+        do {
+            _ = try await client().notificationPage(limit: 1)
+            XCTFail("Malformed notification count must fail decoding")
+        } catch let error as ApiError {
+            guard case .decoding = error else { return XCTFail("Expected decoding error, got \(error)") }
+        }
+    }
+
     @MainActor
     func testNotificationPagesRetainOlderUnreadAndUseWholeInboxCount() async throws {
         var phase = 0
