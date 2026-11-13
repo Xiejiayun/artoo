@@ -182,6 +182,12 @@ C2 通过 [PR #100](https://github.com/Xiejiayun/artoo/pull/100) 合并为 `5535
 
 C3 合并并排序 `app.ts`、`node-binding.ts`、`context-pack-service.ts` 的重复导入，按内置、外部、工作区、相对路径分组。分别从 50/64/17 条变为 49/43/15 条；每个导入的来源、别名、type/runtime 标记及全部非 import AST 与 `5535d38` 一致。当前 app 的尾部导入已在 C1 领域移动时消除，本次不虚构额外删除。按 C4 规则格式化触及的上下文文件，其余业务语句仅格式变化；根 typecheck、server build、3 文件 staged 质量及 Node 24 单 worker 的装配/认证/上下文/节点绑定 5 文件 18 项回归通过（`.git/opt-c3-imports-*`）。没有新增业务或性能收益声明；最终集成门禁仍待后续执行。
 
+C3 通过 [PR #101](https://github.com/Xiejiayun/artoo/pull/101) 合并为 `cc9a94d`（实现 `9695cb9`），拉取 main 后开展 E3。
+
+E3 增加 `test:unit`（domain/protocol/Web 单元及组件）和 `test:server`（全部服务端），保留原 `npm test`、Vitest 配置、超时及平台条件。实际 discovery 精确对应完整 606 文件中的 136/157 文件，DB/storage/artood/desktop 等仍在全量入口；README 说明编译入口前置、真实浏览器和独立 fixture harness 范围，以及追加位置过滤参数不会缩小原目录集合。
+
+实际执行新 `npm run test:unit -- --maxWorkers=2`，Node 24 的 Vitest 进程路径经 CIM 确认；136 文件、1,497 项全部通过，无跳过或未完成用例。JSON reporter 的实际文件集合与 discovery 一致（`.git/opt-e3-unit-tests.log`、`.git/opt-e3-unit-results.json`、`.git/opt-e3-inventory.log`）。staged 质量通过，未改测试原文或依赖。`test:server` 本步核对完整发现集合，尚未重新执行其全部 157 文件；最终全工作区门禁仍待后续集成。本机单位入口耗时 591.84 秒，没有同版本全量对照，因此不声称量化提速。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
@@ -190,7 +196,7 @@ P5 通过 [PR #67](https://github.com/Xiejiayun/artoo/pull/67) 合并为 `53b1d5
 
 恢复预检通过 [PR #68](https://github.com/Xiejiayun/artoo/pull/68) 合并为 `a455704`（实现 `03546d9`）。
 
-C2 → C3 → E3 → X5 → F5 → C5 → E1 完整分区重验。C1 本轮选定的职责拆分与其余候选边界评估如上。F2 保留待实现/验收；E4 的最终版本验收与未就绪环境并行跟进。
+X5 → F5 → C5 → E1 完整分区重验。C1 本轮选定的职责拆分与其余候选边界评估如上。F2 保留待实现/验收；E4 的最终版本验收与未就绪环境并行跟进。
 
 所有条目仍须以最新源码复核适用性。E1 必须在无浏览器缓存的真实 Windows 分片通过后才移除安装步骤；iOS 原生验收需要 macOS；E4 产品发布需具备已授权的环境、凭据、受保护 Profile、健康标准和恢复方案。当前未执行新的产品发布，尚未运行最终统一 E2E。
 

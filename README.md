@@ -78,6 +78,21 @@ npm run verify:v1
 npm run demo:v1
 ```
 
+For a shorter local loop, `npm run test:unit -- --maxWorkers=2` selects the
+domain and protocol contracts plus Web unit/component tests. These suites do
+not start PGlite; the Web cases use jsdom and controlled API fixtures, so this
+command does not replace browser E2E. `npm run test:server -- --maxWorkers=2`
+runs all server tests, including their database and subprocess integrations.
+Build first when running entrypoint tests that require compiled modules.
+
+Both shortcuts use the existing Vitest configuration, case timeouts and
+platform conditions. `npm test -- --maxWorkers=2` remains the full source-test
+gate, including artood, desktop, DB, storage and the other workspace packages.
+To select individual files, use `npm test -- path/to/file.test.ts`; extra file
+filters passed to a shortcut are additive in Vitest and do not narrow its
+existing directory filters. Browser E2E and Node `--test` fixture harnesses
+retain their separate commands.
+
 `npm run verify:v1` includes typecheck, build, full Vitest, Playwright, the
 production dependency audit (`npm audit --omit=dev`), and `git diff --check`.
 
