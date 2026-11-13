@@ -6,6 +6,7 @@
 
 /* Button ---------------------------------------------------------------- */
 .ui-btn {
+  appearance: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -55,6 +56,9 @@
   min-width: 0;
 }
 .ui-field__label {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
   font-size: var(--text-caption);
   font-weight: var(--fw-medium);
   color: var(--text-muted);

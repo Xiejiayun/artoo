@@ -17,7 +17,7 @@ body { font-size: 13px; }
 .app-main > .product-page h1, .inventory-page.resources-page .resources-header h1, .insights-page__header h1, .settings-page__heading h1 { font-size: 24px; line-height: 1.4; font-weight: 600; letter-spacing: -.025em; }
 .app-main .ui-state { background: var(--surface); border: 1px dashed var(--border); border-radius: 10px; }
 .ui-state__title { font-weight: 500; }
-.ui-btn { box-shadow: none; border-radius: 6px; font-size: 12px; font-weight: 500; }
+.ui-btn { border-radius: 6px; font-size: 12px; font-weight: 500; }
 .ui-btn--secondary { background: var(--surface-2); }
 .ui-btn--ghost { background: transparent; }
 .ui-input { background: var(--surface); border-color: var(--border-strong); font-size: 12px; }
