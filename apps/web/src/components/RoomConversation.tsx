@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate } from "react-router-dom";
 import type { DiscussionGoalDraft } from "../app/discussionGoalDraft.js";
 import type { Member, Message } from "@artoo/domain";
-import { messageVisibilityBatchLimit } from "@artoo/domain";
+import { DiscussionPlanPreviewSchema, messageVisibilityBatchLimit, supportsMessageReconciliation } from "@artoo/domain";
 import { ArrowDown, AtSign, ChevronDown, MessageSquare, Send } from "lucide-react";
 import { ApiClientError } from "../api/client.js";
 import type { BootstrapResponse, MessagesResponse } from "../api/types.js";
@@ -54,27 +54,51 @@ export function RoomConversation({ roomId, projectId, taskId, goalId, threadRoot
         page = await api.listMessages(roomId, { limit: 100, after, ...threadQuery });
         received = mergeMessages(received, page.messages);
       }
-      // Reply counts on recent roots can change even without a new root. This
-      // bounded snapshot also reconciles clients whose WebSocket is unavailable.
-      if (cached?.next_after && onOpenThread && !threadRootId) {
+      const capabilities = query.getQueryData<BootstrapResponse>(queryKeys.bootstrap)?.message_sync;
+      const compact = supportsMessageReconciliation(capabilities);
+      // Old agent text may acquire a historical plan preview after its initial
+      // read. Keep the existing projection snapshot for these candidates.
+      const projectionCandidates = [...(query.getQueryData<MessagesResponse>(key)?.messages ?? []), ...received]
+        .some((message) => message.actor_type === "agent" && message.kind === "text" && message.payload.moderation !== "removed"
+          && !DiscussionPlanPreviewSchema.safeParse(message.payload.discussion_plan).success);
+      if (cached?.next_after && onOpenThread && !threadRootId && (!compact || projectionCandidates)) {
         const latest = await api.listMessages(roomId, { limit: 50 });
         received = mergeMessages(received, latest.messages);
       }
-      const trackedIds = [...new Set([...(cached?.messages ?? []).map((message) => message.id), ...received.map((message) => message.id), ...[threadRootId, hiddenMessageId].filter((id): id is string => !!id)])];
+      const trackedIds = [...new Set([...(query.getQueryData<MessagesResponse>(key)?.messages ?? []).map((message) => message.id), ...received.map((message) => message.id), ...[threadRootId, hiddenMessageId].filter((id): id is string => !!id)])];
       // Negotiate the additive capability; an old/unavailable bootstrap keeps
       // the original 100-id wire contract. Reconcile every cached ID, including
       // reconnects with an empty delta, and surface any failed batch as before.
-      const visibilityLimit = messageVisibilityBatchLimit(query.getQueryData<BootstrapResponse>(queryKeys.bootstrap)?.message_sync);
+      const visibilityLimit = messageVisibilityBatchLimit(capabilities);
+      const replyCounts = new Map<string, number>();
+      const display = (message: Message): Message => {
+        const count = replyCounts.get(message.id);
+        return api.messageForDisplay(count === undefined ? message : { ...message, reply_count: Math.max(message.reply_count ?? 0, count) });
+      };
+      const refreshCaches = (): void => {
+        query.setQueriesData<MessagesResponse>({ queryKey: queryKeys.messages(roomId) }, (current) => current && ({ ...current, messages: current.messages.map(display) }));
+        query.setQueriesData<{ message: Message }>({ queryKey: ["message", roomId] }, (current) => current && ({ ...current, message: display(current.message) }));
+      };
       for (let start = 0; start < trackedIds.length; start += visibilityLimit) {
-        await api.messageVisibility(roomId, trackedIds.slice(start, start + visibilityLimit));
+        try {
+          if (compact) {
+            const result = await api.reconcileMessages(roomId, trackedIds.slice(start, start + visibilityLimit));
+            for (const state of result.states) if (state.status !== "unavailable") replyCounts.set(state.id, state.reply_count);
+          } else {
+            await api.messageVisibility(roomId, trackedIds.slice(start, start + visibilityLimit));
+          }
+        } finally {
+          // A later failure must not leave content from a confirmed removal in
+          // any room/thread/detail cache. The query still surfaces the failure.
+          refreshCaches();
+        }
       }
-      for (const id of [threadRootId, hiddenMessageId].filter((id): id is string => !!id)) {
-        query.setQueryData<{ message: Message }>(["message", roomId, id], (current) => current && current.message.payload.moderation !== "removed"
-          ? { message: api.messageForDisplay(current.message) } : current);
-      }
-      received = received.map((message) => api.messageForDisplay(message));
       const cachedNow = query.getQueryData<MessagesResponse>(key);
-      const current = cachedNow ? { ...cachedNow, messages: cachedNow.messages.map((message) => api.messageForDisplay(message)) } : undefined;
+      const current = cachedNow ? { ...cachedNow, messages: cachedNow.messages.map(display) } : undefined;
+      const currentCounts = new Map(current?.messages.map((message) => [message.id, message.reply_count ?? 0]));
+      // Reply counts only grow in the server write paths. A response started
+      // before a realtime arrival must not roll that newer count back.
+      received = received.map((message) => display({ ...message, reply_count: Math.max(message.reply_count ?? 0, currentCounts.get(message.id) ?? 0) }));
       const result = { ...initialPage, messages: received, next_after: page.next_after ?? initialPage.next_after };
       // Read the latest cache after awaiting to preserve concurrently loaded history.
       return cached?.next_after && current ? appendMessages(current, result) : { ...result, messages: mergeMessages(current?.messages ?? [], result.messages) };

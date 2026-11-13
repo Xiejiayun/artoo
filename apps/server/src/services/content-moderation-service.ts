@@ -1,5 +1,5 @@
 import { appendEvent, contentReports, contentRules, discussions, messages, notifications, organizations, rooms, users } from "@artoo/db";
-import { MAX_MESSAGE_VISIBILITY_BATCH_LIMIT } from "@artoo/domain";
+import { MAX_MESSAGE_VISIBILITY_BATCH_LIMIT, type MessageReconciliationV1 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
 import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import { requireAdministrator } from "../auth/request-auth.js";
@@ -127,4 +127,22 @@ export async function messageVisibility(ctx: ServerContext, roomId: string, ids:
     eq(messages.organizationId, ctx.organizationId), eq(messages.roomId, roomId), inArray(messages.id, ids as string[]),
   ));
   return { removed_message_ids: rows.filter((row) => row.moderatedAt !== null && row.moderatedByUserId !== null).map((row) => row.id) };
+}
+
+/** Complete, bounded state for already-loaded IDs. Message bodies never enter this response. */
+export async function reconcileMessages(ctx: ServerContext, roomId: string, ids: string[]): Promise<MessageReconciliationV1> {
+  const room = (await ctx.db.db.select({ id: rooms.id }).from(rooms).where(and(eq(rooms.id, roomId), eq(rooms.organizationId, ctx.organizationId))))[0];
+  if (!room) throw AppError.notFound("Room not found in this team.");
+  const unique = [...new Set(ids)];
+  if (!unique.length) return { version: 1, states: [] };
+  const rows = await ctx.db.db.select({ id: messages.id, replyCount: messages.replyCount,
+    moderatedAt: messages.moderatedAt, moderatedByUserId: messages.moderatedByUserId }).from(messages).where(and(
+    eq(messages.organizationId, ctx.organizationId), eq(messages.roomId, roomId), inArray(messages.id, unique),
+  ));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return { version: 1, states: unique.map((id) => {
+    const row = byId.get(id);
+    return row ? { id, status: row.moderatedAt !== null && row.moderatedByUserId !== null ? "removed" : "visible", reply_count: row.replyCount }
+      : { id, status: "unavailable" };
+  }) };
 }

@@ -1,11 +1,12 @@
 import { memberSuspensions, users } from "@artoo/db";
+import { MessageReconciliationRequestV1Schema } from "@artoo/domain";
 import { and, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { requestContext } from "./auth/auth-routes.js";
 import { effectiveTeamRole, requireAdministrator } from "./auth/request-auth.js";
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
-import { getContentRules, messageVisibility, listContentReports, listMyContentReports, reportMessage, resolveContentReport, setContentRules } from "./services/content-moderation-service.js";
+import { getContentRules, messageVisibility, reconcileMessages, listContentReports, listMyContentReports, reportMessage, resolveContentReport, setContentRules } from "./services/content-moderation-service.js";
 import { setMemberSuspension } from "./services/member-suspension-service.js";
 
 function body(value: unknown, keys: string[]): Record<string, unknown> {
@@ -19,6 +20,11 @@ export function registerContentModerationRoutes(app: FastifyInstance, ctx: Serve
   app.post("/api/v1/rooms/:id/messages/visibility", (request) => {
     const value = body(request.body, ["message_ids"]);
     return messageVisibility(requestContext(ctx, request), (request.params as { id: string }).id, value.message_ids);
+  });
+  app.post("/api/v1/rooms/:id/messages/reconcile", (request) => {
+    const parsed = MessageReconciliationRequestV1Schema.safeParse(request.body);
+    if (!parsed.success) throw AppError.validation("Invalid message reconciliation request.");
+    return reconcileMessages(requestContext(ctx, request), (request.params as { id: string }).id, parsed.data.message_ids);
   });
   app.get("/api/v1/moderation/rules", (request) => getContentRules(requestContext(ctx, request)));
   app.put("/api/v1/moderation/rules", (request) => {

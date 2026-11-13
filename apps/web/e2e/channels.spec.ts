@@ -181,3 +181,63 @@ test("channels and threads synchronize between independent browser clients and s
     await expect(page.getByRole("button", { name: "Toggle navigation", exact: true })).toHaveAttribute("aria-expanded", "false");
   } finally { await secondContext.close(); }
 });
+
+test("reconnection reconciles missed replies and removed paginated history without a new root", async ({ page, request }, testInfo) => {
+  const bootstrap = await (await request.get("/api/v1/bootstrap")).json();
+  expect(bootstrap.message_sync.reconciliation_version).toBe(1);
+  const created = await request.post("/api/v1/channels", { data: { project_id: bootstrap.projects[0].id, name: `reconcile-${Date.now()}` } });
+  expect(created.status()).toBe(201);
+  const { channel } = await created.json();
+  const roots: { id: string; body: string }[] = [];
+  for (let index = 0; index < 55; index++) {
+    const response = await request.post(`/api/v1/rooms/${channel.id}/messages`, { data: { kind: "text", body: `Reconnect history ${index}` } });
+    expect(response.status()).toBe(201);
+    roots.push((await response.json()).message);
+  }
+  const connections: (() => void)[] = [];
+  let transportBlocked = false;
+  await page.routeWebSocket("**/api/v1/ws", (socket) => {
+    if (transportBlocked) { socket.close({ code: 1012, reason: "Controlled transport interruption" }); return; }
+    const remote = socket.connectToServer(); // Forward real server traffic unchanged.
+    connections.push(() => { socket.close({ code: 1012, reason: "Controlled transport interruption" }); remote.close(); });
+  });
+  await page.goto(`/channels?room=${channel.id}`);
+  const main = page.getByRole("region", { name: "Channel conversation", exact: true });
+  await expect(main.getByText(roots[54]!.body, { exact: true })).toBeVisible();
+  await main.getByRole("button", { name: "Load earlier messages", exact: true }).click();
+  await expect(main.getByText(roots[0]!.body, { exact: true })).toBeAttached();
+  await expect.poll(() => connections.length).toBeGreaterThan(0);
+  transportBlocked = true;
+  await page.context().setOffline(true);
+  for (const close of connections.splice(0)) close();
+  const reply = await request.post(`/api/v1/rooms/${channel.id}/messages`, { data: { kind: "text", body: "Reply while browser is disconnected", thread_root_id: roots[54]!.id } });
+  expect(reply.status()).toBe(201);
+  const report = await request.post(`/api/v1/messages/${roots[0]!.id}/report`, { data: { reason: "Controlled reconnect moderation regression" } });
+  expect(report.status()).toBe(200);
+  const removal = await request.post(`/api/v1/moderation/reports/${(await report.json()).id}/resolve`, { data: { action: "remove", note: "Controlled fixture removal" } });
+  expect(removal.status()).toBe(200);
+  await expect(main.getByRole("button", { name: "1 reply", exact: true })).toHaveCount(0);
+  await expect(main.getByText(roots[0]!.body, { exact: true })).toBeAttached();
+  const snapshots: string[] = [];
+  page.on("request", (sent) => {
+    const url = new URL(sent.url());
+    if (sent.method() === "GET" && url.pathname === `/api/v1/rooms/${channel.id}/messages` && !url.searchParams.has("after") && !url.searchParams.has("before")) snapshots.push(sent.url());
+  });
+  const reconciled = page.waitForResponse((response) => response.ok() && new URL(response.url()).pathname === `/api/v1/rooms/${channel.id}/messages/reconcile`);
+  transportBlocked = false;
+  await page.context().setOffline(false);
+  await reconciled;
+  await expect(main.getByRole("button", { name: "1 reply", exact: true })).toBeVisible();
+  await expect(main.getByText(roots[0]!.body, { exact: true })).toHaveCount(0);
+  await expect(main.getByText("This message was removed by a team administrator.", { exact: true })).toBeAttached();
+  expect(snapshots).toEqual([]);
+  const stored = await (await request.get(`/api/v1/rooms/${channel.id}/messages?limit=100`)).json();
+  expect(stored.messages).toHaveLength(55);
+  expect(stored.messages.at(-1).reply_count).toBe(1);
+  await page.screenshot({ path: testInfo.outputPath("reconciled-history.png") });
+  await page.reload();
+  await expect(main.getByRole("button", { name: "1 reply", exact: true })).toBeVisible();
+  await main.getByRole("button", { name: "Load earlier messages", exact: true }).click();
+  await expect(main.getByText("This message was removed by a team administrator.", { exact: true })).toBeAttached();
+  await expect(main.getByText(roots[0]!.body, { exact: true })).toHaveCount(0);
+});

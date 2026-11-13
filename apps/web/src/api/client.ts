@@ -1,4 +1,5 @@
 import { isRemovedMessage, removedMessage } from "./messageModeration.js";
+import { MessageReconciliationV1Schema, type MessageReconciliationV1 } from "@artoo/domain";
 import type { ContentReport, ContentRules, ModerationMember } from "./contentModeration.js";
 /**
  * Typed REST client for the artoo v0.1-core API (design.md §10.6; codex Round
@@ -128,6 +129,20 @@ export class ApiClient {
     const result = await this.request<{ removed_message_ids: string[] }>("POST", `/rooms/${encodeURIComponent(roomId)}/messages/visibility`, { body: { message_ids: messageIds } });
     for (const id of result.removed_message_ids) this.noteMessageRemoved(roomId, id);
     return result.removed_message_ids;
+  }
+  async reconcileMessages(roomId: string, messageIds: string[]): Promise<MessageReconciliationV1> {
+    const result = MessageReconciliationV1Schema.safeParse(await this.request<unknown>("POST", `/rooms/${encodeURIComponent(roomId)}/messages/reconcile`,
+      { body: { version: 1, message_ids: messageIds } }));
+    const requested = new Set(messageIds);
+    if (!result.success || result.data.states.length !== requested.size || new Set(result.data.states.map((state) => state.id)).size !== requested.size
+      || result.data.states.some((state) => !requested.has(state.id))) {
+      throw new ApiClientError("unknown", "Message reconciliation returned an incomplete or invalid response. Retry message sync.", 502);
+    }
+    for (const state of result.data.states) if (state.status === "removed") this.noteMessageRemoved(roomId, state.id);
+    if (result.data.states.some((state) => state.status === "unavailable")) {
+      throw new ApiClientError("not_found", "Some cached messages are unavailable. Retry message sync.", 404);
+    }
+    return result.data;
   }
 
   private readonly baseUrl: string;
