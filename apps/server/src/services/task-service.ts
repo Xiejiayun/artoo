@@ -157,12 +157,13 @@ export async function bootstrap(ctx: ServerContext, isLive: (computerId: string)
  * rail. Stable order (created_at, id) so rendering is deterministic; web derives
  * no lifecycle, it just renders these snapshots.
  */
-export async function listTasks(ctx: ServerContext, projectId: string): Promise<Task[]> {
-  const rows = await ctx.db.db
+export async function listTasks(ctx: ServerContext, projectId: string, limit?: number): Promise<Task[]> {
+  const baseQuery = ctx.db.db
     .select()
     .from(tasks)
     .where(and(eq(tasks.organizationId, ctx.organizationId), eq(tasks.projectId, projectId)))
     .orderBy(asc(tasks.createdAt), asc(tasks.id));
+  const rows = limit !== undefined ? await baseQuery.limit(limit) : await baseQuery;
   // Review tasks deliberately have no scheduling goalId. Expose their original
   // task's provenance in this read model without changing reconciliation.
   const reviewLinks = await ctx.db.db.select({

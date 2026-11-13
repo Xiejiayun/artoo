@@ -153,6 +153,7 @@ export async function getGoal(ctx: ServerContext, id: string): Promise<Goal | nu
 export interface ListGoalsFilter {
   projectId?: string;
   status?: string;
+  limit?: number;
 }
 
 export async function listGoals(ctx: ServerContext, filter: ListGoalsFilter = {}): Promise<Goal[]> {
@@ -163,11 +164,12 @@ export async function listGoals(ctx: ServerContext, filter: ListGoalsFilter = {}
   if (filter.status !== undefined && filter.status !== "") {
     conds.push(eq(goals.status, filter.status));
   }
-  const rows = await ctx.db.db
+  const baseQuery = ctx.db.db
     .select()
     .from(goals)
     .where(and(...conds))
     .orderBy(desc(goals.createdAt));
+  const rows = filter.limit !== undefined ? await baseQuery.limit(filter.limit) : await baseQuery;
   return rows.map(mapGoal);
 }
 

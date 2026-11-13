@@ -154,6 +154,7 @@ export const tasks = pgTable("tasks", {
   check("tasks_preferred_effort_chk", sql`${t.preferredEffort} is null or ${t.preferredEffort} in ('low','medium','high','max')`),
   check("tasks_created_by_type_chk", sql`${t.createdByType} in ('user','agent','system')`),
   index("tasks_project_status_updated_idx").on(t.projectId, t.status, t.updatedAt),
+  index("tasks_org_project_created_idx").on(t.organizationId, t.projectId, t.createdAt, t.id),
   index("tasks_parent_idx").on(t.parentTaskId),
   index("tasks_goal_idx").on(t.goalId),
   // #115 P1d: DB-level dedup so a plan→DAG materialization retry cannot create
@@ -774,6 +775,7 @@ export const approvals = pgTable("approvals", {
     sql`${t.status} in ('pending','approved','rejected','needs_more_info','expired')`,
   ),
   index("approvals_status_expires_idx").on(t.status, t.expiresAt),
+  index("approvals_org_status_created_idx").on(t.organizationId, t.status, t.createdAt, t.id),
 ]);
 
 // ------------------------------------------------------------------ memory ---
@@ -1015,6 +1017,7 @@ export const goals = pgTable("goals", {
   ),
   check("goals_priority_chk", sql`${t.priority} in ('p0','p1','p2','p3')`),
   index("goals_project_status_idx").on(t.projectId, t.status),
+  index("goals_org_created_idx").on(t.organizationId, t.createdAt.desc()),
   index("goals_owner_idx").on(t.ownerUserId),
 ]);
 

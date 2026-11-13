@@ -171,16 +171,18 @@ export async function bindExecutionApprovalToRun(ctx: ServerContext, tx: Drizzle
 export async function listApprovals(
   ctx: ServerContext,
   status?: string,
+  limit?: number,
 ): Promise<Approval[]> {
   const where =
     status !== undefined && status !== ""
       ? and(eq(approvals.organizationId, ctx.organizationId), eq(approvals.status, status))
       : eq(approvals.organizationId, ctx.organizationId);
-  const rows = await ctx.db.db
+  const baseQuery = ctx.db.db
     .select()
     .from(approvals)
     .where(where)
     .orderBy(asc(approvals.createdAt), asc(approvals.id));
+  const rows = limit !== undefined ? await baseQuery.limit(limit) : await baseQuery;
   return rows.map(mapApproval);
 }
 

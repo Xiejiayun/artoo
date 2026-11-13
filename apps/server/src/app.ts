@@ -639,9 +639,18 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     void reply.status(201);
     return { goal };
   });
+  const parseOptionalLimit = (raw: string | undefined): number | undefined => {
+    if (raw === undefined || raw === "") return undefined;
+    const limit = Number(raw);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+      throw AppError.validation("limit must be an integer between 1 and 1000", { limit: raw });
+    }
+    return limit;
+  };
+
   app.get("/api/v1/goals", async (req) => {
-    const query = req.query as { project_id?: string; status?: string };
-    return { goals: await goalService.listGoals(rc(req), { projectId: query.project_id, status: query.status }) };
+    const query = req.query as { project_id?: string; status?: string; limit?: string };
+    return { goals: await goalService.listGoals(rc(req), { projectId: query.project_id, status: query.status, limit: parseOptionalLimit(query.limit) }) };
   });
   app.get("/api/v1/goals/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -781,11 +790,11 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   });
 
   app.get("/api/v1/tasks", async (req) => {
-    const query = req.query as { project_id?: string };
+    const query = req.query as { project_id?: string; limit?: string };
     if (query.project_id === undefined || query.project_id === "") {
       throw AppError.validation("project_id query parameter is required");
     }
-    return { tasks: await taskService.listTasks(rc(req), query.project_id) };
+    return { tasks: await taskService.listTasks(rc(req), query.project_id, parseOptionalLimit(query.limit)) };
   });
 
   app.get("/api/v1/tasks/:id", async (req) => {
@@ -956,8 +965,8 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
   });
 
   app.get("/api/v1/approvals", async (req) => {
-    const { status } = req.query as { status?: string };
-    return { approvals: await approvalService.listApprovals(rc(req), status) };
+    const { status, limit } = req.query as { status?: string; limit?: string };
+    return { approvals: await approvalService.listApprovals(rc(req), status, parseOptionalLimit(limit)) };
   });
 
   app.post("/api/v1/tasks/:id/execution-approval", async (req, reply) => {
@@ -1026,6 +1035,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
       project_id?: string;
       task_id?: string;
       tag?: string;
+      limit?: string;
     };
     if (q.scope !== undefined && q.scope !== "") {
       const parsed = MemoryScopeSchema.safeParse(q.scope);
@@ -1046,6 +1056,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
         projectId: q.project_id,
         taskId: q.task_id,
         tag: q.tag,
+        limit: parseOptionalLimit(q.limit),
       }),
     };
   });

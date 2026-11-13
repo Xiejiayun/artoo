@@ -81,6 +81,7 @@ export interface ListMemoriesFilters {
   projectId?: string;
   taskId?: string;
   tag?: string;
+  limit?: number;
 }
 
 /** GET /memories — list this org's memories, optionally filtered. */
@@ -96,7 +97,8 @@ export async function listMemories(
   const rows = await ctx.db.db.select().from(memories).where(and(...conditions));
   const mapped = rows.map(mapMemory);
   const tag = filters.tag;
-  return tag !== undefined && tag !== "" ? mapped.filter((m) => m.tags.includes(tag)) : mapped;
+  const filtered = tag !== undefined && tag !== "" ? mapped.filter((m) => m.tags.includes(tag)) : mapped;
+  return filters.limit !== undefined ? filtered.slice(0, filters.limit) : filtered;
 }
 
 /** GET /memories/:id. */

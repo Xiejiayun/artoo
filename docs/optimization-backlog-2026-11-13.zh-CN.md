@@ -77,7 +77,7 @@
   3. 如果真的会出现几百条以上,引入"显示更多"按钮(最小方案),不要为了虚拟化引入新依赖,除非有数据支撑。
 - **验收**:渲染节点数有上限,现有测试通过。
 
-### T5 `perf(server): audit list endpoints for pagination and indexes`
+### [x] T5 `perf(server): audit list endpoints for pagination and indexes` (`3b8c239`)
 - **ROI**:中,需要先调查。
 - **背景**:`apps/server/src/*routes.ts` 里只有 `notifications` 和 `moderation` 两类接口明确支持 `limit` 或 `before`。schema 有较多表(`packages/db/src/schema.ts`)。
 - **做法(分两步,各一个 commit)**:
