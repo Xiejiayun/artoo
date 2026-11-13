@@ -70,7 +70,7 @@
 .os-breadcrumb > svg { flex: none; }
 .os-breadcrumb > span { overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
 .os-breadcrumb strong { font-weight: 500; color: var(--text-secondary); }
-.os-tabs { display: flex; align-items: center; flex: none; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.os-tabs { display: flex; align-items: center; flex: 0 1 auto; min-width: 0; overflow-x: auto; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .os-tab { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 3px 10px; border: 1px solid transparent; border-radius: 5px; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .os-tab:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
 .os-tab.is-active { border-color: var(--border-strong); background: var(--surface-2); color: var(--text); box-shadow: var(--e1); }
@@ -119,6 +119,8 @@
   .os-nav-backdrop:hover { background: var(--modal-overlay); }
   .os-menu-toggle { display: inline-flex; }
   .os-header { padding: 10px 14px; gap: 10px; min-height: 56px; }
+  .os-tab { padding-inline: 5px; }
+  .os-tab-number { display: none; }
   .os-header-actions > .ui-btn { font-size: 10px; padding-inline: 4px; }
   .os-breadcrumb { flex: 1; gap: 5px; font-size: 11px; }
   .os-breadcrumb > span { max-width: 100px; }
