@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Flag, Plus, Download, ListChecks, MessageSquare, ArrowRight, Sparkles, ArrowUpRight } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { PreparedGoalEntryV1Schema, canProposePlan, canTransitionGoal, type Goal, type GoalAutomation, type TaskSpec } from "@artoo/domain";
+import { PreparedGoalEntryV1Schema, canProposePlan, canTransitionGoal, type Goal, type GoalAutomation } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
 import { usePollMs } from "../app/RealtimeContext.js";
 import { useProject } from "../app/useProject.js";
@@ -11,6 +11,7 @@ import { useSelection } from "../app/SelectionContext.js";
 import { useGoalContext } from "../app/useGoalContext.js";
 import { readDiscussionGoalDraft, type DiscussionGoalDraft } from "../app/discussionGoalDraft.js";
 import { LoadingView } from "./LoadingView.js";
+import { PlanForm } from "./PlanForm.js";
 import { GoalOverview } from "./GoalOverview.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { Badge, Button, Input, Modal, Select, StatusBadge, Textarea, useToast } from "../ui/index.js";
@@ -18,7 +19,7 @@ import { ActionError } from "./ActionError.js";
 import { RoomConversation } from "./RoomConversation.js";
 import { PreparedGoalRequest } from "./PreparedGoalRequest.js";
 import { GoalDiscussion } from "./GoalDiscussion.js";
-import { CAPABILITY_LABELS, taskUpdatedLabel } from "./taskPresentation.js";
+import { taskUpdatedLabel } from "./taskPresentation.js";
 import "../ui/work-insights.css";
 
 const lines = (text: string): string[] => text.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -261,27 +262,4 @@ export function ApplicationPublicationProgress({ goalId }: { goalId: string }): 
     {(receipt?.outcome === "failed" ? receipt.reason : report?.reason) && <p>{receipt?.outcome === "failed" ? receipt.reason : report?.reason}</p>}
     <ActionError error={stop.error ?? publicationQuery.error} />
   </section>;
-}
-
-const blankTask = (): TaskSpec => ({ title: "", description: "", acceptance_criteria: [], required_capabilities: [], dependencies: [], approval_gates: [], write_scopes: [], expected_artifacts: [] });
-
-function PlanForm({ goalId, onCreated }: { goalId: string; onCreated: () => Promise<void> }): React.ReactNode {
-  const api = useApi();
-  const [rationale, setRationale] = useState("");
-  const [tasks, setTasks] = useState<TaskSpec[]>([blankTask()]);
-  const mutation = useMutation({ mutationFn: () => api.proposePlan(goalId, { rationale, task_specs: tasks.map((task) => ({ ...task, title: task.title.trim(), required_capabilities: task.required_capabilities.map((value) => value.trim()).filter(Boolean), acceptance_criteria: task.acceptance_criteria.map((item) => item.trim()).filter(Boolean) })) }, newIdempotencyKey()), onSuccess: onCreated });
-  const edit = (index: number, patch: Partial<TaskSpec>): void => setTasks((current) => current.map((task, i) => i === index ? { ...task, ...patch } : task));
-  return <form className="insights-plan-editor u-stack" aria-label="Plan editor" onSubmit={(event) => { event.preventDefault(); if (!mutation.isPending) mutation.mutate(); }}>
-    <p className="insights-help">Break the outcome into reviewable tasks. Add dependencies when a task needs an earlier result.</p>
-    <Textarea label="Plan rationale" placeholder="Explain the approach and why these tasks are needed." value={rationale} required disabled={mutation.isPending} onChange={(event) => setRationale(event.target.value)} />
-    {tasks.map((task, index) => <fieldset key={index} className="insights-plan-task-editor u-stack-sm" disabled={mutation.isPending}><legend>Task {index + 1}</legend>
-      <Input label={`Task ${index + 1} title`} value={task.title} required onChange={(event) => edit(index, { title: event.target.value })} />
-      <Textarea label={`Task ${index + 1} description`} value={task.description} onChange={(event) => edit(index, { description: event.target.value })} />
-      <Textarea label={`Task ${index + 1} acceptance criteria`} helperText="One criterion per line" value={task.acceptance_criteria.join("\n")} required onChange={(event) => edit(index, { acceptance_criteria: event.target.value.split("\n") })} />
-      <details className="insights-disclosure"><summary>Agent capabilities · {task.required_capabilities.length} selected</summary><fieldset className="insights-capability-picker"><legend>Task {index + 1} capabilities</legend>{Object.entries(CAPABILITY_LABELS).map(([capability, label]) => <label key={capability}><input type="checkbox" checked={task.required_capabilities.includes(capability)} onChange={(event) => edit(index, { required_capabilities: event.target.checked ? [...task.required_capabilities, capability] : task.required_capabilities.filter((item) => item !== capability) })} />{label}</label>)}</fieldset></details>
-      {index > 0 && <div className="u-stack-sm"><span>Requires completion of</span>{tasks.slice(0, index).map((previous, previousIndex) => <label key={previousIndex}><input type="checkbox" checked={task.dependencies.some((dep) => dep.ref === String(previousIndex))} onChange={(event) => edit(index, { dependencies: event.target.checked ? [...task.dependencies, { ref: String(previousIndex), type: "blocks" }] : task.dependencies.filter((dep) => dep.ref !== String(previousIndex)) })} />{previous.title || `Task ${previousIndex + 1}`}</label>)}</div>}
-      {index === tasks.length - 1 && tasks.length > 1 && <Button size="sm" onClick={() => setTasks(tasks.slice(0, -1))}>Remove last task</Button>}
-    </fieldset>)}
-    <ActionError error={mutation.error} /><div className="action-row"><Button iconLeft={Plus} disabled={mutation.isPending} onClick={() => setTasks([...tasks, blankTask()])}>Add plan task</Button><Button type="submit" variant="primary" loading={mutation.isPending} disabled={!rationale.trim() || tasks.some((task) => !task.title.trim() || !task.acceptance_criteria.some((item) => item.trim()))}>Submit plan for review</Button></div>
-  </form>;
 }
