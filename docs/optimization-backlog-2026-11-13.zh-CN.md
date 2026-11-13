@@ -33,7 +33,7 @@
 
 ## 待办(按优先级)
 
-### [x] T1 `perf(web): extend WS-aware polling to remaining fixed intervals`
+### [x] T1 `perf(web): extend WS-aware polling to remaining fixed intervals` (`a832f89`)
 - **ROI**:高。改动小,可直接减少后台请求量。
 - **背景**:仍有固定间隔的轮询未使用 `usePollMs`:
   - `components/InventoryPages.tsx`(约第 53 行,daemons,5s)
@@ -50,7 +50,7 @@
   - `npx vitest run apps/web/src/components/InventoryPages.test.tsx` 通过。
   - 只改间隔,不改任何 query key 或数据形状。
 
-### T2 `perf(web): share a single daemons query across components`
+### [x] T2 `perf(web): share a single daemons query across components`
 - **ROI**:高。
 - **背景**:`queryKeys.daemons` 被 `DaemonBadge`、`InventoryPages`、`ConnectNodeDialog` 各自注册了 `refetchInterval`。TanStack Query 会共用同一个缓存,但每个观察者的轮询定时器是独立的。
 - **做法**:抽一个 `useDaemons({ intervalMs, enabled })` hook(放在 `app/` 下)。统一 `queryFn`、`retry`、`refetchOnMount` 等选项,让各处调用同一个 hook。

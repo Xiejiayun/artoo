@@ -4,6 +4,7 @@ import { Check, CheckCircle2, Copy, Monitor, Terminal } from "lucide-react";
 import type { DevicePlatform } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { useDaemons } from "../app/useDaemons.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { Button, Modal, Select } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
@@ -40,7 +41,7 @@ export function ConnectNodeDialog({ open, onClose, onCreateInstance, onViewMachi
     retry: false,
   });
   const computerId = progress.data?.device?.computer_id;
-  const presence = useQuery({ queryKey: queryKeys.daemons, queryFn: () => api.listDaemons(), enabled: open && !!computerId, refetchInterval: 2000 });
+  const presence = useDaemons({ enabled: open && !!computerId, intervalMs: 2000 });
   const machine = presence.data?.daemons.find((daemon) => daemon.computer_id === computerId);
   const connected = machine?.status === "online" && machine.connected;
   const claimed = progress.data?.pairing.status === "claimed";

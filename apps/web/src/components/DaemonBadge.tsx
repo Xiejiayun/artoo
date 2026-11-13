@@ -2,6 +2,7 @@ import { onlineManager, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { useDaemons } from "../app/useDaemons.js";
 import { useSubscription } from "../app/RealtimeContext.js";
 import { Badge, type Tone } from "../ui/index.js";
 
@@ -30,7 +31,7 @@ export function DaemonBadge({ computerId, compact = false }: { computerId: strin
   }, []);
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
   useSubscription(bootstrap.data ? [`inbox:${bootstrap.data.user.id}`] : []);
-  const daemons = useQuery({ queryKey: queryKeys.daemons, queryFn: () => api.listDaemons(), refetchInterval: 5000, refetchOnMount: "always", retry: false });
+  const daemons = useDaemons();
   const daemon = daemons.data?.daemons.find((item) => item.computer_id === computerId);
   const unavailable = !online || daemons.fetchStatus === "paused" || !!daemons.error;
   const snapshotVersion = query.getQueryState(queryKeys.daemons)?.dataUpdateCount ?? 0;
