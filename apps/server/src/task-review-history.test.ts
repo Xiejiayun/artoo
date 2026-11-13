@@ -85,6 +85,9 @@ describe("durable task review history", () => {
     await complete(r2.id);
     const [a2] = await server.db.db.select().from(artifacts).where(eq(artifacts.runId, r2.id));
     const afterC2 = await review(taskId, "changes_requested", "C2: follow-up correction");
+    // Task consumers select the latest run with .at(-1); history indexes must
+    // not change this established ascending order, including timestamp ties.
+    expect(afterC2.runs.map((run: { id: string }) => run.id)).toEqual([r1.id, r2.id]);
     expect(afterC2.reviews).toHaveLength(2);
     expect(afterC2.reviews[0]).toEqual(first);
     expect(afterC2.reviews[1]).toMatchObject({ actor: { type: "user", id: "user_reviewer_two" }, actor_name: "Second reviewer",
@@ -92,6 +95,7 @@ describe("durable task review history", () => {
     expect(afterC2.reviews[1].position).toBeGreaterThan(first.position);
     expect(afterC2.reviews[1].occurred_at).toBe(first.occurred_at);
     const r3 = await assign(taskId);
+    expect((await snapshot(taskId)).runs.map((run: { id: string }) => run.id)).toEqual([r1.id, r2.id, r3.id]);
     expect((await pack(r3.context_pack_id)).review_feedback?.entries).toEqual([
       expect.objectContaining({ event_id: first.event_id, comment: c1, artifact_ids: [a1!.id] }),
       expect.objectContaining({ event_id: afterC2.reviews[1].event_id, comment: "C2: follow-up correction", artifact_ids: [a1!.id, a2!.id].sort() }),

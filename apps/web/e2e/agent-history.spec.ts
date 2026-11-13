@@ -50,7 +50,11 @@ test("Agent history retains controlled CLI requests, tool results and failures a
   try {
     node.start(); await transport.ready;
     await expect.poll(async () => (await (await request.get(`/api/v1/computers/${computer.computer_id}/runtimes`)).json()).runtimes.some((value: { runtime: string; status: string }) => value.runtime === "history-fixture" && value.status === "available")).toBe(true);
-    const project = (await post(request, "/projects", { name: `History project ${marker}`, default_workspace: workspace })).project;
+    // Keep the shared server's project inventory stable for later reload tests.
+    // The instance still uses its own temporary workspace and paired computer.
+    const bootstrap = await (await request.get("/api/v1/bootstrap")).json();
+    const project = bootstrap.projects.find((value: { id: string }) => value.id === "proj_artoo");
+    expect(project).toBeTruthy();
     registered = await post(request, `/computers/${computer.computer_id}/instances`, { runtime: "history-fixture", workspace_root: workspace, project_id: project.id, display_name: name });
     const runTask = async (title: string, expected: string) => {
       const task = (await post(request, "/tasks", { project_id: project.id, title, description: "Original history request 原文", acceptance_criteria: ["Keep requests and results"], required_capabilities: ["code.modify"] })).task;

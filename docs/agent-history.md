@@ -22,6 +22,12 @@ immutable context packs and event log; it does not depend on a live WebSocket.
 
 Each implementation step is reviewed, validated and merged to main separately.
 
+The history indexes exposed an existing unordered task-snapshot query. Task
+snapshots now explicitly retain their established oldest-first run order, with
+ID tie-breaking, so consumers selecting the last run keep working. Agent history
+uses its separate newest-first pagination. A regression assertion reproduced
+the reversed snapshot before this compatibility fix.
+
 ## API v1
 
 - `GET /api/v1/agents/:id/history`: `instance_id`, `project_id`, `status`,

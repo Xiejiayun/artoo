@@ -300,7 +300,10 @@ export async function getTaskSnapshot(ctx: ServerContext, id: string): Promise<T
       task.room_id != null
         ? (await db.select().from(rooms).where(and(eq(rooms.id, task.room_id), eq(rooms.organizationId, ctx.organizationId))))[0]
         : undefined;
-    const runRows = await db.select().from(runs).where(and(eq(runs.taskId, id), eq(runs.organizationId, ctx.organizationId)));
+    // Consumers use the last entry as the latest run. Keep that contract
+    // independent of index selection, including runs sharing a timestamp.
+    const runRows = await db.select().from(runs).where(and(eq(runs.taskId, id), eq(runs.organizationId, ctx.organizationId)))
+      .orderBy(asc(runs.createdAt), asc(runs.id));
     const retention = await loadWorkspaceRetentions(db, ctx.organizationId, runRows);
     const approvalRows = await db.select().from(approvals).where(and(eq(approvals.taskId, id), eq(approvals.organizationId, ctx.organizationId)));
     const artifactRows = await db.select().from(artifacts).where(and(eq(artifacts.taskId, id), eq(artifacts.organizationId, ctx.organizationId)));
