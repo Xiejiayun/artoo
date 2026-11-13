@@ -18,6 +18,7 @@ import { DRAFTS_CLEARED_EVENT, readRoomDraft, roomDraftKey, writeRoomDraft, type
 import { Button, EmptyState, ErrorState, Select, Skeleton, Textarea } from "../ui/index.js";
 import { Icon } from "../ui/Icon.js";
 import { MessageCard } from "./MessageCard.js";
+import { useMentionAutocomplete } from "./useMentionAutocomplete.js";
 import { ActionError } from "./ActionError.js";
 import { CollaborationPanel } from "./CollaborationPanel.js";
 import { AssistantTurns } from "./AssistantTurns.js";
@@ -317,6 +318,8 @@ function MessageComposer({ roomId, threadRootId, storageKey, bootstrap, people, 
     if (!draft.submission?.uncertain && (document.activeElement === document.body || form.current?.contains(document.activeElement))) textarea.current?.focus();
     restoreFocus.current = false;
   }, [mutation.isPending, draft.submission?.uncertain]);
+  const mentions = useMentionAutocomplete({ value: draft.body, people, textarea, enabled: draft.mode !== "assistant" && !mutation.isPending && !draft.submission?.uncertain,
+    onPick: (body, personId) => { mutation.reset(); setSent(false); persist({ ...draft, body, mentionIds: [...new Set([...(draft.mentionIds ?? []), personId])], submission: undefined }); } });
   const send = (): void => {
     if (!active.current || !draft.body.trim() || mutation.isPending || sendInFlight.current) return;
     const body = draft.body.trim();
@@ -329,24 +332,26 @@ function MessageComposer({ roomId, threadRootId, storageKey, bootstrap, people, 
   };
   return <form ref={form} className="message-composer conversation-composer" aria-label="Send room message" onSubmit={(event) => { event.preventDefault(); send(); }}>
     <div className="conversation-composer__surface">
+      {mentions.popup}
       {(allowAssistant || threadRootId) && <div className="conversation-composer__toolbar">{allowAssistant && <><Select className="conversation-composer__destination" label="Message destination" value={draft.mode ?? "discussion"} disabled={mutation.isPending || draft.submission?.uncertain} onChange={(event) => { mutation.reset(); setSent(false); persist({ ...draft, mode: event.target.value as "discussion" | "assistant", submission: undefined }); }}><option value="discussion">Team discussion</option><option value="assistant">Send to agent</option></Select><Icon icon={ChevronDown} size={13} /></>}
         {threadRootId && <span className="conversation-composer__scope">Replying in this thread</span>}
         {draft.mode === "assistant" && <Select className="conversation-composer__agent" label="Execution agent" value={draft.agentInstanceId ?? ""} disabled={mutation.isPending || draft.submission?.uncertain} onChange={(event) => { mutation.reset(); persist({ ...draft, agentInstanceId: event.target.value, submission: undefined }); }}><option value="">Choose automatically</option>{bootstrap.agent_instances.map((instance) => <option key={instance.id} value={instance.id}>{bootstrap.agents.find((agent) => agent.id === instance.agent_id)?.display_name ?? instance.runtime} · {bootstrap.computers.find((computer) => computer.id === instance.computer_id)?.display_name ?? instance.computer_id} · {instance.status}</option>)}</Select>}
       </div>}
-      <Textarea className="conversation-composer__input" ref={textarea} label="Message" rows={2} value={draft.body} maxLength={20000} disabled={mutation.isPending || draft.submission?.uncertain} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => {
+      <Textarea className="conversation-composer__input" ref={textarea} label="Message" rows={2} value={draft.body} {...mentions.inputProps} onSelect={event => mentions.syncCursor(event.currentTarget)} onFocus={event => mentions.syncCursor(event.currentTarget)} onBlur={mentions.hide} maxLength={20000} disabled={mutation.isPending || draft.submission?.uncertain} onCompositionStart={() => { composing.current = true; mentions.hide(); }} onCompositionEnd={event => { composing.current = false; mentions.syncCursor(event.currentTarget); }} onKeyDown={(event) => {
+        if (!event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && !composing.current && mentions.onKeyDown(event)) return;
         if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey && !event.repeat && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && !composing.current) {
           event.preventDefault();
           send();
         }
-      }} onChange={(event) => { mutation.reset(); setSent(false); persist({ ...draft, body: event.target.value, submission: event.target.value.trim() === draft.submission?.body ? draft.submission : undefined }); }} placeholder={draft.mode === "assistant" ? "Ask your agent to help…" : threadRootId ? "Reply to this thread…" : "Message your team…"} />
+      }} onChange={(event) => { mentions.syncCursor(event.currentTarget); mutation.reset(); setSent(false); persist({ ...draft, body: event.target.value, submission: event.target.value.trim() === draft.submission?.body ? draft.submission : undefined }); }} placeholder={draft.mode === "assistant" ? "Ask your agent to help…" : threadRootId ? "Reply to this thread…" : "Message your team…"} />
       <div className="conversation-composer__footer">
         {draft.mode !== "assistant" && <details className="conversation-composer__mentions"><summary><Icon icon={AtSign} size={16} /><span>Notify people{draft.mentionIds?.length ? ` (${draft.mentionIds.length})` : ""}</span></summary><fieldset className="mention-picker" disabled={mutation.isPending || draft.submission?.uncertain}><legend>People to notify</legend>{peopleError ? <p className="t-subtle">Member list is unavailable. Refresh to load other people.</p> : null}{people.map((person) => <label key={person.id}><input type="checkbox" checked={draft.mentionIds?.includes(person.id) ?? false} onChange={(event) => { mutation.reset(); persist({ ...draft, mentionIds: event.target.checked ? [...(draft.mentionIds ?? []), person.id] : (draft.mentionIds ?? []).filter((id) => id !== person.id), submission: undefined }); }} />@{person.display_name}</label>)}</fieldset></details>}
-        <span className="conversation-composer__hint">Enter to send · Shift + Enter for a new line</span>
+        <span className="conversation-composer__hint">{mentions.open ? "↑/↓ to choose · Enter to mention · Esc to close" : "Enter to send · Shift + Enter for a new line"}</span>
         <Button className="conversation-composer__send" type="submit" variant="primary" iconLeft={Send} loading={mutation.isPending} disabled={!draft.body.trim()}>{draft.submission?.uncertain && !mutation.isPending ? "Retry sending message" : draft.mode === "assistant" ? "Send to agent" : "Send message"}</Button>
       </div>
     </div>
     {draft.mode === "assistant" && <p className="conversation-composer__context">The agent can execute work using the selected computer and runtime. Required approvals still apply. Follow-ups wait for the current run to finish.</p>}
-    <ActionError error={mutation.error} />
+    <ActionError error={mutation.error ?? mentions.error} />
     <p className="conversation-composer__status" role="status" aria-live="polite">{mutation.isPending ? "Sending message…" : draft.submission?.uncertain ? "Delivery is unconfirmed. Retry safely with the same message." : sent ? draft.mode === "assistant" ? "Agent request submitted." : "Message sent." : draft.body ? "Draft saved on this device." : ""}</p>
   </form>;
 }

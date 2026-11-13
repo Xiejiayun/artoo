@@ -117,7 +117,11 @@
   border: 0;
   background: var(--surface);
 }
-.conversation-composer__surface { border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface); transition: border-color var(--motion-fast), box-shadow var(--motion-fast); }
+.conversation-composer__surface { position: relative; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface); transition: border-color var(--motion-fast), box-shadow var(--motion-fast); }
+.conversation-mention-suggestions { position: absolute; bottom: calc(100% + var(--space-2)); left: 0; z-index: var(--z-dropdown); display: grid; width: min(320px, 100%); max-height: min(240px, 35dvh); overflow: auto; padding: var(--space-2); border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--e2); }
+.conversation-mention-suggestions > button { display: grid; gap: var(--space-1); min-height: 40px; width: 100%; text-align: left; overflow-wrap: anywhere; white-space: normal; border-color: transparent; background: transparent; color: var(--text); }
+.conversation-mention-suggestions > button[aria-selected="true"], .conversation-mention-suggestions > button:hover { background: var(--accent-soft); color: var(--accent-text); }
+.conversation-mention-suggestions small { color: var(--text-muted); }
 .conversation-composer__surface:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .conversation-composer__toolbar { display: flex; align-items: center; gap: var(--space-1); padding: var(--space-2) var(--space-3) 0; color: var(--text-muted); min-width: 0; }
 .conversation-composer__destination { flex: 0 1 auto; }
