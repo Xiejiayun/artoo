@@ -68,7 +68,7 @@
   4. 先用 React Profiler 或简单的渲染计数验证有收益,再提交。没有收益就不要提交。
 - **验收**:`MessageCard.test.tsx`、`TaskList.test.tsx`、`RunTimeline.test.tsx` 通过。
 
-### [x] T4 `perf(web): paginate or virtualize long timelines`
+### [x] T4 `perf(web): paginate or virtualize long timelines` (`6546006`)
 - **ROI**:中。依赖 T3 的结论。
 - **背景**:仓库里没有任何虚拟化或窗口化实现。
 - **做法**:
@@ -131,4 +131,15 @@
 
 | 接口 | 是否分页或有上限 | 相关索引 | 结论 |
 | --- | --- | --- | --- |
-| (待填) | | | |
+| `GET /api/v1/rooms/:id/messages` | 已分页 (`limit`, `before`, `after`, `thread_root_id`) | `messages_room_position_idx (room_id, position)`、`messages_thread_position_idx (thread_root_id, position)` | 已完备，无需改动 |
+| `GET /api/v1/notifications` | 已分页 (`limit`, `before`) | `notifications_user_created_idx (organization_id, user_id, created_at, id)` | 已完备，无需改动 |
+| `GET /api/v1/agents/:id/history` 及 `:runId` | 已分页 (`limit`, `before`) | `runs_agent_history_idx (organization_id, agent_instance_id, created_at DESC, id DESC)`、`event_log_run_history_idx` | 已完备，无需改动 |
+| `GET /api/v1/moderation/reports` 及 `/my-reports` | 已分页 (`before`) | `content_reports_queue_idx`、`content_reports_reporter_message_idx` | 已完备，无需改动 |
+| `GET /api/v1/memories/context` | 有上限 (`limit`) | `memories_org_status_idx (organization_id, status)`、`memories_project_scope_idx` | 已完备，无需改动 |
+| `GET /api/v1/goals/:id/plans`、`/checkpoints`、`/discussions` | 单 Goal 作用域内数量有限 | `plans_goal_idx`、`checkpoints_goal_idx (goal_id, created_at)`、`discussions_goal_idx` | 已有复合索引，单 Goal 下规模受控 |
+| `GET /api/v1/rooms/:roomId/decisions`、`/handoffs`、`/blockers` | 单 Room 作用域 | `decision_records_room_idx`、`handoffs_room_idx`、`blockers_room_idx` | 已有 `room_id` 索引 |
+| `GET /api/v1/tasks?project_id=<id>` | 无 `limit` 参数 | 仅有 `tasks_project_status_updated_idx (project_id, status, updated_at)`，缺少按 `(organization_id, project_id, created_at, id)` 排序的覆盖索引 | **T5-2 修复**：增加可选 `limit` 参数，并新增 `tasks_org_project_created_idx` 索引 |
+| `GET /api/v1/goals` | 无 `limit` 参数 | 仅有 `goals_project_status_idx (project_id, status)`，缺少 `(organization_id, created_at)` 排序索引 | **T5-2 修复**：增加可选 `limit` 参数，并新增 `goals_org_created_idx` 索引 |
+| `GET /api/v1/approvals` | 无 `limit` 参数 | 仅有 `approvals_status_expires_idx (status, expires_at)`，缺少 `organization_id` 前缀及 `created_at` 排序索引 | **T5-2 修复**：增加可选 `limit` 参数，并新增 `approvals_org_status_created_idx` 索引 |
+| `GET /api/v1/memories` | 无 `limit` 参数 | 已有 `memories_org_status_idx`、`memories_updated_idx` | **T5-2 修复**：增加可选 `limit` 参数 |
+
