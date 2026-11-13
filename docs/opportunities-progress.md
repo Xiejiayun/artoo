@@ -162,6 +162,10 @@ C1 schema 消息协作领域通过 [PR #96](https://github.com/Xiejiayun/artoo/p
 
 C1 schema 运行领域将模型/effort/电脑/Runtime/实例/Skill 配置、Run/调度/制品/Usage/审批、上下文与事件/幂等/验证证据共 16 张表原样移入 `schema/execution.ts`；只依赖原列构造函数及身份/工作流表，root 原地 re-export。AST 对比确认全部表声明、回调及剩余声明顺序一致；根 typecheck、DB build、2 文件 staged 质量、Node 24 单 worker 的 schema/seed/调度/真实子进程 Usage/回执/上下文/执行审批 7 文件 43 项通过（`.git/opt-c1-schema-execution-*`）。真实 drizzle-kit 导出的 119 张表、815 条完整 SQL 与基线逐条一致，仅忽略顺序；没有迁移变更。真实子进程 Usage 案例不代表 live Provider 验收，也不启用 F2 成本预算。
 
+C1 schema 运行领域通过 [PR #97](https://github.com/Xiejiayun/artoo/pull/97) 合并为 `b55fab5`（实现 `8ae824c`），拉取 main 后开始自治研发领域提取。
+
+C1 schema 自治研发领域将 Goal 自动化、独立评审、发布、跨节点源码交接及后续设计/执行/验证/恢复/研究修订共 60 张表原样移入 `schema/autonomous-handoff.ts`，root 原地 re-export；已有 clean/restart 模块继续保持原边界。AST 对比确认全部表声明与外键回调一致、其余声明及顺序不变。根 typecheck、DB build、2 文件 staged 质量、Node 24 单 worker 的 schema/seed/源码传输/恢复契约/发布/Goal 自动化 6 文件 95 项通过（`.git/opt-c1-schema-autonomous-handoff-*`）。真实 drizzle-kit 导出的完整 119 张表、815 条 SQL 与基线逐条一致，仅忽略顺序；定义摘要保持 `9df3a12e8e57d616595673f2543adfff64f78de1e3a3858ce61f93cf3b3dcc80`。没有迁移变更或生产数据库操作；受控传输/发布契约不等同真实 Provider、Windows native helper 或目标产品发布验收。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
