@@ -1,19 +1,25 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Route, Routes } from "react-router-dom";
 
 import { BoardView } from "../components/BoardView.js";
-import { AgentsPage, ComputersPage, SkillsPage } from "../components/InventoryPages.js";
-import { AgentHistoryPage } from "../components/AgentHistoryPage.js";
-import { MemoryPage } from "../components/MemoryPage.js";
 import { Nav } from "../components/Nav.js";
-import { RunsAuditPage } from "../components/RunsAuditPage.js";
 import { WorkspaceLayout } from "../components/WorkspaceLayout.js";
 import { ConnectionStatus } from "../components/ConnectionStatus.js";
 import { GoalsPage } from "../components/GoalsPage.js";
-import { SettingsPage } from "../components/SettingsPage.js";
 import { ChannelsPage } from "../components/ChannelsPage.js";
 import { ProductHeader } from "../components/ProductHeader.js";
-import { ReleasePage } from "../components/ReleasePage.js";
+
+// Low-frequency pages are split out of the entry bundle.
+const lazyPage = <K extends string>(load: () => Promise<Record<K, React.ComponentType>>, name: K) =>
+  lazy(async () => ({ default: (await load())[name] }));
+const AgentsPage = lazyPage(() => import("../components/InventoryPages.js"), "AgentsPage");
+const ComputersPage = lazyPage(() => import("../components/InventoryPages.js"), "ComputersPage");
+const SkillsPage = lazyPage(() => import("../components/InventoryPages.js"), "SkillsPage");
+const AgentHistoryPage = lazyPage(() => import("../components/AgentHistoryPage.js"), "AgentHistoryPage");
+const MemoryPage = lazyPage(() => import("../components/MemoryPage.js"), "MemoryPage");
+const RunsAuditPage = lazyPage(() => import("../components/RunsAuditPage.js"), "RunsAuditPage");
+const SettingsPage = lazyPage(() => import("../components/SettingsPage.js"), "SettingsPage");
+const ReleasePage = lazyPage(() => import("../components/ReleasePage.js"), "ReleasePage");
 
 /**
  * Product nav + route surface (no router/providers — App supplies BrowserRouter;
@@ -50,6 +56,7 @@ export function AppRoutes(): React.ReactNode {
       <ProductHeader onToggleMenu={() => setMenuOpen(!menuOpen)} menuOpen={menuOpen} detailsOpen={detailsOpen} onToggleDetails={() => setDetailsOpen(!detailsOpen)} />
       <ConnectionStatus />
       <main className="app-main" id="main-content">
+        <Suspense fallback={<div role="status" aria-live="polite" className="os-page-loading">Loading…</div>}>
         <Routes>
           <Route path="/" element={<WorkspaceLayout />} />
           <Route path="/board" element={<BoardView />} />
@@ -64,6 +71,7 @@ export function AppRoutes(): React.ReactNode {
           <Route path="/memory" element={<MemoryPage />} />
           <Route path="/runs" element={<RunsAuditPage />} />
         </Routes>
+        </Suspense>
       </main>
       </div>
     </div>
