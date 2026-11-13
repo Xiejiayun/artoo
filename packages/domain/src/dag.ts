@@ -85,8 +85,8 @@ export function incomingEdges(edges: readonly DagEdge[], taskId: string): DagEdg
 
 /**
  * A dependent task is UNLOCKED when every gating prerequisite is `done`. Soft
- * edges are ignored. (Phase A gates on prerequisite-done only — see
- * {@link gatingNeedsEvidence} for the artifact/contract/review TODO.)
+ * edges are ignored. Combine with {@link hasRequiredEvidence} (and
+ * {@link gatingNeedsEvidence}) to enforce artifact/contract evidence gates.
  */
 export function isTaskUnlocked(
   incoming: readonly DagEdge[],

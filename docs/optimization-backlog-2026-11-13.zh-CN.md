@@ -110,12 +110,12 @@
   - `schema.ts` 拆分不得改变导出名称和迁移结果。
 - **验收**:该模块对应的测试文件全部通过;`npm run typecheck` 通过。
 
-### [x] T8 `chore(web): introduce i18n scaffolding`
+### [x] T8 `chore(web): introduce i18n scaffolding` (`8102ee2`)
 - **ROI**:低,但越晚越贵。**开始前先和产品负责人确认是否需要多语言。**
 - **做法**:先只做脚手架(轻量的字典加 `t()`),迁移一个页面作为样板。不要一次迁移全部文案。
 - **验收**:默认语言行为不变;现有测试的文案断言通过。
 
-### T9 `docs/test: fix the dag evidence TODO`
+### [x] T9 `docs/test: fix the dag evidence TODO`
 - **ROI**:低。
 - **背景**:`packages/domain/src/dag.ts` 约第 89 行有一处 TODO,与 artifact、contract、review 的证据判定(`gatingNeedsEvidence`)有关。
 - **做法**:先读懂语义。这涉及自动评审的授权边界,改动前先对照 `AGENTS.md` 的"Autonomous development"一节。不确定时,只补充测试或文档,不改行为。
