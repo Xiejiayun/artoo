@@ -1,9 +1,9 @@
+import { registerMemoryRoutes } from "./memory-routes.js";
 import { registerApprovalAndLeaseRoutes, registerDevelopmentApprovalRoutes } from "./approval-routes.js";
 import { registerSkillRoutes } from "./skill-routes.js";
 import { registerTaskRoutes } from "./task-routes.js";
 import { registerDeviceRoutes, registerDeviceRevocationRoutes } from "./device-routes.js";
 import { registerGoalRoutes } from "./goal-routes.js";
-import { parseOptionalLimit } from "./route-input.js";
 import { wireNodeDispatch, wireRunDispatch } from "./node-dispatch-wiring.js";
 import { AgentHistoryQuerySchema, AgentHistoryEventsQuerySchema } from "@artoo/domain";
 import { listAgentHistory, getAgentHistoryRun } from "./services/agent-history-service.js";
@@ -11,15 +11,7 @@ import { registerContentModerationRoutes } from "./content-moderation-routes.js"
 import { createSourceLifecycleRegistry } from "./services/source-clean-lifecycle-service.js";
 import { registerSourceLifecycleWsRoute } from "./ws/source-lifecycle-ws.js";
 import { registerAiDataSharingRoutes } from "./ai-data-sharing-routes.js";
-import {
-  apiError,
-  MemoryScopeSchema,
-  MemoryStatusSchema,
-  MemoryTransitionRequestSchema,
-  type MemoryTrigger,
-  ProposeMemoryRequestSchema,
-  SendMessageRequestSchema,
-} from "@artoo/domain";
+import { apiError, SendMessageRequestSchema } from "@artoo/domain";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 
@@ -44,7 +36,6 @@ import { registerIdempotency } from "./idempotency-middleware.js";
 import { registerCollaborationRoutes } from "./collaboration-routes.js";
 import { startGoalBudgetMonitor } from "./services/budget-service.js";
 import { recoverInterruptedRuns } from "./services/execution-recovery-service.js";
-import * as memoryService from "./services/memory-service.js";
 import * as messageService from "./services/message-service.js";
 import * as presenceService from "./services/presence-service.js";
 import * as runService from "./services/run-service.js";
@@ -366,93 +357,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
 
   registerApprovalAndLeaseRoutes(app, ctx);
 
-  // Memory (#14 Phase B): propose/curate memories + accepted-only retrieval.
-  app.post("/api/v1/memories", async (req, reply) => {
-    const parsed = ProposeMemoryRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw AppError.validation("invalid memory payload", { issues: parsed.error.issues });
-    }
-    const memory = await memoryService.proposeMemory(rc(req), parsed.data);
-    void reply.status(201);
-    return { memory };
-  });
-
-  app.get("/api/v1/memories", async (req) => {
-    const q = req.query as {
-      scope?: string;
-      status?: string;
-      project_id?: string;
-      task_id?: string;
-      tag?: string;
-      limit?: string;
-      q?: unknown;
-    };
-    if (q.scope !== undefined && q.scope !== "") {
-      const parsed = MemoryScopeSchema.safeParse(q.scope);
-      if (!parsed.success) {
-        throw AppError.validation("invalid memory scope filter", { scope: q.scope });
-      }
-    }
-    if (q.status !== undefined && q.status !== "") {
-      const parsed = MemoryStatusSchema.safeParse(q.status);
-      if (!parsed.success) {
-        throw AppError.validation("invalid memory status filter", { status: q.status });
-      }
-    }
-    return {
-      memories: await memoryService.listMemories(rc(req), {
-        scope: q.scope,
-        status: q.status,
-        projectId: q.project_id,
-        taskId: q.task_id,
-        tag: q.tag,
-        limit: parseOptionalLimit(q.limit),
-        q: q.q,
-      }),
-    };
-  });
-
-  // Static `/context` is matched ahead of the `/:id` param route by Fastify.
-  app.get("/api/v1/memories/context", async (req) => {
-    const q = req.query as { project_id?: string; task_id?: string; limit?: string };
-    let limit: number | undefined;
-    if (q.limit !== undefined && q.limit !== "") {
-      limit = Number(q.limit);
-      if (!Number.isInteger(limit) || limit < 0) {
-        throw AppError.validation("limit must be a non-negative integer", { limit: q.limit });
-      }
-    }
-    return memoryService.selectForContext(rc(req), { projectId: q.project_id, taskId: q.task_id }, limit);
-  });
-
-  app.get("/api/v1/memories/:id", async (req) => {
-    const { id } = req.params as { id: string };
-    return { memory: await memoryService.getMemory(rc(req), id) };
-  });
-
-  app.post("/api/v1/memories/:id/supersede", async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const parsed = ProposeMemoryRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw AppError.validation("invalid memory replacement payload", { issues: parsed.error.issues });
-    }
-    const result = await memoryService.supersedeMemory(rc(req), id, parsed.data);
-    void reply.status(201);
-    return result;
-  });
-
-  app.post("/api/v1/memories/:id/:action", async (req) => {
-    const { id, action } = req.params as { id: string; action: string };
-    if (action !== "accept" && action !== "reject") {
-      throw AppError.validation(`unknown memory action: ${action}`, { action });
-    }
-    const parsed = MemoryTransitionRequestSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      throw AppError.validation("invalid memory transition payload", { issues: parsed.error.issues });
-    }
-    const memory = await memoryService.transitionMemory(rc(req), id, action as MemoryTrigger, parsed.data);
-    return { memory };
-  });
+  registerMemoryRoutes(app, ctx);
 
   // Dev-only: the platform requesting a high-risk action approval on a running task.
   if (options.enableDevRoutes === true) registerDevelopmentApprovalRoutes(app, ctx);

@@ -103,6 +103,7 @@ const routeFiles = [
   "task-routes.ts",
   "skill-routes.ts",
   "approval-routes.ts",
+  "memory-routes.ts",
   "product-release-routes.ts",
   "application-publication-routes.ts",
 ];
