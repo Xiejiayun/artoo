@@ -84,6 +84,16 @@ C1 的 Node 26 五文件实验已失败并中止：其余四文件完整通过�
 
 三个失败案例用 Node 24.22.1、单 worker、无采样复核为 1 通过/2 超时；未改动 `1e5b28f` 的原 app 源码基线对照为 2 通过/1 超时（H8 发布重试），本次提取后的文件已按字节恢复并再次通过语法对比。随后当前代码 H7 单例复核通过（1 项，184 项因聚焦选择未运行）。证据 `.git/opt-c1-node24-failed-cases.log`、`.git/opt-c1-main-baseline-cases.log`、`.git/opt-c1-node24-h7-recheck.log`。这证明 H8 超时也存在于基线，不能证明其慢因或完整跨节点验收通过；最终统一门禁仍须重跑，时限和断言均保持。
 
+C1 首步通过 [PR #84](https://github.com/Xiejiayun/artoo/pull/84) 合并为 `76b9451`（实现 `e633cf3`）；完整跨节点长链验收缺口如上，不能以机械比对替代。
+
+U3 后续验收脚本修复：packaged desktop、iOS core、mentions 与 recovery 的六处健康检查改用具名 `status`，保留原可见性与时限。按 C4 格式化触及的文件；语法树比对确认其余工作流/清理语句一致。提取始终等待的工作流清理，双失败保留两个原因，避免 `finally` 抛错覆盖原失败；真实 embedded fixture 测试改按 AST 提取原 writer，三个测试的全部子进程输入及断言经 AST 比对保持。
+
+本轮 preview 构建、11 文件 staged 质量、6 文件 55 项 Node 回归与真实 Chromium 连接状态 1 项通过；本地生产模式恢复演练的 8 项检查通过、`cleanup=true`，证据 `artifacts/recovery/2026-11-13T18-20-20-667Z/report.html`。iOS core `--self-check` 已越过健康检查并通过前五个真实服务端/浏览器检查，随后在折叠的规划代理复选框处超时；资源与临时目录清理、源码稳定检查均通过，整体自检仍为失败，证据 `artifacts/ios/ui-harness-2026-11-13T18-22-10-199Z.html`。Windows 本轮没有运行 Mac 安装或 iOS 原生验收。
+
+F4 的远程 [run 43473093909](https://github.com/Xiejiayun/artoo/actions/runs/43473093909) 现已结束：两个 Windows Vitest 分片和进程分区成功；mac-desktop/iOS 均因旧健康文字断言失败，当前修复覆盖这些位置，尚待远程重验。shared-checks 的 Web E2E 为 44 通过/7 失败（计划编辑 3、发布健康刷新 3、旧保存反馈位置 1），后续分别定位修复；不能声称整个 CI 通过或冷缓存 E1 完成。日志 `.git/opt-f4-remote-ios.log`、`.git/opt-f4-remote-shared-checks.log`。
+
+恢复负向 harness 另 1 项通过（`.git/opt-health-recovery-failure.log`）：先完成真实持久化任务/消息/子进程制品，再故意选择非法浏览器通道；父测试核验子流程失败、实际关闭和删除、CLI exit 1。该结果不计为额外一次成功恢复演练。当前本轮日志还包括 `.git/opt-health-unit-tests-final.log`、`.git/opt-health-browser.log`、`.git/opt-health-ios-harness.log`、`.git/opt-health-quality-final.log`。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
