@@ -25,6 +25,10 @@
 
 ## 最终版本的执行与证据要求
 
+2026-11-14 补查了此前未覆盖的 `%USERPROFILE%/.artoo`，发现已有 rc.8 daemon 安装及其独立 Provider 配置、Codex CLI 和已安装 Chromium。只读预检通过当前编译模块的 Windows helper 清单绑定、文件和 ACL 准入；凭据仅检查配置引用的文件存在，没有读取或输出内容。另用已安装 Chromium 156.0.8078.80 打开纯本地 data 页面，断言内容并观察到浏览器进程实际 close（exit 0，无 signal）。证据 `.git/opt-e4-installation-preflight.{json,log}`、`.git/opt-e4-browser-preflight.{json,log}`。这些预检不是 Provider 连通、原生 Job 全链或产品闭环验收。
+
+当前实际配置为本机 Aerial 代理和 `gpt-6-astra`；项目声明该代理上游为 GitHub Copilot。真实验收入口要求显式外部接收方策略及 `ARTOO_LIVE_AI_SHARING_CONSENT=1`。已就一次最长 45 分钟、隔离测试工作区及临时本机 HTTP 发布的运行向操作者请求单独共享授权，目前仍等待回复。不得从安装存在、旧文档授权或原来的“不清楚”推断同意。本轮尚未调用 Provider、读取凭据、更改运行中的 daemon 或执行产品发布。授权及最终冻结版本的源码/Web 门禁均就绪后，才可启动该实际运行。
+
 1. 在全部优化合并后记录完整 Git SHA、干净工作区/构建输入清单与摘要、Node/npm/CLI/浏览器/helper 版本及受保护验证/发布 Profile 指纹，固定一次调用的目标、期限和预算。
 2. 先完成源码门禁与完整 Web E2E，分别保留命令、实际退出状态、测试数、失败和条件跳过。聚焦重跑不替换失败的完整运行。
 3. 确认现有测试安装、AI sharing 授权、测试发布目标、不可变输入版本、健康标准和恢复安排。按既有 live 或本机入口执行空工作区 → 规划 → 独立审核 → 节点验证 → 实际端点发布；本地静态、应用发布和生产部署分别按各自已实现的契约验收。

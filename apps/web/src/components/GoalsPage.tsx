@@ -36,7 +36,16 @@ const lines = (text: string): string[] =>
 
 export function GoalsPage(): React.ReactNode {
   const { projectId, bootstrap } = useProject();
-  const { goals, items, goal: contextGoal, requested, selectGoal } = useGoalContext(true);
+  const {
+    goals,
+    items,
+    goal: contextGoal,
+    requested,
+    selectGoal,
+    contextLoading,
+    contextError,
+    retryContext,
+  } = useGoalContext(true);
   const location = useLocation();
   const navigate = useNavigate();
   const [creating, setCreating] = useState(false);
@@ -102,7 +111,7 @@ export function GoalsPage(): React.ReactNode {
         {!entry && !entryError && (
           <Button
             iconLeft={Plus}
-            disabled={!projectId}
+            disabled={!projectId || contextLoading}
             onClick={() => {
               setDraft({ objective: "", mode: "manual" });
               setSource(undefined);
@@ -113,7 +122,8 @@ export function GoalsPage(): React.ReactNode {
           </Button>
         )}
       </header>
-      <ActionError error={bootstrap.error ?? goals.error ?? entryError} />
+      <ActionError error={bootstrap.error ?? goals.error ?? contextError ?? entryError} />
+      {contextError && <Button onClick={retryContext}>Retry opening goal</Button>}
       {entry && bootstrap.data && (
         <PreparedGoalRequest
           key={`${bootstrap.data.user.id}:${entry.session_id}`}
@@ -128,7 +138,7 @@ export function GoalsPage(): React.ReactNode {
           <summary>Plan another outcome</summary>
           <OutcomeComposer
             key={`composer:${projectId ?? "pending"}`}
-            disabled={!projectId}
+            disabled={!projectId || contextLoading}
             onContinue={(objective, mode) => {
               setDraft({ objective, mode });
               setSource(undefined);
@@ -151,16 +161,18 @@ export function GoalsPage(): React.ReactNode {
           }}
         />
       )}
-      {requested && goals.isSuccess && !goal && (
+      {requested && goals.isSuccess && !goal && !contextLoading && !contextError && (
         <p role="status">This goal is unavailable in the selected project. Choose a goal below.</p>
       )}
-      {goals.data?.goals.length === 0 && !entry && (
+      {goals.data?.goals.length === 0 && !entry && !contextLoading && !requested && (
         <p className="os-plan-empty">
           No goals yet. Start with the outcome above; your plans and progress will appear here.
         </p>
       )}
-      {!goals.data && (bootstrap.isLoading || goals.isLoading) && <LoadingView label="Loading goals…" shape="goals" />}
-      {(goals.data?.goals.length ?? 0) > 0 && (
+      {(contextLoading || (!goals.data && (bootstrap.isLoading || goals.isLoading))) && (
+        <LoadingView label="Loading goals…" shape="goals" />
+      )}
+      {!contextLoading && (goals.data?.goals.length ?? 0) > 0 && (
         <div className="insights-goal-layout">
           <nav className="product-list insights-goal-picker" aria-label="Goal list">
             <div className="insights-picker-tools">

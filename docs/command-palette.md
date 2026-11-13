@@ -23,6 +23,15 @@ task selection. Channel navigation continues through the server-validated room
 and project path. Project switching clears the previous task as ordinary
 navigation does.
 
+A Goal ID link also survives a full reload when another project is first in
+bootstrap. If the current project's list lacks the requested Goal, Plan,
+Release and Board use the authenticated single-Goal endpoint to confirm its
+organization and project, then select that known project. URL project hints do
+not establish this binding. Lookup failures remain visible and retryable; a
+removed or newly accessible project requires a refreshed bootstrap snapshot.
+Account changes, navigation away and late responses cannot restore an old
+selection. An already matching project list needs no additional Goal request.
+
 Only the selected project's lists load while the panel is open. The panel
 reuses bootstrap and task/goal/channel query keys and the selected project's
 realtime subscription. It does not fan out across every project or claim a

@@ -375,6 +375,9 @@ export class ApiClient {
   listGoals(projectId: string): Promise<{ goals: Goal[] }> {
     return this.request("GET", `/goals?project_id=${encodeURIComponent(projectId)}`);
   }
+  getGoal(id: string): Promise<{ goal: Goal }> {
+    return this.request("GET", `/goals/${encodeURIComponent(id)}`);
+  }
   createGoal(body: CreateGoalRequest, key: string): Promise<{ goal: Goal }> {
     return this.request("POST", "/goals", { body, idempotencyKey: key });
   }

@@ -12,6 +12,8 @@ export const queryKeys = {
   allMemoryContext: ["memoryContext"] as const,
   allComputerRuntimes: ["computerRuntimes"] as const,
   goals: (projectId?: string | null) => (projectId ? (["goals", projectId] as const) : (["goals"] as const)),
+  linkedGoal: (goalId: string | null, organizationId?: string, userId?: string) =>
+    ["linked-goal", organizationId, userId, goalId] as const,
   plans: (goalId?: string) => (goalId ? (["plans", goalId] as const) : (["plans"] as const)),
   checkpoints: (goalId?: string) => (goalId ? (["checkpoints", goalId] as const) : (["checkpoints"] as const)),
   goalAutomation: (goalId?: string) =>
