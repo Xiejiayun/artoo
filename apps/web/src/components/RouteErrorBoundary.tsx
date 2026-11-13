@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { t } from "../app/i18n.js";
 
 interface Props {
   /** Changing this value (e.g. the route path) clears a previous error. */
@@ -39,10 +40,10 @@ export class RouteErrorBoundary extends Component<Props, State> {
     }
     return (
       <div role="alert" className="os-page-error">
-        <h2>Something went wrong loading this page.</h2>
+        <h2>{t("errorBoundary.title")}</h2>
         <p>{this.state.error.message}</p>
-        <button type="button" onClick={() => this.setState({ error: null })}>Try again</button>
-        <button type="button" onClick={() => window.location.reload()}>Reload</button>
+        <button type="button" onClick={() => this.setState({ error: null })}>{t("errorBoundary.tryAgain")}</button>
+        <button type="button" onClick={() => window.location.reload()}>{t("errorBoundary.reload")}</button>
       </div>
     );
   }
