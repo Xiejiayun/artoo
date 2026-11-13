@@ -22,6 +22,12 @@ immutable context packs and event log; it does not depend on a live WebSocket.
 
 Each implementation step is reviewed, validated and merged to main separately.
 
+The history indexes exposed an existing unordered task-snapshot query. Task
+snapshots now explicitly retain their established oldest-first run order, with
+ID tie-breaking, so consumers selecting the last run keep working. Agent history
+uses its separate newest-first pagination. A regression assertion reproduced
+the reversed snapshot before this compatibility fix.
+
 ## API v1
 
 - `GET /api/v1/agents/:id/history`: `instance_id`, `project_id`, `status`,
@@ -66,6 +72,77 @@ Update server and nodes together to obtain structured history.
 Local validation uses controlled provider JSONL and real local subprocesses;
 it does not claim live-provider or native product-development acceptance.
 
+## Browser use
+
+Open **Agents → View history**, or **Instance history** on an instance card.
+Filter executions by instance, project or status, then select a run. The URL
+retains filters and the selected run across reload. Expand tool activity to see
+its request, response, call ID and exit code; raw output remains separately
+expandable. Use **Load older events/executions** for pagination and **Refresh
+history** for newly committed records. Reads work while the execution node is
+offline. Direct history URLs remain readable after resource deletion.
+
+The original request is labeled unavailable when a legacy context pack cannot
+establish it. Final answers use current message moderation. Truncated tool
+details and omitted batch observations are labeled explicitly. The page never
+substitutes current task text for a missing original request.
+
 Migration 0059 adds indexes only and changes no historical rows. Existing storage
 backup/restore procedures apply; application rollback can leave these indexes in
 place. This feature does not execute destructive data migrations or deploy Artoo.
+
+## Validation record (2026-11-13)
+
+The API and activity capture were delivered in PRs
+[#53](https://github.com/Xiejiayun/artoo/pull/53) and
+[#54](https://github.com/Xiejiayun/artoo/pull/54). The browser and compatibility
+fix are in [#55](https://github.com/Xiejiayun/artoo/pull/55), runtime code
+`01322ef`.
+
+| Check | Result |
+| --- | --- |
+| Workspace typecheck | Passed |
+| Workspace build | Passed; existing large-chunk advisory remains |
+| Task review, snapshot consistency and Agent history regression suites | 12 passed |
+| Agent history UI states, paging, filters, retry and refresh | 6 passed |
+| Complete Web E2E | 39 passed, 0 failed (8.1 minutes) |
+| Complete workspace Vitest in CI, two parallel partitions plus the existing Windows process lane | 8,664 passed, 90 skipped, 0 failed; all 592 files accounted for |
+| npm lockfile validation | Passed; the already-used artood workspace package is explicitly declared as a Web test dependency |
+
+Web E2E uses the actual local server/PGlite, authenticated device pairing, the
+production WebSocket node client and process adapter, and an actual child process
+emitting controlled Codex JSONL. It checks success/failure, original request,
+operation input/output, final answer, event pagination, reload, instance filters,
+deleted identity/instance access and 1440/390/320 px layouts. Screenshots were
+reviewed. It does not invoke an external model, test signed native distribution,
+or establish deployment acceptance.
+
+Local evidence is retained under `artifacts/preview-gate/agent-history/`. The
+passing browser report is
+`apps/web/playwright-report/workflows-2026-11-13T03-00-08-515Z/index.html`.
+The earlier complete run (`workflows-2026-11-13T02-46-49-656Z`) retained 33 passes
+and 6 failures, then led to the explicit snapshot ordering and stable project
+inventory fixes. `snapshot-before-fix.log` preserves the failing ordering
+assertion; `snapshot-after-fix.log` records all 12 related cases passing. The
+initial standalone case's failure-reason expectation was also corrected from
+assumed wording to the actual `exit 1` contract; its original report remains in
+`workflows-2026-11-13T02-30-44-557Z`.
+
+The separately launched local full-suite diagnostic began before the snapshot
+ordering fix and is not the final coherent-code gate. It recorded slow failures
+in two imported-runtime cases, a GoalRunner case and storage startup/restore.
+The two runtime cases passed an unchanged focused rerun; all 62 runtime cases,
+all 21 GoalRunner cases and the ordinary four-case storage integration suite
+passed in the final runtime CI run. Original local output is retained rather
+than relabeled as passing. No timeout or platform guard was widened.
+
+At runtime code `01322ef`, GitHub's shared-checks and Windows process gates passed.
+The complete Vitest coverage record in
+[run 43355864133](https://github.com/Xiejiayun/artoo/actions/runs/43355864133)
+binds all three lanes to merge commit `6c5bd2625d6cb2b1945b823877e0b0f2cf92d8e0`,
+whose parents are main `6d1db54` and feature commit `01322ef`. Reporter JSON and
+the verified `coverage.json` are retained in the local evidence directory.
+The Mac gate failed waiting for the hidden `Goal title` field, matching baseline
+main run `43259718939`; the current failure is in run `43355864133`. Other remote
+partitions are tracked separately; local Web E2E success is not a claim that every
+native CI gate passed.

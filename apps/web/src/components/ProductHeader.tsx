@@ -21,7 +21,7 @@ export function ProductHeader({ onToggleMenu, menuOpen, detailsOpen, onToggleDet
 }): React.ReactNode {
   const { pathname, search } = useLocation();
   const { project, bootstrap } = useProject();
-  const title = TITLES[pathname];
+  const title = /^\/agents\/[^/]+\/history$/.test(pathname) ? "Agent history" : TITLES[pathname];
   const { goal } = useGoalContext(pathname === "/goals" || pathname === "/release", !title && (pathname !== "/channels" || new URLSearchParams(search).has("goal")));
   const destination = (to: string): string => !goal ? to : to === "/channels" ? goal.room_id ? `/channels?goal=${encodeURIComponent(goal.id)}&room=${encodeURIComponent(goal.room_id)}&project=${encodeURIComponent(goal.project_id)}` : to : `${to}?goal=${encodeURIComponent(goal.id)}`;
   const user = bootstrap.data?.user;

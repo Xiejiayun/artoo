@@ -24,6 +24,20 @@ const createReq: CreateTaskRequest = {
 };
 
 describe("ApiClient", () => {
+  it("encodes agent history paths and bounded cursor/filter queries without mutating requests", async () => {
+    server.use(http.get(`${BASE}/agents/:id/history`, ({ params, request }) => {
+      expect(params.id).toBe("agent/with space");
+      const query = new URL(request.url).searchParams;
+      expect(Object.fromEntries(query)).toEqual({ instance_id: "instance & 1", project_id: "project/1", status: "failed", before_run_id: "run/2", limit: "10" });
+      return HttpResponse.json({ version: 1, runs: [], next_before_run_id: null });
+    }), http.get(`${BASE}/agents/:id/history/:runId`, ({ params, request }) => {
+      expect(params.id).toBe("agent/with space"); expect(params.runId).toBe("run/1");
+      expect(Object.fromEntries(new URL(request.url).searchParams)).toEqual({ before: "42", limit: "25" });
+      return HttpResponse.json({ version: 1, events: [], next_before: null });
+    }));
+    await client.agentHistory("agent/with space", { instance_id: "instance & 1", project_id: "project/1", status: "failed", before_run_id: "run/2", limit: 10 });
+    await client.agentHistoryRun("agent/with space", "run/1", { before: 42, limit: 25 });
+  });
   it("creates an autonomous goal with one objective and keeps the request identity on the wire", async () => {
     const requestBody = { project_id: "proj_1", objective: "Build a journal\nKeep entries offline", verification_profile_id: "default", max_retries: 3 };
     server.use(http.post(`${BASE}/autonomous-goals`, async ({ request }) => {
