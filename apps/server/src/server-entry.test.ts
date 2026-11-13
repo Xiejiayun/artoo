@@ -11,6 +11,8 @@ const testPepper = "server-entry-test-pepper";
 const readyLine = /^Artoo server ready on ([0-9]+); storage=persistent$/;
 
 interface ObservedChild {
+  entry: string;
+  launchedAt: number;
   child: ChildProcess;
   stdout: string;
   stderr: string;
@@ -43,22 +45,40 @@ function checkpoint(scope: EntryCase): void {
 async function bounded<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([promise, new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(message)), milliseconds);
-    })]);
-  } finally { clearTimeout(timer); }
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), milliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Only OS runtime locations are inherited. In particular this excludes every
 // spelling of ARTOO_*, GOOGLE_*, AUTH_*, NODE_OPTIONS and NODE_PATH, so a developer's
 // configured database, provider, credentials or loaders cannot enter the child.
 function environment(root: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-    /^(path|systemroot|windir|systemdrive|comspec|temp|tmp|userprofile|homedrive|homepath|appdata|localappdata|programfiles|programfiles\(x86\))$/i.test(key)));
-  return { ...inherited, NODE_ENV: "development", AUTH_ENFORCE_API: "0",
-    ARTOO_HOST: "127.0.0.1", ARTOO_PORT: "0", ARTOO_DATA_DIR: join(root, "data"),
-    ARTOO_DB_DIR: join(root, "data", "db"), ARTOO_ARTIFACT_DIR: join(root, "data", "artifacts"),
-    ARTOO_WORKSPACE_ROOT: join(root, "workspace"), ...extra };
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) =>
+      /^(path|systemroot|windir|systemdrive|comspec|temp|tmp|userprofile|homedrive|homepath|appdata|localappdata|programfiles|programfiles\(x86\))$/i.test(
+        key,
+      ),
+    ),
+  );
+  return {
+    ...inherited,
+    NODE_ENV: "development",
+    AUTH_ENFORCE_API: "0",
+    ARTOO_HOST: "127.0.0.1",
+    ARTOO_PORT: "0",
+    ARTOO_DATA_DIR: join(root, "data"),
+    ARTOO_DB_DIR: join(root, "data", "db"),
+    ARTOO_ARTIFACT_DIR: join(root, "data", "artifacts"),
+    ARTOO_WORKSPACE_ROOT: join(root, "workspace"),
+    ...extra,
+  };
 }
 
 describe("server command-line entrypoints", () => {
@@ -66,8 +86,12 @@ describe("server command-line entrypoints", () => {
 
   beforeEach(() => {
     const temporaryParent = realpathSync.native(tmpdir());
-    current = { temporaryParent, root: realpathSync.native(mkdtempSync(join(temporaryParent, "artoo-server-entry-"))),
-      processes: [], cleaningUp: false };
+    current = {
+      temporaryParent,
+      root: realpathSync.native(mkdtempSync(join(temporaryParent, "artoo-server-entry-"))),
+      processes: [],
+      cleaningUp: false,
+    };
   });
 
   afterEach(async () => {
@@ -82,24 +106,39 @@ describe("server command-line entrypoints", () => {
           // own graceful shutdown; forced cleanup below never satisfies assertions.
           observed.child.send({ type: "shutdown" }, () => {});
         }
-        try { await bounded(observed.closed, 5000, "graceful cleanup timed out"); }
-        catch {
+        try {
+          await bounded(observed.closed, 5000, "graceful cleanup timed out");
+        } catch {
           observed.child.kill("SIGKILL");
-          try { await bounded(observed.closed, 5000, "forced cleanup did not close the child"); }
-          catch (error) { cleanupErrors.push(error as Error); }
+          try {
+            await bounded(observed.closed, 5000, "forced cleanup did not close the child");
+          } catch (error) {
+            cleanupErrors.push(error as Error);
+          }
         }
       }
-      if (!observed.closeSeen || (observed.child.pid !== undefined && !observed.exitSeen)
-        || !observed.stdoutEnded || !observed.stderrEnded) {
+      if (
+        !observed.closeSeen ||
+        (observed.child.pid !== undefined && !observed.exitSeen) ||
+        !observed.stdoutEnded ||
+        !observed.stderrEnded
+      ) {
         cleanupErrors.push(new Error("Child exit, close and both output EOFs must precede directory cleanup"));
       }
     }
     if (cleanupErrors.length) throw new AggregateError(cleanupErrors, `Retained server test directory: ${root}`);
     // Never recursively remove a computed path without checking its physical
     // parent and generated prefix, even after all owned processes are closed.
-    const physical = realpathSync.native(root), within = relative(temporaryParent, physical);
-    if (dirname(physical) !== temporaryParent || !basename(physical).startsWith("artoo-server-entry-")
-      || within === "" || within === ".." || within.startsWith(`..${sep}`) || resolve(temporaryParent, within) !== physical) {
+    const physical = realpathSync.native(root),
+      within = relative(temporaryParent, physical);
+    if (
+      dirname(physical) !== temporaryParent ||
+      !basename(physical).startsWith("artoo-server-entry-") ||
+      within === "" ||
+      within === ".." ||
+      within.startsWith(`..${sep}`) ||
+      resolve(temporaryParent, within) !== physical
+    ) {
       throw new Error(`Unexpected server test directory; retained: ${root}`);
     }
     rmSync(physical, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
@@ -109,21 +148,56 @@ describe("server command-line entrypoints", () => {
     checkpoint(scope);
     const { root, processes } = scope;
     expect(existsSync(entry), `Build the server before running its entrypoint regression: ${entry}`).toBe(true);
-    expect(existsSync(directEntry), "The real compiled server is required; this test never substitutes a mock server").toBe(true);
+    expect(
+      existsSync(directEntry),
+      "The real compiled server is required; this test never substitutes a mock server",
+    ).toBe(true);
     let finishReady!: (port: number | undefined) => void, finishClose!: () => void;
-    const ready = new Promise<number | undefined>(done => { finishReady = done; });
-    const closed = new Promise<void>(done => { finishClose = done; });
-    const child = spawn(process.execPath, [entry], { cwd: root, env: environment(root, extra),
-      windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"] });
-    const observed: ObservedChild = { child, stdout: "", stderr: "", stdoutEnded: false, stderrEnded: false,
-      exitSeen: false, exitCode: null, exitSignal: null, closeSeen: false, closeCode: null, closeSignal: null,
-      ready, closed };
+    const ready = new Promise<number | undefined>((done) => {
+      finishReady = done;
+    });
+    const closed = new Promise<void>((done) => {
+      finishClose = done;
+    });
+    const child = spawn(process.execPath, [entry], {
+      cwd: root,
+      env: environment(root, extra),
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    const observed: ObservedChild = {
+      entry,
+      launchedAt: Date.now(),
+      child,
+      stdout: "",
+      stderr: "",
+      stdoutEnded: false,
+      stderrEnded: false,
+      exitSeen: false,
+      exitCode: null,
+      exitSignal: null,
+      closeSeen: false,
+      closeCode: null,
+      closeSignal: null,
+      ready,
+      closed,
+    };
     processes.push(observed);
-    child.once("error", error => { observed.spawnError = error; finishReady(undefined); });
-    child.once("exit", (code, signal) => { observed.exitSeen = true; observed.exitCode = code; observed.exitSignal = signal; });
+    child.once("error", (error) => {
+      observed.spawnError = error;
+      finishReady(undefined);
+    });
+    child.once("exit", (code, signal) => {
+      observed.exitSeen = true;
+      observed.exitCode = code;
+      observed.exitSignal = signal;
+    });
     child.once("close", (code, signal) => {
-      observed.closeSeen = true; observed.closeCode = code; observed.closeSignal = signal;
-      finishReady(undefined); finishClose();
+      observed.closeSeen = true;
+      observed.closeCode = code;
+      observed.closeSignal = signal;
+      finishReady(undefined);
+      finishClose();
     });
     child.stdout!.on("data", (bytes: Buffer) => {
       observed.stdout += bytes.toString();
@@ -132,21 +206,46 @@ describe("server command-line entrypoints", () => {
         if (match) finishReady(Number(match[1]));
       }
     });
-    child.stderr!.on("data", (bytes: Buffer) => { observed.stderr += bytes.toString(); });
-    child.stdout!.once("end", () => { observed.stdoutEnded = true; });
-    child.stderr!.once("end", () => { observed.stderrEnded = true; });
+    child.stderr!.on("data", (bytes: Buffer) => {
+      observed.stderr += bytes.toString();
+    });
+    child.stdout!.once("end", () => {
+      observed.stdoutEnded = true;
+    });
+    child.stderr!.once("end", () => {
+      observed.stderrEnded = true;
+    });
     return observed;
   }
 
   async function healthy(scope: EntryCase, observed: ObservedChild): Promise<void> {
     checkpoint(scope);
-    const port = await bounded(observed.ready, 30_000, "Server did not emit readiness before its deadline");
+    const port = await bounded(observed.ready, 30_000, "Server did not emit readiness before its deadline").catch(
+      (error) => {
+        throw new Error(
+          `Server readiness failed: ${JSON.stringify({
+            entry: basename(observed.entry),
+            elapsed_ms: Date.now() - observed.launchedAt,
+            stdout: observed.stdout.slice(-4000),
+            stderr: observed.stderr.slice(-4000),
+            spawn_error: observed.spawnError?.message,
+            exit_seen: observed.exitSeen,
+            exit_code: observed.exitCode,
+            close_seen: observed.closeSeen,
+          })}`,
+          { cause: error },
+        );
+      },
+    );
     checkpoint(scope);
     expect(observed.spawnError).toBeUndefined();
     expect(port, `Server exited without listening: ${observed.stderr}`).toBeTypeOf("number");
     expect(port).toBeGreaterThan(0);
     expect(observed.closeSeen).toBe(false);
-    for (const [path, status] of [["/health/live", "ok"], ["/health/ready", "ready"]] as const) {
+    for (const [path, status] of [
+      ["/health/live", "ok"],
+      ["/health/ready", "ready"],
+    ] as const) {
       const response = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(5000) });
       checkpoint(scope);
       expect(response.status).toBe(200);
@@ -170,19 +269,25 @@ describe("server command-line entrypoints", () => {
 
   async function stop(scope: EntryCase, observed: ObservedChild): Promise<void> {
     checkpoint(scope);
-    await bounded((async () => {
-      await new Promise<void>((done, reject) => {
-        observed.child.send({ type: "shutdown" }, error => error ? reject(error) : done());
-      });
-      checkpoint(scope);
-      await observed.closed;
-    })(), 10_000, "Server did not send and close after its own IPC shutdown");
+    await bounded(
+      (async () => {
+        await new Promise<void>((done, reject) => {
+          observed.child.send({ type: "shutdown" }, (error) => (error ? reject(error) : done()));
+        });
+        checkpoint(scope);
+        await observed.closed;
+      })(),
+      10_000,
+      "Server did not send and close after its own IPC shutdown",
+    );
     checkpoint(scope);
     expectComplete(observed, 0);
-    expect(observed.stdout.split(/\r?\n/).filter(line => readyLine.test(line))).toHaveLength(1);
+    expect(observed.stdout.split(/\r?\n/).filter((line) => readyLine.test(line))).toHaveLength(1);
   }
 
-  it("starts through the development launcher, closes gracefully, and reopens its database through the direct entry", async ({ signal }) => {
+  it("starts through the development launcher, closes gracefully, and reopens its database through the direct entry", async ({
+    signal,
+  }) => {
     const scope = current;
     scope.signal = signal;
     const development = launch(scope, developmentEntry);
@@ -203,7 +308,9 @@ describe("server command-line entrypoints", () => {
     checkpoint(scope);
     expectComplete(direct, 1);
     expect(direct.stdout).not.toContain("Artoo server ready");
-    expect(direct.stderr.trim()).toBe("ARTOO_PAIRING_PEPPER is required (device pairing HMAC pepper); refusing to start without it");
+    expect(direct.stderr.trim()).toBe(
+      "ARTOO_PAIRING_PEPPER is required (device pairing HMAC pepper); refusing to start without it",
+    );
     expect(existsSync(join(scope.root, "data"))).toBe(false);
   }, 20_000);
 });

@@ -16,6 +16,7 @@
 | `npm run test:e2e --workspace @artoo/web` | Web Playwright E2E，需要已安装的 Chromium 与构建前置，见 [Web 配置](../apps/web/package.json) |
 | `npm run check:staged`、[check-changed.mjs](check-changed.mjs) | 暂存与提交差异的渐进质量门禁；[使用方法](../docs/code-quality.md) |
 | [ci-vitest-coverage.mjs](ci-vitest-coverage.mjs) | Windows CI 的 discovery/实际 JSON reporter 文件覆盖聚合，不替代测试执行 |
+| [gates/ci-vitest-browser-cache.mjs](gates/ci-vitest-browser-cache.mjs) | Windows Vitest lane 前后确认独立浏览器缓存与解析的 Chromium 均不存在，保留绑定提交的 JSON 记录 |
 
 `npm test` 不自动发现 `scripts/*.test.mjs` 或独立 fixture harness。
 按门禁入口和相应指南运行这些检查；POSIX 真实验证与 Windows native helper 验收有各自的平台前置。

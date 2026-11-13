@@ -52,6 +52,7 @@ jobs:
     timeout-minutes: 75
     env:
       ARTOO_CI_TEST_PARTITION: parallel
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.git/artoo-vitest-browserless-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
     strategy:
       fail-fast: false
       matrix:
@@ -65,12 +66,18 @@ jobs:
       - run: npm ci
       - run: npx playwright install chromium
         working-directory: apps/web
+        env:
+          # Retain installation until the isolated complete lanes are validated.
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/artoo-vitest-installer-${{ github.run_id }}-${{ github.run_attempt }}
       - run: npm run build:preview
       - run: node scripts/ci-vitest-coverage.mjs record parallel-${{ matrix.shard }} artifacts/preview-gate/vitest
       # list --filesOnly records discovery, not Vitest's shard allocation. The
       # aggregate checks actual JSON reporter sets from both executed shards.
       - run: npx vitest list --config vitest.ci.config.mjs --filesOnly --json=artifacts/preview-gate/vitest/discovery.json
+      - run: node scripts/gates/ci-vitest-browser-cache.mjs before artifacts/preview-gate/vitest
       - run: npm test -- --config vitest.ci.config.mjs --maxWorkers=2 --shard=${{ matrix.shard }}/2 --reporter=default --reporter=json --outputFile.json=artifacts/preview-gate/vitest/results.json
+      - run: node scripts/gates/ci-vitest-browser-cache.mjs after artifacts/preview-gate/vitest
+        if: always()
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -83,6 +90,7 @@ jobs:
     timeout-minutes: 75
     env:
       ARTOO_CI_TEST_PARTITION: windows-process
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.git/artoo-vitest-browserless-${{ github.run_id }}-${{ github.run_attempt }}-windows-process
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -96,7 +104,10 @@ jobs:
       - run: npx vitest list --config vitest.ci.config.mjs --filesOnly --json=artifacts/preview-gate/vitest/discovery.json
       # Dedicated runner and one file at a time; original per-case deadlines,
       # assertions and platform guards remain in the four complete test files.
+      - run: node scripts/gates/ci-vitest-browser-cache.mjs before artifacts/preview-gate/vitest
       - run: npm test -- --config vitest.ci.config.mjs --maxWorkers=1 --no-file-parallelism --reporter=default --reporter=json --outputFile.json=artifacts/preview-gate/vitest/results.json
+      - run: node scripts/gates/ci-vitest-browser-cache.mjs after artifacts/preview-gate/vitest
+        if: always()
       - uses: actions/upload-artifact@v4
         if: always()
         with:
