@@ -107,6 +107,7 @@ fix are in [#55](https://github.com/Xiejiayun/artoo/pull/55), runtime code
 | Agent history UI states, paging, filters, retry and refresh | 6 passed |
 | Complete Web E2E | 39 passed, 0 failed (8.1 minutes) |
 | Complete workspace Vitest in CI, two parallel partitions plus the existing Windows process lane | 8,664 passed, 90 skipped, 0 failed; all 592 files accounted for |
+| Earlier local full-suite diagnostic | Stopped before completion after final CI passed; 32 finished files reported 836 passed and 28 failed. Not a passing gate |
 | npm lockfile validation | Passed; the already-used artood workspace package is explicitly declared as a Web test dependency |
 
 Web E2E uses the actual local server/PGlite, authenticated device pairing, the
@@ -129,12 +130,19 @@ assumed wording to the actual `exit 1` contract; its original report remains in
 `workflows-2026-11-13T02-30-44-557Z`.
 
 The separately launched local full-suite diagnostic began before the snapshot
-ordering fix and is not the final coherent-code gate. It recorded slow failures
-in two imported-runtime cases, a GoalRunner case and storage startup/restore.
-The two runtime cases passed an unchanged focused rerun; all 62 runtime cases,
-all 21 GoalRunner cases and the ordinary four-case storage integration suite
-passed in the final runtime CI run. Original local output is retained rather
-than relabeled as passing. No timeout or platform guard was widened.
+ordering fix and is not the final coherent-code gate. It was stopped after final
+runtime CI passed. Its finished-file summaries recorded 28 failures: 2 in
+imported runtime, 1 in GoalRunner, 1 in storage startup/restore and 24 in imported
+design continuation. No complete local JSON report was produced. The two runtime
+cases passed an unchanged focused rerun; all 62 runtime cases, all 21 GoalRunner
+cases, the ordinary four-case storage integration suite and all 185 imported
+continuation cases passed in final runtime CI. Original local output is retained
+rather than relabeled as passing. No timeout or platform guard was widened.
+
+`local-diagnostic-stop.json` records the verified job ownership, confirmed exit
+of its five processes and unfinished local result. Temporary fixture directories
+were retained without deletion. The complete CI reports and passing Web E2E are
+the final acceptance evidence.
 
 At runtime code `01322ef`, GitHub's shared-checks and Windows process gates passed.
 The complete Vitest coverage record in
