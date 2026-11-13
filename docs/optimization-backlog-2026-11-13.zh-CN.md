@@ -77,7 +77,7 @@
   3. 如果真的会出现几百条以上,引入"显示更多"按钮(最小方案),不要为了虚拟化引入新依赖,除非有数据支撑。
 - **验收**:渲染节点数有上限,现有测试通过。
 
-### [x] T5 `perf(server): audit list endpoints for pagination and indexes` (`3b8c239`)
+### [x] T5 `perf(server): audit list endpoints for pagination and indexes` (`3b8c239`, `626ebba`)
 - **ROI**:中,需要先调查。
 - **背景**:`apps/server/src/*routes.ts` 里只有 `notifications` 和 `moderation` 两类接口明确支持 `limit` 或 `before`。schema 有较多表(`packages/db/src/schema.ts`)。
 - **做法(分两步,各一个 commit)**:
@@ -86,7 +86,7 @@
 - **约束**:不得改变现有响应的字段含义。新增分页字段必须是可选的。
 - **验收**:对应的 `apps/server/src/*.test.ts` 通过。
 
-### T6 `refactor(web): fold ad-hoc page CSS into modular ui/*.css`
+### [x] T6 `refactor(web): fold ad-hoc page CSS into modular ui/*.css`
 - **ROI**:低中。
 - **背景**:`apps/web/src/styles.css` 约 1329 行,同时存在 `ui/*.css` 模块化样式,两者有重叠。
 - **做法**:每次只迁移一块(例如与 `ChannelsPage` 相关的规则)到对应的 `ui/*.css`,保持选择器和特异性不变。每迁移一块提交一次。
