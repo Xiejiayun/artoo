@@ -5,6 +5,7 @@ import { Box, RefreshCw, SearchX } from "lucide-react";
 import { CAPABILITIES, PERMISSION_CATEGORIES, SKILL_API_VERSION, type AgentInstance } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { usePollMs } from "../app/RealtimeContext.js";
 import type { BootstrapResponse } from "../api/types.js";
 import { Badge, Button, EmptyState, ErrorState, SearchInput, Select } from "../ui/index.js";
 import { SkillInstallForm, SkillPermissionSummary } from "./InventorySetup.js";
@@ -14,10 +15,11 @@ import "./skill-inventory.css";
 
 export function useSkillInventory(bootstrap: BootstrapResponse | undefined) {
   const api = useApi();
-  const skillsQuery = useQuery({ queryKey: queryKeys.skillInstalls, queryFn: () => api.listSkillInstalls(), refetchInterval: 10000 });
+  const poll10s = usePollMs(10000);
+  const skillsQuery = useQuery({ queryKey: queryKeys.skillInstalls, queryFn: () => api.listSkillInstalls(), refetchInterval: poll10s });
   const computers = bootstrap?.computers ?? [];
   const runtimeQueries = useQueries({ queries: computers.map((computer) => ({
-    queryKey: queryKeys.computerRuntimes(computer.id), queryFn: () => api.listComputerRuntimes(computer.id), refetchInterval: 10000,
+    queryKey: queryKeys.computerRuntimes(computer.id), queryFn: () => api.listComputerRuntimes(computer.id), refetchInterval: poll10s,
   })) });
   const native: NativeSkillEntry[] = computers.flatMap((computer, index) =>
     (runtimeQueries[index]?.data?.runtimes ?? []).flatMap((runtime) =>
@@ -51,7 +53,7 @@ export function AgentSkills({ inventory, instance }: { inventory: Inventory; ins
 
 export function SkillCatalogPage(): React.ReactNode {
   const api = useApi();
-  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(), refetchInterval: 10000 });
+  const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap(), refetchInterval: usePollMs(10000) });
   const inventory = useSkillInventory(bootstrap.data);
   const [search, setSearch] = useState("");
   const [source, setSource] = useState("all");

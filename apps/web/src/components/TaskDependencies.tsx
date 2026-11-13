@@ -3,6 +3,7 @@ import { useState } from "react";
 import { DEPENDENCY_TYPES, type DependencyType, type Task } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { usePollMs } from "../app/RealtimeContext.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { Badge, Button, Select } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
@@ -14,7 +15,7 @@ export function TaskDependencies({ task }: { task: Task }): React.ReactNode {
   const [type, setType] = useState<DependencyType>("blocks");
   const dependencies = useQuery({ queryKey: ["dependencies", task.id], queryFn: () => api.listDependencies(task.id) });
   const tasks = useQuery({ queryKey: queryKeys.tasks(task.project_id), queryFn: () => api.listTasks(task.project_id) });
-  const leases = useQuery({ queryKey: ["leases", task.project_id], queryFn: () => api.listLeases(task.project_id), refetchInterval: 10000 });
+  const leases = useQuery({ queryKey: ["leases", task.project_id], queryFn: () => api.listLeases(task.project_id), refetchInterval: usePollMs(10000) });
   const refresh = async (): Promise<void> => { await query.invalidateQueries({ queryKey: ["dependencies", task.id] }); };
   const add = useMutation({ mutationFn: () => api.createDependency(task.id, { depends_on_task_id: prerequisite, type }, newIdempotencyKey()), onSuccess: async () => { setPrerequisite(""); await refresh(); } });
   const remove = useMutation({ mutationFn: (id: string) => api.deleteDependency(task.id, id, newIdempotencyKey()), onSuccess: refresh });

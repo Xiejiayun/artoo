@@ -4,6 +4,7 @@ import { Flag, Plus, Download, ListChecks, MessageSquare, ArrowRight, Sparkles, 
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { PreparedGoalEntryV1Schema, canProposePlan, canTransitionGoal, type Goal, type GoalAutomation, type TaskSpec } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
+import { usePollMs } from "../app/RealtimeContext.js";
 import { useProject } from "../app/useProject.js";
 import { useSelection } from "../app/SelectionContext.js";
 import { useGoalContext } from "../app/useGoalContext.js";
@@ -106,8 +107,10 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
   const automation = useQuery({ queryKey: ["goal-automation", goal.id], queryFn: () => api.getGoalAutomation(goal.id), refetchInterval: 5000 });
   const autonomous = !!automation.data?.automation;
   const manual = automation.data?.automation === null;
-  const plans = useQuery({ queryKey: ["plans", goal.id], queryFn: () => api.listPlans(goal.id), refetchInterval: autonomous ? 5000 : false });
-  const checkpoints = useQuery({ queryKey: ["checkpoints", goal.id], queryFn: () => api.listCheckpoints(goal.id), refetchInterval: 10000 });
+  const poll5s = usePollMs(5000);
+  const poll10s = usePollMs(10000);
+  const plans = useQuery({ queryKey: ["plans", goal.id], queryFn: () => api.listPlans(goal.id), refetchInterval: autonomous ? poll5s : false });
+  const checkpoints = useQuery({ queryKey: ["checkpoints", goal.id], queryFn: () => api.listCheckpoints(goal.id), refetchInterval: poll10s });
   const refresh = async (): Promise<void> => { await Promise.all(["goals", "plans", "checkpoints", "tasks", "goal-automation"].map((key) => query.invalidateQueries({ queryKey: [key] }))); };
   const action = useMutation({ mutationFn: (name: "pause" | "resume" | "cancel" | "reconcile") => api.goalAction(goal.id, name, newIdempotencyKey()), onSuccess: async () => { setConfirmCancel(false); await refresh(); }, onError: refresh });
   const planAction = useMutation({ mutationFn: ({ id, name }: { id: string; name: "accept" | "reject" }) => api.planAction(id, name, newIdempotencyKey()), onSuccess: refresh });

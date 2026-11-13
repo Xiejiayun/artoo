@@ -33,7 +33,7 @@
 
 ## 待办(按优先级)
 
-### T1 `perf(web): extend WS-aware polling to remaining fixed intervals`
+### [x] T1 `perf(web): extend WS-aware polling to remaining fixed intervals`
 - **ROI**:高。改动小,可直接减少后台请求量。
 - **背景**:仍有固定间隔的轮询未使用 `usePollMs`:
   - `components/InventoryPages.tsx`(约第 53 行,daemons,5s)

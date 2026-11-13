@@ -7,6 +7,7 @@ import { FolderKanban, Laptop, Link2, Monitor, Smartphone } from "lucide-react";
 import type { DevicePlatform } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { usePollMs } from "../app/RealtimeContext.js";
 import { useProject } from "../app/useProject.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { Badge, Button, EmptyState, Input, Modal, Select } from "../ui/index.js";
@@ -26,7 +27,7 @@ export function SettingsPage(): React.ReactNode {
   const [platform, setPlatform] = useState<DevicePlatform>("windows");
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
   const [confirmEnroll, setConfirmEnroll] = useState<string | null>(null);
-  const devices = useQuery({ queryKey: ["devices"], queryFn: () => api.listDevices(), refetchInterval: 15000 });
+  const devices = useQuery({ queryKey: ["devices"], queryFn: () => api.listDevices(), refetchInterval: usePollMs(15000) });
   const pairing = useMutation({ mutationFn: () => api.createPairing(platform, newIdempotencyKey()) });
   const revoke = useMutation({ mutationFn: (id: string) => api.revokeDevice(id, newIdempotencyKey()), onSuccess: async () => { setConfirmRevoke(null); await query.invalidateQueries({ queryKey: ["devices"] }); } });
   const enroll = useMutation({ mutationFn: (id: string) => api.enrollDevice(id, newIdempotencyKey()), onSuccess: async () => {

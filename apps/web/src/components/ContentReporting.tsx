@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import type { Message } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
+import { usePollMs } from "../app/RealtimeContext.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { Button, Modal, Textarea } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
@@ -26,7 +27,8 @@ export function MyContentReports(): React.ReactNode {
   const api = useApi();
   const [open, setOpen] = useState(false);
   const [before, setBefore] = useState<string>();
-  const query = useQuery({ queryKey: ["moderation", "my-reports", before], queryFn: () => api.myContentReports(before), enabled: open, refetchInterval: open ? 15000 : false });
+  const poll15s = usePollMs(15000);
+  const query = useQuery({ queryKey: ["moderation", "my-reports", before], queryFn: () => api.myContentReports(before), enabled: open, refetchInterval: open ? poll15s : false });
   return <section className="settings-section" aria-label="My reports"><header className="settings-section__heading"><div><h2>My reports</h2><p>Follow the messages you reported to your team administrators.</p></div>
     <Button onClick={() => setOpen(!open)}>{open ? "Hide reports" : "View my reports"}</Button></header>
     {open && <div className="settings-section__body u-stack"><ActionError error={query.error} />

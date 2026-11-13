@@ -2,13 +2,15 @@ import { useQuery } from "@tanstack/react-query";
 import type { Run } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { usePollMs } from "../app/RealtimeContext.js";
 
 /** Display provider-reported measurements without inventing a cost estimate. */
 export function RunUsageSummary({ run }: { run: Run }): React.ReactNode {
   const api = useApi();
+  const poll8s = usePollMs(8000);
   const result = useQuery({
     queryKey: queryKeys.runUsage(run.id), queryFn: () => api.getRunUsage(run.id),
-    refetchInterval: ["completed", "failed", "cancelled"].includes(run.status) ? false : 8000,
+    refetchInterval: ["completed", "failed", "cancelled"].includes(run.status) ? false : poll8s,
   });
   if (result.isLoading) return <p className="t-subtle">Loading usage…</p>;
   if (result.error) return <p className="t-subtle">Usage unavailable: could not sync with the server.</p>;

@@ -10,7 +10,7 @@ import type { BootstrapResponse, MessagesResponse } from "../api/types.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
-import { useSubscription } from "../app/RealtimeContext.js";
+import { usePollMs, useSubscription } from "../app/RealtimeContext.js";
 import { appendMessages, mergeMessages } from "../app/roomMessages.js";
 import { messageIdentity } from "../app/messageIdentity.js";
 import { DRAFTS_CLEARED_EVENT, readRoomDraft, roomDraftKey, writeRoomDraft, type RoomDraft } from "../app/roomDrafts.js";
@@ -74,7 +74,7 @@ export function RoomConversation({ roomId, projectId, taskId, goalId, threadRoot
       // Read the latest cache after awaiting to preserve concurrently loaded history.
       return cached?.next_after && current ? appendMessages(current, result) : { ...result, messages: mergeMessages(current?.messages ?? [], result.messages) };
     },
-    refetchInterval: 8000,
+    refetchInterval: usePollMs(8000),
   });
   const earlier = useMutation({
     mutationFn: () => api.listMessages(roomId, { limit: 50, before: messages.data!.next_before!, ...threadQuery }),

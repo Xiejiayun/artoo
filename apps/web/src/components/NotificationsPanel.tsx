@@ -3,7 +3,7 @@ import type { Notification } from "@artoo/domain";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
-import { useSubscription } from "../app/RealtimeContext.js";
+import { usePollMs, useSubscription } from "../app/RealtimeContext.js";
 import { Badge, Button } from "../ui/index.js";
 import { ActionError } from "./ActionError.js";
 
@@ -16,7 +16,7 @@ export function useNotifications() {
     queryFn: ({ pageParam }) => api.listNotifications({ limit: 50, ...(pageParam ? { before: pageParam } : {}) }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.has_more && page.next_before ? page.next_before : undefined,
-    enabled: !!bootstrap.data, refetchInterval: 8000,
+    enabled: !!bootstrap.data, refetchInterval: usePollMs(8000),
   });
   const items = [...new Map(query.data?.pages.flatMap((page) => page.notifications).map((notification) => [notification.id, notification]) ?? []).values()];
   return { ...query, items, unreadCount: query.data?.pages[0]?.unread_count };
