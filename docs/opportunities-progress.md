@@ -138,6 +138,12 @@ C1 Approvals/Leases 的六个正式端点和一个开发审批端点原样移入
 
 本步根 typecheck、server build、3 文件 staged 质量、iOS 22 请求/58 端点静态契约通过。Node 24 单 worker 的审批、执行前门控和租约完整回归 3 文件 19 项通过，覆盖替换/并发决策/实际分派、历史与 blocker 关联、路径冲突/释放/过期与非法输入（`.git/opt-c1-approvals-*`）。最终统一门禁仍待后续集成。
 
+C1 Approvals/Leases 通过 [PR #92](https://github.com/Xiejiayun/artoo/pull/92) 合并为 `282935f`（实现 `b9329a7`），再次拉取 main 后开展 Memories 提取。
+
+C1 Memories 的六个端点原序移入 `memory-routes.ts`，保留普通列表 1–1000 与上下文检索非负 limit 的不同规则、静态 context 路由、接受/拒绝/替换和字面搜索行为。AST 比对确认处理器、上下文与还原后的 app 非 import 语句/公开签名一致。根 typecheck、server build、3 文件 staged 质量、iOS 22 请求/58 端点静态契约通过；Node 24 单 worker 的完整 Memory 与服务端搜索 2 文件 19 项通过，覆盖组织鉴权、过滤后上限、接受后检索和 supersede（`.git/opt-c1-memories-*`）。
+
+当前方案指定的 app 内联领域已逐项提取；schema 和其余大文件仍需按依赖/实际边界评估，不能仅按行数宣布整个 C1 完成。#88 远程 shared-checks、Mac desktop、必需 Windows/Linux 打包聚合等成功；iOS/第二个 Vitest 分片尚未完成，不视为该轮完整 CI 通过。#86 两个 Vitest 分片、进程分区和 shared 聚合已成功，iOS 尚未结束，最终统一验收仍待后续集成。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
