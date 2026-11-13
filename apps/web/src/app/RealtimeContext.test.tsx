@@ -93,62 +93,69 @@ describe("RealtimeProvider", () => {
     expect(queryClient.getQueryData(foreign)).toEqual(data);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["message-search", "room_1"] });
   });
-  it("backs off online goal polling and refetches all evidence on a project event", async () => {
-    const socket = new FakeSocket();
-    const queryClient = new QueryClient();
-    let updated = false;
-    const readers = [queryKeys.goalAutomation, queryKeys.goalRelease, queryKeys.goalApplicationPublication].map(
-      (key) => ({ key: key("goal_1"), read: vi.fn(async () => (updated ? "updated" : "initial")) }),
-    );
-    function EvidenceProbe() {
-      useSubscription(["project:proj_artoo"]);
-      const interval = usePollMs(5000);
-      const automation = useQuery({ queryKey: readers[0]!.key, queryFn: readers[0]!.read, refetchInterval: interval });
-      const release = useQuery({ queryKey: readers[1]!.key, queryFn: readers[1]!.read, refetchInterval: interval });
-      const application = useQuery({ queryKey: readers[2]!.key, queryFn: readers[2]!.read, refetchInterval: 5000 });
-      return (
-        <p>
-          {interval} · {automation.data}/{release.data}/{application.data}
-        </p>
+  it.each(["goal.automation.updated", "product.release.health"])(
+    "backs off online goal polling and refetches all evidence on %s",
+    async (eventType) => {
+      const socket = new FakeSocket();
+      const queryClient = new QueryClient();
+      let updated = false;
+      const readers = [queryKeys.goalAutomation, queryKeys.goalRelease, queryKeys.goalApplicationPublication].map(
+        (key) => ({ key: key("goal_1"), read: vi.fn(async () => (updated ? "updated" : "initial")) }),
       );
-    }
-    render(
-      <QueryClientProvider client={queryClient}>
-        <RealtimeProvider socketFactory={() => socket} reconnectDelayMs={0}>
-          <EvidenceProbe />
-        </RealtimeProvider>
-      </QueryClientProvider>,
-    );
-    expect(await screen.findByText("5000 · initial/initial/initial")).toBeInTheDocument();
-    act(() => socket.open());
-    expect(await screen.findByText("30000 · initial/initial/initial")).toBeInTheDocument();
-    await waitFor(() => {
-      for (const { read } of readers) expect(read).toHaveBeenCalledTimes(2);
-    });
-    updated = true;
-    act(() =>
-      socket.emit(
-        JSON.stringify({
-          type: "event",
-          topic: "project:proj_artoo",
-          event: {
-            id: "goal_update",
-            type: "goal.automation.updated",
-            schema_version: "2026-06-11",
-            organization_id: "org_default",
-            actor: { type: "system", id: "goal_runner" },
-            occurred_at: "2026-06-13T00:00:00Z",
-            correlation_id: "goal_1",
-            project_id: "proj_artoo",
-            payload: { goal_id: "goal_1" },
-          },
-        }),
-      ),
-    );
-    expect(await screen.findByText("30000 · updated/updated/updated")).toBeInTheDocument();
-    act(() => socket.closeWith(1006));
-    expect(await screen.findByText("5000 · updated/updated/updated")).toBeInTheDocument();
-  });
+      function EvidenceProbe() {
+        useSubscription(["project:proj_artoo"]);
+        const interval = usePollMs(5000);
+        const automation = useQuery({
+          queryKey: readers[0]!.key,
+          queryFn: readers[0]!.read,
+          refetchInterval: interval,
+        });
+        const release = useQuery({ queryKey: readers[1]!.key, queryFn: readers[1]!.read, refetchInterval: interval });
+        const application = useQuery({ queryKey: readers[2]!.key, queryFn: readers[2]!.read, refetchInterval: 5000 });
+        return (
+          <p>
+            {interval} · {automation.data}/{release.data}/{application.data}
+          </p>
+        );
+      }
+      render(
+        <QueryClientProvider client={queryClient}>
+          <RealtimeProvider socketFactory={() => socket} reconnectDelayMs={0}>
+            <EvidenceProbe />
+          </RealtimeProvider>
+        </QueryClientProvider>,
+      );
+      expect(await screen.findByText("5000 · initial/initial/initial")).toBeInTheDocument();
+      act(() => socket.open());
+      expect(await screen.findByText("30000 · initial/initial/initial")).toBeInTheDocument();
+      await waitFor(() => {
+        for (const { read } of readers) expect(read).toHaveBeenCalledTimes(2);
+      });
+      updated = true;
+      act(() =>
+        socket.emit(
+          JSON.stringify({
+            type: "event",
+            topic: "project:proj_artoo",
+            event: {
+              id: "goal_update",
+              type: eventType,
+              schema_version: "2026-06-11",
+              organization_id: "org_default",
+              actor: { type: "system", id: "goal_runner" },
+              occurred_at: "2026-06-13T00:00:00Z",
+              correlation_id: "goal_1",
+              project_id: "proj_artoo",
+              payload: { goal_id: "goal_1" },
+            },
+          }),
+        ),
+      );
+      expect(await screen.findByText("30000 · updated/updated/updated")).toBeInTheDocument();
+      act(() => socket.closeWith(1006));
+      expect(await screen.findByText("5000 · updated/updated/updated")).toBeInTheDocument();
+    },
+  );
 
   it("refetches active planning progress from a room push without waiting for polling", async () => {
     const socket = new FakeSocket();

@@ -501,6 +501,7 @@ async function main() {
             .getByRole("button", { name: new RegExp(fixture.goal_title) })
             .click();
           const planning = page.getByRole("region", { name: "Agent planning", exact: true });
+          await planning.getByText("Choose planning agents", { exact: true }).click();
           await planning.getByRole("checkbox", { name: new RegExp(fixture.planner_name) }).check();
           await planning.getByRole("checkbox", { name: new RegExp(fixture.reviewer_name) }).check();
           await planning.getByLabel("Discussion rounds", { exact: true }).fill("1");
@@ -517,6 +518,8 @@ async function main() {
           const plans = page.getByRole("region", { name: "Plans", exact: true });
           await expect(plans.getByText(fixture.task_1_title, { exact: true })).toBeVisible();
           await expect(plans.getByText(fixture.task_2_title, { exact: true })).toBeVisible();
+          await plans.getByText(fixture.task_1_title, { exact: true }).click();
+          await plans.getByText(fixture.task_2_title, { exact: true }).click();
           await expect(plans.getByText(fixture.task_1_criterion, { exact: true })).toBeVisible();
           await expect(plans.getByText(fixture.task_2_criterion, { exact: true })).toBeVisible();
           await expect(plans.getByText(`Depends on: ${fixture.task_1_title}`, { exact: true })).toBeVisible();

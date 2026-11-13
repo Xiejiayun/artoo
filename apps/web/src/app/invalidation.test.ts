@@ -19,7 +19,9 @@ function event(partial: Partial<EventEnvelope> & Pick<EventEnvelope, "type">): E
 describe("invalidationsForEvent", () => {
   it.each([
     "goal.automation.updated",
-    "goal.release.health",
+    "product.release.queued",
+    "product.release.completed",
+    "product.release.health",
     "goal.application-publication.observation",
     "goal.plan_accepted",
     "goal.checkpoint_created",
