@@ -1,5 +1,12 @@
 import Foundation
 
+public struct NativeNotificationPage: Decodable, Sendable {
+    public let notifications: [JSONValue]
+    public let nextBefore: String?
+    public let hasMore: Bool
+    public let unreadCount: Int
+}
+
 /// Preserves extensible server records without silently discarding new fields.
 public enum JSONValue: Codable, Equatable, Sendable {
     case object([String: JSONValue]), array([JSONValue]), string(String), number(Double), bool(Bool), null
