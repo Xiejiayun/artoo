@@ -8,6 +8,7 @@ import { usePollMs } from "../app/RealtimeContext.js";
 import { useProject } from "../app/useProject.js";
 import { useGoalContext } from "../app/useGoalContext.js";
 import { Badge, Button, EmptyState } from "../ui/index.js";
+import { LoadingView } from "./LoadingView.js";
 import { ActionError } from "./ActionError.js";
 import { ApplicationPublicationProgress } from "./GoalsPage.js";
 
@@ -18,7 +19,7 @@ export function ReleasePage(): React.ReactNode {
   return <section className="product-page os-release-page" aria-label="Releases">
     <header className="os-page-heading"><div><span className="os-eyebrow"><Rocket size={14} aria-hidden="true" />Deliver with confidence</span><h1>Release</h1><p>Verified output, publication checks, and the latest reported health.</p></div><Link className="os-secondary-link" to={selected ? `/goals?goal=${encodeURIComponent(selected.id)}` : "/goals"}>Manage in Plan<ArrowUpRight size={14} aria-hidden="true" /></Link></header>
     <ActionError error={bootstrap.error ?? goals.error} />
-    {(bootstrap.isLoading || goals.isLoading) && <p role="status">Loading release goals…</p>}
+    {!goals.data && (bootstrap.isLoading || goals.isLoading) && <LoadingView label="Loading release goals…" shape="release" />}
     {(bootstrap.error || goals.error) && <Button onClick={() => { void bootstrap.refetch(); void goals.refetch(); }}>Retry release goals</Button>}
     {goals.data?.goals.length === 0 && <EmptyState icon={Rocket} title="Your first release starts with a plan" description="Create a goal in Plan and select a configured publishing destination. Release evidence will appear here as your team delivers." action={<Link className="os-primary-link" to="/goals">Open Plan<ArrowUpRight size={14} aria-hidden="true" /></Link>} />}
     {requested && goals.isSuccess && !selected && <p role="status">This goal is unavailable in the selected project. <Button onClick={() => selectGoal(null)}>Show project goals</Button></p>}
@@ -50,9 +51,11 @@ function ReleaseDetail({ goal }: { goal: Goal }): React.ReactNode {
   const status = releaseQuery.isError ? "Sync unavailable" : health ? health.state.replaceAll("_", " ") : published ? "Published" : release?.status.replaceAll("_", " ") ?? "Not published";
   const checkPassed = checks.length > 0 && checks.every((check) => check.passed);
   const tone = releaseQuery.isError ? "warning" : health && health.state !== "healthy" ? "danger" : published ? "success" : release?.status === "failed" ? "danger" : "neutral";
+  if ((automation.isLoading || releaseQuery.isLoading) && !releaseQuery.data && !automation.error && !releaseQuery.error) {
+    return <LoadingView label="Loading publication evidence…" />;
+  }
   return <div className="os-release-content">
     <section className="os-card os-release-overview" aria-label="Publication overview"><div className="os-release-overview__top"><span className="os-feature-icon"><Rocket size={22} aria-hidden="true" /></span><Badge tone={tone}>{status}</Badge></div><h2>{goal.title}</h2><p>{goal.objective}</p>
-      {(automation.isLoading || releaseQuery.isLoading) && <p role="status">Loading publication evidence…</p>}
       {!release && releaseQuery.isSuccess && !automation.data?.automation?.app_publication && <p className="os-release-note">{automation.data?.automation?.release_profile_id ? "Publication is waiting for implementation, verification, and independent review." : "This goal has no recorded publication. Configure publishing when creating an Agent Team goal in Plan."}</p>}
       {release && <p className="os-release-note">{published ? "Publication was confirmed by the executor. Health below reflects the latest received observation." : "The publication is not confirmed. Review its recorded state before continuing."}</p>}
       {endpoint && <a className="os-primary-link" href={endpoint} target="_blank" rel="noopener noreferrer">Open published product<ArrowUpRight size={15} aria-hidden="true" /></a>}

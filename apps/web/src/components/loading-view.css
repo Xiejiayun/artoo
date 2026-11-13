@@ -1,0 +1,11 @@
+/* Scope the status reset: legacy global status padding must not alter these layouts. */
+.loading-view[role="status"] { padding: 0; min-width: 0; text-align: start; }
+.loading-view__label { display: block; color: var(--text-muted); font-size: var(--text-small); margin-bottom: var(--space-3); }
+.loading-view__rows, .loading-view__cards, .loading-view__form { display: grid; gap: var(--space-4); min-width: 0; }
+.loading-view__row, .loading-view__card { display: grid; gap: var(--space-4); min-width: 0; padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.loading-view__card { padding: var(--space-5); min-height: 180px; }
+.loading-view__form { max-width: 680px; }
+.loading-view__form > div { display: grid; gap: var(--space-2); }
+.loading-view--page[role="status"] { padding: var(--space-6); }
+.loading-view--page .loading-view__cards { margin-top: var(--space-5); }
+.loading-view--release .loading-view__cards { max-width: 860px; }
