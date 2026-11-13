@@ -10,8 +10,14 @@ const suite = args.find((arg) => arg.startsWith("--suite="))?.slice(8) ?? "share
 if (args.some((arg) => arg !== "--list" && !/^--suite=(shared|shared-checks|ios|desktop|mac)$/.test(arg))) {
   throw new Error("Usage: npm run verify:preview -- [--suite=shared|shared-checks|ios|desktop|mac] [--list]");
 }
-const npm = [process.env.npm_execpath, resolve(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")].find((path) => path && existsSync(path));
-const runNpm = (name, ...command) => ({ name, command: npm ? process.execPath : "npm", args: npm ? [npm, ...command] : command });
+const npm = [process.env.npm_execpath, resolve(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")].find(
+  (path) => path && existsSync(path),
+);
+const runNpm = (name, ...command) => ({
+  name,
+  command: npm ? process.execPath : "npm",
+  args: npm ? [npm, ...command] : command,
+});
 const runNode = (name, script) => ({ name, command: process.execPath, args: [script] });
 // CI partitions this inventory into two two-worker jobs and one serial
 // Windows process job; its aggregate checks actual reporter file coverage.
@@ -30,6 +36,7 @@ const suites = {
     runNode("E2E report integrity", "scripts/e2e-report.test.mjs"),
     runNode("Native PNG evidence integrity", "scripts/png-evidence.test.mjs"),
     runNode("Exact native UI suite contract", "apps/ios/scripts/ui-suite-contract.test.mjs"),
+    runNode("Common Xcode preparation binding", "apps/ios/scripts/project-preparation.test.mjs"),
     runNode("Native fixture session authentication and expiry", "scripts/ios-ui-session.test.mjs"),
     runNode("Native peer boundary deadline", "scripts/ios-ui-peer-boundary.test.mjs"),
     runNode("Native node transition failure diagnostics", "scripts/ios-ui-workflows-fixture.test.mjs"),
@@ -39,10 +46,19 @@ const suites = {
     runNode("Portable Git worktree evidence", "scripts/fixtures/git-worktree-evidence.test.mjs"),
     runNode("Correction subprocess and real Git integrity", "scripts/fixtures/execution-correction.test.mjs"),
     runNode("Correction observer control and artifact isolation", "scripts/ios-ui-correction-fixture.test.mjs"),
-    runNode("Correction production protocol and evidence integrity", "scripts/fixtures/execution-correction-results.test.mjs"),
+    runNode(
+      "Correction production protocol and evidence integrity",
+      "scripts/fixtures/execution-correction-results.test.mjs",
+    ),
     runNode("Zero-artifact subprocess and real Git integrity", "scripts/fixtures/zero-artifact-workspace.test.mjs"),
-    runNode("Zero-artifact passive observer and exported bytes", "scripts/fixtures/zero-artifact-workspace-scenario.test.mjs"),
-    runNode("Zero-artifact production protocol and evidence integrity", "scripts/fixtures/zero-artifact-workspace-protocol.test.mjs"),
+    runNode(
+      "Zero-artifact passive observer and exported bytes",
+      "scripts/fixtures/zero-artifact-workspace-scenario.test.mjs",
+    ),
+    runNode(
+      "Zero-artifact production protocol and evidence integrity",
+      "scripts/fixtures/zero-artifact-workspace-protocol.test.mjs",
+    ),
     runNode("Native retained-work observer isolation", "scripts/ios-ui-retention-fixture.test.mjs"),
     runNode("Owned simulator clipboard commands", "scripts/ios-simulator-clipboard.test.mjs"),
     runNode("Fixture simulator ownership binding", "scripts/ios-ui-simulator.test.mjs"),
@@ -62,6 +78,7 @@ const suites = {
   ios: [
     runNode("Native PNG evidence integrity", "scripts/png-evidence.test.mjs"),
     runNode("Exact native UI suite contract", "apps/ios/scripts/ui-suite-contract.test.mjs"),
+    runNode("Common Xcode preparation binding", "apps/ios/scripts/project-preparation.test.mjs"),
     runNode("Native peer boundary deadline", "scripts/ios-ui-peer-boundary.test.mjs"),
     runNode("Native node transition failure diagnostics", "scripts/ios-ui-workflows-fixture.test.mjs"),
     runNode("Native suite evidence isolation", "scripts/ios-ui-suite-evidence.test.mjs"),
@@ -78,7 +95,10 @@ const suites = {
     runNode("Native Copy probe evidence", "scripts/ios-ui-clipboard-evidence.test.mjs"),
     runNode("Native retained-work evidence integrity", "scripts/ios-ui-retention-evidence.test.mjs"),
     runNode("Native correction retained-byte evidence", "scripts/ios-ui-correction-evidence.test.mjs"),
-    runNode("Zero-artifact passive observer and exported bytes", "scripts/fixtures/zero-artifact-workspace-scenario.test.mjs"),
+    runNode(
+      "Zero-artifact passive observer and exported bytes",
+      "scripts/fixtures/zero-artifact-workspace-scenario.test.mjs",
+    ),
     runNode("Owned native process-group cleanup", "scripts/owned-process-group.test.mjs"),
     runNode("native member revocation fixture integrity", "scripts/ios-ui-member-revocation.test.mjs"),
     runNode("native member credential observation", "scripts/ios-ui-member-claim-observer.test.mjs"),
@@ -87,9 +107,20 @@ const suites = {
     runNode("Native fixture session authentication and expiry", "scripts/ios-ui-session.test.mjs"),
     runNode("native static API contracts", "apps/ios/scripts/verify-contracts.mjs"),
     runNode("Xcode build and XCTest", "apps/ios/scripts/test-macos.mjs"),
-    runNode("core, assistant, mentions, correction and retained-work native UI suites", "scripts/ios-ui-suites-e2e.mjs"),
+    runNode(
+      "core, assistant, mentions, correction and retained-work native UI suites",
+      "scripts/ios-ui-suites-e2e.mjs",
+    ),
   ],
-  desktop: [runNpm(process.platform === "darwin" ? "Mac packaged application smoke" : "Windows installed package smoke", "run", process.platform === "darwin" ? "smoke:mac" : "smoke:win", "--workspace", "@artoo/desktop")],
+  desktop: [
+    runNpm(
+      process.platform === "darwin" ? "Mac packaged application smoke" : "Windows installed package smoke",
+      "run",
+      process.platform === "darwin" ? "smoke:mac" : "smoke:win",
+      "--workspace",
+      "@artoo/desktop",
+    ),
+  ],
   mac: [
     runNode("Exact pre-handler mention read failure", "scripts/fixtures/mentions-read-fault.test.mjs"),
     runNode("Mention identities and unread evidence", "scripts/fixtures/mentions-results.test.mjs"),
@@ -100,38 +131,75 @@ const suites = {
     runNode("Installed Mac assistant lifecycle integrity", "apps/desktop/scripts/installed-mac-assistant.test.mjs"),
     runNode("Correction subprocess and real Git integrity", "scripts/fixtures/execution-correction.test.mjs"),
     runNode("Installed Mac correction lifecycle integrity", "apps/desktop/scripts/installed-mac-correction.test.mjs"),
-    runNode("Installed Mac correction retained-byte evidence", "apps/desktop/scripts/installed-mac-correction-evidence.test.mjs"),
-    runNode("Installed Mac zero-artifact lifecycle integrity", "apps/desktop/scripts/installed-mac-zero-artifact.test.mjs"),
-    runNode("Zero-artifact passive observer and exported bytes", "scripts/fixtures/zero-artifact-workspace-scenario.test.mjs"),
-    runNode("Installed live provider opt-in and evidence routing", "apps/desktop/scripts/installed-live-provider.test.mjs"),
-    runNode("Installed Mac planning subprocess and evidence integrity", "apps/desktop/scripts/mac-planning-fixture.test.mjs"),
+    runNode(
+      "Installed Mac correction retained-byte evidence",
+      "apps/desktop/scripts/installed-mac-correction-evidence.test.mjs",
+    ),
+    runNode(
+      "Installed Mac zero-artifact lifecycle integrity",
+      "apps/desktop/scripts/installed-mac-zero-artifact.test.mjs",
+    ),
+    runNode(
+      "Zero-artifact passive observer and exported bytes",
+      "scripts/fixtures/zero-artifact-workspace-scenario.test.mjs",
+    ),
+    runNode(
+      "Installed live provider opt-in and evidence routing",
+      "apps/desktop/scripts/installed-live-provider.test.mjs",
+    ),
+    runNode(
+      "Installed Mac planning subprocess and evidence integrity",
+      "apps/desktop/scripts/mac-planning-fixture.test.mjs",
+    ),
     runNode("Mac distribution configuration and mount integrity", "apps/desktop/scripts/mac-distribution.test.mjs"),
     runNode("Mac DMG build retry policy and vendor delegation", "apps/desktop/scripts/mac-dmgbuild.test.mjs"),
-    runNpm("Mac execution and worker shutdown regressions", "test", "--", "--maxWorkers=1",
-      "apps/artood/src/main.test.ts", "apps/artood/src/process-adapter.test.ts", "apps/server/src/desktop-worker-posix.test.ts",
-      "apps/server/src/web-static.test.ts"),
+    runNpm(
+      "Mac execution and worker shutdown regressions",
+      "test",
+      "--",
+      "--maxWorkers=1",
+      "apps/artood/src/main.test.ts",
+      "apps/artood/src/process-adapter.test.ts",
+      "apps/server/src/desktop-worker-posix.test.ts",
+      "apps/server/src/web-static.test.ts",
+    ),
     runNpm("Mac DMG installation smoke", "run", "smoke:mac:dmg", "--workspace", "@artoo/desktop"),
   ],
 };
-const checks = suite === "shared-checks"
-  ? suites.shared.filter((check) => check !== unitAndIntegration)
-  : suites[suite];
+const checks =
+  suite === "shared-checks" ? suites.shared.filter((check) => check !== unitAndIntegration) : suites[suite];
 if (args.includes("--list")) {
   console.log(JSON.stringify({ suite, checks: checks.map(({ name }) => name) }, null, 2));
 } else {
-  if (suite === "ios" && process.platform !== "darwin") throw new Error("The iOS suite requires macOS with Xcode, an iOS simulator and XcodeGen.");
-  if (suite === "mac" && process.platform !== "darwin") throw new Error("The Mac suite requires macOS with a graphical desktop session.");
-  if (suite === "desktop" && process.platform !== "darwin" && (process.platform !== "win32" || process.env.ARTOO_DESKTOP_INTERACTIVE !== "1")) {
-    throw new Error("The desktop suite requires a logged-in Windows desktop. Set ARTOO_DESKTOP_INTERACTIVE=1 only in that session; hosted headless CI is not certified.");
+  if (suite === "ios" && process.platform !== "darwin")
+    throw new Error("The iOS suite requires macOS with Xcode, an iOS simulator and XcodeGen.");
+  if (suite === "mac" && process.platform !== "darwin")
+    throw new Error("The Mac suite requires macOS with a graphical desktop session.");
+  if (
+    suite === "desktop" &&
+    process.platform !== "darwin" &&
+    (process.platform !== "win32" || process.env.ARTOO_DESKTOP_INTERACTIVE !== "1")
+  ) {
+    throw new Error(
+      "The desktop suite requires a logged-in Windows desktop. Set ARTOO_DESKTOP_INTERACTIVE=1 only in that session; hosted headless CI is not certified.",
+    );
   }
   const report = { suite, platform: process.platform, started_at: new Date().toISOString(), checks: [], passed: false };
   for (const check of checks) {
     console.log(`\n==> ${check.name}`);
     const started = Date.now();
-    const result = spawnSync(check.command, check.args, { cwd: root, env: process.env, stdio: "inherit", windowsHide: true });
+    const result = spawnSync(check.command, check.args, {
+      cwd: root,
+      env: process.env,
+      stdio: "inherit",
+      windowsHide: true,
+    });
     const passed = !result.error && result.status === 0;
     report.checks.push({ name: check.name, passed, exit_code: result.status, duration_ms: Date.now() - started });
-    if (!passed) { console.error(result.error?.message ?? `${check.name} exited ${result.status ?? result.signal}`); break; }
+    if (!passed) {
+      console.error(result.error?.message ?? `${check.name} exited ${result.status ?? result.signal}`);
+      break;
+    }
   }
   report.passed = report.checks.length === checks.length && report.checks.every((check) => check.passed);
   const directory = resolve(root, "artifacts/preview-gate");
@@ -139,5 +207,7 @@ if (args.includes("--list")) {
   writeFileSync(resolve(directory, `${suite}.json`), `${JSON.stringify(report, null, 2)}\n`);
   process.exitCode = report.passed ? 0 : 1;
   console.log(`\n${suite} suite ${report.passed ? "passed" : "failed"}. This result covers only the selected suite.`);
-  console.log("Real Google login, deployed TLS/WebSocket connectivity, real model credentials, signing and physical iOS devices remain separate acceptance checks; see docs/shared-server.md.");
+  console.log(
+    "Real Google login, deployed TLS/WebSocket connectivity, real model credentials, signing and physical iOS devices remain separate acceptance checks; see docs/shared-server.md.",
+  );
 }

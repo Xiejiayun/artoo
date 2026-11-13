@@ -46,6 +46,30 @@ npm run verify:ios:correction
 npm run verify:ios:retention
 ```
 
+Run several named UI suites with one preview build and one common XcodeGen:
+
+```sh
+npm run verify:ios:suites -- --suites=core,mentions
+```
+
+Names are exact and run in the canonical core/assistant/mentions/correction/
+retention order; duplicates run once. `--suites=all`, empty entries and mixed
+`--suite`/`--suites` options are rejected. The original single-suite commands
+and the complete `verify:ios` gate keep their existing meaning. Calling
+`verify:ios:suites` without options selects all UI suites, without the unit gate.
+Each child validates the inherited v1 source fingerprint and generated pbxproj/
+shared-scheme digest before reusing common preparation. Standalone native runs
+still generate their project. Every UI suite still builds for testing and runs
+its own exact XCTest selection with an independent fixture and xcresult.
+
+Aggregate JSON/HTML reports include XcodeGen, per-parent execution, owned-process
+cleanup and total timings; native reports include simulator selection, project
+preparation, build-for-testing, XCTest and individual command durations. Simulator
+launch/boot remains inside XCTest duration, rather than a separately measured
+boot claim. Existing preview-gate reports separately time the preview build and
+unit gate. Gather actual Mac CI reports before choosing a parallel matrix; the
+180-minute job limit does not establish a performance baseline.
+
 The complete native contract is 11 cases: seven core plus one each for
 assistant, mentions, correction and retention, alongside the unit gate. A
 terminal failed aggregate remains failed even when earlier suites passed.
