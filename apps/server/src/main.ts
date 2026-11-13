@@ -13,6 +13,7 @@ import { loadAiDataSharingPolicy } from "./config/ai-data-sharing.js";
 import { closePreparedGoalSubmission, loadGoalEntryConfig } from "./config/goal-entry.js";
 import { loadTrustedProxies } from "./config/trusted-proxies.js";
 import { loadStorageConfig } from "./config/storage.js";
+import { loadAuditSignerV1 } from "./config/audit-signing.js";
 import type { ServerContext } from "./context.js";
 import { createEventPublisher } from "./ws/event-publisher.js";
 import { createWsHub } from "./ws/ws-hub.js";
@@ -29,7 +30,10 @@ function resolveAuthConfig(env: AuthConfigEnv, origin: string): AuthConfig {
 
 function desktopCors(env: NodeJS.ProcessEnv): DesktopCorsOptions | undefined {
   if (env.ARTOO_DESKTOP_CORS !== "1") return undefined;
-  const allowedOrigins = (env.ARTOO_DESKTOP_CORS_ORIGINS ?? "null").split(",").map((s) => s.trim()).filter(Boolean);
+  const allowedOrigins = (env.ARTOO_DESKTOP_CORS_ORIGINS ?? "null")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   if (allowedOrigins.includes("*")) throw new Error("Desktop CORS requires explicit allowed origins");
   return { allowedOrigins: allowedOrigins.length > 0 ? allowedOrigins : ["null"] };
 }
@@ -51,36 +55,56 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env, options:
   const aiDataSharingPolicy = loadAiDataSharingPolicy(env);
   const goalEntry = loadGoalEntryConfig(env);
   const storage = loadStorageConfig(env);
+  const auditSigner = await loadAuditSignerV1(env);
   const dataRoot = resolve(env.ARTOO_DATA_DIR?.trim() || ".artoo");
   const dbDir = env.ARTOO_DB_DIR?.trim() || (production ? join(dataRoot, "db") : undefined);
   const artifactDir = env.ARTOO_ARTIFACT_DIR?.trim() || join(dataRoot, "artifacts");
-  const workspaceRoot = env.ARTOO_WORKSPACE_ROOT?.trim() || (production ? join(dataRoot, "workspaces") : join(tmpdir(), "artoo-workspace"));
+  const workspaceRoot =
+    env.ARTOO_WORKSPACE_ROOT?.trim() || (production ? join(dataRoot, "workspaces") : join(tmpdir(), "artoo-workspace"));
   const artifactStore = storage.supabase ? await SupabaseContentAddressedBlobStore.create(storage.supabase) : undefined;
   const sslCa = storage.databaseCaFile ? await readFile(storage.databaseCaFile, "utf8") : undefined;
   let databaseFailed = false;
   let stopAfterFailure: (() => void) | undefined;
   const db = storage.databaseUrl
-    ? await PostgresDbClient.create({ connectionString: storage.databaseUrl, ...(sslCa ? { sslCa } : {}),
-      onFatal: () => { databaseFailed = true; stopAfterFailure?.(); } })
+    ? await PostgresDbClient.create({
+        connectionString: storage.databaseUrl,
+        ...(sslCa ? { sslCa } : {}),
+        onFatal: () => {
+          databaseFailed = true;
+          stopAfterFailure?.();
+        },
+      })
     : await PgliteDbClient.create(dbDir === undefined ? {} : { dataDir: resolve(dbDir) });
   let databaseClosing: Promise<void> | undefined;
-  const closeDatabase = (): Promise<void> => databaseClosing ??= db.close();
+  const closeDatabase = (): Promise<void> => (databaseClosing ??= db.close());
   try {
     await db.migrate(await loadMigrationStatements());
     if ((await db.db.select().from(organizations)).length === 0) {
       await seed(db, createSystemClock().nowIso(), {
-        workspaceRoot, demoResources: !production,
+        workspaceRoot,
+        demoResources: !production,
         ownerEmail: authConfig.ownerEmails?.[0],
       });
     }
     const ctx: ServerContext = {
-      db, clock: createSystemClock(), idGen: createUlidIdGen(),
-      organizationId: "org_default", actorUserId: "user_owner",
-      deviceAuth, authConfig, aiDataSharingPolicy, goalEntry, oidcHttp: createFetchOidcHttp(),
+      db,
+      clock: createSystemClock(),
+      idGen: createUlidIdGen(),
+      organizationId: "org_default",
+      actorUserId: "user_owner",
+      deviceAuth,
+      authConfig,
+      aiDataSharingPolicy,
+      goalEntry,
+      auditSigner,
+      oidcHttp: createFetchOidcHttp(),
     };
     const wsHub = createWsHub();
     const app = buildApp(ctx, {
-      wsHub, webDistDir: env.ARTOO_WEB_DIST, desktopCors: cors, trustedProxies,
+      wsHub,
+      webDistDir: env.ARTOO_WEB_DIST,
+      desktopCors: cors,
+      trustedProxies,
       enableDevRoutes: !production && env.ARTOO_ENABLE_DEV_ROUTES === "1",
       artifactDir: resolve(artifactDir),
       ...(artifactStore ? { artifactStore } : {}),
@@ -91,15 +115,21 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env, options:
       // A pending publisher.start() may install its timer after an earlier
       // close. Startup's failure path calls close again to stop that late timer.
       publisher.stop();
-      return closing ??= (async () => {
-        try { await app.close(); } finally { await closeDatabase(); }
-      })();
+      return (closing ??= (async () => {
+        try {
+          await app.close();
+        } finally {
+          await closeDatabase();
+        }
+      })());
     };
     stopAfterFailure = () => {
       options.onFatal?.();
       // The database has permanently fenced queries. Stop all dispatchers and
       // sockets too; a new container must acquire its own ownership session.
-      void close().catch(() => { options.onFatal?.(); });
+      void close().catch(() => {
+        options.onFatal?.();
+      });
     };
     try {
       if (databaseFailed) throw new Error("Database ownership was lost during startup");
@@ -110,8 +140,15 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env, options:
       await close();
       throw error;
     }
-    return { app, ctx, close, dataRoot, persistent: storage.databaseUrl !== undefined || dbDir !== undefined,
-      closePreparedGoalSubmission: (identity: { session_id: string; request_key: string }) => closePreparedGoalSubmission(ctx, identity) };
+    return {
+      app,
+      ctx,
+      close,
+      dataRoot,
+      persistent: storage.databaseUrl !== undefined || dbDir !== undefined,
+      closePreparedGoalSubmission: (identity: { session_id: string; request_key: string }) =>
+        closePreparedGoalSubmission(ctx, identity),
+    };
   } catch (error) {
     await closeDatabase();
     throw error;
@@ -119,13 +156,21 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env, options:
 }
 
 export async function main(): Promise<void> {
-  const server = await startServer(process.env, { onFatal: () => {
-    console.error("Database ownership lost; server shutting down");
-    process.exitCode = 1;
-  } });
+  const server = await startServer(process.env, {
+    onFatal: () => {
+      console.error("Database ownership lost; server shutting down");
+      process.exitCode = 1;
+    },
+  });
   const address = server.app.server.address();
-  console.log(`Artoo server ready on ${typeof address === "object" && address ? address.port : address}; storage=${server.persistent ? "persistent" : "ephemeral"}`);
-  const shutdown = (): void => { void server.close().catch(() => { process.exitCode = 1; }); };
+  console.log(
+    `Artoo server ready on ${typeof address === "object" && address ? address.port : address}; storage=${server.persistent ? "persistent" : "ephemeral"}`,
+  );
+  const shutdown = (): void => {
+    void server.close().catch(() => {
+      process.exitCode = 1;
+    });
+  };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
   // Only a parent that deliberately created an IPC child can use this channel.

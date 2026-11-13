@@ -2,6 +2,7 @@ import { CreateGoalRequestSchema, ProposePlanRequestSchema } from "@artoo/domain
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import { requestContext } from "./auth/auth-routes.js";
+import { wantsSignedAuditExport } from "./audit-export-input.js";
 import { assertPreparedManualGoal } from "./config/goal-entry.js";
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
@@ -143,7 +144,7 @@ export function registerGoalRoutes(
   });
   app.get("/api/v1/goals/:id/audit-bundle/export", async (req) => {
     const { id } = req.params as { id: string };
-    return { export: await auditService.exportGoalAuditBundle(rc(req), id) };
+    return { export: await auditService.exportGoalAuditBundle(rc(req), id, wantsSignedAuditExport(req.query)) };
   });
   app.get("/api/v1/checkpoints/:id", async (req, reply) => {
     const { id } = req.params as { id: string };

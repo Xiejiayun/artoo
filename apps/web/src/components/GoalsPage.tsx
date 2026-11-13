@@ -507,7 +507,7 @@ function GoalDetail({ goal }: { goal: Goal }): React.ReactNode {
   });
   const audit = useMutation({
     mutationFn: async () => {
-      const result = await api.goalAuditExport(goal.id);
+      const result = await api.goalAuditExport(goal.id, "ed25519-v1");
       const url = URL.createObjectURL(new Blob([JSON.stringify(result.export, null, 2)], { type: "application/json" }));
       const a = document.createElement("a");
       a.href = url;

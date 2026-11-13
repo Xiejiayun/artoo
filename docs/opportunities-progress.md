@@ -6,6 +6,7 @@
 
 | 编号 | 状态 | 范围与验证 |
 | --- | --- | --- |
+| F5 | 已实现并验证，待合并 | 显式协商的 Ed25519 v1 Task/Goal 导出、受保护启动配置、公钥环轮换/撤销与离线验签；保留默认 v1alpha1。根 typecheck、server/Web build、125 项聚焦回归及资源夹具补强后的 HTTP/CLI 4 项通过。[格式与运维](audit-signing.md)。 |
 | X5 | 已实现并验证 | 全局命令面板、单项目实体检索、键盘与项目/路由联动，复用确认表单；根 typecheck、Web build、6 文件 64 项及真实 Chromium 连续两轮 6 项通过。[范围](command-palette.md)。 |
 | F1 | 已有能力，无需重复 | 方案已更正 DAG 证据门控结论，保留现有行为。 |
 | P4 | 已实现并验证 | 集中查询键，补齐 Goal 相关事件失效与项目订阅；自动化和静态发布轮询在线退避。应用发布保留 5 秒轮询及本地健康时效判断。根 typecheck、Web build 通过；完整 Web 单元/组件回归 60 文件、574 项通过；新增实时事件/退避回归所在两文件 23 项通过。 |
@@ -198,6 +199,14 @@ X5 增加 Header 命令按钮和 Ctrl/Command+K 面板，复用现有 Modal、�
 最终根 typecheck、Web build、6 文件 staged 质量及相关 6 测试文件 64 项通过（Node 24，单 worker；`.git/opt-x5-typecheck-final3.log`、`.git/opt-x5-web-build-final3.log`、`.git/opt-x5-quality-final3.log`、`.git/opt-x5-focused-tests-accepted.log`）。GoalsPage/ProductHeader 按 C4 全文件格式化；AST 复核只排除新增创建入口/效果，并规范化 React children 的相邻同文本字面量，其余发射 JS 结构一致。早期 NodeList 迭代、测试 fixture/选项类型错误以及缓存通知断言时序失败均已修正并保留原日志；不以初轮失败充当最终结果。
 
 最终 Chromium 3 场景连续两轮共 6 项通过，覆盖真实项目/Task/Goal/Channel/Agent 导航、表单前零写入与确认后各一次写入、Connect Local Node、抽屉冲突和实际 Tab/Escape。320×568 暗/亮及 1440×900 截图人工检查通过，列表和面板保持内部滚动、无横向溢出。证据 `.git/opt-x5-e2e-final.log`、`.git/opt-x5-e2e-final-environment.json`，HTML/截图目录 `apps/web/{playwright-report,test-results}/workflows-2026-11-13T21-07-39-308Z`；初轮、修复中失败及临时诊断保留各自日志。本项不替代最终统一 E2E、原生或 live Provider 验收。
+
+X5 通过 [PR #103](https://github.com/Xiejiayun/artoo/pull/103) 合并为 `40ba866`（实现 `310b9d2`），拉取 main 后开始 F5。
+
+F5 新增显式 `signing=ed25519-v1` 协商的 `artoo.audit-signed.v1`，覆盖 Task/Goal 的已授权、已脱敏证据。Ed25519 签名覆盖除 signature 外全部原始 JSON 字段，包括包摘要、导出时间、kind 与签名元数据；规范化和摘要属于新版本，旧 v1alpha1 默认输出保持。Web 下载按钮请求新格式；未配置时仍返回 deferred，旧客户端保持原 API。配置在打开数据库前校验 issuer、Ed25519、SPKI 指纹及私钥匹配，错误不输出密钥或文件内容。公钥信任须独立分发；retired 验历史、revoked 拒绝，轮换须更新受保护配置并重启。离线 CLI 只接受下载的 envelope 和独立可信公钥环；未安装生产密钥或执行发布。
+
+根 typecheck、server/Web build、19 源码文件 staged 质量及 10 个既有文件有界新增/格式化 AST 比对通过；聚焦 8 文件 125 项全部通过（Node 24，单 worker；`.git/opt-f5-focused-tests-final.log`）。覆盖各字段及嵌套未知数据篡改、完整原始 JSON、轮换撤销、认证/组织隔离、脱敏、参数协商、旧默认输出、真实持久化启动/TCP 导出和实际离线 CLI。最后复核将新启动与 HTTP 测试接入既有 settled fixture：等待原始回调、晚到资源及子进程实际 close 后再删临时目录；时限和断言保持。补强后根 typecheck 与 HTTP/CLI 4 项再次通过（`.git/opt-f5-typecheck-resources.log`、`.git/opt-f5-http-resources.log`），配置 17 项亦通过（`.git/opt-f5-config-lifecycle.log`）。测试资源所有者本身未修改。
+
+中间失败如实保留：首轮篡改测试直接修改冻结元数据，改为克隆 HTTP 解析对象后通过；首轮整组为 124 通过/1 启动案例 30 秒超时。未改断言和期限的配置复跑 17 项通过，尚未证明该次超时慢因，不能称为已修复启动性能。增加了失败阶段计时诊断和安全清理。一次误并发构建经 PID 核验后只终止新启动进程，失败日志保留；随后串行 typecheck/server/Web build 全通过。完整证据 `.git/opt-f5-*`。签名不等于证据事实正确、执行/发布成功或可信时间；本项不替代最终统一 E2E、原生、live Provider 和生产密钥运维验收。
 
 ## 后续顺序
 

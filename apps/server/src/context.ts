@@ -1,7 +1,15 @@
 import type { PreparedGoalEntryConfigV1 } from "./config/goal-entry.js";
+import type { AuditSignerV1 } from "./audit-signature.js";
 import type { AiDataSharingPolicy } from "./config/ai-data-sharing.js";
 import type { SourceLifecycleRegistry } from "./services/source-clean-lifecycle-service.js";
-import type { Clock, IdGen, VerificationCapabilities, ReleaseCapabilitiesV1, NodeOwnedResultProfileDescriptorV1, ProductSourceRoutingV1 } from "@artoo/domain";
+import type {
+  Clock,
+  IdGen,
+  VerificationCapabilities,
+  ReleaseCapabilitiesV1,
+  NodeOwnedResultProfileDescriptorV1,
+  ProductSourceRoutingV1,
+} from "@artoo/domain";
 import type { ApplicationPublicationCapabilitiesV1 } from "@artoo/domain";
 import type { ContentAddressedBlobStore, DbClient } from "@artoo/storage";
 
@@ -10,8 +18,14 @@ import type { OidcHttp } from "./auth/oidc-client.js";
 import type { DeviceAuthConfig } from "./config/device-auth.js";
 
 /** Server-local maintenance routing; never an execution command or caller-supplied receipt. */
-export type ImportedSourceReceiptFamily = "design" | "design-review" | "execution" | "execution-review"
-  | "execution-repair" | "validation" | "validation-review";
+export type ImportedSourceReceiptFamily =
+  | "design"
+  | "design-review"
+  | "execution"
+  | "execution-review"
+  | "execution-repair"
+  | "validation"
+  | "validation-review";
 
 /**
  * Per-request-independent server dependencies. Single org/tenant for v0.1, so
@@ -19,6 +33,8 @@ export type ImportedSourceReceiptFamily = "design" | "design-review" | "executio
  * Clock and IdGen are injected (Gate 0) so flows are deterministic under test.
  */
 export interface ServerContext {
+  /** Startup-only signing capability; no private key or request-selected identity. */
+  auditSigner?: AuditSignerV1;
   /** Process-local original-parent observers; never reconstructed from DB JSON. */
   sourceLifecycle?: Pick<SourceLifecycleRegistry, "registerDaemon" | "checkpoint">;
   db: DbClient;
@@ -48,23 +64,62 @@ export interface ServerContext {
   /** Query an exact execution contract on the current accepted node session. */
   supportsExecutionFeature?: (computerId: string, feature: string) => boolean;
   /** Exact public verifier binding from the current authenticated node session. */
-  supportsVerificationProfile?: (computerId: string, profileId: string, projectId: string, workspaceRoot: string) => boolean;
+  supportsVerificationProfile?: (
+    computerId: string,
+    profileId: string,
+    projectId: string,
+    workspaceRoot: string,
+  ) => boolean;
   /** Resolve a lexical location to one current node-advertised root; never proves physical alias equivalence. */
-  getVerificationWorkspace?: (computerId: string, profileId: string, projectId: string, workspaceRoot: string) => string | undefined;
+  getVerificationWorkspace?: (
+    computerId: string,
+    profileId: string,
+    projectId: string,
+    workspaceRoot: string,
+  ) => string | undefined;
   /** Exact descriptor from a current fully qualified managed receipt session. */
-  getOwnedResultProfile?: (computerId: string, resultProfileId: string, verifierTemplateId: string, projectId: string) => NodeOwnedResultProfileDescriptorV1 | undefined;
+  getOwnedResultProfile?: (
+    computerId: string,
+    resultProfileId: string,
+    verifierTemplateId: string,
+    projectId: string,
+  ) => NodeOwnedResultProfileDescriptorV1 | undefined;
   /** One defensive snapshot from the current authenticated connection, never caller metadata. */
-  getVerificationCapabilities?: (computerId: string, profileId: string, projectId: string, workspaceRoot: string) => VerificationCapabilities | undefined;
-  supportsReleaseProfile?: (computerId: string, profileId: string, projectId: string, workspaceRoot: string, verificationProfileId: string) => boolean;
+  getVerificationCapabilities?: (
+    computerId: string,
+    profileId: string,
+    projectId: string,
+    workspaceRoot: string,
+  ) => VerificationCapabilities | undefined;
+  supportsReleaseProfile?: (
+    computerId: string,
+    profileId: string,
+    projectId: string,
+    workspaceRoot: string,
+    verificationProfileId: string,
+  ) => boolean;
   /** Exact configured publication scope from the current authenticated node, never an agent declaration. */
-  getReleaseCapabilities?: (computerId: string, profileId: string, projectId: string, workspaceRoot: string, verificationProfileId: string) => ReleaseCapabilitiesV1 | undefined;
+  getReleaseCapabilities?: (
+    computerId: string,
+    profileId: string,
+    projectId: string,
+    workspaceRoot: string,
+    verificationProfileId: string,
+  ) => ReleaseCapabilitiesV1 | undefined;
   onProductReleaseQueued?: (releaseId: string) => Promise<void>;
   onProductReleaseCancel?: (releaseId: string) => Promise<void>;
-  getApplicationPublicationCapabilities?: (computerId: string, profileId: string, projectId: string) => ApplicationPublicationCapabilitiesV1 | undefined;
+  getApplicationPublicationCapabilities?: (
+    computerId: string,
+    profileId: string,
+    projectId: string,
+  ) => ApplicationPublicationCapabilitiesV1 | undefined;
   onApplicationPublicationQueued?: (publicationId: string, control: "start" | "stop" | "status") => Promise<void>;
   /** Dedicated imported-subject controller; never routes through ordinary run.start. */
   onImportedProductReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;
-  onProductSourceOperationQueued?: (operationId: string, control: "start" | "stop" | "status" | "qualify") => Promise<void>;
+  onProductSourceOperationQueued?: (
+    operationId: string,
+    control: "start" | "stop" | "status" | "qualify",
+  ) => Promise<void>;
   /** Private durable bytes configured at startup, never supplied by a task or frame. */
   artifactStore?: ContentAddressedBlobStore;
   /** Compatibility for local development callers; artifactStore takes precedence. */
@@ -77,14 +132,20 @@ export interface ServerContext {
   onImportedValidationQueued?: (validationId: string, control: "start" | "stop" | "status") => Promise<void>;
   onImportedValidationReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;
   /** Re-send a committed original result receipt through its current authenticated binding. */
-  redeliverImportedSourceReceipt?: (computerId: string, family: ImportedSourceReceiptFamily, id: string) => Promise<void>;
+  redeliverImportedSourceReceipt?: (
+    computerId: string,
+    family: ImportedSourceReceiptFamily,
+    id: string,
+  ) => Promise<void>;
   onSourceRecoveryQueued?: (recoveryId: string, control: "start" | "stop" | "status") => Promise<void>;
   onRecoveryValidationQueued?: (validationId: string, control: "start" | "stop" | "status") => Promise<void>;
   onCleanValidationQueued?: (validationId: string, control: "start" | "stop" | "status") => Promise<void>;
   onRecoveryValidationReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;
   onCleanValidationReviewQueued?: (reviewId: string, control: "start" | "stop" | "status") => Promise<void>;
   /** Current paired transport identity. Frames and profile metadata cannot populate this. */
-  getPairedNodeSession?: (computerId: string) => { computerId: string; deviceId: string; tokenLookup: string; sessionId: string } | undefined;
+  getPairedNodeSession?: (
+    computerId: string,
+  ) => { computerId: string; deviceId: string; tokenLookup: string; sessionId: string } | undefined;
   /** Current paired node's prepared routing description; never an execution grant. */
   getProductSourceRouting?: (computerId: string) => ProductSourceRoutingV1 | undefined;
 }

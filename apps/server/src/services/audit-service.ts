@@ -25,6 +25,7 @@ import {
   type GoalAuditBundle,
   type GoalAuditBundleExport,
   type TaskAuditBundle,
+  type SignedAuditExportV1,
 } from "@artoo/domain";
 import { and, asc, eq, inArray, or } from "drizzle-orm";
 
@@ -65,13 +66,20 @@ export async function getTaskAuditBundle(ctx: ServerContext, taskId: string): Pr
 // Only called with rows already authorized by the task/goal lookup. Bounded
 // batches reduce round trips on our single-session database port; increasing
 // query concurrency would only queue more work on that same session.
-async function readTaskAuditBundles(ctx: ServerContext, taskRows: (typeof tasks.$inferSelect)[]): Promise<TaskAuditBundle[]> {
+async function readTaskAuditBundles(
+  ctx: ServerContext,
+  taskRows: (typeof tasks.$inferSelect)[],
+): Promise<TaskAuditBundle[]> {
   if (!taskRows.length) return [];
   const db = ctx.db.db;
   const taskIds = taskRows.map((task) => task.id);
-  const roomIds = [...new Set(taskRows.flatMap((task) => task.roomId ? [task.roomId] : []))];
-  const roomRows = roomIds.length ? await db.select().from(rooms)
-    .where(and(inArray(rooms.id, roomIds), eq(rooms.organizationId, ctx.organizationId))) : [];
+  const roomIds = [...new Set(taskRows.flatMap((task) => (task.roomId ? [task.roomId] : [])))];
+  const roomRows = roomIds.length
+    ? await db
+        .select()
+        .from(rooms)
+        .where(and(inArray(rooms.id, roomIds), eq(rooms.organizationId, ctx.organizationId)))
+    : [];
   const roomById = new Map(roomRows.map((room) => [room.id, room]));
   const messageRows = await db
     .select()
@@ -152,19 +160,21 @@ async function readTaskAuditBundles(ctx: ServerContext, taskRows: (typeof tasks.
     const taskEvents = eventsByTask.get(taskRow.id) ?? [];
     const retention = workspaceRetentionsFromEvents(taskRuns, taskEvents);
     const roomRow = taskRow.roomId ? roomById.get(taskRow.roomId) : undefined;
-    return redactTaskAuditBundle(TaskAuditBundleSchema.parse({
-      task: mapTask(taskRow),
-      room: roomRow !== undefined ? mapRoom(roomRow) : null,
-      messages: (messagesByTask.get(taskRow.id) ?? []).map(mapMessage),
-      runs: taskRuns.map((run) => ({ ...mapRun(run), workspace_retention: retention.get(run.id) ?? null })),
-      artifacts: (artifactsByTask.get(taskRow.id) ?? []).map(mapArtifact),
-      approvals: (approvalsByTask.get(taskRow.id) ?? []).map(mapApproval),
-      scheduler_decisions: (schedulerByTask.get(taskRow.id) ?? []).map(mapSchedulerDecision),
-      events: taskEvents.map(mapAuditEvent),
-      decisions: (decisionsByTask.get(taskRow.id) ?? []).map(mapDecision),
-      handoffs: (handoffsByTask.get(taskRow.id) ?? []).map(mapHandoff),
-      blockers: (blockersByTask.get(taskRow.id) ?? []).map(mapBlocker),
-    }));
+    return redactTaskAuditBundle(
+      TaskAuditBundleSchema.parse({
+        task: mapTask(taskRow),
+        room: roomRow !== undefined ? mapRoom(roomRow) : null,
+        messages: (messagesByTask.get(taskRow.id) ?? []).map(mapMessage),
+        runs: taskRuns.map((run) => ({ ...mapRun(run), workspace_retention: retention.get(run.id) ?? null })),
+        artifacts: (artifactsByTask.get(taskRow.id) ?? []).map(mapArtifact),
+        approvals: (approvalsByTask.get(taskRow.id) ?? []).map(mapApproval),
+        scheduler_decisions: (schedulerByTask.get(taskRow.id) ?? []).map(mapSchedulerDecision),
+        events: taskEvents.map(mapAuditEvent),
+        decisions: (decisionsByTask.get(taskRow.id) ?? []).map(mapDecision),
+        handoffs: (handoffsByTask.get(taskRow.id) ?? []).map(mapHandoff),
+        blockers: (blockersByTask.get(taskRow.id) ?? []).map(mapBlocker),
+      }),
+    );
   });
 }
 
@@ -179,9 +189,14 @@ function byTask<T extends { taskId: string | null }>(rows: T[]): Map<string, T[]
   return groups;
 }
 
-/** Exportable v1alpha1 evidence envelope. Unsigned by design until key management exists. */
-export async function exportTaskAuditBundle(ctx: ServerContext, taskId: string): Promise<AuditBundleExport> {
+/** Legacy output is preserved unless the caller explicitly negotiates signing. */
+export async function exportTaskAuditBundle(
+  ctx: ServerContext,
+  taskId: string,
+  signed = false,
+): Promise<AuditBundleExport | SignedAuditExportV1> {
   const bundle = await getTaskAuditBundle(ctx, taskId);
+  if (signed && ctx.auditSigner) return ctx.auditSigner.sign({ kind: "task", bundle, exported_at: ctx.clock.nowIso() });
   return AuditBundleExportSchema.parse({
     schema_version: "v1alpha1",
     exported_at: ctx.clock.nowIso(),
@@ -247,7 +262,7 @@ export async function getGoalAuditBundle(ctx: ServerContext, goalId: string): Pr
   const childBundles: TaskAuditBundle[] = [];
   const batchSize = 20;
   for (let offset = 0; offset < childTaskRows.length; offset += batchSize) {
-    childBundles.push(...await readTaskAuditBundles(ctx, childTaskRows.slice(offset, offset + batchSize)));
+    childBundles.push(...(await readTaskAuditBundles(ctx, childTaskRows.slice(offset, offset + batchSize))));
   }
   // The goal's own lifecycle event stream (goal.* events threaded with goal_id or
   // correlated on the goal id). Child task/run event detail lives inside each
@@ -274,9 +289,14 @@ export async function getGoalAuditBundle(ctx: ServerContext, goalId: string): Pr
   return redactGoalAuditBundle(bundle);
 }
 
-/** Exportable v1alpha1 goal-level evidence envelope. Unsigned until key management exists. */
-export async function exportGoalAuditBundle(ctx: ServerContext, goalId: string): Promise<GoalAuditBundleExport> {
+/** Legacy output is preserved unless the caller explicitly negotiates signing. */
+export async function exportGoalAuditBundle(
+  ctx: ServerContext,
+  goalId: string,
+  signed = false,
+): Promise<GoalAuditBundleExport | SignedAuditExportV1> {
   const bundle = await getGoalAuditBundle(ctx, goalId);
+  if (signed && ctx.auditSigner) return ctx.auditSigner.sign({ kind: "goal", bundle, exported_at: ctx.clock.nowIso() });
   return GoalAuditBundleExportSchema.parse({
     schema_version: "v1alpha1",
     exported_at: ctx.clock.nowIso(),
