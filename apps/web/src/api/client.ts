@@ -413,8 +413,11 @@ export class ApiClient {
   listCheckpoints(id: string): Promise<{ checkpoints: Checkpoint[] }> {
     return this.request("GET", `/goals/${encodeURIComponent(id)}/checkpoints`);
   }
-  goalAuditExport(id: string): Promise<{ export: unknown }> {
-    return this.request("GET", `/goals/${encodeURIComponent(id)}/audit-bundle/export`);
+  goalAuditExport(id: string, signing?: "ed25519-v1"): Promise<{ export: unknown }> {
+    return this.request(
+      "GET",
+      `/goals/${encodeURIComponent(id)}/audit-bundle/export${signing ? "?signing=ed25519-v1" : ""}`,
+    );
   }
   listDecisions(roomId: string): Promise<{ decisions: DecisionRecord[] }> {
     return this.request("GET", `/rooms/${encodeURIComponent(roomId)}/decisions`);
@@ -769,8 +772,11 @@ export class ApiClient {
     return this.request<AuditBundleResponse>("GET", `/tasks/${encodeURIComponent(taskId)}/audit-bundle`);
   }
 
-  getTaskAuditBundleExport(taskId: string): Promise<AuditBundleExportResponse> {
-    return this.request<AuditBundleExportResponse>("GET", `/tasks/${encodeURIComponent(taskId)}/audit-bundle/export`);
+  getTaskAuditBundleExport(taskId: string, signing?: "ed25519-v1"): Promise<AuditBundleExportResponse> {
+    return this.request<AuditBundleExportResponse>(
+      "GET",
+      `/tasks/${encodeURIComponent(taskId)}/audit-bundle/export${signing ? "?signing=ed25519-v1" : ""}`,
+    );
   }
 
   // Auth (#34): session + logout hit `/auth/*` at the server origin root (NOT

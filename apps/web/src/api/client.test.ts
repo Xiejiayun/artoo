@@ -14,6 +14,22 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 
+it("negotiates signed task and goal downloads only when explicitly selected", async () => {
+  const seen: string[] = [];
+  server.use(
+    http.get(`${BASE}/:kind/:id/audit-bundle/export`, ({ request, params }) => {
+      expect(params.id).toBe("subject / &");
+      seen.push(`${params.kind}:${new URL(request.url).search}`);
+      return HttpResponse.json({ export: { signature: "test-response" } });
+    }),
+  );
+  await client.getTaskAuditBundleExport("subject / &");
+  await client.goalAuditExport("subject / &");
+  await client.getTaskAuditBundleExport("subject / &", "ed25519-v1");
+  await client.goalAuditExport("subject / &", "ed25519-v1");
+  expect(seen).toEqual(["tasks:", "goals:", "tasks:?signing=ed25519-v1", "goals:?signing=ed25519-v1"]);
+});
+
 it("encodes literal search queries on messages, tasks and memories with optional bounds", async () => {
   const q = "中文 100%_\\ &?";
   server.use(

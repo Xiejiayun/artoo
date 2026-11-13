@@ -8,6 +8,7 @@ import {
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import { requestContext } from "./auth/auth-routes.js";
+import { wantsSignedAuditExport } from "./audit-export-input.js";
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import { parseOptionalLimit } from "./route-input.js";
@@ -50,7 +51,7 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: ServerContext): vo
 
   app.get("/api/v1/tasks/:id/audit-bundle/export", async (req) => {
     const { id } = req.params as { id: string };
-    return { export: await auditService.exportTaskAuditBundle(rc(req), id) };
+    return { export: await auditService.exportTaskAuditBundle(rc(req), id, wantsSignedAuditExport(req.query)) };
   });
 
   app.post("/api/v1/tasks/:id/dependencies", async (req, reply) => {

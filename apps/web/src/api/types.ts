@@ -29,6 +29,7 @@ import type {
   Task,
   TaskReview,
   AuditBundleExport,
+  SignedTaskAuditExportV1,
   TaskAuditBundle,
 } from "@artoo/domain";
 
@@ -187,9 +188,9 @@ export interface AuditBundleResponse {
   bundle: TaskAuditBundle;
 }
 
-/** `GET /tasks/:id/audit-bundle/export` — shareable unsigned v1alpha1 evidence proof. */
+/** v1alpha1 by default; signing=ed25519-v1 may return the versioned signed envelope. */
 export interface AuditBundleExportResponse {
-  export: AuditBundleExport;
+  export: AuditBundleExport | SignedTaskAuditExportV1;
 }
 
 /** The authenticated user. Fields align with the bootstrap user (#34 server locks the exact shape). */
