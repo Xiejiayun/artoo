@@ -68,6 +68,10 @@ tracked in [docs/v2-android-plan.md](docs/v2-android-plan.md).
 
 ## Development
 
+Use the [documentation map](docs/INDEX.md) for current guides and versioned
+records, and the [script map](scripts/README.md) to choose development, CI,
+native verification and operations entrypoints.
+
 ```bash
 npm install
 npm run typecheck

@@ -6,7 +6,8 @@
 
 | 编号 | 状态 | 范围与验证 |
 | --- | --- | --- |
-| F5 | 已实现并验证，待合并 | 显式协商的 Ed25519 v1 Task/Goal 导出、受保护启动配置、公钥环轮换/撤销与离线验签；保留默认 v1alpha1。根 typecheck、server/Web build、125 项聚焦回归及资源夹具补强后的 HTTP/CLI 4 项通过。[格式与运维](audit-signing.md)。 |
+| C5 | 已建立索引并验证 | 新增 docs/INDEX.md 与 scripts/README.md，覆盖 docs 根目录全部 90 篇文档，区分现行指南、运维发布、客户端与版本化/历史记录；156 个本地链接、14 个命令引用及 preview --list 检查通过。保留现有路径和 CI/npm 调用。 |
+| F5 | 已实现并验证 | 显式协商的 Ed25519 v1 Task/Goal 导出、受保护启动配置、公钥环轮换/撤销与离线验签；保留默认 v1alpha1。根 typecheck、server/Web build、125 项聚焦回归及资源夹具补强后的 HTTP/CLI 4 项通过。[格式与运维](audit-signing.md)。 |
 | X5 | 已实现并验证 | 全局命令面板、单项目实体检索、键盘与项目/路由联动，复用确认表单；根 typecheck、Web build、6 文件 64 项及真实 Chromium 连续两轮 6 项通过。[范围](command-palette.md)。 |
 | F1 | 已有能力，无需重复 | 方案已更正 DAG 证据门控结论，保留现有行为。 |
 | P4 | 已实现并验证 | 集中查询键，补齐 Goal 相关事件失效与项目订阅；自动化和静态发布轮询在线退避。应用发布保留 5 秒轮询及本地健康时效判断。根 typecheck、Web build 通过；完整 Web 单元/组件回归 60 文件、574 项通过；新增实时事件/退避回归所在两文件 23 项通过。 |
@@ -208,6 +209,12 @@ F5 新增显式 `signing=ed25519-v1` 协商的 `artoo.audit-signed.v1`，覆盖 
 
 中间失败如实保留：首轮篡改测试直接修改冻结元数据，改为克隆 HTTP 解析对象后通过；首轮整组为 124 通过/1 启动案例 30 秒超时。未改断言和期限的配置复跑 17 项通过，尚未证明该次超时慢因，不能称为已修复启动性能。增加了失败阶段计时诊断和安全清理。一次误并发构建经 PID 核验后只终止新启动进程，失败日志保留；随后串行 typecheck/server/Web build 全通过。完整证据 `.git/opt-f5-*`。签名不等于证据事实正确、执行/发布成功或可信时间；本项不替代最终统一 E2E、原生、live Provider 和生产密钥运维验收。
 
+F5 通过 [PR #104](https://github.com/Xiejiayun/artoo/pull/104) 合并为 `a41ee56`（实现 `fa5a3b4`），已拉取最新 main 后开展 C5。
+
+C5 新增 [文档地图](INDEX.md)与[脚本地图](../scripts/README.md)，从 README 提供入口。文档区分现行架构/契约、运维发布、客户端、版本化验证和历史计划；脚本区分日常检查、CI 分区/聚合、原生 suite 包装、支持模块、发布工具与受控场景。明确 Node 测试与 Vitest 的发现范围、真实 Provider/原生/生产验收边界及后续 gates/ios/fixtures 归类规则。没有移动文件、改写历史证据或改变 npm/工作流路径。
+
+本机校验 156 个本地链接、docs 根目录全部 90 篇文档的索引覆盖、14 个真实 package 命令和 preview 的 --list 分支；实际 `npm run verify:preview -- --list` 与 diff whitespace 检查通过（`.git/opt-c5-links.log`、`.git/opt-c5-preview-list.log`）。纯文档不新增镜像测试；完整类型/构建/运行门禁留在最终集成执行。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
@@ -216,7 +223,7 @@ P5 通过 [PR #67](https://github.com/Xiejiayun/artoo/pull/67) 合并为 `53b1d5
 
 恢复预检通过 [PR #68](https://github.com/Xiejiayun/artoo/pull/68) 合并为 `a455704`（实现 `03546d9`）。
 
-F5 → C5 → E1 完整分区重验。C1 本轮选定的职责拆分与其余候选边界评估如上。F2 保留待实现/验收；E4 的最终版本验收与未就绪环境并行跟进。
+E1 完整分区重验 → 最终统一门禁。C1 本轮选定的职责拆分与其余候选边界评估如上。F2 保留待实现/验收；E4 的最终版本验收与未就绪环境并行跟进。
 
 所有条目仍须以最新源码复核适用性。E1 必须在无浏览器缓存的真实 Windows 分片通过后才移除安装步骤；iOS 原生验收需要 macOS；E4 产品发布需具备已授权的环境、凭据、受保护 Profile、健康标准和恢复方案。当前未执行新的产品发布，尚未运行最终统一 E2E。
 
