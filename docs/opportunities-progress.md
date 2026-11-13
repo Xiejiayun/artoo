@@ -14,7 +14,9 @@
 | P2 | 已实现并验证 | 追加 0061 迁移与匹配 schema，增加任务消息/最新 Run 排序索引及共用非终态部分索引。[查询计划与成本](presence-indexes-2026-11-13.md)及可复现脚本已记录；根 typecheck、server build、10 文件 53 项回归通过。独立 Postgres 与写入吞吐未测量。 |
 | P3 | 已实现并验证 | 最新 Run 批量读取、每 Run LATERAL 制品上限，Goal 审计按 20 任务批量装配；保持隔离、脱敏、排序与截断。[测量](evidence-query-batching-2026-11-13.md)：101 边交接 204→10 次查询，45 子任务审计 501→36 次。根 typecheck、server build、7 文件 27 项回归通过。 |
 | X1 | 已实现并验证 | 顶部新增 Workspace 入口，根路径独立激活、面包屑明确，移除 Board 借壳高亮；窄屏导航隐藏编号并允许内部滚动。根 typecheck、Web build、2 文件 5 项组件回归及真实浏览器聚焦 E2E 通过。覆盖键盘与 320/390/1024/1180/1440px，无页面横向溢出，320/1440px 截图已人工检查。 |
-| P5 | 已实现并验证 | 可选 v1 bootstrap 能力协商可见性批次 100→500；保留增量、根回复快照及全部缓存移除核对，未知能力回退 100。[兼容与测量范围](message-reconciliation.md)：250 条缓存刷新 5→3 请求（组件 mock）。根 typecheck、server/Web build、6 文件 71 项通过；跨浏览器线程同步/刷新 E2E 连续 3 次通过。 |
+| P5 | 批次优化已合并，其余待补齐 | 可选 v1 bootstrap 能力协商可见性批次 100→500；保留增量、根回复快照及全部缓存移除核对，未知能力回退 100。[兼容与测量范围](message-reconciliation.md)：250 条缓存刷新 5→3 请求（组件 mock）。根 typecheck、server/Web build、6 文件 71 项通过；跨浏览器线程同步/刷新 E2E 连续 3 次通过。仍须建立可验证的稳定同步状态再减少稳定在线快照，并补充真实 HTTP 请求耗时测量。 |
+| E1 | 首轮出现失败，待重验 | Windows / Node 24 第一分片的 storage 四案例套件报告一项失败，已停止该轮实验并确认 Vitest 进程退出；第二分片、进程分区和覆盖聚合未执行。[方法与结果](ci-vitest-browser-validation-2026-11-13.md)。先聚焦核对恢复链，再按最终源码重新执行完整分区；尚未删除安装步骤。 |
+| E1 前置修复 | 已实现并验证，待合并 | 损坏附件在恢复数据库启动前拒绝，有效附件仍只流式复制一次。真实大附件回归先红后绿；原四案例和附件回归共 2 文件、5 项通过，根 typecheck、server build 通过。超时清理父 harness 1 项通过，核验子进程故意 5 失败、2 通过及实际关闭和安全清理，证据单独记录。完整冷分片仍须重新执行。 |
 
 P4 合并为 `172d1f0`（实现 `f59fbf9`）。远程在该次直接推送提示 PR 保护要求，后续均走普通 PR 合并；不使用 admin/bypass。每项本地验证与远程 CI 状态分别报告；CI 未结束不能视为通过。
 
@@ -30,6 +32,8 @@ P3 通过 [PR #65](https://github.com/Xiejiayun/artoo/pull/65) 合并为 `ffbaf6
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
 
-E1 → U2 → U3 → U1 → U4 → X3 → X4 → P6 → P7 → C4 → E2 → F3 → F4 → F2 → C1 → C2 → C3 → E3 → X5 → F5 → C5。E4 的最终版本验收与未就绪环境并行跟进。
+P5 通过 [PR #67](https://github.com/Xiejiayun/artoo/pull/67) 合并为 `53b1d55`（实现 `dabaaea`）。
+
+E1 → P5 同步状态与耗时验证 → U2 → U3 → U1 → U4 → X3 → X4 → P6 → P7 → C4 → E2 → F3 → F4 → F2 → C1 → C2 → C3 → E3 → X5 → F5 → C5。E4 的最终版本验收与未就绪环境并行跟进。
 
 所有条目仍须以最新源码复核适用性。E1 必须在无浏览器缓存的真实 Windows 分片通过后才移除安装步骤；iOS 原生验收需要 macOS；E4 产品发布需具备已授权的环境、凭据、受保护 Profile、健康标准和恢复方案。当前未执行新的产品发布，尚未运行最终统一 E2E。

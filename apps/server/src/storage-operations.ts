@@ -79,12 +79,14 @@ export async function restoreStorage(source: string, destination: string): Promi
     // accumulate alongside it: stream/check each into the unpublished staging
     // directory, keeping memory bounded even for many large attachments.
     const database = await verify(join(source, "database.tar.gz"), manifest.database);
-    const db = await PgliteDbClient.create({ dataDir: join(staging, "db"), archive: database });
-    try { if (!(await db.healthCheck())) throw new Error("Restored database health check failed"); } finally { await db.close(); }
     await mkdir(join(staging, "artifacts"));
     for (const entry of manifest.artifacts) {
       await copyVerifiedArtifact(join(source, "artifacts", entry.name), join(staging, "artifacts", entry.name), entry);
     }
+    // Reject corrupt attachments before opening a database that cannot be
+    // published. Each attachment is still copied and verified only once.
+    const db = await PgliteDbClient.create({ dataDir: join(staging, "db"), archive: database });
+    try { if (!(await db.healthCheck())) throw new Error("Restored database health check failed"); } finally { await db.close(); }
     await requireNew(destination);
     await rename(staging, destination);
   } catch (error) {
