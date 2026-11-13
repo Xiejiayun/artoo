@@ -12,7 +12,7 @@ export function CollaborationPanel({ roomId, taskId, goalId }: { roomId: string;
   const api = useApi();
   const query = useQueryClient();
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
-  const records = useQuery({ queryKey: ["collaboration", roomId], queryFn: async () => {
+  const records = useQuery({ queryKey: queryKeys.collaboration(roomId), queryFn: async () => {
     const [decisions, handoffs, blockers] = await Promise.all([api.listDecisions(roomId), api.listHandoffs(roomId), api.listBlockers(roomId)]);
     return { ...decisions, ...handoffs, ...blockers };
   }, refetchInterval: usePollMs(10000) });
@@ -21,7 +21,7 @@ export function CollaborationPanel({ roomId, taskId, goalId }: { roomId: string;
   const [detail, setDetail] = useState("");
   const [recipient, setRecipient] = useState("");
   const [blockerType, setBlockerType] = useState<BlockerType>("human_input");
-  const refresh = async (): Promise<void> => { await Promise.all([query.invalidateQueries({ queryKey: ["collaboration", roomId] }), query.invalidateQueries({ queryKey: queryKeys.messages(roomId) }), query.invalidateQueries({ queryKey: ["goals"] })]); };
+  const refresh = async (): Promise<void> => { await Promise.all([query.invalidateQueries({ queryKey: queryKeys.collaboration(roomId) }), query.invalidateQueries({ queryKey: queryKeys.messages(roomId) }), query.invalidateQueries({ queryKey: queryKeys.goals() })]); };
   const create = useMutation({ mutationFn: async () => {
     const user = bootstrap.data?.user;
     if (!user) throw new Error("Wait for your account to load before creating a record.");

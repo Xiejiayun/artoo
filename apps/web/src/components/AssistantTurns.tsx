@@ -27,7 +27,7 @@ export function AssistantTurns({ roomId, threadRootId, messages, allowActions = 
     },
     onSuccess: async (_, { id, name }) => {
       keys.current.delete(`${id}:${name}`);
-      await Promise.all([query.invalidateQueries({ queryKey: queryKeys.assistantTurns(roomId) }), query.invalidateQueries({ queryKey: queryKeys.messages(roomId) }), query.invalidateQueries({ queryKey: ["tasks"] })]);
+      await Promise.all([query.invalidateQueries({ queryKey: queryKeys.assistantTurns(roomId) }), query.invalidateQueries({ queryKey: queryKeys.messages(roomId) }), query.invalidateQueries({ queryKey: queryKeys.allTasks })]);
     },
   });
   const visible = turns.data?.turns.filter((turn) => (turn.thread_root_id ?? undefined) === threadRootId);

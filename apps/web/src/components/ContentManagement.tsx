@@ -1,3 +1,4 @@
+import { queryKeys } from "../app/queryKeys.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePollMs } from "../app/RealtimeContext.js";
 import { useState } from "react";
@@ -24,7 +25,7 @@ function ReportQueue(): React.ReactNode {
   const api = useApi();
   const [before, setBefore] = useState<string>();
   const [review, setReview] = useState<{ report: ContentReport; action: "remove" | "dismiss" }>();
-  const reports = useQuery({ queryKey: ["moderation", "reports", before], queryFn: () => api.contentReports(before), refetchInterval: usePollMs(15000) });
+  const reports = useQuery({ queryKey: queryKeys.moderationReports(before), queryFn: () => api.contentReports(before), refetchInterval: usePollMs(15000) });
   return <div className="u-stack"><p>Reports and their original content are private to team administrators. Review incoming reports regularly and respond through your team's support channel.</p>
     <ActionError error={reports.error} />{reports.isPending && <p role="status">Loading reports…</p>}
     {reports.data?.reports.length === 0 && <p>No reports on this page.</p>}
@@ -53,7 +54,7 @@ function ReviewReport({ report, action, onClose }: { report: ContentReport; acti
 }
 function PostingRules(): React.ReactNode {
   const api = useApi();
-  const query = useQuery({ queryKey: ["moderation", "rules"], queryFn: () => api.contentRules() });
+  const query = useQuery({ queryKey: queryKeys.moderationRules, queryFn: () => api.contentRules() });
   return <div className="u-stack"><ActionError error={query.error} />{query.isPending && <p role="status">Loading posting rules…</p>}
     {query.data && <RulesEditor key={query.data.version} rules={query.data} />}
     <Button disabled={query.isFetching} onClick={() => void query.refetch()}>Reload saved rules</Button>
@@ -65,7 +66,7 @@ function RulesEditor({ rules }: { rules: ContentRules }): React.ReactNode {
   const [confirmDisable, setConfirmDisable] = useState(false);
   const phrases = text.split("\n").map((value) => value.trim()).filter(Boolean);
   const save = useMutation({ mutationFn: () => api.saveContentRules(phrases, rules.version, newIdempotencyKey()),
-    onSuccess: (result) => { query.setQueryData(["moderation", "rules"], result); setConfirmDisable(false); } });
+    onSuccess: (result) => { query.setQueryData(queryKeys.moderationRules, result); setConfirmDisable(false); } });
   function submit(): void { if (rules.blocked_phrases.length > 0 && phrases.length === 0) setConfirmDisable(true); else save.mutate(); }
   return <form className="u-stack" onSubmit={(event) => { event.preventDefault(); if (!save.isPending) submit(); }}>
     <p>These phrases block new team messages and agent requests. Matching ignores case, normalizes whitespace and also matches within words. This is a literal phrase filter, not a complete automated content classifier.</p>
@@ -82,7 +83,7 @@ function MemberAccess(): React.ReactNode {
   const api = useApi();
   const { bootstrap } = useProject();
   const [selected, setSelected] = useState<ModerationMember>();
-  const members = useQuery({ queryKey: ["moderation", "members"], queryFn: () => api.moderationMembers(), refetchInterval: usePollMs(15000) });
+  const members = useQuery({ queryKey: queryKeys.moderationMembers, queryFn: () => api.moderationMembers(), refetchInterval: usePollMs(15000) });
   return <div className="u-stack"><ActionError error={members.error} />{members.isPending && <p role="status">Loading members…</p>}
     {members.data?.members.map((member) => {
       const suspended = !!member.suspended_at && !member.reinstated_at;

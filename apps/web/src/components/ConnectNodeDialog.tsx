@@ -36,7 +36,7 @@ export function ConnectNodeDialog({ open, onClose, onCreateInstance, onViewMachi
   const pairing = useMutation({ mutationFn: () => api.createPairing(platform, newIdempotencyKey()) });
   const pairingId = pairing.data?.pairing.id;
   const progress = useQuery({
-    queryKey: ["pairing", pairingId], queryFn: () => api.getPairingStatus(pairingId!), enabled: open && !!pairingId,
+    queryKey: queryKeys.pairing(pairingId), queryFn: () => api.getPairingStatus(pairingId!), enabled: open && !!pairingId,
     refetchInterval: (state) => ["expired", "cancelled"].includes(state.state.data?.pairing.status ?? "") ? false : 2000,
     retry: false,
   });

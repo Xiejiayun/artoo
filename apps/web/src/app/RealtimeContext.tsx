@@ -51,14 +51,14 @@ export function RealtimeProvider({
           queryClient.setQueriesData<MessagesResponse>({ queryKey: queryKeys.messages(event.room_id) }, (current) => current ? {
             ...current, messages: current.messages.map((message) => message.id === id ? removedMessage(message) : message),
           } : current);
-          queryClient.setQueryData<{ message: Message }>(["message", event.room_id, id], (current) => current ? { message: removedMessage(current.message) } : current);
+          queryClient.setQueryData<{ message: Message }>(queryKeys.message(event.room_id, id), (current) => current ? { message: removedMessage(current.message) } : current);
         }
         if (event.type === "sync.required") { void queryClient.invalidateQueries(); return; }
         if (event.room_id && typeof event.payload.thread_root_id === "string") {
           const rootId = event.payload.thread_root_id;
           const count = event.payload.root_reply_count;
           if (typeof count === "number") queryClient.setQueriesData<MessagesResponse>({ queryKey: queryKeys.messages(event.room_id) }, (current) => current ? { ...current, messages: current.messages.map((message) => message.id === rootId ? { ...message, reply_count: Math.max(count, message.reply_count ?? 0) } : message) } : current);
-          void queryClient.invalidateQueries({ queryKey: ["message", event.room_id, rootId] });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.message(event.room_id, rootId) });
         }
         if (event.type === "run.output" && event.task_id) {
           queryClient.setQueryData<RunOutputChunk[]>(queryKeys.runOutputs(event.task_id), (previous) => appendRunOutput(previous, event));

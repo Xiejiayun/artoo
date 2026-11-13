@@ -64,8 +64,8 @@ export function MemoryPage(): React.ReactNode {
   });
 
   const invalidate = async (): Promise<void> => {
-    await queryClient.invalidateQueries({ queryKey: ["memories"] });
-    await queryClient.invalidateQueries({ queryKey: ["memoryContext"] });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.allMemories });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.allMemoryContext });
   };
   const accept = useMutation({
     mutationFn: (id: string) => api.acceptMemory(id, newIdempotencyKey()),

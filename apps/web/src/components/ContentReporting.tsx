@@ -1,3 +1,4 @@
+import { queryKeys } from "../app/queryKeys.js";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import type { Message } from "@artoo/domain";
@@ -28,7 +29,7 @@ export function MyContentReports(): React.ReactNode {
   const [open, setOpen] = useState(false);
   const [before, setBefore] = useState<string>();
   const poll15s = usePollMs(15000);
-  const query = useQuery({ queryKey: ["moderation", "my-reports", before], queryFn: () => api.myContentReports(before), enabled: open, refetchInterval: open ? poll15s : false });
+  const query = useQuery({ queryKey: queryKeys.myContentReports(before), queryFn: () => api.myContentReports(before), enabled: open, refetchInterval: open ? poll15s : false });
   return <section className="settings-section" aria-label="My reports"><header className="settings-section__heading"><div><h2>My reports</h2><p>Follow the messages you reported to your team administrators.</p></div>
     <Button onClick={() => setOpen(!open)}>{open ? "Hide reports" : "View my reports"}</Button></header>
     {open && <div className="settings-section__body u-stack"><ActionError error={query.error} />

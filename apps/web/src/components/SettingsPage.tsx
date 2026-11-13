@@ -27,12 +27,12 @@ export function SettingsPage(): React.ReactNode {
   const [platform, setPlatform] = useState<DevicePlatform>("windows");
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
   const [confirmEnroll, setConfirmEnroll] = useState<string | null>(null);
-  const devices = useQuery({ queryKey: ["devices"], queryFn: () => api.listDevices(), refetchInterval: usePollMs(15000) });
+  const devices = useQuery({ queryKey: queryKeys.devices, queryFn: () => api.listDevices(), refetchInterval: usePollMs(15000) });
   const pairing = useMutation({ mutationFn: () => api.createPairing(platform, newIdempotencyKey()) });
-  const revoke = useMutation({ mutationFn: (id: string) => api.revokeDevice(id, newIdempotencyKey()), onSuccess: async () => { setConfirmRevoke(null); await query.invalidateQueries({ queryKey: ["devices"] }); } });
+  const revoke = useMutation({ mutationFn: (id: string) => api.revokeDevice(id, newIdempotencyKey()), onSuccess: async () => { setConfirmRevoke(null); await query.invalidateQueries({ queryKey: queryKeys.devices }); } });
   const enroll = useMutation({ mutationFn: (id: string) => api.enrollDevice(id, newIdempotencyKey()), onSuccess: async () => {
     setConfirmEnroll(null);
-    await Promise.all([query.invalidateQueries({ queryKey: ["devices"] }), query.invalidateQueries({ queryKey: queryKeys.bootstrap })]);
+    await Promise.all([query.invalidateQueries({ queryKey: queryKeys.devices }), query.invalidateQueries({ queryKey: queryKeys.bootstrap })]);
   } });
   const canManage = ["owner", "admin"].includes(bootstrap.data?.user.role ?? "");
   return <section className="product-page settings-page" aria-label="Settings">
