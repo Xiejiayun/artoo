@@ -154,6 +154,10 @@ C1 schema 身份领域通过 [PR #94](https://github.com/Xiejiayun/artoo/pull/94
 
 C1 schema 工作流领域将项目、任务、DAG 依赖、文件租约和集成队列五张表原样移入 `schema/work.ts`，root 原地 re-export，跨领域 Goal/Run 外键仍使用原延迟回调。AST 比对确认表声明、外键和还原后的全部 schema 非 import 声明一致。根 typecheck、DB build、2 文件 staged 质量、Node 24 单 worker 的 schema/seed/DAG/租约/生命周期 5 文件 28 项通过（`.git/opt-c1-schema-work-*`）。构建后的公开 schema 与基线 119 张表、815 条完整 SQL 逐条一致，仅忽略输出顺序，定义摘要仍为 `9df3a12e8e57d616595673f2543adfff64f78de1e3a3858ce61f93cf3b3dcc80`；没有迁移变更或生产数据库操作。C1 其余稳定领域继续分步评估。
 
+C1 schema 工作流领域通过 [PR #95](https://github.com/Xiejiayun/artoo/pull/95) 合并为 `24ad72f`（实现 `fc15d1e`），重新拉取 main 后提取消息协作领域。该 PR 的远程检查仍未全部完成，不能以本地结果宣称整个 CI 成功。
+
+C1 schema 消息协作领域将房间、消息、内容举报、通知、助手对话/派发和决策/交接/阻塞共九张表原样移入 `schema/messaging.ts`，root 原地 re-export。AST 对比确认九张表和外键回调一致、其余声明及顺序不变。首次 typecheck 发现 root 中两个 `assistantTurns` 外键引用缺导入，补齐后根 typecheck、DB build、2 文件 staged 质量及完整 DDL 比对通过；仍为 119 张表、815 条逐条相同的 SQL（仅忽略顺序）。首次测试过滤实际仅选中 schema 1 文件 6 项，通过；随后按已存在路径补跑消息/通知/助手/协作完整 6 文件 36 项，通过（Node 24 单 worker，`.git/opt-c1-schema-messaging-*`）。不以未匹配的过滤条件声称执行过其他文件；未修改迁移或数据权限。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
