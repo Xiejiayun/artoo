@@ -150,6 +150,10 @@ C1 schema 首步将组织、用户、AI 同意、内容规则、成员限制和 
 
 本步根 typecheck、DB build、3 文件 staged 质量、Node 24 单 worker 的迁移/seed/AI 同意升级/认证/内容治理 5 文件 18 项通过。构建后的完整公开 schema 经真实 drizzle-kit 导出，与基线 119 张表、815 条 SQL 逐条一致（仅忽略语句顺序；模块提取确实改变输出顺序，最初原始文件 hash 比较因此失败，未将它写成字节一致）。定义摘要 `9df3a12e8e57d616595673f2543adfff64f78de1e3a3858ce61f93cf3b3dcc80`，证据 `.git/opt-c1-schema-identity-*`。迁移文件完全未变，不运行生产迁移；C1 其余表组/大文件边界仍待评估。
 
+C1 schema 身份领域通过 [PR #94](https://github.com/Xiejiayun/artoo/pull/94) 合并为 `0eccb1c`（实现 `1cc868a`），拉取 main 后开始工作流表提取。
+
+C1 schema 工作流领域将项目、任务、DAG 依赖、文件租约和集成队列五张表原样移入 `schema/work.ts`，root 原地 re-export，跨领域 Goal/Run 外键仍使用原延迟回调。AST 比对确认表声明、外键和还原后的全部 schema 非 import 声明一致。根 typecheck、DB build、2 文件 staged 质量、Node 24 单 worker 的 schema/seed/DAG/租约/生命周期 5 文件 28 项通过（`.git/opt-c1-schema-work-*`）。构建后的公开 schema 与基线 119 张表、815 条完整 SQL 逐条一致，仅忽略输出顺序，定义摘要仍为 `9df3a12e8e57d616595673f2543adfff64f78de1e3a3858ce61f93cf3b3dcc80`；没有迁移变更或生产数据库操作。C1 其余稳定领域继续分步评估。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
