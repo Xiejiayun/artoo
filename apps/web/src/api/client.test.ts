@@ -14,6 +14,17 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 
+it("loads the exact encoded Goal ID through the authorized single-goal endpoint", async () => {
+  server.use(
+    http.get(`${BASE}/goals/:id`, ({ params, request }) => {
+      expect(params.id).toBe("goal / &");
+      expect(new URL(request.url).search).toBe("");
+      return HttpResponse.json({ goal: { id: params.id } });
+    }),
+  );
+  expect((await client.getGoal("goal / &")).goal.id).toBe("goal / &");
+});
+
 it("negotiates signed task and goal downloads only when explicitly selected", async () => {
   const seen: string[] = [];
   server.use(

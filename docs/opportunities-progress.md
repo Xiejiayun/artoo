@@ -12,7 +12,7 @@
 | F1 | 已有能力，无需重复 | 方案已更正 DAG 证据门控结论，保留现有行为。 |
 | P4 | 已实现并验证 | 集中查询键，补齐 Goal 相关事件失效与项目订阅；自动化和静态发布轮询在线退避。应用发布保留 5 秒轮询及本地健康时效判断。根 typecheck、Web build 通过；完整 Web 单元/组件回归 60 文件、574 项通过；新增实时事件/退避回归所在两文件 23 项通过。 |
 | X2 | 已实现并验证 | 按当前项目任务 ID 关联组织级审批，徽标可筛选并打开真实任务（包含 ready 执行审批）；合并重复缓存记录，支持显示全部及审批清空状态。根 typecheck、Web build 通过；LeftRail/TaskList/WorkspaceLayout/ApprovalInbox 4 文件、15 项通过。 |
-| E4 | 环境未就绪，最终验收待执行 | [验收准备与证据要求](opportunities-acceptance-2026-11-13.md)。当前进程缺少 live 参数，默认安装清单不存在；操作者回复不清楚可沿用的测试配置。补查仓库 artifacts 与本机 Artoo 目录未发现安装/candidate 清单。全部优化后重新冻结最终版本，本项仍未完成。 |
+| E4 | 已发现测试安装，等待共享授权与最终验收 | [验收准备与证据要求](opportunities-acceptance-2026-11-13.md)。补查 `%USERPROFILE%/.artoo` 后找到 rc.8 安装及独立配置；当前源码 helper 生产准入和已安装 Chromium 本地页面/实际关闭预检通过。尚未读取凭据或调用 Provider；单次 45 分钟真实外部模型验收的共享授权仍待操作者回复，最终版本验收未完成。 |
 | P1 | 已实现并验证 | 实例/电脑 Presence 批量查询，SQL 排除终态，保持组织/撤销/队列/状态语义。[测量](presence-performance-2026-11-13.md)：20 实例/4 电脑/1,020 Run，查询数 81→5、13→4；返回行 1,080→48、1,028→28。5 文件 52 项通过；根 typecheck、server build 通过。 |
 | P2 | 已实现并验证 | 追加 0061 迁移与匹配 schema，增加任务消息/最新 Run 排序索引及共用非终态部分索引。[查询计划与成本](presence-indexes-2026-11-13.md)及可复现脚本已记录；根 typecheck、server build、10 文件 53 项回归通过。独立 Postgres 与写入吞吐未测量。 |
 | P3 | 已实现并验证 | 最新 Run 批量读取、每 Run LATERAL 制品上限，Goal 审计按 20 任务批量装配；保持隔离、脱敏、排序与截断。[测量](evidence-query-batching-2026-11-13.md)：101 边交接 204→10 次查询，45 子任务审计 501→36 次。根 typecheck、server build、7 文件 27 项回归通过。 |
@@ -23,7 +23,7 @@
 | U1 | 已分域迁移并验证 | 控件/布局基础规则按原顺序迁入 ui；零特异性排除共享表单原语，移除覆盖焦点环的旧规则。明暗/320/1440px 共 25 组 550 属性稳定采样，530 不变、20 为预期焦点变化，无额外差异；根 typecheck、Web build、4 文件 23 项及最终真实 Chromium 5 项通过。[归属](web-css-ownership.md)与[证据](web-css-validation-2026-11-13.md)。剩余业务规则按组件继续渐进迁移。 |
 | U4 | 已实现并验证 | 统一首次加载骨架，沿用目标/发布响应式列；历史/设置分区独立加载，保留缓存、错误重试及空状态，不提前显示发布结论。根 typecheck、Web build、完整 Web 64 文件 610 项和真实 Chromium 3 项通过；明暗/320/1440px 栏宽及位置一致、无横向溢出。[记录](loading-states-2026-11-13.md)。未声称 CLS 收益。 |
 | X3 | 已实现并验证 | 手动计划支持中间删除、双向移动及稳定依赖；草稿按服务端/组织/账号/目标隔离，退出清理，坏数据显式丢弃，旧提交不删除新编辑。根 typecheck、Web build、聚焦 4 文件 80 项、阶段完整 Web 65 文件 617 项通过；最终快照保护回归 2 文件 36 项及真实 Chromium 3 项通过。[行为与分阶段证据](plan-drafts.md)。 |
-| E1 | 完整第一分片失败，后续重验 | #68 后 Windows / Node 24 第一分片完整运行：292 文件通过、1 失败、3 跳过；唯一失败为 server-entry 的 30 秒 readiness，单文件复核亦失败。存储四案例及附件回归通过。[方法与结果](ci-vitest-browser-validation-2026-11-13.md)。第二分片、进程分区和覆盖聚合未执行，安装步骤保留；完整冷验证移至后续集成版本。 |
+| E1 | 缓存门禁已合并，完整核验进行中 | #106 保留安装并增加独立空缓存/前后观察。实际 Windows CI 的第一分片 303 文件、4,500 项通过/23 项条件跳过，进程分区 4 文件 88 项通过，均确认缓存和 executable 前后不存在；第二分片与覆盖聚合待完成。[方法、早期失败与结果](ci-vitest-browser-validation-2026-11-13.md)。尚未删除安装步骤或宣称整个 CI 通过。 |
 | E1 前置修复 | 已通过 PR #68 合并 | 损坏附件在恢复数据库启动前拒绝，有效附件仍只流式复制一次。真实大附件回归先红后绿；原四案例和附件回归共 2 文件、5 项通过，根 typecheck、server build 通过。超时清理父 harness 1 项通过，核验子进程故意 5 失败、2 通过及实际关闭和安全清理，证据单独记录。 |
 
 P4 合并为 `172d1f0`（实现 `f59fbf9`）。远程在该次直接推送提示 PR 保护要求，后续均走普通 PR 合并；不使用 admin/bypass。每项本地验证与远程 CI 状态分别报告；CI 未结束不能视为通过。
@@ -216,6 +216,16 @@ C5 新增 [文档地图](INDEX.md)与[脚本地图](../scripts/README.md)，从 
 本机校验 156 个本地链接、docs 根目录全部 90 篇文档的索引覆盖、14 个真实 package 命令和 preview 的 --list 分支；实际 `npm run verify:preview -- --list` 与 diff whitespace 检查通过（`.git/opt-c5-links.log`、`.git/opt-c5-preview-list.log`）。纯文档不新增镜像测试；完整类型/构建/运行门禁留在最终集成执行。
 
 C5 通过 [PR #105](https://github.com/Xiejiayun/artoo/pull/105) 合并为 `d46efae`（实现 `4de1396`），已拉取最新 main 后开展 E1。新增入口诊断确定本机失败发生在开发入口首次启动；并行加载实验仍有超时，已撤回，不放宽原时限。完整冷缓存分区将由带前后缓存观察记录的实际 Windows CI 验证；安装步骤尚保留，当前并未完成 E1 或最终统一门禁。详见[追加的诊断与候选说明](ci-vitest-browser-validation-2026-11-13.md#2026-11-14-启动诊断与-ci-隔离候选)。
+
+E1 的缓存观察门禁与启动诊断作为独立基础步骤，经 [PR #106](https://github.com/Xiejiayun/artoo/pull/106) 合并为 `a1c4bf2`（实现 `119db12`），随后重新 pull main。没有删除 Chromium 安装。根 typecheck、完整 workspace build、实际观察器正向/拒绝场景、staged/changed 质量及 YAML/AST 保持核验通过；候选 CI run `43515163808` 的实际 checkout 为 `05622d4b4fb3473cbb9ec412611abe538ba70a67`。当前 windows-process 4 文件 88 项通过，parallel-1 303 文件、4,500 项通过/23 项既有条件跳过，均有一致的前后缓存及 executable 不存在记录；parallel-2 与整体覆盖聚合尚未完成，不视为整个 E1 或 CI 通过。
+
+该轮 shared-checks 的真实 Web 结果为 51 通过、3 失败。失败页面均选中了命令面板测试新建的项目；Goal ID 链接刷新后仍只查询默认项目，未像房间链接确认目标归属。独立临时回归精确失败为所请求 Goal 仍为 none、项目仍为另一项目（`.git/opt-goal-link-diagnostic-before3.log`）。现从上述最新 main 独立分支修复，保留原测试断言和时限；原 CI 失败及早期诊断未被重跑覆盖。
+
+Goal 链接修复在当前项目列表找不到指定 Goal 时，按需调用现有鉴权单 Goal 接口，核对 ID/组织和 bootstrap 已知项目后一次性切换；忽略 URL 项目提示。查询按组织/账号/Goal 隔离，缓存必须重新验证，迟到响应和显式后续选择不能回拉；失效项目或查询失败显式重试。Plan/Release/Board 等待归属查询，不展示无关 Goal 或提前给出发布结论。行为见 [Global commands](command-palette.md)。
+
+根 typecheck 及 Web build 通过，9 文件 staged 质量、Board/Release 除已声明的加载/错误/重试变化外的完整发射 JS AST 保持核验通过。首轮聚焦 7 文件为 108 通过/1 失败：Board 同时呈现新增错误和原 ErrorState，原唯一 alert 断言失败；改为沿用原 ErrorState 后，原 Board、导航与新增链接边界 3 文件 21 项全部通过（`.git/opt-goal-link-tests-recheck.{log,json}`）。新增 9 项覆盖组织/ID、失败重试、bootstrap 更新、缓存重验、账号变化和迟到响应。最初两个测试误用了 Playwright 的 exact 选项，修正为 Testing Library 的既有精确 name 匹配后根 typecheck 通过；未改业务断言、时限或跳过条件。
+
+真实 Chromium 按命令面板创建第二项目 → Goal 链接 → 原加载状态 → 原自然交付顺序完整执行，8 项全部通过（`.git/opt-goal-link-e2e.log`），包含先前 CI 的全部 3 项失败及新增 Plan/Release/Board 刷新归属回归。该聚焦结果仍不替代最终 main 的完整四门禁、完整 Web E2E 或真实 Provider 验收。
 
 ## 后续顺序
 

@@ -10,7 +10,16 @@ import { queryKeys } from "../app/queryKeys.js";
 import { useSubscription } from "../app/RealtimeContext.js";
 import { useSelection } from "../app/SelectionContext.js";
 import { useGoalContext } from "../app/useGoalContext.js";
-import { Button, EmptyState, ErrorState, PriorityBadge, SearchInput, Select, Skeleton, StatusBadge } from "../ui/index.js";
+import {
+  Button,
+  EmptyState,
+  ErrorState,
+  PriorityBadge,
+  SearchInput,
+  Select,
+  Skeleton,
+  StatusBadge,
+} from "../ui/index.js";
 import { ListChecks, Plus, UserRound } from "lucide-react";
 import { CreateTaskModal } from "./CreateTaskModal.js";
 import { PRIORITY_LABELS, taskAssigneeName } from "./taskPresentation.js";
@@ -20,7 +29,12 @@ import "../ui/work-management.css";
 const COLUMNS: { key: string; statuses: TaskStatus[]; label: string; empty: string }[] = [
   { key: "backlog", statuses: ["backlog", "ready"], label: "Backlog", empty: "New and ready tasks appear here" },
   { key: "running", statuses: ["assigned", "running"], label: "In progress", empty: "Assigned work appears here" },
-  { key: "blocked", statuses: ["awaiting_approval", "blocked"], label: "Needs attention", empty: "No work waiting on you" },
+  {
+    key: "blocked",
+    statuses: ["awaiting_approval", "blocked"],
+    label: "Needs attention",
+    empty: "No work waiting on you",
+  },
   { key: "review", statuses: ["review"], label: "Review", empty: "Results ready for review appear here" },
   { key: "done", statuses: ["done", "cancelled"], label: "Closed", empty: "Completed and cancelled tasks appear here" },
 ];
@@ -66,7 +80,16 @@ export function BoardView(): React.ReactNode {
   const [creating, setCreating] = useState(false);
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [includeHistory, setIncludeHistory] = useState(false);
-  const { goals, items: goalOptions, goal, requested, selectGoal } = useGoalContext();
+  const {
+    goals,
+    items: goalOptions,
+    goal,
+    requested,
+    selectGoal,
+    contextLoading,
+    contextError,
+    retryContext,
+  } = useGoalContext();
 
   const { bootstrap, projectId } = useProject();
   useSubscription(projectId === undefined ? [] : [`project:${projectId}`]);
@@ -77,20 +100,47 @@ export function BoardView(): React.ReactNode {
     enabled: projectId !== undefined,
   });
 
-  if (bootstrap.isLoading || tasks.isLoading) {
+  if (bootstrap.isLoading || tasks.isLoading || contextLoading) {
     return <BoardSkeleton />;
   }
   if (bootstrap.isError || tasks.isError || tasks.data === undefined) {
     return (
       <div className="board work-board">
-        <ErrorState title="Failed to load board" description="The board could not be reached. Try again." action={<Button onClick={() => { void bootstrap.refetch(); void tasks.refetch(); }}>Retry</Button>} />
+        <ErrorState
+          title="Failed to load board"
+          description="The board could not be reached. Try again."
+          action={
+            <Button
+              onClick={() => {
+                void bootstrap.refetch();
+                void tasks.refetch();
+              }}
+            >
+              Retry
+            </Button>
+          }
+        />
       </div>
     );
   }
 
-  const all = tasks.data.tasks.filter((task) => !requested || !!goal && task.goal_id === goal.id && (includeHistory || !goal.current_plan_id || !task.source_plan_id || task.source_plan_id === goal.current_plan_id));
+  const all = tasks.data.tasks.filter(
+    (task) =>
+      !requested ||
+      (!!goal &&
+        task.goal_id === goal.id &&
+        (includeHistory ||
+          !goal.current_plan_id ||
+          !task.source_plan_id ||
+          task.source_plan_id === goal.current_plan_id)),
+  );
   const query = search.trim().toLowerCase();
-  const visible = all.filter((task) => (priority === "all" || task.priority === priority) && (!query || task.title.toLowerCase().includes(query)) && (!attentionOnly || ["awaiting_approval", "blocked", "review"].includes(task.status)));
+  const visible = all.filter(
+    (task) =>
+      (priority === "all" || task.priority === priority) &&
+      (!query || task.title.toLowerCase().includes(query)) &&
+      (!attentionOnly || ["awaiting_approval", "blocked", "review"].includes(task.status)),
+  );
   const filtering = priority !== "all" || query !== "" || attentionOnly;
   const needsAttention = all.filter((task) => ["awaiting_approval", "blocked", "review"].includes(task.status)).length;
 
@@ -102,12 +152,54 @@ export function BoardView(): React.ReactNode {
   return (
     <div className="board work-board">
       <header className="board-header">
-        <div className="work-board__heading"><span className="work-eyebrow">{bootstrap.data?.projects.find((project) => project.id === projectId)?.name ?? "Workspace"}</span><h1 className="t-h1">Board <span className="work-count">{all.length}</span></h1><p>{goal ? goal.title : "Keep work moving, from the first brief to the final review."}</p></div>
-        <div className="action-row"><Link className="os-secondary-link" to={goal ? `/?goal=${encodeURIComponent(goal.id)}` : "/"}>Task list</Link>{goal ? <Link className="os-secondary-link" to={`/goals?goal=${encodeURIComponent(goal.id)}`}>Manage plan</Link> : <Button variant="primary" iconLeft={Plus} disabled={!projectId} onClick={() => setCreating(true)}>Create task</Button>}</div>
+        <div className="work-board__heading">
+          <span className="work-eyebrow">
+            {bootstrap.data?.projects.find((project) => project.id === projectId)?.name ?? "Workspace"}
+          </span>
+          <h1 className="t-h1">
+            Board <span className="work-count">{all.length}</span>
+          </h1>
+          <p>{goal ? goal.title : "Keep work moving, from the first brief to the final review."}</p>
+        </div>
+        <div className="action-row">
+          <Link className="os-secondary-link" to={goal ? `/?goal=${encodeURIComponent(goal.id)}` : "/"}>
+            Task list
+          </Link>
+          {goal ? (
+            <Link className="os-secondary-link" to={`/goals?goal=${encodeURIComponent(goal.id)}`}>
+              Manage plan
+            </Link>
+          ) : (
+            <Button variant="primary" iconLeft={Plus} disabled={!projectId} onClick={() => setCreating(true)}>
+              Create task
+            </Button>
+          )}
+        </div>
       </header>
       <div className="work-board__toolbar">
-        <Select label="Goal scope" value={requested ?? ""} onChange={(event) => { selectGoal(event.target.value || null); setIncludeHistory(false); }}><option value="">All project work</option>{requested && !goal && <option value={requested}>Goal unavailable</option>}{goalOptions.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</Select>
-        <SearchInput aria-label="Search board" placeholder="Search tasks…" value={search} onChange={(event) => setSearch(event.target.value)} onClear={() => setSearch("")} />
+        <Select
+          label="Goal scope"
+          value={requested ?? ""}
+          onChange={(event) => {
+            selectGoal(event.target.value || null);
+            setIncludeHistory(false);
+          }}
+        >
+          <option value="">All project work</option>
+          {requested && !goal && <option value={requested}>Goal unavailable</option>}
+          {goalOptions.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.title}
+            </option>
+          ))}
+        </Select>
+        <SearchInput
+          aria-label="Search board"
+          placeholder="Search tasks…"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          onClear={() => setSearch("")}
+        />
         <Select
           label="Priority"
           className="board-filter"
@@ -120,17 +212,92 @@ export function BoardView(): React.ReactNode {
             </option>
           ))}
         </Select>
-        <Button size="sm" className="os-attention-filter" aria-pressed={attentionOnly} onClick={() => setAttentionOnly(!attentionOnly)}>Needs attention<span className="work-count" aria-hidden="true">{needsAttention}</span></Button>
-        {filtering ? <Button size="sm" variant="ghost" onClick={() => { setSearch(""); setPriority("all"); setAttentionOnly(false); }}>Clear filters</Button> : null}
-        <span className="work-board__summary">{filtering ? `${visible.length} of ${all.length} tasks` : needsAttention > 0 ? `${needsAttention} ${needsAttention === 1 ? "task needs" : "tasks need"} attention` : "No reviews or blockers"}</span>
+        <Button
+          size="sm"
+          className="os-attention-filter"
+          aria-pressed={attentionOnly}
+          onClick={() => setAttentionOnly(!attentionOnly)}
+        >
+          Needs attention
+          <span className="work-count" aria-hidden="true">
+            {needsAttention}
+          </span>
+        </Button>
+        {filtering ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setSearch("");
+              setPriority("all");
+              setAttentionOnly(false);
+            }}
+          >
+            Clear filters
+          </Button>
+        ) : null}
+        <span className="work-board__summary">
+          {filtering
+            ? `${visible.length} of ${all.length} tasks`
+            : needsAttention > 0
+              ? `${needsAttention} ${needsAttention === 1 ? "task needs" : "tasks need"} attention`
+              : "No reviews or blockers"}
+        </span>
       </div>
-      {goal?.current_plan_id && <label className="delivery-board-history"><input type="checkbox" checked={includeHistory} onChange={(event) => setIncludeHistory(event.target.checked)} /> Include work from earlier plans</label>}
-      {requested && goals.isLoading ? <p role="status">Loading this goal…</p> : requested && (goals.error || !goal) ? <ErrorState title="Goal unavailable" description="Choose a goal in this project or view all project work." action={<Button onClick={() => selectGoal(null)}>Show all project work</Button>} /> : all.length === 0 && goal ? <EmptyState icon={ListChecks} title="This goal has no linked tasks yet" description="Accept a plan to create work. Current tasks and independent reviews will appear here." action={<Link className="os-secondary-link" to={`/goals?goal=${encodeURIComponent(goal.id)}`}>Open plan</Link>} /> : all.length === 0 ? (
+      {goal?.current_plan_id && (
+        <label className="delivery-board-history">
+          <input
+            type="checkbox"
+            checked={includeHistory}
+            onChange={(event) => setIncludeHistory(event.target.checked)}
+          />{" "}
+          Include work from earlier plans
+        </label>
+      )}
+      {requested && goals.isLoading ? (
+        <p role="status">Loading this goal…</p>
+      ) : requested && (goals.error || !goal) ? (
+        <ErrorState
+          title="Goal unavailable"
+          description={contextError?.message ?? "Choose a goal in this project or view all project work."}
+          action={
+            <>
+              <Button onClick={() => selectGoal(null)}>Show all project work</Button>
+              {contextError && <Button onClick={retryContext}>Retry opening goal</Button>}
+            </>
+          }
+        />
+      ) : all.length === 0 && goal ? (
+        <EmptyState
+          icon={ListChecks}
+          title="This goal has no linked tasks yet"
+          description="Accept a plan to create work. Current tasks and independent reviews will appear here."
+          action={
+            <Link className="os-secondary-link" to={`/goals?goal=${encodeURIComponent(goal.id)}`}>
+              Open plan
+            </Link>
+          }
+        />
+      ) : all.length === 0 ? (
         <div className="board-empty">
-          <EmptyState icon={ListChecks} title="No tasks yet" description="Give your team a clear outcome, then assign the work to an agent." action={<Button iconLeft={Plus} onClick={() => setCreating(true)}>Create your first task</Button>} />
+          <EmptyState
+            icon={ListChecks}
+            title="No tasks yet"
+            description="Give your team a clear outcome, then assign the work to an agent."
+            action={
+              <Button iconLeft={Plus} onClick={() => setCreating(true)}>
+                Create your first task
+              </Button>
+            }
+          />
         </div>
       ) : visible.length === 0 ? (
-        <div className="board-empty"><EmptyState title="No matching tasks" description="Try a different title or priority to find the work you need." /></div>
+        <div className="board-empty">
+          <EmptyState
+            title="No matching tasks"
+            description="Try a different title or priority to find the work you need."
+          />
+        </div>
       ) : (
         <div className="board-columns">
           {COLUMNS.map(({ key, statuses, label, empty }) => {
@@ -138,7 +305,8 @@ export function BoardView(): React.ReactNode {
             return (
               <section key={key} className="board-column" data-status={key} aria-label={label}>
                 <h2 className="board-column__title">
-                  <span className="work-board__status-dot" aria-hidden="true" />{label} <span className="count">{items.length}</span>
+                  <span className="work-board__status-dot" aria-hidden="true" />
+                  {label} <span className="count">{items.length}</span>
                 </h2>
                 {items.length === 0 ? (
                   <p className="board-column__empty">{empty}</p>
@@ -152,12 +320,32 @@ export function BoardView(): React.ReactNode {
                           data-status={task.status}
                           onClick={() => openTask(task.id)}
                         >
-                          <span className="work-board-card__top"><StatusBadge status={task.status} /><PriorityBadge priority={task.priority} /></span>
-                          <span className="board-card__title" title={task.title}>{task.title}</span>
-                          {task.description ? <span className="work-board-card__description" title={task.description}>{task.description}</span> : null}
+                          <span className="work-board-card__top">
+                            <StatusBadge status={task.status} />
+                            <PriorityBadge priority={task.priority} />
+                          </span>
+                          <span className="board-card__title" title={task.title}>
+                            {task.title}
+                          </span>
+                          {task.description ? (
+                            <span className="work-board-card__description" title={task.description}>
+                              {task.description}
+                            </span>
+                          ) : null}
                           <span className="board-card__meta">
-                            <span className="board-card__assignee" title={taskAssigneeName(task, bootstrap.data)}><UserRound size={13} aria-hidden="true" /><span className="u-truncate">{taskAssigneeName(task, bootstrap.data)}</span></span>
-                            {task.acceptance_criteria.length > 0 ? <span className="work-board-card__criteria" title={`${task.acceptance_criteria.length} acceptance criteria`}><ListChecks size={14} aria-hidden="true" />{task.acceptance_criteria.length}</span> : null}
+                            <span className="board-card__assignee" title={taskAssigneeName(task, bootstrap.data)}>
+                              <UserRound size={13} aria-hidden="true" />
+                              <span className="u-truncate">{taskAssigneeName(task, bootstrap.data)}</span>
+                            </span>
+                            {task.acceptance_criteria.length > 0 ? (
+                              <span
+                                className="work-board-card__criteria"
+                                title={`${task.acceptance_criteria.length} acceptance criteria`}
+                              >
+                                <ListChecks size={14} aria-hidden="true" />
+                                {task.acceptance_criteria.length}
+                              </span>
+                            ) : null}
                           </span>
                         </button>
                       </li>
@@ -169,7 +357,9 @@ export function BoardView(): React.ReactNode {
           })}
         </div>
       )}
-      {creating && projectId ? <CreateTaskModal projectId={projectId} onClose={() => setCreating(false)} onCreated={openTask} /> : null}
+      {creating && projectId ? (
+        <CreateTaskModal projectId={projectId} onClose={() => setCreating(false)} onCreated={openTask} />
+      ) : null}
     </div>
   );
 }
