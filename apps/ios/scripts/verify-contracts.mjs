@@ -99,6 +99,7 @@ const routeFiles = [
   "discussion-routes.ts",
   "collaboration-routes.ts",
   "goal-routes.ts",
+  "device-routes.ts",
   "product-release-routes.ts",
   "application-publication-routes.ts",
 ];
