@@ -40,6 +40,12 @@ describe("invalidationsForEvent", () => {
     expect(keys).toContainEqual(["task", "task_1"]);
   });
 
+  it("refreshes the goal's planning progress when a discussion changes", () => {
+    const keys = invalidationsForEvent("room:room_1", event({ type: "discussion.updated", room_id: "room_1", payload: { discussion_id: "discussion_1", status: "ready", current_step: 3 } }));
+    expect(keys).toContainEqual(["discussions"]);
+    expect(keys).toContainEqual(["messages", "room_1"]);
+  });
+
   it("invalidates the project task list on task.created/updated", () => {
     const keys = invalidationsForEvent(
       "task:task_1",

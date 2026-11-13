@@ -49,6 +49,30 @@ function Subscriber({ topics }: { topics: string[] }): null {
 }
 
 describe("RealtimeProvider", () => {
+  it("refetches active planning progress from a room push without waiting for polling", async () => {
+    const socket = new FakeSocket();
+    const queryClient = new QueryClient();
+    let completed = false;
+    const readDiscussion = vi.fn(async () => ({ status: completed ? "ready" : "running", current_step: completed ? 3 : 0 }));
+    function PlanningProbe() {
+      useSubscription(["room:goal_room"]);
+      const progress = useQuery({ queryKey: ["discussions", "goal_1"], queryFn: readDiscussion });
+      return <p>{progress.data?.status} · {progress.data?.current_step}</p>;
+    }
+    render(<QueryClientProvider client={queryClient}><RealtimeProvider socketFactory={() => socket}><PlanningProbe /></RealtimeProvider></QueryClientProvider>);
+    act(() => socket.open());
+    expect(await screen.findByText("running · 0")).toBeInTheDocument();
+    const readsBeforePush = readDiscussion.mock.calls.length;
+    completed = true;
+    act(() => socket.emit(JSON.stringify({ type: "event", topic: "room:goal_room", event: {
+      id: "discussion_update", type: "discussion.updated", schema_version: "2026-06-11", organization_id: "org_default",
+      actor: { type: "system", id: "discussion-coordinator" }, occurred_at: "2026-06-13T00:00:00Z", correlation_id: "discussion_1",
+      room_id: "goal_room", payload: { discussion_id: "discussion_1", status: "ready", current_step: 3 },
+    } })));
+    expect(await screen.findByText("ready · 3")).toBeInTheDocument();
+    expect(readDiscussion).toHaveBeenCalledTimes(readsBeforePush + 1);
+  });
+
   it("renders streamed run output once without refetching chat or task snapshots", async () => {
     const socket = new FakeSocket();
     const queryClient = new QueryClient();
