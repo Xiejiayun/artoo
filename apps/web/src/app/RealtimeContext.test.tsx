@@ -10,6 +10,7 @@ import type { WebSocketLike } from "../ws/realtimeClient.js";
 import { queryKeys } from "./queryKeys.js";
 import { RealtimeProvider, usePollMs, useSubscription } from "./RealtimeContext.js";
 import type { RunOutputChunk } from "./runOutputs.js";
+import { messageFixture } from "../test/utils.js";
 
 afterEach(() => {
   cleanup();
@@ -49,31 +50,101 @@ function Subscriber({ topics }: { topics: string[] }): null {
 }
 
 describe("RealtimeProvider", () => {
+  it("immediately removes moderated hits from every search page and refreshes the room search prefix", () => {
+    const socket = new FakeSocket();
+    const queryClient = new QueryClient();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+    const hit = messageFixture({ id: "removed", kind: "text", body: "Private hit" });
+    const other = messageFixture({ id: "other", kind: "text", body: "Keep hit" });
+    const key = queryKeys.messageSearch("room_1", "hit");
+    const foreign = queryKeys.messageSearch("other_room", "hit");
+    const data = { pages: [{ messages: [hit, other] }, { messages: [hit] }], pageParams: [undefined, "older"] };
+    queryClient.setQueryData(key, data);
+    queryClient.setQueryData(foreign, data);
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RealtimeProvider socketFactory={() => socket}>
+          <Subscriber topics={["room:room_1"]} />
+        </RealtimeProvider>
+      </QueryClientProvider>,
+    );
+    act(() => socket.open());
+    invalidate.mockClear();
+    act(() =>
+      socket.emit(
+        JSON.stringify({
+          type: "event",
+          topic: "room:room_1",
+          event: {
+            id: "moderation",
+            type: "message.moderated",
+            schema_version: "2026-06-11",
+            organization_id: "org_default",
+            actor: { type: "user", id: "owner" },
+            occurred_at: "2026-06-13T00:00:00Z",
+            correlation_id: "removed",
+            room_id: "room_1",
+            payload: { message_id: "removed" },
+          },
+        }),
+      ),
+    );
+    expect(queryClient.getQueryData(key)).toEqual({ ...data, pages: [{ messages: [other] }, { messages: [] }] });
+    expect(queryClient.getQueryData(foreign)).toEqual(data);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["message-search", "room_1"] });
+  });
   it("backs off online goal polling and refetches all evidence on a project event", async () => {
     const socket = new FakeSocket();
     const queryClient = new QueryClient();
     let updated = false;
-    const readers = [queryKeys.goalAutomation, queryKeys.goalRelease, queryKeys.goalApplicationPublication]
-      .map((key) => ({ key: key("goal_1"), read: vi.fn(async () => updated ? "updated" : "initial") }));
+    const readers = [queryKeys.goalAutomation, queryKeys.goalRelease, queryKeys.goalApplicationPublication].map(
+      (key) => ({ key: key("goal_1"), read: vi.fn(async () => (updated ? "updated" : "initial")) }),
+    );
     function EvidenceProbe() {
       useSubscription(["project:proj_artoo"]);
       const interval = usePollMs(5000);
       const automation = useQuery({ queryKey: readers[0]!.key, queryFn: readers[0]!.read, refetchInterval: interval });
       const release = useQuery({ queryKey: readers[1]!.key, queryFn: readers[1]!.read, refetchInterval: interval });
       const application = useQuery({ queryKey: readers[2]!.key, queryFn: readers[2]!.read, refetchInterval: 5000 });
-      return <p>{interval} · {automation.data}/{release.data}/{application.data}</p>;
+      return (
+        <p>
+          {interval} · {automation.data}/{release.data}/{application.data}
+        </p>
+      );
     }
-    render(<QueryClientProvider client={queryClient}><RealtimeProvider socketFactory={() => socket} reconnectDelayMs={0}><EvidenceProbe /></RealtimeProvider></QueryClientProvider>);
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RealtimeProvider socketFactory={() => socket} reconnectDelayMs={0}>
+          <EvidenceProbe />
+        </RealtimeProvider>
+      </QueryClientProvider>,
+    );
     expect(await screen.findByText("5000 · initial/initial/initial")).toBeInTheDocument();
     act(() => socket.open());
     expect(await screen.findByText("30000 · initial/initial/initial")).toBeInTheDocument();
-    await waitFor(() => { for (const { read } of readers) expect(read).toHaveBeenCalledTimes(2); });
+    await waitFor(() => {
+      for (const { read } of readers) expect(read).toHaveBeenCalledTimes(2);
+    });
     updated = true;
-    act(() => socket.emit(JSON.stringify({ type: "event", topic: "project:proj_artoo", event: {
-      id: "goal_update", type: "goal.automation.updated", schema_version: "2026-06-11", organization_id: "org_default",
-      actor: { type: "system", id: "goal_runner" }, occurred_at: "2026-06-13T00:00:00Z", correlation_id: "goal_1",
-      project_id: "proj_artoo", payload: { goal_id: "goal_1" },
-    } })));
+    act(() =>
+      socket.emit(
+        JSON.stringify({
+          type: "event",
+          topic: "project:proj_artoo",
+          event: {
+            id: "goal_update",
+            type: "goal.automation.updated",
+            schema_version: "2026-06-11",
+            organization_id: "org_default",
+            actor: { type: "system", id: "goal_runner" },
+            occurred_at: "2026-06-13T00:00:00Z",
+            correlation_id: "goal_1",
+            project_id: "proj_artoo",
+            payload: { goal_id: "goal_1" },
+          },
+        }),
+      ),
+    );
     expect(await screen.findByText("30000 · updated/updated/updated")).toBeInTheDocument();
     act(() => socket.closeWith(1006));
     expect(await screen.findByText("5000 · updated/updated/updated")).toBeInTheDocument();
@@ -83,22 +154,49 @@ describe("RealtimeProvider", () => {
     const socket = new FakeSocket();
     const queryClient = new QueryClient();
     let completed = false;
-    const readDiscussion = vi.fn(async () => ({ status: completed ? "ready" : "running", current_step: completed ? 3 : 0 }));
+    const readDiscussion = vi.fn(async () => ({
+      status: completed ? "ready" : "running",
+      current_step: completed ? 3 : 0,
+    }));
     function PlanningProbe() {
       useSubscription(["room:goal_room"]);
       const progress = useQuery({ queryKey: ["discussions", "goal_1"], queryFn: readDiscussion });
-      return <p>{progress.data?.status} · {progress.data?.current_step}</p>;
+      return (
+        <p>
+          {progress.data?.status} · {progress.data?.current_step}
+        </p>
+      );
     }
-    render(<QueryClientProvider client={queryClient}><RealtimeProvider socketFactory={() => socket}><PlanningProbe /></RealtimeProvider></QueryClientProvider>);
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RealtimeProvider socketFactory={() => socket}>
+          <PlanningProbe />
+        </RealtimeProvider>
+      </QueryClientProvider>,
+    );
     act(() => socket.open());
     expect(await screen.findByText("running · 0")).toBeInTheDocument();
     const readsBeforePush = readDiscussion.mock.calls.length;
     completed = true;
-    act(() => socket.emit(JSON.stringify({ type: "event", topic: "room:goal_room", event: {
-      id: "discussion_update", type: "discussion.updated", schema_version: "2026-06-11", organization_id: "org_default",
-      actor: { type: "system", id: "discussion-coordinator" }, occurred_at: "2026-06-13T00:00:00Z", correlation_id: "discussion_1",
-      room_id: "goal_room", payload: { discussion_id: "discussion_1", status: "ready", current_step: 3 },
-    } })));
+    act(() =>
+      socket.emit(
+        JSON.stringify({
+          type: "event",
+          topic: "room:goal_room",
+          event: {
+            id: "discussion_update",
+            type: "discussion.updated",
+            schema_version: "2026-06-11",
+            organization_id: "org_default",
+            actor: { type: "system", id: "discussion-coordinator" },
+            occurred_at: "2026-06-13T00:00:00Z",
+            correlation_id: "discussion_1",
+            room_id: "goal_room",
+            payload: { discussion_id: "discussion_1", status: "ready", current_step: 3 },
+          },
+        }),
+      ),
+    );
     expect(await screen.findByText("ready · 3")).toBeInTheDocument();
     expect(readDiscussion).toHaveBeenCalledTimes(readsBeforePush + 1);
   });
@@ -108,13 +206,39 @@ describe("RealtimeProvider", () => {
     const queryClient = new QueryClient();
     const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
     function OutputProbe() {
-      const output = useQuery<RunOutputChunk[]>({ queryKey: queryKeys.runOutputs("task_1"), queryFn: async () => [], enabled: false });
+      const output = useQuery<RunOutputChunk[]>({
+        queryKey: queryKeys.runOutputs("task_1"),
+        queryFn: async () => [],
+        enabled: false,
+      });
       return <pre>{output.data?.map((chunk) => chunk.text).join("\n")}</pre>;
     }
-    render(<QueryClientProvider client={queryClient}><RealtimeProvider socketFactory={() => socket} reconnectDelayMs={0}><OutputProbe /></RealtimeProvider></QueryClientProvider>);
-    act(() => socket.open()); invalidate.mockClear();
-    const event = { id: "output_1", type: "run.output", schema_version: "2026-06-11", organization_id: "org_default", actor: { type: "agent", id: "agent_1" }, occurred_at: "2026-06-13T00:00:00Z", correlation_id: "corr_1", task_id: "task_1", room_id: "room_1", run_id: "run_1", payload: { stream: "stdout", text: "streamed output" } };
-    act(() => { socket.emit(JSON.stringify({ type: "event", topic: "task:task_1", event })); socket.emit(JSON.stringify({ type: "event", topic: "room:room_1", event })); });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RealtimeProvider socketFactory={() => socket} reconnectDelayMs={0}>
+          <OutputProbe />
+        </RealtimeProvider>
+      </QueryClientProvider>,
+    );
+    act(() => socket.open());
+    invalidate.mockClear();
+    const event = {
+      id: "output_1",
+      type: "run.output",
+      schema_version: "2026-06-11",
+      organization_id: "org_default",
+      actor: { type: "agent", id: "agent_1" },
+      occurred_at: "2026-06-13T00:00:00Z",
+      correlation_id: "corr_1",
+      task_id: "task_1",
+      room_id: "room_1",
+      run_id: "run_1",
+      payload: { stream: "stdout", text: "streamed output" },
+    };
+    act(() => {
+      socket.emit(JSON.stringify({ type: "event", topic: "task:task_1", event }));
+      socket.emit(JSON.stringify({ type: "event", topic: "room:room_1", event }));
+    });
     expect(await screen.findByText("streamed output")).toBeInTheDocument();
     expect(queryClient.getQueryData<RunOutputChunk[]>(queryKeys.runOutputs("task_1"))).toHaveLength(1);
     expect(invalidate).not.toHaveBeenCalled();

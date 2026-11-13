@@ -1,6 +1,6 @@
 import { removedMessage } from "../api/messageModeration.js";
 import type { Message } from "@artoo/domain";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 
 import { RealtimeClient, type SocketFactory } from "../ws/realtimeClient.js";
@@ -48,20 +48,57 @@ export function RealtimeProvider({
         if (event.type === "message.moderated" && event.room_id && typeof event.payload.message_id === "string") {
           const id = event.payload.message_id;
           onMessageRemoved?.(event.room_id, id);
-          queryClient.setQueriesData<MessagesResponse>({ queryKey: queryKeys.messages(event.room_id) }, (current) => current ? {
-            ...current, messages: current.messages.map((message) => message.id === id ? removedMessage(message) : message),
-          } : current);
-          queryClient.setQueryData<{ message: Message }>(queryKeys.message(event.room_id, id), (current) => current ? { message: removedMessage(current.message) } : current);
+          queryClient.setQueriesData<MessagesResponse>({ queryKey: queryKeys.messages(event.room_id) }, (current) =>
+            current
+              ? {
+                  ...current,
+                  messages: current.messages.map((message) => (message.id === id ? removedMessage(message) : message)),
+                }
+              : current,
+          );
+          queryClient.setQueryData<{ message: Message }>(queryKeys.message(event.room_id, id), (current) =>
+            current ? { message: removedMessage(current.message) } : current,
+          );
+          queryClient.setQueriesData<InfiniteData<MessagesResponse>>(
+            { queryKey: queryKeys.messageSearch(event.room_id) },
+            (current) =>
+              current
+                ? {
+                    ...current,
+                    pages: current.pages.map((page) => ({
+                      ...page,
+                      messages: page.messages.filter((message) => message.id !== id),
+                    })),
+                  }
+                : current,
+          );
         }
-        if (event.type === "sync.required") { void queryClient.invalidateQueries(); return; }
+        if (event.type === "sync.required") {
+          void queryClient.invalidateQueries();
+          return;
+        }
         if (event.room_id && typeof event.payload.thread_root_id === "string") {
           const rootId = event.payload.thread_root_id;
           const count = event.payload.root_reply_count;
-          if (typeof count === "number") queryClient.setQueriesData<MessagesResponse>({ queryKey: queryKeys.messages(event.room_id) }, (current) => current ? { ...current, messages: current.messages.map((message) => message.id === rootId ? { ...message, reply_count: Math.max(count, message.reply_count ?? 0) } : message) } : current);
+          if (typeof count === "number")
+            queryClient.setQueriesData<MessagesResponse>({ queryKey: queryKeys.messages(event.room_id) }, (current) =>
+              current
+                ? {
+                    ...current,
+                    messages: current.messages.map((message) =>
+                      message.id === rootId
+                        ? { ...message, reply_count: Math.max(count, message.reply_count ?? 0) }
+                        : message,
+                    ),
+                  }
+                : current,
+            );
           void queryClient.invalidateQueries({ queryKey: queryKeys.message(event.room_id, rootId) });
         }
         if (event.type === "run.output" && event.task_id) {
-          queryClient.setQueryData<RunOutputChunk[]>(queryKeys.runOutputs(event.task_id), (previous) => appendRunOutput(previous, event));
+          queryClient.setQueryData<RunOutputChunk[]>(queryKeys.runOutputs(event.task_id), (previous) =>
+            appendRunOutput(previous, event),
+          );
         }
         for (const key of invalidationsForEvent(topic, event)) {
           void queryClient.invalidateQueries({ queryKey: key });
@@ -81,14 +118,22 @@ export function RealtimeProvider({
     if (preparedPolling) {
       client?.close();
       void refreshPreparedTaskProgress(queryClient);
-      const timer = setInterval(() => { void refreshPreparedTaskProgress(queryClient); }, 5000);
-      return () => { clearInterval(timer); client?.close(); };
+      const timer = setInterval(() => {
+        void refreshPreparedTaskProgress(queryClient);
+      }, 5000);
+      return () => {
+        clearInterval(timer);
+        client?.close();
+      };
     }
     const unsubscribe = client?.subscribeStatus(() => {
       if (client.getStatus() === "connected") void queryClient.invalidateQueries();
     });
     client?.connect();
-    return () => { unsubscribe?.(); client?.close(); };
+    return () => {
+      unsubscribe?.();
+      client?.close();
+    };
   }, [queryClient, preparedPolling]);
 
   return <RealtimeContext.Provider value={ref.current}>{children}</RealtimeContext.Provider>;
@@ -112,7 +157,6 @@ export function useSubscription(topics: string[]): void {
     client.subscribe(topics);
     return () => client.unsubscribe(topics);
     // topics are tracked via their stable joined `key`.
-
   }, [client, key]);
 }
 

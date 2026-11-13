@@ -11,22 +11,28 @@ export const queryKeys = {
   allMemories: ["memories"] as const,
   allMemoryContext: ["memoryContext"] as const,
   allComputerRuntimes: ["computerRuntimes"] as const,
-  goals: (projectId?: string | null) => projectId ? ["goals", projectId] as const : ["goals"] as const,
-  plans: (goalId?: string) => goalId ? ["plans", goalId] as const : ["plans"] as const,
-  checkpoints: (goalId?: string) => goalId ? ["checkpoints", goalId] as const : ["checkpoints"] as const,
-  goalAutomation: (goalId?: string) => goalId ? ["goal-automation", goalId] as const : ["goal-automation"] as const,
-  goalRelease: (goalId?: string) => goalId ? ["goal-release", goalId] as const : ["goal-release"] as const,
-  goalApplicationPublication: (goalId?: string) => goalId ? ["goal-application-publication", goalId] as const : ["goal-application-publication"] as const,
-  discussions: (goalId?: string) => goalId ? ["discussions", goalId] as const : ["discussions"] as const,
-  channels: (projectId?: string | null) => projectId ? ["channels", projectId] as const : ["channels"] as const,
+  goals: (projectId?: string | null) => (projectId ? (["goals", projectId] as const) : (["goals"] as const)),
+  plans: (goalId?: string) => (goalId ? (["plans", goalId] as const) : (["plans"] as const)),
+  checkpoints: (goalId?: string) => (goalId ? (["checkpoints", goalId] as const) : (["checkpoints"] as const)),
+  goalAutomation: (goalId?: string) =>
+    goalId ? (["goal-automation", goalId] as const) : (["goal-automation"] as const),
+  goalRelease: (goalId?: string) => (goalId ? (["goal-release", goalId] as const) : (["goal-release"] as const)),
+  goalApplicationPublication: (goalId?: string) =>
+    goalId ? (["goal-application-publication", goalId] as const) : (["goal-application-publication"] as const),
+  discussions: (goalId?: string) => (goalId ? (["discussions", goalId] as const) : (["discussions"] as const)),
+  channels: (projectId?: string | null) => (projectId ? (["channels", projectId] as const) : (["channels"] as const)),
   room: (roomId: string | null) => ["room", roomId] as const,
-  notificationProject: (roomId: string | null, projectId: string | null | undefined, organizationId?: string, userId?: string) =>
-    ["notification-project", roomId, projectId, organizationId, userId] as const,
+  notificationProject: (
+    roomId: string | null,
+    projectId: string | null | undefined,
+    organizationId?: string,
+    userId?: string,
+  ) => ["notification-project", roomId, projectId, organizationId, userId] as const,
   message: (roomId: string, messageId: string | undefined) => ["message", roomId, messageId] as const,
   collaboration: (roomId: string) => ["collaboration", roomId] as const,
   devices: ["devices"] as const,
-  dependencies: (taskId?: string) => taskId ? ["dependencies", taskId] as const : ["dependencies"] as const,
-  leases: (projectId?: string) => projectId ? ["leases", projectId] as const : ["leases"] as const,
+  dependencies: (taskId?: string) => (taskId ? (["dependencies", taskId] as const) : (["dependencies"] as const)),
+  leases: (projectId?: string) => (projectId ? (["leases", projectId] as const) : (["leases"] as const)),
   pairing: (pairingId: string | undefined) => ["pairing", pairingId] as const,
   desktopConnection: ["desktopConnection"] as const,
   desktopDaemon: ["desktopDaemon"] as const,
@@ -36,11 +42,19 @@ export const queryKeys = {
   myContentReports: (before?: string) => ["moderation", "my-reports", before] as const,
   tasks: (projectId: string) => ["tasks", projectId] as const,
   task: (taskId: string) => ["task", taskId] as const,
-  messages: (roomId: string, threadRootId?: string) => threadRootId ? ["messages", roomId, "thread", threadRootId] as const : ["messages", roomId] as const,
+  messages: (roomId: string, threadRootId?: string) =>
+    threadRootId ? (["messages", roomId, "thread", threadRootId] as const) : (["messages", roomId] as const),
+  messageSearch: (roomId: string, q?: string, threadRootId?: string) =>
+    q === undefined
+      ? (["message-search", roomId] as const)
+      : (["message-search", roomId, threadRootId ?? null, q] as const),
   members: ["members"] as const,
   notifications: ["notifications"] as const,
   daemons: ["daemons"] as const,
-  assistantTurns: (roomId: string, threadRootId?: string) => threadRootId ? ["assistantTurns", roomId, "thread", threadRootId] as const : ["assistantTurns", roomId] as const,
+  assistantTurns: (roomId: string, threadRootId?: string) =>
+    threadRootId
+      ? (["assistantTurns", roomId, "thread", threadRootId] as const)
+      : (["assistantTurns", roomId] as const),
   runOutputs: (taskId: string) => ["runOutputs", taskId] as const,
   runUsage: (runId: string) => ["runUsage", runId] as const,
   agentHistory: (agentId: string, filters: Record<string, string>) => ["agentHistory", agentId, filters] as const,
@@ -50,7 +64,6 @@ export const queryKeys = {
   approvals: (status: string) => ["approvals", status] as const,
   memories: (filters: Record<string, string | undefined> = {}) => ["memories", filters] as const,
   memory: (memoryId: string) => ["memory", memoryId] as const,
-  memoryContext: (projectId: string, taskId?: string) =>
-    ["memoryContext", projectId, taskId ?? null] as const,
+  memoryContext: (projectId: string, taskId?: string) => ["memoryContext", projectId, taskId ?? null] as const,
   auditBundle: (taskId: string) => ["auditBundle", taskId] as const,
 };

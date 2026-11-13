@@ -9,7 +9,9 @@
 import type {
   PreparedGoalEntryV1,
   MessageSyncCapabilitiesV1,
-  ApplicationPublicationRequestV1, ApplicationPublicationReceiptV1, ApplicationPublicationObservationV1,
+  ApplicationPublicationRequestV1,
+  ApplicationPublicationReceiptV1,
+  ApplicationPublicationObservationV1,
   Agent,
   AgentInstance,
   AgentRuntime,
@@ -107,9 +109,18 @@ export interface MessagesResponse {
   has_more?: boolean;
 }
 
-export interface MessagePageOptions { limit?: number; before?: string; after?: string; thread_root_id?: string }
+export interface MessagePageOptions {
+  limit?: number;
+  before?: string;
+  after?: string;
+  thread_root_id?: string;
+  q?: string;
+}
 
-export interface NotificationPageOptions { limit?: number; before?: string }
+export interface NotificationPageOptions {
+  limit?: number;
+  before?: string;
+}
 export interface NotificationsResponse {
   notifications: Notification[];
   next_before?: string | null;
@@ -119,10 +130,14 @@ export interface NotificationsResponse {
 }
 
 export interface DaemonPresence {
-  computer_id: string; display_name: string;
+  computer_id: string;
+  display_name: string;
   status: "online" | "reconnecting" | "offline" | "stale" | "disabled";
-  connected: boolean; last_heartbeat_at: string | null; heartbeat_age_ms: number | null;
-  active_runs: number; runtimes: AgentRuntime[];
+  connected: boolean;
+  last_heartbeat_at: string | null;
+  heartbeat_age_ms: number | null;
+  active_runs: number;
+  runtimes: AgentRuntime[];
   workspace_roots?: { version: 1; paths: string[] };
 }
 
