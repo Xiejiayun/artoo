@@ -2,6 +2,14 @@
 
 依据 [opportunities.md](../opportunities.md)（2026-11-13）逐项实施。每项从 fetch 后的最新 main 创建独立分支，先回归、再合并并同步 main，下一项重新 fetch。最终集成门禁包含 typecheck、build、完整 Vitest 和 Web E2E；原生客户端与真实 Provider 验收分别记录，不能由夹具替代。
 
+## 2026-11-15 最终集成结果
+
+冻结 main `7295072fad2948815f177271e08d2ce280044a7c` 的 [Preview CI](https://github.com/Xiejiayun/artoo/actions/runs/43631002049) 与 [Azure validation](https://github.com/Xiejiayun/artoo/actions/runs/43631002036) 已完整结束为成功并独立核验。完整 Vitest 为 611 文件、8,848 通过、90 条既有条件跳过；共享 39 项（Web 55/认证 6）、Windows process 88、Mac 安装 18/恢复 8、iOS 200 项单元/十一项业务 UI/两台模拟器 publisher，以及 Azure 17/19/47 项和镜像迁移检查均通过。Windows Electron 安装 UI 仍按原条件未运行；原生 XcodeGen 后的稳定追踪差异单独保留，不声称干净源码或真实 Provider 验收。
+
+同提交本机 Node 24.22.1 的 typecheck、完整 build、新 daemon bundle 与完整 Web 55 项通过；全量 Vitest 实际退出 1，为 8,839 通过、11 失败、88 条件跳过。原 8,938 项用例身份保持，两个 Windows worker 因本机条件具备而额外通过；十个跨节点集成案例分别遇到原 setup/主体期限，另一个为服务入口原 30 秒 readiness 失败。各进程实际关闭、源码保持，所有失败与原始 stderr 保留，CI 通过不覆盖本机失败。
+
+完整运行后进行了独立启动 CPU 采样，首次开发入口约 58.42 秒、同库直接重开约 12.79 秒，均正常关闭；模块文件加载栈占据首次样本的较多时间。采样开销、缓存及负载未受控，不据此判断共同根因或修改原期限。精确版本、原生附件/大字体刷新、本机失败、采样范围和原证据见[最终集成验收记录](opportunities-acceptance-2026-11-13.md#2026-11-15-冻结-main-的最终源码门禁)。F2 按操作者决定延期；E4 外部数据共享授权及真实 Provider 全流程仍未完成，不能宣布整个目标完成。
+
 ## 完成与进行中
 
 | 编号 | 状态 | 范围与验证 |

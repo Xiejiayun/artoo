@@ -1,6 +1,28 @@
 # Opportunities 产品验收准备（E4）
 
-## 2026-11-15 集成验证快照
+## 2026-11-15 冻结 main 的最终源码门禁
+
+本轮验收固定在 `7295072fad2948815f177271e08d2ce280044a7c`。该版本的 [Preview CI](https://github.com/Xiejiayun/artoo/actions/runs/43631002049) 和 [Azure validation](https://github.com/Xiejiayun/artoo/actions/runs/43631002036) 均已实际结束为成功；本机完整运行结束为失败，不能合称全部验收通过。以下历史失败继续保留各自的版本范围。
+
+| 范围 | 实际结果与核验 |
+| --- | --- |
+| 本机 Node 24.22.1 | 干净、冻结的同一提交完成 typecheck、完整 workspace build、新 daemon bundle 和 Web E2E 55 项，均实际退出 0。完整 Vitest 实际退出 1：611 文件，8,839 通过、11 失败、88 条件跳过，8,938 项用例身份与同版本 CI 全量集合一致。五个子进程实际关闭，各门禁后源码指纹保持。 |
+| CI 全量 Vitest | 三个原分区共 611 文件、8,848 通过、90 条既有条件跳过，零失败；文件无遗漏/重叠、全部用例身份及六份前后空浏览器缓存记录已核对。实际 coverage 聚合 job 与其产物通过。 |
+| CI Web / 桌面 | 共享 39 项检查（含 Web 55、认证 6）、Windows process 88、Mac 安装 18/恢复 8 均通过；Mac 23 张完整 PNG、保留现场、实际关闭及清理已核验。Windows Electron 安装 UI 仍按原条件跳过，不能报为已运行。 |
+| CI iOS | 业务门禁 30 项、200 项单元 XCTest、原十一项业务 UI，以及独立 iPhone/iPad publisher 各一项通过，零跳过；73 张业务 PNG、八张 publisher PNG、用例身份、实际父/原生进程关闭及新建模拟器删除已核验，未强制清理。 |
+| Azure validation | 17 项发布/备份/恢复契约、19 项真实 PostgreSQL 集成、47 项存储/生命周期及 Linux 镜像导入的 568 条迁移检查通过。这是一次性 CI 数据库与镜像验证，未部署 Azure 产品。 |
+
+本机两个 Windows worker 用例具备 bundle/helper 后实际通过，而同版 CI 按原条件跳过，因此跳过数为 88/90。其余十一项差异均为本机失败、CI 通过；不能用 CI 替换本机结果或据此判断共同慢因。`imported-design-continuation` 的一项 setup 在原 30 秒超时，八项主体在原 30 秒超时，一项主体在原 60 秒超时；`server-entry` 的开发入口在原 30 秒内没有 stdout/stderr 或 readiness。JSON 中部分错误仅保留框架栈，独立核验同时绑定了原始 stderr 中的精确错误、用例身份和期限，没有删除断言、跳过用例或修改期限。
+
+iOS 原生报告记录 XcodeGen 后 `working_tree_dirty=true`，前后追踪差异摘要稳定为 `61717b07761f860b4d2e2d918a2d13b4d502100b6ccf1d10e611bb95c2c8c377`；这不是干净源码证据。大字体原生附件绑定同一 Run、响应事件及验收制品，Accessibility XXXL 请求标题高度 72.33→341.33 点，新认证刷新完成次数 2→3，原请求/响应保持；两张对应原图已查看。
+
+原始报告及独立核验保留于 `.git/opt-final-main-7295072-43631002049/verified-{vitest-current,coverage-ci,shared,mac,ios-completed,large-text}.json`、`.git/opt-final-main-7295072-43631002036-azure/verified-azure-validation.json` 和 `.git/opt-final-merged-main-2026-11-14T19-15-13-985Z/verified-local.json`。原方案摘要未变，30 个编号及 100 处代表性文件引用另绑定到当前提交；该清单只证明输入对应关系，不能将文件存在当作功能完成。
+
+完整运行关闭后，另以原编译入口、全新隔离持久库及同库重开做 CPU 采样诊断：首次开发启动约 58.42 秒，同库直接重开约 12.79 秒；两次健康检查及正常 IPC 关闭、exit/close 和输出 EOF 均确认。首次样本中，模块加载器的 `openSync/readFileSync` 两个主要栈合计约 27.17 秒，另有模块解析与 PGlite 持久化调用。采样自身有开销，缓存和工作负载未受控，采样权重也不是纯 CPU 时间；不能据此比较性能、确定十一项失败的共同根因或将首次启动视作满足原 30 秒要求。诊断的 90 秒观察窗口不修改测试期限。证据 `.git/opt-final-startup-profile-2026-11-14T21-16-55-633Z/verified-startup-profile.json`，临时数据保留，源码及依赖未改。
+
+F2 保持操作者确认的延期和精确计量要求，继续拒绝 `max_cost_usd`。E4 的真实 Provider/外部数据共享授权仍未收到，没有读取 Provider 凭据、调用真实模型或发布目标产品。CI、受控进程和上述诊断均不能替代 E4；完整目标仍未完成。本次仅修改 Markdown，不另行启动本机全量复跑；文档提交的自动 CI 按自身状态记录，`7295072` 的证据不误写成新提交全量运行。
+
+## 较早集成快照（2026-11-15）
 
 以下是已完成运行的版本范围，后续章节保留各次历史记录；不是最终 main 全流程通过声明。
 
