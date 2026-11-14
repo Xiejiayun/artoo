@@ -271,6 +271,12 @@ iOS 新路径通过 [PR #111](https://github.com/Xiejiayun/artoo/pull/111) 合�
 
 此前本机完整 Vitest 的九项失败继续保留。四项再次在 Node 26 原期限下复核仍失败；H8 单 worker CPU 采样和阶段计时显示其 prepare-publication 约 29.94 秒，整个测试触发 30 秒期限。该诊断不能证明所有失败的共同根因，也不是通过证据；没有改生产行为、断言或期限。证据 `.git/opt-four-system-node26-20261114/`、`.git/opt-h8-owned-worker-2026-11-14T01-59-55-025Z/`。F2 可靠计量/账本/成本准入仍未实现，E4 仍等待真实外部 Provider 共享授权及最终产品验收。
 
+## 2026-11-14 iOS 历史响应查询修正
+
+PR #111 的 [原生 CI](https://github.com/Xiejiayun/artoo/actions/runs/43542284017) 完整结束为失败：core 七项中六项通过，任务执行/验收用例已走到真实 Agent History 响应展开，随后测试进程 SIGABRT。原始 xcresult 的诊断日志明确报告字符串标识符查询超过 XCTest 的 128 字符上限，响应为实际执行器产生的完整 150 字符文字；不是应用进程崩溃或业务断言失败。后续四套原生 suite 和 publisher 检查未执行，不能计为通过。父进程实际退出 1，原生进程组、服务端/节点及临时目录清理完成。完整工件和解压后的诊断摘录保留在 `.git/opt-f3-pr111-43542284017/`。
+
+重新 fetch 并从干净最新 main `cb2a128` 创建独立分支，只把该响应的字符串标识符查询改为精确 `label == %@` 谓词，并显式断言完整 label 等于服务器响应。原生用例、响应、滚动次数、期限及既有业务断言保留。本机 Swift 语法解析、原生 suite/报告契约 29 项及 API 静态契约通过；这些不是 Swift 编译或原生 XCTest 通过，实际 macOS 门禁仍须重跑。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。

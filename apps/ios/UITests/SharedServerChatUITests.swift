@@ -270,7 +270,10 @@ final class SharedServerChatUITests: XCTestCase {
         attachScreenshot("Native agent history original request for the completed run")
         let activity = app.buttons["agent.history.event.\(event.id)"]
         try reveal(activity); activity.tap()
-        try reveal(app.staticTexts[response])
+        // XCTest's string-identifier lookup rejects responses over 128 characters.
+        let responseText = app.staticTexts.matching(NSPredicate(format: "label == %@", response)).firstMatch
+        try reveal(responseText)
+        XCTAssertEqual(responseText.label, response)
         attachScreenshot("Native agent history real executor response")
         let afterHistory: ExecutionTaskSnapshot = try await peerGet("api/v1/tasks/\(taskId)")
         XCTAssertEqual(afterHistory.task.status, "done")
