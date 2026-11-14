@@ -38,3 +38,24 @@ try {
 未运行独立远程 Postgres 测量，未测量生产 p95、峰值内存或网络。索引计划和存储成本见 [P2](presence-indexes-2026-11-13.md)。本项不构成最终统一 E2E 或真实 Provider 验收。
 
 根 typecheck、server build 和最终 7 文件 27 项聚焦回归全部通过，最终日志为 `.git/opt-p3-final-typecheck.log`、`.git/opt-p3-build.log`、`.git/opt-p3-final-regression.log`。覆盖同时间戳最新 Run 的 ID 排序、失败/运行/取消/暂停不回退、组织/项目与制品关联隔离、单任务审计一致性、跨批次事件归属及重复关联去重。
+
+## 2026-11-15 独立 PostgreSQL 后端补充
+
+Windows、Node 24.22.1、独立 PostgreSQL 18.6 回环 TCP；相关服务、契约、存储和完整 `query-batching.test.ts` 与 main `c3923ad` 一致。一次性新集群/两个新数据库只承载生成的测试数据，使用项目原有 `PostgresDbClient` 单物理会话。未连接现有数据库，未读取 Provider 配置。
+
+以独立诊断配置显式选择 PostgreSQL：原 PGlite 工厂改为返回真实 `PostgresDbClient`，选用匹配的 node-postgres Drizzle 驱动；原测试显式持有的事务由真实 pg session 执行 BEGIN/COMMIT 并 release。这个后端适配用于补充跨引擎验证，不属于普通默认 PGlite 测试入口。原文件的两个完整测试、全部断言、30 秒测试/Hook 时限均未修改，仍验证最新失败 Run 不回退、每任务制品上限、组织/项目隔离、消息与关联事件归属及跨批次去重。
+
+两个测试实际通过（14.30s、8.09s），各预热一次后按原报告开关采样 10 次：
+
+| 当前实现的真实 PostgreSQL 夹具 | 查询次数 | 返回行数 | 本地 p95 |
+| --- | ---: | ---: | ---: |
+| 101 条依赖边的 ContextPack | 10 | 398 | 168.95 ms |
+| 45 个子任务的 Goal 审计 | 36 | 140 | 71.93 ms |
+
+原测试的 JSONL 报告把 engine 固定写成 `local PGlite`；为保留原测试字节未改该文字。独立报告明确以实际 PostgreSQL 18.6 版本、两个真实 backend PID 和 127.0.0.1 地址更正本次后端身份，不能把该文字当作引擎证据。上述时间没有同轮旧实现的 PostgreSQL 对照，也没有远程网络，不能据此计算 PostgreSQL 优化百分比或比较历史 PGlite 样本。
+
+证据为 `.git/opt-p3-postgres-diagnostic-2026-11-14T18-18-30.866Z/` 的原始 Vitest JSON/输出、`measurements.jsonl`、`backend-observations.json`、父报告和 `verified-postgres-query-batching.json`。本机驱动、后端配置与适配分别保留在 `.git/opportunities-p3-postgres-diagnostic.mjs`、`.git/opportunities-p3-postgres.vitest.config.mjs` 和 `.git/opportunities-p3-postgres-setup.mjs`。原测试 SHA-256 为 `a088d55886da1a306a3679160fc2ada0ea577769675ee872d2dbe635e38abb51`，与 main/current 源码一致。
+
+原测试客户端和管理连接均已正常关闭；Vitest 子进程、postmaster 及管理 helper 实际 exit/close=0，输出 EOF 完整，没有强制清理，临时数据保留。另一次只读活动观察恰逢已发出的 fast shutdown，返回 57P03 并退出 1；它未参与测量、未重启服务，不改变原两项测试通过结果。
+
+本节补充独立 PostgreSQL 的当前行为、查询数与本地延迟，远程 PostgreSQL 测量仍未完成；不替代普通完整测试、原生客户端或真实 Provider 产品验收。
