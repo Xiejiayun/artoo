@@ -413,3 +413,15 @@ Correction 在创建任务前点击键盘 Done 后失败。原始层级在同一
 整个 iOS job 仍为失败：业务门禁后的独立 publisher 用例在 iPhone 打开真实隐私政策网页、返回应用并记录 Support 点击后，Safari 未在原 20 秒内进入前台；iPad 未执行。原始录屏显示应用仍可见，但不足以确定 SwiftUI、系统事件或时序根因。发布者相关源码、配置、测试及 runner 与原 main 完全相同；原断言/期限未放宽。全部发布者子进程实际关闭、精确新建模拟器已删除；原报告、失败 xcresult 摘要及录屏摘要保留 `.git/opt-pr118-43590263224/verified-publisher-failure.json`。本次只合并已验证的历史优化，保留此独立失败，由合并后最新 main 统一门禁重新验证，不称整个 workflow 通过。
 
 F2 按操作者明确决定暂缓，保留精确计量要求，继续拒绝 `max_cost_usd`。E4 已找到本机安装并完成只读前置检查；配置位置回复“不清楚”不等于 AI 数据共享授权，真实 Provider 产品验收尚未执行。最终 main 四门禁、重新构建的 daemon bundle 和合并后 CI 结果尚待记录；此前本机完整失败与全部原生失败证据继续保留。
+
+## 2026-11-14 合并后 main 验证与 mentions 原始诊断
+
+`8923e23` 的 [main run 43602171258](https://github.com/Xiejiayun/artoo/actions/runs/43602171258) 已结束，整个 workflow 失败。完整 Vitest 独立核验为 611 文件、8,848 通过、90 条既有条件跳过，全部 8,938 项用例身份、发现清单及六份空浏览器缓存记录保持。共享 39 项（Web 55、认证 6）、Windows process 88、Mac 安装 18/恢复 8，以及独立 Azure 验证均通过；Windows 安装 UI 仍按原条件跳过。
+
+iOS 的 200 项单元 XCTest、core 七项及 assistant 一项通过；mentions 一项在后续测试数据发布中收到 HTTP 500，correction、retention 和 publisher 均未执行。逐套核验原始 xcresult、37 张完整内嵌 PNG、源码稳定及全部已启动的原生/父进程和资源实际关闭，无强制清理。core 的大字体高度再次为 72.33→341.33 点，同一 Run 的新认证读取完成次数 2→3。证据 `.git/opt-final-main-43602171258/verified-{ios-main-failure,large-text,vitest-current,shared,mac}.json`；本机完整测试仍独立运行，不能以远程通过覆盖本机失败。
+
+mentions 的父报告将失败限定在独立发送者打开 Web 线程的阶段，但原夹具把内部异常转换成通用 HTTP 错误，未保存底层导航或定位异常，现有证据不足以判断根因。重新 fetch/pull 最新 main 后，仅让夹具的本地父进程保留原始 publication 异常，写入现有受限原始 JSON 工件；控制 HTTP 响应继续脱敏，共享 HTML 不包含该异常。沿用已有 `withWorkflowCleanup` 等待清理并保留工作流/清理双失败，避免触及旧 `finally` 抛错覆盖初始原因的问题。
+
+五文件 Node 回归 67 项、根 typecheck 和三文件 staged 质量通过，零跳过；完整 AST 比对确认所有原业务操作、断言、期限、准备与清理语句保持，仅增加原始诊断和已有清理包装。证据 `.git/opt-mentions-diagnostic-preservation.json`。这是诊断保存修正，不是已修复原 HTTP 500 的证据；新的原生验收和 publisher 复核仍须执行。
+
+publisher runner 自行构建并管理新建模拟器，因此 CI 现允许在前置准备成功、业务套件失败后继续执行该独立检查；准备失败或取消仍不运行。业务门禁保留原失败退出，没有 `continue-on-error`，所有原生用例、publisher 命令和期限保持。此调整用于取得独立的原始证据，不把两项结果合并为一次通过。
