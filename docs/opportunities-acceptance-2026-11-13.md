@@ -6,11 +6,11 @@
 
 | 范围 | 已有依据 | 本轮状态 |
 | --- | --- | --- |
-| 源码正确性 | [实施记录](opportunities-progress.md) 逐项记录聚焦回归 | 最终 typecheck/build/完整 Vitest 尚未运行 |
-| Web 控制面 E2E | 仓库 `npm run test:e2e --workspace @artoo/web` | 按请求在全部优化整合后统一运行 |
+| 源码正确性 | [实施记录](opportunities-progress.md) 逐项记录回归及冻结版本 | main `ea75afe` 的本机 typecheck/build 通过，完整 Vitest 8,841 通过/9 失败/88 条件跳过；同提交 CI 三 lane 8,848 通过/90 条件跳过，不能覆盖本机失败 |
+| Web 控制面 E2E | 仓库 `npm run test:e2e --workspace @artoo/web` | main `ea75afe` 本机完整 54 通过/1 Toast 断言失败；候选修复原场景三次通过，合并后的完整重验仍待执行；同提交 CI Web 55 项通过 |
 | 真实 Provider 静态产品闭环 | [Agent Team 指南](agent-team-development.md)、[live 验收入口](../apps/server/src/agent-team-live.test.ts) | 尚未启动新的完整运行，不能以组件/受控夹具通过替代 |
-| Windows 单需求安装入口 | [现有运行与停止约定](../scripts/windows-local-request/README.md) | 默认安装清单未发现；其他目录是否已有合格安装尚未知 |
-| 原生 iOS UI | [Apple 客户端 E2E](apple-client-e2e.md) | 当前宿主 Windows，原生 Xcode/Simulator 验收需 macOS 环境 |
+| Windows 单需求安装入口 | [现有运行与停止约定](../scripts/windows-local-request/README.md) | 默认单需求安装清单未发现；已发现 rc.8 daemon 并通过下述 helper/浏览器边界验证，不等同该入口产品验收 |
+| 原生 iOS UI | [Apple 客户端 E2E](apple-client-e2e.md) | main `ea75afe` 的远程 macOS iOS job 仍运行；既有 UI 用例不能自动证明 F3 新页面交互已覆盖 |
 | 后端/数据库部署与数据恢复 | 指南明确保留的未完成范围 | 不属于已合格的静态站点发布能力，不能据静态发布结果宣称通过 |
 
 指南顶部保留了较早静态流程的成功与后续失败/待验证增量；它们属于各自冻结版本。研究修订/两节点尝试 r18 未进入设计并超时；r20/r21 分别保留停止行为、凭据等失败；r22 未提交 Goal，因目标节点准备超过原 300 秒期限而失败。具体历史证据和更早失败均以指南原记录为准，不被本轮源码回归覆盖。两个逻辑节点在同一 Windows 电脑运行也不证明实体多电脑验收。

@@ -77,3 +77,18 @@ CI 候选为两个 parallel 分片和 windows-process 各设置独立、原本�
 这证明上述版本的全部 Vitest 分区在保留原平台/opt-in 条件的情况下不需要安装的 Chromium。现在从 `shared-vitest` 矩阵删除 installer step（实际对应两个 parallel job）；测试命令、分区、断言、时限、条件跳过和覆盖聚合保持，缓存观察器继续防止依赖回流。shared-checks、iOS、Mac 和 Windows desktop 的真实浏览器安装保持。未测量这项删除对 CI 总耗时或流量的影响。
 
 该旧 run 的 shared-checks 曾有三个 Web 失败，shared 聚合因此失败；不能称整个 run 通过。随后 [PR #107](https://github.com/Xiejiayun/artoo/pull/107) 修复 Goal 链接刷新项目归属并合并为 `e5a4915d19095413175c30fa2b34af43d45073c5`。该改动的新 jsdom Goal-link 文件在实现 `560ba3baf9a6333ec9c5f51380c34334c0199976` 下独立空缓存执行 9 项通过，前后缓存及 executable 不存在（`.git/opt-goal-link-cold{,-results}.json`）；已有 API client 测试扩展复用 fetch fixture，未增加浏览器依赖。聚焦真实 Chromium 8 项通过，包含原三项失败。不同版本和范围的证据分别保留；这些补充不将旧分区结果改称最终 main 全量验证。安装移除后的最终四门禁仍须独立执行。
+
+## 安装移除后的精确 main 复核
+
+[PR #108](https://github.com/Xiejiayun/artoo/pull/108) 仅移除 parallel installer 并合并为 `061335e`；原生夹具断言修正随后经 [PR #109](https://github.com/Xiejiayun/artoo/pull/109) 合并为 main `ea75afe28ecc3abf2e104f49fb1d72dea7e7334e`。[run 43524088497](https://github.com/Xiejiayun/artoo/actions/runs/43524088497) 实际 checkout 正是该 SHA，三个 Windows / Node 24.22.2 lane 已全部成功：
+
+| lane | 实际 reporter 文件数 | 通过用例 | 失败 | 既有条件跳过 |
+| --- | ---: | ---: | ---: | ---: |
+| parallel-1 | 304 | 4,501 | 0 | 23 |
+| parallel-2 | 303 | 4,259 | 0 | 67 |
+| windows-process | 4 | 88 | 0 | 0 |
+| 合计 | 611 | 8,848 | 0 | 90 |
+
+下载后的三份 discovery/reporter/metadata 由仓库原 `verifyCoverage` 再次核验，结果与 CI `coverage.json` 一致；六份 before/after 观察记录逐项核对 commit、lane、Node、独立 cache/executable 路径和两者不存在。证据 `.git/opt-final-remote-43524088497/verified-vitest.json`。这补齐删除 installer 后的完整空缓存证据，未测量安装时间或流量收益。
+
+该提交本机 Node 24.22.1 的完整四门禁已实际结束：typecheck/build 通过；完整 Vitest 611 文件、8,841 通过/9 失败/88 条件跳过，Web 54 通过/1 失败。文件与 8,938 项用例集合和 CI 完全相同，两项 desktop-worker 本机执行通过、CI 条件跳过。原始失败及后续诊断分别保留，详见[最终集成记录](opportunities-progress.md#2026-11-14-首轮最终集成门禁)。远程 shared-checks/Mac 成功不覆盖这些失败；iOS 仍运行，尚不能称整个 workflow 或最终验收通过。

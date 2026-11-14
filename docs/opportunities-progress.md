@@ -23,7 +23,7 @@
 | U1 | 已分域迁移并验证 | 控件/布局基础规则按原顺序迁入 ui；零特异性排除共享表单原语，移除覆盖焦点环的旧规则。明暗/320/1440px 共 25 组 550 属性稳定采样，530 不变、20 为预期焦点变化，无额外差异；根 typecheck、Web build、4 文件 23 项及最终真实 Chromium 5 项通过。[归属](web-css-ownership.md)与[证据](web-css-validation-2026-11-13.md)。剩余业务规则按组件继续渐进迁移。 |
 | U4 | 已实现并验证 | 统一首次加载骨架，沿用目标/发布响应式列；历史/设置分区独立加载，保留缓存、错误重试及空状态，不提前显示发布结论。根 typecheck、Web build、完整 Web 64 文件 610 项和真实 Chromium 3 项通过；明暗/320/1440px 栏宽及位置一致、无横向溢出。[记录](loading-states-2026-11-13.md)。未声称 CLS 收益。 |
 | X3 | 已实现并验证 | 手动计划支持中间删除、双向移动及稳定依赖；草稿按服务端/组织/账号/目标隔离，退出清理，坏数据显式丢弃，旧提交不删除新编辑。根 typecheck、Web build、聚焦 4 文件 80 项、阶段完整 Web 65 文件 617 项通过；最终快照保护回归 2 文件 36 项及真实 Chromium 3 项通过。[行为与分阶段证据](plan-drafts.md)。 |
-| E1 | 完整空缓存分区通过，移除冗余安装 | #106 的实际 Windows CI 三 lane 共 610 文件、8,838 项通过/90 项既有条件跳过，实际文件覆盖无遗漏/重叠，前后缓存及 executable 均不存在。现仅删除 parallel 矩阵的 Chromium 安装，保留观察器及真实浏览器 suite 安装。[版本、方法与结果](ci-vitest-browser-validation-2026-11-13.md)。旧 run 的 shared-checks 失败单列，最终 main 门禁另行执行。 |
+| E1 | 完整空缓存分区通过，移除冗余安装 | 安装移除后，main `ea75afe` 的实际 Windows CI 三 lane 共 611 文件、8,848 项通过/90 项既有条件跳过；实际文件覆盖无遗漏/重叠，前后缓存及 executable 均不存在。保留观察器及真实浏览器 suite 安装。[版本、方法与结果](ci-vitest-browser-validation-2026-11-13.md)。本机完整失败及远程其他 job 分别记录。 |
 | E1 前置修复 | 已通过 PR #68 合并 | 损坏附件在恢复数据库启动前拒绝，有效附件仍只流式复制一次。真实大附件回归先红后绿；原四案例和附件回归共 2 文件、5 项通过，根 typecheck、server build 通过。超时清理父 harness 1 项通过，核验子进程故意 5 失败、2 通过及实际关闭和安全清理，证据单独记录。 |
 
 P4 合并为 `172d1f0`（实现 `f59fbf9`）。远程在该次直接推送提示 PR 保护要求，后续均走普通 PR 合并；不使用 admin/bypass。每项本地验证与远程 CI 状态分别报告；CI 未结束不能视为通过。
@@ -235,6 +235,20 @@ Goal 链接修复通过 [PR #107](https://github.com/Xiejiayun/artoo/pull/107) �
 
 最终完整原生存储夹具 1 项通过、零跳过，内含全部十个实际 CLI 拒绝场景；正向种子只应用一次，真实存储写失败命中一次，源码不变、私有上下文清理、原始关闭回执及序列化副本拒绝均通过。实际子进程 close 为 0/null，运行前后源码 patch 和 4,762 个输入文件摘要一致；fixture 按原约定保留独立证据目录。完整证据 `.git/opt-native-recheck-2026-11-13T22-57-50.015Z/`；早期失败 `.git/opt-native-2026-11-13T22-44-39.073Z/`、`opt-native-recheck-2026-11-13T22-51-10.166Z/` 与 `opt-native-recheck-2026-11-13T22-53-15.627Z/` 保留。worker 语法、单文件 staged 质量及最终 AST 检查通过；这不是模型产品、跨实体电脑、原生客户端或发布验收。
 
+原生夹具调整通过 [PR #109](https://github.com/Xiejiayun/artoo/pull/109) 合并为 `ea75afe28ecc3abf2e104f49fb1d72dea7e7334e`（实现 `dfe625c`），再次拉取 main 后冻结本机最终四门禁。
+
+## 2026-11-14 首轮最终集成门禁
+
+干净 main `ea75afe28ecc3abf2e104f49fb1d72dea7e7334e`，Windows、Node 24.22.1、npm 11.20.0，串行执行四门禁，整个驱动实际退出 1。各阶段核验 HEAD 和干净源码保持；证据 `.git/opt-final-20261114-070254/summary.json`。typecheck 和完整 workspace build 均退出 0；完整 Vitest 退出 1，611 文件、8,841 项通过、9 项失败、88 项条件跳过；随后完整真实 Chromium Web E2E 退出 1，54 通过、1 失败。不能称该轮最终验收通过。
+
+Vitest 的九项失败分布在 server-entry（1）、imported-design-review-verification（1）、goal-automation（1）、preview-storage（1）、release-capability-batch（1）及 imported-design-continuation（4）。入口明确在首次开发启动的原 30 秒 readiness 期限失败；其余八项 JSON 保留 Vitest 的 `STACK_TRACE_ERROR` 注册栈，未保留原始错误文字。当前 runner 的 timeout 错误会复制这种栈，且本轮 PowerShell 原生 stderr/CLIXML 解析错误污染了人类日志；因此仍需原始流采集和相称诊断，不只凭耗时断言全部同因。原始 JSON、日志及失败记录保留，时限和断言未放宽。
+
+同一 main 的 [CI run 43524088497](https://github.com/Xiejiayun/artoo/actions/runs/43524088497) 已完成 shared-checks、两个 parallel lane、windows-process、shared 聚合和 mac-desktop。三 lane 的完整实际结果为 611 文件、8,848 通过、90 条既有条件跳过、零失败，Node 24.22.2；原覆盖核验函数重新复核文件零遗漏/重叠及六份前后空缓存记录。shared-checks 38 个门禁通过，包含 Web 55 项、认证浏览器 6 项；Mac 18 个门禁和生产模式隔离恢复演练 8 项通过，实际进程关闭及清理完成。恢复使用确定性本地子进程，不是 live Provider 或生产灾难恢复验收。证据 `.git/opt-final-remote-43524088497/verified-{vitest,shared,mac}.json`。截至本次记录，iOS 仍运行 `verify:ios`，整个 workflow 尚未结束，windows-desktop 按既有条件跳过。
+
+本机与上述 CI 的文件和 8,938 项用例身份逐项相同。九项本机失败在 CI 均通过；另两项 Windows desktop-worker 的真实 IPC 关闭/独立 guardian 进程树案例在本机执行通过、CI 条件跳过，解释了跳过数差异。比较证据 `.git/opt-final-20261114-070254/verified-comparison.json`；环境和耗时差异不构成慢因证明，也不覆盖本机失败。
+
+Web 唯一失败是项目创建和改名连续完成时，两个合法的相同 `Project saved.` Toast 同时存在，旧测试把通知区当作唯一 status。现先等待创建提示按原生命周期消失，再执行保存并使用原 status/文字断言；这也防止把上一次创建提示误当作本次保存反馈。没有改变产品 Toast、超时、后续项目/配对/撤销/Skill 流程或其断言。暂存质量、根 typecheck 及原场景连续三次真实 Chromium 完整复核均通过，实际 close 0/null；证据 `.git/opt-toast-e2e-recheck-20261114-0922/{summary.json,stdout.log,stderr.log,source.patch}`，HTML `apps/web/playwright-report/workflows-2026-11-14T01-20-20-091Z`。目录名不作启动时间依据，实际开始/结束以 summary 为准。原完整失败保留，修复合并后仍须完整 Web 重验。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
@@ -245,6 +259,6 @@ P5 通过 [PR #67](https://github.com/Xiejiayun/artoo/pull/67) 合并为 `53b1d5
 
 E1 安装移除合并 → 本机原生验证发现的夹具复核 → 最终统一门禁。C1 本轮选定的职责拆分与其余候选边界评估如上。F2 保留待实现/验收；E4 的最终版本验收与授权并行跟进。
 
-所有条目仍须以最新源码复核适用性。E1 必须在无浏览器缓存的真实 Windows 分片通过后才移除安装步骤；iOS 原生验收需要 macOS；E4 产品发布需具备已授权的环境、凭据、受保护 Profile、健康标准和恢复方案。当前未执行新的产品发布，尚未运行最终统一 E2E。
+所有条目仍须以最新源码复核适用性。E1 已取得安装移除前后的实际空缓存证据；iOS 原生验收继续跟进 macOS job；E4 产品发布需具备已授权的环境、凭据、受保护 Profile、健康标准和恢复方案。当前未执行新的产品发布，首轮最终统一门禁已执行但失败，后续修复后须重新验证，F2 与 E4 缺口保持。
 
 F2 当前行为回归：`structured-output`、领域预算、Goal 成本拒绝门控 3 文件 25 项通过（`.git/opt-f2-current-behavior.log`）；本次只提交前置设计，不改变 Usage、预算或调度代码。
