@@ -276,10 +276,20 @@ observer-timeout failure is also retained. No new full-all or archive pass is
 claimed. Mac distribution now defaults to ten normal vendor detach attempts;
 see [the exact policy](../apps/desktop/MAC-DISTRIBUTION.md#dmg-build-detach-policy).
 
-On iOS failure, CI additionally retains exported attachment manifests, PNGs and
-text diagnostics for seven days. These raw files may contain disposable fixture
+CI retains exported native attachment manifests, PNGs and text diagnostics for
+fourteen days in `ios-native-ui-attachments`, including successful suites. Earlier
+runs used the failure-only `ios-failed-ui-attachments` artifact for seven days.
+These raw files may contain disposable fixture
 credentials and are for trusted recipients; approved workflow HTML still uses
 its existing screenshot allowlist. Preserve every failed HTML/JSON/xcresult.
+
+The retention suite records failed internal requests in `suite-result.json` under
+`request_failures`: method, route without query parameters, elapsed time, abort
+state and a bounded allowlist of transport cause codes. It keeps the original
+error and caller-owned deadline; messages, stacks, tokens and request bodies are
+excluded from this diagnostic field. Unknown or truncated causes are explicit.
+An observation HTTP 500 remains a failed acceptance run until investigated and
+revalidated; recording its cause does not make the workflow pass.
 
 
 ## Compact installed Mac profile
