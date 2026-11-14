@@ -434,6 +434,8 @@ PR #121 已普通合并为 `542be11c103879394bf1675ff8d10973b94cab03`，随后�
 
 原始计时、查询计划、实际引擎/会话身份、每批影响行数、固定源码摘要、子进程实际 exit/close 和输出 EOF 均已独立核验，临时测试数据保留。未连接现有数据库、调用 Provider 或发布产品。持续吞吐、生产 p95、远程网络及生产迁移锁等待仍未覆盖；这些补测也不替代最终统一 E2E。
 
+同日完成的 main `c3923ad` 原生门禁及 PR #121 原始失败已汇总到[集成验收快照](opportunities-acceptance-2026-11-13.md)。前者完整通过 200 项单元、十一项业务及两台模拟器 publisher，后者保留配对键盘及 iPad 关闭未知的独立失败。main 的 Web 重载失败、本机完整测试失败及 E4 共享授权缺口均保持；本记录不宣布最终验收完成。
+
 ## 2026-11-15 串行复核与浏览器失败现场
 
 [PR #120](https://github.com/Xiejiayun/artoo/pull/120) 已普通合并为 `c3923ad`。其 [run 43610681452](https://github.com/Xiejiayun/artoo/actions/runs/43610681452) 保存了原始异常：独立发送者打开 Web 线程后，正文未在原 5 秒内出现。200 项原生单元、core 七项和 assistant 一项通过，mentions 失败，correction/retention 未执行；37 张原生 PNG、已启动进程关闭及清理已核验。独立 publisher 的 iPhone/iPad 两例均通过，共 21 项检查、8 张 PNG，正常退出并移除新建模拟器。该 PR 完成诊断和独立执行范围，原线程失败根因仍待定位。
