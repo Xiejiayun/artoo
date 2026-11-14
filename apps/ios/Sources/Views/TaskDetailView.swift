@@ -607,17 +607,18 @@ public struct RunSummaryView: View {
                 if let endedAt = run.endedAt { LabeledContent("Ended", value: endedAt) }
                 if let sequence = run.sequence { LabeledContent("Sequence", value: String(sequence)) }
             }
-            Section("Provider usage") {
+            Section("Runtime usage") {
                 if let usage {
                     LabeledContent("Input tokens", value: usage.inputTokens.map(String.init) ?? "Unavailable")
                     LabeledContent("Output tokens", value: usage.outputTokens.map(String.init) ?? "Unavailable")
                     LabeledContent("Cached input tokens", value: usage.cachedInputTokens.map(String.init) ?? "Unavailable")
-                    LabeledContent("Cost (USD)", value: usage.costUsd.map { String(format: "%.6f", $0) } ?? "Unavailable")
-                    Text("Reported by the provider · \(usage.updatedAt)").font(.caption).foregroundStyle(.secondary)
+                    LabeledContent("Reported cost (USD)", value: usage.costUsd.map { String(format: "%.6f", $0) } ?? "Unavailable")
+                    Text("Runtime-reported usage · \(usage.updatedAt)").font(.caption).foregroundStyle(.secondary)
+                    Text("Costs may be estimates and include earlier session activity. Billing accuracy and Goal totals are unverified.").font(.caption).foregroundStyle(.secondary)
                 } else if !usageLoaded && client != nil {
                     ProgressView("Loading usage…")
                 } else {
-                    Text("Usage unavailable. The provider has not supplied verified measurements.").foregroundStyle(.secondary)
+                    Text("Usage unavailable. The runtime has not reported usage.").foregroundStyle(.secondary)
                 }
                 if let usageError { Text(usageError).font(.caption).foregroundStyle(.red) }
             }
