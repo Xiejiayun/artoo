@@ -335,6 +335,16 @@ PR #118 首轮 [run 43564166008](https://github.com/Xiejiayun/artoo/actions/runs
 
 补充证据保存：原 CI 附件工件只上传 manifest、PNG 和 TXT，遗漏 XCTest `public.json` 记录。现将同一原生诊断目录的 JSON 纳入原有、14 天保留的附件工件，保留实际标题高度、刷新前后成功读取次数及既有执行/制品身份记录。检查现有 JSON 附件构造器未包含凭据；原始诊断仍沿用仓库工件访问权限，不加入共享 HTML。此变更只保存证据，不改业务、原七项 core 用例、断言、期限或 CI 权限。上一轮已确认 UI target 实际编译成功并开始 core；新的 commit 仍需完整 CI，不能将上一轮在途结果视为最终通过。
 
+## 2026-11-14 完整运行结果与大字体历史入口修正
+
+PR #118 的不可变提交 `fa81380` 在 [run 43566722920](https://github.com/Xiejiayun/artoo/actions/runs/43566722920) 完整 Vitest 三分区核验为 611 文件、8,848 通过、90 条既有条件跳过、零失败。8,938 项用例多重集合与当前 main 一致，文件与发现清单无遗漏或重叠，六份前后空缓存记录均通过；共享 39 项、Web 55/认证 6、Mac 安装 18/恢复 8 与 Windows process 88 项另有独立证据。
+
+该提交的 iOS 最终失败：200 项单元 XCTest 通过，原 core 七项为六通过、一失败。任务执行、人工验收及普通 Agent History 已保存真实读取记录；大字体重启后，测试在 Team 查找同一 Agent 的历史入口失败，未到达大字体请求/响应或刷新测量。原失败截图与可访问性层级显示列表有 12 页、失败时回到 0%，History 位于电脑与实例分区之后。原 29 项门禁及新增只读观察器检查均保留，30 项中只有原生聚合失败；后续套件与 publisher 未运行。原生进程组实际关闭、无强制清理，资源和临时目录清理完成，XcodeGen 后源码指纹保持。证据 `.git/opt-pr118-43566722920/verified-ios-failure.json`。
+
+重新 fetch 后 main 仍为 `fe87841`，在同一未合并项内将已有 Agent History 分区移到 Team 介绍之后、电脑和实例之前。完整文本复原比对确认仅移动原八行，身份、项目、导航和授权代码相同；原 XCTest 及期限未修改。系统 Node 26 的单文件 Swift 语法解析退出 0，不代表 Swift 编译或大字体入口已通过；新的原生运行仍须验证。
+
+原 checkout 冻结 `2516a60` 的四门禁已实际结束：typecheck、build 和完整 Web 55 项通过，Vitest 为 611 文件、8,824 通过、26 失败、88 条条件跳过，整体失败。四个命令均有实际 close 与源码保持记录。全部用例身份与上述 CI 相同；24 个本机失败用例在 CI 通过，两项 Windows 打包 worker 在 CI 条件跳过，不能计为已验证。其本机 bundle 时间戳为 9 月 29 日，且根 build 不生成该 bundle，输入版本尚未核验，需明确构建后单独验证。原 26 项失败及完整错误保留于 `.git/opt-final-all-2026-11-14T04-58-06-299Z/verified-vitest-failures.json`，不以 CI 成功覆盖，也未放宽断言或期限。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
