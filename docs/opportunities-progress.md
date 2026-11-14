@@ -333,6 +333,8 @@ PR #118 首轮 [run 43564166008](https://github.com/Xiejiayun/artoo/actions/runs
 
 观察器的七项回归现接入 shared-checks 和 iOS 两个现有门禁，避免仅在本机运行。`--list` 确认每套只新增一次检查（shared-checks 39、iOS 30），其余入口与原有检查保持；单文件 staged 质量通过（`.git/opt-ios-history-gate-{shared,ios}.json`、`.git/opt-ios-history-gate-quality.log`）。
 
+补充证据保存：原 CI 附件工件只上传 manifest、PNG 和 TXT，遗漏 XCTest `public.json` 记录。现将同一原生诊断目录的 JSON 纳入原有、14 天保留的附件工件，保留实际标题高度、刷新前后成功读取次数及既有执行/制品身份记录。检查现有 JSON 附件构造器未包含凭据；原始诊断仍沿用仓库工件访问权限，不加入共享 HTML。此变更只保存证据，不改业务、原七项 core 用例、断言、期限或 CI 权限。上一轮已确认 UI target 实际编译成功并开始 core；新的 commit 仍需完整 CI，不能将上一轮在途结果视为最终通过。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
