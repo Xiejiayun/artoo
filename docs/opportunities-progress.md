@@ -317,6 +317,68 @@ Node 24 根 typecheck、Web build、2 文件 staged 质量全部实际 close 0/n
 
 PR #114 完整三 lane 实际文件与用例集合、六份前后空缓存记录独立核验：611 文件、8,848 通过、90 既有条件跳过、零失败（`.git/opt-pr114-43555955145/verified-vitest-current.json`）。PR #113 只重跑失败 lane 后同一不可变 CI commit 的完整合并结果也通过，原两项首次失败和 iOS retention 失败仍保留（`.git/opt-pr113-43548201742/attempt-2/verified-vitest-combined.json`）。这些结果不代表新布局版本完整 CI 或真实 Provider 验收。
 
+## 2026-11-14 最新 main 门禁与历史大字体验收补充
+
+[PR #117](https://github.com/Xiejiayun/artoo/pull/117) 普通合并为 `fe87841bb0c346f98a161cfda87ec3565cab0482`（实现 `b5e4a9b`），随后重新 fetch/pull main 再创建本项分支。该干净 main 的本机完整 Web E2E 55 项通过，实际 close 0/null，源码保持；证据 `.git/opt-new-main-web-2026-11-14T05-23-54-248Z/`。CI [run 43561220099](https://github.com/Xiejiayun/artoo/actions/runs/43561220099) 的共享 38 项、Web 55/认证 6、Mac 安装 18/恢复 8、Windows process 4 文件 88 项均独立核验通过。完整 Vitest 为 611 文件、8,848 通过、90 既有条件跳过、零失败；8,938 项身份和六份空缓存记录逐项核验，费用说明测试的一项改名显式对应。证据 `.git/opt-main-43561220099/verified-{shared,mac,correction,vitest-current}.json`。iOS 尚在执行，Windows 安装 UI 按既有条件跳过，不能称整个 workflow 或最终产品验收通过。原 checkout 仍冻结 `2516a60` 运行四个完整门禁，typecheck/build 已通过，Vitest 与后续 Web 尚待结束。
+
+本项为 F3 增加实际原生 History 大字体与刷新证据：在原任务执行/人工验收用例的全部既有断言后，用仅本次 app launch 生效的 UIKit 大字体参数重启同一个已配对应用，核对同一 Run 的原请求/响应、标题实际增高及可达视口，刷新后再次核对任务/制品/摘要。只增加断言和两个经过配对输入隐私防护的截图，不改变原七项 core 用例、期限或业务内容。
+
+刷新证据来自测试 fixture 对现有真实 HTTP server 的只读监听，计数限定 Agent/Run、最新 50 项页面、HTTP 200 finish 及首个非 peer 成功凭据绑定；不导出凭据或其摘要。原回环 bearer 保护的 fixture controller 返回次数，缺失/关闭/溢出证据均失败，不修改生产 API、鉴权或响应。刷新必须在单一 15 秒期限内完成新的读取并恢复 UI 可操作状态，不能用仍显示的缓存响应证明刷新成功。观察关闭移除自己的监听器，不中止原响应。
+
+Node 24 的实际回环 HTTP 生命周期/中止/关闭/隐私与既有 fixture/report 共 26 项通过，无失败或跳过；5 个 JS 文件 staged 质量与 22 请求/58 端点静态契约通过。完整 fixture AST 除声明的只读观察接线外与 main 相同，Swift 原源码无删除/修改；证据 `.git/opt-ios-history-{large-text-tests-final,large-text-quality-final,large-text-static-contracts,preservation}.log`。Node 24 WASM parser 虽输出解析成功，随后 OOM 退出，保留为失败；系统 Node 26 对同一文件语法解析实际退出 0（`.git/opt-ios-history-large-text-swift-system.log`）。这不是 Swift 编译、Dynamic Type 生效或原生交互通过，新路径仍需 Xcode 和截图证据。
+
+F2 精确生产计量/事务账本/全部阶段准入/预算 UI 仍未实现，继续拒绝 `max_cost_usd`；E4 用户“不清楚”仅回答配置位置，尚未获得外部 Provider 共享授权和可用验收安装。本项不读取凭据或调用 Provider，仍保留最终原生/产品验收缺口。
+
+PR #118 首轮 [run 43564166008](https://github.com/Xiejiayun/artoo/actions/runs/43564166008) 的应用构建及 200 项 XCTest 单元测试通过，但 core fixture 在原生 UI 启动前失败：观察器只接受 `127.0.0.1`，现有 harness 使用 `localhost`。不是大字体断言通过或应用崩溃。原 job 日志和父报告保留 `.git/opt-pr118-43564166008/` 及 `.git/opt-pr118-ios-first.log`；core 清理完成，后续 suite/publisher 未运行。现允许固定本机别名，同时要求真实 listener 绑定回环地址及同一端口；不改 harness 原点、鉴权、读取与超时。新增真实 localhost 请求回归，并验证错端口及 wildcard listener 拒绝，27 项全部通过（`.git/opt-ios-history-localhost-tests.log`）。原生 UI 及完整 CI 须以修正后的新 commit 重验。
+
+观察器的七项回归现接入 shared-checks 和 iOS 两个现有门禁，避免仅在本机运行。`--list` 确认每套只新增一次检查（shared-checks 39、iOS 30），其余入口与原有检查保持；单文件 staged 质量通过（`.git/opt-ios-history-gate-{shared,ios}.json`、`.git/opt-ios-history-gate-quality.log`）。
+
+补充证据保存：原 CI 附件工件只上传 manifest、PNG 和 TXT，遗漏 XCTest `public.json` 记录。现将同一原生诊断目录的 JSON 纳入原有、14 天保留的附件工件，保留实际标题高度、刷新前后成功读取次数及既有执行/制品身份记录。检查现有 JSON 附件构造器未包含凭据；原始诊断仍沿用仓库工件访问权限，不加入共享 HTML。此变更只保存证据，不改业务、原七项 core 用例、断言、期限或 CI 权限。上一轮已确认 UI target 实际编译成功并开始 core；新的 commit 仍需完整 CI，不能将上一轮在途结果视为最终通过。
+
+## 2026-11-14 完整运行结果与大字体历史入口修正
+
+PR #118 的不可变提交 `fa81380` 在 [run 43566722920](https://github.com/Xiejiayun/artoo/actions/runs/43566722920) 完整 Vitest 三分区核验为 611 文件、8,848 通过、90 条既有条件跳过、零失败。8,938 项用例多重集合与当前 main 一致，文件与发现清单无遗漏或重叠，六份前后空缓存记录均通过；共享 39 项、Web 55/认证 6、Mac 安装 18/恢复 8 与 Windows process 88 项另有独立证据。
+
+该提交的 iOS 最终失败：200 项单元 XCTest 通过，原 core 七项为六通过、一失败。任务执行、人工验收及普通 Agent History 已保存真实读取记录；大字体重启后，测试在 Team 查找同一 Agent 的历史入口失败，未到达大字体请求/响应或刷新测量。原失败截图与可访问性层级显示列表有 12 页、失败时回到 0%，History 位于电脑与实例分区之后。原 29 项门禁及新增只读观察器检查均保留，30 项中只有原生聚合失败；后续套件与 publisher 未运行。原生进程组实际关闭、无强制清理，资源和临时目录清理完成，XcodeGen 后源码指纹保持。证据 `.git/opt-pr118-43566722920/verified-ios-failure.json`。
+
+重新 fetch 后 main 仍为 `fe87841`，在同一未合并项内将已有 Agent History 分区移到 Team 介绍之后、电脑和实例之前。完整文本复原比对确认仅移动原八行，身份、项目、导航和授权代码相同；原 XCTest 及期限未修改。系统 Node 26 的单文件 Swift 语法解析退出 0，不代表 Swift 编译或大字体入口已通过；新的原生运行仍须验证。
+
+原 checkout 冻结 `2516a60` 的四门禁已实际结束：typecheck、build 和完整 Web 55 项通过，Vitest 为 611 文件、8,824 通过、26 失败、88 条条件跳过，整体失败。四个命令均有实际 close 与源码保持记录。全部用例身份与上述 CI 相同；24 个本机失败用例在 CI 通过，两项 Windows 打包 worker 在 CI 条件跳过，不能计为已验证。其本机 bundle 时间戳为 9 月 29 日，且根 build 不生成该 bundle，输入版本尚未核验，需明确构建后单独验证。原 26 项失败及完整错误保留于 `.git/opt-final-all-2026-11-14T04-58-06-299Z/verified-vitest-failures.json`，不以 CI 成功覆盖，也未放宽断言或期限。
+
+## 2026-11-14 当前候选的完整共享验证与原生中断诊断
+
+PR #118 候选 `45a25e6` 的 [CI run 43571317074](https://github.com/Xiejiayun/artoo/actions/runs/43571317074) 已完整结束，整体失败，尚未合并。共享三 lane 为 611 文件、8,848 通过、90 条既有条件跳过、零失败；逐项核对 8,938 项用例身份、文件零遗漏/重叠和六份前后空浏览器缓存记录。共享 39 个检查、Web 55 项、认证 6 项、Windows process 88 项、Mac 安装 18 个检查及隔离恢复 8 项均通过，23 张原图和实际清理已核验。证据 `.git/opt-pr118-43571317074/verified-{vitest-current,shared,mac}.json`；Windows desktop 仍按既有条件跳过。
+
+iOS 的 200 项单元 XCTest 通过；原 core 前五项在日志中明确完成，第六项聊天/线程用例仍执行时流程进入清理并中断 Xcode，原生进程组在 SIGTERM 后持续返回 EPERM，未确认关闭。父进程组已关闭，服务端/浏览器等资源和临时目录清理完成，源码指纹保持；这些不等于原生进程组关闭。未生成完成的原生结果 JSON 或导出的附件，第七项任务/大字体历史路径、其余四套 suite 与 publisher 未执行，不能计为通过。原始日志、未完成 xcresult 和父报告保留在上述独立目录。初始流程错误被清理报告覆盖，当前不能确定触发中断的根因，也不能根据约 30 分钟耗时将其认定为既有 70 分钟父期限到期。
+
+现仅把 core 报告的三个清理错误赋值改为保留首个错误；清理状态、失败退出、进程组探测和全部期限保持。后续原生运行须保留初始失败诊断并重新验证实际路径，不以本次报告修正宣称业务故障已修复。
+
+该诊断修正的单文件 staged 质量、Node 语法与根 typecheck 通过。完整文本复原比对确认脚本仅三处赋值运算符变化，其余源码（含全部断言/期限/清理）一致。原 workflow cleanup、peer boundary 与 owned process group 三文件 Node 回归为 29 通过、7 条既有 POSIX 条件跳过、零失败；Windows 上的跳过不代表真实 macOS 进程组关闭通过。证据 `.git/opt-pr118-preserve-root-error-{staged,tests,typecheck,proof}-20261114.*`。
+
+本机 managed 工作区原先共享 primary 的 node_modules 联接，打包完整性检查因物理路径与 lock key 不一致拒绝构建。核对并保存联接元数据后仅非递归移除该联接，保留 primary 目标，正常 `npm ci` 安装独立依赖，源码/锁文件不变。使用原真实 rc.8 helper 的新 bundle 构建通过，摘要 `342268bf5fa3aceeb508e0ed7fcc1c8d4baf0376e41d085f7060e054e96ebd60`；原两项 Windows desktop-worker 用例通过、零跳过，实际 close 0/null，原断言/期限及源码/bundle 保持。证据 `.git/opt-windows-worker-fresh-45a25e6-{isolated-build-20261114.json,tests-20261114/summary.json}`。这是受控 CLI 进程验证，不是已安装 Electron UI 验收。
+
+独立依赖下精确复核其余原 24 项失败为 21 通过/3 失败，181 项因聚焦未运行；两条 H7 长链仍超出原 30 秒测试期限，server-entry 仍超出原 30 秒 readiness 期限。实际 close 1/null、源码保持；原完整失败保留，聚焦通过不覆盖它。证据 `.git/opt-local-24-isolated-45a25e6-20261114/`。一次独立持久化启动诊断约 27.8 秒就绪，其中模块加载约 5.7 秒、数据库创建约 11.3 秒、迁移约 9.3 秒，实际关闭并删除临时目录；它只观察原方法、没有改变测试期限，也不足以证明完整测试超时的根因。证据 `.git/opt-startup-diagnostic-45a25e6-20261114/`。
+
+## 2026-11-14 大字体历史详情的原始失败与滚动修正
+
+PR #118 的 `b4625db` 在 [run 43574730806](https://github.com/Xiejiayun/artoo/actions/runs/43574730806) 完整结束为失败，尚未合并。完整 Vitest 为 611 文件、8,848 通过、90 条既有条件跳过、零失败；原覆盖核验确认文件零遗漏/重叠、用例身份与 main 一致，六份前后空浏览器缓存记录齐全。共享 39 个检查（Web 55、认证 6）、Windows process 88、Mac 安装 18/隔离恢复 8 均独立核验通过。相同提交的 Azure validation 还通过 17 项发布/备份/恢复契约、19 项真实 PostgreSQL 集成、47 项远程存储/服务生命周期检查和 Linux 镜像导入；这是一次性 CI 环境，未部署 Azure 产品或调用真实 Provider。
+
+iOS 单元 XCTest 200 项通过；原 core 七项为六通过、一失败。任务执行、人工验收、普通历史读取及大字体下同一 Run 的详情导航均到达。失败截图与可访问性层级显示详情停在五页列表的 0%：大字号执行信息填满首屏，原始请求标题尚未进入虚拟列表的可访问性树。测试在调用已有滚动助手前要求该标题存在，因此提前失败。原生及父进程组实际正常关闭，资源/临时目录清理完成，源码指纹稳定；四个后续 suite、publisher 和大字体增长/刷新测量均未通过或未运行。原始失败及机器核验保留于 `.git/opt-pr118-43574730806/verified-ios-failure.json`，不覆盖此前中断失败。
+
+重新 fetch 确认 main 仍为 `fe87841`，在同一未合并项内将大字体详情的首屏标题存在前置改为等待原 `Execution history` 导航，然后使用已有 `revealText` 查找下方标题。原文、字号增长、完整可见区域、真实认证读取/刷新、响应、制品及清理断言均保留；原滚动次数和全部期限未修改。实际新路径仍须 macOS XCTest 验证，不以 Windows 语法解析替代。
+
+本机单文件 Swift 语法解析、完整文本复原比对、根 typecheck 及四文件原生 suite/报告/读取观察器回归 76 项通过，零跳过；staged 质量入口正常退出，本次无适用 Biome 文件。证据 `.git/opt-pr118-virtualized-request-{swift-recheck,proof,typecheck,contracts,staged}-20261114.*`。这些前置结果不构成新的原生 UI 通过。
+
+## 2026-11-14 大字体历史刷新入口
+
+PR #118 的 `208928d` 原生 [run 43578600089](https://github.com/Xiejiayun/artoo/actions/runs/43578600089) 完整结束为失败：200 项原生单元测试通过，core 七项为六通过、一失败。大字体的原请求已经过原文、增高和可见区域断言并留下截图，随后真实响应也已显示；失败发生在查找位于展开内容末尾的刷新按钮。原始失败截图/层级显示 12 页内容停在 49%，按钮未进入虚拟列表的可访问树；原辅助方法完成五次向前、五次向后搜索后失败。没有实际刷新点击或最终数值/认证刷新记录，后四个 suite 和 publisher 未执行。实际原生/父进程关闭、资源及临时目录清理完成，源码保持；原报告、附件、raw xcresult 和独立核验保留 `.git/opt-pr118-43578600089/verified-ios-failure.json`。
+
+同一提交的完整 Windows Vitest 独立核验为 611 文件、8,848 通过、90 条原条件跳过、零失败，六份空浏览器缓存记录及全部用例身份保持。Mac 安装 18/隔离恢复 8、Windows process 88 和 Azure 验证通过。共享门禁执行 36/39 项，35 通过、一失败；原外部网络负向案例正确拒绝访问，但 Windows 子树超过原 128 个候选上限，完整浏览器关闭未确认。认证、依赖审计和 whitespace 三项未运行；原失败及本机原案例一项通过分开保留，不当作 CI 通过或已证明慢因。
+
+重新 fetch 确认 main 仍为 `fe87841`。将 Agent history 和 Execution history 的同一个刷新操作移到导航栏，保留可访问名称、`model.refresh()`、加载期间禁用、旧页入口和说明。长响应及大字体下无需滚动到列表末尾；现有原生 XCTest、十次控制搜索、24 次文本搜索、15 秒新认证读取/刷新期限及全部响应/制品断言逐字保持。此为实际入口优化，尚待新 macOS 原生验证；不能将旧大字体截图或 Windows 语法解析称作新入口验收通过。
+
+本机 Swift 语法解析、完整视图文本复原比对、Node 24 根 typecheck、完整 workspace build 及四文件既有回归 76 项通过，零跳过。staged 质量入口正常退出，零适用 Biome 文件；原模型、原 API 测试及完整原生 XCTest 与 `208928d` 相同。日志与证明 `.git/opt-pr118-history-toolbar-{swift,typecheck,build,contracts,staged,proof}-20261114.*`。这些不是 SwiftUI 编译、原生点击/刷新或最终统一门禁通过。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
@@ -330,3 +392,11 @@ E1 安装移除合并 → 本机原生验证发现的夹具复核 → 最终统�
 所有条目仍须以最新源码复核适用性。E1 已取得安装移除前后的实际空缓存证据；iOS 原生验收继续跟进 macOS job；E4 产品发布需具备已授权的环境、凭据、受保护 Profile、健康标准和恢复方案。当前未执行新的产品发布，首轮最终统一门禁已执行但失败，后续修复后须重新验证，F2 与 E4 缺口保持。
 
 F2 当前行为回归：`structured-output`、领域预算、Goal 成本拒绝门控 3 文件 25 项通过（`.git/opt-f2-current-behavior.log`）；本次只提交前置设计，不改变 Usage、预算或调度代码。
+
+## 2026-11-14 History 原生通过与 Correction 键盘定位修正
+
+[PR #118 的 run 43582750602](https://github.com/Xiejiayun/artoo/actions/runs/43582750602) 在 `70661f4` 完成：共享 Vitest 611 文件、8,848 通过、90 既有条件跳过，Web 55/认证 6、Mac 安装 18/恢复 8、数据库门禁通过。iOS 的 200 项单元 XCTest、core 7 项、assistant 1 项、mentions 1 项通过；Correction 1 项失败，Retention 和 publisher iPhone/iPad 未执行，整个 iOS job 失败。
+
+独立核验原始 History 附件：同一 Run、响应事件和已验收制品相互绑定；Accessibility XXXL 标题高度由 72.33 增至 341.33 点，新认证刷新完成计数由 2 增至 3，原请求/响应保持。四个已启动 suite 的原生与父进程实际关闭，未强制清理。证据 `.git/opt-pr118-43582750602/verified-ios-correction-failure.json`；这是部分原生证据，不是完整产品或 Provider 验收。
+
+Correction 在创建任务前点击键盘 Done 后失败。原始层级在同一标识下同时包含 `Other` 包装节点和 `Button`，日志记录点击了 `Other`，criteria 仍有键盘焦点。现仅将该测试定位改为唯一、具名、启用且可点击的原生 Done Button；原键盘消失断言、10 秒期限和全部其他用例内容保持。源码逆向复原比对通过；Windows Tree-sitter 工具在输出语法结果后于 V8 退出阶段崩溃，该命令保留为失败，不计作通过。实际 Swift 编译和原生点击须由新 CI 证明；PR 暂不合并。

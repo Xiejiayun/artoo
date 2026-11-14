@@ -772,7 +772,13 @@ final class ExecutionCorrectionUITests: XCTestCase {
 
     @MainActor
     private func dismissKeyboard(_ id: String) throws {
-        try tap(id)
+        // SwiftUI exposes both its keyboard-toolbar container and the actual
+        // Button with this identifier. Target the actionable native control.
+        let buttons = app.buttons.matching(identifier: id), button = buttons.firstMatch
+        try reveal(button, identifier: id)
+        try require(buttons.count == 1 && button.label == "Done" && button.isEnabled && button.isHittable,
+                    "One identified native Done button must be available before dismissing the keyboard")
+        button.tap()
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
         try require(XCTWaiter.wait(for: [gone], timeout: 10) == .completed, "Done must dismiss the keyboard before lifecycle actions")
     }

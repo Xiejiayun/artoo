@@ -16,6 +16,14 @@ struct TeamView: View {
                         ArtooPageIntro(title: "The team behind your work", message: "Find your agents and the computers they use to carry work forward.", systemImage: "person.2.fill")
                             .listRowBackground(Color.clear)
                     }
+                    Section("Agent history") {
+                        ForEach(data["agents"].records) { agent in
+                            NavigationLink { AgentHistoryView(client: model.client, agentId: agent.id, projectId: container.projectId).id("\(agent.id):\(container.projectId)") } label: {
+                                Label(agent.title, systemImage: "clock.arrow.circlepath")
+                            }.accessibilityIdentifier("agent.history.open.\(agent.id)")
+                        }
+                        if data["agents"].records.isEmpty { Text("History appears after an agent is configured.").foregroundStyle(.secondary) }
+                    }
                     Section("Execution computers") {
                         if data["computers"].records.isEmpty {
                             ArtooPageIntro(title: "Connect your first computer", message: "Pair an execution computer from Devices, then start its daemon.", systemImage: "desktopcomputer")
@@ -60,14 +68,6 @@ struct TeamView: View {
                                 }
                             }
                         }
-                    }
-                    Section("Agent history") {
-                        ForEach(data["agents"].records) { agent in
-                            NavigationLink { AgentHistoryView(client: model.client, agentId: agent.id, projectId: container.projectId).id("\(agent.id):\(container.projectId)") } label: {
-                                Label(agent.title, systemImage: "clock.arrow.circlepath")
-                            }.accessibilityIdentifier("agent.history.open.\(agent.id)")
-                        }
-                        if data["agents"].records.isEmpty { Text("History appears after an agent is configured.").foregroundStyle(.secondary) }
                     }
                     if let message = daemons.error ?? model.actionError { Text(message).foregroundStyle(.red) }
                 }

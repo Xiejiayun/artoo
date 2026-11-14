@@ -216,6 +216,7 @@ async function main() {
           origin,
           projectId: channel.project_id,
           peerToken: peer.control_token,
+          httpServer: server.app.server,
           suffix,
           request,
           until,
@@ -608,14 +609,14 @@ async function main() {
       report.native_process_cleanup = nativeCleanup;
       if (!nativeCleanup.closed) {
         report.passed = false;
-        report.error = "Native test process-group cleanup failed";
+        report.error ??= "Native test process-group cleanup failed";
       }
       const workersClosed = await Promise.allSettled([workflows?.close()]);
       const closed = [...workersClosed, ...(await Promise.allSettled([browser?.close(), server?.close()]))];
       const failedClose = closed.find((result) => result.status === "rejected");
       if (failedClose) {
         report.passed = false;
-        report.error = "Native UI fixture cleanup failed";
+        report.error ??= "Native UI fixture cleanup failed";
       }
       let removalError;
       try {
@@ -628,7 +629,7 @@ async function main() {
       } catch (error) {
         removalError = error;
         report.passed = false;
-        report.error = "Native UI temporary fixture cleanup failed";
+        report.error ??= "Native UI temporary fixture cleanup failed";
       } finally {
         process.removeListener("SIGINT", onInterrupt);
         process.removeListener("SIGTERM", onTerminate);

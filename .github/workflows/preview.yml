@@ -188,6 +188,7 @@ jobs:
           name: ios-native-ui-attachments
           path: |
             artifacts/ios/attempts/*/ui-attachments/manifest.json
+            artifacts/ios/attempts/*/ui-attachments/*.json
             artifacts/ios/attempts/*/ui-attachments/*.png
             artifacts/ios/attempts/*/ui-attachments/*.txt
           if-no-files-found: ignore
