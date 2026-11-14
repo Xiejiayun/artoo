@@ -43,6 +43,14 @@
 
 候选修正使用精确 label 谓词，并核对完整 label 等于同一真实响应；没有截断文字或修改测试期限/用例集合。本机语法和静态契约通过只证明前置条件，修正后的 Swift 编译、真实原生交互及全部 suite 仍以新的 macOS 门禁为准。
 
+### 当前集成证据补充（2026-11-14）
+
+上表的早期结果保留其版本范围。后续 main `cb2a128` 本机 typecheck、完整 workspace build 和真实 Chromium Web 55 项通过；同提交 CI 完整 611 文件、8,848 通过、零失败、90 条既有条件跳过，文件/用例集合及六份前后空缓存记录已核验。原本机九项失败未被此结果覆盖。该 main 的 iOS 因旧响应标识符查询失败；修正 PR #113 已基于实际编译与七项完整 core XCTest 通过普通合并，当前 main 为 `b779006`。PR 的整个 iOS gate 尚未结束，Vitest 首轮仍有两项未修改 WebSocket 重试测试失败，最终重验尚未完成。完整原生/统一 E2E 状态继续为未完成。
+
+[跨平台 daemon run 43524088335](https://github.com/Xiejiayun/artoo/actions/runs/43524088335) 在 `ea75afe` 全部八个 job 成功，五个 OS/架构使用相同 tarball 摘要，各自正常安装并实际执行四个受控 CLI 成功/失败任务，daemon 正常关闭/重启、身份保持、未授权停止拒绝和进程缺席均已核验。四个平台的 POSIX 验证各 17 项（共 68）通过，Ubuntu 沙箱浏览器 8 项通过且正常关闭/安全清理；未关闭浏览器沙箱。174 份证据文件摘要保留 `.git/opt-final-cross-platform-43524088335/verified-cross-platform.json`。该运行的合格 daemon/服务端/共享包/打包脚本输入到 `b779006` 未修改；这是限定输入的受控运行证据，不是新版本 live Provider、原生 supervisor、Windows 安装 UI、npm 发布或生产恢复验收。完整 tarball 未在本机重新下载/哈希。
+
+仓库 self-hosted runners 只读查询为零，Windows Electron 安装 UI 的条件跳过继续记为未运行。未在个人电脑代替隔离交互 runner 执行 NSIS 安装/卸载。F2 当前仍只有计量契约设计，可信金额来源、精确账本及成本准入未实现；E4 的实际 Provider 共享授权仍待操作者回复。
+
 ### 最终验收步骤
 
 1. 在全部优化合并后记录完整 Git SHA、干净工作区/构建输入清单与摘要、Node/npm/CLI/浏览器/helper 版本及受保护验证/发布 Profile 指纹，固定一次调用的目标、期限和预算。

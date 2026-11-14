@@ -277,6 +277,16 @@ PR #111 的 [原生 CI](https://github.com/Xiejiayun/artoo/actions/runs/43542284
 
 重新 fetch 并从干净最新 main `cb2a128` 创建独立分支，只把该响应的字符串标识符查询改为精确 `label == %@` 谓词，并显式断言完整 label 等于服务器响应。原生用例、响应、滚动次数、期限及既有业务断言保留。本机 Swift 语法解析、原生 suite/报告契约 29 项及 API 静态契约通过；这些不是 Swift 编译或原生 XCTest 通过，实际 macOS 门禁仍须重跑。
 
+## 2026-11-14 原生 core 复核与回环链接修正
+
+[PR #113](https://github.com/Xiejiayun/artoo/pull/113) 普通合并为 `b779006fbdc05ccbd95ba7abfc39818332874d79`（实现 `202ed95`），随后重新 fetch/pull 干净 main。合并依据是该测试修正的实际针对性结果：[run 43548201742](https://github.com/Xiejiayun/artoo/actions/runs/43548201742) 的 Swift 编译成功，原 core 七项全部通过，任务执行/验收案例完整走过新增 Agent History 请求、150 字符真实响应、精确 label 校验和截图，03:28:59 UTC suite 结束，xcodebuild 明确 `TEST EXECUTE SUCCEEDED`。此时后续独立原生 suite 仍运行，未称完整 iOS 或整个 workflow 通过；最终仍需下载原始 xcresult/关闭报告核验。
+
+该 PR 的共享检查 38 项（含 Web 55、认证 6）及 Mac 安装 18/恢复 8 项已完成并独立核验。Vitest 首轮完整 611 文件为 8,846 通过、2 失败、90 条既有条件跳过：两项未修改的 `node-client-release-retry.integration.test.ts` 在等待首个 WebSocket command ack 时失败。原失败、文件/用例身份和现行 main 对比保留 `.git/opt-pr113-43548201742/verified-vitest-{current,first-failure}.json`。原文件本机两项通过，与相邻真实进程测试并行复核 2 文件 24 项通过，此前精确 main 完整 CI 也通过；这些不建立首轮 CI 慢因或覆盖失败。完整 run 结束后仍须重验失败分片及聚合，不放宽时限或断言。
+
+从上述新 main 单独修正 F3 静态发布链接：旧判断只排除 `127.0.0.1`，实际可表示的 `http://127.0.0.2:8080/` 会错误显示手机打开入口。现对 Foundation 解码后的 host 使用本机地址解析，排除整个 127/8、短式/十六进制 IPv4、localhost 根点/子域，以及 IPv6 回环和映射的 127/8；不执行 DNS 查询，不隐藏正常远程域名、局域网或非回环 IPv6。发布、健康、同步和无凭据条件保持。新增一个 XCTest 含 16 个拒绝与 10 个保留断言；Windows 语法检查不等于 Foundation/Swift/XCTest 通过，实际 macOS 验证尚待执行。
+
+本机两份 Swift 语法解析退出 0（`.git/opt-f3-loopback-swift-final.log`），diff whitespace 与 staged 质量入口退出 0；本项无适用 Biome 文件，实际检查数为 0（`.git/opt-f3-loopback-quality.log`）。没有用其他语言镜像地址解析来替代原生 XCTest。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
