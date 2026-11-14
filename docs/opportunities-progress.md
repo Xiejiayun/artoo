@@ -392,3 +392,11 @@ E1 安装移除合并 → 本机原生验证发现的夹具复核 → 最终统�
 所有条目仍须以最新源码复核适用性。E1 已取得安装移除前后的实际空缓存证据；iOS 原生验收继续跟进 macOS job；E4 产品发布需具备已授权的环境、凭据、受保护 Profile、健康标准和恢复方案。当前未执行新的产品发布，首轮最终统一门禁已执行但失败，后续修复后须重新验证，F2 与 E4 缺口保持。
 
 F2 当前行为回归：`structured-output`、领域预算、Goal 成本拒绝门控 3 文件 25 项通过（`.git/opt-f2-current-behavior.log`）；本次只提交前置设计，不改变 Usage、预算或调度代码。
+
+## 2026-11-14 History 原生通过与 Correction 键盘定位修正
+
+[PR #118 的 run 43582750602](https://github.com/Xiejiayun/artoo/actions/runs/43582750602) 在 `70661f4` 完成：共享 Vitest 611 文件、8,848 通过、90 既有条件跳过，Web 55/认证 6、Mac 安装 18/恢复 8、数据库门禁通过。iOS 的 200 项单元 XCTest、core 7 项、assistant 1 项、mentions 1 项通过；Correction 1 项失败，Retention 和 publisher iPhone/iPad 未执行，整个 iOS job 失败。
+
+独立核验原始 History 附件：同一 Run、响应事件和已验收制品相互绑定；Accessibility XXXL 标题高度由 72.33 增至 341.33 点，新认证刷新完成计数由 2 增至 3，原请求/响应保持。四个已启动 suite 的原生与父进程实际关闭，未强制清理。证据 `.git/opt-pr118-43582750602/verified-ios-correction-failure.json`；这是部分原生证据，不是完整产品或 Provider 验收。
+
+Correction 在创建任务前点击键盘 Done 后失败。原始层级在同一标识下同时包含 `Other` 包装节点和 `Button`，日志记录点击了 `Other`，criteria 仍有键盘焦点。现仅将该测试定位改为唯一、具名、启用且可点击的原生 Done Button；原键盘消失断言、10 秒期限和全部其他用例内容保持。源码逆向复原比对通过；Windows Tree-sitter 工具在输出语法结果后于 V8 退出阶段崩溃，该命令保留为失败，不计作通过。实际 Swift 编译和原生点击须由新 CI 证明；PR 暂不合并。
