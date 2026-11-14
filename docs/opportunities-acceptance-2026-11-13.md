@@ -37,6 +37,12 @@
 
 证据 `.git/opt-native-recheck-2026-11-13T22-57-50.015Z/{summary.json,input-hashes.json,source.patch,fixture.log}` 绑定基线及完整候选 patch，子进程实际 close 0/null，输入摘要和 patch 前后相同。按夹具原有约定，最终 native records/workspace 保留于已配置私有临时根；先前失败及目录亦保留。该结果不证明真实 Provider、实体多电脑、iOS/Electron 客户端、发布或重启恢复验收完成，仍须执行最终冻结版本的四门禁与单独授权的产品闭环。
 
+### iOS 失败诊断补充（2026-11-14）
+
+[PR #111 的原生门禁](https://github.com/Xiejiayun/artoo/actions/runs/43542284017) 最终失败。core 的六项通过，任务执行/验收用例在已完成任务、打开精确 Agent Run 和原始请求后，展开响应并以完整响应作为 XCTest 字符串标识符查询。原始 xcresult 诊断明确说明响应超过 128 字符上限，测试进程因此 SIGABRT；不是应用进程退出。后续四套原生 suite 及 publisher 检查未执行，不能推断通过。失败工件保留 `.git/opt-f3-pr111-43542284017/`，父进程退出 1，资源关闭、原生进程组关闭和临时目录清理完成。
+
+候选修正使用精确 label 谓词，并核对完整 label 等于同一真实响应；没有截断文字或修改测试期限/用例集合。本机语法和静态契约通过只证明前置条件，修正后的 Swift 编译、真实原生交互及全部 suite 仍以新的 macOS 门禁为准。
+
 ### 最终验收步骤
 
 1. 在全部优化合并后记录完整 Git SHA、干净工作区/构建输入清单与摘要、Node/npm/CLI/浏览器/helper 版本及受保护验证/发布 Profile 指纹，固定一次调用的目标、期限和预算。
