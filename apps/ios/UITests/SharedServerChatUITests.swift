@@ -265,6 +265,7 @@ final class SharedServerChatUITests: XCTestCase {
         try require(requestTitle.waitForExistence(timeout: 15), "Execution history must load the original context-pack request")
         try reveal(requestTitle)
         XCTAssertEqual(requestTitle.label, original.title)
+        let baselineRequestHeight = Double(requestTitle.frame.height)
         for criterion in original.acceptanceCriteria { try reveal(app.staticTexts[criterion]) }
         try reveal(app.staticTexts[run.id], searchTowardTop: true)
         attachScreenshot("Native agent history original request for the completed run")
@@ -283,6 +284,80 @@ final class SharedServerChatUITests: XCTestCase {
         try attachRecord(["agent_id": history.agentId, "run_id": run.id, "task_id": original.id,
                           "response_event_id": event.id, "artifact_checksum_after_read": checksum],
                          name: "Real native agent execution history read boundary")
+        try await inspectHistoryWithLargeText(runId: run.id, eventId: event.id, title: original.title,
+                                             response: response, baselineRequestHeight: baselineRequestHeight)
+        let afterLargeText: ExecutionTaskSnapshot = try await peerGet("api/v1/tasks/\(taskId)")
+        XCTAssertEqual(afterLargeText.task.status, "done")
+        XCTAssertEqual(afterLargeText.runs.map(\.id), [run.id])
+        XCTAssertEqual(afterLargeText.artifacts.map(\.id), [artifact.id])
+        XCTAssertEqual(afterLargeText.artifacts.first?.checksum, checksum)
+    }
+
+    @MainActor
+    private func inspectHistoryWithLargeText(runId: String, eventId: String, title: String, response: String,
+                                            baselineRequestHeight: Double) async throws {
+        let originalArguments = app.launchArguments
+        app.terminate()
+        // UIKit's argument-domain preference affects this app invocation only.
+        // Restore the arguments even on failure; other original cases keep their font size.
+        app.launchArguments = originalArguments + ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        defer { app.terminate(); app.launchArguments = originalArguments }
+        app.launch()
+        let team = app.tabBars.buttons["Team"]
+        try require(team.waitForExistence(timeout: 20), "Large-text relaunch must restore the real paired session")
+        team.tap()
+        let history = app.buttons["agent.history.open.\(fixture.executorAgentId)"]
+        try reveal(history); history.tap()
+        let run = app.buttons["agent.history.run.\(runId)"]
+        try require(run.waitForExistence(timeout: 15), "Large-text history must retain the exact completed run")
+        try reveal(run); run.tap()
+        let requestTitle = app.staticTexts["agent.history.request.title"]
+        try require(requestTitle.waitForExistence(timeout: 15), "Large-text detail must load the original request")
+        try revealText(requestTitle)
+        XCTAssertEqual(requestTitle.label, title)
+        let frame = requestTitle.frame
+        let largeHeight = Double(frame.height)
+        try require(baselineRequestHeight.isFinite && baselineRequestHeight > 0 && largeHeight.isFinite
+                    && largeHeight > baselineRequestHeight && app.frame.contains(frame),
+                    "The same request title must visibly grow and remain reachable inside the large-text viewport")
+        try attachConnectedScreenshot("Native agent history large text original request")
+        let event = app.buttons["agent.history.event.\(eventId)"]
+        try reveal(event); event.tap()
+        let answer = app.staticTexts.matching(NSPredicate(format: "label == %@", response)).firstMatch
+        try revealText(answer)
+        XCTAssertEqual(answer.label, response)
+        let refresh = app.buttons["Refresh latest history"]
+        try reveal(refresh); try require(refresh.isEnabled, "Large-text history refresh must remain actionable")
+        let beforeRefresh = try await nativeHistoryReadEvidence(runId)
+        try require(beforeRefresh.runId == runId && beforeRefresh.sessionBound && beforeRefresh.successfulReads > 0,
+                    "The native session must have completed an authenticated history read")
+        refresh.tap()
+        let deadline = Date().addingTimeInterval(15)
+        var refreshed = false
+        var refreshedReads = beforeRefresh.successfulReads
+        repeat {
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { break }
+            let observed = try await nativeHistoryReadEvidence(runId, timeout: remaining)
+            if Date() < deadline && observed.runId == runId && observed.sessionBound && observed.successfulReads > beforeRefresh.successfulReads {
+                refreshed = true; refreshedReads = observed.successfulReads; break
+            }
+            if deadline.timeIntervalSinceNow > 0.25 { try await Task.sleep(nanoseconds: 250_000_000) }
+        } while Date() < deadline
+        try require(refreshed, "Refresh must complete a new authenticated read for this run and native session")
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: refresh)
+        try require(XCTWaiter.wait(for: [ready], timeout: max(0, deadline.timeIntervalSinceNow)) == .completed && Date() <= deadline,
+                    "The native UI must finish applying the refreshed history within the original read deadline")
+        try require(event.exists, "Refreshing large-text history must retain the original response event")
+        try revealText(answer)
+        XCTAssertEqual(answer.label, response)
+        try attachConnectedScreenshot("Native agent history large text response after refresh")
+        try attachRecord(["run_id": runId, "event_id": eventId, "content_size_category": "UICTContentSizeCategoryAccessibilityXXXL",
+                          "baseline_request_height": String(baselineRequestHeight), "large_request_height": String(largeHeight),
+                          "request_title_unchanged": "true", "response_unchanged_after_refresh": "true",
+                          "completed_reads_before_refresh": String(beforeRefresh.successfulReads),
+                          "completed_reads_after_refresh": String(refreshedReads)],
+                         name: "Real native history large-text rendering and refresh")
     }
 
     @MainActor
@@ -1745,6 +1820,11 @@ final class SharedServerChatUITests: XCTestCase {
         let _: NodeControlResponse = try await peerRequest(request, token: fixture.controlToken, timeout: 75)
     }
 
+    private func nativeHistoryReadEvidence(_ runId: String, timeout: TimeInterval = 15) async throws -> NativeHistoryReadEvidence {
+        let request = URLRequest(url: fixture.controlURL.appendingPathComponent("history-reads/\(runId)"))
+        return try await peerRequest(request, token: fixture.controlToken, timeout: timeout)
+    }
+
     private func waitForDaemon(_ status: String, timeout: TimeInterval = 30) async throws -> ServerDaemon {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
@@ -1894,6 +1974,12 @@ private struct GoalTaskEnvelope: Decodable { let task: ServerTask }
 private struct ServerTask: Decodable { let id: String; let title: String; let acceptanceCriteria: [String] }
 private struct DependencyPage: Decodable { let dependencies: [ServerDependency] }
 private struct ServerDependency: Decodable { let fromTaskId: String; let toTaskId: String; let type: String }
+
+private struct NativeHistoryReadEvidence: Decodable {
+    let runId: String
+    let successfulReads: Int
+    let sessionBound: Bool
+}
 
 private struct Fixture {
     let serverURL: URL

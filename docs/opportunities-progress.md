@@ -317,6 +317,18 @@ Node 24 根 typecheck、Web build、2 文件 staged 质量全部实际 close 0/n
 
 PR #114 完整三 lane 实际文件与用例集合、六份前后空缓存记录独立核验：611 文件、8,848 通过、90 既有条件跳过、零失败（`.git/opt-pr114-43555955145/verified-vitest-current.json`）。PR #113 只重跑失败 lane 后同一不可变 CI commit 的完整合并结果也通过，原两项首次失败和 iOS retention 失败仍保留（`.git/opt-pr113-43548201742/attempt-2/verified-vitest-combined.json`）。这些结果不代表新布局版本完整 CI 或真实 Provider 验收。
 
+## 2026-11-14 最新 main 门禁与历史大字体验收补充
+
+[PR #117](https://github.com/Xiejiayun/artoo/pull/117) 普通合并为 `fe87841bb0c346f98a161cfda87ec3565cab0482`（实现 `b5e4a9b`），随后重新 fetch/pull main 再创建本项分支。该干净 main 的本机完整 Web E2E 55 项通过，实际 close 0/null，源码保持；证据 `.git/opt-new-main-web-2026-11-14T05-23-54-248Z/`。CI [run 43561220099](https://github.com/Xiejiayun/artoo/actions/runs/43561220099) 的共享 38 项、Web 55/认证 6、Mac 安装 18/恢复 8、Windows process 4 文件 88 项均独立核验通过。完整 Vitest 为 611 文件、8,848 通过、90 既有条件跳过、零失败；8,938 项身份和六份空缓存记录逐项核验，费用说明测试的一项改名显式对应。证据 `.git/opt-main-43561220099/verified-{shared,mac,correction,vitest-current}.json`。iOS 尚在执行，Windows 安装 UI 按既有条件跳过，不能称整个 workflow 或最终产品验收通过。原 checkout 仍冻结 `2516a60` 运行四个完整门禁，typecheck/build 已通过，Vitest 与后续 Web 尚待结束。
+
+本项为 F3 增加实际原生 History 大字体与刷新证据：在原任务执行/人工验收用例的全部既有断言后，用仅本次 app launch 生效的 UIKit 大字体参数重启同一个已配对应用，核对同一 Run 的原请求/响应、标题实际增高及可达视口，刷新后再次核对任务/制品/摘要。只增加断言和两个经过配对输入隐私防护的截图，不改变原七项 core 用例、期限或业务内容。
+
+刷新证据来自测试 fixture 对现有真实 HTTP server 的只读监听，计数限定 Agent/Run、最新 50 项页面、HTTP 200 finish 及首个非 peer 成功凭据绑定；不导出凭据或其摘要。原回环 bearer 保护的 fixture controller 返回次数，缺失/关闭/溢出证据均失败，不修改生产 API、鉴权或响应。刷新必须在单一 15 秒期限内完成新的读取并恢复 UI 可操作状态，不能用仍显示的缓存响应证明刷新成功。观察关闭移除自己的监听器，不中止原响应。
+
+Node 24 的实际回环 HTTP 生命周期/中止/关闭/隐私与既有 fixture/report 共 26 项通过，无失败或跳过；5 个 JS 文件 staged 质量与 22 请求/58 端点静态契约通过。完整 fixture AST 除声明的只读观察接线外与 main 相同，Swift 原源码无删除/修改；证据 `.git/opt-ios-history-{large-text-tests-final,large-text-quality-final,large-text-static-contracts,preservation}.log`。Node 24 WASM parser 虽输出解析成功，随后 OOM 退出，保留为失败；系统 Node 26 对同一文件语法解析实际退出 0（`.git/opt-ios-history-large-text-swift-system.log`）。这不是 Swift 编译、Dynamic Type 生效或原生交互通过，新路径仍需 Xcode 和截图证据。
+
+F2 精确生产计量/事务账本/全部阶段准入/预算 UI 仍未实现，继续拒绝 `max_cost_usd`；E4 用户“不清楚”仅回答配置位置，尚未获得外部 Provider 共享授权和可用验收安装。本项不读取凭据或调用 Provider，仍保留最终原生/产品验收缺口。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。

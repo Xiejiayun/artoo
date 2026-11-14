@@ -216,6 +216,7 @@ async function main() {
           origin,
           projectId: channel.project_id,
           peerToken: peer.control_token,
+          httpServer: server.app.server,
           suffix,
           request,
           until,
