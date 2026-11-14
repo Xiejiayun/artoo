@@ -183,15 +183,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: always()
         with:
-          name: ios-failed-ui-attachments
+          name: ios-native-ui-attachments
           path: |
             artifacts/ios/attempts/*/ui-attachments/manifest.json
             artifacts/ios/attempts/*/ui-attachments/*.png
             artifacts/ios/attempts/*/ui-attachments/*.txt
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

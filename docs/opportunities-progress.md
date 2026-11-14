@@ -297,6 +297,14 @@ Node 24 根 typecheck、Web build、4 文件 28 项费用展示/适配器/预算
 
 PR #113 的完整原生 run 此后结束为失败：原始 xcresult 中 core 7、assistant 1、mentions 1、correction 1 共十项通过，retention 1 项失败，无跳过。首次 `/observations` 返回 HTTP 500，内部保留 `TypeError: fetch failed`，未保存 cause，尚不能断言 DNS、超时或共同慢因。29 个门禁中该原生聚合失败，其余通过；publisher 未执行。原始导出、65 张 PNG、精确用例身份、记录的 post-XcodeGen 源码稳定性及全部父/原生进程关闭与非强制清理独立复核，证据 `.git/opt-pr113-43548201742/verified-ios-completed.json`。原两项 Vitest 首轮失败仍保留；已在 run 结束后只重跑失败分片，结果尚待完成。不删除断言、不增加时限、不将针对性成功写成完整验收。
 
+## 2026-11-14 原生观察请求与截图证据补充
+
+费用来源说明通过 [PR #115](https://github.com/Xiejiayun/artoo/pull/115) 普通合并为 `fcf2a3e1aaf9f9f5e5227df5320d27a6b21ef6fd`（实现 `8e1f7b3`），随后 fetch/pull 干净 main，再创建本项分支。此时该 PR 完整 CI 仍运行，changed 质量已通过；不将本地 28 项回归视作整个 CI 或原生通过。
+
+针对已保留的 retention `/observations` HTTP 500，为内部请求添加纯诊断观察器：原样返回结果/抛回原错误，记录无查询参数的路由、耗时、中止状态及有限传输错误码/嵌套原因，省略令牌、请求体和异常消息/栈。原 15 秒请求信号/期限、HTTP 与 JSON 校验、suite/父预算、全部业务断言、证据/关闭/清理逻辑保持。CI 的原生附件改为每轮上传 `ios-native-ui-attachments`、保留 14 天，解决成功套件没有独立截图工件的证据缺口；失败 raw xcresult 仍按原规则保留。
+
+Node 24 实际本地 HTTP/socket/中止与错误隐私测试及既有 retention 认证/串行边界/关闭/冷恢复测试 2 文件 11 项全部通过，无跳过（`.git/opt-native-request-tests-final.log`）。3 文件 staged 质量通过；初次检测到已有 finally 内嵌套 throw，改为设置原外层 catch 相同的失败字段并保留退出 1，未跳过断言。完整脚本 AST（仅声明的观察包装和相同失败字段处理）与 main 一致，整个 workflow 复原后与基线逐字相同，仅该附件上传条件/名称/保留天数变化（`.git/opt-native-request-preservation-final.json`）。这项是诊断与证据补充，尚未证明 HTTP 500 根因修复；完整原生重验及最终统一门禁仍待完成。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
