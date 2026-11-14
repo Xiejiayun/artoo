@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 enum ReleasePresentation {
     static func date(_ value: JSONValue) -> Date? {
@@ -14,10 +15,33 @@ enum ReleasePresentation {
         guard !syncFailed, release["status"] == .string("published"), release["receipt"]["outcome"] == .string("published"),
               release["health"] == .null || release["health"]["state"] == .string("healthy"),
               let url = URL(string: release["receipt"]["endpoint"].text),
-              ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host?.isEmpty == false,
-              !["localhost", "127.0.0.1", "::1", "[::1]"].contains(url.host?.lowercased() ?? ""),
+              ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host(percentEncoded: false), !host.isEmpty, !isLoopback(host),
               url.user == nil, url.password == nil else { return nil }
         return url
+    }
+
+    private static func isLoopback(_ rawHost: String) -> Bool {
+        var host = rawHost.lowercased()
+        if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
+        // A trailing DNS root dot and localhost subdomains still name this device.
+        if host.hasSuffix(".") { host.removeLast() }
+        if host == "localhost" || host.hasSuffix(".localhost") { return true }
+
+        // Use the system parser for numeric IPv4 forms, including 127.1 and hex.
+        var ipv4 = in_addr()
+        if host.withCString({ inet_aton($0, &ipv4) }) != 0 {
+            return UInt32(bigEndian: ipv4.s_addr) >> 24 == 127
+        }
+        // A zone identifier does not turn an IPv6 loopback into a remote host.
+        let address = String(host.split(separator: "%", maxSplits: 1).first ?? "")
+        var ipv6 = in6_addr()
+        guard address.withCString({ inet_pton(AF_INET6, $0, &ipv6) }) == 1 else { return false }
+        return withUnsafeBytes(of: ipv6) { bytes in
+            let loopback = bytes.prefix(15).allSatisfy { $0 == 0 } && bytes[15] == 1
+            let mappedIPv4 = bytes.prefix(10).allSatisfy { $0 == 0 } && bytes[10] == 255 && bytes[11] == 255
+            return loopback || (mappedIPv4 && bytes[12] == 127)
+        }
     }
 
     static func isClosed(_ publication: JSONValue) -> Bool {
