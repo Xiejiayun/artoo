@@ -45,10 +45,13 @@ export function RunUsageSummary({ run }: { run: Run }): React.ReactNode {
           <dd>{cost}</dd>
         </div>
       </dl>
-      <p id={descriptionId} className="t-subtle">
-        Runtime-reported usage. Costs may be estimates and include earlier session activity. Billing accuracy and Goal
-        totals are unverified.
-      </p>
+      <details className="t-subtle">
+        <summary>Cost reporting limits</summary>
+        <p id={descriptionId}>
+          Runtime-reported usage. Costs may be estimates and include earlier session activity. Billing accuracy and Goal
+          totals are unverified.
+        </p>
+      </details>
     </>
   );
 }
