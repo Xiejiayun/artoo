@@ -345,6 +345,20 @@ PR #118 的不可变提交 `fa81380` 在 [run 43566722920](https://github.com/Xi
 
 原 checkout 冻结 `2516a60` 的四门禁已实际结束：typecheck、build 和完整 Web 55 项通过，Vitest 为 611 文件、8,824 通过、26 失败、88 条条件跳过，整体失败。四个命令均有实际 close 与源码保持记录。全部用例身份与上述 CI 相同；24 个本机失败用例在 CI 通过，两项 Windows 打包 worker 在 CI 条件跳过，不能计为已验证。其本机 bundle 时间戳为 9 月 29 日，且根 build 不生成该 bundle，输入版本尚未核验，需明确构建后单独验证。原 26 项失败及完整错误保留于 `.git/opt-final-all-2026-11-14T04-58-06-299Z/verified-vitest-failures.json`，不以 CI 成功覆盖，也未放宽断言或期限。
 
+## 2026-11-14 当前候选的完整共享验证与原生中断诊断
+
+PR #118 候选 `45a25e6` 的 [CI run 43571317074](https://github.com/Xiejiayun/artoo/actions/runs/43571317074) 已完整结束，整体失败，尚未合并。共享三 lane 为 611 文件、8,848 通过、90 条既有条件跳过、零失败；逐项核对 8,938 项用例身份、文件零遗漏/重叠和六份前后空浏览器缓存记录。共享 39 个检查、Web 55 项、认证 6 项、Windows process 88 项、Mac 安装 18 个检查及隔离恢复 8 项均通过，23 张原图和实际清理已核验。证据 `.git/opt-pr118-43571317074/verified-{vitest-current,shared,mac}.json`；Windows desktop 仍按既有条件跳过。
+
+iOS 的 200 项单元 XCTest 通过；原 core 前五项在日志中明确完成，第六项聊天/线程用例仍执行时流程进入清理并中断 Xcode，原生进程组在 SIGTERM 后持续返回 EPERM，未确认关闭。父进程组已关闭，服务端/浏览器等资源和临时目录清理完成，源码指纹保持；这些不等于原生进程组关闭。未生成完成的原生结果 JSON 或导出的附件，第七项任务/大字体历史路径、其余四套 suite 与 publisher 未执行，不能计为通过。原始日志、未完成 xcresult 和父报告保留在上述独立目录。初始流程错误被清理报告覆盖，当前不能确定触发中断的根因，也不能根据约 30 分钟耗时将其认定为既有 70 分钟父期限到期。
+
+现仅把 core 报告的三个清理错误赋值改为保留首个错误；清理状态、失败退出、进程组探测和全部期限保持。后续原生运行须保留初始失败诊断并重新验证实际路径，不以本次报告修正宣称业务故障已修复。
+
+该诊断修正的单文件 staged 质量、Node 语法与根 typecheck 通过。完整文本复原比对确认脚本仅三处赋值运算符变化，其余源码（含全部断言/期限/清理）一致。原 workflow cleanup、peer boundary 与 owned process group 三文件 Node 回归为 29 通过、7 条既有 POSIX 条件跳过、零失败；Windows 上的跳过不代表真实 macOS 进程组关闭通过。证据 `.git/opt-pr118-preserve-root-error-{staged,tests,typecheck,proof}-20261114.*`。
+
+本机 managed 工作区原先共享 primary 的 node_modules 联接，打包完整性检查因物理路径与 lock key 不一致拒绝构建。核对并保存联接元数据后仅非递归移除该联接，保留 primary 目标，正常 `npm ci` 安装独立依赖，源码/锁文件不变。使用原真实 rc.8 helper 的新 bundle 构建通过，摘要 `342268bf5fa3aceeb508e0ed7fcc1c8d4baf0376e41d085f7060e054e96ebd60`；原两项 Windows desktop-worker 用例通过、零跳过，实际 close 0/null，原断言/期限及源码/bundle 保持。证据 `.git/opt-windows-worker-fresh-45a25e6-{isolated-build-20261114.json,tests-20261114/summary.json}`。这是受控 CLI 进程验证，不是已安装 Electron UI 验收。
+
+独立依赖下精确复核其余原 24 项失败为 21 通过/3 失败，181 项因聚焦未运行；两条 H7 长链仍超出原 30 秒测试期限，server-entry 仍超出原 30 秒 readiness 期限。实际 close 1/null、源码保持；原完整失败保留，聚焦通过不覆盖它。证据 `.git/opt-local-24-isolated-45a25e6-20261114/`。一次独立持久化启动诊断约 27.8 秒就绪，其中模块加载约 5.7 秒、数据库创建约 11.3 秒、迁移约 9.3 秒，实际关闭并删除临时目录；它只观察原方法、没有改变测试期限，也不足以证明完整测试超时的根因。证据 `.git/opt-startup-diagnostic-45a25e6-20261114/`。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
