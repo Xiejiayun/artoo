@@ -46,6 +46,7 @@ private struct AgentExecutionHistoryView: View {
                     if data["request"] == .null { Text("The original request is unavailable for this execution.") }
                     else {
                         Text(data["request"]["title"].text).font(.headline)
+                            .accessibilityIdentifier("agent.history.request.title")
                         Text(data["request"]["description"].text).textSelection(.enabled)
                         ForEach(Array(data["request"]["acceptance_criteria"].array.enumerated()), id: \.offset) { _, criterion in Text(criterion.text) }
                     }

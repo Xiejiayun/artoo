@@ -112,6 +112,7 @@ try {
       cancellation_goal_id: "CANCELLATION_GOAL_ID",
       cancellation_goal_title: "CANCELLATION_GOAL_TITLE",
       executor_instance_id: "EXECUTOR_INSTANCE_ID",
+      executor_agent_id: "EXECUTOR_AGENT_ID",
       executor_name: "EXECUTOR_NAME",
       executor_runtime: "EXECUTOR_RUNTIME",
       executor_collision_instance_id: "EXECUTOR_COLLISION_INSTANCE_ID",

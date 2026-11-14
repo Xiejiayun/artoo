@@ -249,6 +249,18 @@ Vitest 的九项失败分布在 server-entry（1）、imported-design-review-ver
 
 Web 唯一失败是项目创建和改名连续完成时，两个合法的相同 `Project saved.` Toast 同时存在，旧测试把通知区当作唯一 status。现先等待创建提示按原生命周期消失，再执行保存并使用原 status/文字断言；这也防止把上一次创建提示误当作本次保存反馈。没有改变产品 Toast、超时、后续项目/配对/撤销/Skill 流程或其断言。暂存质量、根 typecheck 及原场景连续三次真实 Chromium 完整复核均通过，实际 close 0/null；证据 `.git/opt-toast-e2e-recheck-20261114-0922/{summary.json,stdout.log,stderr.log,source.patch}`，HTML `apps/web/playwright-report/workflows-2026-11-14T01-20-20-091Z`。目录名不作启动时间依据，实际开始/结束以 summary 为准。原完整失败保留，修复合并后仍须完整 Web 重验。
 
+## 2026-11-14 iOS 原生路径补充
+
+Toast 复核通过 [PR #110](https://github.com/Xiejiayun/artoo/pull/110) 普通合并为 `182c969222b80c80064432a1bbbee947ddd822bb`（实现 `09feecb`），拉取 main 后创建本项分支。合并后的完整 Web 尚待重跑。
+
+在该干净 main 上按原失败 fullName 精确选择九项、保留 maxWorkers=2 和原期限复核，五项通过、四项失败，另 260 项因聚焦未运行；不是完整套件通过。原始字节流证据 `.git/opt-failed-nine-recheck-20261114-0926/` 显示 H7/H8 各在 30 秒测试期限、storage 在 60 秒测试期限、入口在 30 秒 readiness 期限失败。H8 的 prepare-publication 观测约 32.1 秒；尚未确立根因，未放宽期限或修改生产逻辑。原完整九失败保留。
+
+旧 main 的 CI run 43524088497 被后续 main 推送按现有 `cancel-in-progress` 策略自动取消。下载工件后，独立按原始 xcresult tests/summary、相同源码指纹和完成后的父报告核验 core 7、assistant 1、mentions 1、correction 1，共十项通过，资源/临时目录/原生进程组清理均完成且无强制关闭；证据 `.git/opt-final-remote-43524088497/ios-cancelled-evidence/verified-ios-partial.json`。retention 未完成，publisher iPhone/iPad 未执行，整个 workflow 仍为 cancelled；不称完整 iOS 通过。
+
+本项扩展现有两个 core XCTest，不增删原十一项原生用例或改变期限：任务真实执行并人工验收后，从 Team 按 Agent ID 打开精确 Run，核对原 ContextPack 请求、验收标准和实际响应事件，再确认任务、Run、制品和摘要保持；取消用例从 Tasks→Goals 进入，经 Goal→Publication 核验独立静态/本地应用未发布状态，再保留原 Keep/确认取消全部断言，并经 More→Release 复核同一 Goal 及读取未写入审计。fixture 已有 executor Agent ID，现传入原生环境；同名实例仍不作为历史身份依据。三种新增截图加入显式报告白名单，相关报告模块按仓库规则格式化。
+
+Windows 前置：22 请求/58 端点静态契约、原生套件与截图报告 29 项 Node 测试、两文件 staged 质量通过；三份变更 Swift 在系统 Node 26.13.0 下语法解析退出 0。Node 24.22.1 的旧 WASM parser 虽输出三文件无语法诊断，但随后进程 OOM 退出，记为失败；全仓解析还命中已记录的旧语法诊断，不以它宣称通过。证据 `.git/opt-f3-native-paths-{api,contract,swift,swift-system}-20261114/`。这些都不替代 Swift 编译、XCTest 或新路径原生实测；新增 UI、发布停止/健康/断网交互及最终完整 iOS 验收仍待 macOS 门禁。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。

@@ -51,6 +51,7 @@ private struct NativePublicationSection: View {
                 let publication = model.publication
                 if publication == .null {
                     Text("No publication recorded. Verified delivery and a configured publishing destination are required.")
+                        .accessibilityIdentifier(kind == .application ? "release.application.empty" : "release.static.empty")
                 } else {
                     let receipt = publication["receipt"]
                     LabeledContent("Recorded status", value: publication["status"].text)
