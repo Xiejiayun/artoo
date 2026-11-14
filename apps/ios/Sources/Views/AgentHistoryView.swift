@@ -24,6 +24,7 @@ struct AgentHistoryView: View {
             }
             historyControls(model)
         }.navigationTitle("Agent history").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { historyRefresh(model) } }
             .task { if model.document == nil { await model.refresh() } }.refreshable { await model.refresh() }
     }
 }
@@ -61,6 +62,7 @@ private struct AgentExecutionHistoryView: View {
             }
             historyControls(model)
         }.navigationTitle("Execution history").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { historyRefresh(model) } }
             .task { if model.document == nil { await model.refresh() } }.refreshable { await model.refresh() }
     }
 }
@@ -101,6 +103,12 @@ private struct HistoryEventRow: View {
     if model.loading { ProgressView("Loading history…") }
     if let error = model.error { Text(error).foregroundStyle(.red) }
     if model.hasMore { Button("Load older history") { Task { await model.loadEarlier() } }.disabled(model.loading) }
-    Button("Refresh latest history") { Task { await model.refresh() } }.disabled(model.loading)
     Text("Refreshing returns to the newest page; older history remains available through Load older history.").font(.footnote).foregroundStyle(.secondary)
+}
+
+// Keep refresh reachable when large type or an expanded response fills many screens.
+@MainActor @ViewBuilder private func historyRefresh(_ model: AgentHistoryViewModel) -> some View {
+    Button { Task { await model.refresh() } } label: {
+        Label("Refresh latest history", systemImage: "arrow.clockwise")
+    }.disabled(model.loading)
 }

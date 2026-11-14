@@ -129,6 +129,8 @@ const nativeCoreImages = [
   "Native task accepted after artifact review",
   "Native agent history original request for the completed run",
   "Native agent history real executor response",
+  "Native agent history large text original request",
+  "Native agent history large text response after refresh",
   "Native unpublished goal static and application evidence",
   "Native member device permissions without pairing inputs",
   "Native member restored after fresh pairing without pairing inputs",
