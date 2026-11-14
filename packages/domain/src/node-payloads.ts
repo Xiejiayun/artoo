@@ -83,7 +83,11 @@ export type RunOutputPayload = z.infer<typeof RunOutputPayloadSchema>;
 export const RunAnswerPayloadSchema = z.object({ text: z.string().min(1).max(200_000) });
 export type RunAnswerPayload = z.infer<typeof RunAnswerPayloadSchema>;
 
-/** Provider-reported measurements only. Omitted fields are unknown, not zero. */
+/**
+ * Legacy runtime usage snapshot; omitted fields are unknown, not zero.
+ * Cost may be a client estimate or include earlier provider-session activity.
+ * This payload declares neither authoritative billing nor incremental Run cost.
+ */
 export const RunUsagePayloadSchema = z.object({
   input_tokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   output_tokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),

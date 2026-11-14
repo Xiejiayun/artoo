@@ -4,13 +4,19 @@
 
 ## 当前证据
 
-- `apps/artood/src/structured-output.ts`：Codex `turn.completed` 提取 Token，未上报美元费用；Claude `result.total_cost_usd` 可以展示，但通常到进程结束才有最终费用，错误/中断可能缺报。plain 自定义适配器也能输出 `run.usage`。
+- `apps/artood/src/structured-output.ts`：Codex `turn.completed` 提取 Token，未上报美元费用；Claude `result.total_cost_usd` 可以作为旧观测展示，但属于客户端价格估算，且恢复会话时包含此前会话活动，不能当作当前 Run 增量账单。错误/中断可能缺报。plain 自定义适配器也能输出 `run.usage`。
 - `packages/domain/src/node-payloads.ts`：旧 RunUsagePayload 字段均可选，没有完整性、修订、计量范围或价格来源声明。字段缺失代表 unknown，不代表 0。
 - `apps/server/src/services/run-service.ts`：旧 Usage 是按 Run upsert 的当前快照，部分字段缺失会保留已有数据库值；事件是快照，不是可累加账单。协议 receipt 去重只确认传输身份，不能证明供应商账单准确或完整。
-- `goals.elapsed_cost_usd` 为 nullable real，目前不能作为精确金额账本；已有 UI 费用是 Provider 报告的观测，不是预算权威。
+- `goals.elapsed_cost_usd` 为 nullable real，目前不能作为精确金额账本；已有 UI 费用是 Runtime 报告的观测，金额准确性和 Goal 汇总未获验证。
 - Goal 可能触发规划/评审/研究/导入/验证/修复/发布等专用执行路径。只聚合 tasks→runs 会漏掉不走普通 Run Usage 的费用，不能宣称覆盖整个 Goal。
 
 因此，仅把 `max_cost_usd` 加入 PAUSE_BUDGETS、累加旧 usage 或允许 Claude 类型均不成立。当前未得到覆盖全部相关执行的已验证计量 Profile/Provider 集成，不能以模型回答、Token 估算、fixture 价格或 Runtime 名称替代。
+
+### 2026-11-14 公开来源复核
+
+Claude 的[官方成本跟踪说明](https://code.claude.com/docs/en/agent-sdk/cost-tracking)明确说明 `total_cost_usd` / `costUSD` 是依据客户端内置或配置价格计算的估算，不能作为权威账单或财务决策依据。恢复会话的 result 包含此前会话支出；流式结果是累计快照。result `usage` 的 Token 范围不含子 Agent，而 `total_cost_usd` / `modelUsage` 包含它们；不能从这些字段假定一致的计费范围。进程/连接错误可能没有 result，崩溃时结果的费用也可能归零。[Claude Code 成本说明](https://code.claude.com/docs/en/costs)还区分订阅包含用量与美元 API 账单。公开单价、CLI max-budget 参数和 OTLP 观测均不能补出供应商结算身份与完整性。
+
+本次只读取公开文档，没有调用 Provider、读取凭据或改动账户。Web/iOS 将旧值标为 Runtime reported cost，并明确估算、会话范围及未验证账单/Goal 汇总；保留数字、币种、缺失、零值和快照行为，不给历史数据新增 wire 语义。F2 的生产计量、事务账本、全部阶段准入和成本预算 UI 仍未实现。
 
 ## 选定的 v1 语义
 

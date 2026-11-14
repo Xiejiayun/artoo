@@ -1,10 +1,16 @@
-import { RunAnswerPayloadSchema, RunUsagePayloadSchema, type RunActivityPayload, type RunUsagePayload } from "@artoo/domain";
+import {
+  RunAnswerPayloadSchema,
+  RunUsagePayloadSchema,
+  type RunActivityPayload,
+  type RunUsagePayload,
+} from "@artoo/domain";
 import type { RunEvent } from "@artoo/protocol";
 import { createStructuredActivity } from "./structured-activity.js";
 
 export type ProcessOutputFormat = "plain" | "codex-json" | "claude-json";
 type RecordValue = Record<string, unknown>;
-const record = (value: unknown): RecordValue | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : undefined;
+const record = (value: unknown): RecordValue | undefined =>
+  value !== null && typeof value === "object" && !Array.isArray(value) ? (value as RecordValue) : undefined;
 
 /**
  * JSONL contracts: https://developers.openai.com/codex/noninteractive/ and
@@ -25,12 +31,16 @@ export function createStructuredOutput(format: ProcessOutputFormat, sanitize?: (
       const number = value?.[key];
       return typeof number === "number" && Number.isSafeInteger(number) && number >= 0 ? number : undefined;
     };
-    const input = count("input_tokens"), output = count("output_tokens");
+    const input = count("input_tokens"),
+      output = count("output_tokens");
     const cached = count(format === "claude-json" ? "cache_read_input_tokens" : "cached_input_tokens");
     if (input !== undefined) fields.input_tokens = input;
     if (output !== undefined) fields.output_tokens = output;
     if (cached !== undefined) fields.cached_input_tokens = cached;
-    if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) { fields.cost_usd = cost; fields.currency = "USD"; }
+    if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) {
+      fields.cost_usd = cost;
+      fields.currency = "USD";
+    }
     if (sessionId !== undefined) fields.provider_session_id = sessionId;
     if (Object.keys(fields).length > 0) usage = fields;
   }
@@ -38,36 +48,54 @@ export function createStructuredOutput(format: ProcessOutputFormat, sanitize?: (
   return {
     consume(line: string): RunActivityPayload | undefined {
       let parsed: unknown;
-      try { parsed = JSON.parse(line); } catch { return; }
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        return;
+      }
       const event = record(parsed);
       if (!event) return;
       const observed = activity(event);
       if (format === "codex-json") {
-        if (event.type === "thread.started" && typeof event.thread_id === "string" && event.thread_id.length <= 500) sessionId = event.thread_id;
+        if (event.type === "thread.started" && typeof event.thread_id === "string" && event.thread_id.length <= 500)
+          sessionId = event.thread_id;
         const item = record(event.item);
         if (event.type === "item.completed" && item?.type === "agent_message") {
           const valid = RunAnswerPayloadSchema.safeParse({ text: item.text });
           if (valid.success) candidate = valid.data.text;
-          else if (typeof item.text === "string" && item.text.length > 200_000) failure = "assistant answer exceeds 200000 characters";
+          else if (typeof item.text === "string" && item.text.length > 200_000)
+            failure = "assistant answer exceeds 200000 characters";
         }
-        if (event.type === "turn.completed") { answer = candidate; saveUsage(record(event.usage)); }
+        if (event.type === "turn.completed") {
+          answer = candidate;
+          saveUsage(record(event.usage));
+        }
         if (event.type === "turn.failed" || event.type === "error") {
           const error = record(event.error);
-          failure = typeof error?.message === "string" ? error.message : typeof event.message === "string" ? event.message : "provider reported a failed turn";
+          failure =
+            typeof error?.message === "string"
+              ? error.message
+              : typeof event.message === "string"
+                ? event.message
+                : "provider reported a failed turn";
           answer = undefined;
         }
       } else if (format === "claude-json") {
         if (typeof event.session_id === "string" && event.session_id.length <= 500) sessionId = event.session_id;
         if (event.type !== "result") return observed;
+        // Claude's result cost is a client estimate, cumulative over the session
+        // (including earlier resumed activity), not an incremental Run bill.
         saveUsage(record(event.usage), event.total_cost_usd);
         if (event.is_error === true || (typeof event.subtype === "string" && event.subtype !== "success")) {
-          failure = typeof event.result === "string" && event.result !== "" ? event.result : "provider reported a failed turn";
+          failure =
+            typeof event.result === "string" && event.result !== "" ? event.result : "provider reported a failed turn";
           answer = undefined;
           return observed;
         }
         const valid = RunAnswerPayloadSchema.safeParse({ text: event.result });
         if (valid.success) answer = valid.data.text;
-        else if (typeof event.result === "string" && event.result.length > 200_000) failure = "assistant answer exceeds 200000 characters";
+        else if (typeof event.result === "string" && event.result.length > 200_000)
+          failure = "assistant answer exceeds 200000 characters";
       } else {
         // Deterministic/custom adapters may deliberately emit protocol frames.
         // Plain logs or provider-shaped JSON are never guessed to be answers.
@@ -84,9 +112,12 @@ export function createStructuredOutput(format: ProcessOutputFormat, sanitize?: (
     finish(success: boolean): RunEvent[] {
       const events: RunEvent[] = [];
       if (usage !== undefined) events.push({ type: "run.usage", payload: usage });
-      if (success && failure === undefined && answer !== undefined) events.push({ type: "run.answer", payload: { text: answer } });
+      if (success && failure === undefined && answer !== undefined)
+        events.push({ type: "run.answer", payload: { text: answer } });
       return events;
     },
-    failureReason(): string | undefined { return failure; },
+    failureReason(): string | undefined {
+      return failure;
+    },
   };
 }

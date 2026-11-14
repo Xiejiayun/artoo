@@ -287,6 +287,16 @@ PR #111 的 [原生 CI](https://github.com/Xiejiayun/artoo/actions/runs/43542284
 
 本机两份 Swift 语法解析退出 0（`.git/opt-f3-loopback-swift-final.log`），diff whitespace 与 staged 质量入口退出 0；本项无适用 Biome 文件，实际检查数为 0（`.git/opt-f3-loopback-quality.log`）。没有用其他语言镜像地址解析来替代原生 XCTest。
 
+## 2026-11-14 回环链接验证与费用来源说明
+
+[PR #114](https://github.com/Xiejiayun/artoo/pull/114) 普通合并为 `a73e7c0ec0ea13d41e58308efe49eb543a4b7bb2`（实现 `2fe95d2`），随后 fetch、切换 main、pull --ff-only，再创建本项分支。合并前 [run 43555955145](https://github.com/Xiejiayun/artoo/actions/runs/43555955145) 已实际完成 Xcode 26.3 编译和全部 200 项原生单元测试；新增回环地址用例通过，04:27:22 UTC unit suite 结束，明确 `TEST EXECUTE SUCCEEDED`。共享 38 项（Web 55/认证 6）及 Mac 安装 18/恢复 8 项独立工件核验通过，进程关闭和清理完成；证据 `.git/opt-pr114-43555955145/`。当时完整 iOS UI/publisher 和两个 Vitest 分片尚未结束，Windows 安装 UI 条件跳过；不称整个 workflow 或最终验收通过。
+
+F2 公开来源进一步确认 Claude `total_cost_usd` 是客户端估算、恢复会话时可包含此前活动；旧 Usage 未声明准确账单、增量范围或全部 Goal 阶段覆盖。现只修正 Web/iOS 的 reported cost、来源和范围说明，保留旧数字、缺失/零值和 wire 行为，并在[计量决议](cost-metering-contract.md)记录官方来源。费用实际计量、事务账本、受保护 Profile、全部阶段准入和预算 UI 仍未实现，`max_cost_usd` 继续拒绝；没有新的 Provider 调用或账户操作。
+
+Node 24 根 typecheck、Web build、4 文件 28 项费用展示/适配器/预算/执行拒绝回归及 4 文件 staged 质量全部通过，实际进程 close 均为 0/null，源码保持（`.git/opt-usage-2026-11-14T04-35-42-274Z/`）。适配器与领域契约的完整可执行 AST 和 main 一致。按 C4 格式化三个既有文件；首轮质量三项格式错误保留。首次文本式发射 JS 比对因格式/尾逗号差异而中止，尚未执行任何产品测试；随后完整 AST 比对通过。Swift 解析保留基线已有的一个诊断，完整源文字复原比对证明仅上述提示/标签变化，无其他代码变化（`.git/opt-usage-swift-preservation.log`）；不能称本项 Swift 编译或原生 UI 通过。
+
+PR #113 的完整原生 run 此后结束为失败：原始 xcresult 中 core 7、assistant 1、mentions 1、correction 1 共十项通过，retention 1 项失败，无跳过。首次 `/observations` 返回 HTTP 500，内部保留 `TypeError: fetch failed`，未保存 cause，尚不能断言 DNS、超时或共同慢因。29 个门禁中该原生聚合失败，其余通过；publisher 未执行。原始导出、65 张 PNG、精确用例身份、记录的 post-XcodeGen 源码稳定性及全部父/原生进程关闭与非强制清理独立复核，证据 `.git/opt-pr113-43548201742/verified-ios-completed.json`。原两项 Vitest 首轮失败仍保留；已在 run 结束后只重跑失败分片，结果尚待完成。不删除断言、不增加时限、不将针对性成功写成完整验收。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
