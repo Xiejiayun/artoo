@@ -235,6 +235,51 @@ final class SharedServerChatUITests: XCTestCase {
                           "artifact_checksum": checksum, "downloaded_bytes": String(bytes.count),
                           "final_status": accepted.task.status, "runtime_validation": "deterministic subprocess; no live model inference"],
                          name: "Real native execution approval and artifact acceptance")
+
+        // Inspect the run just executed by this case, not a seeded history row
+        // or the other fixture instance with the same display name.
+        let history: ExecutionHistory = try await peerGet("api/v1/agents/\(fixture.executorAgentId)/history/\(run.id)")
+        XCTAssertEqual(history.agentId, fixture.executorAgentId)
+        XCTAssertEqual(history.execution.projectId, fixture.projectId)
+        XCTAssertEqual(history.execution.run.id, run.id)
+        XCTAssertEqual(history.execution.run.status, run.status)
+        XCTAssertEqual(history.execution.run.agentInstanceId, fixture.executorInstanceId)
+        let original = try XCTUnwrap(history.request)
+        XCTAssertEqual(original.id, taskId)
+        XCTAssertEqual(original.title, fixture.executionTaskTitle)
+        XCTAssertEqual(original.acceptanceCriteria, created.acceptanceCriteria)
+        let event = try XCTUnwrap(history.events.first { $0.responseText != nil })
+        let response = try XCTUnwrap(event.responseText)
+        try require(!response.isEmpty, "The real executor must have recorded its final response")
+
+        app.tabBars.buttons["Team"].tap()
+        let openHistory = app.buttons["agent.history.open.\(fixture.executorAgentId)"]
+        try reveal(openHistory); openHistory.tap()
+        try require(app.navigationBars["Agent history"].waitForExistence(timeout: 15), "The selected agent must open its execution history")
+        let execution = app.buttons["agent.history.run.\(run.id)"]
+        try require(execution.waitForExistence(timeout: 15), "Agent history must include the newly completed run")
+        XCTAssertTrue(execution.label.contains(fixture.executionTaskTitle))
+        try reveal(execution); execution.tap()
+        try require(app.navigationBars["Execution history"].waitForExistence(timeout: 15), "The exact run must open its original request and activity")
+        let requestTitle = app.staticTexts["agent.history.request.title"]
+        try require(requestTitle.waitForExistence(timeout: 15), "Execution history must load the original context-pack request")
+        try reveal(requestTitle)
+        XCTAssertEqual(requestTitle.label, original.title)
+        for criterion in original.acceptanceCriteria { try reveal(app.staticTexts[criterion]) }
+        try reveal(app.staticTexts[run.id], searchTowardTop: true)
+        attachScreenshot("Native agent history original request for the completed run")
+        let activity = app.buttons["agent.history.event.\(event.id)"]
+        try reveal(activity); activity.tap()
+        try reveal(app.staticTexts[response])
+        attachScreenshot("Native agent history real executor response")
+        let afterHistory: ExecutionTaskSnapshot = try await peerGet("api/v1/tasks/\(taskId)")
+        XCTAssertEqual(afterHistory.task.status, "done")
+        XCTAssertEqual(afterHistory.runs.map(\.id), [run.id])
+        XCTAssertEqual(afterHistory.artifacts.map(\.id), [artifact.id])
+        XCTAssertEqual(afterHistory.artifacts.first?.checksum, checksum)
+        try attachRecord(["agent_id": history.agentId, "run_id": run.id, "task_id": original.id,
+                          "response_event_id": event.id, "artifact_checksum_after_read": checksum],
+                         name: "Real native agent execution history read boundary")
     }
 
     @MainActor
@@ -300,8 +345,8 @@ final class SharedServerChatUITests: XCTestCase {
         XCTAssertEqual(initial.goal.id, fixture.cancellationGoalId)
         XCTAssertEqual(initial.goal.title, fixture.cancellationGoalTitle)
         try require(initial.goal.status == "draft" && initial.tasks.isEmpty, "Cancellation must start with an isolated draft goal without child work")
-        app.tabBars.buttons["More"].tap()
-        let goals = app.buttons["Goals"]
+        app.tabBars.buttons["Tasks"].tap()
+        let goals = app.buttons["tasks.goals.open"]
         try reveal(goals); goals.tap()
         let goal = app.buttons["workspace.goals.\(fixture.cancellationGoalId)"]
         try require(goal.waitForExistence(timeout: 15), "The independent cancellation goal must appear in Goals")
@@ -310,6 +355,12 @@ final class SharedServerChatUITests: XCTestCase {
         let visibleStatus = app.descendants(matching: .any).matching(identifier: "goal.status.\(fixture.cancellationGoalId)").firstMatch
         try require(visibleStatus.waitForExistence(timeout: 15), "Goal detail must expose its current server status")
         try waitForGoalStatus(fixture.cancellationGoalId, initial.goal.status, message: "The independent goal must display its initial server status")
+        let publication = app.buttons["goal.release.\(fixture.cancellationGoalId)"]
+        try reveal(publication); publication.tap()
+        try await assertUnpublishedGoal(fixture.cancellationGoalId)
+        try require(app.navigationBars["Publication"].buttons.firstMatch.exists, "Publication must retain navigation back to its goal")
+        app.navigationBars["Publication"].buttons.firstMatch.tap()
+        try require(visibleStatus.waitForExistence(timeout: 15), "Returning from Publication must restore the same goal")
         let request = app.buttons["goal.cancel.request.\(fixture.cancellationGoalId)"]
         try reveal(request); request.tap()
         let keep = try cancellationDialogButton("dismiss", label: "Keep goal")
@@ -348,6 +399,37 @@ final class SharedServerChatUITests: XCTestCase {
                           "events_before_confirmation": String(kept.events.count),
                           "cancellation_event_id": cancelled.events.first { $0.type == "goal.cancelled" }?.id ?? ""],
                          name: "Real goal cancellation confirmation boundary")
+        app.tabBars.buttons["More"].tap()
+        let releases = app.buttons["Release"]
+        try reveal(releases); releases.tap()
+        let releaseGoal = app.buttons["release.goal.\(fixture.cancellationGoalId)"]
+        try require(releaseGoal.waitForExistence(timeout: 15), "More Release must list the same cancelled goal")
+        try reveal(releaseGoal); releaseGoal.tap()
+        try await assertUnpublishedGoal(fixture.cancellationGoalId)
+        let afterPublication = try await peerGoalBundle(goalId: fixture.cancellationGoalId)
+        XCTAssertEqual(afterPublication.goal.status, cancelled.goal.status)
+        XCTAssertEqual(afterPublication.goal.updatedAt, cancelled.goal.updatedAt)
+        XCTAssertEqual(afterPublication.events.map(\.id), cancelled.events.map(\.id), "Reading publication must not write goal audit events")
+    }
+
+    @MainActor
+    private func assertUnpublishedGoal(_ goalId: String) async throws {
+        let site: StaticPublicationEnvelope = try await peerGet("api/v1/goals/\(goalId)/release")
+        let application: ApplicationPublicationEnvelope = try await peerGet("api/v1/goals/\(goalId)/application-publication")
+        XCTAssertNil(site.release)
+        XCTAssertNil(application.publication)
+        try require(app.navigationBars["Publication"].waitForExistence(timeout: 15), "Both release entrances must open Publication")
+        let empty = "No publication recorded. Verified delivery and a configured publishing destination are required."
+        let staticState = app.staticTexts["release.static.empty"]
+        try require(staticState.waitForExistence(timeout: 15), "The static publication query must finish before inspecting the independent kinds")
+        for identifier in ["release.static.empty", "release.application.empty"] {
+            let state = app.staticTexts[identifier]
+            try reveal(state)
+            XCTAssertEqual(state.label, empty)
+            XCTAssertFalse(app.buttons["release.application.stop"].exists)
+            XCTAssertFalse(app.links["Open published site"].exists)
+        }
+        attachScreenshot("Native unpublished goal static and application evidence")
     }
 
     @MainActor
@@ -1762,6 +1844,15 @@ private struct ServerApproval: Decodable {
     let id: String; let taskId: String; let summary: String; let status: String; let resolvedBy: String?
 }
 private struct ExecutionTaskPage: Decodable { let tasks: [ExecutionTask] }
+private struct ExecutionHistory: Decodable {
+    let agentId: String; let execution: HistoryExecution; let request: HistoryRequest?; let events: [HistoryEvent]
+}
+private struct HistoryExecution: Decodable { let run: ExecutionRun; let projectId: String }
+private struct HistoryRequest: Decodable { let id: String; let title: String; let acceptanceCriteria: [String] }
+private struct HistoryEvent: Decodable { let id: String; let responseText: String? }
+private struct StaticPublicationEnvelope: Decodable { let release: EmptyPublication? }
+private struct ApplicationPublicationEnvelope: Decodable { let publication: EmptyPublication? }
+private struct EmptyPublication: Decodable {}
 private struct ExecutionTaskSnapshot: Decodable {
     let task: ExecutionTask; let runs: [ExecutionRun]; let approvals: [ExecutionApproval]; let artifacts: [ExecutionArtifact]
 }
@@ -1829,6 +1920,7 @@ private struct Fixture {
     let cancellationGoalId: String
     let cancellationGoalTitle: String
     let executorInstanceId: String
+    let executorAgentId: String
     let executorCollisionInstanceId: String
     let executorName: String
     let executorRuntime: String
@@ -1888,6 +1980,7 @@ private struct Fixture {
         cancellationGoalId = try require("ARTOO_UI_CANCELLATION_GOAL_ID")
         cancellationGoalTitle = try require("ARTOO_UI_CANCELLATION_GOAL_TITLE")
         executorInstanceId = try require("ARTOO_UI_EXECUTOR_INSTANCE_ID")
+        executorAgentId = try require("ARTOO_UI_EXECUTOR_AGENT_ID")
         executorCollisionInstanceId = try require("ARTOO_UI_EXECUTOR_COLLISION_INSTANCE_ID")
         executorName = try require("ARTOO_UI_EXECUTOR_NAME")
         executorRuntime = try require("ARTOO_UI_EXECUTOR_RUNTIME")
