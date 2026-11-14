@@ -138,11 +138,13 @@ test("project management, device pairing/revocation and reviewed skill installat
   ).toHaveAttribute("aria-pressed", "true");
   const edit = page.getByRole("form", { name: "Edit project" });
   await expect(edit.getByLabel("Project name")).toHaveValue(name);
+  const notifications = page.getByRole("region", { name: "Notifications", exact: true });
+  // Creation and editing emit the same message; observe this save independently
+  // after the creation feedback has finished its normal dismissal lifecycle.
+  await expect(notifications).toHaveCount(0);
   await edit.getByLabel("Project name").fill(`${name} renamed`);
   await edit.getByRole("button", { name: "Save project" }).click();
-  await expect(page.getByRole("region", { name: "Notifications", exact: true }).getByRole("status")).toContainText(
-    "Project saved",
-  );
+  await expect(notifications.getByRole("status")).toContainText("Project saved");
   await selectProject(page, "tasks", `${name} renamed`);
   await expect(page.getByRole("heading", { name: `${name} renamed`, exact: true })).toBeVisible();
   await createTask(page, unique("Isolated project task"));
