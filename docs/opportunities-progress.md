@@ -9,6 +9,7 @@
 | C5 | 已建立索引并验证 | 新增 docs/INDEX.md 与 scripts/README.md，覆盖 docs 根目录全部 90 篇文档，区分现行指南、运维发布、客户端与版本化/历史记录；156 个本地链接、14 个命令引用及 preview --list 检查通过。保留现有路径和 CI/npm 调用。 |
 | F5 | 已实现并验证 | 显式协商的 Ed25519 v1 Task/Goal 导出、受保护启动配置、公钥环轮换/撤销与离线验签；保留默认 v1alpha1。根 typecheck、server/Web build、125 项聚焦回归及资源夹具补强后的 HTTP/CLI 4 项通过。[格式与运维](audit-signing.md)。 |
 | X5 | 已实现并验证 | 全局命令面板、单项目实体检索、键盘与项目/路由联动，复用确认表单；根 typecheck、Web build、6 文件 64 项及真实 Chromium 连续两轮 6 项通过。[范围](command-palette.md)。 |
+| F2 | 操作者已确认延期 | 2026-11-14 操作者选择保留精确计量要求、暂不启用成本预算。继续拒绝 max_cost_usd；精确生产计量、账本、全部阶段准入和预算 UI 尚未实现。既有 Runtime 观测仍按原语义展示，启用条件见 [计量决议](cost-metering-contract.md)。 |
 | F1 | 已有能力，无需重复 | 方案已更正 DAG 证据门控结论，保留现有行为。 |
 | P4 | 已实现并验证 | 集中查询键，补齐 Goal 相关事件失效与项目订阅；自动化和静态发布轮询在线退避。应用发布保留 5 秒轮询及本地健康时效判断。根 typecheck、Web build 通过；完整 Web 单元/组件回归 60 文件、574 项通过；新增实时事件/退避回归所在两文件 23 项通过。 |
 | X2 | 已实现并验证 | 按当前项目任务 ID 关联组织级审批，徽标可筛选并打开真实任务（包含 ready 执行审批）；合并重复缓存记录，支持显示全部及审批清空状态。根 typecheck、Web build 通过；LeftRail/TaskList/WorkspaceLayout/ApprovalInbox 4 文件、15 项通过。 |
@@ -387,7 +388,7 @@ P5 通过 [PR #67](https://github.com/Xiejiayun/artoo/pull/67) 合并为 `53b1d5
 
 恢复预检通过 [PR #68](https://github.com/Xiejiayun/artoo/pull/68) 合并为 `a455704`（实现 `03546d9`）。
 
-E1 安装移除合并 → 本机原生验证发现的夹具复核 → 最终统一门禁。C1 本轮选定的职责拆分与其余候选边界评估如上。F2 保留待实现/验收；E4 的最终版本验收与授权并行跟进。
+E1 安装移除合并 → 本机原生验证发现的夹具复核 → 最终统一门禁。C1 本轮选定的职责拆分与其余候选边界评估如上。F2 按操作者决定保留精确计量要求，暂不启用成本预算；E4 的最终版本验收与授权继续单独跟进。
 
 所有条目仍须以最新源码复核适用性。E1 已取得安装移除前后的实际空缓存证据；iOS 原生验收继续跟进 macOS job；E4 产品发布需具备已授权的环境、凭据、受保护 Profile、健康标准和恢复方案。当前未执行新的产品发布，首轮最终统一门禁已执行但失败，后续修复后须重新验证，F2 与 E4 缺口保持。
 
@@ -400,3 +401,15 @@ F2 当前行为回归：`structured-output`、领域预算、Goal 成本拒绝�
 独立核验原始 History 附件：同一 Run、响应事件和已验收制品相互绑定；Accessibility XXXL 标题高度由 72.33 增至 341.33 点，新认证刷新完成计数由 2 增至 3，原请求/响应保持。四个已启动 suite 的原生与父进程实际关闭，未强制清理。证据 `.git/opt-pr118-43582750602/verified-ios-correction-failure.json`；这是部分原生证据，不是完整产品或 Provider 验收。
 
 Correction 在创建任务前点击键盘 Done 后失败。原始层级在同一标识下同时包含 `Other` 包装节点和 `Button`，日志记录点击了 `Other`，criteria 仍有键盘焦点。现仅将该测试定位改为唯一、具名、启用且可点击的原生 Done Button；原键盘消失断言、10 秒期限和全部其他用例内容保持。源码逆向复原比对通过；Windows Tree-sitter 工具在输出语法结果后于 V8 退出阶段崩溃，该命令保留为失败，不计作通过。实际 Swift 编译和原生点击须由新 CI 证明；PR 暂不合并。
+
+## 2026-11-14 当前项合并与原生业务完整验收
+
+[PR #118](https://github.com/Xiejiayun/artoo/pull/118) 已普通合并为 `7cb7bfc7baafed7b8ce6dbfc6a9e0688b6c13dd3`（实现 `2eb6ca3`），随后重新 fetch 最新 main 创建本记录分支。没有使用 admin 或绕过保护。
+
+[不可变 run 43590263224](https://github.com/Xiejiayun/artoo/actions/runs/43590263224) 的原生业务门禁全部 30 项通过：200 项原生单元 XCTest、core 七项及 assistant/mentions/correction/retention 各一项，共十一项原有业务用例全部通过，零跳过。逐套核验 xcresult 用例身份、源码稳定、73 张完整内嵌 PNG、实际原生/父进程关闭和非强制清理。Accessibility XXXL 的请求标题高度 72.33→341.33 点，同一 Run 的新认证刷新完成次数 2→3，原请求/响应、事件及已验收制品绑定保持；两张大字体截图已检查。证据 `.git/opt-pr118-43590263224/verified-{ios-business,large-text}.json`。这补齐 F3/P7 的当前原生业务证据，不是 live Provider 验收。
+
+同一候选的完整 Vitest 为 611 文件、8,848 通过、90 条既有条件跳过，全部文件/用例身份和六份空浏览器缓存记录已核验。共享 39 项（Web 55/认证 6）、Windows process 88、Mac 安装 18/恢复 8、Azure 的 17 项契约、19 项真实 PostgreSQL 和 47 项存储/生命周期及镜像检查独立通过。详细原始结果和范围保留在同目录与 `.git/opt-pr118-43590263291-azure/`；Windows 安装 UI 仍按原条件跳过。
+
+整个 iOS job 仍为失败：业务门禁后的独立 publisher 用例在 iPhone 打开真实隐私政策网页、返回应用并记录 Support 点击后，Safari 未在原 20 秒内进入前台；iPad 未执行。原始录屏显示应用仍可见，但不足以确定 SwiftUI、系统事件或时序根因。发布者相关源码、配置、测试及 runner 与原 main 完全相同；原断言/期限未放宽。全部发布者子进程实际关闭、精确新建模拟器已删除；原报告、失败 xcresult 摘要及录屏摘要保留 `.git/opt-pr118-43590263224/verified-publisher-failure.json`。本次只合并已验证的历史优化，保留此独立失败，由合并后最新 main 统一门禁重新验证，不称整个 workflow 通过。
+
+F2 按操作者明确决定暂缓，保留精确计量要求，继续拒绝 `max_cost_usd`。E4 已找到本机安装并完成只读前置检查；配置位置回复“不清楚”不等于 AI 数据共享授权，真实 Provider 产品验收尚未执行。最终 main 四门禁、重新构建的 daemon bundle 和合并后 CI 结果尚待记录；此前本机完整失败与全部原生失败证据继续保留。
