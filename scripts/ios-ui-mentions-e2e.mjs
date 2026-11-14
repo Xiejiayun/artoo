@@ -323,6 +323,7 @@ async function main() {
               `${JSON.stringify(
                 {
                   stage: scenario?.publicationStage,
+                  peer: scenario?.publicationFailureDiagnostics,
                   ...detail(failure),
                   ...(failure instanceof Error && failure.cause !== undefined ? { cause: detail(failure.cause) } : {}),
                 },
