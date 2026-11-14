@@ -158,7 +158,11 @@ jobs:
       - name: Ensure XcodeGen
         run: command -v xcodegen >/dev/null || brew install xcodegen
       - run: npm run verify:ios
+        id: native_ios
       - name: Verify publisher links on iPhone and iPad
+        # This standalone gate owns its build/simulators and can still supply
+        # evidence after a business-suite failure. Earlier setup must succeed.
+        if: ${{ !cancelled() && (success() || steps.native_ios.outcome == 'failure') }}
         run: npm run verify:ios:release
       - uses: actions/upload-artifact@v4
         if: always()

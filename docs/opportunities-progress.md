@@ -423,3 +423,5 @@ iOS 的 200 项单元 XCTest、core 七项及 assistant 一项通过；mentions 
 mentions 的父报告将失败限定在独立发送者打开 Web 线程的阶段，但原夹具把内部异常转换成通用 HTTP 错误，未保存底层导航或定位异常，现有证据不足以判断根因。重新 fetch/pull 最新 main 后，仅让夹具的本地父进程保留原始 publication 异常，写入现有受限原始 JSON 工件；控制 HTTP 响应继续脱敏，共享 HTML 不包含该异常。沿用已有 `withWorkflowCleanup` 等待清理并保留工作流/清理双失败，避免触及旧 `finally` 抛错覆盖初始原因的问题。
 
 五文件 Node 回归 67 项、根 typecheck 和三文件 staged 质量通过，零跳过；完整 AST 比对确认所有原业务操作、断言、期限、准备与清理语句保持，仅增加原始诊断和已有清理包装。证据 `.git/opt-mentions-diagnostic-preservation.json`。这是诊断保存修正，不是已修复原 HTTP 500 的证据；新的原生验收和 publisher 复核仍须执行。
+
+publisher runner 自行构建并管理新建模拟器，因此 CI 现允许在前置准备成功、业务套件失败后继续执行该独立检查；准备失败或取消仍不运行。业务门禁保留原失败退出，没有 `continue-on-error`，所有原生用例、publisher 命令和期限保持。此调整用于取得独立的原始证据，不把两项结果合并为一次通过。
