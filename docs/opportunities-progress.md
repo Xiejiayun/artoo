@@ -359,6 +359,16 @@ iOS 的 200 项单元 XCTest 通过；原 core 前五项在日志中明确完成
 
 独立依赖下精确复核其余原 24 项失败为 21 通过/3 失败，181 项因聚焦未运行；两条 H7 长链仍超出原 30 秒测试期限，server-entry 仍超出原 30 秒 readiness 期限。实际 close 1/null、源码保持；原完整失败保留，聚焦通过不覆盖它。证据 `.git/opt-local-24-isolated-45a25e6-20261114/`。一次独立持久化启动诊断约 27.8 秒就绪，其中模块加载约 5.7 秒、数据库创建约 11.3 秒、迁移约 9.3 秒，实际关闭并删除临时目录；它只观察原方法、没有改变测试期限，也不足以证明完整测试超时的根因。证据 `.git/opt-startup-diagnostic-45a25e6-20261114/`。
 
+## 2026-11-14 大字体历史详情的原始失败与滚动修正
+
+PR #118 的 `b4625db` 在 [run 43574730806](https://github.com/Xiejiayun/artoo/actions/runs/43574730806) 完整结束为失败，尚未合并。完整 Vitest 为 611 文件、8,848 通过、90 条既有条件跳过、零失败；原覆盖核验确认文件零遗漏/重叠、用例身份与 main 一致，六份前后空浏览器缓存记录齐全。共享 39 个检查（Web 55、认证 6）、Windows process 88、Mac 安装 18/隔离恢复 8 均独立核验通过。相同提交的 Azure validation 还通过 17 项发布/备份/恢复契约、19 项真实 PostgreSQL 集成、47 项远程存储/服务生命周期检查和 Linux 镜像导入；这是一次性 CI 环境，未部署 Azure 产品或调用真实 Provider。
+
+iOS 单元 XCTest 200 项通过；原 core 七项为六通过、一失败。任务执行、人工验收、普通历史读取及大字体下同一 Run 的详情导航均到达。失败截图与可访问性层级显示详情停在五页列表的 0%：大字号执行信息填满首屏，原始请求标题尚未进入虚拟列表的可访问性树。测试在调用已有滚动助手前要求该标题存在，因此提前失败。原生及父进程组实际正常关闭，资源/临时目录清理完成，源码指纹稳定；四个后续 suite、publisher 和大字体增长/刷新测量均未通过或未运行。原始失败及机器核验保留于 `.git/opt-pr118-43574730806/verified-ios-failure.json`，不覆盖此前中断失败。
+
+重新 fetch 确认 main 仍为 `fe87841`，在同一未合并项内将大字体详情的首屏标题存在前置改为等待原 `Execution history` 导航，然后使用已有 `revealText` 查找下方标题。原文、字号增长、完整可见区域、真实认证读取/刷新、响应、制品及清理断言均保留；原滚动次数和全部期限未修改。实际新路径仍须 macOS XCTest 验证，不以 Windows 语法解析替代。
+
+本机单文件 Swift 语法解析、完整文本复原比对、根 typecheck 及四文件原生 suite/报告/读取观察器回归 76 项通过，零跳过；staged 质量入口正常退出，本次无适用 Biome 文件。证据 `.git/opt-pr118-virtualized-request-{swift-recheck,proof,typecheck,contracts,staged}-20261114.*`。这些前置结果不构成新的原生 UI 通过。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。

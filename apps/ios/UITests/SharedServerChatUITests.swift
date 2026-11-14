@@ -311,8 +311,11 @@ final class SharedServerChatUITests: XCTestCase {
         let run = app.buttons["agent.history.run.\(runId)"]
         try require(run.waitForExistence(timeout: 15), "Large-text history must retain the exact completed run")
         try reveal(run); run.tap()
+        try require(app.navigationBars["Execution history"].waitForExistence(timeout: 15),
+                    "Large-text history must open the exact run detail")
         let requestTitle = app.staticTexts["agent.history.request.title"]
-        try require(requestTitle.waitForExistence(timeout: 15), "Large-text detail must load the original request")
+        // At Accessibility XXXL, the execution metadata fills the first screen.
+        // List creates the original-request row only after scrolling it into view.
         try revealText(requestTitle)
         XCTAssertEqual(requestTitle.label, title)
         let frame = requestTitle.frame
