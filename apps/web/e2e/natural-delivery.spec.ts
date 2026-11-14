@@ -1,19 +1,29 @@
 import { expect, test } from "@playwright/test";
 
-test("a conversation becomes an editable goal, then keeps its context through work and delivery", async ({ page, request }) => {
+// Keep the failed reload's DOM and network evidence without retrying the case.
+test.use({ trace: "retain-on-failure" });
+
+test("a conversation becomes an editable goal, then keeps its context through work and delivery", async ({
+  page,
+  request,
+}) => {
   const marker = `natural-${Date.now()}`;
   const channelResponse = await request.post("/api/v1/channels", { data: { project_id: "proj_artoo", name: marker } });
   expect(channelResponse.ok()).toBe(true);
   const { channel } = await channelResponse.json();
   const objective = `Build a running journal ${marker}`;
-  const messageResponse = await request.post(`/api/v1/rooms/${channel.id}/messages`, { data: { kind: "text", body: objective } });
+  const messageResponse = await request.post(`/api/v1/rooms/${channel.id}/messages`, {
+    data: { kind: "text", body: objective },
+  });
   expect(messageResponse.ok()).toBe(true);
   const { message } = await messageResponse.json();
   await page.goto(`/channels?room=${channel.id}`);
   const row = page.getByRole("article", { name: "text message" }).filter({ hasText: objective });
   await row.hover();
   let submissions = 0;
-  page.on("request", item => { if (item.method() === "POST" && /\/goals(?:\/autonomous)?$/.test(new URL(item.url()).pathname)) submissions++; });
+  page.on("request", (item) => {
+    if (item.method() === "POST" && /\/goals(?:\/autonomous)?$/.test(new URL(item.url()).pathname)) submissions++;
+  });
   await row.getByRole("button", { name: "Plan this", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "New goal", exact: true });
   await expect(dialog.getByLabel("Objective", { exact: true })).toHaveValue(objective);
@@ -24,10 +34,19 @@ test("a conversation becomes an editable goal, then keeps its context through wo
   await expect(dialog).toHaveCount(0);
   expect(submissions).toBe(1);
   const goalId = new URL(page.url()).searchParams.get("goal")!;
-  const proposal = await request.post(`/api/v1/goals/${goalId}/plans`, { data: { rationale: "Implement, then validate persistence.", task_specs: [
-    { title: `Implement entries ${marker}`, acceptance_criteria: ["Entries persist"] },
-    { title: `Validate entries ${marker}`, acceptance_criteria: ["Reload preserves entries"], dependencies: [{ ref: "0", type: "blocks" }] },
-  ] } });
+  const proposal = await request.post(`/api/v1/goals/${goalId}/plans`, {
+    data: {
+      rationale: "Implement, then validate persistence.",
+      task_specs: [
+        { title: `Implement entries ${marker}`, acceptance_criteria: ["Entries persist"] },
+        {
+          title: `Validate entries ${marker}`,
+          acceptance_criteria: ["Reload preserves entries"],
+          dependencies: [{ ref: "0", type: "blocks" }],
+        },
+      ],
+    },
+  });
   expect(proposal.ok()).toBe(true);
   const { plan } = await proposal.json();
   const accepted = await request.post(`/api/v1/plans/${plan.id}/accept`);
@@ -55,5 +74,7 @@ test("a conversation becomes an editable goal, then keeps its context through wo
   await expect(page.getByRole("form", { name: "Send room message", exact: true })).toHaveCount(1);
   await expect(page.getByText("Replying in this thread", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Close thread", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Channel conversation", exact: true }).getByLabel("Message", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Channel conversation", exact: true }).getByLabel("Message", { exact: true }),
+  ).toBeVisible();
 });

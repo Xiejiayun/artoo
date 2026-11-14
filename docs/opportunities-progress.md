@@ -425,3 +425,19 @@ mentions 的父报告将失败限定在独立发送者打开 Web 线程的阶段
 五文件 Node 回归 67 项、根 typecheck 和三文件 staged 质量通过，零跳过；完整 AST 比对确认所有原业务操作、断言、期限、准备与清理语句保持，仅增加原始诊断和已有清理包装。证据 `.git/opt-mentions-diagnostic-preservation.json`。这是诊断保存修正，不是已修复原 HTTP 500 的证据；新的原生验收和 publisher 复核仍须执行。
 
 publisher runner 自行构建并管理新建模拟器，因此 CI 现允许在前置准备成功、业务套件失败后继续执行该独立检查；准备失败或取消仍不运行。业务门禁保留原失败退出，没有 `continue-on-error`，所有原生用例、publisher 命令和期限保持。此调整用于取得独立的原始证据，不把两项结果合并为一次通过。
+
+## 2026-11-15 串行复核与浏览器失败现场
+
+[PR #120](https://github.com/Xiejiayun/artoo/pull/120) 已普通合并为 `c3923ad`。其 [run 43610681452](https://github.com/Xiejiayun/artoo/actions/runs/43610681452) 保存了原始异常：独立发送者打开 Web 线程后，正文未在原 5 秒内出现。200 项原生单元、core 七项和 assistant 一项通过，mentions 失败，correction/retention 未执行；37 张原生 PNG、已启动进程关闭及清理已核验。独立 publisher 的 iPhone/iPad 两例均通过，共 21 项检查、8 张 PNG，正常退出并移除新建模拟器。该 PR 完成诊断和独立执行范围，原线程失败根因仍待定位。
+
+合并后 [main run 43618099700](https://github.com/Xiejiayun/artoo/actions/runs/43618099700) 的三份实际 Vitest 报告已独立汇总：611 文件、8,848 通过、90 项既有条件跳过，全部 8,938 用例身份、发现集合及六份空浏览器缓存记录相符。共享聚合 job 因 Web 失败而停在前置条件，自身 coverage 步骤未运行。Web 为 54 通过/1 失败：natural-delivery 接受计划并刷新后，原 15 秒内没有 Current goal progress，工件没有失败页面快照或 trace。Mac 18 项/恢复 8 项及 23 张完整 PNG、实际关闭和保留现场已核验；[Azure run 43618099625](https://github.com/Xiejiayun/artoo/actions/runs/43618099625) 的 17 项契约、19 项真实 PostgreSQL、47 项存储/生命周期及镜像 568 条迁移检查通过。此时 iOS 仍运行，整个 main 门禁未通过。证据 `.git/opt-main-c392-43618099700/` 与 `.git/opt-main-c392-43618099625-azure/`。
+
+本机保持 `8923e23` 冻结源码，七个原失败文件以单 worker、无文件并行及原断言/期限完整复核，实际退出 1：415 项中 408 通过/7 失败/零跳过。原先 23 个失败案例中 19 个本次通过、4 个仍失败，另有三个本次新增超时；六个 imported-design 案例为原 30 秒超时，另一个为服务入口 30 秒 readiness 失败。185 案例文件耗时约 55 分钟，全部执行及原始用例集合已核验；这些差异不能证明共同根因或替代原全量失败。证据 `.git/opt-final-main-focused-failures-2026-11-14T16-26-45-699Z/verified-focused.json`。
+
+上述进程退出后，重新核验先前新构建的 daemon bundle：178 文件、39 目录的完整树及实际打包模块导入通过。随后独立生产认证/PGlite 的 Windows 发送端在原 5 秒断言下通过两次真实 Web 发送，两张完整截图已检查，没有页面异常或失败请求；实际浏览器/场景/服务正常关闭。受控 API 客户端仅承担一次性接收设备配对，没有运行原生 iOS 接收 UI。原配置修正后的完整 Web 55 项已通过；另一次保留失败 trace 的完整 Web 55 项也通过并实际退出 0。两次 Web 固定在 `8923e23`，其 server/Web/packages 提交内容与 `c3923ad` 一致；CI 原失败继续保留。证据 `.git/opt-post-focused-diagnostics-2026-11-14T17-16-31-230Z/`、`.git/opt-mentions-sender-diagnostic-2026-11-14T17-28-39-864Z/`、`.git/opt-main-web-failure-trace-2026-11-14T17-29-25-036Z/`。
+
+重新 fetch 确认最新 main 为 `c3923ad` 后，本轮仅补充诊断：发送端保存最多 500 条请求状态及页面事件；publication 失败后以 1 秒有界读取保留最多 16,000 字符页面文本，过滤查询、fragment、URL 用户信息及已知会话值，不读取 Cookie、headers 或网络正文。异常仍原样拒绝，诊断采集失败单独记录；只有本地父进程将快照写入既有受限原始 JSON，控制 HTTP 和共享 HTML 保持原行为。natural-delivery 单文件启用失败 trace 保留。现有断言 AST、该完整业务用例 AST、原库存用例和超时配置核对一致。
+
+本轮 59 项 Node 回归、staged 质量、根 typecheck 和完整 workspace build 通过。新增观察器另经真实 Chromium 的正常发送和明确标记的 503 注入回归验证：正常子进程退出 0；注入案例保留原 5 秒定位失败、真实 503 和页面文本并退出 1，父 harness 核验后通过。两个场景均确认非强制浏览器关闭及场景/服务清理；受控负向案例没有被记为产品通过。证据 `.git/opt-mentions-peer-regression-2026-11-14T17-40-52-717Z/`、`.git/opt-mentions-peer-assertions-preserved-index.json`、`.git/opt-mentions-peer-{quality,typecheck,build}.log`。新增诊断仍需由后续 CI 提供 macOS 原始现场，当前不宣称原 Web/iOS 问题已修复。
+
+F2 保持操作者确认的延期和精确计量要求，继续拒绝 `max_cost_usd`。E4 的外部数据共享授权仍未答复，没有读取 Provider 凭据或调用真实外部模型。

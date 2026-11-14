@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { installMentionsReadFault } from "./mentions-read-fault.mjs";
 import { verifyMentionsResults } from "./mentions-results.mjs";
+import { observeMentionPeer } from "./mentions-peer-diagnostics.mjs";
 
 export const mentionsPeerImageNames = ["mentions-peer-first.png", "mentions-peer-second.png"];
 const frozen = (value) => {
@@ -68,6 +69,8 @@ export async function createMentionsScenario({
     fault,
     publication,
     publicationPromise,
+    peerDiagnostics,
+    publicationFailureDiagnostics,
     requestedDevice,
     closed = false;
   let publicationStage = "Waiting for recipient readiness";
@@ -104,6 +107,7 @@ export async function createMentionsScenario({
     } catch (error) {
       failure = error;
     }
+    peerDiagnostics?.dispose();
     try {
       await fault?.close();
     } catch (error) {
@@ -186,6 +190,7 @@ export async function createMentionsScenario({
       { name: "artoo_session", value: session.raw, url: origin, httpOnly: true, sameSite: "Lax" },
     ]);
     const peer = await peerContext.newPage();
+    peerDiagnostics = observeMentionPeer(peer, [session.raw]);
     peer.setDefaultTimeout(30_000);
     fault = installMentionsReadFault(server.app.server, { origin });
     const publish = ({ deviceId } = {}) => {
@@ -347,7 +352,16 @@ export async function createMentionsScenario({
         });
         publicationStage = "Publication complete; recipient UI owns every read action";
         return publication;
-      })();
+      })().catch(async (error) => {
+        // Capture at the original failure, before the native HTTP caller reacts
+        // or resource cleanup closes the page. Preserve the exact rejection.
+        try {
+          publicationFailureDiagnostics = await peerDiagnostics.snapshot();
+        } catch {
+          publicationFailureDiagnostics = { error: "Could not capture the failed sender page" };
+        }
+        throw error;
+      });
       return publicationPromise;
     };
     const observe = async () => ({
@@ -389,6 +403,9 @@ export async function createMentionsScenario({
       close,
       get publicationStage() {
         return publicationStage;
+      },
+      get publicationFailureDiagnostics() {
+        return publicationFailureDiagnostics;
       },
     };
   } catch (error) {
