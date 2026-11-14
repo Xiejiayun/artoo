@@ -261,6 +261,16 @@ Toast 复核通过 [PR #110](https://github.com/Xiejiayun/artoo/pull/110) 普通
 
 Windows 前置：22 请求/58 端点静态契约、原生套件与截图报告 29 项 Node 测试、两文件 staged 质量通过；三份变更 Swift 在系统 Node 26.13.0 下语法解析退出 0。Node 24.22.1 的旧 WASM parser 虽输出三文件无语法诊断，但随后进程 OOM 退出，记为失败；全仓解析还命中已记录的旧语法诊断，不以它宣称通过。证据 `.git/opt-f3-native-paths-{api,contract,swift,swift-system}-20261114/`。这些都不替代 Swift 编译、XCTest 或新路径原生实测；新增 UI、发布停止/健康/断网交互及最终完整 iOS 验收仍待 macOS 门禁。
 
+## 2026-11-14 连接状态 E2E 时序与完整 Web 复核
+
+iOS 新路径通过 [PR #111](https://github.com/Xiejiayun/artoo/pull/111) 合并为 `3ecb0e47e531b70cd31eb2475bfee0ec7d98c973`（实现 `19ab792`）。该干净 main 的 typecheck 与完整 workspace build 通过，随后完整 Web 为 54 通过/1 失败：连接状态测试在待发横幅已出现、浏览器 request 事件尚未到达时就检查 `taskId`，得到空字符串。原始完整失败保留在 `.git/opt-final-browser-2026-11-14T01-51-41-174Z/`。
+
+重新 fetch 并从同一最新 main 创建独立分支，只将原 Mark ready 点击与实际 `requestfailed` 事件同步等待。AST 比对确认其余可执行语句一致，原有服务器 backlog/ready、队列、重连、幂等键、视口和全部期限断言均保留。staged Biome、根 typecheck 通过；真实 Chromium 原场景连续三次通过（`.git/opt-connection-sync-recheck-20261114/`），随后完整 Web 55 项全部通过（`.git/opt-connection-sync-full-web-20261114/`）。两个驱动均观察到真实 close 0/null，运行前后提交与工作区状态不变；这轮候选是 `3ecb0e4` 加该单文件 patch，尚不称为合并后 main 的复核。
+
+同一 main 的 [run 43542991905](https://github.com/Xiejiayun/artoo/actions/runs/43542991905) 已完成 shared-checks 与 mac-desktop。下载原始报告并核对 job 的 run/HEAD、38 个共享检查、Web 55 项、认证 6 项、18 个 Mac 检查和 8 项隔离恢复演练；全部通过，恢复的浏览器实际正常关闭、节点/服务端关闭及临时目录清理均完成。机器核验汇总 `.git/opt-final-remote-43542991905/verified-shared-mac.json`。此时两个完整 Vitest lane 与 iOS 仍运行，Windows desktop 按既有条件跳过，不能宣称整个 workflow 通过；上述恢复是确定性本地子进程演练，不是 live Provider 或生产恢复证据。
+
+此前本机完整 Vitest 的九项失败继续保留。四项再次在 Node 26 原期限下复核仍失败；H8 单 worker CPU 采样和阶段计时显示其 prepare-publication 约 29.94 秒，整个测试触发 30 秒期限。该诊断不能证明所有失败的共同根因，也不是通过证据；没有改生产行为、断言或期限。证据 `.git/opt-four-system-node26-20261114/`、`.git/opt-h8-owned-worker-2026-11-14T01-59-55-025Z/`。F2 可靠计量/账本/成本准入仍未实现，E4 仍等待真实外部 Provider 共享授权及最终产品验收。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
