@@ -369,6 +369,16 @@ iOS 单元 XCTest 200 项通过；原 core 七项为六通过、一失败。任�
 
 本机单文件 Swift 语法解析、完整文本复原比对、根 typecheck 及四文件原生 suite/报告/读取观察器回归 76 项通过，零跳过；staged 质量入口正常退出，本次无适用 Biome 文件。证据 `.git/opt-pr118-virtualized-request-{swift-recheck,proof,typecheck,contracts,staged}-20261114.*`。这些前置结果不构成新的原生 UI 通过。
 
+## 2026-11-14 大字体历史刷新入口
+
+PR #118 的 `208928d` 原生 [run 43578600089](https://github.com/Xiejiayun/artoo/actions/runs/43578600089) 完整结束为失败：200 项原生单元测试通过，core 七项为六通过、一失败。大字体的原请求已经过原文、增高和可见区域断言并留下截图，随后真实响应也已显示；失败发生在查找位于展开内容末尾的刷新按钮。原始失败截图/层级显示 12 页内容停在 49%，按钮未进入虚拟列表的可访问树；原辅助方法完成五次向前、五次向后搜索后失败。没有实际刷新点击或最终数值/认证刷新记录，后四个 suite 和 publisher 未执行。实际原生/父进程关闭、资源及临时目录清理完成，源码保持；原报告、附件、raw xcresult 和独立核验保留 `.git/opt-pr118-43578600089/verified-ios-failure.json`。
+
+同一提交的完整 Windows Vitest 独立核验为 611 文件、8,848 通过、90 条原条件跳过、零失败，六份空浏览器缓存记录及全部用例身份保持。Mac 安装 18/隔离恢复 8、Windows process 88 和 Azure 验证通过。共享门禁执行 36/39 项，35 通过、一失败；原外部网络负向案例正确拒绝访问，但 Windows 子树超过原 128 个候选上限，完整浏览器关闭未确认。认证、依赖审计和 whitespace 三项未运行；原失败及本机原案例一项通过分开保留，不当作 CI 通过或已证明慢因。
+
+重新 fetch 确认 main 仍为 `fe87841`。将 Agent history 和 Execution history 的同一个刷新操作移到导航栏，保留可访问名称、`model.refresh()`、加载期间禁用、旧页入口和说明。长响应及大字体下无需滚动到列表末尾；现有原生 XCTest、十次控制搜索、24 次文本搜索、15 秒新认证读取/刷新期限及全部响应/制品断言逐字保持。此为实际入口优化，尚待新 macOS 原生验证；不能将旧大字体截图或 Windows 语法解析称作新入口验收通过。
+
+本机 Swift 语法解析、完整视图文本复原比对、Node 24 根 typecheck、完整 workspace build 及四文件既有回归 76 项通过，零跳过。staged 质量入口正常退出，零适用 Biome 文件；原模型、原 API 测试及完整原生 XCTest 与 `208928d` 相同。日志与证明 `.git/opt-pr118-history-toolbar-{swift,typecheck,build,contracts,staged,proof}-20261114.*`。这些不是 SwiftUI 编译、原生点击/刷新或最终统一门禁通过。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
