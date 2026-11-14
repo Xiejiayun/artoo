@@ -61,6 +61,9 @@ describe("RunUsageSummary", () => {
       "Runtime-reported usage. Costs may be estimates and include earlier session activity. Billing accuracy and Goal totals are unverified.",
     );
     expect(screen.getByText("Reported cost")).toBeInTheDocument();
+    const disclosure = screen.getByText("Cost reporting limits").closest("details");
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(disclosure).toContainElement(screen.getByText(/Runtime-reported usage\. Costs may be estimates/));
     first.unmount();
     renderWithProviders(<RunUsageSummary run={run} />, {
       client: fakeApi({

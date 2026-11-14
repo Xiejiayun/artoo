@@ -305,6 +305,18 @@ PR #113 的完整原生 run 此后结束为失败：原始 xcresult 中 core 7�
 
 Node 24 实际本地 HTTP/socket/中止与错误隐私测试及既有 retention 认证/串行边界/关闭/冷恢复测试 2 文件 11 项全部通过，无跳过（`.git/opt-native-request-tests-final.log`）。3 文件 staged 质量通过；初次检测到已有 finally 内嵌套 throw，改为设置原外层 catch 相同的失败字段并保留退出 1，未跳过断言。完整脚本 AST（仅声明的观察包装和相同失败字段处理）与 main 一致，整个 workflow 复原后与基线逐字相同，仅该附件上传条件/名称/保留天数变化（`.git/opt-native-request-preservation-final.json`）。这项是诊断与证据补充，尚未证明 HTTP 500 根因修复；完整原生重验及最终统一门禁仍待完成。
 
+## 2026-11-14 紧凑窗口的费用说明回归
+
+PR #116 普通合并为 `2516a6089f8799aefd521e7618f634dff49f16dd` 后，原 checkout 冻结该干净 main 串行运行完整四门禁；typecheck/build 已通过，Vitest 和随后完整 Web E2E 尚待结束。另从 fetch 后相同最新 main 创建独立 managed worktree，避免在验证期间切换或修改原源码。
+
+PR #115 的 Mac 安装 E2E 首次在第四次 Run 的 Keep running 后失败：完整运行卡片原 `toBeInViewport({ ratio: 1 })` 得到 `0.945485532283783`。PR #116 的独立 Mac job 同一阶段、同一比例再次失败（`.git/opt-pr116-mac-job.log`）。常驻费用说明撑高运行卡片；现改为原生、默认收起的 Cost reporting limits，保留完整正文及 `aria-describedby`，数字、缺失和零值行为保持。原 Mac 业务流程、断言、5 秒时限和其他测试未修改。
+
+Node 24 根 typecheck、Web build、2 文件 staged 质量全部实际 close 0/null 且源码保持（`.git/opt-compact-usage-checks-2026-11-14T05-13-58-590Z/summary.json`）。首次 staged 检查只报新增断言换行格式，修正后通过。首次 2 worker 聚焦有 3 项通过和 2 个 worker 启动超时，退出 1；保留原工具会话 48408，未放宽期限。随后原三文件单 worker 完整复核 20 项全部通过、退出 0（`.git/opt-compact-usage-unit-recheck.{log,json}`）。
+
+真实 Chromium 148 运行实际 RunTimeline、WorkspaceRetention、RunUsageSummary 和 CSS 的明确标注布局夹具：在 1024×656 窗口、556px 面板中，改动前卡片 591px 无法完整显示，改动后 545px 完整显示并通过原 ratio 1 断言；Enter/Space 展开收起、320px 完整正文可见和无页面横向溢出通过，截图已检查。证据 `.git/opt-compact-usage-layout-2026-11-14T05-14-09-883Z/`。用量是明确 mock，夹具不是实际安装 Mac、账单、Provider 或产品发布验收；合并后的完整原生 Mac 流程仍需 CI 验证。
+
+PR #114 完整三 lane 实际文件与用例集合、六份前后空缓存记录独立核验：611 文件、8,848 通过、90 既有条件跳过、零失败（`.git/opt-pr114-43555955145/verified-vitest-current.json`）。PR #113 只重跑失败 lane 后同一不可变 CI commit 的完整合并结果也通过，原两项首次失败和 iOS retention 失败仍保留（`.git/opt-pr113-43548201742/attempt-2/verified-vitest-combined.json`）。这些结果不代表新布局版本完整 CI 或真实 Provider 验收。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。
