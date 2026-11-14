@@ -8,7 +8,7 @@ export function observeNativeHistoryReads(server, { origin, agentId, peerToken }
   const address = server.address();
   if (
     base.protocol !== "http:" ||
-    base.hostname !== "127.0.0.1" ||
+    !["localhost", "127.0.0.1", "[::1]"].includes(base.hostname) ||
     base.username ||
     base.password ||
     base.pathname !== "/" ||
@@ -16,7 +16,8 @@ export function observeNativeHistoryReads(server, { origin, agentId, peerToken }
     base.hash ||
     !address ||
     typeof address === "string" ||
-    Number(base.port) !== address.port ||
+    !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address.address) ||
+    Number(base.port || 80) !== address.port ||
     typeof agentId !== "string" ||
     !/^[A-Za-z0-9_-]+$/.test(agentId) ||
     typeof peerToken !== "string" ||

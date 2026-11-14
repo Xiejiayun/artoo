@@ -329,6 +329,8 @@ Node 24 的实际回环 HTTP 生命周期/中止/关闭/隐私与既有 fixture/
 
 F2 精确生产计量/事务账本/全部阶段准入/预算 UI 仍未实现，继续拒绝 `max_cost_usd`；E4 用户“不清楚”仅回答配置位置，尚未获得外部 Provider 共享授权和可用验收安装。本项不读取凭据或调用 Provider，仍保留最终原生/产品验收缺口。
 
+PR #118 首轮 [run 43564166008](https://github.com/Xiejiayun/artoo/actions/runs/43564166008) 的应用构建及 200 项 XCTest 单元测试通过，但 core fixture 在原生 UI 启动前失败：观察器只接受 `127.0.0.1`，现有 harness 使用 `localhost`。不是大字体断言通过或应用崩溃。原 job 日志和父报告保留 `.git/opt-pr118-43564166008/` 及 `.git/opt-pr118-ios-first.log`；core 清理完成，后续 suite/publisher 未运行。现允许固定本机别名，同时要求真实 listener 绑定回环地址及同一端口；不改 harness 原点、鉴权、读取与超时。新增真实 localhost 请求回归，并验证错端口及 wildcard listener 拒绝，27 项全部通过（`.git/opt-ios-history-localhost-tests.log`）。原生 UI 及完整 CI 须以修正后的新 commit 重验。
+
 ## 后续顺序
 
 P5 首次聚焦 E2E 在创建频道后的首次发送处超时，输入框为空；未改代码重跑通过。既有组件测试已记录列表刷新后到房间校验间会替换 DOM，E2E 现在等待房间校验响应再输入，不改发送/同步断言或超时。连续 3 次通过，证据 `.git/opt-p5-e2e-stable.log`；首次失败保留 `.git/opt-p5-e2e.log`。类型/构建/回归日志分别为 `.git/opt-p5-final-typecheck.log`、`.git/opt-p5-server-build.log`、`.git/opt-p5-web-build.log`、`.git/opt-p5-tests.log`、`.git/opt-p5-client-tests.log`。这不替代最终统一 E2E。

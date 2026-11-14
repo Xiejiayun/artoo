@@ -73,6 +73,49 @@ test("separate runs bind independently and closing disables stale evidence witho
   });
 });
 
+test("the harness localhost origin observes its actual loopback server and rejects a different server", async () => {
+  await fixture(async ({ server, origin }) => {
+    const alias = origin.replace("127.0.0.1", "localhost");
+    const observer = observeNativeHistoryReads(server, {
+      origin: alias,
+      agentId: "agent_fixture",
+      peerToken: "private-peer",
+    });
+    try {
+      const response = await fetch(alias + path("run_localhost"), {
+        headers: { authorization: "Bearer private-native" },
+      });
+      assert.equal(await response.text(), "Original response body");
+      assert.deepEqual(observer.read("run_localhost"), {
+        run_id: "run_localhost",
+        successful_reads: 1,
+        session_bound: true,
+      });
+      const wrong = new URL(alias);
+      wrong.port = String(server.address().port === 65535 ? 65534 : server.address().port + 1);
+      assert.throws(
+        () => observeNativeHistoryReads(server, { origin: wrong.href, agentId: "agent_fixture", peerToken: "peer" }),
+        /exact local fixture/,
+      );
+      // Explicit configuration double; a wildcard-bound listener is not local-only.
+      assert.throws(
+        () =>
+          observeNativeHistoryReads(
+            { address: () => ({ ...server.address(), address: "0.0.0.0" }) },
+            {
+              origin: alias,
+              agentId: "agent_fixture",
+              peerToken: "peer",
+            },
+          ),
+        /exact local fixture/,
+      );
+    } finally {
+      observer.stop();
+    }
+  });
+});
+
 test("bounded observation fails closed when its run inventory overflows", async () => {
   await fixture(async ({ observer, get }) => {
     for (let index = 0; index < 64; index++) await get(path(`run_${index}`));
