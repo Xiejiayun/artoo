@@ -237,6 +237,125 @@ afterAll(async () => {
 });
 
 describe("PostgresDbClient with a real PostgreSQL server", () => {
+  it("serializes real Run reservations across independent PostgreSQL backends at all three quotas", async () => {
+    const f = await shadowFixture();
+    const service = (await import(
+      new URL("../../../../apps/server/dist/services/scheduler-capacity-service.js", import.meta.url).href
+    )) as {
+      persistRunReservation(ctx: object, tx: DrizzleDb, values: object): Promise<unknown>;
+    };
+    const context = (db: TestDbPort) => ({
+      ...f.context(db),
+      schedulerRollout: { version: 1, workspaces: { org_default: { flags: { capacity_admission: true } } } },
+    });
+    const reserve = (db: TestDbPort, taskId: string) =>
+      db.transaction((tx) =>
+        service.persistRunReservation(context(db), tx, {
+          id: `capacity_${taskId}`,
+          organizationId: "org_default",
+          taskId,
+          computerId: "computer_local_mock",
+          agentInstanceId: "instance_mock_coder",
+          runtimeId: "mock",
+          status: "queued",
+          createdAt: "2026-06-13T00:00:00.000Z",
+        }),
+      );
+    const pidA = (await f.first.db.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid;
+    const pidB = (await f.second.db.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid;
+    expect(pidA).not.toBe(pidB);
+    await observer!.query("BEGIN");
+    try {
+      await observer!.query("SELECT pg_advisory_xact_lock(1095914313, hashtext('org_default'))");
+      await expect(reserve(f.first, "task_pg_a")).rejects.toMatchObject({
+        details: { reason: "scheduler_capacity_busy" },
+      });
+      expect((await observer!.query("SELECT count(*)::int AS n FROM runs")).rows).toEqual([{ n: 0 }]);
+    } finally {
+      await observer!.query("ROLLBACK");
+    }
+    for (const kind of ["project", "computer", "agent"] as const) {
+      const table = `scheduler_${kind}_policies`;
+      await observer!.query(`UPDATE ${table} SET policy = jsonb_set(policy,'{max_concurrent_runs}','1')`);
+      const outcomes = await Promise.allSettled([reserve(f.first, "task_pg_a"), reserve(f.second, "task_pg_b")]);
+      expect(outcomes.filter((value) => value.status === "fulfilled")).toHaveLength(1);
+      expect(outcomes.filter((value) => value.status === "rejected")).toHaveLength(1);
+      const held = await observer!.query("SELECT task_id FROM runs");
+      expect(held.rows).toHaveLength(1);
+      const loser = held.rows[0].task_id === "task_pg_a" ? "task_pg_b" : "task_pg_a";
+      await expect(reserve(f.second, loser)).rejects.toMatchObject({
+        details: { reason: "scheduler_capacity_exceeded", kind, occupied: 1, limit: 1 },
+      });
+      await observer!.query("DELETE FROM runs");
+      await observer!.query(`UPDATE ${table} SET policy = jsonb_set(policy,'{max_concurrent_runs}','2')`);
+    }
+    expect((await observer!.query("SELECT * FROM file_leases")).rows).toEqual([]);
+    expect((await observer!.query("SELECT status FROM tasks ORDER BY id")).rows).toEqual([
+      { status: "ready" },
+      { status: "ready" },
+    ]);
+  });
+
+  it("serializes policy lowering with real admission and rejects a repeatable-read capacity snapshot", async () => {
+    const f = await shadowFixture();
+    const capacity = (await import(
+      new URL("../../../../apps/server/dist/services/scheduler-capacity-service.js", import.meta.url).href
+    )) as {
+      persistRunReservation(ctx: object, tx: DrizzleDb, values: object): Promise<unknown>;
+    };
+    const policies = (await import(
+      new URL("../../../../apps/server/dist/services/scheduler-policy-service.js", import.meta.url).href
+    )) as {
+      putSchedulerPolicy(ctx: object, kind: string, id: string, input: object): Promise<unknown>;
+    };
+    const context = (db: TestDbPort) => ({
+      ...f.context(db),
+      authConfig: {},
+      schedulerRollout: { version: 1, workspaces: { org_default: { flags: { capacity_admission: true } } } },
+    });
+    const values = (id: string) => ({
+      id: `capacity_${id}`,
+      organizationId: "org_default",
+      taskId: id,
+      computerId: "computer_local_mock",
+      agentInstanceId: "instance_mock_coder",
+      runtimeId: "mock",
+      status: "queued",
+      createdAt: "2026-06-13T00:00:00.000Z",
+    });
+    await expect(
+      f.second.db.transaction((tx) => capacity.persistRunReservation(context(f.second), tx, values("task_pg_b")), {
+        isolationLevel: "repeatable read",
+      }),
+    ).rejects.toMatchObject({ details: { reason: "scheduler_capacity_transaction" } });
+    const entered = deferred(),
+      release = deferred();
+    const first = f.first.transaction(async (tx) => {
+      await capacity.persistRunReservation(context(f.first), tx, values("task_pg_a"));
+      entered.resolve();
+      await release.promise;
+    });
+    await entered.promise;
+    const policy = { version: 1, repo_url: null, default_branch: "main", max_concurrent_runs: 1 };
+    try {
+      await expect(
+        policies.putSchedulerPolicy(context(f.second), "project", "proj_artoo", policy),
+      ).rejects.toMatchObject({ details: { reason: "scheduler_capacity_busy" } });
+      expect((await observer!.query("SELECT * FROM event_log WHERE type='scheduler.policy.updated'")).rows).toEqual([]);
+    } finally {
+      release.resolve();
+      await first;
+    }
+    await policies.putSchedulerPolicy(context(f.second), "project", "proj_artoo", policy);
+    await expect(
+      f.second.transaction((tx) => capacity.persistRunReservation(context(f.second), tx, values("task_pg_b"))),
+    ).rejects.toMatchObject({ details: { reason: "scheduler_capacity_exceeded", kind: "project" } });
+    expect((await observer!.query("SELECT task_id FROM runs")).rows).toEqual([{ task_id: "task_pg_a" }]);
+    expect((await observer!.query("SELECT revision::int FROM scheduler_project_policies")).rows).toEqual([
+      { revision: 2 },
+    ]);
+  });
+
   it("keeps one inactive original-user intent across independent concurrent staging, replay and cancellation", async () => {
     const f = await shadowFixture();
     type Intent = { id: string; state: string; requestKey: string; snapshot: object; executionAuthorized: boolean };

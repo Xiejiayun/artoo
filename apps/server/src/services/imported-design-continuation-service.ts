@@ -1,3 +1,4 @@
+import { persistRunReservation } from "./scheduler-capacity-service.js";
 import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
 import { resolveResearchRevisionOrigin } from "./research-revision-origin-service.js";
 import { assertCurrentResearchHandoff } from "./research-handoff-guard.js";
@@ -462,7 +463,7 @@ export async function ensureGoalImportedDesignContinuation(
     payload: context,
     createdAt: now,
   });
-  await tx.insert(runs).values({
+  await persistRunReservation(ctx, tx, {
     id: runId,
     organizationId: ctx.organizationId,
     requestedByUserId: review.actorUserId,

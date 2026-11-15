@@ -27,6 +27,7 @@ export interface SchedulerOccupant {
   task_id: string | null;
   computer_id: string;
   agent_ids: string[];
+  agent_instance_ids?: string[];
   evidence?: string[];
 }
 
@@ -56,6 +57,7 @@ export async function collectSchedulerOccupants(ctx: ServerContext, tx: DrizzleD
       task_id: run.taskId,
       computer_id: run.computerId,
       agent_ids: [agentId],
+      agent_instance_ids: [run.agentInstanceId],
       evidence: [
         ...(isActiveRunStatus(run.status) ? ["active_run"] : []),
         ...(heldIds.has(run.id) ? ["held_file_lease"] : []),
@@ -98,6 +100,7 @@ export async function collectSchedulerOccupants(ctx: ServerContext, tx: DrizzleD
         task_id: backing?.run.taskId ?? null,
         computer_id: op.computerId,
         agent_ids: [...new Set([...(previous?.agent_ids ?? []), ...(agentIds as string[])])],
+        agent_instance_ids: [...new Set([...(previous?.agent_instance_ids ?? []), ...op.participantInstanceIds])],
         evidence: [...(previous?.evidence ?? []), `dedicated:${op.kind}:${op.id}`],
       });
     }

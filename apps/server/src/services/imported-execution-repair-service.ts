@@ -1,3 +1,4 @@
+import { persistRunReservation } from "./scheduler-capacity-service.js";
 import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
 import { assertSourceLineageDispatch } from "./source-lineage-fence.js";
 import {
@@ -304,7 +305,7 @@ export async function ensureGoalImportedExecutionRepair(
     payload: context,
     createdAt: now,
   });
-  await tx.insert(runs).values({
+  await persistRunReservation(ctx, tx, {
     id: runId,
     organizationId: ctx.organizationId,
     requestedByUserId: review.actorUserId,

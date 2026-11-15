@@ -1,3 +1,4 @@
+import { lockSchedulerCapacity } from "./scheduler-capacity-service.js";
 import {
   agents,
   appendEvent,
@@ -86,6 +87,7 @@ export async function getSchedulerPolicy(ctx: ServerContext, kind: SchedulerPoli
 export async function putSchedulerPolicy(ctx: ServerContext, kind: SchedulerPolicyKind, id: string, input: unknown) {
   return ctx.db.transaction(async (tx) => {
     await requireAdministrator(ctx, tx);
+    await lockSchedulerCapacity(ctx, tx);
     await requireTarget(ctx, tx, kind, id);
     const common = {
       organizationId: ctx.organizationId,

@@ -1,3 +1,4 @@
+import { schedulerCapacityStatus } from "./services/scheduler-capacity-service.js";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requestContext } from "./auth/auth-routes.js";
@@ -76,13 +77,24 @@ export function registerSchedulerModelRoutes(app: FastifyInstance, ctx: ServerCo
   ] as const) {
     app.get(`/api/v1/${resource}/:id/scheduling-policy`, async (request) => {
       const c = requestContext(ctx, request);
-      return { policy: await getSchedulerPolicy(c, kind, (request.params as { id: string }).id), active: false };
+      return {
+        policy: await getSchedulerPolicy(c, kind, (request.params as { id: string }).id),
+        active: false,
+        capacity_admission: schedulerCapacityStatus(
+          c,
+          kind === "project" ? (request.params as { id: string }).id : undefined,
+        ),
+      };
     });
     app.put(`/api/v1/${resource}/:id/scheduling-policy`, async (request) => {
       const c = requestContext(ctx, request);
       return {
         policy: await putSchedulerPolicy(c, kind, (request.params as { id: string }).id, request.body),
         active: false,
+        capacity_admission: schedulerCapacityStatus(
+          c,
+          kind === "project" ? (request.params as { id: string }).id : undefined,
+        ),
       };
     });
   }
