@@ -17,10 +17,15 @@ import * as dagService from "./services/dag-service.js";
 import * as lifecycle from "./services/lifecycle-service.js";
 import { AssignOwnedResultRequestSchema } from "./services/owned-result-service.js";
 import * as taskService from "./services/task-service.js";
+import { getSchedulerObservations } from "./services/scheduler-observation-service.js";
 
 /** Register task lifecycle, DAG and audit reads in the existing app scope. */
 export function registerTaskRoutes(app: FastifyInstance, ctx: ServerContext): void {
   const rc = (req: FastifyRequest): ServerContext => requestContext(ctx, req);
+  app.get("/api/v1/projects/:id/scheduler-observations", async (req) => {
+    const { id } = req.params as { id: string };
+    return getSchedulerObservations(rc(req), id, req.query);
+  });
   app.post("/api/v1/tasks", async (req, reply) => {
     const parsed = CreateTaskRequestSchema.safeParse(req.body);
     if (!parsed.success) {

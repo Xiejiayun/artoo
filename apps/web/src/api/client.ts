@@ -9,6 +9,7 @@ import type { ContentReport, ContentRules, ModerationMember } from "./contentMod
  * are surfaced as {@link ApiClientError}.
  */
 import type { AiDataSharingState } from "./aiDataSharing.js";
+import type { SchedulerObservationsV1 } from "@artoo/domain";
 import type {
   ApiErrorCode,
   AssignRequest,
@@ -543,6 +544,13 @@ export class ApiClient {
         response.status,
       );
     return response.blob();
+  }
+
+  getSchedulerObservations(projectId: string): Promise<SchedulerObservationsV1> {
+    return this.request<SchedulerObservationsV1>(
+      "GET",
+      `/projects/${encodeURIComponent(projectId)}/scheduler-observations`,
+    );
   }
 
   listTasks(projectId: string, options: { q?: string; limit?: number } = {}): Promise<TasksResponse> {
