@@ -1,0 +1,360 @@
+import {
+  agentInstances,
+  agentRuntimes,
+  computers,
+  contextPacks,
+  devices,
+  deviceTokens,
+  eventLog,
+  fileLeases,
+  runs,
+  schedulerDecisions,
+  schedulerExecutionRequests,
+  tasks,
+} from "@artoo/db";
+import { createInProcessChannel } from "@artoo/testkit";
+import { and, eq, sql } from "drizzle-orm";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildAiDataSharingPolicy } from "./config/ai-data-sharing.js";
+import { loadSchedulerRollout, type SchedulerRolloutFlag } from "./config/scheduler-rollout.js";
+import { attachNodeBinding } from "./node-binding.js";
+import { grantAiDataSharingConsent, revokeAiDataSharingConsent } from "./services/ai-data-sharing-service.js";
+import { claimSchedulerExecutionRequest } from "./services/lifecycle-service.js";
+import {
+  cancelSchedulerExecutionRequest,
+  createSchedulerExecutionRequest,
+} from "./services/scheduler-execution-request-service.js";
+import { currentTaskVersion } from "./services/sync-service.js";
+import { buildTestServer, type TestServer } from "./test-support.js";
+
+const COMPUTER = "computer_local_mock",
+  INSTANCE = "ai_claim";
+const session = {
+  computerId: COMPUTER,
+  deviceId: "claim-node",
+  tokenLookup: "controlled-fixture-lookup",
+  sessionId: "session-one",
+};
+const switches: SchedulerRolloutFlag[] = [
+  "execution_requests",
+  "daemon_claim",
+  "isolated_workspaces",
+  "capacity_admission",
+  "unified_enqueue",
+];
+
+describe("internal scheduling consumption kernel (real DB, no Provider or node execution)", () => {
+  let server: TestServer;
+  afterEach(async () => {
+    await server?.close();
+  });
+  function flags(disabled?: SchedulerRolloutFlag) {
+    server.ctx.schedulerRollout = loadSchedulerRollout({
+      ARTOO_SCHEDULER_ROLLOUT: JSON.stringify({
+        version: 1,
+        workspaces: { org_default: { flags: Object.fromEntries(switches.map((key) => [key, key !== disabled])) } },
+      }),
+    });
+  }
+  async function setup() {
+    server = await buildTestServer();
+    flags();
+    await server.db.db.update(computers).set({ os: "linux" }).where(eq(computers.id, COMPUTER));
+    // Controlled inventory only: no CLI, credentials, subprocess or Provider is invoked.
+    const [seed] = await server.db.db.select().from(agentInstances).where(eq(agentInstances.id, "instance_mock_coder"));
+    if (!seed) throw new Error("Missing controlled instance fixture");
+    await server.db.db.update(agentInstances).set({ status: "disabled" }).where(eq(agentInstances.id, seed.id));
+    await server.db.db.insert(agentInstances).values({
+      ...seed,
+      id: INSTANCE,
+      runtime: "codex",
+      workspaceRoot: "/fixture/repository",
+      config: {
+        concurrency_limit: 2,
+        worktree_workspace_base: { version: 1, strategy: "per-run", basePath: "/fixture/attempts" },
+      },
+    });
+    await server.db.db.insert(agentRuntimes).values({
+      id: "claim-runtime",
+      organizationId: "org_default",
+      computerId: COMPUTER,
+      runtime: "codex",
+      status: "available",
+      capabilities: [],
+      lastSeenAt: server.ctx.clock.nowIso(),
+      metadata: {},
+    });
+    await server.db.db.insert(devices).values({
+      id: session.deviceId,
+      organizationId: "org_default",
+      displayName: "Controlled paired node",
+      platform: "linux",
+      appVersion: "fixture",
+      computerId: COMPUTER,
+      enrolledByUserId: "user_owner",
+      trust: "active",
+      createdAt: server.ctx.clock.nowIso(),
+    });
+    await server.db.db.insert(deviceTokens).values({
+      id: "claim-token",
+      organizationId: "org_default",
+      deviceId: session.deviceId,
+      kind: "node",
+      tokenLookup: session.tokenLookup,
+      tokenHash: "fixture-never-authenticated",
+      status: "active",
+      createdAt: server.ctx.clock.nowIso(),
+    });
+    server.ctx.getPairedNodeSession = () => ({ ...session });
+    server.ctx.supportsExecutionFeature = (_computer, feature) => feature === "workspace-allocation.per-run-v1";
+    server.ctx.onRunQueued = vi.fn(async () => {});
+    for (const [resource, policy] of [
+      ["projects/proj_artoo", { version: 1, repo_url: null, default_branch: "main", max_concurrent_runs: 2 }],
+      [
+        "agents/agent_mock_coder",
+        {
+          version: 1,
+          pinned_computer_id: null,
+          required_runtimes: ["codex"],
+          required_labels: [],
+          max_concurrent_runs: 2,
+        },
+      ],
+      [`computers/${COMPUTER}`, { version: 1, labels: [], max_concurrent_runs: 2 }],
+    ] as const)
+      expect(
+        (await server.app.inject({ method: "PUT", url: `/api/v1/${resource}/scheduling-policy`, payload: policy }))
+          .statusCode,
+      ).toBe(200);
+  }
+  async function stage(source = false) {
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/tasks",
+      payload: {
+        project_id: "proj_artoo",
+        title: "One conditional execution",
+        acceptance_criteria: ["ok"],
+        required_capabilities: ["code.modify"],
+        ...(source
+          ? {
+              enqueue_source: {
+                version: 1,
+                kind: "issue",
+                key: "claim-source",
+                event_id: "one",
+                comment: "Original input",
+              },
+            }
+          : {}),
+      },
+    });
+    expect(response.statusCode).toBe(201);
+    const taskId = response.json().task.id as string;
+    expect((await server.app.inject({ method: "POST", url: `/api/v1/tasks/${taskId}/ready` })).statusCode).toBe(200);
+    const request = {
+      version: 2 as const,
+      permission: "execute_once" as const,
+      request_key: "one",
+      agent_id: "agent_mock_coder",
+      base_version: await currentTaskVersion(server.ctx, taskId),
+      branch_backed: true as const,
+      write_paths: [`src/${taskId}.ts`],
+    };
+    const row = await createSchedulerExecutionRequest(server.ctx, taskId, request);
+    return { taskId, requestId: row.id, computerId: COMPUTER, sessionId: session.sessionId };
+  }
+  const claim = (input: Awaited<ReturnType<typeof stage>>) =>
+    claimSchedulerExecutionRequest(
+      {
+        ...server.ctx,
+        actorUserId: "daemon-is-not-the-user",
+        automationActor: { type: "system", id: "goal_runner" },
+      },
+      input,
+    );
+  async function snapshot() {
+    return {
+      tasks: await server.db.db.select().from(tasks),
+      runs: await server.db.db.select().from(runs),
+      packs: await server.db.db.select().from(contextPacks),
+      decisions: await server.db.db.select().from(schedulerDecisions),
+      requests: await server.db.db.select().from(schedulerExecutionRequests),
+      leases: await server.db.db.select().from(fileLeases),
+      events: await server.db.db.select().from(eventLog),
+    };
+  }
+  async function unchanged(input: Awaited<ReturnType<typeof stage>>, message?: string) {
+    const before = await snapshot();
+    await expect(claim(input)).rejects.toThrow(message);
+    expect(await snapshot()).toEqual(before);
+    expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+  }
+
+  it("atomically binds one original-user Run, audit, context and leases; response replay creates and dispatches nothing", async () => {
+    await setup();
+    const input = await stage(true),
+      result = await claim(input);
+    expect(result.run).toMatchObject({
+      task_id: input.taskId,
+      status: "queued",
+      agent_instance_id: INSTANCE,
+      workspace_allocation: { version: 1, strategy: "per-run", base_path: "/fixture/attempts" },
+    });
+    expect(result.run.workspace_branch).toBe(`artoo/run-${result.run.id}`);
+    const [row] = await server.db.db.select().from(schedulerExecutionRequests);
+    expect(row).toMatchObject({
+      state: "consumed",
+      consumedRunId: result.run.id,
+      consumedDeviceId: session.deviceId,
+      consumedSessionId: session.sessionId,
+    });
+    const before = await snapshot();
+    expect(before.runs).toHaveLength(1);
+    expect(before.runs[0]!.requestedByUserId).toBe("user_owner");
+    expect(before.packs).toHaveLength(1);
+    expect(before.decisions).toHaveLength(1);
+    expect(before.leases).toHaveLength(1);
+    expect(before.packs[0]!.payload).toMatchObject({ source_inputs: { entries: [{ body: "Original input" }] } });
+    expect(before.events.find((event) => event.type === "scheduler.execution_request.consumed")).toMatchObject({
+      actorType: "system",
+      actorId: "scheduler",
+      payload: {
+        actor_user_id: "user_owner",
+        request_id: row!.id,
+        ranking_snapshot: { manual_agent_instance_id: null },
+      },
+    });
+    expect(await claim(input)).toEqual(result);
+    expect(await snapshot()).toEqual(before);
+    expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+    await expect(cancelSchedulerExecutionRequest(server.ctx, input.taskId, input.requestId)).rejects.toThrow(
+      "was consumed",
+    );
+    const channel = createInProcessChannel(),
+      send = vi.spyOn(channel.serverTransport, "send");
+    const binding = attachNodeBinding(server.ctx, channel.serverTransport, COMPUTER, [
+      "workspace-allocation.per-run-v1",
+    ]);
+    try {
+      await expect(binding.dispatchRunStart(result.run.id)).rejects.toThrow("node-owned attempt protocol");
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      binding.close();
+    }
+    // SQL history is immutable, including after process/Task lifecycle changes.
+    for (const update of [
+      sql`state='pending',consumed_run_id=NULL,consumed_device_id=NULL,consumed_session_id=NULL,consumed_at=NULL`,
+      sql`consumed_session_id='replacement'`,
+      sql`consumed_at=now()`,
+    ])
+      await expect(server.db.db.execute(sql`UPDATE scheduler_execution_requests SET ${update}`)).rejects.toThrow();
+    await expect(server.db.db.execute(sql`DELETE FROM scheduler_execution_requests`)).rejects.toThrow();
+  });
+
+  it("requires every startup scope, paired credential, current session, inventory and real isolated allocation", async () => {
+    await setup();
+    const input = await stage();
+    for (const flag of ["daemon_claim", "capacity_admission", "isolated_workspaces", "execution_requests"] as const) {
+      flags(flag);
+      await unchanged(input, "disabled");
+    }
+    flags();
+    const getSession = server.ctx.getPairedNodeSession;
+    server.ctx.getPairedNodeSession = () => undefined;
+    await unchanged(input, "paired node session");
+    server.ctx.getPairedNodeSession = () => ({ ...session, sessionId: "replaced" });
+    await unchanged(input, "paired node session");
+    server.ctx.getPairedNodeSession = getSession;
+    server.ctx.supportsExecutionFeature = () => false;
+    await unchanged(input, "allocation session");
+    server.ctx.supportsExecutionFeature = () => true;
+    await server.db.db.update(deviceTokens).set({ expiresAt: server.ctx.clock.nowIso() });
+    await unchanged(input, "credential");
+    await server.db.db.update(deviceTokens).set({ expiresAt: null, status: "revoked" });
+    await unchanged(input, "credential");
+    await server.db.db.update(deviceTokens).set({ status: "active" });
+    await server.db.db.update(agentRuntimes).set({ status: "missing" });
+    await unchanged(input, "eligible");
+    await server.db.db.update(agentRuntimes).set({ status: "available" });
+    // Changing even a benign configuration invalidates the original request.
+    await server.db.db.update(agentInstances).set({ config: {} }).where(eq(agentInstances.id, INSTANCE));
+    await unchanged(input, "configuration_digest");
+  });
+
+  it("rejects branch-only requests without per-run isolation and preserves all pre-claim state", async () => {
+    await setup();
+    await server.db.db.update(agentInstances).set({ config: {} }).where(eq(agentInstances.id, INSTANCE));
+    const input = await stage();
+    await unchanged(input, "exact isolated Run");
+    // A DB caller cannot mark consumption without a real matching Run either.
+    await expect(
+      server.db.db.execute(sql`UPDATE scheduler_execution_requests SET state='consumed', consumed_session_id='one'`),
+    ).rejects.toThrow();
+  });
+
+  it("rolls back Run, assignment, decision, context and leases if consumption audit fails", async () => {
+    await setup();
+    const input = await stage();
+    await server.db.db.execute(sql`CREATE FUNCTION reject_claim_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.type='scheduler.execution_request.consumed' THEN RAISE EXCEPTION 'injected claim audit failure'; END IF; RETURN NEW; END $$`);
+    await server.db.db.execute(
+      sql`CREATE TRIGGER reject_claim_audit BEFORE INSERT ON event_log FOR EACH ROW EXECUTE FUNCTION reject_claim_audit()`,
+    );
+    await unchanged(input);
+    await server.db.db.execute(sql`DROP TRIGGER reject_claim_audit ON event_log`);
+    expect((await claim(input)).run.status).toBe("queued");
+  });
+
+  it("rolls back if the paired session changes while preparing the Run and never transfers a consumed claim", async () => {
+    await setup();
+    const input = await stage();
+    const generate = server.ctx.idGen.generate.bind(server.ctx.idGen);
+    let replaced = false;
+    server.ctx.getPairedNodeSession = () => ({ ...session, sessionId: replaced ? "new-session" : session.sessionId });
+    server.ctx.idGen.generate = (prefix) => {
+      if (prefix === "run") replaced = true;
+      return generate(prefix);
+    };
+    await unchanged(input, "original paired allocation session");
+    server.ctx.idGen.generate = generate;
+    server.ctx.getPairedNodeSession = () => ({ ...session });
+    const result = await claim(input);
+    server.ctx.getPairedNodeSession = () => ({ ...session, sessionId: "new-session" });
+    await unchanged({ ...input, sessionId: "new-session" }, "cannot move");
+    expect((await server.db.db.select().from(runs))[0]!.id).toBe(result.run.id);
+  });
+
+  it("retains exact consent, original-user access, cancellation and three-level capacity gates", async () => {
+    await setup();
+    server.ctx.aiDataSharingPolicy = buildAiDataSharingPolicy({
+      mode: "external",
+      providers: [{ id: "fixture", name: "Fixture", privacy_url: "https://example.com/privacy" }],
+    });
+    await grantAiDataSharingConsent(server.ctx, server.ctx.aiDataSharingPolicy.version);
+    const input = await stage();
+    await revokeAiDataSharingConsent(server.ctx);
+    await grantAiDataSharingConsent(server.ctx, server.ctx.aiDataSharingPolicy.version);
+    await unchanged(input, "Review and allow");
+    await cancelSchedulerExecutionRequest(server.ctx, input.taskId, input.requestId);
+    await unchanged(input, "cancelled");
+    const fresh = await stage();
+    const auth = server.ctx.authConfig;
+    server.ctx.authConfig = { ...auth, allowedEmails: ["another@example.com"] };
+    await unchanged(fresh, "active access");
+    server.ctx.authConfig = auth;
+    await claim(fresh);
+    const second = await stage();
+    await claim(second);
+    const third = await stage();
+    await unchanged(third, "eligible");
+    expect(
+      await server.db.db
+        .select()
+        .from(schedulerExecutionRequests)
+        .where(
+          and(eq(schedulerExecutionRequests.id, third.requestId), eq(schedulerExecutionRequests.state, "pending")),
+        ),
+    ).toHaveLength(1);
+  });
+});

@@ -569,6 +569,60 @@ staging/replay/cancellation and a Task-lock input-change race. Implementation an
 executed validation are tracked separately in the PR; these cases do not establish
 an available claim consumer or satisfy elapsed installation rollout gates.
 
+### Internal one-time consumption kernel (Step 3; no node consumer)
+
+Additive migration `0071_scheduler_execution_consumption.sql` extends version-2
+requests with terminal `consumed` state and an exact Run, paired device, session
+and timestamp binding. Pending/cancelled records keep their previous meaning;
+no shadow intent or historical permission is imported. SQL prevents rewriting,
+deleting, cancelling or reopening consumed history, preserves request-key
+uniqueness, and requires the Run's tenant, project, Task, logical Agent, original
+user, exact consent and generated per-run workspace metadata to match. A consumed
+request frees the pending slot but cannot authorize another Run.
+
+`claimSchedulerExecutionRequest` is an internal database entry, deliberately
+unwired from HTTP, WS, polling or timers. It requires all four project startup
+scopes: `execution_requests`, `daemon_claim`, `capacity_admission` and
+`isolated_workspaces`. One read-committed transaction acquires the shared
+configuration/capacity fences, Task lock, source-input locks, active original-user
+authorization and the current registry-owned paired session's exact credential.
+It ranks only eligible instances of the requested logical Agent, with fresh
+runtime inventory and policy/queue constraints. It retains instance-before-computer
+lock order and repeats snapshot/eligibility/ranking after both lock waits.
+
+The original assignment transaction then supplies all existing approval,
+capability, ownership, context, workspace, physical-uncertainty, capacity and file
+lease gates. A generated branch without an actual per-run allocation is rejected;
+mock runtimes cannot be consumed. Run/context/decision/leases, Task assignment,
+terminal request consumption and the system scheduling audit commit together.
+Run authorization remains attributed to the initiating user. The audit records
+the policy ranking as decision evidence; that ranking object itself retains its
+false-authority contract. A final synchronous registry comparison rejects a
+session replacement observed during preparation. Node admission must still
+revalidate before any physical process starts.
+
+An exact replay on the same current paired session reads the original Run and
+creates no additional reservation, event or dispatch. A different session cannot
+take it over. This kernel intentionally invokes no dispatch hook, and ordinary
+`run.start` rejects a Run bound to a consumed request even if a generic restart
+dispatcher discovers it. Storage APIs therefore still report
+`consumer_available:false` and `execution_authorized:false`. No startup flag alone
+enables execution. The next protocol slice must provide node-owned pre-spawn
+attempt identity, replay handling and explicit start authority before connecting
+this kernel to a live consumer; renewal, fencing epochs, failover and scoped
+attempt credentials remain pending. A prepared database Run is not a running
+process or a publication result.
+
+Regression coverage uses actual migrated PGlite for atomic consumption/replay,
+original-user attribution and consent, disabled scopes, credential/session/runtime
+changes, missing isolation, audit rollback and ordinary-dispatch denial. Migration
+coverage checks additive upgrade/rollback, exact SQL bindings, immutable terminal
+history and backup restoration. The separate PostgreSQL integration case uses
+independent backend sessions for competing consumption and an observed instance
+lock wait followed by disabled eligibility. These are controlled database and
+transport tests, not live Provider or elapsed rollout acceptance. Executed results
+are recorded with the implementation PR.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research

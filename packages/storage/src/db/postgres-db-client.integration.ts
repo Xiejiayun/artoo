@@ -365,7 +365,7 @@ async function delegationFixture() {
   return { owner, other, root, create, delegation, lifecycle, ownerPid, otherPid, observerPid, snapshot };
 }
 
-async function observeDelegationBlock(blockedPid: number, blockerPid: number, relation: string) {
+async function observeDelegationBlock(blockedPid: number, blockerPid: number, relation: string, label = "delegation") {
   const deadline = performance.now() + 8000;
   let last: unknown;
   while (performance.now() < deadline) {
@@ -379,12 +379,12 @@ async function observeDelegationBlock(blockedPid: number, blockerPid: number, re
     last = row;
     if (row?.blockers.includes(blockerPid) && row.wait_event_type === "Lock") {
       expect(row.query).toContain(relation);
-      console.info("delegation_fence_block", JSON.stringify({ blockedPid, blockerPid, observation: row }));
+      console.info(`${label}_fence_block`, JSON.stringify({ blockedPid, blockerPid, observation: row }));
       return;
     }
     await delay(1);
   }
-  throw new Error(`Missing actual delegation lock wait: ${JSON.stringify(last)}`);
+  throw new Error(`Missing actual ${label} lock wait: ${JSON.stringify(last)}`);
 }
 
 async function pauseDelegationCreation() {
@@ -1290,6 +1290,144 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
       expect((await observer!.query(`SELECT * FROM ${table}`)).rows).toEqual([]);
     expect((await observer!.query("SELECT DISTINCT status FROM tasks")).rows).toEqual([{ status: "ready" }]);
   });
+  it("consumes explicit execution once across independent backends and refreshes eligibility after an instance lock wait", async () => {
+    const f = await shadowFixture();
+    const requests = requireBuilt("../../../../apps/server/dist/services/scheduler-execution-request-service.js") as {
+      createSchedulerExecutionRequest(ctx: object, task: string, input: object): Promise<{ id: string }>;
+    };
+    const lifecycle = requireBuilt("../../../../apps/server/dist/services/lifecycle-service.js") as {
+      claimSchedulerExecutionRequest(ctx: object, input: object): Promise<{ run: { id: string } }>;
+    };
+    const sharing = requireBuilt("../../../../apps/server/dist/config/ai-data-sharing.js") as {
+      buildAiDataSharingPolicy(input: object): object;
+    };
+    const now = f.context(f.first).clock.nowIso();
+    await observer!.query(`UPDATE computers SET os='linux' WHERE id='computer_local_mock';
+      INSERT INTO agent_instances SELECT (jsonb_populate_record(NULL::agent_instances,to_jsonb(i)||
+        '{"id":"ai_claim","runtime":"codex","workspace_root":"/fixture/repository","config":{"concurrency_limit":2,"worktree_workspace_base":{"version":1,"strategy":"per-run","basePath":"/fixture/attempts"}}}'::jsonb)).*
+        FROM agent_instances i WHERE id='instance_mock_coder';
+      UPDATE agent_instances SET status='disabled' WHERE id='instance_mock_coder';
+      UPDATE scheduler_agent_policies SET policy=jsonb_set(policy,'{required_runtimes}','["codex"]'::jsonb)`);
+    await observer!.query(
+      `INSERT INTO agent_runtimes(id,organization_id,computer_id,runtime,status,last_seen_at)
+      VALUES ('claim-runtime','org_default','computer_local_mock','codex','available',$1);
+      `,
+      [now],
+    );
+    await observer!.query(
+      `INSERT INTO devices(id,organization_id,display_name,platform,app_version,computer_id,enrolled_by_user_id,trust,created_at)
+      VALUES ('claim-device','org_default','Controlled fixture','linux','fixture','computer_local_mock','user_owner','active',$1)`,
+      [now],
+    );
+    await observer!.query(
+      `INSERT INTO device_tokens(id,organization_id,device_id,kind,token_lookup,token_hash,status,created_at)
+      VALUES ('claim-token','org_default','claim-device','node','fixture-lookup','fixture-not-authenticated','active',$1)`,
+      [now],
+    );
+    const ports = [f.first, f.second];
+    const contexts = ports.map((db) => ({
+      ...f.context(db),
+      authConfig: {},
+      aiDataSharingPolicy: sharing.buildAiDataSharingPolicy({ mode: "local", providers: [] }),
+      idGen: { generate: (prefix: string) => `${prefix}_${randomUUID()}` },
+      schedulerRollout: {
+        version: 1,
+        workspaces: {
+          org_default: {
+            flags: {
+              execution_requests: true,
+              daemon_claim: true,
+              isolated_workspaces: true,
+              capacity_admission: true,
+            },
+          },
+        },
+      },
+      getPairedNodeSession: () => ({
+        computerId: "computer_local_mock",
+        deviceId: "claim-device",
+        tokenLookup: "fixture-lookup",
+        sessionId: "session",
+      }),
+      supportsExecutionFeature: () => true,
+      onRunQueued: vi.fn(async () => {}),
+    }));
+    const backendIds = await Promise.all(
+      ports.map(async (port) => (await port.db.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid),
+    );
+    const observerId = (await observer!.query("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+    expect(new Set([...backendIds, observerId]).size).toBe(3);
+    const stage = async (task: string) => {
+      await observer!.query(
+        `INSERT INTO event_log(id,organization_id,type,schema_version,actor_type,actor_id,correlation_id,project_id,task_id,payload,occurred_at)
+        VALUES ($1,'org_default','task.updated','1','user','user_owner',$2,'proj_artoo',$2,'{}'::jsonb,$3)`,
+        [randomUUID(), task, now],
+      );
+      const version = (
+        await observer!.query("SELECT max(position)::int AS version FROM event_log WHERE task_id=$1", [task])
+      ).rows[0]!.version;
+      const request = await requests.createSchedulerExecutionRequest(contexts[0]!, task, {
+        version: 2,
+        permission: "execute_once",
+        request_key: "one",
+        base_version: version,
+        agent_id: "agent_mock_coder",
+        branch_backed: true,
+        write_paths: [],
+      });
+      return { taskId: task, requestId: request.id, computerId: "computer_local_mock", sessionId: "session" };
+    };
+    const first = await stage("task_pg_a");
+    const outcomes = await Promise.allSettled(
+      contexts.map((ctx) => lifecycle.claimSchedulerExecutionRequest(ctx, first)),
+    );
+    const successes = outcomes.filter(
+      (outcome): outcome is PromiseFulfilledResult<{ run: { id: string } }> => outcome.status === "fulfilled",
+    );
+    expect(successes.length).toBeGreaterThan(0);
+    for (const outcome of outcomes)
+      if (outcome.status === "rejected") expect(outcome.reason).toMatchObject({ httpStatus: 409 });
+    const winner = successes[0]!.value;
+    for (const ctx of contexts)
+      expect((await lifecycle.claimSchedulerExecutionRequest(ctx, first)).run.id).toBe(winner.run.id);
+    expect((await observer!.query("SELECT id,requested_by_user_id FROM runs")).rows).toEqual([
+      { id: winner.run.id, requested_by_user_id: "user_owner" },
+    ]);
+    expect(
+      (
+        await observer!.query(
+          "SELECT count(*)::int AS n FROM event_log WHERE type='scheduler.execution_request.consumed'",
+        )
+      ).rows,
+    ).toEqual([{ n: 1 }]);
+    for (const ctx of contexts) expect(ctx.onRunQueued).not.toHaveBeenCalled();
+    const second = await stage("task_pg_b");
+    await observer!.query("BEGIN");
+    let waiting: Promise<unknown> | undefined;
+    try {
+      // Status is a runtime eligibility fact, deliberately absent from the configuration digest.
+      await observer!.query("UPDATE agent_instances SET status='disabled' WHERE id='ai_claim'");
+      waiting = lifecycle.claimSchedulerExecutionRequest(contexts[0]!, second).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await observeDelegationBlock(Number(backendIds[0]), observerId, "agent_instances", "scheduling_claim");
+      await observer!.query("COMMIT");
+      expect(await waiting).toBeInstanceOf(Error);
+    } finally {
+      await observer!.query("ROLLBACK");
+      if (waiting) await waiting;
+    }
+    expect(
+      (
+        await observer!.query("SELECT state,consumed_run_id FROM scheduler_execution_requests WHERE id=$1", [
+          second.requestId,
+        ])
+      ).rows,
+    ).toEqual([{ state: "pending", consumed_run_id: null }]);
+    expect((await observer!.query("SELECT count(*)::int AS n FROM runs")).rows).toEqual([{ n: 1 }]);
+  });
+
   it("keeps one explicit execution request across independent concurrent staging, replay and cancellation", async () => {
     const f = await shadowFixture();
     type Intent = { id: string; state: string; requestKey: string; snapshot: object };
