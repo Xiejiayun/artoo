@@ -56,6 +56,14 @@ test("enabled mirror preserves browser submission and human review through reloa
       )
       .toBe("online");
     const title = `Scheduler mirror ${Date.now()}`;
+    // This suite now also runs source-enqueue scenarios on the same server.
+    // Assert this scenario adds exactly one record to both real inventories.
+    const baselineResponse = await request.post("/api/v1/projects/proj_artoo/scheduler-reconciliations", {
+      data: { repair: false },
+    });
+    expect(baselineResponse.ok(), await baselineResponse.text()).toBe(true);
+    const baseline = (await baselineResponse.json()).reconciliation;
+    expect(baseline).toMatchObject({ mismatchesBefore: 0, mismatchesAfter: 0, repaired: 0 });
     await page.goto("/");
     await selectProject(page);
     await page.getByRole("button", { name: "New task", exact: true }).click();
@@ -97,8 +105,8 @@ test("enabled mirror preserves browser submission and human review through reloa
     });
     expect(reconcile.ok(), await reconcile.text()).toBe(true);
     expect((await reconcile.json()).reconciliation).toMatchObject({
-      sourceCount: 1,
-      projectionCount: 1,
+      sourceCount: baseline.sourceCount + 1,
+      projectionCount: baseline.projectionCount + 1,
       mismatchesBefore: 0,
       mismatchesAfter: 0,
       repaired: 0,

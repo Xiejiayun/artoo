@@ -137,6 +137,74 @@ starts with `task_mirror:true`, then browser submission, controlled mock executi
 human acceptance, reload and drift-free reconciliation exercise the real routes.
 The ordinary Web E2E suite continues to use its existing default-off setup.
 
+## Step 2: unified transactional enqueue
+
+`services/task-enqueue-service.ts` is the sole production Task insert owner. All
+six creation paths call it inside their original business transaction. Their
+room/message/events, request authorization, initiating actor, plan/spec uniqueness,
+assistant request replay, discussion guards and independent-review/revision
+attempt guards remain with their existing owners. The off path keeps the legacy
+Task insert and optional mirror in this writer for the required release cycle.
+Parent references must resolve in the same organization and project.
+
+`unified_enqueue` remains default off. Enabling it records explicit source
+bindings and immutable event replay identities in additive migration
+`0064_task_enqueue.sql`; it does not invent historical source keys. Internal keys
+are manual Task identity, assistant room/thread + durable client request,
+discussion operation identity, plan/spec identity, independent-review operation
+identity and research-revision operation identity. Existing complete-operation
+guards run first. A repeated internal insertion fails instead of duplicating its
+business side effects. No Issue connector is introduced.
+
+The existing `POST /api/v1/tasks` optionally accepts strict version 1
+`enqueue_source`: `kind` (`manual` or `issue`), `key`, `event_id`, optional
+`target_key` (default `default`) and optional nonblank `comment` (at most 20,000
+characters). These are user provenance, not an Agent/Issue execution grant. An
+off project rejects this opt-in explicitly instead of silently creating undeduped
+work. Source scope includes organization, project, authenticated initiating user,
+kind and target. The source row serializes concurrent insertions, then locks its
+active Task; lifecycle transitions never acquire the source lock.
+
+An exact event replay returns the original Task/room even after it is terminal;
+changed event content is a conflict. A new event reuses a nonterminal Task only
+when immutable description, criteria, capabilities, parent/policy, preference,
+priority and creation provenance match. A new event after `done` or `cancelled`
+creates fresh work. Acceptance/cancellation and enqueue serialize through the
+Task lock. There is no implicit ready/assignment or additional authorization.
+
+Every accepted source comment becomes one normal user message in the task room
+and a `message.created` event in the same transaction. Event replay creates no
+extra message. Cleartext comments live only in the existing moderated message
+table; source replay records hold a digest and message reference. Content rules
+and active team membership apply. New comments remain visible during a run, but
+cannot amend that run's frozen ContextPack.
+
+Assignment freezes all currently visible comments in optional version 1
+`source_inputs`, including their digest and message/event identities. Comments
+also appear in the existing `task.description` context field for older Daemons;
+the persisted Task's original description/criteria do not change. There is no
+silent truncation: at most 100 visible comments and 200,000 aggregate characters
+are accepted per Task; a new input over the bound is rejected explicitly. A
+moderated comment is excluded from future contexts. The shared Task transition
+owner rejects acceptance unless the latest completed Run's persisted scoped
+ContextPack has the current digest. Late inputs therefore require the existing
+human `changes_requested -> ready -> run -> review` loop. Turning the rollout
+flag off does not bypass the acceptance check for already persisted comments.
+
+Focused integration covers active dedupe, exact replay, terminal new triggers,
+intent conflicts, scope isolation, transaction rollback, moderation and the late
+input review loop. The opted-in browser suite also exercises visible comments and
+that review loop. The explicit PostgreSQL integration suite uses built production
+services and concurrent independent transactions to check actual source/Task
+locks; PGlite alone is not concurrency evidence. Automated checks and elapsed
+installation rollout remain separate acceptance scopes.
+
+`npm test -- --config vitest.enqueue.config.mjs --maxWorkers=2` reruns the
+original assistant, discussion, plan, Agent Team peer-review and imported research
+revision suites with both enqueue and mirror enabled. Its test-only environment
+sets fixture configuration; it does not mock product services or weaken their
+original assertions. The normal suite keeps deterministic default-off fixtures.
+
 ## Migration and acceptance gates
 
 | Step | Implementation / activation gate |

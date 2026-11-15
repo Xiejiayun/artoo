@@ -1,4 +1,4 @@
-import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
+import { enqueueTask } from "./task-enqueue-service.js";
 import { appendEvent, goalAutomations, goals, plans, rooms, runs, taskDependencies, tasks } from "@artoo/db";
 import {
   type DagEdge,
@@ -330,26 +330,30 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
   for (let i = 0; i < specs.length; i += 1) {
     const spec = specs[i]!;
     const roomId = ctx.idGen.generate(ID_PREFIXES.room);
-    await tx.insert(tasks).values({
-      id: taskIds[i]!,
-      organizationId: goal.organizationId,
-      projectId: goal.projectId,
-      roomId,
-      goalId: goal.id,
-      sourcePlanId: planId,
-      sourcePlanSpecRef: String(i),
-      title: spec.title,
-      description: spec.description,
-      status: "backlog",
-      priority: goal.priority,
-      requiredCapabilities: spec.required_capabilities,
-      acceptanceCriteria: spec.acceptance_criteria,
-      createdByType: "system",
-      createdById: "plan_materializer",
-      createdAt: now,
-      updatedAt: now,
-    });
-    await mirrorSchedulerTask(ctx, tx, taskIds[i]!);
+    await enqueueTask(
+      ctx,
+      tx,
+      {
+        id: taskIds[i]!,
+        organizationId: goal.organizationId,
+        projectId: goal.projectId,
+        roomId,
+        goalId: goal.id,
+        sourcePlanId: planId,
+        sourcePlanSpecRef: String(i),
+        title: spec.title,
+        description: spec.description,
+        status: "backlog",
+        priority: goal.priority,
+        requiredCapabilities: spec.required_capabilities,
+        acceptanceCriteria: spec.acceptance_criteria,
+        createdByType: "system",
+        createdById: "plan_materializer",
+        createdAt: now,
+        updatedAt: now,
+      },
+      { kind: "plan", key: planId, eventId: String(i), targetKey: String(i) },
+    );
     await tx.insert(rooms).values({
       id: roomId,
       organizationId: goal.organizationId,

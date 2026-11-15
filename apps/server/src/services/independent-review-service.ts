@@ -1,4 +1,4 @@
-import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
+import { enqueueTask } from "./task-enqueue-service.js";
 import { resolveResearchRevisionOrigin } from "./research-revision-origin-service.js";
 import {
   agentInstances,
@@ -466,23 +466,27 @@ export async function ensureIndependentReview(
     (automation.appPublication != null
       ? "\n\nThis goal carries a separate original app_publication grant. Inspect application_publication.authorization and its exact bounded local contract. Research must enumerate every original must criterion in application_publication_plan without omission or weakening. Only the exact canonical bounded-local-application-publication statement may use that publication method; reject business/API/browser or stronger availability/recovery requirements disguised as publication. Design must map every application-case criterion to substantive accepted cases. The node-owned application.publication projection, when present, binds the original accepted research/design bytes and actual executed case programs; declarations and matching digests alone do not prove semantic coverage. Compare each mapped assertion and screenshot with the original criterion, and reject superficial or weakened coverage. Publication remains pending during every development review: only the separate trusted executor can establish installation, readiness, one normal reopen at the same version/URL/database and the second owner's bounded live service. Neither successful development verification nor this review claims continuous hosting, failure recovery, a third owner or whole-product completion. Preserve genuine unsupported user requirements as unmet, and do not invent stronger requirements beyond the original request."
       : "");
-  await tx.insert(tasks).values({
-    id: reviewTaskId,
-    organizationId: ctx.organizationId,
-    projectId: task.projectId,
-    roomId: goal.roomId,
-    title: `Independent review: ${task.title}`.slice(0, 300),
-    description: prompt,
-    status: "backlog",
-    priority: task.priority,
-    requiredCapabilities: ["code.read", "code.review"],
-    acceptanceCriteria: ["Inspect the exact verified source and return a bound independent review verdict"],
-    createdByType: "system",
-    createdById: "goal_runner",
-    createdAt: now,
-    updatedAt: now,
-  });
-  await mirrorSchedulerTask(ctx, tx, reviewTaskId);
+  await enqueueTask(
+    ctx,
+    tx,
+    {
+      id: reviewTaskId,
+      organizationId: ctx.organizationId,
+      projectId: task.projectId,
+      roomId: goal.roomId,
+      title: `Independent review: ${task.title}`.slice(0, 300),
+      description: prompt,
+      status: "backlog",
+      priority: task.priority,
+      requiredCapabilities: ["code.read", "code.review"],
+      acceptanceCriteria: ["Inspect the exact verified source and return a bound independent review verdict"],
+      createdByType: "system",
+      createdById: "goal_runner",
+      createdAt: now,
+      updatedAt: now,
+    },
+    { kind: "independent-review", key: id, eventId: id },
+  );
   await tx.insert(messages).values({
     id: rootId,
     organizationId: ctx.organizationId,

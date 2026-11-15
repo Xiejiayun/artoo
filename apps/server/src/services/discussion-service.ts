@@ -1,4 +1,4 @@
-import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
+import { enqueueTask } from "./task-enqueue-service.js";
 import { requireAiSharingAuthorization } from "./ai-data-sharing-service.js";
 import {
   agentInstances,
@@ -208,23 +208,27 @@ export async function startDiscussion(ctx: ServerContext, goalId: string, reques
       rootId = ctx.idGen.generate(ID_PREFIXES.message);
     // Planning is a separate, read-only run. It must not count as accepted execution
     // work or force a draft goal into running merely to produce its first plan.
-    await tx.insert(tasks).values({
-      id: taskId,
-      organizationId: ctx.organizationId,
-      projectId: goal.projectId,
-      roomId: room.id,
-      title: `Planning discussion: ${goal.title}`.slice(0, 300),
-      description: goal.objective,
-      status: "backlog",
-      priority: goal.priority,
-      requiredCapabilities: [],
-      acceptanceCriteria: ["Discuss the objective and produce a reviewable plan; do not implement it."],
-      createdByType: ctx.automationActor?.type ?? "user",
-      createdById: ctx.automationActor?.id ?? ctx.actorUserId,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await mirrorSchedulerTask(ctx, tx, taskId);
+    await enqueueTask(
+      ctx,
+      tx,
+      {
+        id: taskId,
+        organizationId: ctx.organizationId,
+        projectId: goal.projectId,
+        roomId: room.id,
+        title: `Planning discussion: ${goal.title}`.slice(0, 300),
+        description: goal.objective,
+        status: "backlog",
+        priority: goal.priority,
+        requiredCapabilities: [],
+        acceptanceCriteria: ["Discuss the objective and produce a reviewable plan; do not implement it."],
+        createdByType: ctx.automationActor?.type ?? "user",
+        createdById: ctx.automationActor?.id ?? ctx.actorUserId,
+        createdAt: now,
+        updatedAt: now,
+      },
+      { kind: "discussion", key: id, eventId: id },
+    );
     await tx.insert(messages).values({
       id: rootId,
       organizationId: ctx.organizationId,

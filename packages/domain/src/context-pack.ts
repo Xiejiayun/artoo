@@ -6,8 +6,12 @@
  * the shape below.
  */
 import { z } from "zod";
+import { SourceInputsV1Schema } from "./enqueue-source.js";
 import { ApplicationDeliveryV1Schema } from "./application-development.js";
-import { ApplicationPublicationGrantV1Schema, ApplicationPublicationContextV1Schema } from "./application-publication.js";
+import {
+  ApplicationPublicationGrantV1Schema,
+  ApplicationPublicationContextV1Schema,
+} from "./application-publication.js";
 
 import { ActorSchema } from "./events.js";
 import { ProductDevelopmentContextSchema } from "./product-development.js";
@@ -21,12 +25,25 @@ import { ProductDesignRevisionContextV1Schema } from "./product-design-revision.
 import { ProductResearchRevisionContextV1Schema } from "./research-revision-context.js";
 import { ImportedDesignReviewSubjectV1Schema } from "./imported-design-review-context.js";
 import { ImportedExecutionContextV1Schema } from "./imported-execution-context.js";
-import { ImportedExecutionReviewSubjectV1Schema, ImportedExecutionRepairContextV1Schema } from "./imported-implementation-context.js";
-import { ImportedValidationContextV1Schema, ImportedValidationReviewSubjectV1Schema } from "./imported-validation-context.js";
-import { ImportedRecoveryValidationContextV1Schema, ImportedRecoveryValidationReviewSubjectV1Schema } from "./source-recovery-context.js";
-import { ImportedCleanValidationContextV1Schema, ImportedCleanValidationReviewSubjectV1Schema } from "./clean-validation-context.js";
+import {
+  ImportedExecutionReviewSubjectV1Schema,
+  ImportedExecutionRepairContextV1Schema,
+} from "./imported-implementation-context.js";
+import {
+  ImportedValidationContextV1Schema,
+  ImportedValidationReviewSubjectV1Schema,
+} from "./imported-validation-context.js";
+import {
+  ImportedRecoveryValidationContextV1Schema,
+  ImportedRecoveryValidationReviewSubjectV1Schema,
+} from "./source-recovery-context.js";
+import {
+  ImportedCleanValidationContextV1Schema,
+  ImportedCleanValidationReviewSubjectV1Schema,
+} from "./clean-validation-context.js";
 
 export const ContextPackSchema = z.object({
+  source_inputs: SourceInputsV1Schema.optional(),
   app_delivery: ApplicationDeliveryV1Schema.optional(),
   app_publication: ApplicationPublicationGrantV1Schema.optional(),
   application_publication: ApplicationPublicationContextV1Schema.optional(),
@@ -46,63 +63,128 @@ export const ContextPackSchema = z.object({
   imported_review_subject: ImportedProductReviewSubjectV1Schema.optional(),
   verification_capabilities: VerificationCapabilitiesContextSchema.optional(),
   release_capabilities: ReleaseCapabilitiesV1Schema.optional(),
-  review_subject: z.object({
-    version: z.literal(1), task_id: z.string().min(1), run_id: z.string().min(1), evidence_id: z.string().min(1),
-    subject_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/), development_stage: DevelopmentStageSchema.optional(),
-    verification: ReviewVerificationContextSchema.optional(),
-  }).superRefine((subject, ctx) => {
-    if (subject.verification?.application && (subject.verification.application.run_id !== subject.run_id
-      || subject.verification.application.candidate.subject_digest !== subject.subject_digest
-      || subject.verification.application.stage !== subject.development_stage)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["verification", "application"], message: "Application review evidence must match the original run, source and stage" });
-    }
-    if (subject.development_stage && subject.verification?.checks.some((check) => check.observation
-      && check.observation.stage !== subject.development_stage)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["verification"], message: "Review observations must match the bound development stage" });
-    }
-  }).optional(),
+  review_subject: z
+    .object({
+      version: z.literal(1),
+      task_id: z.string().min(1),
+      run_id: z.string().min(1),
+      evidence_id: z.string().min(1),
+      subject_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      development_stage: DevelopmentStageSchema.optional(),
+      verification: ReviewVerificationContextSchema.optional(),
+    })
+    .superRefine((subject, ctx) => {
+      if (
+        subject.verification?.application &&
+        (subject.verification.application.run_id !== subject.run_id ||
+          subject.verification.application.candidate.subject_digest !== subject.subject_digest ||
+          subject.verification.application.stage !== subject.development_stage)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["verification", "application"],
+          message: "Application review evidence must match the original run, source and stage",
+        });
+      }
+      if (
+        subject.development_stage &&
+        subject.verification?.checks.some(
+          (check) => check.observation && check.observation.stage !== subject.development_stage,
+        )
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["verification"],
+          message: "Review observations must match the bound development stage",
+        });
+      }
+    })
+    .optional(),
   product_development: ProductDevelopmentContextSchema.optional(),
-  goal_context: z.object({
-    version: z.literal(1),
-    goal_id: z.string().min(1),
-    objective: z.string(),
-    acceptance_criteria: z.array(z.string()),
-    plan: z.object({ id: z.string().min(1), version: z.number().int().positive(), rationale: z.string(), spec_ref: z.string().nullable() }).nullable(),
-  }).optional(),
+  goal_context: z
+    .object({
+      version: z.literal(1),
+      goal_id: z.string().min(1),
+      objective: z.string(),
+      acceptance_criteria: z.array(z.string()),
+      plan: z
+        .object({
+          id: z.string().min(1),
+          version: z.number().int().positive(),
+          rationale: z.string(),
+          spec_ref: z.string().nullable(),
+        })
+        .nullable(),
+    })
+    .optional(),
   // References are evidence, not instructions or permission to access another
   // workspace. Artifact bodies remain behind the authenticated content API.
-  dependency_context: z.object({
-    version: z.literal(1),
-    truncated: z.boolean(),
-    entries: z.array(z.object({
-      task_id: z.string().min(1), title: z.string(), dependency_type: z.string(), status: z.string(),
-      acceptance_criteria: z.array(z.string()),
-      run_id: z.string().nullable(), workspace_root: z.string().nullable(),
-      artifacts_truncated: z.boolean(),
-      artifacts: z.array(z.object({
-        id: z.string().min(1), type: z.string(), run_id: z.string().min(1),
-        checksum: z.string().nullable(), content_path: z.string(),
-      })).max(100),
-    })).max(100),
-  }).optional(),
-  conversation: z.object({
-    room_id: z.string(), turn_id: z.string(), current_request: z.string(),
-    thread_root_id: z.string().nullable().optional(),
-    messages: z.array(z.object({ id: z.string(), role: z.enum(["user", "assistant"]), body: z.string(), actor_id: z.string().optional() })),
-    history_truncated: z.boolean(),
-  }).optional(),
-  review_feedback: z.object({
-    version: z.literal(1),
-    entries: z.array(z.object({
-      event_id: z.string().min(1),
-      position: z.number().refine(Number.isInteger, "Expected an integer").positive(),
-      task_id: z.string().min(1),
-      actor: ActorSchema,
-      occurred_at: z.string().min(1),
-      comment: z.string().refine((value) => value.trim().length > 0),
-      artifact_ids: z.array(z.string().min(1)).nullable().optional(),
-    })).min(1),
-  }).optional(),
+  dependency_context: z
+    .object({
+      version: z.literal(1),
+      truncated: z.boolean(),
+      entries: z
+        .array(
+          z.object({
+            task_id: z.string().min(1),
+            title: z.string(),
+            dependency_type: z.string(),
+            status: z.string(),
+            acceptance_criteria: z.array(z.string()),
+            run_id: z.string().nullable(),
+            workspace_root: z.string().nullable(),
+            artifacts_truncated: z.boolean(),
+            artifacts: z
+              .array(
+                z.object({
+                  id: z.string().min(1),
+                  type: z.string(),
+                  run_id: z.string().min(1),
+                  checksum: z.string().nullable(),
+                  content_path: z.string(),
+                }),
+              )
+              .max(100),
+          }),
+        )
+        .max(100),
+    })
+    .optional(),
+  conversation: z
+    .object({
+      room_id: z.string(),
+      turn_id: z.string(),
+      current_request: z.string(),
+      thread_root_id: z.string().nullable().optional(),
+      messages: z.array(
+        z.object({
+          id: z.string(),
+          role: z.enum(["user", "assistant"]),
+          body: z.string(),
+          actor_id: z.string().optional(),
+        }),
+      ),
+      history_truncated: z.boolean(),
+    })
+    .optional(),
+  review_feedback: z
+    .object({
+      version: z.literal(1),
+      entries: z
+        .array(
+          z.object({
+            event_id: z.string().min(1),
+            position: z.number().refine(Number.isInteger, "Expected an integer").positive(),
+            task_id: z.string().min(1),
+            actor: ActorSchema,
+            occurred_at: z.string().min(1),
+            comment: z.string().refine((value) => value.trim().length > 0),
+            artifact_ids: z.array(z.string().min(1)).nullable().optional(),
+          }),
+        )
+        .min(1),
+    })
+    .optional(),
   task: z.object({
     id: z.string(),
     title: z.string(),

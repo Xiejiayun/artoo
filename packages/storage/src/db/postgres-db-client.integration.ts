@@ -11,11 +11,17 @@ import { PostgresDbClient, type PostgresDbClientOptions } from "./postgres-db-cl
 
 const configuredUrl = process.env.ARTOO_POSTGRES_TEST_ADMIN_URL;
 if (configuredUrl === undefined || process.env.ARTOO_POSTGRES_TEST_ISOLATED !== "1") {
-  throw new Error("This integration suite requires ARTOO_POSTGRES_TEST_ADMIN_URL and ARTOO_POSTGRES_TEST_ISOLATED=1 for a private local PostgreSQL cluster");
+  throw new Error(
+    "This integration suite requires ARTOO_POSTGRES_TEST_ADMIN_URL and ARTOO_POSTGRES_TEST_ISOLATED=1 for a private local PostgreSQL cluster",
+  );
 }
 const adminUrl = new URL(configuredUrl);
-if (!["postgres:", "postgresql:"].includes(adminUrl.protocol)
-  || !["127.0.0.1", "[::1]", "localhost"].includes(adminUrl.hostname) || adminUrl.port === "6543" || adminUrl.search) {
+if (
+  !["postgres:", "postgresql:"].includes(adminUrl.protocol) ||
+  !["127.0.0.1", "[::1]", "localhost"].includes(adminUrl.hostname) ||
+  adminUrl.port === "6543" ||
+  adminUrl.search
+) {
   throw new Error("Integration tests require a direct loopback PostgreSQL URL without query parameters");
 }
 
@@ -30,8 +36,11 @@ let clients: PostgresDbClient[] = [];
 
 async function open(options: Partial<Omit<PostgresDbClientOptions, "connectionString">> = {}) {
   const client = await PostgresDbClient.create({
-    connectionString: databaseUrl, allowInsecureLocalhost: true,
-    connectionTimeoutMillis: 3000, queryTimeoutMillis: 5000, ...options,
+    connectionString: databaseUrl,
+    allowInsecureLocalhost: true,
+    connectionTimeoutMillis: 3000,
+    queryTimeoutMillis: 5000,
+    ...options,
   });
   clients.push(client);
   return client;
@@ -39,7 +48,9 @@ async function open(options: Partial<Omit<PostgresDbClientOptions, "connectionSt
 
 function deferred() {
   let resolve!: () => void;
-  const promise = new Promise<void>((done) => { resolve = done; });
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
   return { promise, resolve };
 }
 
@@ -74,55 +85,157 @@ beforeEach(async () => {
   databaseUrl = url.toString();
   observer = new pg.Client({ connectionString: databaseUrl, ssl: false, connectionTimeoutMillis: 3000 });
   await observer.connect();
-  await observer!.query("REVOKE ALL ON SCHEMA public FROM PUBLIC; REVOKE ALL ON SCHEMA public FROM anon, authenticated");
+  await observer!.query(
+    "REVOKE ALL ON SCHEMA public FROM PUBLIC; REVOKE ALL ON SCHEMA public FROM anon, authenticated",
+  );
 });
 
 afterEach(async () => {
   const closed = await Promise.allSettled([...clients.map((client) => client.close()), observer?.end()]);
   const ownership = await admin.query<{ marker: string }>(
-    "SELECT shobj_description(oid, 'pg_database') AS marker FROM pg_database WHERE datname = $1", [databaseName],
+    "SELECT shobj_description(oid, 'pg_database') AS marker FROM pg_database WHERE datname = $1",
+    [databaseName],
   );
   if (ownership.rows[0]?.marker !== marker || !/^artoo_adapter_\d+_[a-f0-9]{32}$/.test(databaseName)) {
     throw new Error("Test database ownership changed; retaining it instead of deleting it");
   }
   await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
   const failures = closed.filter((result): result is PromiseRejectedResult => result.status === "rejected");
-  if (failures.length) throw new AggregateError(failures.map((result) => result.reason), "Adapter cleanup failed");
+  if (failures.length)
+    throw new AggregateError(
+      failures.map((result) => result.reason),
+      "Adapter cleanup failed",
+    );
 });
 
 afterAll(async () => {
   try {
     for (const role of createdRoles) {
       const ownership = await admin.query<{ marker: string }>(
-        "SELECT shobj_description(oid, 'pg_authid') AS marker FROM pg_roles WHERE rolname = $1", [role],
+        "SELECT shobj_description(oid, 'pg_authid') AS marker FROM pg_roles WHERE rolname = $1",
+        [role],
       );
       if (ownership.rows[0]?.marker !== marker) throw new Error("Test role ownership changed; retaining it");
       await admin.query(`DROP ROLE "${role}"`);
     }
-  } finally { await admin.end(); }
+  } finally {
+    await admin.end();
+  }
 });
 
 describe("PostgresDbClient with a real PostgreSQL server", () => {
+  it("serializes independent task enqueue transactions without losing source comments or replay identities", async () => {
+    // Built production services exercise PostgreSQL's real row/unique locks,
+    // rather than PGlite's process-local transaction serialization.
+    const schema = (await import(new URL("../../../db/dist/index.js", import.meta.url).href)) as {
+      loadMigrationStatements(): Promise<string[]>;
+      seed(client: PostgresDbClient, now: string): Promise<unknown>;
+    };
+    const service = (await import(
+      new URL("../../../../apps/server/dist/services/task-service.js", import.meta.url).href
+    )) as {
+      createTask(ctx: object, request: object): Promise<{ task: { id: string }; room: { id: string } }>;
+    };
+    const client = await open({ queryTimeoutMillis: 10000 });
+    await client.migrate(await schema.loadMigrationStatements());
+    const now = new Date().toISOString();
+    await schema.seed(client, now);
+    const ctx = {
+      db: client,
+      organizationId: "org_default",
+      actorUserId: "user_owner",
+      clock: { now: () => new Date(now), nowIso: () => now },
+      idGen: { generate: (prefix: string) => `${prefix}_${randomUUID()}` },
+      schedulerRollout: {
+        version: 1,
+        workspaces: { org_default: { flags: { unified_enqueue: true, task_mirror: true } } },
+      },
+    };
+    const request = (event: string, description = "Preserve all accepted requirements") => ({
+      project_id: "proj_artoo",
+      title: "Concurrent issue",
+      description,
+      priority: "p2",
+      acceptance_criteria: ["All cases pass"],
+      required_capabilities: [],
+      enqueue_source: {
+        version: 1,
+        kind: "issue",
+        key: "repo/issue/1",
+        event_id: event,
+        target_key: "default",
+        comment: event,
+      },
+    });
+    const results = await Promise.all(
+      ["first", "second", "third"].map((event) => service.createTask(ctx, request(event))),
+    );
+    expect(new Set(results.map((result) => result.task.id)).size).toBe(1);
+    expect(new Set(results.map((result) => result.room.id)).size).toBe(1);
+    const taskId = results[0]!.task.id;
+    expect((await observer!.query("SELECT count(*)::int AS n FROM tasks")).rows).toEqual([{ n: 1 }]);
+    expect((await observer!.query("SELECT count(*)::int AS n FROM rooms WHERE type='task'")).rows).toEqual([{ n: 1 }]);
+    expect((await observer!.query("SELECT body FROM messages WHERE task_id=$1 ORDER BY body", [taskId])).rows).toEqual([
+      { body: "first" },
+      { body: "second" },
+      { body: "third" },
+    ]);
+    const retries = await Promise.all(Array.from({ length: 3 }, () => service.createTask(ctx, request("second"))));
+    expect(retries.every((result) => result.task.id === taskId)).toBe(true);
+    expect((await observer!.query("SELECT count(*)::int AS n FROM task_enqueue_events")).rows).toEqual([{ n: 3 }]);
+    const conflicts = await Promise.allSettled(
+      ["one", "two"].map((event) => service.createTask(ctx, request(event, "Incompatible changed intent"))),
+    );
+    expect(
+      conflicts.every((result) => result.status === "rejected" && result.reason.message.includes("different intent")),
+    ).toBe(true);
+    await observer!.query("UPDATE tasks SET status='done' WHERE id=$1", [taskId]);
+    const fresh = await Promise.all(
+      ["after-1", "after-2", "after-3"].map((event) => service.createTask(ctx, request(event))),
+    );
+    expect(new Set(fresh.map((result) => result.task.id)).size).toBe(1);
+    expect(fresh[0]!.task.id).not.toBe(taskId);
+    expect((await service.createTask(ctx, request("first"))).task.id).toBe(taskId);
+    expect((await observer!.query("SELECT count(*)::int AS n FROM tasks")).rows).toEqual([{ n: 2 }]);
+  });
   it("applies the production migration history only after the actual Supabase prerequisite SQL", async () => {
     // Load the built production loader instead of introducing a db -> storage
     // -> db source dependency. This suite is explicitly run after npm run build.
     const moduleUrl = new URL("../../../db/dist/index.js", import.meta.url);
-    const schema = await import(moduleUrl.href) as Record<string, unknown> & { loadMigrationStatements(): Promise<string[]> };
+    const schema = (await import(moduleUrl.href)) as Record<string, unknown> & {
+      loadMigrationStatements(): Promise<string[]>;
+    };
     const statements = await schema.loadMigrationStatements();
     const client = await open();
-    await observer!.query("GRANT USAGE ON SCHEMA public TO PUBLIC, anon, authenticated; CREATE SCHEMA auth; CREATE SCHEMA storage; GRANT USAGE ON SCHEMA auth, storage TO anon, authenticated");
+    await observer!.query(
+      "GRANT USAGE ON SCHEMA public TO PUBLIC, anon, authenticated; CREATE SCHEMA auth; CREATE SCHEMA storage; GRANT USAGE ON SCHEMA auth, storage TO anon, authenticated",
+    );
     await expect(client.migrate(statements)).rejects.toThrow("deployment security prerequisite");
-    expect((await observer!.query("SELECT to_regnamespace('artoo_meta')::text AS name")).rows).toEqual([{ name: null }]);
-    const prerequisite = await readFile(new URL("../../../../deploy/azure/supabase-private-schema.sql", import.meta.url), "utf8");
+    expect((await observer!.query("SELECT to_regnamespace('artoo_meta')::text AS name")).rows).toEqual([
+      { name: null },
+    ]);
+    const prerequisite = await readFile(
+      new URL("../../../../deploy/azure/supabase-private-schema.sql", import.meta.url),
+      "utf8",
+    );
     await observer!.query(prerequisite);
     await client.migrate(statements);
     await client.migrate(statements);
-    const expected = Object.values(schema).filter((value) => is(value, PgTable)).map(getTableName).sort();
+    const expected = Object.values(schema)
+      .filter((value) => is(value, PgTable))
+      .map(getTableName)
+      .sort();
     expect(expected.length).toBeGreaterThan(0);
-    const tables = await observer!.query<{ name: string }>("SELECT table_name AS name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name");
+    const tables = await observer!.query<{ name: string }>(
+      "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name",
+    );
     expect(tables.rows.map((row) => row.name)).toEqual(expected);
-    expect((await observer!.query("SELECT count(*)::int AS n FROM artoo_meta.migrations")).rows).toEqual([{ n: statements.length }]);
-    const permissions = await observer!.query("SELECT rolname, has_schema_privilege(oid, 'public', 'USAGE') AS public, has_schema_privilege(oid, 'auth', 'USAGE') AS auth, has_schema_privilege(oid, 'storage', 'USAGE') AS storage FROM pg_roles WHERE rolname IN ('anon', 'authenticated') ORDER BY rolname");
+    expect((await observer!.query("SELECT count(*)::int AS n FROM artoo_meta.migrations")).rows).toEqual([
+      { n: statements.length },
+    ]);
+    const permissions = await observer!.query(
+      "SELECT rolname, has_schema_privilege(oid, 'public', 'USAGE') AS public, has_schema_privilege(oid, 'auth', 'USAGE') AS auth, has_schema_privilege(oid, 'storage', 'USAGE') AS storage FROM pg_roles WHERE rolname IN ('anon', 'authenticated') ORDER BY rolname",
+    );
     expect(permissions.rows).toEqual([
       { rolname: "anon", public: false, auth: true, storage: true },
       { rolname: "authenticated", public: false, auth: true, storage: true },
@@ -139,38 +252,58 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     const history = [initial, "ALTER TABLE adapter_test ADD COLUMN note text DEFAULT 'new'"];
     await client.migrate(history);
     await client.migrate(history);
-    expect((await client.db.execute(sql`SELECT * FROM adapter_test`)).rows).toEqual([{ id: "saved", n: 1, note: "new" }]);
-    expect((await client.db.execute(sql`SELECT count(*)::int AS n FROM artoo_meta.migrations`)).rows).toEqual([{ n: 2 }]);
+    expect((await client.db.execute(sql`SELECT * FROM adapter_test`)).rows).toEqual([
+      { id: "saved", n: 1, note: "new" },
+    ]);
+    expect((await client.db.execute(sql`SELECT count(*)::int AS n FROM artoo_meta.migrations`)).rows).toEqual([
+      { n: 2 },
+    ]);
     expect(await client.healthCheck()).toBe(true);
   });
 
   it("commits and rolls back complete transactions", async () => {
     const client = await open();
     await client.migrate([initial]);
-    await client.transaction(async (tx) => { await tx.execute(sql`INSERT INTO adapter_test VALUES ('committed', 1)`); });
-    await expect(client.transaction(async (tx) => {
-      await tx.execute(sql`INSERT INTO adapter_test VALUES ('aborted', 2)`);
-      throw new Error("abort this transaction");
-    })).rejects.toThrow("abort this transaction");
+    await client.transaction(async (tx) => {
+      await tx.execute(sql`INSERT INTO adapter_test VALUES ('committed', 1)`);
+    });
+    await expect(
+      client.transaction(async (tx) => {
+        await tx.execute(sql`INSERT INTO adapter_test VALUES ('aborted', 2)`);
+        throw new Error("abort this transaction");
+      }),
+    ).rejects.toThrow("abort this transaction");
     expect((await client.db.execute(sql`SELECT id FROM adapter_test`)).rows).toEqual([{ id: "committed" }]);
   });
 
   it("preserves direct Drizzle transaction isolation, read-only mode and savepoints", async () => {
     const client = await open();
     await client.migrate([initial]);
-    await client.db.transaction(async (tx) => {
-      const result = await tx.execute(sql`SELECT current_setting('transaction_isolation') AS isolation, current_setting('transaction_read_only') AS readonly`);
-      expect(result.rows).toEqual([{ isolation: "repeatable read", readonly: "on" }]);
-    }, { isolationLevel: "repeatable read", accessMode: "read only" });
-    await expect(client.db.transaction(async (tx) => {
-      await tx.execute(sql`INSERT INTO adapter_test VALUES ('read-only', 1)`);
-    }, { accessMode: "read only" })).rejects.toThrow();
+    await client.db.transaction(
+      async (tx) => {
+        const result = await tx.execute(
+          sql`SELECT current_setting('transaction_isolation') AS isolation, current_setting('transaction_read_only') AS readonly`,
+        );
+        expect(result.rows).toEqual([{ isolation: "repeatable read", readonly: "on" }]);
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
+    await expect(
+      client.db.transaction(
+        async (tx) => {
+          await tx.execute(sql`INSERT INTO adapter_test VALUES ('read-only', 1)`);
+        },
+        { accessMode: "read only" },
+      ),
+    ).rejects.toThrow();
     await client.transaction(async (tx) => {
       await tx.execute(sql`INSERT INTO adapter_test VALUES ('outer', 1)`);
-      await expect(tx.transaction(async (nested) => {
-        await nested.execute(sql`INSERT INTO adapter_test VALUES ('inner', 1)`);
-        throw new Error("rollback savepoint");
-      })).rejects.toThrow("rollback savepoint");
+      await expect(
+        tx.transaction(async (nested) => {
+          await nested.execute(sql`INSERT INTO adapter_test VALUES ('inner', 1)`);
+          throw new Error("rollback savepoint");
+        }),
+      ).rejects.toThrow("rollback savepoint");
     });
     expect((await client.db.execute(sql`SELECT id FROM adapter_test`)).rows).toEqual([{ id: "outer" }]);
   });
@@ -178,13 +311,16 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
   it("keeps an independent query outside another request's transaction", async () => {
     const client = await open();
     await client.migrate([initial]);
-    const entered = deferred(), release = deferred();
-    const aborted = client.transaction(async (tx) => {
-      await tx.execute(sql`INSERT INTO adapter_test VALUES ('transaction', 1)`);
-      entered.resolve();
-      await release.promise;
-      throw new Error("rollback isolated request");
-    }).catch((error: unknown) => error);
+    const entered = deferred(),
+      release = deferred();
+    const aborted = client
+      .transaction(async (tx) => {
+        await tx.execute(sql`INSERT INTO adapter_test VALUES ('transaction', 1)`);
+        entered.resolve();
+        await release.promise;
+        throw new Error("rollback isolated request");
+      })
+      .catch((error: unknown) => error);
     await entered.promise;
     const independent = Promise.resolve(client.db.execute(sql`INSERT INTO adapter_test VALUES ('independent', 2)`));
     expect(await Promise.race([independent.then(() => "settled"), delay(50).then(() => "queued")])).toBe("queued");
@@ -198,7 +334,10 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     const client = await open();
     await client.migrate([initial]);
     let leaked: DrizzleDb | undefined;
-    await client.transaction(async (tx) => { leaked = tx; await tx.execute(sql`SELECT 1`); });
+    await client.transaction(async (tx) => {
+      leaked = tx;
+      await tx.execute(sql`SELECT 1`);
+    });
     await client.transaction(async (tx) => {
       await tx.execute(sql`INSERT INTO adapter_test VALUES ('new-owner', 1)`);
       await expect(leaked!.execute(sql`INSERT INTO adapter_test VALUES ('leaked', 1)`)).rejects.toThrow();
@@ -223,9 +362,15 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
   it("rolls DDL and journal back together after a failed migration", async () => {
     const client = await open();
     await client.migrate([initial]);
-    await expect(client.migrate([initial, "CREATE TABLE incomplete (n integer)", "this is invalid SQL"])).rejects.toThrow();
-    expect((await client.db.execute(sql`SELECT to_regclass('public.incomplete') AS name`)).rows).toEqual([{ name: null }]);
-    expect((await client.db.execute(sql`SELECT count(*)::int AS n FROM artoo_meta.migrations`)).rows).toEqual([{ n: 1 }]);
+    await expect(
+      client.migrate([initial, "CREATE TABLE incomplete (n integer)", "this is invalid SQL"]),
+    ).rejects.toThrow();
+    expect((await client.db.execute(sql`SELECT to_regclass('public.incomplete') AS name`)).rows).toEqual([
+      { name: null },
+    ]);
+    expect((await client.db.execute(sql`SELECT count(*)::int AS n FROM artoo_meta.migrations`)).rows).toEqual([
+      { n: 1 },
+    ]);
     await client.migrate([initial, "CREATE TABLE complete (n integer)"]);
   });
 
@@ -243,7 +388,9 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     await client.db.execute(sql`INSERT INTO untracked VALUES (42)`);
     await expect(client.migrate([initial])).rejects.toThrow("untracked legacy schema");
     expect((await client.db.execute(sql`SELECT * FROM untracked`)).rows).toEqual([{ n: 42 }]);
-    expect((await client.db.execute(sql`SELECT to_regnamespace('artoo_meta')::text AS name`)).rows).toEqual([{ name: null }]);
+    expect((await client.db.execute(sql`SELECT to_regnamespace('artoo_meta')::text AS name`)).rows).toEqual([
+      { name: null },
+    ]);
   });
 
   it("checks Supabase effective public-schema privileges before creating any DDL", async () => {
@@ -251,7 +398,9 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     for (const role of ["anon", "authenticated"]) {
       await observer!.query(`GRANT USAGE ON SCHEMA public TO "${role}"`);
       await expect(client.migrate([initial])).rejects.toThrow("deployment security prerequisite");
-      expect((await observer!.query("SELECT to_regnamespace('artoo_meta')::text AS name")).rows).toEqual([{ name: null }]);
+      expect((await observer!.query("SELECT to_regnamespace('artoo_meta')::text AS name")).rows).toEqual([
+        { name: null },
+      ]);
       await observer!.query(`REVOKE USAGE ON SCHEMA public FROM "${role}"`);
     }
     await observer!.query("GRANT USAGE ON SCHEMA public TO PUBLIC");
@@ -289,12 +438,24 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     const client = await open({ onFatal: fatal });
     await client.migrate([initial]);
     const pid = Number((await client.db.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid);
-    const active = Promise.resolve(client.db.execute(sql`SELECT pg_sleep(4)`)).then(() => "unexpected success", (error: unknown) => error);
-    await vi.waitFor(async () => {
-      const state = await observer!.query<{ wait_event: string }>("SELECT wait_event FROM pg_stat_activity WHERE pid = $1", [pid]);
-      expect(state.rows[0]?.wait_event).toBe("PgSleep");
-    }, { timeout: 3000 });
-    const queued = Promise.resolve(client.db.execute(sql`INSERT INTO adapter_test VALUES ('queued', 1)`)).then(() => "unexpected success", (error: unknown) => error);
+    const active = Promise.resolve(client.db.execute(sql`SELECT pg_sleep(4)`)).then(
+      () => "unexpected success",
+      (error: unknown) => error,
+    );
+    await vi.waitFor(
+      async () => {
+        const state = await observer!.query<{ wait_event: string }>(
+          "SELECT wait_event FROM pg_stat_activity WHERE pid = $1",
+          [pid],
+        );
+        expect(state.rows[0]?.wait_event).toBe("PgSleep");
+      },
+      { timeout: 3000 },
+    );
+    const queued = Promise.resolve(client.db.execute(sql`INSERT INTO adapter_test VALUES ('queued', 1)`)).then(
+      () => "unexpected success",
+      (error: unknown) => error,
+    );
     await terminateOwnedBackend(pid);
     expect(await active).toBeInstanceOf(Error);
     expect(await queued).toBeInstanceOf(Error);
@@ -307,15 +468,21 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     const fatal = vi.fn();
     const client = await open({ onFatal: fatal });
     await client.migrate([initial]);
-    const entered = deferred(), resume = deferred();
+    const entered = deferred(),
+      resume = deferred();
     let pid: number | undefined;
-    const transaction = client.transaction(async (tx) => {
-      pid = Number((await tx.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid);
-      await tx.execute(sql`INSERT INTO adapter_test VALUES ('uncommitted', 1)`);
-      entered.resolve();
-      await resume.promise;
-      await tx.execute(sql`INSERT INTO adapter_test VALUES ('stale', 1)`);
-    }).then(() => "unexpected success", (error: unknown) => error);
+    const transaction = client
+      .transaction(async (tx) => {
+        pid = Number((await tx.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid);
+        await tx.execute(sql`INSERT INTO adapter_test VALUES ('uncommitted', 1)`);
+        entered.resolve();
+        await resume.promise;
+        await tx.execute(sql`INSERT INTO adapter_test VALUES ('stale', 1)`);
+      })
+      .then(
+        () => "unexpected success",
+        (error: unknown) => error,
+      );
     try {
       await entered.promise;
       await terminateOwnedBackend(pid!);
@@ -323,7 +490,9 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
       expect(await Promise.race([client.close().then(() => "closed"), delay(1000).then(() => "stuck")])).toBe("closed");
       const next = await open();
       expect((await next.db.execute(sql`SELECT * FROM adapter_test`)).rows).toEqual([]);
-    } finally { resume.resolve(); }
+    } finally {
+      resume.resolve();
+    }
     expect(await transaction).toBeInstanceOf(Error);
   });
 
@@ -331,12 +500,17 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     const fatal = vi.fn();
     const client = await open({ onFatal: fatal });
     // Exercise the real driver's pre-finally failure path, not a mock pool.
-    await expect(client.db.transaction(async () => undefined, {
-      isolationLevel: "invalid test isolation" as "serializable",
-    })).rejects.toThrow();
+    await expect(
+      client.db.transaction(async () => undefined, {
+        isolationLevel: "invalid test isolation" as "serializable",
+      }),
+    ).rejects.toThrow();
     expect(await client.healthCheck()).toBe(false);
     expect(fatal).toHaveBeenCalledTimes(1);
-    const queued = Promise.resolve(client.db.execute(sql`SELECT 1`)).then(() => "unexpected success", (error: unknown) => error);
+    const queued = Promise.resolve(client.db.execute(sql`SELECT 1`)).then(
+      () => "unexpected success",
+      (error: unknown) => error,
+    );
     expect(await Promise.race([client.close().then(() => "closed"), delay(1000).then(() => "stuck")])).toBe("closed");
     expect(await queued).toBeInstanceOf(Error);
     expect(await (await open()).healthCheck()).toBe(true);
@@ -355,10 +529,12 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     const fatal = vi.fn();
     const client = await open({ queryTimeoutMillis: 100, onFatal: fatal });
     await client.migrate([initial]);
-    await expect(client.transaction(async (tx) => {
-      await tx.execute(sql`INSERT INTO adapter_test VALUES ('timed-out', 1)`);
-      await tx.execute(sql`SELECT pg_sleep(1)`);
-    })).rejects.toThrow();
+    await expect(
+      client.transaction(async (tx) => {
+        await tx.execute(sql`INSERT INTO adapter_test VALUES ('timed-out', 1)`);
+        await tx.execute(sql`SELECT pg_sleep(1)`);
+      }),
+    ).rejects.toThrow();
     expect((await client.db.execute(sql`SELECT * FROM adapter_test`)).rows).toEqual([]);
     expect(await client.healthCheck()).toBe(true);
     expect(fatal).not.toHaveBeenCalled();
@@ -366,7 +542,8 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
 
   it("does not silently downgrade the default verified TLS connection", async () => {
     // The test launcher starts a fresh local cluster without TLS certificates.
-    await expect(PostgresDbClient.create({ connectionString: databaseUrl, connectionTimeoutMillis: 1000 }))
-      .rejects.toThrow("PostgreSQL connection failed");
+    await expect(
+      PostgresDbClient.create({ connectionString: databaseUrl, connectionTimeoutMillis: 1000 }),
+    ).rejects.toThrow("PostgreSQL connection failed");
   });
 });
