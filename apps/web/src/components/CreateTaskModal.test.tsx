@@ -7,6 +7,55 @@ import { fakeApi, renderWithProviders, taskFixture } from "../test/utils.js";
 import { CreateTaskModal } from "./CreateTaskModal.js";
 
 describe("CreateTaskModal", () => {
+  it("reuses one creation identity for an unchanged brief after a lost response", async () => {
+    const createTask = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Response delivery lost"))
+      .mockResolvedValue({
+        task: taskFixture({ id: "already-created", title: "One logical task", status: "backlog" }),
+      });
+    renderWithProviders(<CreateTaskModal projectId="proj_artoo" onClose={() => undefined} />, {
+      client: fakeApi({ createTask }),
+    });
+    await userEvent.type(screen.getByLabelText("Title"), "One logical task");
+    await userEvent.click(screen.getByRole("button", { name: "Create task" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Response delivery lost");
+    await userEvent.click(screen.getByRole("button", { name: "Create task" }));
+    expect(createTask).toHaveBeenCalledTimes(2);
+    expect(createTask.mock.calls[1]).toEqual(createTask.mock.calls[0]);
+  });
+
+  it("uses a fresh creation identity when the submitted brief changes", async () => {
+    const createTask = vi.fn().mockRejectedValue(new Error("Controlled rejection"));
+    renderWithProviders(<CreateTaskModal projectId="proj_artoo" onClose={() => undefined} />, {
+      client: fakeApi({ createTask }),
+    });
+    await userEvent.type(screen.getByLabelText("Title"), "Original task");
+    await userEvent.click(screen.getByRole("button", { name: "Create task" }));
+    await screen.findByRole("alert");
+    await userEvent.type(screen.getByLabelText("Description"), "A changed brief");
+    await userEvent.click(screen.getByRole("button", { name: "Create task" }));
+    expect(createTask).toHaveBeenCalledTimes(2);
+    expect(createTask.mock.calls[1]![1]).not.toBe(createTask.mock.calls[0]![1]);
+    expect(createTask.mock.calls[1]![0]).toMatchObject({ description: "A changed brief" });
+  });
+
+  it("starts a fresh creation identity when a new dialog repeats an earlier brief", async () => {
+    const createTask = vi
+      .fn()
+      .mockResolvedValue({ task: taskFixture({ id: "created", title: "Repeatable brief", status: "backlog" }) });
+    const client = fakeApi({ createTask });
+    const first = renderWithProviders(<CreateTaskModal projectId="proj_artoo" onClose={() => undefined} />, { client });
+    await userEvent.type(screen.getByLabelText("Title"), "Repeatable brief");
+    await userEvent.click(screen.getByRole("button", { name: "Create task" }));
+    first.unmount();
+    renderWithProviders(<CreateTaskModal projectId="proj_artoo" onClose={() => undefined} />, { client });
+    await userEvent.type(screen.getByLabelText("Title"), "Repeatable brief");
+    await userEvent.click(screen.getByRole("button", { name: "Create task" }));
+    expect(createTask).toHaveBeenCalledTimes(2);
+    expect(createTask.mock.calls[1]![0]).toEqual(createTask.mock.calls[0]![0]);
+    expect(createTask.mock.calls[1]![1]).not.toBe(createTask.mock.calls[0]![1]);
+  });
   it("submits a CreateTaskRequest with title + criteria and an idempotency key", async () => {
     const createTask = vi
       .fn()
