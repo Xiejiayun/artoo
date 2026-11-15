@@ -10,6 +10,8 @@ type Source = { id: string; projectId: string; status: string; updatedAt: string
 type Projection = typeof schedulerTaskProjections.$inferSelect;
 
 function matches(source: Source, projection: Projection | undefined): boolean {
+  // Both string-mode timestamptz columns use the same transaction/driver format.
+  // Parsing through Date would discard PostgreSQL's sub-millisecond precision.
   return (
     projection !== undefined &&
     projection.version === 1 &&
@@ -17,7 +19,7 @@ function matches(source: Source, projection: Projection | undefined): boolean {
     projection.projectId === source.projectId &&
     projection.legacyStatus === source.status &&
     projection.attemptCount === source.attempts &&
-    Date.parse(projection.sourceUpdatedAt) === Date.parse(source.updatedAt)
+    projection.sourceUpdatedAt === source.updatedAt
   );
 }
 

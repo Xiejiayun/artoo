@@ -109,6 +109,7 @@ changed after that PostgreSQL snapshot rejects repair with a serialization
 error; the monitor reports it and retries at the next scan. Source and mirror
 changes commit together in enabled writers. Repair cannot overwrite a nonzero
 epoch or foreign identity/version.
+Timestamp comparison and copying retain the database's full microsecond precision.
 The report persists counts and drift **before** and **after** repair; unresolved
 identity mismatches stay visible. A clean repaired result alone does not satisfy
 three days of consistent observations. GET returns the latest 50 scoped reports.
@@ -117,7 +118,7 @@ even when repaired, and waits for outstanding work when the server closes.
 
 GET/PUT `/api/v1/{projects,agents,computers}/:id/scheduling-policy` reads or saves
 strict version 1 metadata. PUT holds administrative authorization through commit
-and validates targets and Agent pin against the same tenant and live resources.
+and validates targets and Agent pin against the same tenant and non-deleted resources.
 Changes append an actor-attributed event. Responses explicitly say `active:false`:
 these policy limits and labels are prepared for shadow scheduling, not consumed
 by legacy scheduling. Missing policy is null, never an implicit unpinning or limit.

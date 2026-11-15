@@ -9,7 +9,7 @@ import {
   tasks,
   users,
 } from "@artoo/db";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadSchedulerRollout } from "./config/scheduler-rollout.js";
 import { mirrorSchedulerTask, reconcileSchedulerProject } from "./services/scheduler-projection-service.js";
@@ -149,6 +149,20 @@ describe("scheduler model migration (legacy authority)", () => {
     ).json().reconciliations;
     expect(reports).toHaveLength(3);
     expect(reports.map((r: { mismatchesBefore: number }) => r.mismatchesBefore)).toEqual([1, 1, 1]);
+  });
+  it("detects and repairs database timestamp drift below JavaScript's millisecond precision", async () => {
+    await setup();
+    const id = await submit();
+    await server.db.db.execute(
+      sql`UPDATE tasks SET updated_at = updated_at + interval '1 microsecond' WHERE id = ${id}`,
+    );
+    const exact = () =>
+      server.db.db.execute(sql`SELECT p.source_updated_at = t.updated_at AS same
+      FROM scheduler_task_projections p JOIN tasks t ON t.id = p.task_id WHERE t.id = ${id}`);
+    expect((await exact()).rows).toEqual([{ same: false }]);
+    expect(await reconcile(false)).toMatchObject({ mismatchesBefore: 1, mismatchesAfter: 1, repaired: 0 });
+    expect(await reconcile(true)).toMatchObject({ mismatchesBefore: 1, mismatchesAfter: 0, repaired: 1 });
+    expect((await exact()).rows).toEqual([{ same: true }]);
   });
   it("rolls back a new mirror with its source and resumes legacy writes after disabling", async () => {
     await setup();
