@@ -21,7 +21,7 @@ import {
 
 type ExecutionRequestRow = typeof schedulerExecutionRequests.$inferSelect;
 
-function checkedSnapshot(row: ExecutionRequestRow) {
+export function checkSchedulerExecutionRequestSnapshot(row: ExecutionRequestRow) {
   const parsed = SchedulerExecutionRequestSnapshotV2Schema.safeParse(row.snapshot);
   if (
     !parsed.success ||
@@ -72,7 +72,7 @@ export async function createSchedulerExecutionRequest(ctx: ServerContext, taskId
           );
         const replay = existing.find((row) => row.requestKey === request.request_key);
         if (replay) {
-          const snapshot = checkedSnapshot(replay);
+          const snapshot = checkSchedulerExecutionRequestSnapshot(replay);
           if (
             replay.organizationId !== ctx.organizationId ||
             replay.projectId !== task.projectId ||
@@ -171,7 +171,7 @@ export async function listSchedulerExecutionRequests(ctx: ServerContext, taskId:
     .limit(50);
   for (const row of rows) {
     if (row.projectId !== task.projectId) throw AppError.conflict("Scheduling execution request project changed");
-    checkedSnapshot(row);
+    checkSchedulerExecutionRequestSnapshot(row);
   }
   return rows;
 }
@@ -192,8 +192,10 @@ export async function cancelSchedulerExecutionRequest(ctx: ServerContext, taskId
       );
     if (!row) throw AppError.notFound("Scheduling execution request not found");
     if (row.projectId !== task.projectId) throw AppError.conflict("Scheduling execution request project changed");
-    checkedSnapshot(row);
+    checkSchedulerExecutionRequestSnapshot(row);
     if (row.actorUserId !== ctx.actorUserId) await requireAdministrator(ctx, tx);
+    if (row.state === "consumed")
+      throw AppError.conflict("Execution request was consumed; stop its Run through the normal lifecycle");
     if (row.state === "cancelled") return row;
     const [cancelled] = await tx
       .update(schedulerExecutionRequests)
@@ -236,7 +238,7 @@ export async function validateSchedulerExecutionRequestSnapshot(
       ),
     );
   if (!row || row.state !== "pending") throw AppError.conflict("Scheduling execution request is missing or cancelled");
-  const snapshot = checkedSnapshot(row);
+  const snapshot = checkSchedulerExecutionRequestSnapshot(row);
   const original = { ...ctx, actorUserId: row.actorUserId, automationActor: undefined };
   await requireCurrentTeamMember(original, tx);
   await requireAiSharingAuthorization(original, tx, {

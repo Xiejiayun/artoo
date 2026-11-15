@@ -1,4 +1,9 @@
 import { persistRunReservation } from "./scheduler-capacity-service.js";
+import {
+  prepareSchedulerExecutionClaim,
+  consumeSchedulerExecutionClaim,
+  type SchedulerExecutionClaimInput,
+} from "./scheduler-execution-claim-service.js";
 import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
 import { assertSourceLineageDispatch } from "./source-lineage-fence.js";
 import { assertResearchDestinationUnreserved } from "./research-destination-pool-service.js";
@@ -291,6 +296,33 @@ export async function markReady(ctx: ServerContext, taskId: string): Promise<Tas
 export interface AssignResult {
   run: Run;
   scheduler_decision: { id: string; reason: string; score: number };
+}
+
+/** Database claim kernel. The future authenticated claim transport must own dispatch.
+ * Deliberately unreachable from routes; ordinary run.start rejects consumed requests
+ * until a node-owned attempt protocol can enforce their identity before spawning. */
+export async function claimSchedulerExecutionRequest(
+  ctx: ServerContext,
+  input: SchedulerExecutionClaimInput,
+): Promise<AssignResult> {
+  return ctx.db.db.transaction(
+    async (tx) => {
+      const claim = await prepareSchedulerExecutionClaim(ctx, tx, input);
+      if (claim.kind === "replay") return claim.result;
+      const result = await assignTaskInTransaction(claim.original, tx, {
+        taskId: claim.row.taskId,
+        req: {
+          mode: "manual",
+          agent_instance_id: claim.selected.agent_instance_id,
+          branch_backed: true,
+          write_paths: claim.snapshot.request.write_paths,
+        },
+        now: ctx.clock.nowIso(),
+      });
+      return consumeSchedulerExecutionClaim(ctx, tx, claim, result);
+    },
+    { isolationLevel: "read committed" },
+  );
 }
 
 /**

@@ -23,6 +23,7 @@ import {
   goals,
   productReleases,
   runs,
+  schedulerExecutionRequests,
   tasks,
 } from "@artoo/db";
 import {
@@ -1260,6 +1261,19 @@ export function attachNodeBinding(
     // Capture before the first read: Stop/rejection/lifecycle handling may retire
     // this entry during any awaited admission check, not only the transaction.
     const previousSourceStart = pendingSourceStarts.get(runId);
+    const [schedulerClaim] = await ctx.db.db
+      .select({ id: schedulerExecutionRequests.id })
+      .from(schedulerExecutionRequests)
+      .where(
+        and(
+          eq(schedulerExecutionRequests.organizationId, ctx.organizationId),
+          eq(schedulerExecutionRequests.consumedRunId, runId),
+        ),
+      )
+      .limit(1);
+    if (schedulerClaim)
+      throw AppError.conflict("Scheduling claims require the node-owned attempt protocol before execution");
+    assertCurrentStartBinding(runId);
     if (await importedExecutionForRun(runId))
       throw AppError.permissionDenied("H5 requires its dedicated single-use execution command");
     if (await importedExecutionRepairForRun(runId))
