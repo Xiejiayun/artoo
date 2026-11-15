@@ -588,8 +588,8 @@ async function assignTaskInTransaction(
   };
   const outcome = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], scheduleOptions);
 
-  // Share the administrator configuration fence. Only this selected instance
-  // is locked; candidate revalidation must use a fresh post-wait query.
+  // Keep the existing instance -> computer lock order. Runtime snapshots share
+  // the computer fence, so fresh eligibility must follow BOTH lock waits.
   const [instance] = await tx
     .select()
     .from(agentInstances)
@@ -601,6 +601,12 @@ async function assignTaskInTransaction(
     )
     .for("update");
   if (!instance) throw AppError.conflict("Selected agent instance is no longer available");
+  const [computer] = await tx
+    .select({ id: computers.id, os: computers.os })
+    .from(computers)
+    .where(and(eq(computers.id, instance.computerId), eq(computers.organizationId, ctx.organizationId)))
+    .for("update");
+  if (!computer) throw AppError.conflict("Selected execution computer is no longer available");
   const rechecked = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], {
     ...scheduleOptions,
     captureShadow: false,
@@ -611,12 +617,6 @@ async function assignTaskInTransaction(
   if (!isDeepStrictEqual(rechecked.selected, outcome.selected)) {
     throw AppError.conflict("Selected agent instance changed before assignment; retry the request");
   }
-  const [computer] = await tx
-    .select({ id: computers.id, os: computers.os })
-    .from(computers)
-    .where(and(eq(computers.id, instance.computerId), eq(computers.organizationId, ctx.organizationId)))
-    .for("update");
-  if (!computer) throw AppError.conflict("Selected execution computer is no longer available");
   const revisionAdmission = researchOrigin ?? reviewedResearchOrigin;
   const revisionRole = researchOrigin?.snapshot.source.writer ?? reviewedResearchOrigin?.snapshot.source.reviewer;
   if (
