@@ -15,12 +15,44 @@ import {
   createSchedulerIntent,
   listSchedulerIntents,
 } from "./services/scheduler-intent-service.js";
+import {
+  cancelSchedulerExecutionRequest,
+  createSchedulerExecutionRequest,
+  listSchedulerExecutionRequests,
+} from "./services/scheduler-execution-request-service.js";
 
 const reconcileInput = z.object({ repair: z.boolean() }).strict();
 const pinImportInput = z.object({ apply: z.boolean() }).strict();
 const cancelIntentInput = z.object({ version: z.literal(1) }).strict();
+const cancelExecutionRequestInput = z.object({ version: z.literal(2) }).strict();
+
+// Request storage is available independently from the future node claim consumer.
+const executionRequestStatus = { consumer_available: false, execution_authorized: false } as const;
 
 export function registerSchedulerModelRoutes(app: FastifyInstance, ctx: ServerContext) {
+  app.get("/api/v1/tasks/:id/scheduler-execution-requests", async (request) => {
+    const c = requestContext(ctx, request);
+    return {
+      requests: await listSchedulerExecutionRequests(c, (request.params as { id: string }).id),
+      ...executionRequestStatus,
+    };
+  });
+  app.post("/api/v1/tasks/:id/scheduler-execution-requests", async (request, reply) => {
+    const c = requestContext(ctx, request);
+    const executionRequest = await createSchedulerExecutionRequest(
+      c,
+      (request.params as { id: string }).id,
+      request.body,
+    );
+    return reply.status(201).send({ request: executionRequest, ...executionRequestStatus });
+  });
+  app.post("/api/v1/tasks/:id/scheduler-execution-requests/:requestId/cancel", async (request) => {
+    if (!cancelExecutionRequestInput.safeParse(request.body).success)
+      throw AppError.validation("Explicit version 2 cancellation is required");
+    const c = requestContext(ctx, request);
+    const { id, requestId } = request.params as { id: string; requestId: string };
+    return { request: await cancelSchedulerExecutionRequest(c, id, requestId), ...executionRequestStatus };
+  });
   app.get("/api/v1/tasks/:id/scheduler-intents", async (request) => {
     const c = requestContext(ctx, request);
     return {
