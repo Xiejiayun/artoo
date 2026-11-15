@@ -10,6 +10,7 @@ import {
   runs,
   schedulerDecisions,
   schedulerExecutionRequests,
+  schedulerPreparedStarts,
   tasks,
 } from "@artoo/db";
 import { createInProcessChannel } from "@artoo/testkit";
@@ -25,6 +26,7 @@ import {
   createSchedulerExecutionRequest,
 } from "./services/scheduler-execution-request-service.js";
 import { currentTaskVersion } from "./services/sync-service.js";
+import { assertSchedulerPreparedStartUnchanged } from "./services/scheduler-prepared-start-service.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 
 const COMPUTER = "computer_local_mock",
@@ -127,7 +129,7 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
           .statusCode,
       ).toBe(200);
   }
-  async function stage(source = false) {
+  async function stage(source = false, approval = false) {
     const response = await server.app.inject({
       method: "POST",
       url: "/api/v1/tasks",
@@ -152,6 +154,23 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     expect(response.statusCode).toBe(201);
     const taskId = response.json().task.id as string;
     expect((await server.app.inject({ method: "POST", url: `/api/v1/tasks/${taskId}/ready` })).statusCode).toBe(200);
+    if (approval) {
+      const gate = await server.app.inject({
+        method: "POST",
+        url: `/api/v1/tasks/${taskId}/execution-approval`,
+        payload: { summary: "Approve this execution", risk: "high" },
+      });
+      expect(gate.statusCode).toBe(201);
+      expect(
+        (
+          await server.app.inject({
+            method: "POST",
+            url: `/api/v1/approvals/${gate.json().approval.id}/resolve`,
+            payload: { decision: "approved" },
+          })
+        ).statusCode,
+      ).toBe(200);
+    }
     const request = {
       version: 2 as const,
       permission: "execute_once" as const,
@@ -180,6 +199,7 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
       packs: await server.db.db.select().from(contextPacks),
       decisions: await server.db.db.select().from(schedulerDecisions),
       requests: await server.db.db.select().from(schedulerExecutionRequests),
+      prepared: await server.db.db.select().from(schedulerPreparedStarts),
       leases: await server.db.db.select().from(fileLeases),
       events: await server.db.db.select().from(eventLog),
     };
@@ -215,6 +235,21 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     expect(before.packs).toHaveLength(1);
     expect(before.decisions).toHaveLength(1);
     expect(before.leases).toHaveLength(1);
+    expect(before.prepared).toHaveLength(1);
+    const prepared = before.prepared[0]!.snapshot;
+    expect(prepared).toMatchObject({
+      version: 1,
+      request_id: row!.id,
+      request_snapshot_digest: row!.snapshotDigest,
+      run_id: result.run.id,
+      actor_user_id: "user_owner",
+      device_id: session.deviceId,
+      session_id: session.sessionId,
+      execution_authorized: false,
+    });
+    expect(prepared.assigned.task_input_digest).not.toBe(row!.snapshot.task_input_digest);
+    expect(prepared.assigned.task_input_version).toBeGreaterThan(row!.snapshot.task_input_version);
+    expect(await assertSchedulerPreparedStartUnchanged(server.ctx, server.db.db, input.requestId)).toEqual(prepared);
     expect(before.packs[0]!.payload).toMatchObject({ source_inputs: { entries: [{ body: "Original input" }] } });
     expect(before.events.find((event) => event.type === "scheduler.execution_request.consumed")).toMatchObject({
       actorType: "system",
@@ -304,6 +339,81 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     await unchanged(input);
     await server.db.db.execute(sql`DROP TRIGGER reject_claim_audit ON event_log`);
     expect((await claim(input)).run.status).toBe("queued");
+  });
+
+  it("keeps bound approvals and detects drift in the actual assigned Task, frozen context, Run, decision, leases and configuration", async () => {
+    await setup();
+    const input = await stage(true, true);
+    const result = await claim(input);
+    const [stored] = await server.db.db.select().from(schedulerPreparedStarts);
+    const compare = (tx: Parameters<typeof assertSchedulerPreparedStartUnchanged>[1]) =>
+      assertSchedulerPreparedStartUnchanged(server.ctx, tx, input.requestId);
+    expect(await compare(server.db.db)).toEqual(stored!.snapshot);
+    const before = await snapshot();
+    for (const change of [
+      sql`UPDATE tasks SET title='Changed after assignment' WHERE id=${input.taskId}`,
+      sql`UPDATE approvals SET summary='Changed approval' WHERE task_id=${input.taskId}`,
+      sql`UPDATE context_packs SET payload=payload || '{"changed":true}'::jsonb WHERE id=${result.run.context_pack_id}`,
+      sql`UPDATE runs SET workspace_branch='changed' WHERE id=${result.run.id}`,
+      sql`UPDATE scheduler_decisions SET reason='changed' WHERE id=${result.scheduler_decision.id}`,
+      sql`UPDATE file_leases SET status='released' WHERE run_id=${result.run.id}`,
+      sql`UPDATE agent_instances SET config=config || '{"changed":true}'::jsonb WHERE id=${INSTANCE}`,
+      sql`UPDATE scheduler_project_policies SET revision=revision+1 WHERE project_id='proj_artoo'`,
+    ]) {
+      const rollback = new Error("rollback controlled drift");
+      await expect(
+        server.db.db.transaction(async (tx) => {
+          await tx.execute(change);
+          await expect(compare(tx)).rejects.toThrow("inputs changed");
+          throw rollback;
+        }),
+      ).rejects.toBe(rollback);
+      expect(await snapshot()).toEqual(before);
+      expect(await compare(server.db.db)).toEqual(stored!.snapshot);
+    }
+    for (const change of [
+      sql`UPDATE scheduler_prepared_starts SET snapshot_digest=${`sha256:${"a".repeat(64)}`}`,
+      sql`UPDATE scheduler_prepared_starts SET created_at=now()`,
+      sql`DELETE FROM scheduler_prepared_starts`,
+    ])
+      await expect(server.db.db.execute(change)).rejects.toMatchObject({
+        cause: { code: "P0001", message: "Prepared scheduling start history is immutable" },
+      });
+    const lateInput = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/tasks",
+      payload: {
+        project_id: "proj_artoo",
+        title: "One conditional execution",
+        acceptance_criteria: ["ok"],
+        required_capabilities: ["code.modify"],
+        enqueue_source: {
+          version: 1,
+          kind: "issue",
+          key: "claim-source",
+          event_id: "two",
+          comment: "New input after preparation",
+        },
+      },
+    });
+    expect(lateInput.statusCode).toBe(201);
+    expect(lateInput.json().task.id).toBe(input.taskId);
+    await expect(compare(server.db.db)).rejects.toThrow("inputs changed");
+    expect(await server.db.db.select().from(schedulerPreparedStarts)).toEqual([stored]);
+    expect(server.ctx.onRunQueued).not.toHaveBeenCalled();
+  });
+
+  it("rolls back the complete consumption when immutable prepared-start recording fails", async () => {
+    await setup();
+    const input = await stage();
+    await server.db.db.execute(sql`CREATE FUNCTION reject_prepared_start() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'injected prepared-start failure'; END $$`);
+    await server.db.db.execute(sql`CREATE TRIGGER reject_prepared_start BEFORE INSERT ON scheduler_prepared_starts
+      FOR EACH ROW EXECUTE FUNCTION reject_prepared_start()`);
+    await unchanged(input);
+    await server.db.db.execute(sql`DROP TRIGGER reject_prepared_start ON scheduler_prepared_starts`);
+    await claim(input);
+    expect(await server.db.db.select().from(schedulerPreparedStarts)).toHaveLength(1);
   });
 
   it("rolls back if the paired session changes while preparing the Run and never transfers a consumed claim", async () => {

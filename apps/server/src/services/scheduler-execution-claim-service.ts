@@ -31,6 +31,7 @@ import { lockSchedulerRequestTask } from "./scheduler-request-bindings.js";
 import { collectSchedulerRankingSnapshot } from "./scheduler-shadow-snapshot.js";
 import { scheduleTask } from "./scheduler.js";
 import { freezeTaskSourceInputs } from "./task-source-input-service.js";
+import { recordSchedulerPreparedStart } from "./scheduler-prepared-start-service.js";
 
 const id = z.string().min(1).max(128);
 const inputSchema = z.object({ taskId: id, requestId: id, computerId: id, sessionId: id }).strict();
@@ -266,6 +267,7 @@ export async function consumeSchedulerExecutionClaim(
       },
     }),
   );
+  await recordSchedulerPreparedStart(ctx, tx, claim.row.id);
   // No await after this comparison: a registry replacement during admission rolls everything back.
   assertSchedulerClaimSession(ctx, claim.session);
   return { ...result, scheduler_decision: { ...result.scheduler_decision, reason: "scheduler_execution_request" } };

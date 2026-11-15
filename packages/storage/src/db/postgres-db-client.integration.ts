@@ -1395,6 +1395,12 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     ]);
     expect(
       (
+        await observer!.query(`SELECT request_id,run_id,snapshot->'execution_authorized' AS execution_authorized
+      FROM scheduler_prepared_starts`)
+      ).rows,
+    ).toEqual([{ request_id: first.requestId, run_id: winner.run.id, execution_authorized: false }]);
+    expect(
+      (
         await observer!.query(
           "SELECT count(*)::int AS n FROM event_log WHERE type='scheduler.execution_request.consumed'",
         )
