@@ -11,6 +11,7 @@ import type { DrizzleDb } from "@artoo/storage";
 import { and, eq } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
+import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
 
 export interface TransitionResult {
   /** True iff the guarded UPDATE actually changed the row (status was `from`). */
@@ -41,15 +42,12 @@ export async function transitionTask(
     .update(tasks)
     .set({ status: to, updatedAt: params.now })
     .where(
-      and(
-        eq(tasks.id, params.taskId),
-        eq(tasks.status, params.from),
-        eq(tasks.organizationId, ctx.organizationId),
-      ),
+      and(eq(tasks.id, params.taskId), eq(tasks.status, params.from), eq(tasks.organizationId, ctx.organizationId)),
     )
     .returning({ id: tasks.id });
 
   const changed = updated.length > 0;
+  if (changed) await mirrorSchedulerTask(ctx, tx, params.taskId);
   if (changed && params.events !== undefined) {
     for (const event of params.events(to)) {
       await appendEvent(tx, event);
@@ -82,14 +80,7 @@ export async function transitionRun(
   const updated = await tx
     .update(runs)
     .set({ status: to, ...params.patch })
-    .where(
-      and(
-        eq(runs.id, params.runId),
-        eq(runs.status, params.from),
-        eq(runs.organizationId, ctx.organizationId),
-      ),
-    )
+    .where(and(eq(runs.id, params.runId), eq(runs.status, params.from), eq(runs.organizationId, ctx.organizationId)))
     .returning({ id: runs.id });
   return { changed: updated.length > 0, to };
 }
-

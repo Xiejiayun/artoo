@@ -1,3 +1,4 @@
+import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
 import { appendEvent, goalAutomations, goals, plans, rooms, runs, taskDependencies, tasks } from "@artoo/db";
 import {
   type DagEdge,
@@ -71,7 +72,11 @@ export function mapPlan(row: typeof plans.$inferSelect): Plan {
 
 async function requireGoalInOrg(ctx: ServerContext, tx: Tx, goalId: string): Promise<typeof goals.$inferSelect> {
   const goal = (
-    await tx.select().from(goals).where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId))).for("update")
+    await tx
+      .select()
+      .from(goals)
+      .where(and(eq(goals.id, goalId), eq(goals.organizationId, ctx.organizationId)))
+      .for("update")
   )[0];
   if (goal === undefined) {
     throw AppError.notFound(`goal not found: ${goalId}`, { goal_id: goalId });
@@ -85,7 +90,10 @@ async function requireGoalInOrg(ctx: ServerContext, tx: Tx, goalId: string): Pro
  * propose time, the real task id at materialize time). Fails closed on
  * self/unknown/out-of-range refs and cycles.
  */
-function buildEdges(specs: TaskSpec[], idForIndex: (i: number) => string): { fromId: string; toId: string; type: string }[] {
+function buildEdges(
+  specs: TaskSpec[],
+  idForIndex: (i: number) => string,
+): { fromId: string; toId: string; type: string }[] {
   const edges: DagEdge[] = [];
   const out: { fromId: string; toId: string; type: string }[] = [];
   for (let i = 0; i < specs.length; i += 1) {
@@ -148,59 +156,67 @@ export async function proposePlan(ctx: ServerContext, goalId: string, input: Pro
 }
 
 /** Allows an orchestrator to link its proposal atomically; acceptance is a separate authorized action. */
-export async function proposePlanInTx(ctx: ServerContext, tx: Tx, goalId: string, input: ProposePlanInput): Promise<Plan> {
+export async function proposePlanInTx(
+  ctx: ServerContext,
+  tx: Tx,
+  goalId: string,
+  input: ProposePlanInput,
+): Promise<Plan> {
   const specs = validatePlanTaskSpecs(input.task_specs);
   const now = ctx.clock.nowIso();
   const planId = ctx.idGen.generate(ID_PREFIXES.plan);
-    const goal = await requireGoalInOrg(ctx, tx, goalId);
-    const existing = await tx
-      .select({ version: plans.version, status: plans.status })
-      .from(plans)
-      .where(and(eq(plans.organizationId, ctx.organizationId), eq(plans.goalId, goalId)));
-    const hasAccepted = existing.some((p) => p.status === "accepted");
-    if (!canProposePlan(goal.status as GoalStatus, hasAccepted)) {
-      throw AppError.invalidState(
-        `cannot propose a plan while goal is '${goal.status}'` +
-          (hasAccepted ? " (re-plan requires pause/block first)" : ""),
-        { goal_status: goal.status, has_accepted_plan: hasAccepted },
-      );
-    }
-    const nextVersion = existing.reduce((m, p) => Math.max(m, p.version), 0) + 1;
-    await tx.insert(plans).values({
-      id: planId,
-      organizationId: ctx.organizationId,
-      goalId,
-      version: nextVersion,
-      authorType: input.author_type ?? "user",
-      authorId: input.author_id ?? ctx.actorUserId,
-      rationale: input.rationale ?? "",
-      status: "proposed",
-      taskSpecs: specs,
-      materializedAt: null,
-      materializationEventId: null,
-      createdAt: now,
-      acceptedAt: null,
-    });
-    await appendEvent(
-      tx,
-      buildEvent(ctx, {
-        type: "goal.plan_proposed",
-        actorType: ctx.automationActor?.type ?? "user",
-        actorId: ctx.automationActor?.id ?? ctx.actorUserId,
-        correlationId: goalId,
-        projectId: goal.projectId,
-        roomId: goal.roomId,
-        goalId,
-        payload: { goal_id: goalId, plan_id: planId, version: nextVersion },
-      }),
+  const goal = await requireGoalInOrg(ctx, tx, goalId);
+  const existing = await tx
+    .select({ version: plans.version, status: plans.status })
+    .from(plans)
+    .where(and(eq(plans.organizationId, ctx.organizationId), eq(plans.goalId, goalId)));
+  const hasAccepted = existing.some((p) => p.status === "accepted");
+  if (!canProposePlan(goal.status as GoalStatus, hasAccepted)) {
+    throw AppError.invalidState(
+      `cannot propose a plan while goal is '${goal.status}'` +
+        (hasAccepted ? " (re-plan requires pause/block first)" : ""),
+      { goal_status: goal.status, has_accepted_plan: hasAccepted },
     );
-    const row = (await tx.select().from(plans).where(eq(plans.id, planId)))[0]!;
-    return mapPlan(row);
+  }
+  const nextVersion = existing.reduce((m, p) => Math.max(m, p.version), 0) + 1;
+  await tx.insert(plans).values({
+    id: planId,
+    organizationId: ctx.organizationId,
+    goalId,
+    version: nextVersion,
+    authorType: input.author_type ?? "user",
+    authorId: input.author_id ?? ctx.actorUserId,
+    rationale: input.rationale ?? "",
+    status: "proposed",
+    taskSpecs: specs,
+    materializedAt: null,
+    materializationEventId: null,
+    createdAt: now,
+    acceptedAt: null,
+  });
+  await appendEvent(
+    tx,
+    buildEvent(ctx, {
+      type: "goal.plan_proposed",
+      actorType: ctx.automationActor?.type ?? "user",
+      actorId: ctx.automationActor?.id ?? ctx.actorUserId,
+      correlationId: goalId,
+      projectId: goal.projectId,
+      roomId: goal.roomId,
+      goalId,
+      payload: { goal_id: goalId, plan_id: planId, version: nextVersion },
+    }),
+  );
+  const row = (await tx.select().from(plans).where(eq(plans.id, planId)))[0]!;
+  return mapPlan(row);
 }
 
 export async function getPlan(ctx: ServerContext, id: string): Promise<Plan | null> {
   const row = (
-    await ctx.db.db.select().from(plans).where(and(eq(plans.id, id), eq(plans.organizationId, ctx.organizationId)))
+    await ctx.db.db
+      .select()
+      .from(plans)
+      .where(and(eq(plans.id, id), eq(plans.organizationId, ctx.organizationId)))
   )[0];
   return row === undefined ? null : mapPlan(row);
 }
@@ -219,11 +235,19 @@ export async function listPlans(ctx: ServerContext, goalId: string): Promise<Pla
 
 export async function rejectPlan(ctx: ServerContext, planId: string): Promise<Plan | null> {
   return ctx.db.transaction(async (tx) => {
-    const lookup = (await tx.select({ goalId: plans.goalId }).from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId))))[0];
+    const lookup = (
+      await tx
+        .select({ goalId: plans.goalId })
+        .from(plans)
+        .where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId)))
+    )[0];
     if (!lookup) return null;
     const goal = await requireGoalInOrg(ctx, tx, lookup.goalId);
     const row = (
-      await tx.select().from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId)))
+      await tx
+        .select()
+        .from(plans)
+        .where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId)))
     )[0];
     if (row === undefined) return null;
     if (row.status !== "proposed") {
@@ -257,11 +281,19 @@ export interface MaterializeResult {
 /** The materialize body, run inside a caller-provided transaction so accept +
  *  materialize are atomic. Re-entrant on materialized_at. */
 async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: string): Promise<MaterializeResult> {
-  const lookup = (await tx.select({ goalId: plans.goalId }).from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId))))[0];
+  const lookup = (
+    await tx
+      .select({ goalId: plans.goalId })
+      .from(plans)
+      .where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId)))
+  )[0];
   if (!lookup) throw AppError.notFound(`plan not found: ${planId}`, { plan_id: planId });
   const goal = await requireGoalInOrg(ctx, tx, lookup.goalId);
   const plan = (
-    await tx.select().from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId)))
+    await tx
+      .select()
+      .from(plans)
+      .where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId)))
   )[0];
   if (plan === undefined) {
     throw AppError.notFound(`plan not found: ${planId}`, { plan_id: planId });
@@ -317,8 +349,16 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
       createdAt: now,
       updatedAt: now,
     });
-    await tx.insert(rooms).values({ id: roomId, organizationId: goal.organizationId, projectId: goal.projectId,
-      taskId: taskIds[i]!, goalId: goal.id, type: "task", name: spec.title.slice(0, 200), createdAt: now,
+    await mirrorSchedulerTask(ctx, tx, taskIds[i]!);
+    await tx.insert(rooms).values({
+      id: roomId,
+      organizationId: goal.organizationId,
+      projectId: goal.projectId,
+      taskId: taskIds[i]!,
+      goalId: goal.id,
+      type: "task",
+      name: spec.title.slice(0, 200),
+      createdAt: now,
     });
     await appendEvent(
       tx,
@@ -334,9 +374,19 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
         payload: { title: spec.title, source_plan_id: planId, source_plan_spec_ref: String(i) },
       }),
     );
-    await appendEvent(tx, buildEvent(ctx, { type: "room.created", actorType: "system", actorId: "plan_materializer",
-      correlationId: goal.id, projectId: goal.projectId, taskId: taskIds[i]!, roomId, goalId: goal.id,
-    }));
+    await appendEvent(
+      tx,
+      buildEvent(ctx, {
+        type: "room.created",
+        actorType: "system",
+        actorId: "plan_materializer",
+        correlationId: goal.id,
+        projectId: goal.projectId,
+        taskId: taskIds[i]!,
+        roomId,
+        goalId: goal.id,
+      }),
+    );
   }
   for (const e of edgeRows) {
     await tx.insert(taskDependencies).values({
@@ -379,13 +429,11 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
   // to the materialization event. Guarded so a materialize retry (which is
   // already short-circuited by materialized_at) can never create a duplicate.
   if (!(await hasMaterializeCheckpoint(ctx, tx, planId))) {
-    await createCheckpointInTx(
-      ctx,
-      tx,
-      { ...goal, status: goalStatus },
-      "dag_materialized",
-      { planId, triggerEventId: matEvent.id, summary: `Materialized plan into ${taskIds.length} task(s)` },
-    );
+    await createCheckpointInTx(ctx, tx, { ...goal, status: goalStatus }, "dag_materialized", {
+      planId,
+      triggerEventId: matEvent.id,
+      summary: `Materialized plan into ${taskIds.length} task(s)`,
+    });
   }
 
   const updated = (await tx.select().from(plans).where(eq(plans.id, planId)))[0]!;
@@ -403,21 +451,36 @@ async function materializeInTx(ctx: ServerContext, tx: Tx, planId: string, now: 
 export async function acceptPlan(ctx: ServerContext, planId: string): Promise<MaterializeResult> {
   const now = ctx.clock.nowIso();
   const result = await ctx.db.transaction(async (tx) => {
-    const lookup = (await tx.select({ goalId: plans.goalId }).from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId))))[0];
+    const lookup = (
+      await tx
+        .select({ goalId: plans.goalId })
+        .from(plans)
+        .where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId)))
+    )[0];
     if (!lookup) throw AppError.notFound(`plan not found: ${planId}`, { plan_id: planId });
     const goal = await requireGoalInOrg(ctx, tx, lookup.goalId);
     const automation = (await tx.select().from(goalAutomations).where(eq(goalAutomations.goalId, goal.id)))[0];
-    if (automation && (!ctx.automationActor || ctx.actorUserId !== automation.actorUserId || (automation.planId !== null && automation.planId !== planId))) {
+    if (
+      automation &&
+      (!ctx.automationActor ||
+        ctx.actorUserId !== automation.actorUserId ||
+        (automation.planId !== null && automation.planId !== planId))
+    ) {
       throw AppError.permissionDenied("Autonomous goals only accept the runner's original validated plan");
     }
     const plan = (
-      await tx.select().from(plans).where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId)))
+      await tx
+        .select()
+        .from(plans)
+        .where(and(eq(plans.id, planId), eq(plans.organizationId, ctx.organizationId)))
     )[0];
     if (plan === undefined) {
       throw AppError.notFound(`plan not found: ${planId}`, { plan_id: planId });
     }
     if (automation?.executionMode === "agent_team") {
-      const errors = validateProductDevelopmentPlan((plan.taskSpecs as unknown[]).map((spec) => TaskSpecSchema.parse(spec)));
+      const errors = validateProductDevelopmentPlan(
+        (plan.taskSpecs as unknown[]).map((spec) => TaskSpecSchema.parse(spec)),
+      );
       if (errors.length) throw AppError.validation(`Agent Team plan is incomplete: ${errors.join("; ")}`);
     }
     if (plan.status === "accepted") {
@@ -429,28 +492,71 @@ export async function acceptPlan(ctx: ServerContext, planId: string): Promise<Ma
     const replacement = goal.currentPlanId !== null;
     if ((!replacement && goal.status !== "draft") || (replacement && goal.status !== "paused")) {
       throw AppError.invalidState(
-        replacement ? "Pause the goal before accepting a replacement plan" : `A first plan requires a draft goal (is '${goal.status}')`,
+        replacement
+          ? "Pause the goal before accepting a replacement plan"
+          : `A first plan requires a draft goal (is '${goal.status}')`,
         { goal_status: goal.status },
       );
     }
     supportedGoalPolicy(goal.budgets, goal.stopConditions);
     const retiredTaskIds: string[] = [];
     if (replacement) {
-      const current = (await tx.select({ version: plans.version }).from(plans).where(and(eq(plans.id, goal.currentPlanId!), eq(plans.organizationId, ctx.organizationId))))[0];
-      if (!current || plan.version <= current.version) throw AppError.conflict("A replacement plan must be newer than the current accepted plan");
+      const current = (
+        await tx
+          .select({ version: plans.version })
+          .from(plans)
+          .where(and(eq(plans.id, goal.currentPlanId!), eq(plans.organizationId, ctx.organizationId)))
+      )[0];
+      if (!current || plan.version <= current.version)
+        throw AppError.conflict("A replacement plan must be newer than the current accepted plan");
       const unsettled = await unsettledGoalRunIds(ctx, tx, goal.id);
       const standalone = await unsettledStandaloneExecutions(ctx, tx, { goalId: goal.id });
-      if (unsettled.length > 0 || standalone.length > 0) throw AppError.conflict("Cannot replace a plan until all goal executions have confirmed they stopped", { run_ids: unsettled, standalone_operations: standalone.map(operation => ({ kind: operation.kind, id: operation.id })) });
-      const previous = await tx.select().from(tasks).where(and(eq(tasks.organizationId, ctx.organizationId), eq(tasks.goalId, goal.id), eq(tasks.sourcePlanId, goal.currentPlanId!)));
-      const executed = await tx.select({ taskId: runs.taskId }).from(runs).innerJoin(tasks, eq(tasks.id, runs.taskId)).where(and(eq(runs.organizationId, ctx.organizationId), eq(tasks.goalId, goal.id)));
+      if (unsettled.length > 0 || standalone.length > 0)
+        throw AppError.conflict("Cannot replace a plan until all goal executions have confirmed they stopped", {
+          run_ids: unsettled,
+          standalone_operations: standalone.map((operation) => ({ kind: operation.kind, id: operation.id })),
+        });
+      const previous = await tx
+        .select()
+        .from(tasks)
+        .where(
+          and(
+            eq(tasks.organizationId, ctx.organizationId),
+            eq(tasks.goalId, goal.id),
+            eq(tasks.sourcePlanId, goal.currentPlanId!),
+          ),
+        );
+      const executed = await tx
+        .select({ taskId: runs.taskId })
+        .from(runs)
+        .innerJoin(tasks, eq(tasks.id, runs.taskId))
+        .where(and(eq(runs.organizationId, ctx.organizationId), eq(tasks.goalId, goal.id)));
       const historical = new Set(executed.map((run) => run.taskId));
       for (const task of previous) {
         if (historical.has(task.id) || !canTransitionTask(task.status as TaskStatus, "cancel")) continue;
-        await transitionTask(tx, ctx, { taskId: task.id, from: task.status as TaskStatus, trigger: "cancel", now,
-          events: (to) => [buildEvent(ctx, { type: "task.updated", actorType: ctx.automationActor?.type ?? "user", actorId: ctx.automationActor?.id ?? ctx.actorUserId,
-            correlationId: goal.id, projectId: goal.projectId, taskId: task.id, roomId: task.roomId, goalId: goal.id,
-            payload: { status: to, reason: "plan_superseded", source_plan_id: task.sourcePlanId, replacement_plan_id: planId },
-          })],
+        await transitionTask(tx, ctx, {
+          taskId: task.id,
+          from: task.status as TaskStatus,
+          trigger: "cancel",
+          now,
+          events: (to) => [
+            buildEvent(ctx, {
+              type: "task.updated",
+              actorType: ctx.automationActor?.type ?? "user",
+              actorId: ctx.automationActor?.id ?? ctx.actorUserId,
+              correlationId: goal.id,
+              projectId: goal.projectId,
+              taskId: task.id,
+              roomId: task.roomId,
+              goalId: goal.id,
+              payload: {
+                status: to,
+                reason: "plan_superseded",
+                source_plan_id: task.sourcePlanId,
+                replacement_plan_id: planId,
+              },
+            }),
+          ],
         });
         retiredTaskIds.push(task.id);
       }
@@ -461,11 +567,17 @@ export async function acceptPlan(ctx: ServerContext, planId: string): Promise<Ma
     await tx
       .update(plans)
       .set({ status: "superseded" })
-      .where(and(eq(plans.organizationId, ctx.organizationId), eq(plans.goalId, plan.goalId), eq(plans.status, "accepted")));
+      .where(
+        and(eq(plans.organizationId, ctx.organizationId), eq(plans.goalId, plan.goalId), eq(plans.status, "accepted")),
+      );
     await tx.update(plans).set({ status: "accepted", acceptedAt: now }).where(eq(plans.id, planId));
     await tx
       .update(goals)
-      .set({ status: replacement ? "paused" : applyGoalTransition("draft", "plan_accepted"), currentPlanId: planId, updatedAt: now })
+      .set({
+        status: replacement ? "paused" : applyGoalTransition("draft", "plan_accepted"),
+        currentPlanId: planId,
+        updatedAt: now,
+      })
       .where(eq(goals.id, plan.goalId));
     await appendEvent(
       tx,
@@ -477,7 +589,12 @@ export async function acceptPlan(ctx: ServerContext, planId: string): Promise<Ma
         projectId: goal.projectId,
         roomId: goal.roomId,
         goalId: plan.goalId,
-        payload: { goal_id: plan.goalId, plan_id: planId, previous_plan_id: goal.currentPlanId, retired_task_ids: retiredTaskIds },
+        payload: {
+          goal_id: plan.goalId,
+          plan_id: planId,
+          previous_plan_id: goal.currentPlanId,
+          retired_task_ids: retiredTaskIds,
+        },
       }),
     );
     return materializeInTx(ctx, tx, planId, now);

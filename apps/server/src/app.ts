@@ -33,6 +33,8 @@ import { registerProductSourceSemanticTransferRoutes } from "./product-source-se
 import { registerProductSourceTransferRoutes } from "./product-source-transfer-routes.js";
 import { registerProjectRoutes } from "./project-routes.js";
 import { registerResourceRoutes } from "./resource-routes.js";
+import { registerSchedulerModelRoutes } from "./scheduler-model-routes.js";
+import { startSchedulerProjectionMonitor } from "./services/scheduler-projection-service.js";
 import { getAgentHistoryRun, listAgentHistory } from "./services/agent-history-service.js";
 import { startGoalBudgetMonitor } from "./services/budget-service.js";
 import { listDaemons } from "./services/daemon-service.js";
@@ -95,6 +97,17 @@ export interface DesktopCorsOptions {
 export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): FastifyInstance {
   const artifactStore = resolveArtifactStore(options);
   const app = Fastify({ logger: false, trustProxy: options.trustedProxies?.length ? options.trustedProxies : false });
+  if (ctx.schedulerRollout) {
+    let projectionMonitor: ReturnType<typeof startSchedulerProjectionMonitor> | undefined;
+    app.addHook("onReady", async () => {
+      projectionMonitor = startSchedulerProjectionMonitor(ctx, {
+        onError: (error) => app.log.error(error, "scheduler projection monitor failed"),
+      });
+    });
+    app.addHook("onClose", async () => {
+      await projectionMonitor?.stop();
+    });
+  }
   if (options.budgetMonitorIntervalMs !== false) {
     let budgetMonitor: ReturnType<typeof startGoalBudgetMonitor> | undefined;
     app.addHook("onReady", async () => {
@@ -219,6 +232,7 @@ export function buildApp(ctx: ServerContext, options: BuildAppOptions = {}): Fas
     taskService.bootstrap(rc(req), (id) => nodeRegistry.get(id) !== undefined),
   );
   registerProjectRoutes(app, ctx);
+  registerSchedulerModelRoutes(app, ctx);
   registerResourceRoutes(app, ctx, (computerId, deviceIds) => {
     for (const id of deviceIds) deviceConnections.closeForDevice(id, 1008, "computer deleted");
     const binding = nodeRegistry.get(computerId);
