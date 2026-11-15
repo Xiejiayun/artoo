@@ -199,7 +199,19 @@ context fields; a separate one-row scoped existence check distinguishes no sourc
 input from entirely moderated history, which retains its empty input digest.
 Visible ordering, digest bytes and the 200,000 JavaScript-character limit stay
 unchanged. This bounds rows materialized by the server, not the database work
-needed to scan historical comments, and does not add a new execution fence.
+needed to scan historical comments.
+
+Context creation and acceptance now freeze those visible source-message rows
+under `FOR SHARE OF messages NOWAIT` through the same owner transaction. The
+caller already owns the Task lock, which serializes new source comments; message
+locks separately prevent concurrent moderation from changing the captured body.
+A busy message returns 409 and rolls back the complete assignment/review. Only
+the actual lock-unavailable database code is mapped; other errors retain their
+original meaning. NOWAIT avoids waiting against moderation's message-to-Task
+event order. Empty, entirely moderated, scoped and overflow semantics stay the
+same. Read-only request snapshots and enqueue accounting remain plain reads and
+acquire no new execution authority. No node pre-spawn or lease guarantee follows
+from this context/review fence alone.
 
 Focused integration covers active dedupe, exact replay, terminal new triggers,
 intent conflicts, scope isolation, transaction rollback, moderation and the late

@@ -170,6 +170,135 @@ async function terminateOwnedBackend(pid: number): Promise<void> {
   await admin.query("SELECT pg_terminate_backend($1)", [pid]);
 }
 
+async function sourceInputFenceFixture() {
+  const schema = requireBuilt("../../../db/dist/index.js") as {
+    loadMigrationStatements(): Promise<string[]>;
+    seed(db: PostgresDbClient, now: string): Promise<unknown>;
+  };
+  const lifecycle = requireBuilt("../../../../apps/server/dist/services/lifecycle-service.js") as {
+    markReady(ctx: object, task: string): Promise<unknown>;
+    assignTask(ctx: object, task: string, input: object): Promise<{ run: { id: string } }>;
+    reviewTask(ctx: object, task: string, input: object): Promise<unknown>;
+  };
+  const service = requireBuilt("../../../../apps/server/dist/services/task-service.js") as {
+    createTask(ctx: object, input: object): Promise<{ task: { id: string }; room: { id: string } }>;
+  };
+  const moderation = requireBuilt("../../../../apps/server/dist/services/content-moderation-service.js") as {
+    reportMessage(ctx: object, message: string, reason: string): Promise<{ id: string }>;
+    resolveContentReport(ctx: object, report: string, action: string, note: string): Promise<unknown>;
+  };
+  const sharing = requireBuilt("../../../../apps/server/dist/config/ai-data-sharing.js") as {
+    buildAiDataSharingPolicy(input: object): object;
+  };
+  const first = await open({ queryTimeoutMillis: 10000 });
+  await first.migrate(await schema.loadMigrationStatements());
+  const second = await openIndependentTestPort();
+  const now = new Date().toISOString();
+  await schema.seed(first, now);
+  const context = (db: TestDbPort) => ({
+    db,
+    organizationId: "org_default",
+    actorUserId: "user_owner",
+    authConfig: {},
+    clock: { now: () => new Date(now), nowIso: () => now },
+    idGen: { generate: (prefix: string) => `${prefix}_${randomUUID()}` },
+    aiDataSharingPolicy: sharing.buildAiDataSharingPolicy({ mode: "local", providers: [] }),
+    schedulerRollout: { version: 1, workspaces: { org_default: { flags: { unified_enqueue: true } } } },
+    // Controlled dispatch observation: no adapter or Provider is invoked.
+    onRunQueued: vi.fn(async (_id: string) => {}),
+  });
+  const owner = context(first),
+    moderator = context(second);
+  const created = await service.createTask(owner, {
+    project_id: "proj_artoo",
+    title: "Coherent source context",
+    description: "Preserve the visible requirement",
+    priority: "p2",
+    acceptance_criteria: ["Preserve every visible source requirement in the execution context"],
+    required_capabilities: [],
+    enqueue_source: {
+      version: 1,
+      kind: "issue",
+      key: "source-fence/1",
+      event_id: "first",
+      target_key: "default",
+      comment: "Retain this requirement",
+    },
+  });
+  await lifecycle.markReady(owner, created.task.id);
+  const message = (await observer!.query("SELECT id,body FROM messages WHERE task_id=$1", [created.task.id])).rows[0]!;
+  const report = await moderation.reportMessage(moderator, message.id, "Controlled moderation fixture");
+  const ownerPid = (await first.db.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid;
+  const moderatorPid = (await second.db.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid;
+  const observerPid = (await observer!.query("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+  expect(new Set([ownerPid, moderatorPid, observerPid]).size).toBe(3);
+  const assign = () =>
+    lifecycle.assignTask(owner, created.task.id, {
+      mode: "manual",
+      agent_instance_id: "instance_mock_coder",
+      write_paths: [],
+    });
+  const remove = () => moderation.resolveContentReport(moderator, report.id, "remove", "Controlled removal");
+  const accept = () =>
+    lifecycle.reviewTask(owner, created.task.id, { outcome: "accepted", comment: "Human fixture review" });
+  const snapshot = async () => {
+    const records: Record<string, unknown> = {
+      tasks: (await observer!.query("SELECT * FROM tasks WHERE id=$1", [created.task.id])).rows,
+    };
+    for (const table of ["runs", "context_packs", "file_leases", "scheduler_decisions", "event_log"])
+      records[table] = (
+        await observer!.query(`SELECT to_jsonb(t) AS row FROM ${table} t WHERE task_id=$1 ORDER BY to_jsonb(t)::text`, [
+          created.task.id,
+        ])
+      ).rows;
+    return records;
+  };
+  const completeFixture = async (runId: string) => {
+    // Controlled DB completion only: this is not physical execution evidence.
+    await observer!.query("UPDATE runs SET status='completed',ended_at=$2 WHERE id=$1", [runId, now]);
+    await observer!.query("UPDATE tasks SET status='review' WHERE id=$1", [created.task.id]);
+  };
+  return {
+    ...created,
+    owner,
+    moderator,
+    first,
+    second,
+    ownerPid,
+    moderatorPid,
+    observerPid,
+    message,
+    report,
+    assign,
+    remove,
+    accept,
+    snapshot,
+    completeFixture,
+  };
+}
+
+async function observeSourceInputBlock(blockedPid: number, blockerPid: number) {
+  const deadline = performance.now() + 8000;
+  let last: unknown;
+  while (performance.now() < deadline) {
+    await observer!.query("SELECT pg_stat_clear_snapshot()");
+    const row = (
+      await observer!.query<{ blockers: number[]; wait_event_type: string; query: string }>(
+        "SELECT pg_blocking_pids(pid) AS blockers,wait_event_type,query FROM pg_stat_activity WHERE pid=$1",
+        [blockedPid],
+      )
+    ).rows[0];
+    last = row;
+    if (row?.blockers.includes(blockerPid) && row.wait_event_type === "Lock") {
+      expect(row.query).toContain("messages");
+      console.info("source_input_fence_block", JSON.stringify({ blockedPid, blockerPid, observation: row }));
+      return;
+    }
+    await delay(1);
+  }
+  throw new Error(`Missing actual source-message lock wait: ${JSON.stringify(last)}`);
+}
+
 beforeAll(async () => {
   await admin.connect();
   // These NOLOGIN roles exercise Supabase's effective schema privileges. Only
@@ -691,6 +820,126 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
         { default_workspace: "C:/committed" },
       ]);
     });
+  });
+
+  it.each(["assignment", "acceptance"] as const)(
+    "rolls back %s without waiting behind actual source moderation",
+    {
+      timeout: 45_000,
+    },
+    async (kind) => {
+      const f = await sourceInputFenceFixture();
+      if (kind === "acceptance") {
+        const assigned = await f.assign();
+        await f.completeFixture(assigned.run.id);
+        f.owner.onRunQueued.mockClear();
+      }
+      const before = await f.snapshot();
+      await observer!.query(`CREATE FUNCTION source_message_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN PERFORM pg_advisory_xact_lock(1095914320,1); RETURN NEW; END $$;
+      CREATE TRIGGER source_message_barrier BEFORE UPDATE OF body,moderated_at ON messages
+      FOR EACH ROW EXECUTE FUNCTION source_message_barrier()`);
+      await observer!.query("BEGIN");
+      let removing: Promise<unknown> | undefined;
+      try {
+        await observer!.query("SELECT pg_advisory_xact_lock(1095914320,1)");
+        removing = f.remove();
+        void removing.catch(() => undefined);
+        await observeSourceInputBlock(f.moderatorPid, f.observerPid);
+        await expect(kind === "assignment" ? f.assign() : f.accept()).rejects.toMatchObject({
+          code: "conflict",
+          details: { reason: "source_inputs_busy", task_id: f.task.id },
+        });
+        expect(await f.snapshot()).toEqual(before);
+        expect(f.owner.onRunQueued).not.toHaveBeenCalled();
+      } finally {
+        await observer!.query("ROLLBACK");
+        try {
+          await removing;
+        } finally {
+          await observer!.query(
+            "DROP TRIGGER source_message_barrier ON messages; DROP FUNCTION source_message_barrier()",
+          );
+        }
+      }
+      expect(
+        (await observer!.query("SELECT moderated_at FROM messages WHERE id=$1", [f.message.id])).rows[0]!.moderated_at,
+      ).not.toBeNull();
+      expect((await observer!.query("SELECT status FROM content_reports WHERE id=$1", [f.report.id])).rows).toEqual([
+        { status: "resolved" },
+      ]);
+      expect(
+        (await observer!.query("SELECT type FROM event_log WHERE task_id=$1 AND type='message.moderated'", [f.task.id]))
+          .rows,
+      ).toEqual([{ type: "message.moderated" }]);
+    },
+  );
+
+  it("retains frozen source locks until assignment commits and then rejects the stale acceptance", {
+    timeout: 45_000,
+  }, async () => {
+    const f = await sourceInputFenceFixture();
+    // Pausing the genuine final assignment audit proves the message lock outlives
+    // the context read, without replacing the production transaction or adapter.
+    await observer!.query(`CREATE FUNCTION source_assignment_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.type='task.assigned' THEN PERFORM pg_advisory_xact_lock(1095914320,2); END IF; RETURN NEW; END $$;
+      CREATE TRIGGER source_assignment_barrier BEFORE INSERT ON event_log
+      FOR EACH ROW EXECUTE FUNCTION source_assignment_barrier()`);
+    await observer!.query("BEGIN");
+    let assigning: ReturnType<typeof f.assign> | undefined, removing: Promise<unknown> | undefined;
+    try {
+      await observer!.query("SELECT pg_advisory_xact_lock(1095914320,2)");
+      assigning = f.assign();
+      void assigning.catch(() => undefined);
+      // This owner's current statement is event_log INSERT, so observe it directly.
+      const deadline = performance.now() + 8000;
+      let held = false;
+      while (performance.now() < deadline) {
+        await observer!.query("SELECT pg_stat_clear_snapshot()");
+        const row = (
+          await observer!.query(
+            "SELECT pg_blocking_pids(pid) AS blockers,wait_event_type,query FROM pg_stat_activity WHERE pid=$1",
+            [f.ownerPid],
+          )
+        ).rows[0];
+        if (row?.blockers.includes(f.observerPid) && row.wait_event_type === "Lock") {
+          expect(row.query).toContain("event_log");
+          held = true;
+          break;
+        }
+        await delay(1);
+      }
+      expect(held).toBe(true);
+      removing = f.remove();
+      void removing.catch(() => undefined);
+      await observeSourceInputBlock(f.moderatorPid, f.ownerPid);
+      expect(f.owner.onRunQueued).not.toHaveBeenCalled();
+      expect((await observer!.query("SELECT * FROM runs")).rows).toEqual([]);
+    } finally {
+      await observer!.query("ROLLBACK");
+      try {
+        await Promise.all([assigning, removing]);
+      } finally {
+        await observer!.query(
+          "DROP TRIGGER source_assignment_barrier ON event_log; DROP FUNCTION source_assignment_barrier()",
+        );
+      }
+    }
+    const assigned = await assigning!;
+    expect(f.owner.onRunQueued).toHaveBeenCalledExactlyOnceWith(assigned.run.id);
+    const pack = (await observer!.query("SELECT payload FROM context_packs WHERE run_id=$1", [assigned.run.id]))
+      .rows[0]!.payload;
+    expect(pack.source_inputs.entries).toEqual([
+      { event_id: "first", message_id: f.message.id, body: f.message.body, actor_id: "user_owner" },
+    ]);
+    expect(pack.task.description).toContain(f.message.body);
+    await f.completeFixture(assigned.run.id);
+    const before = await f.snapshot();
+    await expect(f.accept()).rejects.toMatchObject({
+      code: "conflict",
+      message: expect.stringContaining("Source comments changed"),
+    });
+    expect(await f.snapshot()).toEqual(before);
   });
 
   it("keeps one inactive original-user intent across independent concurrent staging, replay and cancellation", async () => {
