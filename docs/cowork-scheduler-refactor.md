@@ -299,6 +299,23 @@ or create a durable execution authorization. The future original-user scheduling
 intent must bind the metadata revision, exact consent/policy/profile and current
 approval, then reject changed or revoked authority before real admission.
 
+### Assignment transaction boundary
+
+Ordinary `assignTask` retains request preparation, its original clock sample,
+transaction ownership and the post-commit `onRunQueued` call. Its private
+`assignTaskInTransaction` core owns the existing ordered assignment statements:
+authorization, Task and configuration locks, capability revalidation, approval,
+context, Run, reservations, projection and events. It has no dispatch hook or
+new HTTP entry point. The extraction does not enable claim execution or change
+existing manual, assistant or dedicated-operation authorization.
+
+Regression coverage rejects a real database transaction after all assignment
+writes and checks complete rollback with no dispatch. Successful dispatch reads
+committed records through the original client; a transport failure retains the
+committed queued Run and cannot create a duplicate assignment. A future real
+claim must own its complete admission transaction and use an internal core;
+calling ordinary `assignTask` inside an outer transaction remains unsupported.
+
 ## Migration and acceptance gates
 
 | Step | Implementation / activation gate |

@@ -323,799 +323,815 @@ export async function assignTask(
     }
   }
   const now = ctx.clock.nowIso();
-  const result = await ctx.db.transaction(async (tx) => {
-    let sharing = await requireAiSharingAuthorization(ctx, tx);
-    const row = (
-      await tx
-        .select()
-        .from(tasks)
-        .where(and(eq(tasks.id, taskId), eq(tasks.organizationId, ctx.organizationId)))
-        .for("update")
-    )[0];
-    if (row === undefined) {
-      throw AppError.notFound(`task not found: ${taskId}`, { task_id: taskId });
-    }
-    if (row.status !== "ready") {
-      throw AppError.invalidState(`task must be 'ready' to assign (is '${row.status}')`, {
-        status: row.status,
-      });
-    }
-    const [importedDesign] = await tx
-      .select({ id: goalImportedDesignContinuations.id })
-      .from(goalImportedDesignContinuations)
-      .where(
-        and(
-          eq(goalImportedDesignContinuations.taskId, taskId),
-          eq(goalImportedDesignContinuations.organizationId, ctx.organizationId),
-        ),
-      );
-    if (importedDesign)
-      throw AppError.permissionDenied("Imported design is bound to its dedicated single-use writer execution");
-    const planning = (
-      await tx
-        .select({ id: discussions.id, goalId: discussions.goalId, activeTurnId: discussions.activeTurnId })
-        .from(discussions)
-        .where(and(eq(discussions.taskId, taskId), eq(discussions.organizationId, ctx.organizationId)))
-    )[0];
-    const planningAutomation = planning
-      ? (
-          await tx
-            .select()
-            .from(goalAutomations)
-            .where(
-              and(eq(goalAutomations.goalId, planning.goalId), eq(goalAutomations.organizationId, ctx.organizationId)),
-            )
-        )[0]
-      : undefined;
-    const independentReview = (
-      await tx
-        .select()
-        .from(autonomousReviews)
-        .where(
-          and(eq(autonomousReviews.reviewTaskId, taskId), eq(autonomousReviews.organizationId, ctx.organizationId)),
-        )
-    )[0];
-    let reviewedResearchOrigin: Awaited<ReturnType<typeof resolveResearchRevisionOrigin>> = undefined;
-    const reviewAutomation = independentReview
-      ? (await tx.select().from(goalAutomations).where(eq(goalAutomations.goalId, independentReview.goalId)))[0]
-      : undefined;
-    if (independentReview) {
-      const goal = (await tx.select().from(goals).where(eq(goals.id, independentReview.goalId)).for("update"))[0];
-      const [subject] = await tx.select().from(runs).where(eq(runs.id, independentReview.subjectRunId));
-      const [sourceTask] = await tx.select().from(tasks).where(eq(tasks.id, independentReview.taskId));
-      const sourceOrigin = sourceTask ? await resolveResearchRevisionOrigin(ctx, tx, sourceTask) : undefined;
-      reviewedResearchOrigin = sourceOrigin;
-      if (
-        !reviewAutomation ||
-        reviewAutomation.executionMode !== "agent_team" ||
-        !ctx.automationActor ||
-        ctx.actorUserId !== reviewAutomation.actorUserId ||
-        !goal ||
-        goal.status !== "running" ||
-        !["executing", "waiting"].includes(reviewAutomation.status) ||
-        goal.currentPlanId !== reviewAutomation.planId ||
-        sourceTask?.status !== "review" ||
-        (sourceOrigin?.plan.id ?? sourceTask.sourcePlanId) !== goal.currentPlanId ||
-        subject?.status !== "completed" ||
-        independentReview.status !== "pending" ||
-        assistantTurnId !== independentReview.turnId ||
-        req.mode !== "manual" ||
-        req.agent_instance_id !== independentReview.reviewerInstanceId ||
-        req.branch_backed ||
-        req.workspace_branch != null ||
-        verificationRequirement?.profile_id !== reviewAutomation.verificationProfileId ||
-        verificationRequirement?.expected_subject_digest !== independentReview.subjectDigest
-      ) {
-        throw AppError.permissionDenied(
-          "Independent review must use its bound reviewer, source and verification request",
-        );
-      }
-      const measured = await inspectRunVerification(ctx, tx, subject);
-      if (
-        !measured.passed ||
-        measured.evidence?.id !== independentReview.evidenceId ||
-        measured.evidence.payload.subject_digest !== independentReview.subjectDigest
-      ) {
-        throw AppError.conflict("Independent review source evidence changed");
-      }
-      await assertGoalAllowsExecution(ctx, tx, goal.id, "assign", goal.currentPlanId);
-      await requireAiSharingAuthorization(ctx, tx, {
-        consentId: reviewAutomation.consentId,
-        policyVersion: reviewAutomation.policyVersion,
-      });
-    }
-    if (planning) {
-      const goal = (
-        await tx
-          .select({ status: goals.status })
-          .from(goals)
-          .where(
-            and(
-              eq(goals.id, planning.goalId),
-              eq(goals.organizationId, ctx.organizationId),
-              eq(goals.projectId, row.projectId),
-            ),
-          )
-          .for("share")
-      )[0];
-      if (!goal) throw AppError.conflict("Planning discussion does not belong to this task's project");
-      if (planningAutomation) {
-        if (
-          goal.status !== "draft" ||
-          !["planning", "waiting"].includes(planningAutomation.status) ||
-          planningAutomation.discussionId !== planning.id ||
-          planning.activeTurnId !== assistantTurnId ||
-          verificationRequirement
-        ) {
-          throw AppError.conflict("Autonomous planning is paused, changed or stopped");
-        }
-        await requireAiSharingAuthorization(ctx, tx, {
-          consentId: planningAutomation.consentId,
-          policyVersion: planningAutomation.policyVersion,
-        });
-      }
-    }
-    if (assistantTurnId) {
-      const turn = (
-        await tx
-          .select()
-          .from(assistantTurns)
-          .where(
-            and(
-              eq(assistantTurns.id, assistantTurnId),
-              eq(assistantTurns.taskId, taskId),
-              eq(assistantTurns.organizationId, ctx.organizationId),
-            ),
-          )
-          .for("update")
-      )[0];
-      if (!turn || !["queued", "waiting"].includes(turn.status) || turn.runId !== null)
-        throw AppError.conflict("Assistant turn was cancelled, changed, or already dispatched");
-      sharing = await requireAiSharingAuthorization(ctx, tx, {
-        consentId: turn.aiDataSharingConsentId,
-        policyVersion: turn.aiDataSharingPolicyVersion,
-      });
-      const active = await tx
-        .select({ id: assistantTurns.id })
-        .from(assistantTurns)
-        .where(
-          and(
-            eq(assistantTurns.roomId, turn.roomId),
-            turn.threadRootId
-              ? eq(assistantTurns.threadRootId, turn.threadRootId)
-              : isNull(assistantTurns.threadRootId),
-            eq(assistantTurns.status, "running"),
-          ),
-        );
-      if (active.length) throw AppError.conflict("Another assistant turn is still running in this room");
-    }
-    const policyTask = await resolveExecutionPolicyTask(ctx, tx, row);
-    const researchOrigin = await resolveResearchRevisionOrigin(ctx, tx, row);
-    const executionPlanId = researchOrigin?.plan.id ?? row.sourcePlanId;
-    const executionSpecRef = researchOrigin?.specRef ?? row.sourcePlanSpecRef;
-    const automation = await automationForTask(ctx, tx, policyTask);
-    if (ownedSelection && (automation || independentReview || planning)) {
-      throw AppError.validation("Owned result v1 does not support product stages, independent review or planning");
-    }
-    if (automation) {
-      let permittedInstance = automation.agentInstanceId;
-      if (automation.executionMode === "agent_team") {
-        const [plan] = await tx.select().from(plans).where(eq(plans.id, executionPlanId!));
-        const spec = TaskSpecSchema.parse((plan?.taskSpecs as unknown[] | undefined)?.[Number(executionSpecRef)]);
-        permittedInstance =
-          AutonomousTeamSchema.parse(automation.team).members.find((member) => member.stage === spec.development_stage)
-            ?.agent_instance_id ?? null;
-      }
-      if (
-        !ctx.automationActor ||
-        ctx.actorUserId !== automation.actorUserId ||
-        !verificationRequirement ||
-        assistantTurnId ||
-        automation.planId !== executionPlanId ||
-        !permittedInstance ||
-        req.mode !== "manual" ||
-        req.agent_instance_id !== permittedInstance ||
-        req.branch_backed ||
-        req.workspace_branch != null ||
-        verificationRequirement.profile_id !== automation.verificationProfileId ||
-        !["planning", "executing", "waiting"].includes(automation.status)
-      ) {
-        throw AppError.permissionDenied(
-          "Autonomous goal execution must use its fixed worker and trusted verification request",
-        );
-      }
-      sharing = await requireAiSharingAuthorization(ctx, tx, {
-        consentId: automation.consentId,
-        policyVersion: automation.policyVersion,
-      });
-    } else if (verificationRequirement && !independentReview) {
-      throw AppError.permissionDenied("Verification requests are reserved for autonomous goal execution");
-    }
-    const allowedRuntimes = await assertGoalAllowsExecution(
-      ctx,
-      tx,
-      policyTask.goalId,
-      "assign",
-      policyTask.sourcePlanId,
-    );
-    if ((await unconfirmedDisconnectRunIds(ctx, tx, { taskId })).length > 0) {
-      throw AppError.conflict(
-        "execution node has not confirmed the previous process stopped; reconnect it before assigning this task again",
-      );
-    }
-    await assertTaskPlanControlsSupported(ctx, tx, policyTask);
-    await assertInheritedApprovalRequired(ctx, tx, row, policyTask);
-    await assertExecutionApprovalGranted(ctx, tx, taskId);
-    const writePaths =
-      req.write_paths ??
-      (assistantTurnId || row.executionPolicyTaskId ? await inheritedWritePaths(ctx, tx, row, policyTask) : []);
-
-    const scheduleOptions = {
-      shadowTaskId: row.id,
-      captureShadow: schedulerRolloutEnabled(ctx.schedulerRollout, "claim_shadow", {
-        organizationId: ctx.organizationId,
-        projectId: row.projectId,
-      }),
-      mode: req.mode,
-      projectId: row.projectId,
-      agentInstanceId: req.agent_instance_id ?? null,
-      allowedRuntimes,
-      branchBacked: req.workspace_branch != null || req.branch_backed === true,
-    };
-    const outcome = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], scheduleOptions);
-
-    // Share the administrator configuration fence. Only this selected instance
-    // is locked; candidate revalidation must use a fresh post-wait query.
-    const [instance] = await tx
-      .select()
-      .from(agentInstances)
-      .where(
-        and(
-          eq(agentInstances.id, outcome.selected.agent_instance_id),
-          eq(agentInstances.organizationId, ctx.organizationId),
-        ),
-      )
-      .for("update");
-    if (!instance) throw AppError.conflict("Selected agent instance is no longer available");
-    const rechecked = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], {
-      ...scheduleOptions,
-      captureShadow: false,
-      mode: "manual",
-      agentInstanceId: instance.id,
-    });
-    const recheckedAt = ctx.clock.nowIso();
-    if (!isDeepStrictEqual(rechecked.selected, outcome.selected)) {
-      throw AppError.conflict("Selected agent instance changed before assignment; retry the request");
-    }
-    const [computer] = await tx
-      .select({ id: computers.id, os: computers.os })
-      .from(computers)
-      .where(and(eq(computers.id, instance.computerId), eq(computers.organizationId, ctx.organizationId)))
-      .for("update");
-    if (!computer) throw AppError.conflict("Selected execution computer is no longer available");
-    const revisionAdmission = researchOrigin ?? reviewedResearchOrigin;
-    const revisionRole = researchOrigin?.snapshot.source.writer ?? reviewedResearchOrigin?.snapshot.source.reviewer;
-    if (
-      revisionAdmission &&
-      revisionRole &&
-      (instance.id !== revisionRole.instance_id ||
-        instance.agentId !== revisionRole.agent_id ||
-        instance.runtime !== revisionRole.runtime ||
-        instance.modelProfileId !== revisionRole.model_profile_id ||
-        instance.effortProfileId !== revisionRole.effort_profile_id ||
-        instance.computerId !== revisionAdmission.snapshot.source.computer_id ||
-        instance.workspaceRoot !== revisionAdmission.snapshot.source.workspace_root ||
-        ctx.supportsExecutionFeature?.(instance.computerId, "product-research-revision.v1") !== true ||
-        !isDeepStrictEqual(
-          ctx.getReleaseCapabilities?.(
-            instance.computerId,
-            revisionAdmission.snapshot.source.release.binding.release_profile_id,
-            row.projectId,
-            instance.workspaceRoot,
-            revisionAdmission.snapshot.source.release.binding.verification_profile_id,
-          ),
-          revisionAdmission.snapshot.source.release,
-        ))
-    ) {
-      throw AppError.conflict(
-        "Research revision must retain its original source contributor, model, effort and prepared scope",
-      );
-    }
-    let ownedProfile: NodeOwnedResultProfileDescriptorV1 | undefined;
-    if (ownedSelection) {
-      ownedProfile = ctx.getOwnedResultProfile?.(
-        instance.computerId,
-        ownedSelection.result_profile_id,
-        ownedSelection.verifier_template_id,
-        row.projectId,
-      );
-      if (
-        !ownedProfile ||
-        instance.runtime === "mock" ||
-        !["linux", "darwin"].includes(computer.os) ||
-        ownedProfile.node_id !== instance.computerId ||
-        ownedProfile.project_id !== row.projectId
-      ) {
-        throw AppError.conflict("The selected node has no current qualified owned-result profile");
-      }
-    }
-    const executionAutomation = automation ?? reviewAutomation;
-    if (
-      executionAutomation &&
-      (!instance.workspaceRoot ||
-        instance.runtime === "mock" ||
-        ctx.supportsExecutionFeature?.(instance.computerId, "run-verification.v1") !== true)
-    ) {
-      throw AppError.conflict("The fixed worker does not support trusted workspace verification");
-    }
-    if (
-      executionAutomation &&
-      (executionAutomation.computerId !== instance.computerId ||
-        !executionAutomation.workspaceRoot ||
-        !instance.workspaceRoot ||
-        canonicalAutomationWorkspace(executionAutomation.workspaceRoot, computer.os) !==
-          canonicalAutomationWorkspace(instance.workspaceRoot, computer.os))
-    ) {
-      throw AppError.permissionDenied("The fixed autonomous worker's workspace configuration changed");
-    }
-    if (
-      executionAutomation &&
-      resolveAutomationWorkspace(
-        ctx,
-        computer,
-        executionAutomation.verificationProfileId,
-        row.projectId,
-        instance.workspaceRoot!,
-      ) !== executionAutomation.workspaceRoot
-    ) {
-      throw AppError.conflict("The fixed worker no longer advertises this verification profile, project and workspace");
-    }
-    if (
-      executionAutomation &&
-      (
-        await tx
-          .select({ id: runs.id })
-          .from(runs)
-          .where(
-            and(
-              eq(runs.organizationId, ctx.organizationId),
-              eq(runs.agentInstanceId, instance.id),
-              sql`${runs.status} NOT IN ('completed','failed','cancelled')`,
-            ),
-          )
-      ).length > 0
-    ) {
-      throw AppError.conflict("The autonomous workspace is already in use; waiting for its current execution");
-    }
-
-    const decisionId = ctx.idGen.generate(ID_PREFIXES.schedulerDecision);
-    const runId = ctx.idGen.generate(ID_PREFIXES.run);
-
-    // Transition first so a stale/duplicate assign can't create an orphan run.
-    const transition = await transitionTask(tx, ctx, {
-      taskId,
-      from: "ready",
-      trigger: "assign",
-      now,
-    });
-    if (!transition.changed) {
-      throw AppError.conflict("task is no longer ready (already assigned?)");
-    }
-
-    await tx.insert(schedulerDecisions).values({
-      id: decisionId,
-      organizationId: ctx.organizationId,
-      taskId,
-      selectedComputerId: outcome.selected.computer_id,
-      selectedAgentInstanceId: outcome.selected.agent_instance_id,
-      selectedModelProfileId: outcome.selected.model_profile_id,
-      selectedEffortProfileId: outcome.selected.effort_profile_id,
-      mode: req.mode,
-      score: outcome.score,
-      reason: outcome.reason,
-      candidates: outcome.candidates,
-      createdAt: now,
-    });
-    await recordSchedulerShadowObservation(ctx, tx, {
-      projectId: row.projectId,
-      taskId,
-      decisionId,
-      outcome,
-      revalidation: { selected_agent_instance_id: rechecked.selected.agent_instance_id, observed_at: recheckedAt },
-    });
-
-    // Branch-backed worktree opt-in (#23): an explicit branch is used verbatim; a
-    // `branch_backed` request generates a deterministic per-run `artoo/run-<id>`;
-    // neither -> null (ordinary workspace, unchanged). Branch spelling is a git ref
-    // (source-case preserved), separate from canonical-lowercase lease keys.
-    const explicitBranch = req.workspace_branch ?? null;
-    const workspaceBranch =
-      explicitBranch != null ? explicitBranch : req.branch_backed === true ? `artoo/run-${runId}` : null;
-
-    const config = instance.config;
-    const setting =
-      config !== null && typeof config === "object" && !Array.isArray(config) && "worktree_workspace_base" in config
-        ? config.worktree_workspace_base
-        : undefined;
-    let workspaceRoot: string | null;
-    let workspaceAllocation: WorkspaceAllocationRecord | null = null;
-    try {
-      const validated =
-        workspaceBranch !== null && setting !== undefined
-          ? validateWorktreeBaseConfiguration(setting, computer.os)
-          : undefined;
-      // Only new assignment resolves a root. Existing runs are never reallocated.
-      workspaceRoot = allocateWorkspaceRoot({
-        workspaceRoot: instance.workspaceRoot,
-        branchBacked: workspaceBranch !== null,
-        targetComputerOs: computer.os,
-        agentInstanceId: instance.id,
-        runId,
-        worktreeBase: setting,
-      });
-      if (validated) workspaceAllocation = { version: 1, strategy: "per-run", base_path: validated.basePath };
-    } catch (error) {
-      if (error instanceof WorkspaceAllocationError) {
-        throw AppError.validation("Invalid per-run workspace allocation", { reason: error.code });
-      }
-      throw error;
-    }
-    // Persist the exact ordinary root that matched the node's profile advertisement.
-    // Manual runs keep their existing path spelling; autonomous runs must not send
-    // a trailing-slash/dot alias that the node correctly rejects as a different binding.
-    if (executionAutomation) workspaceRoot = executionAutomation.workspaceRoot;
-    await assertSourceLineageDispatch(ctx, tx, instance.computerId, workspaceRoot);
-    await assertResearchDestinationUnreserved(ctx, tx, instance.computerId, workspaceRoot);
-    // H2 holds the same instance -> computer fence when issuing its delivery.
-    const standalone = await unsettledStandaloneExecutions(ctx, tx, { computerId: instance.computerId });
-    if (
-      standalone.some(
-        (operation) =>
-          operation.participantInstanceIds.includes(instance.id) ||
-          !workspaceRoot ||
-          automationWorkspacesOverlap(operation.workspaceRoot, workspaceRoot, computer.os),
-      )
-    )
-      throw AppError.conflict(
-        "The selected agent or workspace is reserved by an active or unconfirmed source operation",
-      );
-    if (ownedSelection && (!workspaceRoot || !workspaceBranch || !workspaceAllocation)) {
-      throw AppError.conflict("Owned result execution requires configured per-run workspace allocation");
-    }
-    // Verification needs an unchanged shared workspace; fence other starts there until terminal state.
-    const uncertainWriters = await unconfirmedDisconnectRunIds(ctx, tx, { computerId: instance.computerId });
-    const neighbors = await tx
-      .select({ id: runs.id, root: runs.workspaceRoot, verification: runs.verificationRequirement })
-      .from(runs)
-      .where(
-        and(
-          eq(runs.organizationId, ctx.organizationId),
-          eq(runs.computerId, instance.computerId),
-          or(
-            sql`${runs.status} NOT IN ('completed','failed','cancelled')`,
-            uncertainWriters.length ? inArray(runs.id, uncertainWriters) : undefined,
-          ),
-        ),
-      );
-    if (
-      neighbors.some(
-        (run) =>
-          (executionAutomation || run.verification !== null || uncertainWriters.includes(run.id)) &&
-          (!run.root || !workspaceRoot || automationWorkspacesOverlap(run.root, workspaceRoot, computer.os)),
-      )
-    )
-      throw AppError.conflict("The workspace is reserved by an active or unconfirmed execution");
-    const reservations = await tx
-      .select()
-      .from(goalAutomations)
-      .where(
-        and(
-          eq(goalAutomations.organizationId, ctx.organizationId),
-          eq(goalAutomations.computerId, instance.computerId),
-          sql`${goalAutomations.status} IN ('planning','executing','waiting')`,
-        ),
-      );
-    if (
-      workspaceRoot &&
-      reservations.some(
-        (reservation) =>
-          reservation.goalId !== (executionAutomation?.goalId ?? planning?.goalId) &&
-          reservation.workspaceRoot &&
-          automationWorkspacesOverlap(reservation.workspaceRoot, workspaceRoot, computer.os),
-      )
-    ) {
-      throw AppError.conflict("The workspace is reserved for another autonomous goal");
-    }
-
-    // Build + persist the run's ContextPack (#21 Part D): select accepted memories
-    // for this context and record source_memory_ids for audit; the run links it.
-    let verificationSnapshot: contextPackService.BuildContextPackParams["verification"];
-    if (executionAutomation && verificationRequirement) {
-      if (
-        (executionAutomation.appDelivery != null || executionAutomation.appPublication != null) &&
-        (workspaceBranch != null ||
-          workspaceAllocation ||
-          !["windows", "win32"].includes(computer.os) ||
-          ctx.supportsExecutionFeature?.(instance.computerId, APPLICATION_VERIFICATION_FEATURE_V1) !== true)
-      ) {
-        throw AppError.conflict(
-          "Application development requires a supporting native Windows node and ordinary workspace",
-        );
-      }
-      // Recheck synchronously beside the single snapshot read: a disconnect during
-      // the preceding database work must not turn a configured profile into legacy unknown scope.
-      if (
-        ctx.supportsVerificationProfile?.(
-          instance.computerId,
-          verificationRequirement.profile_id,
-          row.projectId,
-          workspaceRoot!,
-        ) !== true
-      ) {
-        throw AppError.conflict("The selected node verification profile is no longer available");
-      }
-      verificationSnapshot = {
-        profile_id: verificationRequirement.profile_id,
-        capabilities: ctx.getVerificationCapabilities?.(
-          instance.computerId,
-          verificationRequirement.profile_id,
-          row.projectId,
-          workspaceRoot!,
-        ),
-      };
-      if (
-        verificationSnapshot.capabilities?.measurement_plan_policy &&
-        ctx.supportsExecutionFeature?.(
-          instance.computerId,
-          `measurement-plan.v${verificationSnapshot.capabilities.measurement_plan_policy.version}`,
-        ) !== true
-      ) {
-        throw AppError.conflict("The selected node cannot enforce its measurement-plan policy");
-      }
-    }
-    await assertDesignRevisionAssignment(ctx, tx, row, {
-      instanceId: instance.id,
-      computerId: instance.computerId,
-      workspaceRoot: workspaceRoot!,
-      assistantTurnId,
-      capabilities: verificationSnapshot?.capabilities,
-    });
-    const contextPack = await contextPackService.buildRunContextPack(ctx, tx, {
-      runId,
-      agentInstanceId: instance.id,
-      task: row,
-      workspaceRoot,
-      writePaths,
-      assistantTurnId,
-      ...(verificationSnapshot ? { verification: verificationSnapshot } : {}),
-    });
-    if (executionAutomation && verificationSnapshot)
-      assertSelectedPlanningCapabilities(executionAutomation, row.projectId, verificationSnapshot.capabilities);
-    if (
-      verificationRequirement?.capability_binding &&
-      !isDeepStrictEqual(verificationRequirement.capability_binding, contextPack.verificationCapabilityBinding)
-    ) {
-      throw AppError.conflict("Verification request does not match the selected capability snapshot");
-    }
-    if (
-      verificationRequirement?.release_capability_binding &&
-      !isDeepStrictEqual(verificationRequirement.release_capability_binding, contextPack.releaseCapabilityBinding)
-    ) {
-      throw AppError.conflict("Verification request does not match the fixed release capability snapshot");
-    }
-    const boundVerificationRequirement = verificationRequirement
-      ? {
-          ...verificationRequirement,
-          ...(contextPack.applicationRequirement ? { application: contextPack.applicationRequirement } : {}),
-          ...(contextPack.applicationPublicationRequirement
-            ? { application_publication: contextPack.applicationPublicationRequirement }
-            : {}),
-          ...(contextPack.releaseCapabilityBinding
-            ? { release_capability_binding: contextPack.releaseCapabilityBinding }
-            : {}),
-          ...(contextPack.verificationCapabilityBinding
-            ? { capability_binding: contextPack.verificationCapabilityBinding }
-            : {}),
-        }
-      : undefined;
-    if (
-      verificationRequirement?.application &&
-      !isDeepStrictEqual(verificationRequirement.application, contextPack.applicationRequirement)
-    ) {
-      throw AppError.conflict("Application request differs from the original goal and current verified candidate");
-    }
-    if (
-      verificationRequirement?.application_publication &&
-      !isDeepStrictEqual(verificationRequirement.application_publication, contextPack.applicationPublicationRequirement)
-    ) {
-      throw AppError.conflict(
-        "Application publication request differs from its original authorization or paired connection",
-      );
-    }
-
-    let ownedResultAssignment: OwnedResultAssignment | null = null;
-    if (ownedSelection && ownedProfile) {
-      const [saved] = await tx
-        .select()
-        .from(contextPacks)
-        .where(
-          and(
-            eq(contextPacks.id, contextPack.contextPackId),
-            eq(contextPacks.organizationId, ctx.organizationId),
-            eq(contextPacks.runId, runId),
-            eq(contextPacks.taskId, taskId),
-          ),
-        );
-      if (!saved) throw AppError.conflict("Owned result author context was not persisted");
-      const payload = ContextPackSchema.parse(saved.payload);
-      if (!isDeepStrictEqual(payload, saved.payload))
-        throw AppError.conflict("Owned result author context has unsupported fields");
-      let contextDigest: string;
-      try {
-        contextDigest = `sha256:${createHash("sha256").update(canonicalOwnedResultAuthorContextV1(payload)).digest("hex")}`;
-      } catch {
-        throw AppError.validation(
-          "Owned result v1 requires plain author context without product-stage, review or capability inputs",
-        );
-      }
-      const acceptedInput =
-        ownedSelection.input.kind === "accepted_run"
-          ? await resolveAcceptedOwnedResultInput(ctx, tx, row, ownedProfile, ownedSelection.input.run_id)
-          : undefined;
-      ownedResultAssignment = sealOwnedResultAssignment(
-        {
-          version: 1,
-          run_start: {
-            run_id: runId,
-            task_id: taskId,
-            agent_instance_id: instance.id,
-            runtime: instance.runtime,
-            workspace: { root: workspaceRoot!, branch: workspaceBranch! },
-            workspace_allocation: workspaceAllocation!,
-            workspace_retention_reporting: "typed-v1",
-            context_pack: { id: contextPack.contextPackId, payload },
-            policy_snapshot: {
-              filesystem_write_scope: [workspaceRoot!],
-              requires_approval: ["git.push", "external.post"],
-            },
-            artifact_rules: { paths: ["artifacts/**", "*.patch"] },
-          },
-          requirement: {
-            version: 1,
-            request_id: ctx.idGen.generate("result_verify"),
-            capture_request_id: ctx.idGen.generate("result_capture"),
-            verification_materialization_request_id: ctx.idGen.generate("result_tree"),
-            profile: ownedProfile,
-            author_context_digest: contextDigest,
-            input: acceptedInput ? { kind: "result", reference: acceptedInput.reference } : { kind: "baseline" },
-          },
-        },
-        acceptedInput,
-      );
-      const current = ctx.getOwnedResultProfile?.(
-        instance.computerId,
-        ownedSelection.result_profile_id,
-        ownedSelection.verifier_template_id,
-        row.projectId,
-      );
-      if (!current || !isDeepStrictEqual(current, ownedProfile))
-        throw AppError.conflict("Owned result profile changed during assignment");
-    }
-
-    await tx.insert(runs).values({
-      id: runId,
-      requestedByUserId: ctx.actorUserId,
-      aiDataSharingConsentId: sharing.consentId,
-      aiDataSharingPolicyVersion: sharing.policyVersion,
-      organizationId: ctx.organizationId,
-      taskId,
-      computerId: outcome.selected.computer_id,
-      agentInstanceId: outcome.selected.agent_instance_id,
-      runtimeId: outcome.selected.runtime,
-      schedulerDecisionId: decisionId,
-      modelProfileId: outcome.selected.model_profile_id,
-      effortProfileId: outcome.selected.effort_profile_id,
-      status: "queued",
-      contextPackId: contextPack.contextPackId,
-      workspaceRoot,
-      workspaceBranch,
-      workspaceAllocation,
-      verificationRequirement: boundVerificationRequirement ?? null,
-      ownedResultAssignment,
-      createdAt: now,
-    });
-    await bindDesignRevisionRun(ctx, tx, runId);
-    await bindExecutionApprovalToRun(ctx, tx, taskId, runId);
-    if (assistantTurnId) {
-      await tx.insert(assistantRunDispatches).values({
-        runId,
-        organizationId: ctx.organizationId,
-        turnId: assistantTurnId,
-        version: 1,
-        state: "prepared",
-        createdAt: now,
-      });
-      await tx
-        .update(assistantTurns)
-        .set({ runId, status: "running", error: null, updatedAt: now })
-        .where(eq(assistantTurns.id, assistantTurnId));
-      await appendEvent(
-        tx,
-        buildEvent(ctx, {
-          type: "assistant.turn.updated",
-          actorType: ctx.automationActor?.type ?? "user",
-          actorId: ctx.automationActor?.id ?? ctx.actorUserId,
-          correlationId: assistantTurnId,
-          projectId: row.projectId,
-          taskId,
-          roomId: row.roomId,
-          runId,
-          payload: { turn_id: assistantTurnId, status: "running", run_id: runId },
-        }),
-      );
-    }
-
-    // Reserve write leases for the run's declared paths (#20). A conflict throws,
-    // rolling back this whole transaction: no run, no assignment, task stays ready.
-    await leaseService.reserveRunLeases(ctx, tx, {
-      taskId,
-      runId,
-      projectId: row.projectId,
-      paths: writePaths,
-    });
-
-    await tx
-      .update(tasks)
-      .set({ assigneeType: "agent", assigneeId: outcome.selected.agent_id, updatedAt: now })
-      .where(eq(tasks.id, taskId));
-    await mirrorSchedulerTask(ctx, tx, taskId);
-
-    await appendEvent(
-      tx,
-      buildEvent(ctx, {
-        type: "task.assigned",
-        actorType: "system",
-        actorId: "scheduler",
-        correlationId: taskId,
-        projectId: row.projectId,
-        taskId,
-        roomId: row.roomId,
-        runId,
-        payload: {
-          run_id: runId,
-          agent_instance_id: outcome.selected.agent_instance_id,
-          scheduler_decision_id: decisionId,
-        },
-      }),
-    );
-
-    const runRow = (await tx.select().from(runs).where(eq(runs.id, runId)))[0];
-    if (runRow === undefined) {
-      throw new Error("assignTask: run missing after insert");
-    }
-    // This is the last awaited read in assignment. New planning uses the fixed
-    // future writer, even when the current participant runs on another node.
-    if (planningAutomation) recheckPlanningSnapshot(ctx, planningAutomation, row.projectId);
-    if (executionAutomation) assertPlanningTargetAvailable(ctx, executionAutomation, row.projectId);
-    if (ownedSelection && ownedProfile) {
-      const current = ctx.getOwnedResultProfile?.(
-        instance.computerId,
-        ownedSelection.result_profile_id,
-        ownedSelection.verifier_template_id,
-        row.projectId,
-      );
-      if (!current || !isDeepStrictEqual(current, ownedProfile))
-        throw AppError.conflict("Owned result profile changed before assignment committed");
-    }
-    return {
-      run: mapRun(runRow),
-      scheduler_decision: { id: decisionId, reason: outcome.reason, score: outcome.score },
-    };
-  });
+  const result = await ctx.db.transaction((tx) =>
+    assignTaskInTransaction(ctx, tx, { taskId, req, assistantTurnId, verificationRequirement, ownedSelection, now }),
+  );
 
   // After commit: let a node binding dispatch run.start (no-op in REST-only tests).
   await ctx.onRunQueued?.(result.run.id);
   return result;
+}
+
+interface AssignmentTransactionInput {
+  taskId: string;
+  req: AssignRequest;
+  assistantTurnId?: string;
+  verificationRequirement?: VerificationRequirement;
+  ownedSelection?: AssignOwnedResultRequest;
+  now: string;
+}
+
+/**
+ * Internal assignment writes only. The caller owns the transaction and dispatches
+ * after its commit; never nest assignTask inside another admission transaction.
+ * Request preparation and the original clock sample remain with assignTask.
+ */
+async function assignTaskInTransaction(
+  ctx: ServerContext,
+  tx: DrizzleDb,
+  { taskId, req, assistantTurnId, verificationRequirement, ownedSelection, now }: AssignmentTransactionInput,
+): Promise<AssignResult> {
+  let sharing = await requireAiSharingAuthorization(ctx, tx);
+  const row = (
+    await tx
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.organizationId, ctx.organizationId)))
+      .for("update")
+  )[0];
+  if (row === undefined) {
+    throw AppError.notFound(`task not found: ${taskId}`, { task_id: taskId });
+  }
+  if (row.status !== "ready") {
+    throw AppError.invalidState(`task must be 'ready' to assign (is '${row.status}')`, {
+      status: row.status,
+    });
+  }
+  const [importedDesign] = await tx
+    .select({ id: goalImportedDesignContinuations.id })
+    .from(goalImportedDesignContinuations)
+    .where(
+      and(
+        eq(goalImportedDesignContinuations.taskId, taskId),
+        eq(goalImportedDesignContinuations.organizationId, ctx.organizationId),
+      ),
+    );
+  if (importedDesign)
+    throw AppError.permissionDenied("Imported design is bound to its dedicated single-use writer execution");
+  const planning = (
+    await tx
+      .select({ id: discussions.id, goalId: discussions.goalId, activeTurnId: discussions.activeTurnId })
+      .from(discussions)
+      .where(and(eq(discussions.taskId, taskId), eq(discussions.organizationId, ctx.organizationId)))
+  )[0];
+  const planningAutomation = planning
+    ? (
+        await tx
+          .select()
+          .from(goalAutomations)
+          .where(
+            and(eq(goalAutomations.goalId, planning.goalId), eq(goalAutomations.organizationId, ctx.organizationId)),
+          )
+      )[0]
+    : undefined;
+  const independentReview = (
+    await tx
+      .select()
+      .from(autonomousReviews)
+      .where(and(eq(autonomousReviews.reviewTaskId, taskId), eq(autonomousReviews.organizationId, ctx.organizationId)))
+  )[0];
+  let reviewedResearchOrigin: Awaited<ReturnType<typeof resolveResearchRevisionOrigin>> = undefined;
+  const reviewAutomation = independentReview
+    ? (await tx.select().from(goalAutomations).where(eq(goalAutomations.goalId, independentReview.goalId)))[0]
+    : undefined;
+  if (independentReview) {
+    const goal = (await tx.select().from(goals).where(eq(goals.id, independentReview.goalId)).for("update"))[0];
+    const [subject] = await tx.select().from(runs).where(eq(runs.id, independentReview.subjectRunId));
+    const [sourceTask] = await tx.select().from(tasks).where(eq(tasks.id, independentReview.taskId));
+    const sourceOrigin = sourceTask ? await resolveResearchRevisionOrigin(ctx, tx, sourceTask) : undefined;
+    reviewedResearchOrigin = sourceOrigin;
+    if (
+      !reviewAutomation ||
+      reviewAutomation.executionMode !== "agent_team" ||
+      !ctx.automationActor ||
+      ctx.actorUserId !== reviewAutomation.actorUserId ||
+      !goal ||
+      goal.status !== "running" ||
+      !["executing", "waiting"].includes(reviewAutomation.status) ||
+      goal.currentPlanId !== reviewAutomation.planId ||
+      sourceTask?.status !== "review" ||
+      (sourceOrigin?.plan.id ?? sourceTask.sourcePlanId) !== goal.currentPlanId ||
+      subject?.status !== "completed" ||
+      independentReview.status !== "pending" ||
+      assistantTurnId !== independentReview.turnId ||
+      req.mode !== "manual" ||
+      req.agent_instance_id !== independentReview.reviewerInstanceId ||
+      req.branch_backed ||
+      req.workspace_branch != null ||
+      verificationRequirement?.profile_id !== reviewAutomation.verificationProfileId ||
+      verificationRequirement?.expected_subject_digest !== independentReview.subjectDigest
+    ) {
+      throw AppError.permissionDenied(
+        "Independent review must use its bound reviewer, source and verification request",
+      );
+    }
+    const measured = await inspectRunVerification(ctx, tx, subject);
+    if (
+      !measured.passed ||
+      measured.evidence?.id !== independentReview.evidenceId ||
+      measured.evidence.payload.subject_digest !== independentReview.subjectDigest
+    ) {
+      throw AppError.conflict("Independent review source evidence changed");
+    }
+    await assertGoalAllowsExecution(ctx, tx, goal.id, "assign", goal.currentPlanId);
+    await requireAiSharingAuthorization(ctx, tx, {
+      consentId: reviewAutomation.consentId,
+      policyVersion: reviewAutomation.policyVersion,
+    });
+  }
+  if (planning) {
+    const goal = (
+      await tx
+        .select({ status: goals.status })
+        .from(goals)
+        .where(
+          and(
+            eq(goals.id, planning.goalId),
+            eq(goals.organizationId, ctx.organizationId),
+            eq(goals.projectId, row.projectId),
+          ),
+        )
+        .for("share")
+    )[0];
+    if (!goal) throw AppError.conflict("Planning discussion does not belong to this task's project");
+    if (planningAutomation) {
+      if (
+        goal.status !== "draft" ||
+        !["planning", "waiting"].includes(planningAutomation.status) ||
+        planningAutomation.discussionId !== planning.id ||
+        planning.activeTurnId !== assistantTurnId ||
+        verificationRequirement
+      ) {
+        throw AppError.conflict("Autonomous planning is paused, changed or stopped");
+      }
+      await requireAiSharingAuthorization(ctx, tx, {
+        consentId: planningAutomation.consentId,
+        policyVersion: planningAutomation.policyVersion,
+      });
+    }
+  }
+  if (assistantTurnId) {
+    const turn = (
+      await tx
+        .select()
+        .from(assistantTurns)
+        .where(
+          and(
+            eq(assistantTurns.id, assistantTurnId),
+            eq(assistantTurns.taskId, taskId),
+            eq(assistantTurns.organizationId, ctx.organizationId),
+          ),
+        )
+        .for("update")
+    )[0];
+    if (!turn || !["queued", "waiting"].includes(turn.status) || turn.runId !== null)
+      throw AppError.conflict("Assistant turn was cancelled, changed, or already dispatched");
+    sharing = await requireAiSharingAuthorization(ctx, tx, {
+      consentId: turn.aiDataSharingConsentId,
+      policyVersion: turn.aiDataSharingPolicyVersion,
+    });
+    const active = await tx
+      .select({ id: assistantTurns.id })
+      .from(assistantTurns)
+      .where(
+        and(
+          eq(assistantTurns.roomId, turn.roomId),
+          turn.threadRootId ? eq(assistantTurns.threadRootId, turn.threadRootId) : isNull(assistantTurns.threadRootId),
+          eq(assistantTurns.status, "running"),
+        ),
+      );
+    if (active.length) throw AppError.conflict("Another assistant turn is still running in this room");
+  }
+  const policyTask = await resolveExecutionPolicyTask(ctx, tx, row);
+  const researchOrigin = await resolveResearchRevisionOrigin(ctx, tx, row);
+  const executionPlanId = researchOrigin?.plan.id ?? row.sourcePlanId;
+  const executionSpecRef = researchOrigin?.specRef ?? row.sourcePlanSpecRef;
+  const automation = await automationForTask(ctx, tx, policyTask);
+  if (ownedSelection && (automation || independentReview || planning)) {
+    throw AppError.validation("Owned result v1 does not support product stages, independent review or planning");
+  }
+  if (automation) {
+    let permittedInstance = automation.agentInstanceId;
+    if (automation.executionMode === "agent_team") {
+      const [plan] = await tx.select().from(plans).where(eq(plans.id, executionPlanId!));
+      const spec = TaskSpecSchema.parse((plan?.taskSpecs as unknown[] | undefined)?.[Number(executionSpecRef)]);
+      permittedInstance =
+        AutonomousTeamSchema.parse(automation.team).members.find((member) => member.stage === spec.development_stage)
+          ?.agent_instance_id ?? null;
+    }
+    if (
+      !ctx.automationActor ||
+      ctx.actorUserId !== automation.actorUserId ||
+      !verificationRequirement ||
+      assistantTurnId ||
+      automation.planId !== executionPlanId ||
+      !permittedInstance ||
+      req.mode !== "manual" ||
+      req.agent_instance_id !== permittedInstance ||
+      req.branch_backed ||
+      req.workspace_branch != null ||
+      verificationRequirement.profile_id !== automation.verificationProfileId ||
+      !["planning", "executing", "waiting"].includes(automation.status)
+    ) {
+      throw AppError.permissionDenied(
+        "Autonomous goal execution must use its fixed worker and trusted verification request",
+      );
+    }
+    sharing = await requireAiSharingAuthorization(ctx, tx, {
+      consentId: automation.consentId,
+      policyVersion: automation.policyVersion,
+    });
+  } else if (verificationRequirement && !independentReview) {
+    throw AppError.permissionDenied("Verification requests are reserved for autonomous goal execution");
+  }
+  const allowedRuntimes = await assertGoalAllowsExecution(
+    ctx,
+    tx,
+    policyTask.goalId,
+    "assign",
+    policyTask.sourcePlanId,
+  );
+  if ((await unconfirmedDisconnectRunIds(ctx, tx, { taskId })).length > 0) {
+    throw AppError.conflict(
+      "execution node has not confirmed the previous process stopped; reconnect it before assigning this task again",
+    );
+  }
+  await assertTaskPlanControlsSupported(ctx, tx, policyTask);
+  await assertInheritedApprovalRequired(ctx, tx, row, policyTask);
+  await assertExecutionApprovalGranted(ctx, tx, taskId);
+  const writePaths =
+    req.write_paths ??
+    (assistantTurnId || row.executionPolicyTaskId ? await inheritedWritePaths(ctx, tx, row, policyTask) : []);
+
+  const scheduleOptions = {
+    shadowTaskId: row.id,
+    captureShadow: schedulerRolloutEnabled(ctx.schedulerRollout, "claim_shadow", {
+      organizationId: ctx.organizationId,
+      projectId: row.projectId,
+    }),
+    mode: req.mode,
+    projectId: row.projectId,
+    agentInstanceId: req.agent_instance_id ?? null,
+    allowedRuntimes,
+    branchBacked: req.workspace_branch != null || req.branch_backed === true,
+  };
+  const outcome = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], scheduleOptions);
+
+  // Share the administrator configuration fence. Only this selected instance
+  // is locked; candidate revalidation must use a fresh post-wait query.
+  const [instance] = await tx
+    .select()
+    .from(agentInstances)
+    .where(
+      and(
+        eq(agentInstances.id, outcome.selected.agent_instance_id),
+        eq(agentInstances.organizationId, ctx.organizationId),
+      ),
+    )
+    .for("update");
+  if (!instance) throw AppError.conflict("Selected agent instance is no longer available");
+  const rechecked = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], {
+    ...scheduleOptions,
+    captureShadow: false,
+    mode: "manual",
+    agentInstanceId: instance.id,
+  });
+  const recheckedAt = ctx.clock.nowIso();
+  if (!isDeepStrictEqual(rechecked.selected, outcome.selected)) {
+    throw AppError.conflict("Selected agent instance changed before assignment; retry the request");
+  }
+  const [computer] = await tx
+    .select({ id: computers.id, os: computers.os })
+    .from(computers)
+    .where(and(eq(computers.id, instance.computerId), eq(computers.organizationId, ctx.organizationId)))
+    .for("update");
+  if (!computer) throw AppError.conflict("Selected execution computer is no longer available");
+  const revisionAdmission = researchOrigin ?? reviewedResearchOrigin;
+  const revisionRole = researchOrigin?.snapshot.source.writer ?? reviewedResearchOrigin?.snapshot.source.reviewer;
+  if (
+    revisionAdmission &&
+    revisionRole &&
+    (instance.id !== revisionRole.instance_id ||
+      instance.agentId !== revisionRole.agent_id ||
+      instance.runtime !== revisionRole.runtime ||
+      instance.modelProfileId !== revisionRole.model_profile_id ||
+      instance.effortProfileId !== revisionRole.effort_profile_id ||
+      instance.computerId !== revisionAdmission.snapshot.source.computer_id ||
+      instance.workspaceRoot !== revisionAdmission.snapshot.source.workspace_root ||
+      ctx.supportsExecutionFeature?.(instance.computerId, "product-research-revision.v1") !== true ||
+      !isDeepStrictEqual(
+        ctx.getReleaseCapabilities?.(
+          instance.computerId,
+          revisionAdmission.snapshot.source.release.binding.release_profile_id,
+          row.projectId,
+          instance.workspaceRoot,
+          revisionAdmission.snapshot.source.release.binding.verification_profile_id,
+        ),
+        revisionAdmission.snapshot.source.release,
+      ))
+  ) {
+    throw AppError.conflict(
+      "Research revision must retain its original source contributor, model, effort and prepared scope",
+    );
+  }
+  let ownedProfile: NodeOwnedResultProfileDescriptorV1 | undefined;
+  if (ownedSelection) {
+    ownedProfile = ctx.getOwnedResultProfile?.(
+      instance.computerId,
+      ownedSelection.result_profile_id,
+      ownedSelection.verifier_template_id,
+      row.projectId,
+    );
+    if (
+      !ownedProfile ||
+      instance.runtime === "mock" ||
+      !["linux", "darwin"].includes(computer.os) ||
+      ownedProfile.node_id !== instance.computerId ||
+      ownedProfile.project_id !== row.projectId
+    ) {
+      throw AppError.conflict("The selected node has no current qualified owned-result profile");
+    }
+  }
+  const executionAutomation = automation ?? reviewAutomation;
+  if (
+    executionAutomation &&
+    (!instance.workspaceRoot ||
+      instance.runtime === "mock" ||
+      ctx.supportsExecutionFeature?.(instance.computerId, "run-verification.v1") !== true)
+  ) {
+    throw AppError.conflict("The fixed worker does not support trusted workspace verification");
+  }
+  if (
+    executionAutomation &&
+    (executionAutomation.computerId !== instance.computerId ||
+      !executionAutomation.workspaceRoot ||
+      !instance.workspaceRoot ||
+      canonicalAutomationWorkspace(executionAutomation.workspaceRoot, computer.os) !==
+        canonicalAutomationWorkspace(instance.workspaceRoot, computer.os))
+  ) {
+    throw AppError.permissionDenied("The fixed autonomous worker's workspace configuration changed");
+  }
+  if (
+    executionAutomation &&
+    resolveAutomationWorkspace(
+      ctx,
+      computer,
+      executionAutomation.verificationProfileId,
+      row.projectId,
+      instance.workspaceRoot!,
+    ) !== executionAutomation.workspaceRoot
+  ) {
+    throw AppError.conflict("The fixed worker no longer advertises this verification profile, project and workspace");
+  }
+  if (
+    executionAutomation &&
+    (
+      await tx
+        .select({ id: runs.id })
+        .from(runs)
+        .where(
+          and(
+            eq(runs.organizationId, ctx.organizationId),
+            eq(runs.agentInstanceId, instance.id),
+            sql`${runs.status} NOT IN ('completed','failed','cancelled')`,
+          ),
+        )
+    ).length > 0
+  ) {
+    throw AppError.conflict("The autonomous workspace is already in use; waiting for its current execution");
+  }
+
+  const decisionId = ctx.idGen.generate(ID_PREFIXES.schedulerDecision);
+  const runId = ctx.idGen.generate(ID_PREFIXES.run);
+
+  // Transition first so a stale/duplicate assign can't create an orphan run.
+  const transition = await transitionTask(tx, ctx, {
+    taskId,
+    from: "ready",
+    trigger: "assign",
+    now,
+  });
+  if (!transition.changed) {
+    throw AppError.conflict("task is no longer ready (already assigned?)");
+  }
+
+  await tx.insert(schedulerDecisions).values({
+    id: decisionId,
+    organizationId: ctx.organizationId,
+    taskId,
+    selectedComputerId: outcome.selected.computer_id,
+    selectedAgentInstanceId: outcome.selected.agent_instance_id,
+    selectedModelProfileId: outcome.selected.model_profile_id,
+    selectedEffortProfileId: outcome.selected.effort_profile_id,
+    mode: req.mode,
+    score: outcome.score,
+    reason: outcome.reason,
+    candidates: outcome.candidates,
+    createdAt: now,
+  });
+  await recordSchedulerShadowObservation(ctx, tx, {
+    projectId: row.projectId,
+    taskId,
+    decisionId,
+    outcome,
+    revalidation: { selected_agent_instance_id: rechecked.selected.agent_instance_id, observed_at: recheckedAt },
+  });
+
+  // Branch-backed worktree opt-in (#23): an explicit branch is used verbatim; a
+  // `branch_backed` request generates a deterministic per-run `artoo/run-<id>`;
+  // neither -> null (ordinary workspace, unchanged). Branch spelling is a git ref
+  // (source-case preserved), separate from canonical-lowercase lease keys.
+  const explicitBranch = req.workspace_branch ?? null;
+  const workspaceBranch =
+    explicitBranch != null ? explicitBranch : req.branch_backed === true ? `artoo/run-${runId}` : null;
+
+  const config = instance.config;
+  const setting =
+    config !== null && typeof config === "object" && !Array.isArray(config) && "worktree_workspace_base" in config
+      ? config.worktree_workspace_base
+      : undefined;
+  let workspaceRoot: string | null;
+  let workspaceAllocation: WorkspaceAllocationRecord | null = null;
+  try {
+    const validated =
+      workspaceBranch !== null && setting !== undefined
+        ? validateWorktreeBaseConfiguration(setting, computer.os)
+        : undefined;
+    // Only new assignment resolves a root. Existing runs are never reallocated.
+    workspaceRoot = allocateWorkspaceRoot({
+      workspaceRoot: instance.workspaceRoot,
+      branchBacked: workspaceBranch !== null,
+      targetComputerOs: computer.os,
+      agentInstanceId: instance.id,
+      runId,
+      worktreeBase: setting,
+    });
+    if (validated) workspaceAllocation = { version: 1, strategy: "per-run", base_path: validated.basePath };
+  } catch (error) {
+    if (error instanceof WorkspaceAllocationError) {
+      throw AppError.validation("Invalid per-run workspace allocation", { reason: error.code });
+    }
+    throw error;
+  }
+  // Persist the exact ordinary root that matched the node's profile advertisement.
+  // Manual runs keep their existing path spelling; autonomous runs must not send
+  // a trailing-slash/dot alias that the node correctly rejects as a different binding.
+  if (executionAutomation) workspaceRoot = executionAutomation.workspaceRoot;
+  await assertSourceLineageDispatch(ctx, tx, instance.computerId, workspaceRoot);
+  await assertResearchDestinationUnreserved(ctx, tx, instance.computerId, workspaceRoot);
+  // H2 holds the same instance -> computer fence when issuing its delivery.
+  const standalone = await unsettledStandaloneExecutions(ctx, tx, { computerId: instance.computerId });
+  if (
+    standalone.some(
+      (operation) =>
+        operation.participantInstanceIds.includes(instance.id) ||
+        !workspaceRoot ||
+        automationWorkspacesOverlap(operation.workspaceRoot, workspaceRoot, computer.os),
+    )
+  )
+    throw AppError.conflict("The selected agent or workspace is reserved by an active or unconfirmed source operation");
+  if (ownedSelection && (!workspaceRoot || !workspaceBranch || !workspaceAllocation)) {
+    throw AppError.conflict("Owned result execution requires configured per-run workspace allocation");
+  }
+  // Verification needs an unchanged shared workspace; fence other starts there until terminal state.
+  const uncertainWriters = await unconfirmedDisconnectRunIds(ctx, tx, { computerId: instance.computerId });
+  const neighbors = await tx
+    .select({ id: runs.id, root: runs.workspaceRoot, verification: runs.verificationRequirement })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.organizationId, ctx.organizationId),
+        eq(runs.computerId, instance.computerId),
+        or(
+          sql`${runs.status} NOT IN ('completed','failed','cancelled')`,
+          uncertainWriters.length ? inArray(runs.id, uncertainWriters) : undefined,
+        ),
+      ),
+    );
+  if (
+    neighbors.some(
+      (run) =>
+        (executionAutomation || run.verification !== null || uncertainWriters.includes(run.id)) &&
+        (!run.root || !workspaceRoot || automationWorkspacesOverlap(run.root, workspaceRoot, computer.os)),
+    )
+  )
+    throw AppError.conflict("The workspace is reserved by an active or unconfirmed execution");
+  const reservations = await tx
+    .select()
+    .from(goalAutomations)
+    .where(
+      and(
+        eq(goalAutomations.organizationId, ctx.organizationId),
+        eq(goalAutomations.computerId, instance.computerId),
+        sql`${goalAutomations.status} IN ('planning','executing','waiting')`,
+      ),
+    );
+  if (
+    workspaceRoot &&
+    reservations.some(
+      (reservation) =>
+        reservation.goalId !== (executionAutomation?.goalId ?? planning?.goalId) &&
+        reservation.workspaceRoot &&
+        automationWorkspacesOverlap(reservation.workspaceRoot, workspaceRoot, computer.os),
+    )
+  ) {
+    throw AppError.conflict("The workspace is reserved for another autonomous goal");
+  }
+
+  // Build + persist the run's ContextPack (#21 Part D): select accepted memories
+  // for this context and record source_memory_ids for audit; the run links it.
+  let verificationSnapshot: contextPackService.BuildContextPackParams["verification"];
+  if (executionAutomation && verificationRequirement) {
+    if (
+      (executionAutomation.appDelivery != null || executionAutomation.appPublication != null) &&
+      (workspaceBranch != null ||
+        workspaceAllocation ||
+        !["windows", "win32"].includes(computer.os) ||
+        ctx.supportsExecutionFeature?.(instance.computerId, APPLICATION_VERIFICATION_FEATURE_V1) !== true)
+    ) {
+      throw AppError.conflict(
+        "Application development requires a supporting native Windows node and ordinary workspace",
+      );
+    }
+    // Recheck synchronously beside the single snapshot read: a disconnect during
+    // the preceding database work must not turn a configured profile into legacy unknown scope.
+    if (
+      ctx.supportsVerificationProfile?.(
+        instance.computerId,
+        verificationRequirement.profile_id,
+        row.projectId,
+        workspaceRoot!,
+      ) !== true
+    ) {
+      throw AppError.conflict("The selected node verification profile is no longer available");
+    }
+    verificationSnapshot = {
+      profile_id: verificationRequirement.profile_id,
+      capabilities: ctx.getVerificationCapabilities?.(
+        instance.computerId,
+        verificationRequirement.profile_id,
+        row.projectId,
+        workspaceRoot!,
+      ),
+    };
+    if (
+      verificationSnapshot.capabilities?.measurement_plan_policy &&
+      ctx.supportsExecutionFeature?.(
+        instance.computerId,
+        `measurement-plan.v${verificationSnapshot.capabilities.measurement_plan_policy.version}`,
+      ) !== true
+    ) {
+      throw AppError.conflict("The selected node cannot enforce its measurement-plan policy");
+    }
+  }
+  await assertDesignRevisionAssignment(ctx, tx, row, {
+    instanceId: instance.id,
+    computerId: instance.computerId,
+    workspaceRoot: workspaceRoot!,
+    assistantTurnId,
+    capabilities: verificationSnapshot?.capabilities,
+  });
+  const contextPack = await contextPackService.buildRunContextPack(ctx, tx, {
+    runId,
+    agentInstanceId: instance.id,
+    task: row,
+    workspaceRoot,
+    writePaths,
+    assistantTurnId,
+    ...(verificationSnapshot ? { verification: verificationSnapshot } : {}),
+  });
+  if (executionAutomation && verificationSnapshot)
+    assertSelectedPlanningCapabilities(executionAutomation, row.projectId, verificationSnapshot.capabilities);
+  if (
+    verificationRequirement?.capability_binding &&
+    !isDeepStrictEqual(verificationRequirement.capability_binding, contextPack.verificationCapabilityBinding)
+  ) {
+    throw AppError.conflict("Verification request does not match the selected capability snapshot");
+  }
+  if (
+    verificationRequirement?.release_capability_binding &&
+    !isDeepStrictEqual(verificationRequirement.release_capability_binding, contextPack.releaseCapabilityBinding)
+  ) {
+    throw AppError.conflict("Verification request does not match the fixed release capability snapshot");
+  }
+  const boundVerificationRequirement = verificationRequirement
+    ? {
+        ...verificationRequirement,
+        ...(contextPack.applicationRequirement ? { application: contextPack.applicationRequirement } : {}),
+        ...(contextPack.applicationPublicationRequirement
+          ? { application_publication: contextPack.applicationPublicationRequirement }
+          : {}),
+        ...(contextPack.releaseCapabilityBinding
+          ? { release_capability_binding: contextPack.releaseCapabilityBinding }
+          : {}),
+        ...(contextPack.verificationCapabilityBinding
+          ? { capability_binding: contextPack.verificationCapabilityBinding }
+          : {}),
+      }
+    : undefined;
+  if (
+    verificationRequirement?.application &&
+    !isDeepStrictEqual(verificationRequirement.application, contextPack.applicationRequirement)
+  ) {
+    throw AppError.conflict("Application request differs from the original goal and current verified candidate");
+  }
+  if (
+    verificationRequirement?.application_publication &&
+    !isDeepStrictEqual(verificationRequirement.application_publication, contextPack.applicationPublicationRequirement)
+  ) {
+    throw AppError.conflict(
+      "Application publication request differs from its original authorization or paired connection",
+    );
+  }
+
+  let ownedResultAssignment: OwnedResultAssignment | null = null;
+  if (ownedSelection && ownedProfile) {
+    const [saved] = await tx
+      .select()
+      .from(contextPacks)
+      .where(
+        and(
+          eq(contextPacks.id, contextPack.contextPackId),
+          eq(contextPacks.organizationId, ctx.organizationId),
+          eq(contextPacks.runId, runId),
+          eq(contextPacks.taskId, taskId),
+        ),
+      );
+    if (!saved) throw AppError.conflict("Owned result author context was not persisted");
+    const payload = ContextPackSchema.parse(saved.payload);
+    if (!isDeepStrictEqual(payload, saved.payload))
+      throw AppError.conflict("Owned result author context has unsupported fields");
+    let contextDigest: string;
+    try {
+      contextDigest = `sha256:${createHash("sha256").update(canonicalOwnedResultAuthorContextV1(payload)).digest("hex")}`;
+    } catch {
+      throw AppError.validation(
+        "Owned result v1 requires plain author context without product-stage, review or capability inputs",
+      );
+    }
+    const acceptedInput =
+      ownedSelection.input.kind === "accepted_run"
+        ? await resolveAcceptedOwnedResultInput(ctx, tx, row, ownedProfile, ownedSelection.input.run_id)
+        : undefined;
+    ownedResultAssignment = sealOwnedResultAssignment(
+      {
+        version: 1,
+        run_start: {
+          run_id: runId,
+          task_id: taskId,
+          agent_instance_id: instance.id,
+          runtime: instance.runtime,
+          workspace: { root: workspaceRoot!, branch: workspaceBranch! },
+          workspace_allocation: workspaceAllocation!,
+          workspace_retention_reporting: "typed-v1",
+          context_pack: { id: contextPack.contextPackId, payload },
+          policy_snapshot: {
+            filesystem_write_scope: [workspaceRoot!],
+            requires_approval: ["git.push", "external.post"],
+          },
+          artifact_rules: { paths: ["artifacts/**", "*.patch"] },
+        },
+        requirement: {
+          version: 1,
+          request_id: ctx.idGen.generate("result_verify"),
+          capture_request_id: ctx.idGen.generate("result_capture"),
+          verification_materialization_request_id: ctx.idGen.generate("result_tree"),
+          profile: ownedProfile,
+          author_context_digest: contextDigest,
+          input: acceptedInput ? { kind: "result", reference: acceptedInput.reference } : { kind: "baseline" },
+        },
+      },
+      acceptedInput,
+    );
+    const current = ctx.getOwnedResultProfile?.(
+      instance.computerId,
+      ownedSelection.result_profile_id,
+      ownedSelection.verifier_template_id,
+      row.projectId,
+    );
+    if (!current || !isDeepStrictEqual(current, ownedProfile))
+      throw AppError.conflict("Owned result profile changed during assignment");
+  }
+
+  await tx.insert(runs).values({
+    id: runId,
+    requestedByUserId: ctx.actorUserId,
+    aiDataSharingConsentId: sharing.consentId,
+    aiDataSharingPolicyVersion: sharing.policyVersion,
+    organizationId: ctx.organizationId,
+    taskId,
+    computerId: outcome.selected.computer_id,
+    agentInstanceId: outcome.selected.agent_instance_id,
+    runtimeId: outcome.selected.runtime,
+    schedulerDecisionId: decisionId,
+    modelProfileId: outcome.selected.model_profile_id,
+    effortProfileId: outcome.selected.effort_profile_id,
+    status: "queued",
+    contextPackId: contextPack.contextPackId,
+    workspaceRoot,
+    workspaceBranch,
+    workspaceAllocation,
+    verificationRequirement: boundVerificationRequirement ?? null,
+    ownedResultAssignment,
+    createdAt: now,
+  });
+  await bindDesignRevisionRun(ctx, tx, runId);
+  await bindExecutionApprovalToRun(ctx, tx, taskId, runId);
+  if (assistantTurnId) {
+    await tx.insert(assistantRunDispatches).values({
+      runId,
+      organizationId: ctx.organizationId,
+      turnId: assistantTurnId,
+      version: 1,
+      state: "prepared",
+      createdAt: now,
+    });
+    await tx
+      .update(assistantTurns)
+      .set({ runId, status: "running", error: null, updatedAt: now })
+      .where(eq(assistantTurns.id, assistantTurnId));
+    await appendEvent(
+      tx,
+      buildEvent(ctx, {
+        type: "assistant.turn.updated",
+        actorType: ctx.automationActor?.type ?? "user",
+        actorId: ctx.automationActor?.id ?? ctx.actorUserId,
+        correlationId: assistantTurnId,
+        projectId: row.projectId,
+        taskId,
+        roomId: row.roomId,
+        runId,
+        payload: { turn_id: assistantTurnId, status: "running", run_id: runId },
+      }),
+    );
+  }
+
+  // Reserve write leases for the run's declared paths (#20). A conflict throws,
+  // rolling back this whole transaction: no run, no assignment, task stays ready.
+  await leaseService.reserveRunLeases(ctx, tx, {
+    taskId,
+    runId,
+    projectId: row.projectId,
+    paths: writePaths,
+  });
+
+  await tx
+    .update(tasks)
+    .set({ assigneeType: "agent", assigneeId: outcome.selected.agent_id, updatedAt: now })
+    .where(eq(tasks.id, taskId));
+  await mirrorSchedulerTask(ctx, tx, taskId);
+
+  await appendEvent(
+    tx,
+    buildEvent(ctx, {
+      type: "task.assigned",
+      actorType: "system",
+      actorId: "scheduler",
+      correlationId: taskId,
+      projectId: row.projectId,
+      taskId,
+      roomId: row.roomId,
+      runId,
+      payload: {
+        run_id: runId,
+        agent_instance_id: outcome.selected.agent_instance_id,
+        scheduler_decision_id: decisionId,
+      },
+    }),
+  );
+
+  const runRow = (await tx.select().from(runs).where(eq(runs.id, runId)))[0];
+  if (runRow === undefined) {
+    throw new Error("assignTask: run missing after insert");
+  }
+  // This is the last awaited read in assignment. New planning uses the fixed
+  // future writer, even when the current participant runs on another node.
+  if (planningAutomation) recheckPlanningSnapshot(ctx, planningAutomation, row.projectId);
+  if (executionAutomation) assertPlanningTargetAvailable(ctx, executionAutomation, row.projectId);
+  if (ownedSelection && ownedProfile) {
+    const current = ctx.getOwnedResultProfile?.(
+      instance.computerId,
+      ownedSelection.result_profile_id,
+      ownedSelection.verifier_template_id,
+      row.projectId,
+    );
+    if (!current || !isDeepStrictEqual(current, ownedProfile))
+      throw AppError.conflict("Owned result profile changed before assignment committed");
+  }
+  return {
+    run: mapRun(runRow),
+    scheduler_decision: { id: decisionId, reason: outcome.reason, score: outcome.score },
+  };
 }
 
 /**
