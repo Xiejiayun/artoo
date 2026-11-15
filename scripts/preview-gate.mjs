@@ -72,6 +72,7 @@ const suites = {
     runNode("SDK-aware iPhone simulator selection", "apps/ios/scripts/simulator-selection.test.mjs"),
     runNode("native static API contracts", "apps/ios/scripts/verify-contracts.mjs"),
     runNpm("browser workflows", "run", "test:e2e", "--workspace", "@artoo/web"),
+    runNpm("enabled scheduler mirror workflows", "run", "test:e2e:scheduler", "--workspace", "@artoo/web"),
     runNpm("authentication browser workflows", "run", "e2e:auth"),
     runNpm("production dependency audit", "audit", "--omit=dev"),
     { name: "diff whitespace", command: "git", args: ["diff", "--check"] },

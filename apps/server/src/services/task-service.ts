@@ -1,3 +1,4 @@
+import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
 import {
   appendEvent,
   agentRuntimes,
@@ -271,6 +272,7 @@ export async function createTask(ctx: ServerContext, req: CreateTaskRequest): Pr
       createdAt: now,
       updatedAt: now,
     });
+    await mirrorSchedulerTask(ctx, tx, taskId);
 
     await tx.insert(rooms).values({
       id: roomId,

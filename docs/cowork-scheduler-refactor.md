@@ -83,6 +83,59 @@ failure/retry and disconnect handling. Existing mixed-node, allocation, trusted
 verification, grace and execution-recovery suites remain required compatibility
 checks. Controlled CLI/E2E runs are not external Provider acceptance.
 
+## Step 1: additive policies and task projection
+
+Migration `0063_scheduler_projection.sql` adds versioned project, Agent and
+computer policy records, a minimal task projection and durable reconciliation
+history. Existing identities, Task/Run states, room contents, authorization and
+node-owned evidence remain authoritative. DDL does not import historical rows.
+An explicit `task_mirror` startup scope enables import and mirror writes. Only
+nonterminal tasks are initially imported; a mirrored task keeps its terminal
+record. `attempt_count` counts persisted Runs, never inferred retries; initial
+`lease_epoch` is zero. No prompt, command, token or verifier capability is copied.
+
+All six creation paths and all seven Run creation paths mirror in the original
+transaction, as does `transitionTask`. Assignment mirrors again after inserting
+the Run and updating the assignee, so the attempt count cannot lag. Incompatible
+projection identity/version or a nonzero lease epoch causes the original write
+to roll back. Turning the startup flag off returns to legacy-only writes while
+retaining projection and reconciliation evidence for later inspection.
+
+`POST /api/v1/projects/:id/scheduler-reconciliations` accepts an explicit
+`{"repair":false}` or `{"repair":true}`. It requires the current request's
+administrator and reads one repeatable-read snapshot. It avoids taking extra
+Task locks across existing multi-task workflows. A projection concurrently
+changed after that PostgreSQL snapshot rejects repair with a serialization
+error; the monitor reports it and retries at the next scan. Source and mirror
+changes commit together in enabled writers. Repair cannot overwrite a nonzero
+epoch or foreign identity/version.
+The report persists counts and drift **before** and **after** repair; unresolved
+identity mismatches stay visible. A clean repaired result alone does not satisfy
+three days of consistent observations. GET returns the latest 50 scoped reports.
+The non-overlapping monitor repairs enabled scopes every minute, reports drift
+even when repaired, and waits for outstanding work when the server closes.
+
+GET/PUT `/api/v1/{projects,agents,computers}/:id/scheduling-policy` reads or saves
+strict version 1 metadata. PUT holds administrative authorization through commit
+and validates targets and Agent pin against the same tenant and live resources.
+Changes append an actor-attributed event. Responses explicitly say `active:false`:
+these policy limits and labels are prepared for shadow scheduling, not consumed
+by legacy scheduling. Missing policy is null, never an implicit unpinning or limit.
+Fixed legacy Agent-instance/computer bindings remain in effect. Before claim
+activation, their mapping must be reviewed and migrated as explicit pins; a
+multi-computer identity cannot be resolved to one pin by guesswork.
+
+Repository URLs and branch names are metadata, not local clone/execution
+permissions. Trusted node profiles, approval gates and workspace ownership retain
+their existing authority. No live claim, reaper, budget, node token or automatic
+publication is enabled in this step.
+
+The opt-in mirror's browser characterization is
+`npm run test:e2e:scheduler --workspace @artoo/web`: a separate ephemeral server
+starts with `task_mirror:true`, then browser submission, controlled mock execution,
+human acceptance, reload and drift-free reconciliation exercise the real routes.
+The ordinary Web E2E suite continues to use its existing default-off setup.
+
 ## Migration and acceptance gates
 
 | Step | Implementation / activation gate |
