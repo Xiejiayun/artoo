@@ -614,6 +614,16 @@ task brief, criteria, priority and capabilities form, sends explicit version-1
 parent identity, and opens the new Backlog Task without assigning or executing it.
 Ordinary creation sends no delegation field. Server conflicts retain the brief.
 
+Both ordinary and delegated creation retain the same idempotency key when an
+unchanged submitted brief is retried in the same open dialog. Editing submitted
+fields (including project or parent identity), or opening a new dialog, starts a
+fresh creation identity. This recovers a successful response already cached by
+the server without creating another Task, room or delegation slot. A real browser
+regression first lets the server commit/cache success, aborts only its delivery,
+then checks that retry returns the original Task and one durable record. It does
+not establish recovery from the separate business-commit/response-cache crash
+window or exactly-once external side effects.
+
 The panel explains disabled rollout, terminal parents, depth-three and thirty-Task
 limits. A failed or refreshing tree cannot admit creation from stale UI state;
 the server remains authoritative if state changes while the form is open. Project

@@ -18,7 +18,7 @@ export interface CreateTaskModalProps {
   onCreated?: (taskId: string) => void;
 }
 
-/** Create-task dialog. Submits a CreateTaskRequest with a fresh idempotency key. */
+/** One creation identity per submitted brief; transport retries keep that identity. */
 export function CreateTaskModal({
   projectId,
   delegationParent,
@@ -35,6 +35,7 @@ export function CreateTaskModal({
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const formId = useId();
   const titleRef = useRef<HTMLInputElement>(null);
+  const submitted = useRef<{ body: string; key: string } | null>(null);
   const criteriaCount = criteria.split("\n").filter((line) => line.trim()).length;
 
   useEffect(() => {
@@ -42,7 +43,11 @@ export function CreateTaskModal({
   }, []);
 
   const mutation = useMutation({
-    mutationFn: (request: CreateTaskRequest) => api.createTask(request, newIdempotencyKey()),
+    mutationFn: (request: CreateTaskRequest) => {
+      const body = JSON.stringify(request);
+      if (submitted.current?.body !== body) submitted.current = { body, key: newIdempotencyKey() };
+      return api.createTask(request, submitted.current.key);
+    },
     onSuccess: async (response) => {
       toast.push({ tone: "success", message: "Task created." });
       await queryClient.invalidateQueries({ queryKey: queryKeys.tasks(projectId) });
