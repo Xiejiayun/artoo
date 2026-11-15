@@ -522,6 +522,177 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     ]);
   });
 
+  it("fences every configuration mutation against an independent PostgreSQL admission holder", {
+    timeout: 30_000,
+  }, async () => {
+    const f = await shadowFixture();
+    const { buildApp } = requireBuilt("../../../../apps/server/dist/app.js") as {
+      buildApp(ctx: object, options: object): import("fastify").FastifyInstance;
+    };
+    const { testAuthConfig } = requireBuilt("../../../../apps/server/dist/auth/auth-config.js") as {
+      testAuthConfig(): object;
+    };
+    const { testDeviceAuthConfig } = requireBuilt("../../../../apps/server/dist/config/device-auth.js") as {
+      testDeviceAuthConfig(): object;
+    };
+    const { schedulerConfigurationMutations } = requireBuilt(
+      "../../../../apps/server/dist/test-fixtures/scheduler-configuration.js",
+    ) as {
+      schedulerConfigurationMutations: { name: string; request: import("fastify").InjectOptions; status: number }[];
+    };
+    await observer!.query(
+      "UPDATE agent_runtimes SET capabilities=(SELECT capabilities FROM agents WHERE id='agent_mock_coder') WHERE id='runtime_mock'",
+    );
+    const ctx = {
+      ...f.context(f.first),
+      db: f.first,
+      authConfig: testAuthConfig(),
+      deviceAuth: testDeviceAuthConfig(),
+      supportsExecutionFeature: (_computer: string, _feature: string) => true,
+      idGen: { generate: (prefix: string) => `${prefix}_${randomUUID()}` },
+      // One opted-in project fences shared catalog/pool changes throughout this org.
+      schedulerRollout: {
+        version: 1 as const,
+        workspaces: {
+          org_default: {
+            projects: {
+              proj_artoo: { daemon_claim: true },
+              other: { daemon_claim: false },
+            },
+          },
+        },
+      },
+    };
+    const app = buildApp(ctx, {
+      assistantDispatcher: false,
+      resetPresenceOnStart: false,
+      budgetMonitorIntervalMs: false,
+    });
+    await app.ready();
+    // Controlled capability advertisement only; no node process is launched.
+    ctx.supportsExecutionFeature = () => true;
+    const tables = [
+      "projects",
+      "agents",
+      "agent_instances",
+      "computers",
+      "devices",
+      "device_tokens",
+      "skill_installs",
+      "scheduler_project_policies",
+      "scheduler_agent_policies",
+      "scheduler_computer_policies",
+      "event_log",
+    ];
+    const snapshot = async () =>
+      Object.fromEntries(
+        await Promise.all(
+          tables.map(async (table) => [
+            table,
+            (await observer!.query(`SELECT to_jsonb(t) AS row FROM ${table} t ORDER BY to_jsonb(t)::text`)).rows,
+          ]),
+        ),
+      );
+    const pid = (await f.first.db.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid;
+    expect(pid).not.toBe((await observer!.query("SELECT pg_backend_pid() AS pid")).rows[0]!.pid);
+    try {
+      const before = await snapshot();
+      await observer!.query("BEGIN");
+      try {
+        await observer!.query("SELECT pg_advisory_xact_lock(1095914314, hashtext('org_default'))");
+        for (const mutation of schedulerConfigurationMutations) {
+          const response = await app.inject(mutation.request);
+          expect(response.statusCode, `${mutation.name}: ${response.body}`).toBe(409);
+          expect(response.json()).toMatchObject({
+            error: { code: "conflict", details: { reason: "scheduler_configuration_busy" } },
+          });
+        }
+        expect(await snapshot()).toEqual(before);
+        expect(
+          (await app.inject({ method: "POST", url: "/api/v1/scheduler/agent-pin-import", payload: { apply: false } }))
+            .statusCode,
+        ).toBe(200);
+        expect((await app.inject("/api/v1/projects/proj_artoo/scheduling-policy")).statusCode).toBe(200);
+      } finally {
+        await observer!.query("ROLLBACK");
+      }
+      // Every original authorized operation remains usable after whole-operation retry.
+      for (const mutation of schedulerConfigurationMutations) {
+        const response = await app.inject(mutation.request);
+        expect(response.statusCode, `${mutation.name}: ${response.body}`).toBe(mutation.status);
+      }
+      expect((await observer!.query("SELECT * FROM runs")).rows).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("holds the configuration fence through commit, rejects stale snapshots and leaves heartbeat independent", {
+    timeout: 30_000,
+  }, async () => {
+    const f = await shadowFixture();
+    const service = requireBuilt("../../../../apps/server/dist/services/scheduler-configuration-fence.js") as {
+      lockSchedulerConfiguration(ctx: object, tx: DrizzleDb): Promise<boolean>;
+    };
+    const { recordHeartbeatRuntimes } = requireBuilt(
+      "../../../../apps/server/dist/services/runtime-registry-service.js",
+    ) as {
+      recordHeartbeatRuntimes(ctx: object, computer: string, runtimes: object[]): Promise<void>;
+    };
+    const context = (db: TestDbPort) => ({
+      ...f.context(db),
+      idGen: { generate: (prefix: string) => `${prefix}_${randomUUID()}` },
+      schedulerRollout: { version: 1, workspaces: { org_default: { flags: { daemon_claim: true } } } },
+    });
+    await expect(service.lockSchedulerConfiguration(context(f.first), f.first.db)).rejects.toMatchObject({
+      details: { reason: "scheduler_configuration_transaction" },
+    });
+    await expect(
+      f.second.db.transaction((tx) => service.lockSchedulerConfiguration(context(f.second), tx), {
+        isolationLevel: "repeatable read",
+      }),
+    ).rejects.toMatchObject({ details: { reason: "scheduler_configuration_transaction" } });
+    const entered = deferred(),
+      release = deferred();
+    const writer = f.first.transaction(async (tx) => {
+      await service.lockSchedulerConfiguration(context(f.first), tx);
+      await tx.execute(sql`UPDATE projects SET default_workspace='C:/committed' WHERE id='proj_artoo'`);
+      entered.resolve();
+      await release.promise;
+    });
+    // Propagate setup failures instead of waiting indefinitely for the barrier.
+    await Promise.race([entered.promise, writer]);
+    try {
+      await expect(
+        f.second.transaction((tx) => service.lockSchedulerConfiguration(context(f.second), tx)),
+      ).rejects.toMatchObject({
+        details: { reason: "scheduler_configuration_busy" },
+      });
+      expect(
+        (await observer!.query("SELECT default_workspace FROM projects WHERE id='proj_artoo'")).rows[0]!
+          .default_workspace,
+      ).not.toBe("C:/committed");
+      const other = {
+        ...context(f.second),
+        organizationId: "another",
+        schedulerRollout: { version: 1, workspaces: { another: { flags: { daemon_claim: true } } } },
+      };
+      expect(await f.second.transaction((tx) => service.lockSchedulerConfiguration(other, tx))).toBe(true);
+      await recordHeartbeatRuntimes(context(f.second), "computer_local_mock", [
+        { runtime: "mock", status: "available", capabilities: ["code.read"] },
+      ]);
+    } finally {
+      release.resolve();
+      await writer;
+    }
+    await f.second.transaction(async (tx) => {
+      expect(await service.lockSchedulerConfiguration(context(f.second), tx)).toBe(true);
+      expect((await tx.execute(sql`SELECT default_workspace FROM projects WHERE id='proj_artoo'`)).rows).toEqual([
+        { default_workspace: "C:/committed" },
+      ]);
+    });
+  });
+
   it("keeps one inactive original-user intent across independent concurrent staging, replay and cancellation", async () => {
     const f = await shadowFixture();
     type Intent = { id: string; state: string; requestKey: string; snapshot: object; executionAuthorized: boolean };

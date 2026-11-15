@@ -1,4 +1,5 @@
 import { lockSchedulerCapacity, schedulerCapacityEnabled } from "./scheduler-capacity-service.js";
+import { lockSchedulerConfiguration, schedulerConfigurationFenceEnabled } from "./scheduler-configuration-fence.js";
 import { agentInstances, agents, appendEvent, computers, schedulerAgentPolicies } from "@artoo/db";
 import { SchedulerAgentPolicyV1Schema } from "@artoo/domain";
 import { and, asc, eq, isNull } from "drizzle-orm";
@@ -7,7 +8,8 @@ import type { ServerContext } from "../context.js";
 import { buildEvent } from "../events.js";
 
 /**
- * Explicit administrator import from one repeatable-read configuration snapshot.
+ * Explicit administrator import. Preview/off mode uses repeatable read;
+ * opted-in configuration/capacity writers use read committed under their mutex.
  * No resource is retargeted, and existing policies (including explicit unpins)
  * are never replaced. Configuration changes after this snapshot need review.
  */
@@ -15,7 +17,10 @@ export async function importSchedulerAgentPins(ctx: ServerContext, apply: boolea
   return ctx.db.db.transaction(
     async (tx) => {
       await requireAdministrator(ctx, tx);
-      if (apply) await lockSchedulerCapacity(ctx, tx);
+      if (apply) {
+        await lockSchedulerConfiguration(ctx, tx);
+        await lockSchedulerCapacity(ctx, tx);
+      }
       const observedAt = ctx.clock.nowIso();
       const targets = await tx
         .select({ id: agents.id })
@@ -108,6 +113,11 @@ export async function importSchedulerAgentPins(ctx: ServerContext, apply: boolea
       }
       return { version: 1 as const, observed_at: observedAt, execution_authorized: false as const, results };
     },
-    { isolationLevel: apply && schedulerCapacityEnabled(ctx) ? "read committed" : "repeatable read" },
+    {
+      isolationLevel:
+        apply && (schedulerCapacityEnabled(ctx) || schedulerConfigurationFenceEnabled(ctx))
+          ? "read committed"
+          : "repeatable read",
+    },
   );
 }

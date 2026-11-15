@@ -13,40 +13,58 @@ import { buildEvent } from "./events.js";
 import { mapAgent, mapAgentInstance } from "./mappers.js";
 import { unconfirmedDisconnectRunIds, unsettledStandaloneExecutions } from "./services/execution-state.js";
 import { deleteResource } from "./services/resource-deletion-service.js";
+import { lockSchedulerConfiguration } from "./services/scheduler-configuration-fence.js";
 
 const WORKTREE_BASE_KEY = "worktree_workspace_base";
 const WORKTREE_FEATURE = "workspace-allocation.per-run-v1";
 
 async function changeWorktreeBase(c: ServerContext, id: string, setting: WorktreeBaseConfiguration | undefined) {
   return c.db.transaction(async (tx) => {
+    await lockSchedulerConfiguration(c, tx);
     // Serializes configuration edits. Allocation assignment must share this lock
     // when that separate integration is enabled.
-    const [instance] = await tx.select().from(agentInstances).where(and(
-      eq(agentInstances.id, id), eq(agentInstances.organizationId, c.organizationId), isNull(agentInstances.deletedAt),
-    )).for("update");
+    const [instance] = await tx
+      .select()
+      .from(agentInstances)
+      .where(
+        and(
+          eq(agentInstances.id, id),
+          eq(agentInstances.organizationId, c.organizationId),
+          isNull(agentInstances.deletedAt),
+        ),
+      )
+      .for("update");
     if (!instance) throw AppError.notFound("agent instance not found");
     // Lock order: instance FOR UPDATE, then actor FOR SHARE. Recheck after any
     // instance wait; the actor lock protects authorization through this commit.
     await requireAdministrator(c, tx);
-    const [computer] = await tx.select().from(computers).where(and(
-      eq(computers.id, instance.computerId), eq(computers.organizationId, c.organizationId),
-    ));
+    const [computer] = await tx
+      .select()
+      .from(computers)
+      .where(and(eq(computers.id, instance.computerId), eq(computers.organizationId, c.organizationId)));
     if (!computer) throw AppError.notFound("computer not found");
     if (instance.config === null || typeof instance.config !== "object" || Array.isArray(instance.config)) {
       throw AppError.conflict("Stored agent instance configuration is invalid");
     }
     const currentConfig = instance.config as Record<string, unknown>;
     if (setting !== undefined) {
-      try { validateWorktreeBaseConfiguration(setting, computer.os); }
-      catch (error) {
+      try {
+        validateWorktreeBaseConfiguration(setting, computer.os);
+      } catch (error) {
         if (error instanceof WorkspaceAllocationError) throw AppError.validation(error.message, { reason: error.code });
         throw error;
       }
     }
-    const active = await tx.select({ id: runs.id }).from(runs).where(and(
-      eq(runs.agentInstanceId, id), eq(runs.organizationId, c.organizationId),
-      inArray(runs.status, ["queued", "starting", "running", "awaiting_input", "paused"]),
-    ));
+    const active = await tx
+      .select({ id: runs.id })
+      .from(runs)
+      .where(
+        and(
+          eq(runs.agentInstanceId, id),
+          eq(runs.organizationId, c.organizationId),
+          inArray(runs.status, ["queued", "starting", "running", "awaiting_input", "paused"]),
+        ),
+      );
     if (active.length > 0) throw AppError.conflict("Stop the active run before changing this agent instance");
     if ((await unconfirmedDisconnectRunIds(c, tx, { agentInstanceId: id })).length > 0) {
       throw AppError.conflict("Confirm the disconnected process has stopped before changing this agent instance");
@@ -64,21 +82,39 @@ async function changeWorktreeBase(c: ServerContext, id: string, setting: Worktre
     const config = { ...currentConfig };
     if (setting === undefined) delete config[WORKTREE_BASE_KEY];
     else config[WORKTREE_BASE_KEY] = setting;
-    const [updated] = await tx.update(agentInstances).set({ config }).where(and(
-      eq(agentInstances.id, id), eq(agentInstances.organizationId, c.organizationId),
-    )).returning();
-    await appendEvent(tx, buildEvent(c, {
-      type: "agent_instance.updated", actorType: "user", actorId: c.actorUserId, correlationId: id,
-      payload: { agent_instance_id: id, computer_id: computer.id,
-        worktree_workspace_base: { before: hadSetting ? before : null, after: setting ?? null } },
-    }));
+    const [updated] = await tx
+      .update(agentInstances)
+      .set({ config })
+      .where(and(eq(agentInstances.id, id), eq(agentInstances.organizationId, c.organizationId)))
+      .returning();
+    await appendEvent(
+      tx,
+      buildEvent(c, {
+        type: "agent_instance.updated",
+        actorType: "user",
+        actorId: c.actorUserId,
+        correlationId: id,
+        payload: {
+          agent_instance_id: id,
+          computer_id: computer.id,
+          worktree_workspace_base: { before: hadSetting ? before : null, after: setting ?? null },
+        },
+      }),
+    );
     return { agent_instance: mapAgentInstance(updated!) };
   });
 }
 
-export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext,
-  disconnect: (computerId: string, deviceIds: string[]) => void = () => {}): void {
-  for (const [path, kind] of [["computers", "computer"], ["agents", "agent"], ["agent-instances", "agent_instance"]] as const) {
+export function registerResourceRoutes(
+  app: FastifyInstance,
+  ctx: ServerContext,
+  disconnect: (computerId: string, deviceIds: string[]) => void = () => {},
+): void {
+  for (const [path, kind] of [
+    ["computers", "computer"],
+    ["agents", "agent"],
+    ["agent-instances", "agent_instance"],
+  ] as const) {
     app.delete(`/api/v1/${path}/:id`, async (request) => {
       const { id } = request.params as { id: string };
       const result = await deleteResource(requestContext(ctx, request), kind, id);
@@ -92,30 +128,69 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext,
     const { id } = request.params as { id: string };
     const projectId = readProjectId(request.body, true);
     return c.db.transaction(async (tx) => {
+      await lockSchedulerConfiguration(c, tx);
       // Assignment takes the same instance lock, then rechecks squad membership.
-      const [instance] = await tx.select().from(agentInstances).where(and(
-        eq(agentInstances.id, id), eq(agentInstances.organizationId, c.organizationId), isNull(agentInstances.deletedAt),
-      )).for("update");
+      const [instance] = await tx
+        .select()
+        .from(agentInstances)
+        .where(
+          and(
+            eq(agentInstances.id, id),
+            eq(agentInstances.organizationId, c.organizationId),
+            isNull(agentInstances.deletedAt),
+          ),
+        )
+        .for("update");
       if (!instance) throw AppError.notFound("agent instance not found");
       if (projectId !== null) {
-        const [project] = await tx.select().from(projects).where(and(eq(projects.id, projectId), eq(projects.organizationId, c.organizationId)));
+        const [project] = await tx
+          .select()
+          .from(projects)
+          .where(and(eq(projects.id, projectId), eq(projects.organizationId, c.organizationId)));
         if (!project) throw AppError.notFound("project not found");
       }
       await requireAdministrator(c, tx);
       if (instance.projectId === projectId) return { agent_instance: mapAgentInstance(instance) };
-      const active = await tx.select({ id: runs.id }).from(runs).where(and(eq(runs.organizationId, c.organizationId),
-        eq(runs.agentInstanceId, id), notInArray(runs.status, ["completed", "failed", "cancelled"])));
-      const planning = await tx.select({ participants: discussions.participants }).from(discussions).where(and(
-        eq(discussions.organizationId, c.organizationId), inArray(discussions.status, ["running", "stopping"])));
-      if (active.length || (await unconfirmedDisconnectRunIds(c, tx, { agentInstanceId: id })).length
-        || (await unsettledStandaloneExecutions(c, tx, { agentInstanceId: id })).length
-        || planning.some((row) => (row.participants as { agent_instance_id: string }[]).some((member) => member.agent_instance_id === id))) {
-        throw AppError.conflict("Stop active work and confirm processes have exited before changing this instance's project");
+      const active = await tx
+        .select({ id: runs.id })
+        .from(runs)
+        .where(
+          and(
+            eq(runs.organizationId, c.organizationId),
+            eq(runs.agentInstanceId, id),
+            notInArray(runs.status, ["completed", "failed", "cancelled"]),
+          ),
+        );
+      const planning = await tx
+        .select({ participants: discussions.participants })
+        .from(discussions)
+        .where(
+          and(eq(discussions.organizationId, c.organizationId), inArray(discussions.status, ["running", "stopping"])),
+        );
+      if (
+        active.length ||
+        (await unconfirmedDisconnectRunIds(c, tx, { agentInstanceId: id })).length ||
+        (await unsettledStandaloneExecutions(c, tx, { agentInstanceId: id })).length ||
+        planning.some((row) =>
+          (row.participants as { agent_instance_id: string }[]).some((member) => member.agent_instance_id === id),
+        )
+      ) {
+        throw AppError.conflict(
+          "Stop active work and confirm processes have exited before changing this instance's project",
+        );
       }
       const [updated] = await tx.update(agentInstances).set({ projectId }).where(eq(agentInstances.id, id)).returning();
-      await appendEvent(tx, buildEvent(c, { type: "agent_instance.updated", actorType: "user", actorId: c.actorUserId,
-        correlationId: id, projectId: projectId ?? instance.projectId,
-        payload: { agent_instance_id: id, project_id: projectId, previous_project_id: instance.projectId } }));
+      await appendEvent(
+        tx,
+        buildEvent(c, {
+          type: "agent_instance.updated",
+          actorType: "user",
+          actorId: c.actorUserId,
+          correlationId: id,
+          projectId: projectId ?? instance.projectId,
+          payload: { agent_instance_id: id, project_id: projectId, previous_project_id: instance.projectId },
+        }),
+      );
       return { agent_instance: mapAgentInstance(updated!) };
     });
   });
@@ -125,7 +200,8 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext,
     await requireAdministrator(c);
     const { id } = request.params as { id: string };
     const parsed = WorktreeBaseConfigurationSchema.safeParse(request.body);
-    if (!parsed.success) throw AppError.validation("worktree workspace base requires only version 1, per-run strategy and basePath");
+    if (!parsed.success)
+      throw AppError.validation("worktree workspace base requires only version 1, per-run strategy and basePath");
     return changeWorktreeBase(c, id, parsed.data);
   });
 
@@ -133,8 +209,13 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext,
     const c = requestContext(ctx, request);
     await requireAdministrator(c);
     const { id } = request.params as { id: string };
-    if (request.body !== undefined && (request.body === null || typeof request.body !== "object"
-      || Array.isArray(request.body) || Object.keys(request.body).length !== 0)) {
+    if (
+      request.body !== undefined &&
+      (request.body === null ||
+        typeof request.body !== "object" ||
+        Array.isArray(request.body) ||
+        Object.keys(request.body).length !== 0)
+    ) {
       throw AppError.validation("Deleting a worktree workspace base does not accept configuration data");
     }
     return changeWorktreeBase(c, id, undefined);
@@ -147,58 +228,138 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext,
     const input = (request.body ?? {}) as Record<string, unknown>;
     const projectId = readProjectId(request.body, false);
     if (typeof input.runtime !== "string" || !input.runtime.trim()) throw AppError.validation("runtime is required");
-    if (typeof input.workspace_root !== "string" || input.workspace_root.includes("\0") || input.workspace_root.length > 4096 || !(posix.isAbsolute(input.workspace_root) || win32.isAbsolute(input.workspace_root))) {
+    if (
+      typeof input.workspace_root !== "string" ||
+      input.workspace_root.includes("\0") ||
+      input.workspace_root.length > 4096 ||
+      !(posix.isAbsolute(input.workspace_root) || win32.isAbsolute(input.workspace_root))
+    ) {
       throw AppError.validation("workspace_root must be an absolute path on the execution computer");
     }
     const runtime = input.runtime.trim();
     const workspaceRoot = input.workspace_root;
     const existingAgentId = input.agent_id;
-    if (existingAgentId !== undefined && (typeof existingAgentId !== "string" || !existingAgentId.trim() || existingAgentId.length > 128)) {
+    if (
+      existingAgentId !== undefined &&
+      (typeof existingAgentId !== "string" || !existingAgentId.trim() || existingAgentId.length > 128)
+    ) {
       throw AppError.validation("agent_id must identify an existing agent");
     }
     if (existingAgentId !== undefined && (input.display_name !== undefined || input.capabilities !== undefined)) {
       throw AppError.validation("An existing agent retains its name and declared capabilities");
     }
     const displayName = typeof input.display_name === "string" ? input.display_name.trim() : runtime;
-    if (!displayName || displayName.length > 160) throw AppError.validation("display_name must contain between 1 and 160 characters");
+    if (!displayName || displayName.length > 160)
+      throw AppError.validation("display_name must contain between 1 and 160 characters");
     const result = await c.db.transaction(async (tx) => {
+      await lockSchedulerConfiguration(c, tx);
       if (projectId !== null) {
-        const [project] = await tx.select().from(projects).where(and(eq(projects.id, projectId), eq(projects.organizationId, c.organizationId)));
+        const [project] = await tx
+          .select()
+          .from(projects)
+          .where(and(eq(projects.id, projectId), eq(projects.organizationId, c.organizationId)));
         if (!project) throw AppError.notFound("project not found");
       }
-      const [computer] = await tx.select().from(computers).where(and(eq(computers.id, computerId), eq(computers.organizationId, c.organizationId), isNull(computers.deletedAt))).for("share");
+      const [computer] = await tx
+        .select()
+        .from(computers)
+        .where(
+          and(
+            eq(computers.id, computerId),
+            eq(computers.organizationId, c.organizationId),
+            isNull(computers.deletedAt),
+          ),
+        )
+        .for("share");
       if (!computer) throw AppError.notFound("computer not found");
       if (computer.status === "disabled") throw AppError.conflict("computer is disabled");
-      const [registered] = await tx.select().from(agentRuntimes).where(and(
-        eq(agentRuntimes.computerId, computerId), eq(agentRuntimes.organizationId, c.organizationId), eq(agentRuntimes.runtime, runtime),
-      ));
-      if (!registered || registered.status !== "available") throw AppError.conflict("The computer must advertise an available runtime before it can be configured");
+      const [registered] = await tx
+        .select()
+        .from(agentRuntimes)
+        .where(
+          and(
+            eq(agentRuntimes.computerId, computerId),
+            eq(agentRuntimes.organizationId, c.organizationId),
+            eq(agentRuntimes.runtime, runtime),
+          ),
+        );
+      if (!registered || registered.status !== "available")
+        throw AppError.conflict("The computer must advertise an available runtime before it can be configured");
       const available = registered.capabilities as string[];
       // Separate workspaces can retain the same logical contributor. Selecting
       // an existing identity never edits its declarations or crosses an org.
-      const [existingAgent] = typeof existingAgentId === "string" ? await tx.select().from(agents).where(and(
-        eq(agents.id, existingAgentId), eq(agents.organizationId, c.organizationId), isNull(agents.deletedAt),
-      )).for("share") : [];
+      const [existingAgent] =
+        typeof existingAgentId === "string"
+          ? await tx
+              .select()
+              .from(agents)
+              .where(
+                and(
+                  eq(agents.id, existingAgentId),
+                  eq(agents.organizationId, c.organizationId),
+                  isNull(agents.deletedAt),
+                ),
+              )
+              .for("share")
+          : [];
       if (existingAgentId !== undefined && !existingAgent) throw AppError.notFound("agent not found");
       const capabilities = existingAgent?.capabilities ?? input.capabilities ?? available;
-      if (!Array.isArray(capabilities) || capabilities.some((value) => typeof value !== "string" || !available.includes(value))) {
+      if (
+        !Array.isArray(capabilities) ||
+        capabilities.some((value) => typeof value !== "string" || !available.includes(value))
+      ) {
         throw AppError.validation("capabilities must be supported by the advertised runtime");
       }
       await requireAdministrator(c, tx);
       const now = c.clock.nowIso();
-      const agent = existingAgent ?? (await tx.insert(agents).values({
-        id: c.idGen.generate(ID_PREFIXES.agent), organizationId: c.organizationId, displayName, kind: "coding",
-        status: "idle", capabilities: [...new Set(capabilities)], createdAt: now,
-      }).returning())[0]!;
-      const [instance] = await tx.insert(agentInstances).values({
-        id: c.idGen.generate(ID_PREFIXES.agentInstance), organizationId: c.organizationId, projectId,
-        computerId, agentId: agent.id, runtime, status: "idle", workspaceRoot, config: {}, createdAt: now,
-      }).returning();
-      await appendEvent(tx, buildEvent(c, {
-        type: "agent_instance.created", actorType: "user", actorId: c.actorUserId, correlationId: instance!.id, projectId,
-        payload: { agent_instance_id: instance!.id, computer_id: computerId, runtime, project_id: projectId,
-          ...(existingAgent ? { agent_id: existingAgent.id } : {}) },
-      }));
+      const agent =
+        existingAgent ??
+        (
+          await tx
+            .insert(agents)
+            .values({
+              id: c.idGen.generate(ID_PREFIXES.agent),
+              organizationId: c.organizationId,
+              displayName,
+              kind: "coding",
+              status: "idle",
+              capabilities: [...new Set(capabilities)],
+              createdAt: now,
+            })
+            .returning()
+        )[0]!;
+      const [instance] = await tx
+        .insert(agentInstances)
+        .values({
+          id: c.idGen.generate(ID_PREFIXES.agentInstance),
+          organizationId: c.organizationId,
+          projectId,
+          computerId,
+          agentId: agent.id,
+          runtime,
+          status: "idle",
+          workspaceRoot,
+          config: {},
+          createdAt: now,
+        })
+        .returning();
+      await appendEvent(
+        tx,
+        buildEvent(c, {
+          type: "agent_instance.created",
+          actorType: "user",
+          actorId: c.actorUserId,
+          correlationId: instance!.id,
+          projectId,
+          payload: {
+            agent_instance_id: instance!.id,
+            computer_id: computerId,
+            runtime,
+            project_id: projectId,
+            ...(existingAgent ? { agent_id: existingAgent.id } : {}),
+          },
+        }),
+      );
       return { agent: mapAgent(agent!), agent_instance: mapAgentInstance(instance!) };
     });
     return reply.status(201).send(result);
@@ -212,18 +373,45 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext,
     if (typeof input.enabled !== "boolean") throw AppError.validation("enabled must be a boolean");
     const enabled = input.enabled;
     return c.db.transaction(async (tx) => {
-      const [instance] = await tx.select().from(agentInstances).where(and(eq(agentInstances.id, id), eq(agentInstances.organizationId, c.organizationId), isNull(agentInstances.deletedAt))).for("update");
+      await lockSchedulerConfiguration(c, tx);
+      const [instance] = await tx
+        .select()
+        .from(agentInstances)
+        .where(
+          and(
+            eq(agentInstances.id, id),
+            eq(agentInstances.organizationId, c.organizationId),
+            isNull(agentInstances.deletedAt),
+          ),
+        )
+        .for("update");
       if (!instance) throw AppError.notFound("agent instance not found");
-      const active = await tx.select({ id: runs.id }).from(runs).where(and(
-        eq(runs.agentInstanceId, id), eq(runs.organizationId, c.organizationId),
-        inArray(runs.status, ["queued", "starting", "running", "awaiting_input", "paused"]),
-      ));
+      const active = await tx
+        .select({ id: runs.id })
+        .from(runs)
+        .where(
+          and(
+            eq(runs.agentInstanceId, id),
+            eq(runs.organizationId, c.organizationId),
+            inArray(runs.status, ["queued", "starting", "running", "awaiting_input", "paused"]),
+          ),
+        );
       if (active.length > 0) throw AppError.conflict("Stop the active run before changing this agent instance");
-      const [updated] = await tx.update(agentInstances).set({ status: enabled ? "idle" : "disabled" }).where(eq(agentInstances.id, id)).returning();
-      await appendEvent(tx, buildEvent(c, {
-        type: "agent_instance.updated", actorType: "user", actorId: c.actorUserId, correlationId: id,
-        payload: { agent_instance_id: id, enabled },
-      }));
+      const [updated] = await tx
+        .update(agentInstances)
+        .set({ status: enabled ? "idle" : "disabled" })
+        .where(eq(agentInstances.id, id))
+        .returning();
+      await appendEvent(
+        tx,
+        buildEvent(c, {
+          type: "agent_instance.updated",
+          actorType: "user",
+          actorId: c.actorUserId,
+          correlationId: id,
+          payload: { agent_instance_id: id, enabled },
+        }),
+      );
       return { agent_instance: mapAgentInstance(updated!) };
     });
   });
@@ -231,9 +419,11 @@ export function registerResourceRoutes(app: FastifyInstance, ctx: ServerContext,
 
 /** Older clients may register inventory without a project; it remains unassigned. */
 function readProjectId(body: unknown, required: boolean): string | null {
-  if (body === null || typeof body !== "object" || Array.isArray(body)) throw AppError.validation("project fields must be an object");
+  if (body === null || typeof body !== "object" || Array.isArray(body))
+    throw AppError.validation("project fields must be an object");
   const value = (body as Record<string, unknown>).project_id;
   if ((value === undefined && !required) || value === null) return null;
-  if (typeof value !== "string" || !value.trim() || value.length > 128) throw AppError.validation("project_id must identify a project or be null");
+  if (typeof value !== "string" || !value.trim() || value.length > 128)
+    throw AppError.validation("project_id must identify a project or be null");
   return value;
 }
