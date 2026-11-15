@@ -6,6 +6,7 @@
  * contract (accepted gaps gap1/gap2/gap3).
  */
 import { z } from "zod";
+import { EnqueueSourceV1Schema } from "./enqueue-source.js";
 
 import { CapabilitySchema } from "./capabilities.js";
 import {
@@ -56,15 +57,12 @@ export const ApiErrorSchema = z.object({
 });
 export type ApiError = z.infer<typeof ApiErrorSchema>;
 
-export function apiError(
-  code: ApiErrorCode,
-  message: string,
-  details: Record<string, unknown> = {},
-): ApiError {
+export function apiError(code: ApiErrorCode, message: string, details: Record<string, unknown> = {}): ApiError {
   return { error: { code, message, details } };
 }
 
 export const CreateTaskRequestSchema = z.object({
+  enqueue_source: EnqueueSourceV1Schema.optional(),
   project_id: z.string(),
   title: z.string().min(1),
   description: z.string().default(""),
@@ -88,25 +86,27 @@ export type CreateDependencyRequest = z.infer<typeof CreateDependencyRequestSche
  * containment-checked server-side before storage. `holder_type`/`holder_id`
  * default to run/run_id when `run_id` is present, else task/task_id.
  */
-export const AcquireLeaseRequestSchema = z.object({
-  task_id: z.string(),
-  run_id: z.string().nullish(),
-  path: z.string(),
-  mode: LeaseModeSchema,
-  holder_type: LeaseHolderTypeSchema.nullish(),
-  holder_id: z.string().nullish(),
-  expires_at: z.string().nullish(),
-}).superRefine((data, ctx) => {
-  const hasHolderType = data.holder_type != null;
-  const hasHolderId = data.holder_id != null;
-  if (hasHolderType !== hasHolderId) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "holder_type and holder_id must be provided together",
-      path: hasHolderType ? ["holder_id"] : ["holder_type"],
-    });
-  }
-});
+export const AcquireLeaseRequestSchema = z
+  .object({
+    task_id: z.string(),
+    run_id: z.string().nullish(),
+    path: z.string(),
+    mode: LeaseModeSchema,
+    holder_type: LeaseHolderTypeSchema.nullish(),
+    holder_id: z.string().nullish(),
+    expires_at: z.string().nullish(),
+  })
+  .superRefine((data, ctx) => {
+    const hasHolderType = data.holder_type != null;
+    const hasHolderId = data.holder_id != null;
+    if (hasHolderType !== hasHolderId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "holder_type and holder_id must be provided together",
+        path: hasHolderType ? ["holder_id"] : ["holder_type"],
+      });
+    }
+  });
 export type AcquireLeaseRequest = z.infer<typeof AcquireLeaseRequestSchema>;
 
 /** A node in a task DAG snapshot. */
@@ -133,51 +133,53 @@ export const DagSnapshotSchema = z.object({
 });
 export type DagSnapshot = z.infer<typeof DagSnapshotSchema>;
 
-export const AssignRequestSchema = z.object({
-  mode: z.enum(["auto", "manual"]).default("auto"),
-  agent_instance_id: z.string().nullish(),
-  model_profile_id: z.string().nullish(),
-  effort: EffortSchema.nullish(),
-  /**
-   * Paths the run will write (#20). Reserved as `write` file leases (holder=run)
-   * inside the assignment transaction; a conflict aborts the whole assign and
-   * leaves the task `ready`. Normalized + deduped to canonical lowercase lease
-   * keys server-side. Empty/absent is a back-compat no-op.
-   */
-  write_paths: z.array(z.string()).nullish(),
-  /**
-   * Branch-backed worktree opt-in (#23). Provide an explicit `workspace_branch`
-   * to use that exact branch, OR `branch_backed: true` to have the server
-   * generate a deterministic `artoo/run-<runId>` branch. Both absent -> ordinary
-   * run (no worktree, `workspace_branch = null`). Providing both is invalid.
-   */
-  workspace_branch: z.string().nullish(),
-  branch_backed: z.boolean().nullish(),
-}).superRefine((data, ctx) => {
-  const branch = data.workspace_branch;
-  const hasExplicitBranch = branch != null;
-  if (branch != null && branch.trim() === "") {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "workspace_branch must be non-empty when provided",
-      path: ["workspace_branch"],
-    });
-  }
-  if (branch != null && branch !== branch.trim()) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "workspace_branch must not include leading or trailing whitespace",
-      path: ["workspace_branch"],
-    });
-  }
-  if (hasExplicitBranch && data.branch_backed === true) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "provide either workspace_branch or branch_backed, not both",
-      path: ["workspace_branch"],
-    });
-  }
-});
+export const AssignRequestSchema = z
+  .object({
+    mode: z.enum(["auto", "manual"]).default("auto"),
+    agent_instance_id: z.string().nullish(),
+    model_profile_id: z.string().nullish(),
+    effort: EffortSchema.nullish(),
+    /**
+     * Paths the run will write (#20). Reserved as `write` file leases (holder=run)
+     * inside the assignment transaction; a conflict aborts the whole assign and
+     * leaves the task `ready`. Normalized + deduped to canonical lowercase lease
+     * keys server-side. Empty/absent is a back-compat no-op.
+     */
+    write_paths: z.array(z.string()).nullish(),
+    /**
+     * Branch-backed worktree opt-in (#23). Provide an explicit `workspace_branch`
+     * to use that exact branch, OR `branch_backed: true` to have the server
+     * generate a deterministic `artoo/run-<runId>` branch. Both absent -> ordinary
+     * run (no worktree, `workspace_branch = null`). Providing both is invalid.
+     */
+    workspace_branch: z.string().nullish(),
+    branch_backed: z.boolean().nullish(),
+  })
+  .superRefine((data, ctx) => {
+    const branch = data.workspace_branch;
+    const hasExplicitBranch = branch != null;
+    if (branch != null && branch.trim() === "") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "workspace_branch must be non-empty when provided",
+        path: ["workspace_branch"],
+      });
+    }
+    if (branch != null && branch !== branch.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "workspace_branch must not include leading or trailing whitespace",
+        path: ["workspace_branch"],
+      });
+    }
+    if (hasExplicitBranch && data.branch_backed === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "provide either workspace_branch or branch_backed, not both",
+        path: ["workspace_branch"],
+      });
+    }
+  });
 export type AssignRequest = z.infer<typeof AssignRequestSchema>;
 
 /** POST /tasks/:id/retry — recovers blocked/failed tasks by creating a new run. */
@@ -203,7 +205,12 @@ export const SendMessageRequestSchema = z.object({
   body: z.string().default(""),
   payload: z.record(z.string(), z.unknown()).default({}),
   thread_root_id: z.string().min(1).optional(),
-  client_request_id: z.string().min(8).max(128).regex(/^[A-Za-z0-9_-]+$/).optional(),
+  client_request_id: z
+    .string()
+    .min(8)
+    .max(128)
+    .regex(/^[A-Za-z0-9_-]+$/)
+    .optional(),
   /** Structured @mentions and action assignments (#114). Persisted in the
    *  message payload and surfaced via a metadata-only message.mention event. */
   mentions: z.array(MentionSchema).default([]),

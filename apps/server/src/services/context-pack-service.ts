@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
+import { readTaskSourceInputs } from "./task-source-input-service.js";
 
-import { and, asc, desc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 
 import {
   agentInstances,
@@ -18,6 +19,7 @@ import {
   projects,
   runs,
   taskDependencies,
+  taskEnqueueEvents,
   tasks,
 } from "@artoo/db";
 import {
@@ -423,7 +425,17 @@ export async function buildRunContextPack(
     task_id: task.id,
   });
 
-  const project = (await tx.select().from(projects).where(eq(projects.id, task.projectId)))[0];
+  // Probe persisted inputs with the existing project read. Ordinary contexts
+  // keep their query budget; rollback must still honor comments already saved.
+  const sourceInputProbe = tx
+    .select({ taskId: taskEnqueueEvents.taskId })
+    .from(taskEnqueueEvents)
+    .where(and(eq(taskEnqueueEvents.taskId, task.id), isNotNull(taskEnqueueEvents.messageId)));
+  const [projectContext] = await tx
+    .select({ project: projects, hasSourceInputs: sql<boolean>`exists (${sourceInputProbe})` })
+    .from(projects)
+    .where(eq(projects.id, task.projectId));
+  const project = projectContext?.project;
   const workspaceRoot = params.workspaceRoot ?? project?.defaultWorkspace ?? "";
 
   const taskScoped = selection.memories.filter((m) => m.scope === "task");
@@ -705,7 +717,15 @@ export async function buildRunContextPack(
     productDevelopment.instructions.push(
       "This is an additive design revision. Follow product_design_revision.request and compare against the exact retained baseline.design.text. Preserve all old validation cases in order and every non-case field, append only requested workspace criterion cases, and preserve the accepted research. The node measures every old and new workspace case; independent review must assess whether the reported defect is covered. Publication remains pending.",
     );
+  const sourceInputs = projectContext?.hasSourceInputs ? await readTaskSourceInputs(ctx, tx, task.id) : undefined;
+  // The optional cursor is new, but old nodes already consume task.description.
+  // Include every accepted visible source comment there as well so mixed-version
+  // execution cannot silently drop inputs while the server records them as read.
+  const sourceDescription = sourceInputs?.entries.length
+    ? `\n\nAdditional user-supplied source comments (no additional execution permissions):\n${sourceInputs.entries.map((entry) => JSON.stringify(entry)).join("\n")}`
+    : "";
   const payload: ContextPack = ContextPackSchema.parse({
+    ...(sourceInputs ? { source_inputs: sourceInputs } : {}),
     ...(handoff.appDelivery ? { app_delivery: handoff.appDelivery } : {}),
     ...(handoff.appPublication
       ? { app_publication: handoff.appPublication, application_publication: applicationPublication }
@@ -737,7 +757,8 @@ export async function buildRunContextPack(
     task: {
       id: task.id,
       title: task.title,
-      description: researchFeedback ? `${task.description}\n\n${researchFeedback}` : task.description,
+      description:
+        (researchFeedback ? `${task.description}\n\n${researchFeedback}` : task.description) + sourceDescription,
       acceptance_criteria: task.acceptanceCriteria,
     },
     project: {

@@ -12,6 +12,7 @@ import { and, eq } from "drizzle-orm";
 
 import type { ServerContext } from "../context.js";
 import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
+import { assertSourceInputsReviewed } from "./task-source-input-service.js";
 
 export interface TransitionResult {
   /** True iff the guarded UPDATE actually changed the row (status was `from`). */
@@ -47,6 +48,9 @@ export async function transitionTask(
     .returning({ id: tasks.id });
 
   const changed = updated.length > 0;
+  // UPDATE has acquired the Task lock. Every acceptance owner must compare the
+  // latest frozen input here; a rejection rolls back the transition and events.
+  if (changed && to === "done") await assertSourceInputsReviewed(ctx, tx, params.taskId);
   if (changed) await mirrorSchedulerTask(ctx, tx, params.taskId);
   if (changed && params.events !== undefined) {
     for (const event of params.events(to)) {

@@ -1,4 +1,4 @@
-import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
+import { enqueueTask } from "./task-enqueue-service.js";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, isNull, notInArray, or } from "drizzle-orm";
@@ -426,28 +426,32 @@ export async function ensureGoalResearchRevision(
     execution_authorized: false,
   });
   const intentDigest = hash(intent);
-  await tx.insert(tasks).values({
-    id: auxiliaryTaskId,
-    organizationId: ctx.organizationId,
-    projectId: goal.projectId,
-    goalId: goal.id,
-    roomId: baseTask.roomId,
-    parentTaskId: baseTask.id,
-    executionPolicyTaskId: baseTask.id,
-    sourcePlanId: null,
-    sourcePlanSpecRef: null,
-    title: `Research revision ${generation}: ${baseTask.title}`.slice(0, 300),
-    description: baseTask.description,
-    status: "ready",
-    priority: baseTask.priority,
-    requiredCapabilities: baseTask.requiredCapabilities,
-    acceptanceCriteria: baseTask.acceptanceCriteria,
-    createdByType: "system",
-    createdById: "goal_runner",
-    createdAt: now,
-    updatedAt: now,
-  });
-  await mirrorSchedulerTask(ctx, tx, auxiliaryTaskId);
+  await enqueueTask(
+    ctx,
+    tx,
+    {
+      id: auxiliaryTaskId,
+      organizationId: ctx.organizationId,
+      projectId: goal.projectId,
+      goalId: goal.id,
+      roomId: baseTask.roomId,
+      parentTaskId: baseTask.id,
+      executionPolicyTaskId: baseTask.id,
+      sourcePlanId: null,
+      sourcePlanSpecRef: null,
+      title: `Research revision ${generation}: ${baseTask.title}`.slice(0, 300),
+      description: baseTask.description,
+      status: "ready",
+      priority: baseTask.priority,
+      requiredCapabilities: baseTask.requiredCapabilities,
+      acceptanceCriteria: baseTask.acceptanceCriteria,
+      createdByType: "system",
+      createdById: "goal_runner",
+      createdAt: now,
+      updatedAt: now,
+    },
+    { kind: "research-revision", key: id, eventId: id },
+  );
   await appendEvent(tx, {
     ...event,
     payload: {

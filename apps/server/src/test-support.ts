@@ -10,6 +10,7 @@ import { testAuthConfig, type AuthConfig } from "./auth/auth-config.js";
 import { createFakeOidcProvider, type FakeOidcProvider } from "./auth/fake-oidc.js";
 import { testDeviceAuthConfig } from "./config/device-auth.js";
 import type { DeviceAuthConfig } from "./config/device-auth.js";
+import { loadSchedulerRollout } from "./config/scheduler-rollout.js";
 import type { ServerContext } from "./context.js";
 import { createEventPublisher, type EventPublisher } from "./ws/event-publisher.js";
 import { createNodeRegistry, type NodeRegistry } from "./ws/node-registry.js";
@@ -88,9 +89,7 @@ export interface BuildTestServerOptions {
 }
 
 /** A fully wired server over an embedded, migrated, seeded database. */
-export async function buildTestServer(
-  options: BuildTestServerOptions = {},
-): Promise<TestServer> {
+export async function buildTestServer(options: BuildTestServerOptions = {}): Promise<TestServer> {
   const db = await PgliteDbClient.create();
   options.onResourceAcquired?.(db);
   await db.migrate(await loadMigrationStatements());
@@ -102,8 +101,14 @@ export async function buildTestServer(
     nowMs: Date.parse(FIXED_ISO),
   });
   const ctx: ServerContext = {
+    // Dedicated opt-in integration config only; production rollout environment
+    // never leaks into this deterministic default-off fixture.
+    schedulerRollout: loadSchedulerRollout({ ARTOO_SCHEDULER_ROLLOUT: process.env.ARTOO_TEST_SCHEDULER_ROLLOUT }),
     db,
-    aiDataSharingPolicy: options.aiDataSharingPolicy === undefined ? buildAiDataSharingPolicy({ mode: "local", providers: [] }) : options.aiDataSharingPolicy,
+    aiDataSharingPolicy:
+      options.aiDataSharingPolicy === undefined
+        ? buildAiDataSharingPolicy({ mode: "local", providers: [] })
+        : options.aiDataSharingPolicy,
     clock: fixedClock(),
     idGen: sequentialIdGen(),
     organizationId: "org_default",
@@ -130,9 +135,17 @@ export async function buildTestServer(
     desktopCors: options.desktopCors,
     graceWindow: options.graceWindow,
   });
-  options.onResourceAcquired?.({ close: async () => { await app.close(); } });
+  options.onResourceAcquired?.({
+    close: async () => {
+      await app.close();
+    },
+  });
   const publisher = createEventPublisher(ctx, wsHub);
-  options.onResourceAcquired?.({ close: async () => { publisher.stop(); } });
+  options.onResourceAcquired?.({
+    close: async () => {
+      publisher.stop();
+    },
+  });
   await app.ready();
   return {
     app,

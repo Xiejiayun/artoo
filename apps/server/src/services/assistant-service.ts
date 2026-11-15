@@ -1,4 +1,4 @@
-import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
+import { enqueueTask } from "./task-enqueue-service.js";
 import { requireContentAllowed } from "./content-moderation-service.js";
 import { requireAiSharingAuthorization, requireRunAiSharingAuthorization } from "./ai-data-sharing-service.js";
 import {
@@ -262,9 +262,10 @@ export async function enqueueAssistantTurn(ctx: ServerContext, roomId: string, r
           "This goal is closed. Create a follow-up goal to run more work; team discussion remains available.",
         );
       const taskId = ctx.idGen.generate(ID_PREFIXES.task);
-      [task] = await tx
-        .insert(tasks)
-        .values({
+      ({ task } = await enqueueTask(
+        ctx,
+        tx,
+        {
           id: taskId,
           organizationId: ctx.organizationId,
           projectId: room.projectId,
@@ -286,9 +287,14 @@ export async function enqueueAssistantTurn(ctx: ServerContext, roomId: string, r
           createdById: ctx.actorUserId,
           createdAt: now,
           updatedAt: now,
-        })
-        .returning();
-      await mirrorSchedulerTask(ctx, tx, taskId);
+        },
+        {
+          kind: "assistant",
+          key: roomId,
+          eventId: request.client_request_id,
+          targetKey: request.thread_root_id ?? "root",
+        },
+      ));
       await appendEvent(
         tx,
         buildEvent(ctx, {

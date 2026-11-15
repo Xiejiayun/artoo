@@ -1,4 +1,4 @@
-import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
+import { enqueueTask } from "./task-enqueue-service.js";
 import {
   appendEvent,
   agentRuntimes,
@@ -253,65 +253,77 @@ export async function createTask(ctx: ServerContext, req: CreateTaskRequest): Pr
       throw AppError.notFound(`project not found: ${req.project_id}`, { project_id: req.project_id });
     }
 
-    await tx.insert(tasks).values({
-      id: taskId,
-      organizationId: ctx.organizationId,
-      projectId: req.project_id,
-      parentTaskId: req.parent_task_id ?? null,
-      roomId,
-      title: req.title,
-      description: req.description,
-      status: "backlog",
-      priority: req.priority,
-      requiredCapabilities: req.required_capabilities,
-      preferredModelProfileId: req.preferred_model_profile_id ?? null,
-      preferredEffort: req.preferred_effort ?? null,
-      acceptanceCriteria: req.acceptance_criteria,
-      createdByType: "user",
-      createdById: ctx.actorUserId,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await mirrorSchedulerTask(ctx, tx, taskId);
-
-    await tx.insert(rooms).values({
-      id: roomId,
-      organizationId: ctx.organizationId,
-      projectId: req.project_id,
-      taskId,
-      type: "task",
-      name: req.title,
-      createdAt: now,
-    });
-
-    await appendEvent(
+    const { task: taskRow } = await enqueueTask(
+      ctx,
       tx,
-      buildEvent(ctx, {
-        type: "task.created",
-        actorType: "user",
-        actorId: ctx.actorUserId,
-        correlationId,
+      {
+        id: taskId,
+        organizationId: ctx.organizationId,
         projectId: req.project_id,
-        taskId,
+        parentTaskId: req.parent_task_id ?? null,
         roomId,
-        payload: { title: req.title },
-      }),
-    );
-    await appendEvent(
-      tx,
-      buildEvent(ctx, {
-        type: "room.created",
-        actorType: "system",
-        actorId: "system",
-        correlationId,
-        projectId: req.project_id,
-        taskId,
-        roomId,
-      }),
-    );
+        title: req.title,
+        description: req.description,
+        status: "backlog",
+        priority: req.priority,
+        requiredCapabilities: req.required_capabilities,
+        preferredModelProfileId: req.preferred_model_profile_id ?? null,
+        preferredEffort: req.preferred_effort ?? null,
+        acceptanceCriteria: req.acceptance_criteria,
+        createdByType: "user",
+        createdById: ctx.actorUserId,
+        createdAt: now,
+        updatedAt: now,
+      },
+      req.enqueue_source
+        ? {
+            kind: req.enqueue_source.kind === "issue" ? "external-issue" : "external-manual",
+            key: req.enqueue_source.key,
+            eventId: req.enqueue_source.event_id,
+            targetKey: req.enqueue_source.target_key,
+            comment: req.enqueue_source.comment,
+            deduplicate: true,
+          }
+        : { kind: "manual", key: taskId, eventId: taskId },
+      async () => {
+        await tx.insert(rooms).values({
+          id: roomId,
+          organizationId: ctx.organizationId,
+          projectId: req.project_id,
+          taskId,
+          type: "task",
+          name: req.title,
+          createdAt: now,
+        });
 
-    const taskRow = (await tx.select().from(tasks).where(eq(tasks.id, taskId)))[0];
-    const roomRow = (await tx.select().from(rooms).where(eq(rooms.id, roomId)))[0];
+        await appendEvent(
+          tx,
+          buildEvent(ctx, {
+            type: "task.created",
+            actorType: "user",
+            actorId: ctx.actorUserId,
+            correlationId,
+            projectId: req.project_id,
+            taskId,
+            roomId,
+            payload: { title: req.title },
+          }),
+        );
+        await appendEvent(
+          tx,
+          buildEvent(ctx, {
+            type: "room.created",
+            actorType: "system",
+            actorId: "system",
+            correlationId,
+            projectId: req.project_id,
+            taskId,
+            roomId,
+          }),
+        );
+      },
+    );
+    const roomRow = (await tx.select().from(rooms).where(eq(rooms.id, taskRow.roomId!)))[0];
     if (taskRow === undefined || roomRow === undefined) {
       throw new Error("createTask: row missing after insert");
     }

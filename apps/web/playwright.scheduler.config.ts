@@ -7,7 +7,7 @@ export default defineConfig({
   ...base,
   ...htmlEvidence(
     "scheduler",
-    "Enabled task mirror against a real local server/browser and controlled mock execution; no external Provider acceptance",
+    "Enabled task mirror and unified enqueue against a real local server/browser and controlled mock execution; no external Provider acceptance",
   ),
   testDir: "./e2e-scheduler",
   webServer: servers.map((server, index) =>
@@ -18,7 +18,7 @@ export default defineConfig({
             ...server.env,
             ARTOO_SCHEDULER_ROLLOUT: JSON.stringify({
               version: 1,
-              workspaces: { org_default: { flags: { task_mirror: true } } },
+              workspaces: { org_default: { flags: { task_mirror: true, unified_enqueue: true } } },
             }),
           },
         }
