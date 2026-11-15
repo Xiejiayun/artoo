@@ -299,6 +299,109 @@ async function observeSourceInputBlock(blockedPid: number, blockerPid: number) {
   throw new Error(`Missing actual source-message lock wait: ${JSON.stringify(last)}`);
 }
 
+async function delegationFixture() {
+  const schema = requireBuilt("../../../db/dist/index.js") as {
+    loadMigrationStatements(): Promise<string[]>;
+    seed(db: PostgresDbClient, now: string): Promise<unknown>;
+  };
+  const taskService = requireBuilt("../../../../apps/server/dist/services/task-service.js") as {
+    createTask(ctx: object, input: object): Promise<{ task: { id: string } }>;
+  };
+  const delegation = requireBuilt("../../../../apps/server/dist/services/task-delegation-service.js") as {
+    getTaskDelegationTree(ctx: object, id: string): Promise<{ nodes: object[] }>;
+  };
+  const lifecycle = requireBuilt("../../../../apps/server/dist/services/lifecycle-service.js") as {
+    reviewTask(ctx: object, id: string, input: object): Promise<unknown>;
+  };
+  const first = await open({ queryTimeoutMillis: 10000 });
+  await first.migrate(await schema.loadMigrationStatements());
+  const second = await openIndependentTestPort();
+  const now = new Date().toISOString();
+  await schema.seed(first, now);
+  const context = (db: TestDbPort) => ({
+    db,
+    organizationId: "org_default",
+    actorUserId: "user_owner",
+    authConfig: {},
+    clock: { now: () => new Date(now), nowIso: () => now },
+    idGen: { generate: (prefix: string) => `${prefix}_${randomUUID()}` },
+    schedulerRollout: {
+      version: 1,
+      workspaces: { org_default: { flags: { unified_enqueue: true, delegation_limits: true } } },
+    },
+  });
+  const owner = context(first),
+    other = context(second);
+  const create = (ctx: object, title: string, parent?: string) =>
+    taskService.createTask(ctx, {
+      project_id: "proj_artoo",
+      title,
+      description: "Controlled delegation concurrency fixture",
+      priority: "p2",
+      acceptance_criteria: ["Preserve original lifecycle and bounded explicit lineage"],
+      required_capabilities: [],
+      ...(parent ? { delegation: { version: 1, parent_task_id: parent } } : {}),
+    });
+  const root = (await create(owner, "Root")).task;
+  const ownerPid = (await first.db.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid;
+  const otherPid = (await second.db.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid;
+  const observerPid = (await observer!.query("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+  expect(new Set([ownerPid, otherPid, observerPid]).size).toBe(3);
+  const snapshot = async () => {
+    const records: Record<string, unknown> = {};
+    for (const table of [
+      "tasks",
+      "rooms",
+      "task_delegations",
+      "task_enqueue_sources",
+      "task_enqueue_events",
+      "event_log",
+    ])
+      records[table] = (
+        await observer!.query(`SELECT to_jsonb(t) AS row FROM ${table} t ORDER BY to_jsonb(t)::text`)
+      ).rows;
+    return records;
+  };
+  return { owner, other, root, create, delegation, lifecycle, ownerPid, otherPid, observerPid, snapshot };
+}
+
+async function observeDelegationBlock(blockedPid: number, blockerPid: number, relation: string) {
+  const deadline = performance.now() + 8000;
+  let last: unknown;
+  while (performance.now() < deadline) {
+    await observer!.query("SELECT pg_stat_clear_snapshot()");
+    const row = (
+      await observer!.query<{ blockers: number[]; wait_event_type: string; query: string }>(
+        "SELECT pg_blocking_pids(pid) AS blockers,wait_event_type,query FROM pg_stat_activity WHERE pid=$1",
+        [blockedPid],
+      )
+    ).rows[0];
+    last = row;
+    if (row?.blockers.includes(blockerPid) && row.wait_event_type === "Lock") {
+      expect(row.query).toContain(relation);
+      console.info("delegation_fence_block", JSON.stringify({ blockedPid, blockerPid, observation: row }));
+      return;
+    }
+    await delay(1);
+  }
+  throw new Error(`Missing actual delegation lock wait: ${JSON.stringify(last)}`);
+}
+
+async function pauseDelegationCreation() {
+  await observer!.query(`CREATE FUNCTION delegation_creation_barrier() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN IF NEW.type='task.created' AND NEW.payload->>'title'='Held child' THEN PERFORM pg_advisory_xact_lock(1095914321,1); END IF; RETURN NEW; END $$;
+    CREATE TRIGGER delegation_creation_barrier BEFORE INSERT ON event_log
+    FOR EACH ROW EXECUTE FUNCTION delegation_creation_barrier()`);
+  await observer!.query("BEGIN");
+  await observer!.query("SELECT pg_advisory_xact_lock(1095914321,1)");
+}
+
+async function dropDelegationBarrier() {
+  await observer!.query(
+    "DROP TRIGGER delegation_creation_barrier ON event_log; DROP FUNCTION delegation_creation_barrier()",
+  );
+}
+
 beforeAll(async () => {
   await admin.connect();
   // These NOLOGIN roles exercise Supabase's effective schema privileges. Only
@@ -940,6 +1043,102 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
       message: expect.stringContaining("Source comments changed"),
     });
     expect(await f.snapshot()).toEqual(before);
+  });
+
+  it("serializes explicit delegation on different leaves at the last tree slot", { timeout: 45_000 }, async () => {
+    const f = await delegationFixture();
+    const parents: string[] = [];
+    for (let index = 0; index < 28; index++)
+      parents.push((await f.create(f.owner, `Existing ${index}`, f.root.id)).task.id);
+    const before = await f.snapshot();
+    await pauseDelegationCreation();
+    let creating: ReturnType<typeof f.create> | undefined;
+    try {
+      creating = f.create(f.owner, "Held child", parents[0]);
+      void creating.catch(() => undefined);
+      await observeDelegationBlock(f.ownerPid, f.observerPid, "event_log");
+      await expect(f.create(f.other, "Competing leaf", parents[1])).rejects.toMatchObject({
+        code: "conflict",
+        details: { reason: "delegation_busy" },
+      });
+      expect(await f.snapshot()).toEqual(before);
+    } finally {
+      await observer!.query("ROLLBACK");
+      try {
+        await creating;
+      } finally {
+        await dropDelegationBarrier();
+      }
+    }
+    expect((await f.delegation.getTaskDelegationTree(f.owner, f.root.id)).nodes).toHaveLength(30);
+    const full = await f.snapshot();
+    await expect(f.create(f.other, "Competing leaf", parents[1])).rejects.toMatchObject({
+      code: "conflict",
+      details: { reason: "delegation_size_exceeded", limit: 30 },
+    });
+    expect(await f.snapshot()).toEqual(full);
+  });
+
+  it("does not wait behind parent completion and retains all business records on rejection", {
+    timeout: 45_000,
+  }, async () => {
+    const f = await delegationFixture();
+    const before = await f.snapshot();
+    await observer!.query("BEGIN");
+    try {
+      await observer!.query("SELECT id FROM tasks WHERE id=$1 FOR UPDATE", [f.root.id]);
+      await expect(f.create(f.owner, "Busy parent", f.root.id)).rejects.toMatchObject({
+        code: "conflict",
+        details: { reason: "delegation_busy" },
+      });
+      expect(await f.snapshot()).toEqual(before);
+      // Controlled terminal state for this ordering; the inverse case below uses real reviewTask.
+      await observer!.query("UPDATE tasks SET status='done' WHERE id=$1", [f.root.id]);
+      await observer!.query("COMMIT");
+    } finally {
+      await observer!.query("ROLLBACK");
+    }
+    const terminal = await f.snapshot();
+    await expect(f.create(f.owner, "Terminal parent", f.root.id)).rejects.toMatchObject({ code: "invalid_state" });
+    expect(await f.snapshot()).toEqual(terminal);
+  });
+
+  it("holds the parent fence through child commit so real acceptance observes its new open child", {
+    timeout: 45_000,
+  }, async () => {
+    const f = await delegationFixture();
+    // Controlled review-ready metadata only, no Run/process/verification evidence is fabricated.
+    await observer!.query("UPDATE tasks SET status='review' WHERE id=$1", [f.root.id]);
+    await pauseDelegationCreation();
+    let creating: ReturnType<typeof f.create> | undefined;
+    let reviewing: Promise<unknown> | undefined;
+    try {
+      creating = f.create(f.owner, "Held child", f.root.id);
+      void creating.catch(() => undefined);
+      await observeDelegationBlock(f.ownerPid, f.observerPid, "event_log");
+      reviewing = f.lifecycle.reviewTask(f.other, f.root.id, {
+        outcome: "accepted",
+        comment: "Controlled human review",
+      });
+      void reviewing.catch(() => undefined);
+      await observeDelegationBlock(f.otherPid, f.ownerPid, "tasks");
+    } finally {
+      await observer!.query("ROLLBACK");
+      try {
+        await creating;
+        if (reviewing)
+          await expect(reviewing).rejects.toMatchObject({ code: "invalid_state", details: { open_children: 1 } });
+      } finally {
+        await dropDelegationBarrier();
+      }
+    }
+    expect((await observer!.query("SELECT status FROM tasks WHERE id=$1", [f.root.id])).rows).toEqual([
+      { status: "review" },
+    ]);
+    expect((await f.delegation.getTaskDelegationTree(f.owner, f.root.id)).nodes).toHaveLength(2);
+    expect(
+      (await observer!.query("SELECT type FROM event_log WHERE task_id=$1 AND type='task.reviewed'", [f.root.id])).rows,
+    ).toEqual([]);
   });
 
   it("keeps one inactive original-user intent across independent concurrent staging, replay and cancellation", async () => {

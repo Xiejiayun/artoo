@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { appendEvent, messages, projects, taskEnqueueEvents, taskEnqueueSources, tasks } from "@artoo/db";
-import { canonicalReleaseJson, ID_PREFIXES } from "@artoo/domain";
+import {
+  appendEvent,
+  messages,
+  projects,
+  taskDelegations,
+  taskEnqueueEvents,
+  taskEnqueueSources,
+  tasks,
+} from "@artoo/db";
+import { canonicalReleaseJson, ID_PREFIXES, type TaskDelegationRequestV1 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
 import { and, eq } from "drizzle-orm";
 import type { ServerContext } from "../context.js";
@@ -11,6 +19,7 @@ import { buildEvent } from "../events.js";
 import { requireContentAllowed } from "./content-moderation-service.js";
 import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
 import { readTaskSourceInputs } from "./task-source-input-service.js";
+import { prepareTaskDelegation } from "./task-delegation-service.js";
 
 type TaskValues = typeof tasks.$inferInsert;
 type TaskRow = typeof tasks.$inferSelect;
@@ -30,14 +39,17 @@ export interface TaskEnqueueProvenance {
   /** Only the public source adapter permits active reuse; business workflows keep their own replay guards. */
   deduplicate?: boolean;
   comment?: string;
+  delegation?: TaskDelegationRequestV1;
 }
 export function enqueueDigest(value: unknown): string {
   return `sha256:${createHash("sha256").update(canonicalReleaseJson(value)).digest("hex")}`;
 }
-function intent(values: TaskValues) {
+function intent(values: TaskValues, delegation?: TaskDelegationRequestV1) {
   // Generated identities/time and the manual room are not part of source intent.
   // Every execution, policy, attribution and immutable provenance field is.
   return {
+    // Omit entirely for legacy requests: adding even null would change old replay digests.
+    ...(delegation ? { delegation } : {}),
     projectId: values.projectId,
     parentTaskId: values.parentTaskId ?? null,
     executionPolicyTaskId: values.executionPolicyTaskId ?? null,
@@ -103,7 +115,7 @@ export async function enqueueTask(
     targetKey: source.targetKey ?? "default",
   };
   const sourceId = enqueueDigest(scope),
-    intentDigest = enqueueDigest(intent(values));
+    intentDigest = enqueueDigest(intent(values, source.delegation));
   const requestDigest = enqueueDigest({ intentDigest, comment: source.comment ?? null });
   let created = true;
   let task: TaskRow | undefined;
@@ -179,9 +191,11 @@ export async function enqueueTask(
     }
   }
   if (!task) {
+    const delegation = source.delegation ? await prepareTaskDelegation(ctx, tx, values, source.delegation) : undefined;
     // Default-off rollback uses exactly this legacy persistence operation.
     [task] = await tx.insert(tasks).values(values).returning();
     if (!task) throw new Error("Task missing after enqueue insert");
+    if (delegation) await tx.insert(taskDelegations).values(delegation);
     await mirrorSchedulerTask(ctx, tx, task.id);
     await onCreated?.(task);
   }

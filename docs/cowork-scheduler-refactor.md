@@ -569,6 +569,44 @@ staging/replay/cancellation and a Task-lock input-change race. Implementation an
 executed validation are tracked separately in the PR; these cases do not establish
 an available claim consumer or satisfy elapsed installation rollout gates.
 
+## Explicit delegation (independent Step 7)
+
+Existing `parent_task_id` also records conversation continuations and research
+successors. It retains those original semantics; historical parent links are not
+guessed into delegation or capped. Additive migration `0070_task_delegations.sql`
+stores new explicit version 1 child/parent/root/depth identities separately and
+keeps the original Task row and existing conditional-request digests unchanged.
+SQL rejects lineage rewrites/deletion and changes to a participating Task's
+scoped identity or a delegated child's parent. Ordinary lifecycle status updates
+remain available.
+
+`POST /api/v1/tasks` optionally accepts strict
+`delegation:{version:1,parent_task_id:"..."}`. An additionally supplied legacy
+`parent_task_id` must agree. The independent `delegation_limits` startup scope
+defaults off and rejects new explicit delegation while off. Ordinary creation and
+legacy parent provenance add no delegation queries. Explicit delegation sets the
+normal Task parent too, so existing human parent review still sees open children.
+It grants no assignment, automatic review, merge, publication or deletion rights.
+
+The root is depth zero; child depth is at most three. A tree contains at most 30
+Tasks including its root and all terminal history. The central enqueue writer
+checks only an actual new insertion, after exact source replay and active dedupe.
+A replay consumes no slot and remains available with delegation rollout off.
+The guard requires a real read-committed transaction, shares a non-waiting root
+transaction mutex across different leaves, and retains a direct-parent SHARE
+NOWAIT lock through commit. A changing or terminal parent cannot admit new work.
+Contention returns 409 and requires the complete original operation to retry;
+rejection rolls back Task, lineage, source, room and audit writes together.
+
+`GET /api/v1/tasks/:id/delegation-tree` reads a tenant/project-scoped repeatable-read
+snapshot of the complete explicit tree, current statuses, depths, creation scope
+and limits. It uses bounded indexed history reads and remains usable with rollout
+off. A legacy provenance child is its own explicit root. Inconsistent history
+fails closed instead of silently truncating. This endpoint precedes the remaining
+Web tree/navigation work; no recursive process cancellation or legacy-lineage
+import is implemented. Existing per-Task stop/physical-closure requirements and
+human release owners remain authoritative.
+
 ## Migration and acceptance gates
 
 | Step | Implementation / activation gate |
