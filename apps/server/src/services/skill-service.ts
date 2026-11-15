@@ -13,12 +13,9 @@ import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { buildEvent } from "../events.js";
 import { mapSkillInstall } from "../mappers.js";
+import { lockSchedulerConfiguration } from "./scheduler-configuration-fence.js";
 
-async function assertProjectVisible(
-  tx: DrizzleDb,
-  ctx: ServerContext,
-  projectId: string,
-): Promise<void> {
+async function assertProjectVisible(tx: DrizzleDb, ctx: ServerContext, projectId: string): Promise<void> {
   const row = (
     await tx
       .select({ id: projects.id })
@@ -47,12 +44,10 @@ function stableUnique(values: readonly string[]): string[] {
  * already parsed the body through InstallSkillRequestSchema, so this service
  * records the derived read-model fields that scheduler/UI consumers need.
  */
-export async function installSkill(
-  ctx: ServerContext,
-  req: InstallSkillRequest,
-): Promise<SkillInstall> {
+export async function installSkill(ctx: ServerContext, req: InstallSkillRequest): Promise<SkillInstall> {
   const now = ctx.clock.nowIso();
   return ctx.db.transaction(async (tx) => {
+    await lockSchedulerConfiguration(ctx, tx);
     if (req.project_id != null) {
       await assertProjectVisible(tx, ctx, req.project_id);
     }
@@ -123,10 +118,7 @@ export async function listSkillInstalls(
     conditions.push(eq(skillInstalls.enabled, filters.enabled));
   }
   if (filters.projectId !== undefined && filters.projectId !== "") {
-    const scopeCondition = or(
-      isNull(skillInstalls.projectId),
-      eq(skillInstalls.projectId, filters.projectId),
-    );
+    const scopeCondition = or(isNull(skillInstalls.projectId), eq(skillInstalls.projectId, filters.projectId));
     if (scopeCondition !== undefined) conditions.push(scopeCondition);
   }
 
@@ -134,12 +126,7 @@ export async function listSkillInstalls(
     .select()
     .from(skillInstalls)
     .where(and(...conditions))
-    .orderBy(
-      asc(skillInstalls.name),
-      asc(skillInstalls.skillId),
-      asc(skillInstalls.version),
-      asc(skillInstalls.id),
-    );
+    .orderBy(asc(skillInstalls.name), asc(skillInstalls.skillId), asc(skillInstalls.version), asc(skillInstalls.id));
   return rows.map(mapSkillInstall);
 }
 

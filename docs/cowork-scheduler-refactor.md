@@ -479,6 +479,29 @@ cases observe the actual lock wait and check rollback without dispatch, plus
 successful ordinary and shadow-enabled assignment when eligibility remains valid.
 This fence does not by itself implement the later executing claim transaction.
 
+### Configuration writer fence
+
+Any `daemon_claim` opt-in within an organization now makes its configuration
+writers share a non-waiting organization transaction mutex. Project creation and
+workspace edits, Agent/instance creation and tombstones, instance project,
+worktree and enable edits, skill installs, policy PUT and applied pin import all
+participate, including new pool/catalog rows. An organization with the flag off
+adds no mutex or isolation queries. Project opt-out cannot remove the shared
+fence needed by another project using the same Agent pool or global skills.
+
+The fence requires an actual read-committed transaction. Contention returns 409
+and rolls back the complete operation; callers must repeat original authorization
+on retry. Applied pin import uses read committed when either configuration or
+capacity requires it; read-only preview retains repeatable read. Policy reads,
+pin previews and runtime heartbeats do not acquire this configuration mutex.
+Heartbeat eligibility retains its existing selected-computer row fence.
+
+This is preparation for executing admission. There is still no real claim
+consumer, and it does not fence Task inputs, moderation, approval, consent,
+paired-node authority or local verifier configuration. Those remain separate
+mandatory checks. All server instances must use the same startup rollout scopes;
+future configuration writers must join this mutex before claims can use them.
+
 ### Explicit conditional execution requests (implementation in progress)
 
 Version 1 shadow intents retain their false-authority constraint and original

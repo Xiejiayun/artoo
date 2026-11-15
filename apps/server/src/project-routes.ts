@@ -7,6 +7,7 @@ import { requireAdministrator } from "./auth/request-auth.js";
 import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import { buildEvent } from "./events.js";
+import { lockSchedulerConfiguration } from "./services/scheduler-configuration-fence.js";
 
 function readInput(body: unknown, create: boolean): { name?: string; defaultWorkspace?: string | null } {
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
@@ -21,10 +22,16 @@ function readInput(body: unknown, create: boolean): { name?: string; defaultWork
     result.name = value.name.trim();
   }
   if ("default_workspace" in value) {
-    if (value.default_workspace !== null && (typeof value.default_workspace !== "string" || value.default_workspace.includes("\0") || value.default_workspace.length > 4096)) {
+    if (
+      value.default_workspace !== null &&
+      (typeof value.default_workspace !== "string" ||
+        value.default_workspace.includes("\0") ||
+        value.default_workspace.length > 4096)
+    ) {
       throw AppError.validation("default_workspace must be a path or null");
     }
-    result.defaultWorkspace = typeof value.default_workspace === "string" ? value.default_workspace.trim() || null : null;
+    result.defaultWorkspace =
+      typeof value.default_workspace === "string" ? value.default_workspace.trim() || null : null;
   }
   if (Object.keys(result).length === 0) throw AppError.validation("no project fields supplied");
   return result;
@@ -41,14 +48,28 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: ServerContext):
     const input = readInput(request.body, true);
     const id = c.idGen.generate(ID_PREFIXES.project);
     const project = await c.db.transaction(async (tx) => {
-      const [row] = await tx.insert(projects).values({
-        id, organizationId: c.organizationId, name: input.name!,
-        defaultWorkspace: input.defaultWorkspace ?? null, createdAt: c.clock.nowIso(),
-      }).returning();
-      await appendEvent(tx, buildEvent(c, {
-        type: "project.created", actorType: "user", actorId: c.actorUserId,
-        correlationId: id, projectId: id, payload: { project_id: id, name: input.name },
-      }));
+      await lockSchedulerConfiguration(c, tx);
+      const [row] = await tx
+        .insert(projects)
+        .values({
+          id,
+          organizationId: c.organizationId,
+          name: input.name!,
+          defaultWorkspace: input.defaultWorkspace ?? null,
+          createdAt: c.clock.nowIso(),
+        })
+        .returning();
+      await appendEvent(
+        tx,
+        buildEvent(c, {
+          type: "project.created",
+          actorType: "user",
+          actorId: c.actorUserId,
+          correlationId: id,
+          projectId: id,
+          payload: { project_id: id, name: input.name },
+        }),
+      );
       return mapProject(row!);
     });
     return reply.status(201).send({ project });
@@ -59,13 +80,24 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: ServerContext):
     const { id } = request.params as { id: string };
     const input = readInput(request.body, false);
     const project = await c.db.transaction(async (tx) => {
-      const [row] = await tx.update(projects).set(input)
-        .where(and(eq(projects.id, id), eq(projects.organizationId, c.organizationId))).returning();
+      await lockSchedulerConfiguration(c, tx);
+      const [row] = await tx
+        .update(projects)
+        .set(input)
+        .where(and(eq(projects.id, id), eq(projects.organizationId, c.organizationId)))
+        .returning();
       if (row === undefined) throw AppError.notFound("project not found");
-      await appendEvent(tx, buildEvent(c, {
-        type: "project.updated", actorType: "user", actorId: c.actorUserId,
-        correlationId: id, projectId: id, payload: { project_id: id, name: row.name },
-      }));
+      await appendEvent(
+        tx,
+        buildEvent(c, {
+          type: "project.updated",
+          actorType: "user",
+          actorId: c.actorUserId,
+          correlationId: id,
+          projectId: id,
+          payload: { project_id: id, name: row.name },
+        }),
+      );
       return mapProject(row);
     });
     return { project };
