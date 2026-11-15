@@ -301,9 +301,8 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     for (const result of results)
       if (result.status === "rejected") {
         // A stale repeatable-read snapshot may lose at the unique index instead
-        // of the service conflict guard. Both must fail closed, without an audit.
-        const code = result.reason.cause?.code ?? result.reason.code;
-        expect(["23505", "40001", "conflict"]).toContain(code);
+        // of the service guard. Both must be explicit HTTP conflicts, without an audit.
+        expect(result.reason).toMatchObject({ code: "conflict", httpStatus: 409 });
       }
     const winner = accepted[0]!.value;
     const request = requests.find((entry) => entry.request_key === winner.requestKey)!;
@@ -320,6 +319,47 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     );
     expect(cancellations.every((entry) => entry.id === winner.id && entry.state === "cancelled")).toBe(true);
     expect((await service.createSchedulerIntent(contexts[1]!, "task_pg_a", request)).state).toBe("cancelled");
+    const changedInputRequest = {
+      ...request,
+      request_key: "changed-input-race",
+      base_version: (
+        await observer!.query("SELECT max(position)::int AS version FROM event_log WHERE task_id='task_pg_a'")
+      ).rows[0]!.version,
+    };
+    await observer!.query("BEGIN");
+    let observerTransaction = true;
+    let changedInput: Promise<unknown> | undefined;
+    try {
+      await observer!.query("UPDATE tasks SET title='Concurrent input change' WHERE id='task_pg_a'");
+      changedInput = service.createSchedulerIntent(contexts[0]!, "task_pg_a", changedInputRequest).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      const deadline = Date.now() + 3000;
+      let blocked = false;
+      while (!blocked && Date.now() < deadline) {
+        const activity = (
+          await admin.query("SELECT wait_event_type,query FROM pg_stat_activity WHERE pid=$1 AND datname=$2", [
+            backends[0],
+            databaseName,
+          ])
+        ).rows[0];
+        blocked =
+          activity?.wait_event_type === "Lock" &&
+          activity.query.toLowerCase().includes('"tasks"') &&
+          activity.query.toLowerCase().includes("for update");
+        if (!blocked) await delay(25);
+      }
+      // Establish actual lock contention before committing the changed input.
+      // The old repeatable-read snapshot must become a 409, never a new intent.
+      expect(blocked).toBe(true);
+      await observer!.query("COMMIT");
+      observerTransaction = false;
+      expect(await changedInput).toMatchObject({ code: "conflict", httpStatus: 409 });
+    } finally {
+      if (observerTransaction) await observer!.query("ROLLBACK");
+      await changedInput;
+    }
     expect((await observer!.query("SELECT snapshot,state,execution_authorized FROM scheduler_intents")).rows).toEqual([
       { snapshot: winner.snapshot, state: "cancelled", execution_authorized: false },
     ]);

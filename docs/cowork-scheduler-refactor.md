@@ -374,6 +374,10 @@ the original record and cannot revive cancellation. Another pending request must
 be explicitly cancelled first. Creation and cancellation audit writes commit
 with their records.
 
+Concurrent staging that loses the pending/request unique constraint or the
+repeatable-read snapshot returns an explicit 409 conflict, without retrying or
+committing an extra audit. Other database errors are not reclassified.
+
 GET on the same collection retains the latest 50 scoped records even after the
 rollout switch is off. POST
 `/api/v1/tasks/:id/scheduler-intents/:intentId/cancel` requires `{"version":1}`

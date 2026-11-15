@@ -276,93 +276,108 @@ export async function createSchedulerIntent(ctx: ServerContext, taskId: string, 
   if (ctx.automationActor) throw AppError.permissionDenied("An explicit original-user scheduling request is required");
   for (const path of request.write_paths)
     if (!normalizeLeasePath("", path).ok) throw AppError.validation("Invalid write path");
-  return ctx.db.db.transaction(
-    async (tx) => {
-      await requireCurrentTeamMember(ctx, tx);
-      const task = await lockTask(ctx, tx, taskId);
-      if (
-        !schedulerRolloutEnabled(ctx.schedulerRollout, "claim_shadow", {
-          organizationId: ctx.organizationId,
-          projectId: task.projectId,
-        })
-      )
-        throw AppError.conflict("Shadow scheduling intent staging is disabled");
-      const existing = await tx
-        .select()
-        .from(schedulerIntents)
-        .where(
-          and(
-            eq(schedulerIntents.taskId, taskId),
-            or(eq(schedulerIntents.requestKey, request.request_key), eq(schedulerIntents.state, "pending")),
-          ),
-        );
-      const replay = existing.find((row) => row.requestKey === request.request_key);
-      if (replay) {
-        const snapshot = checkedSnapshot(replay);
+  return ctx.db.db
+    .transaction(
+      async (tx) => {
+        await requireCurrentTeamMember(ctx, tx);
+        const task = await lockTask(ctx, tx, taskId);
         if (
-          replay.organizationId !== ctx.organizationId ||
-          replay.projectId !== task.projectId ||
-          replay.actorUserId !== ctx.actorUserId ||
-          auditDigestV1(snapshot.request) !== auditDigestV1(request)
+          !schedulerRolloutEnabled(ctx.schedulerRollout, "claim_shadow", {
+            organizationId: ctx.organizationId,
+            projectId: task.projectId,
+          })
         )
-          throw AppError.conflict("Scheduling request key already has different inputs");
-        return replay;
-      }
-      if (existing.some((row) => row.state === "pending"))
-        throw AppError.conflict("Cancel the existing scheduling intent before staging another");
-      if (request.base_version !== (await taskVersion(ctx, tx, taskId, false)))
-        throw AppError.conflict("Task version changed; read it again before staging");
-      const sharing = await requireAiSharingAuthorization(ctx, tx);
-      const bindings = await captureBindings(ctx, tx, task, request);
-      const snapshot = SchedulerIntentSnapshotV1Schema.parse({
-        version: 1,
-        organization_id: ctx.organizationId,
-        project_id: task.projectId,
-        task_id: taskId,
-        actor_user_id: ctx.actorUserId,
-        request,
-        ai_sharing: { consent_id: sharing.consentId, policy_version: sharing.policyVersion },
-        ...bindings,
-        execution_authorized: false,
-      });
-      const [row] = await tx
-        .insert(schedulerIntents)
-        .values({
-          id: ctx.idGen.generate("scheduler_intent"),
-          organizationId: ctx.organizationId,
-          projectId: task.projectId,
-          taskId,
-          agentId: request.agent_id,
-          actorUserId: ctx.actorUserId,
-          requestKey: request.request_key,
-          snapshot,
-          snapshotDigest: auditDigestV1(snapshot),
-          createdAt: ctx.clock.nowIso(),
-        })
-        .returning();
-      if (!row) throw AppError.conflict("Scheduling intent was not persisted");
-      await appendEvent(
-        tx,
-        buildEvent(ctx, {
-          type: "scheduler.intent.created",
-          actorType: "user",
-          actorId: ctx.actorUserId,
-          correlationId: row.id,
-          projectId: row.projectId,
-          taskId,
-          payload: {
-            version: 1,
-            intent_id: row.id,
-            agent_id: row.agentId,
-            snapshot_digest: row.snapshotDigest,
-            execution_authorized: false,
-          },
-        }),
-      );
-      return row;
-    },
-    { isolationLevel: "repeatable read" },
-  );
+          throw AppError.conflict("Shadow scheduling intent staging is disabled");
+        const existing = await tx
+          .select()
+          .from(schedulerIntents)
+          .where(
+            and(
+              eq(schedulerIntents.taskId, taskId),
+              or(eq(schedulerIntents.requestKey, request.request_key), eq(schedulerIntents.state, "pending")),
+            ),
+          );
+        const replay = existing.find((row) => row.requestKey === request.request_key);
+        if (replay) {
+          const snapshot = checkedSnapshot(replay);
+          if (
+            replay.organizationId !== ctx.organizationId ||
+            replay.projectId !== task.projectId ||
+            replay.actorUserId !== ctx.actorUserId ||
+            auditDigestV1(snapshot.request) !== auditDigestV1(request)
+          )
+            throw AppError.conflict("Scheduling request key already has different inputs");
+          return replay;
+        }
+        if (existing.some((row) => row.state === "pending"))
+          throw AppError.conflict("Cancel the existing scheduling intent before staging another");
+        if (request.base_version !== (await taskVersion(ctx, tx, taskId, false)))
+          throw AppError.conflict("Task version changed; read it again before staging");
+        const sharing = await requireAiSharingAuthorization(ctx, tx);
+        const bindings = await captureBindings(ctx, tx, task, request);
+        const snapshot = SchedulerIntentSnapshotV1Schema.parse({
+          version: 1,
+          organization_id: ctx.organizationId,
+          project_id: task.projectId,
+          task_id: taskId,
+          actor_user_id: ctx.actorUserId,
+          request,
+          ai_sharing: { consent_id: sharing.consentId, policy_version: sharing.policyVersion },
+          ...bindings,
+          execution_authorized: false,
+        });
+        const [row] = await tx
+          .insert(schedulerIntents)
+          .values({
+            id: ctx.idGen.generate("scheduler_intent"),
+            organizationId: ctx.organizationId,
+            projectId: task.projectId,
+            taskId,
+            agentId: request.agent_id,
+            actorUserId: ctx.actorUserId,
+            requestKey: request.request_key,
+            snapshot,
+            snapshotDigest: auditDigestV1(snapshot),
+            createdAt: ctx.clock.nowIso(),
+          })
+          .returning();
+        if (!row) throw AppError.conflict("Scheduling intent was not persisted");
+        await appendEvent(
+          tx,
+          buildEvent(ctx, {
+            type: "scheduler.intent.created",
+            actorType: "user",
+            actorId: ctx.actorUserId,
+            correlationId: row.id,
+            projectId: row.projectId,
+            taskId,
+            payload: {
+              version: 1,
+              intent_id: row.id,
+              agent_id: row.agentId,
+              snapshot_digest: row.snapshotDigest,
+              execution_authorized: false,
+            },
+          }),
+        );
+        return row;
+      },
+      { isolationLevel: "repeatable read" },
+    )
+    .catch((error: unknown) => {
+      const cause = error instanceof Error && error.cause instanceof Error ? error.cause : error;
+      const databaseError = cause as { code?: string; constraint?: string } | null;
+      if (
+        databaseError?.code === "40001" ||
+        (databaseError?.code === "23505" &&
+          (databaseError.constraint === "scheduler_intent_pending_task_idx" ||
+            databaseError.constraint === "scheduler_intent_request_unique"))
+      )
+        throw AppError.conflict(
+          "Concurrent scheduling intent update; read the current Task and intents before retrying",
+        );
+      throw error;
+    });
 }
 
 export async function listSchedulerIntents(ctx: ServerContext, taskId: string) {
