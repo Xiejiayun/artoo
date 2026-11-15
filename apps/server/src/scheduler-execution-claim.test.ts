@@ -325,7 +325,7 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     expect((await server.db.db.select().from(runs))[0]!.id).toBe(result.run.id);
   });
 
-  it("retains exact consent, original-user access, cancellation and three-level capacity gates", async () => {
+  it("retains exact consent, original-user access, cancellation and instance capacity gates", async () => {
     await setup();
     server.ctx.aiDataSharingPolicy = buildAiDataSharingPolicy({
       mode: "external",
@@ -356,5 +356,46 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
           and(eq(schedulerExecutionRequests.id, third.requestId), eq(schedulerExecutionRequests.state, "pending")),
         ),
     ).toHaveLength(1);
+  });
+
+  it("enforces each shared project, Agent and computer quota below the instance limit", async () => {
+    await setup();
+    const [instance] = await server.db.db.select().from(agentInstances).where(eq(agentInstances.id, INSTANCE));
+    await server.db.db
+      .update(agentInstances)
+      .set({ config: { ...(instance!.config as Record<string, unknown>), concurrency_limit: 4 } })
+      .where(eq(agentInstances.id, INSTANCE));
+    const policies = [
+      ["projects/proj_artoo", { version: 1, repo_url: null, default_branch: "main", max_concurrent_runs: 4 }],
+      [
+        "agents/agent_mock_coder",
+        {
+          version: 1,
+          pinned_computer_id: null,
+          required_runtimes: ["codex"],
+          required_labels: [],
+          max_concurrent_runs: 4,
+        },
+      ],
+      [`computers/${COMPUTER}`, { version: 1, labels: [], max_concurrent_runs: 4 }],
+    ] as const;
+    const put = async (resource: string, policy: object) =>
+      expect(
+        (
+          await server.app.inject({
+            method: "PUT",
+            url: `/api/v1/${resource}/scheduling-policy`,
+            payload: policy,
+          })
+        ).statusCode,
+      ).toBe(200);
+    for (const [resource, policy] of policies) await put(resource, policy);
+    await claim(await stage());
+    for (const [resource, policy] of policies) {
+      await put(resource, { ...policy, max_concurrent_runs: 1 });
+      await unchanged(await stage(), "no selected eligible");
+      await put(resource, policy);
+    }
+    expect(await server.db.db.select().from(runs)).toHaveLength(1);
   });
 });
