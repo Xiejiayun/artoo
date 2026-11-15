@@ -399,6 +399,16 @@ attempt credentials and real failover remain separate work. Actual scheduling
 activation must not reinterpret this staged metadata as an execution grant.
 The exact-cost requirement remains unchanged and cost budgets remain disabled.
 
+During intent validation, two complete parallel Windows invocations each timed
+out in a different existing case of `application-invocation-bridge.test.ts`.
+The unchanged full 40-case file passed locally at its original deadlines. The
+specific host delay is not established. CI now runs that entire synchronous
+SQLite/wire suite in the existing dedicated Windows serial partition, alongside
+the four process-observation files. The actual-reporter coverage gate still
+requires every discovered file exactly once across all partitions. No bridge
+case, assertion, deadline, platform skip or cleanup rule changes; this isolation
+is not evidence that the earlier failed invocations passed.
+
 ## Migration and acceptance gates
 
 | Step | Implementation / activation gate |
