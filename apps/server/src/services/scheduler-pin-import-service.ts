@@ -1,3 +1,4 @@
+import { lockSchedulerCapacity, schedulerCapacityEnabled } from "./scheduler-capacity-service.js";
 import { agentInstances, agents, appendEvent, computers, schedulerAgentPolicies } from "@artoo/db";
 import { SchedulerAgentPolicyV1Schema } from "@artoo/domain";
 import { and, asc, eq, isNull } from "drizzle-orm";
@@ -14,6 +15,7 @@ export async function importSchedulerAgentPins(ctx: ServerContext, apply: boolea
   return ctx.db.db.transaction(
     async (tx) => {
       await requireAdministrator(ctx, tx);
+      if (apply) await lockSchedulerCapacity(ctx, tx);
       const observedAt = ctx.clock.nowIso();
       const targets = await tx
         .select({ id: agents.id })
@@ -106,6 +108,6 @@ export async function importSchedulerAgentPins(ctx: ServerContext, apply: boolea
       }
       return { version: 1 as const, observed_at: observedAt, execution_authorized: false as const, results };
     },
-    { isolationLevel: "repeatable read" },
+    { isolationLevel: apply && schedulerCapacityEnabled(ctx) ? "read committed" : "repeatable read" },
   );
 }

@@ -1,3 +1,4 @@
+import { persistRunReservation } from "./scheduler-capacity-service.js";
 import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
 import { assertSourceLineageDispatch } from "./source-lineage-fence.js";
 import { assertResearchDestinationUnreserved } from "./research-destination-pool-service.js";
@@ -1023,7 +1024,7 @@ async function assignTaskInTransaction(
       throw AppError.conflict("Owned result profile changed during assignment");
   }
 
-  await tx.insert(runs).values({
+  await persistRunReservation(ctx, tx, {
     id: runId,
     requestedByUserId: ctx.actorUserId,
     aiDataSharingConsentId: sharing.consentId,

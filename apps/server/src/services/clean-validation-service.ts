@@ -1,3 +1,4 @@
+import { persistRunReservation } from "./scheduler-capacity-service.js";
 import { mirrorSchedulerTask } from "./scheduler-projection-service.js";
 import {
   approvals,
@@ -328,7 +329,7 @@ async function createValidation(
     payload: context,
     createdAt: now,
   });
-  await tx.insert(runs).values({
+  await persistRunReservation(ctx, tx, {
     id: runId,
     organizationId: ctx.organizationId,
     requestedByUserId: root.h6.actorUserId,

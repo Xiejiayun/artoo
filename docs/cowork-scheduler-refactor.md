@@ -51,7 +51,7 @@ project override cannot cross a tenant boundary.
 }
 ```
 
-Reserved switches: `task_mirror`, `unified_enqueue`, `claim_shadow`, `daemon_claim`,
+Reserved switches: `task_mirror`, `unified_enqueue`, `claim_shadow`, `capacity_admission`, `daemon_claim`,
 `lease_failover`, `isolated_workspaces`, `delegation_limits`, `attempt_credentials`.
 Only implemented consumers can change behavior; defining a reserved flag is not
 evidence that its phase is implemented or accepted. No real claim, reaper or new
@@ -120,8 +120,9 @@ GET/PUT `/api/v1/{projects,agents,computers}/:id/scheduling-policy` reads or sav
 strict version 1 metadata. PUT holds administrative authorization through commit
 and validates targets and Agent pin against the same tenant and non-deleted resources.
 Changes append an actor-attributed event. Responses explicitly say `active:false`:
-these policy limits and labels are prepared for shadow scheduling, not consumed
-by legacy scheduling. Missing policy is null, never an implicit unpinning or limit.
+these full policies remain staged. The separate `capacity_admission` status below
+reports optional consumption of concurrency limits only. Missing policy is null,
+never an implicit unpinning or limit.
 Fixed legacy Agent-instance/computer bindings remain in effect. Before claim
 activation, their mapping must be reviewed and migrated as explicit pins; a
 multi-computer identity cannot be resolved to one pin by guesswork.
@@ -247,10 +248,10 @@ cannot start, renew or finish a newer owner. Epoch exhaustion rejects atomically
 
 The kernel adds open shadow claims to observed occupancy, excluding any claim
 whose Task already has a real execution, to avoid counting the same work twice.
-Its three capacity levels constrain **shadow claims only**. Existing real Run and
-dedicated-operation admissions do not acquire this new mutex; global real
-capacity enforcement still requires their shared admission boundary in the later
-executing path. These internal functions have no node HTTP endpoint or execution
+Its three capacity levels constrain **shadow claims only**. Real reservations use
+the separately gated capacity admission boundary described below, with their own
+mutex namespace. Shadow claims never reserve physical execution capacity.
+These internal functions have no node HTTP endpoint or execution
 grant. Every stored/resulting shadow attempt has `execution_authorized:false`.
 Logical expiry/finish never changes Task/Run state, file resources, node-owned
 verification, process-closure evidence or dispatch. Actual failover stays off.
@@ -408,6 +409,58 @@ the four process-observation files. The actual-reporter coverage gate still
 requires every discovered file exactly once across all partitions. No bridge
 case, assertion, deadline, platform skip or cleanup rule changes; this isolation
 is not evidence that the earlier failed invocations passed.
+
+### Shared real reservation capacity
+
+`capacity_admission` is independently default off. In an organization with any
+enabled workspace or project scope, all seven Run insertion paths and seven
+standalone operation owners participate in one non-waiting organization advisory
+mutex. An actual read-committed database transaction is required; a bare handle
+or repeatable-read snapshot is rejected. Contention returns a 409 and requires
+retrying the complete business operation, including its original authorization.
+The off organization adds no capacity reads or mutex queries.
+
+Enabled projects require explicit project, computer and every participant Agent
+policy. Project `false` disables that project's quota and explicit-policy
+requirement. Every reservation in the organization still obeys present shared
+Agent/computer policies, including work in projects with the project quota off.
+Missing policies are never invented; malformed consumed policies fail closed.
+This consumes only concurrency limits, without activating new pinning, labels,
+ranking, claim, execution tokens or failover.
+
+Capacity counts the existing durable execution facts: active Runs, held Run-backed
+file leases, unconfirmed disconnects and unsettled dedicated operations. A backed
+Run counts once; a standalone review counts once for its project/computer and once
+for each distinct participant Agent. All exact participant instance identities
+are retained in observation evidence. Logical completion or lease expiry cannot
+stand in for actual process closure or release protected workspaces.
+
+Run-backed owners check before Run insertion. Five standalone review owners check
+before inserting their reservation. Handoff and imported-product review check in
+the first start-delivery transaction, where their existing occupancy begins.
+An already-counted start may replay only with the exact project, computer, Task
+and participant instance/Agent bindings, while retaining every original start
+fence. Stop, status, result, receipt and physical closure remain available at full
+capacity. Admission rejection rolls back original context, resources, events and
+business records before dispatch.
+
+Policy PUT and applied pin import use the same mutex. Lowering a quota preserves
+existing work and rejects additional reservations until occupancy falls below it.
+Active apply-import uses read committed; off-mode apply and read-only previews
+retain their original repeatable-read behavior. Policy endpoints keep the legacy
+`active:false` full-policy marker and add `capacity_admission` with precise shared
+and project quota consumption status.
+
+The focused capacity suite covers three quotas and ordinary transaction rollback;
+fourteen controlled business-entry cases cover all dedicated reservation owners.
+Their new full-history fixtures have a 90-second body limit; original cases,
+process observations and 25-second cleanup drains are unchanged. The separate
+PostgreSQL integration cases exercise distinct actual backend PIDs and contention
+with policy lowering. `npm run test:e2e:capacity --workspace @artoo/web` runs an
+isolated browser suite with explicit policies and controlled mock execution. It
+checks a visible capacity conflict, no leaked Run, reload, capacity recovery and
+human acceptance. These test scopes do not establish a live Provider run or an
+installation's observation/rollout gates.
 
 ## Migration and acceptance gates
 

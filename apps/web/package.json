@@ -10,7 +10,8 @@
     "dev": "vite",
     "typecheck": "tsc -b",
     "test:e2e": "npm run build --workspace @artoo/server && playwright test",
-    "test:e2e:scheduler": "npm run build --workspace @artoo/server && playwright test --config playwright.scheduler.config.ts"
+    "test:e2e:scheduler": "npm run build --workspace @artoo/server && playwright test --config playwright.scheduler.config.ts",
+    "test:e2e:capacity": "npm run build --workspace @artoo/server && playwright test --config playwright.capacity.config.ts"
   },
   "dependencies": {
     "@artoo/client": "0.1.0",
