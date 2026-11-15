@@ -66,8 +66,7 @@ export async function lockSchedulerRequestTask(ctx: ServerContext, tx: DrizzleDb
   return task;
 }
 
-async function assertPlainTask(ctx: ServerContext, tx: DrizzleDb, task: typeof tasks.$inferSelect) {
-  if (task.status !== "ready") throw AppError.invalidState("Only a ready task can stage a scheduling intent");
+async function assertPlainTaskOwner(ctx: ServerContext, tx: DrizzleDb, task: typeof tasks.$inferSelect) {
   const linked = [
     ...(await tx.select({ id: discussions.id }).from(discussions).where(eq(discussions.taskId, task.id)).limit(1)),
     ...(await tx
@@ -83,7 +82,6 @@ async function assertPlainTask(ctx: ServerContext, tx: DrizzleDb, task: typeof t
   ];
   if (task.goalId || task.executionPolicyTaskId || task.sourcePlanId || linked.length)
     throw AppError.conflict("This task retains its dedicated planning, assistant or product execution owner");
-  await assertExecutionApprovalGranted(ctx, tx, task.id);
 }
 
 /** Caller holds the Task lock. Configuration reads are a bounded snapshot, not real admission. */
@@ -93,7 +91,30 @@ export async function captureSchedulerRequestBindings(
   task: typeof tasks.$inferSelect,
   request: { agent_id: string },
 ) {
-  await assertPlainTask(ctx, tx, task);
+  if (task.status !== "ready") throw AppError.invalidState("Only a ready task can stage a scheduling intent");
+  await assertPlainTaskOwner(ctx, tx, task);
+  await assertExecutionApprovalGranted(ctx, tx, task.id);
+  return collectSchedulerBindings(ctx, tx, task, request);
+}
+
+/** Captures the actual post-assignment Task. Never reconstruct a ready Task or refresh user permission. */
+export async function captureSchedulerAssignedBindings(
+  ctx: ServerContext,
+  tx: DrizzleDb,
+  task: typeof tasks.$inferSelect,
+  request: { agent_id: string },
+) {
+  if (task.status !== "assigned") throw AppError.invalidState("Prepared scheduling start requires an assigned task");
+  await assertPlainTaskOwner(ctx, tx, task);
+  return collectSchedulerBindings(ctx, tx, task, request);
+}
+
+async function collectSchedulerBindings(
+  ctx: ServerContext,
+  tx: DrizzleDb,
+  task: typeof tasks.$inferSelect,
+  request: { agent_id: string },
+) {
   const [project] = await tx
     .select()
     .from(projects)

@@ -623,6 +623,43 @@ lock wait followed by disabled eligibility. These are controlled database and
 transport tests, not live Provider or elapsed rollout acceptance. Executed results
 are recorded with the implementation PR.
 
+### Immutable prepared-start bindings (Step 3 to Step 4 boundary)
+
+Assignment legitimately changes the Task's state, assignee, timestamp and approval
+Run binding. Its ready-state permission digest cannot be reused as the digest of
+that assigned Task. Migration `0072_scheduler_prepared_starts.sql` adds a separate
+immutable version-1 record for each newly consumed request. It preserves the
+original request digest and user/device/session identities while recording the
+actual assigned Task/source/approval digest and durable input version, policy and
+queue revisions, configuration digest, and a digest of the queued Run, frozen
+ContextPack, scheduling decision and file leases. Configuration contents and
+context text are not copied into this record.
+
+The record is inserted after assignment and the consumption audit, inside the
+same claim transaction. An insertion failure rolls back the complete claim.
+SQL binds it to the exact consumed request, assigned Task, queued unstarted Run
+and paired session; update and deletion are forbidden. Upgrade does not backfill
+old consumed requests, and ordinary request replay does not manufacture a record.
+Their absence therefore cannot be treated as permission to launch old work.
+
+The internal comparison helper compares persisted post-assignment evidence without
+pretending the Task is still ready or silently refreshing its user permission.
+Its contract explicitly says `execution_authorized:false`. Callers must still
+fence concurrent writes; equality alone checks no current user consent, node
+eligibility, protected local profile or physical process. No route, poller,
+transport consumer or pre-spawn grant uses it yet. The ordinary `run.start`
+rejection remains in place. Node-owned attempt admission, authorization/eligibility
+revalidation, durable replay protection and a physical-start receipt are still
+required before live dispatch can be enabled.
+
+Regression coverage includes actual bound execution approval, post-assignment
+Task/approval/context/Run/decision/lease/configuration drift, atomic receipt-write
+failure, original request replay, additive migration rollback without backfill,
+SQL identity rejection and backup restoration of immutable history. Independent
+PostgreSQL backend consumption also checks that exactly one false-authority
+prepared-start record exists. Executed results remain separate from this coverage
+description and do not establish live Provider acceptance.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research
