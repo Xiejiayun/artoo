@@ -206,7 +206,7 @@ revision suites with both enqueue and mirror enabled. Its test-only environment
 sets fixture configuration; it does not mock product services or weaken their
 original assertions. The normal suite keeps deterministic default-off fixtures.
 
-## Step 3 preparation: counterfactual ranking
+## Step 3 in progress: shadow ownership and counterfactual ranking
 
 `packages/domain/src/scheduler-ranking.ts` defines a versioned, non-executing
 comparison over the existing scheduler's qualified candidates. It preserves
@@ -216,13 +216,59 @@ remain explicit. The old manual runtime-inventory fallback can appear in the
 snapshot, but an unconfirmed runtime is not evidence for new-path eligibility.
 Every result carries `execution_authorized:false`.
 
-This module evaluates supplied occupancy; it does not collect it, reserve
-capacity, claim a Task or dispatch a Run. Integration must capture the original
-decision inputs, include dedicated reservations and uncertain process closure,
-and avoid counting a real execution again as hypothetical occupancy. Its unit
-tests are not PostgreSQL mutual-exclusion or live capacity evidence. The lease
-kernel, epoch-bound updates, decision-boundary recording and initial pin import
-remain work in progress; no one-week shadow observation is claimed.
+The pure module evaluates supplied occupancy. Server-side shadow collection
+includes active Runs, held Run-backed file reservations, unconfirmed disconnects
+and unsettled dedicated operations from the existing execution-state owner.
+Run-backed reservations count once; dedicated identifiers keep their namespaces.
+Each participant Agent counts once per operation, across all of its instances.
+The project count is scoped to the current project; Agent/computer occupancy spans
+the tenant. Records retain the capacity evidence, not just aggregate counts.
+
+With `claim_shadow` enabled, ordinary `assignTask` captures its original qualified
+candidate set and reads the new policies/capacity before creating the real Run.
+It stores the snapshot, explained ranking, collection start/end times and later
+selected-instance revalidation with the original scheduler decision, in the same
+transaction. These reads are a bounded collection interval under the existing
+transaction isolation, not an atomic global snapshot or an alternate historical
+schedule. No shadow attempt is created by observation. Only the existing owner
+creates/dispatches the real Run. Turning the switch off stops sampling and keeps
+the historical evidence. GET `/api/v1/projects/:id/scheduler-shadow-observations`
+returns the latest 50 scoped comparisons without recomputing their inputs.
+
+Additive migration `0065_scheduler_shadow_leases.sql` keeps shadow heads, attempts
+and observations separate from the legacy projection. Internal shadow-only
+claim/start/renew/finish/cancel functions bind tenant, project, Task, attempt,
+Agent, instance, computer and monotonically increasing safe-integer epoch. An
+organization-scoped **non-waiting** advisory mutex serializes shadow mutations;
+Task acquisition uses SKIP LOCKED. A busy result requires a whole-operation retry.
+Lease comparisons occur in SQL at full timestamptz precision using the injected
+server clock. Renewals cannot shorten a lease. An expired or terminal binding
+cannot start, renew or finish a newer owner. Epoch exhaustion rejects atomically.
+
+The kernel adds open shadow claims to observed occupancy, excluding any claim
+whose Task already has a real execution, to avoid counting the same work twice.
+Its three capacity levels constrain **shadow claims only**. Existing real Run and
+dedicated-operation admissions do not acquire this new mutex; global real
+capacity enforcement still requires their shared admission boundary in the later
+executing path. These internal functions have no node HTTP endpoint or execution
+grant. Every stored/resulting shadow attempt has `execution_authorized:false`.
+Logical expiry/finish never changes Task/Run state, file resources, node-owned
+verification, process-closure evidence or dispatch. Actual failover stays off.
+
+POST `/api/v1/scheduler/agent-pin-import` requires the current administrator and
+an explicit `{"apply":false}` preview or `{"apply":true}` import. One
+repeatable-read configuration snapshot supplies only unambiguous non-deleted
+Agent-instance/computer bindings. Existing policies, including explicit unpins,
+are preserved. Missing/multi-computer mappings are returned for review rather
+than guessed. Imports append an actor-attributed policy event; they do not move
+instances or activate execution. Configuration changes after the snapshot need
+separate review before activating a new path.
+
+New automated regression sources cover these boundaries; their results are
+tracked separately from elapsed installation observation. Versioned persisted
+queue timing/soft-affinity and durable original-user scheduling intent still need
+integration before a real claim protocol. No real one-week shadow observation,
+global real-capacity guarantee or two-machine fault drill is claimed here.
 
 ## Migration and acceptance gates
 
