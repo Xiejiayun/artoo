@@ -14,6 +14,27 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 
+it("loads the exact encoded task delegation tree and rejects unsupported response versions", async () => {
+  const data = {
+    version: 1,
+    root_task_id: "task / &",
+    selected_task_id: "task / &",
+    creation_enabled: false,
+    limits: { max_depth: 3, max_tasks: 30 },
+    nodes: [{ task_id: "task / &", parent_task_id: null, depth: 0, title: "Parent", status: "ready" }],
+  };
+  server.use(
+    http.get(`${BASE}/tasks/:id/delegation-tree`, ({ params, request }) => {
+      expect(params.id).toBe("task / &");
+      expect(new URL(request.url).search).toBe("");
+      return HttpResponse.json(data);
+    }),
+  );
+  expect(await client.getTaskDelegationTree("task / &")).toEqual(data);
+  server.use(http.get(`${BASE}/tasks/:id/delegation-tree`, () => HttpResponse.json({ ...data, version: 2 })));
+  await expect(client.getTaskDelegationTree("task / &")).rejects.toThrow();
+});
+
 it("loads the exact encoded Goal ID through the authorized single-goal endpoint", async () => {
   server.use(
     http.get(`${BASE}/goals/:id`, ({ params, request }) => {

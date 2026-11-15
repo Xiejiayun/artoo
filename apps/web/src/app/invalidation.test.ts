@@ -18,6 +18,23 @@ function event(partial: Partial<EventEnvelope> & Pick<EventEnvelope, "type">): E
 
 describe("invalidationsForEvent", () => {
   it.each([
+    "task.created",
+    "task.updated",
+    "task.assigned",
+    "task.reviewed",
+    "run.started",
+    "run.completed",
+    "run.failed",
+    "run.cancelled",
+    "approval.resolved",
+  ] as const)("refreshes all views of a project's delegation trees on %s", (type) => {
+    const keys = invalidationsForEvent(
+      "project:proj_artoo",
+      event({ type, task_id: "child", project_id: "proj_artoo" }),
+    );
+    expect(keys.filter((key) => key[0] === "delegation-trees")).toEqual([["delegation-trees", "proj_artoo"]]);
+  });
+  it.each([
     "goal.automation.updated",
     "product.release.queued",
     "product.release.completed",

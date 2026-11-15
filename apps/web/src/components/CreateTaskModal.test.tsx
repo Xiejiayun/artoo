@@ -15,10 +15,7 @@ describe("CreateTaskModal", () => {
     const onCreated = vi.fn();
     const client = fakeApi({ createTask });
 
-    renderWithProviders(
-      <CreateTaskModal projectId="proj_artoo" onClose={onClose} onCreated={onCreated} />,
-      { client },
-    );
+    renderWithProviders(<CreateTaskModal projectId="proj_artoo" onClose={onClose} onCreated={onCreated} />, { client });
 
     await userEvent.type(screen.getByLabelText("Title"), "Build inbox");
     await userEvent.type(
@@ -36,6 +33,7 @@ describe("CreateTaskModal", () => {
       title: "Build inbox",
       acceptance_criteria: ["see pending", "resolve updates room"],
     });
+    expect(request).not.toHaveProperty("delegation");
     expect(typeof idempotencyKey).toBe("string");
     expect(idempotencyKey.length).toBeGreaterThan(0);
     expect(onCreated).toHaveBeenCalledWith("task_new");
@@ -45,10 +43,7 @@ describe("CreateTaskModal", () => {
 
   it("disables submit until a title is entered", async () => {
     const client = fakeApi({ createTask: vi.fn() });
-    renderWithProviders(
-      <CreateTaskModal projectId="proj_artoo" onClose={() => undefined} />,
-      { client },
-    );
+    renderWithProviders(<CreateTaskModal projectId="proj_artoo" onClose={() => undefined} />, { client });
 
     expect(screen.getByRole("button", { name: "Create task" })).toBeDisabled();
     await userEvent.type(screen.getByLabelText("Title"), "x");
@@ -56,8 +51,12 @@ describe("CreateTaskModal", () => {
   });
 
   it("focuses the brief, supports keyboard submission, and preserves selected routing fields", async () => {
-    const createTask = vi.fn().mockResolvedValue({ task: taskFixture({ id: "new", title: "Improve search", status: "backlog" }) });
-    renderWithProviders(<CreateTaskModal projectId="proj_artoo" onClose={() => undefined} />, { client: fakeApi({ createTask }) });
+    const createTask = vi
+      .fn()
+      .mockResolvedValue({ task: taskFixture({ id: "new", title: "Improve search", status: "backlog" }) });
+    renderWithProviders(<CreateTaskModal projectId="proj_artoo" onClose={() => undefined} />, {
+      client: fakeApi({ createTask }),
+    });
 
     expect(screen.getByRole("dialog", { name: "Create task" })).toHaveAttribute("aria-modal", "true");
     expect(screen.getByLabelText("Title")).toHaveFocus();
@@ -70,13 +69,23 @@ describe("CreateTaskModal", () => {
     await userEvent.click(screen.getByLabelText("Title"));
     await userEvent.keyboard("{Control>}{Enter}{/Control}");
 
-    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ title: "Improve search", description: "Keep keyboard navigation working", priority: "p1", required_capabilities: ["code.modify", "test.run"] }), expect.any(String));
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Improve search",
+        description: "Keep keyboard navigation working",
+        priority: "p1",
+        required_capabilities: ["code.modify", "test.run"],
+      }),
+      expect.any(String),
+    );
   });
 
   it("closes with Escape without creating work", async () => {
     const onClose = vi.fn();
     const createTask = vi.fn();
-    renderWithProviders(<CreateTaskModal projectId="proj_artoo" onClose={onClose} />, { client: fakeApi({ createTask }) });
+    renderWithProviders(<CreateTaskModal projectId="proj_artoo" onClose={onClose} />, {
+      client: fakeApi({ createTask }),
+    });
     await userEvent.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(createTask).not.toHaveBeenCalled();

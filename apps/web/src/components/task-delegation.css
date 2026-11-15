@@ -1,0 +1,27 @@
+.work-delegation ul {
+  list-style: none;
+  padding-inline-start: var(--space-3);
+  margin: 0;
+  border-inline-start: 1px solid var(--border);
+}
+
+.work-delegation__node {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-block: var(--space-1);
+}
+
+.work-delegation__node .ui-btn {
+  max-width: 100%;
+  min-width: 0;
+  white-space: normal;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+
+.work-delegation__node [aria-current="true"] {
+  background: var(--surface-2);
+  font-weight: var(--fw-semibold);
+}

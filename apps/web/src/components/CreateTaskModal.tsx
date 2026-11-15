@@ -13,6 +13,7 @@ import "../ui/work-management.css";
 
 export interface CreateTaskModalProps {
   projectId: string;
+  delegationParent?: Pick<Task, "id" | "title">;
   onClose: () => void;
   onCreated?: (taskId: string) => void;
 }
@@ -20,6 +21,7 @@ export interface CreateTaskModalProps {
 /** Create-task dialog. Submits a CreateTaskRequest with a fresh idempotency key. */
 export function CreateTaskModal({
   projectId,
+  delegationParent,
   onClose,
   onCreated,
 }: CreateTaskModalProps): React.ReactNode {
@@ -44,6 +46,12 @@ export function CreateTaskModal({
     onSuccess: async (response) => {
       toast.push({ tone: "success", message: "Task created." });
       await queryClient.invalidateQueries({ queryKey: queryKeys.tasks(projectId) });
+      if (delegationParent) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.delegationTrees(projectId) }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.task(delegationParent.id) }),
+        ]);
+      }
       onCreated?.(response.task.id);
       onClose();
     },
@@ -66,39 +74,131 @@ export function CreateTaskModal({
       priority,
       acceptance_criteria,
       required_capabilities: capabilities,
+      ...(delegationParent ? { delegation: { version: 1 as const, parent_task_id: delegationParent.id } } : {}),
     });
   }
 
   return (
     <div className="work-create-dialog">
-      <Modal open title="Create task" onClose={close} footer={<>
-        <span className="work-create-dialog__shortcut">Ctrl / ⌘ + Enter</span>
-        <Button onClick={close} disabled={mutation.isPending}>Cancel</Button>
-        <Button type="submit" form={formId} variant="primary" iconLeft={Plus} loading={mutation.isPending} disabled={!title.trim()}>Create task</Button>
-      </>}>
-        <form id={formId} className="work-create-form" onSubmit={handleSubmit} onKeyDown={(event) => {
-          if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-            event.preventDefault();
-            event.currentTarget.requestSubmit();
-          }
-        }}>
+      <Modal
+        open
+        title={delegationParent ? "Create delegated task" : "Create task"}
+        onClose={close}
+        footer={
+          <>
+            <span className="work-create-dialog__shortcut">Ctrl / ⌘ + Enter</span>
+            <Button onClick={close} disabled={mutation.isPending}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form={formId}
+              variant="primary"
+              iconLeft={Plus}
+              loading={mutation.isPending}
+              disabled={!title.trim()}
+            >
+              Create task
+            </Button>
+          </>
+        }
+      >
+        <form
+          id={formId}
+          className="work-create-form"
+          onSubmit={handleSubmit}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+              event.preventDefault();
+              event.currentTarget.requestSubmit();
+            }
+          }}
+        >
           <p className="work-create-form__intro">Describe the outcome and what a successful result looks like.</p>
-          <Input ref={titleRef} label="Title" className="work-create-form__title" placeholder="What needs to get done?" value={title} onChange={(event) => setTitle(event.target.value)} required disabled={mutation.isPending} />
-          <Textarea label="Description" placeholder="Add context, useful links, and any constraints…" rows={4} value={description} onChange={(event) => setDescription(event.target.value)} disabled={mutation.isPending} />
-          <Textarea label="Acceptance criteria (one per line)" placeholder="The change works on desktop and mobile\nExisting tests pass" rows={3} value={criteria} onChange={(event) => setCriteria(event.target.value)} disabled={mutation.isPending} helperText={criteriaCount > 0 ? `${criteriaCount} ${criteriaCount === 1 ? "criterion" : "criteria"} added` : "Give the assignee a clear definition of done."} />
-          <Select label="Priority" value={priority} onChange={(event) => setPriority(event.target.value as Task["priority"])} disabled={mutation.isPending}>
-            {Object.entries(PRIORITY_LABELS).map(([value, label]) => <option key={value} value={value}>{value.toUpperCase()} · {label}</option>)}
+          {delegationParent ? (
+            <p>
+              Parent task: <strong>{delegationParent.title}</strong>. This task starts in Backlog and needs its own
+              assignment and review.
+            </p>
+          ) : null}
+          <Input
+            ref={titleRef}
+            label="Title"
+            className="work-create-form__title"
+            placeholder="What needs to get done?"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            required
+            disabled={mutation.isPending}
+          />
+          <Textarea
+            label="Description"
+            placeholder="Add context, useful links, and any constraints…"
+            rows={4}
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            disabled={mutation.isPending}
+          />
+          <Textarea
+            label="Acceptance criteria (one per line)"
+            placeholder="The change works on desktop and mobile\nExisting tests pass"
+            rows={3}
+            value={criteria}
+            onChange={(event) => setCriteria(event.target.value)}
+            disabled={mutation.isPending}
+            helperText={
+              criteriaCount > 0
+                ? `${criteriaCount} ${criteriaCount === 1 ? "criterion" : "criteria"} added`
+                : "Give the assignee a clear definition of done."
+            }
+          />
+          <Select
+            label="Priority"
+            value={priority}
+            onChange={(event) => setPriority(event.target.value as Task["priority"])}
+            disabled={mutation.isPending}
+          >
+            {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {value.toUpperCase()} · {label}
+              </option>
+            ))}
           </Select>
           <details className="work-capabilities">
-            <summary>Required capabilities <span>{capabilities.length > 0 ? `${capabilities.length} selected` : "Optional"}</span></summary>
+            <summary>
+              Required capabilities{" "}
+              <span>{capabilities.length > 0 ? `${capabilities.length} selected` : "Optional"}</span>
+            </summary>
             <p>Limit assignment to agents with these capabilities.</p>
-            <div className="work-capabilities__grid">{CAPABILITIES.map((capability) => <label key={capability} title={capability}>
-              <input type="checkbox" checked={capabilities.includes(capability)} disabled={mutation.isPending} onChange={(event) => setCapabilities(event.target.checked ? [...capabilities, capability] : capabilities.filter((value) => value !== capability))} />
-              <span>{CAPABILITY_LABELS[capability]}</span>
-            </label>)}</div>
+            <div className="work-capabilities__grid">
+              {CAPABILITIES.map((capability) => (
+                <label key={capability} title={capability}>
+                  <input
+                    type="checkbox"
+                    checked={capabilities.includes(capability)}
+                    disabled={mutation.isPending}
+                    onChange={(event) =>
+                      setCapabilities(
+                        event.target.checked
+                          ? [...capabilities, capability]
+                          : capabilities.filter((value) => value !== capability),
+                      )
+                    }
+                  />
+                  <span>{CAPABILITY_LABELS[capability]}</span>
+                </label>
+              ))}
+            </div>
           </details>
-          <p className="work-create-form__destination"><ListTodo size={16} aria-hidden="true" />Created in Backlog. Assign an agent when the task is ready.</p>
-          {mutation.isError ? <p role="alert" className="action-error">Failed to create task: {mutation.error.message}</p> : null}
+          <p className="work-create-form__destination">
+            <ListTodo size={16} aria-hidden="true" />
+            Created in Backlog. Assign an agent when the task is ready.
+          </p>
+          {mutation.isError ? (
+            <p role="alert" className="action-error">
+              Failed to create task: {mutation.error.message}
+            </p>
+          ) : null}
         </form>
       </Modal>
     </div>
