@@ -29,6 +29,16 @@ export const SchedulerRankingSnapshotV1Schema = z
           .strict(),
       ])
       .optional(),
+    policy_revisions: z
+      .object({
+        version: z.literal(1),
+        project_id: id,
+        project: count.min(1).nullable(),
+        agents: z.record(id, count.min(1)),
+        computers: z.record(id, count.min(1)),
+      })
+      .strict()
+      .optional(),
     observed_at_ms: time,
     not_before_ms: time,
     preferred_computer_id: id.nullable(),
@@ -59,6 +69,17 @@ export const SchedulerRankingSnapshotV1Schema = z
       ctx.addIssue({ code: "custom", message: "Soft affinity requires both computer and deadline" });
     if (new Set(value.candidates.map((candidate) => candidate.agent_instance_id)).size !== value.candidates.length)
       ctx.addIssue({ code: "custom", message: "Candidate instance identities must be unique" });
+    if (value.policy_revisions) {
+      const revisions = value.policy_revisions;
+      const sameKeys = (a: object, b: object) =>
+        Object.keys(a).length === Object.keys(b).length && Object.keys(a).every((key) => Object.hasOwn(b, key));
+      if (
+        (revisions.project === null) !== (value.project_policy === null) ||
+        !sameKeys(revisions.agents, value.agent_policies) ||
+        !sameKeys(revisions.computers, value.computer_policies)
+      )
+        ctx.addIssue({ code: "custom", message: "Policy revisions must describe exactly the captured policies" });
+    }
   });
 
 export type SchedulerRankingSnapshotV1 = z.infer<typeof SchedulerRankingSnapshotV1Schema>;

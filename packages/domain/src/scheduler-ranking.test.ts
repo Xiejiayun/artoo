@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { rankSchedulerCandidates, type SchedulerRankingSnapshotV1 } from "./scheduler-ranking.js";
+import {
+  rankSchedulerCandidates,
+  SchedulerRankingSnapshotV1Schema,
+  type SchedulerRankingSnapshotV1,
+} from "./scheduler-ranking.js";
 
 function snapshot(): SchedulerRankingSnapshotV1 {
   const agent = {
@@ -43,6 +47,45 @@ function snapshot(): SchedulerRankingSnapshotV1 {
 }
 
 describe("point-in-time shadow scheduler ranking", () => {
+  it("preserves historical shapes and checks optional exact policy revision provenance", () => {
+    const old = snapshot();
+    expect(SchedulerRankingSnapshotV1Schema.parse(old)).toEqual(old);
+    expect(SchedulerRankingSnapshotV1Schema.parse(old)).not.toHaveProperty("policy_revisions");
+    const provenance = {
+      version: 1 as const,
+      project_id: "project",
+      project: 1,
+      agents: { agent: 2 },
+      computers: { a: 3, b: 4 },
+    };
+    const current = { ...old, policy_revisions: provenance };
+    expect(SchedulerRankingSnapshotV1Schema.parse(current)).toEqual(current);
+    expect(rankSchedulerCandidates(current)).toEqual(rankSchedulerCandidates(old));
+    for (const extra of [
+      { version: 2 },
+      { project: null },
+      { project: 0 },
+      { project: Number.MAX_SAFE_INTEGER + 1 },
+      { agents: {} },
+      { agents: { agent: 2, unrelated: 1 } },
+      { agents: { agent: 0.1 } },
+      { computers: { a: 3 } },
+      { execution_authorized: true },
+    ])
+      expect(
+        SchedulerRankingSnapshotV1Schema.safeParse({ ...current, policy_revisions: { ...provenance, ...extra } })
+          .success,
+      ).toBe(false);
+    expect(SchedulerRankingSnapshotV1Schema.safeParse({ ...current, project_policy: null }).success).toBe(false);
+    const absent = {
+      ...old,
+      project_policy: null,
+      agent_policies: {},
+      computer_policies: {},
+      policy_revisions: { version: 1, project_id: "project", project: null, agents: {}, computers: {} },
+    };
+    expect(SchedulerRankingSnapshotV1Schema.parse(absent)).toEqual(absent);
+  });
   it("keeps deterministic legacy scoring without mutating its captured inputs or granting execution", () => {
     const input = snapshot(),
       before = structuredClone(input);

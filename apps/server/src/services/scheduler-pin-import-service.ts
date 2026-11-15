@@ -96,6 +96,7 @@ export async function importSchedulerAgentPins(ctx: ServerContext, apply: boolea
               kind: "agent",
               target_id: target.id,
               policy,
+              revision: inserted[0]!.revision,
               observed_at: observedAt,
               execution_authorized: false,
             },

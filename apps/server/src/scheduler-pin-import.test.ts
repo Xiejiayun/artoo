@@ -22,6 +22,7 @@ describe("explicit initial Agent pin import", () => {
     expect(saved).toMatchObject({
       organizationId: "org_default",
       updatedByUserId: "user_owner",
+      revision: 1,
       policy: { pinned_computer_id: "computer_local_mock" },
     });
     const audit = await server.db.db.select().from(eventLog).where(eq(eventLog.type, "scheduler.policy.imported"));
@@ -29,11 +30,20 @@ describe("explicit initial Agent pin import", () => {
     expect(audit[0]).toMatchObject({
       actorType: "user",
       actorId: "user_owner",
-      payload: { execution_authorized: false },
+      payload: { execution_authorized: false, revision: 1 },
     });
-    await server.db.db.update(schedulerAgentPolicies).set({ policy: { ...saved!.policy, pinned_computer_id: null } });
+    expect(
+      (
+        await server.app.inject({
+          method: "PUT",
+          url: "/api/v1/agents/agent_mock_coder/scheduling-policy",
+          payload: { ...saved!.policy, pinned_computer_id: null },
+        })
+      ).statusCode,
+    ).toBe(200);
     expect((await request(true)).json().import.results[0].status).toBe("preserved");
     expect((await server.db.db.select().from(schedulerAgentPolicies))[0]?.policy.pinned_computer_id).toBeNull();
+    expect((await server.db.db.select().from(schedulerAgentPolicies))[0]?.revision).toBe(2);
     expect(await server.db.db.select().from(agentInstances)).toEqual(before);
     expect(await server.db.db.select().from(runs)).toEqual([]);
   });

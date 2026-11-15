@@ -237,6 +237,58 @@ afterAll(async () => {
 });
 
 describe("PostgresDbClient with a real PostgreSQL server", () => {
+  it("increments each policy revision atomically across independent production service transactions", async () => {
+    const f = await shadowFixture();
+    const service = (await import(
+      new URL("../../../../apps/server/dist/services/scheduler-policy-service.js", import.meta.url).href
+    )) as { putSchedulerPolicy(ctx: object, kind: string, id: string, input: object): Promise<{ revision: number }> };
+    const ports = [f.first, f.second, await openIndependentTestPort()];
+    const contexts = ports.map((db) => ({
+      ...f.context(db),
+      authConfig: {},
+      idGen: { generate: (prefix: string) => `${prefix}_${randomUUID()}` },
+    }));
+    const backends = await Promise.all(
+      ports.map(async (db) => (await db.db.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid),
+    );
+    expect(new Set(backends).size).toBe(3);
+    for (const [kind, id, policy] of [
+      ["project", "proj_artoo", { version: 1, repo_url: null, default_branch: "main", max_concurrent_runs: 2 }],
+      [
+        "agent",
+        "agent_mock_coder",
+        {
+          version: 1,
+          pinned_computer_id: null,
+          required_runtimes: ["mock"],
+          required_labels: [],
+          max_concurrent_runs: 2,
+        },
+      ],
+      ["computer", "computer_local_mock", { version: 1, labels: ["test"], max_concurrent_runs: 2 }],
+    ] as const) {
+      // The fixture starts at revision 1. Concurrent repeated PUTs must each
+      // increment the stored row, rather than racing a pre-read + replace.
+      const results = await Promise.all(contexts.map((ctx) => service.putSchedulerPolicy(ctx, kind, id, policy)));
+      expect(results.map((result) => result.revision).sort()).toEqual([2, 3, 4]);
+      const audits = await observer!.query(
+        "SELECT (payload->>'revision')::int AS revision FROM event_log WHERE type='scheduler.policy.updated' AND payload->>'kind'=$1 ORDER BY revision",
+        [kind],
+      );
+      expect(audits.rows).toEqual([{ revision: 2 }, { revision: 3 }, { revision: 4 }]);
+    }
+    const captured = await f.claim(f.first, "task_pg_a");
+    expect(captured.snapshot).toMatchObject({
+      policy_revisions: {
+        version: 1,
+        project_id: "proj_artoo",
+        project: 4,
+        agents: { agent_mock_coder: 4 },
+        computers: { computer_local_mock: 4 },
+      },
+    });
+    expect((await observer!.query("SELECT count(*)::int AS n FROM runs")).rows).toEqual([{ n: 0 }]);
+  });
   it("reads persisted versioned queue timing from the shadow claim transaction on actual PostgreSQL", async () => {
     const f = await shadowFixture();
     const now = Date.parse("2026-06-13T00:00:00Z");
