@@ -174,8 +174,9 @@ Task lock. There is no implicit ready/assignment or additional authorization.
 
 Every accepted source comment becomes one normal user message in the task room
 and a `message.created` event in the same transaction. Event replay creates no
-extra message. Cleartext comments live only in the existing moderated message
-table; source replay records hold a digest and message reference. Content rules
+extra message. Source replay records hold only a digest and message reference;
+comment content uses the existing moderated message table. Frozen Run contexts
+retain their then-visible content as execution history. Content rules
 and active team membership apply. New comments remain visible during a run, but
 cannot amend that run's frozen ContextPack.
 
