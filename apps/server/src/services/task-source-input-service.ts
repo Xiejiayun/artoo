@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { contextPacks, messages, runs, taskEnqueueEvents } from "@artoo/db";
 import { ContextPackSchema, SourceInputsV1Schema, type SourceInputsV1 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 
@@ -12,28 +12,36 @@ export async function readTaskSourceInputs(
   tx: DrizzleDb,
   taskId: string,
 ): Promise<SourceInputsV1 | undefined> {
+  const scopedMessage = and(
+    eq(messages.id, taskEnqueueEvents.messageId),
+    eq(messages.organizationId, ctx.organizationId),
+    eq(messages.taskId, taskId),
+  );
   const rows = await tx
-    .select({ eventId: taskEnqueueEvents.eventKey, message: messages })
+    .select({
+      event_id: taskEnqueueEvents.eventKey,
+      message_id: messages.id,
+      body: messages.body,
+      actor_id: messages.actorId,
+    })
     .from(taskEnqueueEvents)
-    .innerJoin(
-      messages,
-      and(
-        eq(messages.id, taskEnqueueEvents.messageId),
-        eq(messages.organizationId, ctx.organizationId),
-        eq(messages.taskId, taskId),
-      ),
-    )
-    .where(eq(taskEnqueueEvents.taskId, taskId))
-    .orderBy(asc(taskEnqueueEvents.position));
-  if (!rows.length) return undefined;
-  const entries = rows
-    .filter(({ message }) => message.moderatedAt === null)
-    .map(({ eventId, message }) => ({
-      event_id: eventId,
-      message_id: message.id,
-      body: message.body,
-      actor_id: message.actorId,
-    }));
+    .innerJoin(messages, scopedMessage)
+    .where(and(eq(taskEnqueueEvents.taskId, taskId), isNull(messages.moderatedAt)))
+    .orderBy(asc(taskEnqueueEvents.position))
+    // One extra visible row proves overflow without materializing all history.
+    .limit(101);
+  if (!rows.length) {
+    const [history] = await tx
+      .select({ id: messages.id })
+      .from(taskEnqueueEvents)
+      .innerJoin(messages, scopedMessage)
+      .where(eq(taskEnqueueEvents.taskId, taskId))
+      .limit(1);
+    // Entirely moderated history still has an empty input digest that review
+    // must compare. A source event without a matching message is not an input.
+    if (!history) return undefined;
+  }
+  const entries = rows;
   if (entries.length > 100 || entries.reduce((sum, entry) => sum + entry.body.length, 0) > 200000)
     throw AppError.conflict("Persisted source inputs exceed the execution context limit");
   const digest = `sha256:${createHash("sha256").update(JSON.stringify(entries)).digest("hex")}`;
