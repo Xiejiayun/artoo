@@ -45,7 +45,12 @@ test("capacity rejection preserves ready work and permits assignment after the o
           sequence: sequence++,
           resources: { cpu_load: 0, memory_used_pct: 0, disk_free_gb: 10 },
           runtimes: [
-            { runtime: "mock", status: "available", version: "0.1.0", capabilities: ["code.read", "code.modify"] },
+            {
+              runtime: "mock",
+              status: "available",
+              version: "0.1.0",
+              capabilities: ["code.read", "code.modify", "test.run"],
+            },
           ],
           running_instances: [],
         }),
