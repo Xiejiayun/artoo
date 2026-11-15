@@ -173,6 +173,13 @@ export async function collectSchedulerRankingSnapshot(
     queue_metadata: queue
       ? { version: 1, task_id: task.id, source: "persisted", revision: queue.revision }
       : { version: 1, task_id: task.id, source: "legacy_default", revision: null },
+    policy_revisions: {
+      version: 1,
+      project_id: input.projectId,
+      project: projectRows[0]?.revision ?? null,
+      agents: Object.fromEntries(agentRows.map((row) => [row.agentId, row.revision])),
+      computers: Object.fromEntries(computerRows.map((row) => [row.computerId, row.revision])),
+    },
     observed_at_ms: Date.parse(now),
     not_before_ms: queue?.metadata.not_before_ms ?? 0,
     preferred_computer_id: queue?.metadata.preferred_computer_id ?? null,

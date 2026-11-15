@@ -13,7 +13,7 @@ import {
   SchedulerProjectPolicyV1Schema,
 } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, lt, sql } from "drizzle-orm";
 import { requireAdministrator } from "../auth/request-auth.js";
 import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
@@ -101,8 +101,11 @@ export async function putSchedulerPolicy(ctx: ServerContext, kind: SchedulerPoli
         .values({ ...common, projectId: id, policy: parsed.data })
         .onConflictDoUpdate({
           target: schedulerProjectPolicies.projectId,
-          set: { ...common, policy: parsed.data },
-          setWhere: eq(schedulerProjectPolicies.organizationId, ctx.organizationId),
+          set: { ...common, policy: parsed.data, revision: sql`${schedulerProjectPolicies.revision} + 1` },
+          setWhere: and(
+            eq(schedulerProjectPolicies.organizationId, ctx.organizationId),
+            lt(schedulerProjectPolicies.revision, Number.MAX_SAFE_INTEGER),
+          ),
         })
         .returning();
     } else if (kind === "agent") {
@@ -115,8 +118,11 @@ export async function putSchedulerPolicy(ctx: ServerContext, kind: SchedulerPoli
         .values({ ...common, agentId: id, policy: parsed.data })
         .onConflictDoUpdate({
           target: schedulerAgentPolicies.agentId,
-          set: { ...common, policy: parsed.data },
-          setWhere: eq(schedulerAgentPolicies.organizationId, ctx.organizationId),
+          set: { ...common, policy: parsed.data, revision: sql`${schedulerAgentPolicies.revision} + 1` },
+          setWhere: and(
+            eq(schedulerAgentPolicies.organizationId, ctx.organizationId),
+            lt(schedulerAgentPolicies.revision, Number.MAX_SAFE_INTEGER),
+          ),
         })
         .returning();
     } else {
@@ -127,12 +133,15 @@ export async function putSchedulerPolicy(ctx: ServerContext, kind: SchedulerPoli
         .values({ ...common, computerId: id, policy: parsed.data })
         .onConflictDoUpdate({
           target: schedulerComputerPolicies.computerId,
-          set: { ...common, policy: parsed.data },
-          setWhere: eq(schedulerComputerPolicies.organizationId, ctx.organizationId),
+          set: { ...common, policy: parsed.data, revision: sql`${schedulerComputerPolicies.revision} + 1` },
+          setWhere: and(
+            eq(schedulerComputerPolicies.organizationId, ctx.organizationId),
+            lt(schedulerComputerPolicies.revision, Number.MAX_SAFE_INTEGER),
+          ),
         })
         .returning();
     }
-    if (!result) throw AppError.conflict("scheduling policy belongs to a different organization");
+    if (!result) throw AppError.conflict("Scheduling policy scope changed or revision exhausted");
     await appendEvent(
       tx,
       buildEvent(ctx, {
@@ -141,7 +150,14 @@ export async function putSchedulerPolicy(ctx: ServerContext, kind: SchedulerPoli
         actorId: ctx.actorUserId,
         correlationId: id,
         projectId: kind === "project" ? id : null,
-        payload: { version: 1, kind, target_id: id, policy: result.policy, execution_authorized: false },
+        payload: {
+          version: 1,
+          kind,
+          target_id: id,
+          policy: result.policy,
+          revision: result.revision,
+          execution_authorized: false,
+        },
       }),
     );
     return result;

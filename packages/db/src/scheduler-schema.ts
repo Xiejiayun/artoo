@@ -16,12 +16,14 @@ export const schedulerProjectPolicies = pgTable(
       .notNull()
       .references(() => organizations.id),
     policy: jsonb("policy").notNull().$type<SchedulerProjectPolicyV1>(),
+    revision: bigint("revision", { mode: "number" }).notNull().default(1),
     updatedByUserId: text("updated_by_user_id")
       .notNull()
       .references(() => users.id),
     updatedAt: ts("updated_at").notNull(),
   },
   (t) => [
+    check("scheduler_project_policy_revision_chk", sql`${t.revision} BETWEEN 1 AND 9007199254740991`),
     check(
       "scheduler_project_policy_v1_chk",
       sql`(jsonb_typeof(${t.policy}) = 'object' AND ${t.policy}->'version' = '1'::jsonb) IS TRUE`,
@@ -39,12 +41,14 @@ export const schedulerAgentPolicies = pgTable(
       .notNull()
       .references(() => organizations.id),
     policy: jsonb("policy").notNull().$type<SchedulerAgentPolicyV1>(),
+    revision: bigint("revision", { mode: "number" }).notNull().default(1),
     updatedByUserId: text("updated_by_user_id")
       .notNull()
       .references(() => users.id),
     updatedAt: ts("updated_at").notNull(),
   },
   (t) => [
+    check("scheduler_agent_policy_revision_chk", sql`${t.revision} BETWEEN 1 AND 9007199254740991`),
     check(
       "scheduler_agent_policy_v1_chk",
       sql`(jsonb_typeof(${t.policy}) = 'object' AND ${t.policy}->'version' = '1'::jsonb) IS TRUE`,
@@ -62,12 +66,14 @@ export const schedulerComputerPolicies = pgTable(
       .notNull()
       .references(() => organizations.id),
     policy: jsonb("policy").notNull().$type<SchedulerComputerPolicyV1>(),
+    revision: bigint("revision", { mode: "number" }).notNull().default(1),
     updatedByUserId: text("updated_by_user_id")
       .notNull()
       .references(() => users.id),
     updatedAt: ts("updated_at").notNull(),
   },
   (t) => [
+    check("scheduler_computer_policy_revision_chk", sql`${t.revision} BETWEEN 1 AND 9007199254740991`),
     check(
       "scheduler_computer_policy_v1_chk",
       sql`(jsonb_typeof(${t.policy}) = 'object' AND ${t.policy}->'version' = '1'::jsonb) IS TRUE`,

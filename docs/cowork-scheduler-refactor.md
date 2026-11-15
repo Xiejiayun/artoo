@@ -316,6 +316,29 @@ committed queued Run and cannot create a duplicate assignment. A future real
 claim must own its complete admission transaction and use an internal core;
 calling ordinary `assignTask` inside an outer transaction remains unsupported.
 
+### Exact scheduling policy revisions
+
+Additive migration `0067_scheduler_policy_revisions.sql` adds a positive
+safe-integer `revision` to project, Agent and computer scheduling policies.
+Existing rows start at 1 without changing their policy, actor or timestamp;
+this is an upgrade baseline, not a reconstruction of past edits. Every accepted
+administrator PUT atomically increments the current row in SQL, including
+repeated values and changes back to an earlier value. Exhaustion rejects with
+no write. The audit event records that same revision in the same transaction.
+Pin import creates revision 1 and preserves existing rows and their revisions.
+
+New shadow snapshots include optional version 1 `policy_revisions` provenance
+for exactly their captured project, Agent and computer policies. Missing policy
+stays null/absent. Historical version 1 snapshots without this field retain
+their original shape, and persisted observations and attempts are not rewritten.
+Collection is still a bounded read interval, not a globally atomic policy
+snapshot. Ranking and ordinary execution behavior do not change.
+
+The revisions let a future deferred scheduling intent reject changed policy
+even when its values or timestamp match again. They are not an execution grant;
+original-user intent, exact consent/profile bindings and shared real capacity
+admission still require their own integration.
+
 ## Migration and acceptance gates
 
 | Step | Implementation / activation gate |
