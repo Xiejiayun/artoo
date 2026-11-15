@@ -44,6 +44,8 @@ export const queryKeys = {
   myContentReports: (before?: string) => ["moderation", "my-reports", before] as const,
   tasks: (projectId: string) => ["tasks", projectId] as const,
   task: (taskId: string) => ["task", taskId] as const,
+  delegationTrees: (projectId: string) => ["delegation-trees", projectId] as const,
+  delegationTree: (projectId: string, taskId: string) => ["delegation-trees", projectId, taskId] as const,
   messages: (roomId: string, threadRootId?: string) =>
     threadRootId ? (["messages", roomId, "thread", threadRootId] as const) : (["messages", roomId] as const),
   messageSearch: (roomId: string, q?: string, threadRootId?: string) =>

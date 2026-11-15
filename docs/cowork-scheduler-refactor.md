@@ -602,10 +602,34 @@ rejection rolls back Task, lineage, source, room and audit writes together.
 snapshot of the complete explicit tree, current statuses, depths, creation scope
 and limits. It uses bounded indexed history reads and remains usable with rollout
 off. A legacy provenance child is its own explicit root. Inconsistent history
-fails closed instead of silently truncating. This endpoint precedes the remaining
-Web tree/navigation work; no recursive process cancellation or legacy-lineage
+fails closed instead of silently truncating. No recursive process cancellation or legacy-lineage
 import is implemented. Existing per-Task stop/physical-closure requirements and
 human release owners remain authoritative.
+
+Task detail now has an on-demand **Task delegation** panel. It renders the complete
+explicit hierarchy with each Task's current state and depth, the selected Task,
+and the historical tree count. Selecting a node opens its ordinary detail and
+preserves the panel's expansion while loading. **Delegate task** reuses the full
+task brief, criteria, priority and capabilities form, sends explicit version-1
+parent identity, and opens the new Backlog Task without assigning or executing it.
+Ordinary creation sends no delegation field. Server conflicts retain the brief.
+
+The panel explains disabled rollout, terminal parents, depth-three and thirty-Task
+limits. A failed or refreshing tree cannot admit creation from stale UI state;
+the server remains authoritative if state changes while the form is open. Project
+Task and relevant Run lifecycle events refresh all cached selected-node views of
+the tree, with polling recovery. Reads still work with creation rollout off.
+Select a Task to use its existing stop confirmation and actual process-closure
+rules; stopping one Run does not recursively cancel other Tasks. Parent acceptance
+and product release retain their existing reviews.
+
+The scheduler browser suite also opts into `delegation_limits`. Its delegation
+scenario exercises the real routes/database/browser: three brief-preserving child
+creations, navigation back to root, live child-state refresh, server rejection at
+depth four, no leaked extra Task and persisted history after page reload. It
+creates no Run and calls no Provider. Component checks cover disabled creation,
+full history, fetch/conflict recovery and cached-view invalidation. Executed
+results and remaining latest-main acceptance are recorded separately in the PR.
 
 ## Migration and acceptance gates
 

@@ -65,6 +65,8 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
   }
   if (event.type.startsWith("lease.")) keys.push(queryKeys.leases());
   if (event.type.startsWith("dependency.")) keys.push(queryKeys.dependencies());
+  if (typeof event.project_id === "string" && event.type.startsWith("task."))
+    keys.push(queryKeys.delegationTrees(event.project_id));
   // Runtime lifecycle events also transition tasks without a separate
   // task.updated event. Keep the rail and Board aligned with task detail.
   if (
@@ -73,7 +75,7 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
       event.type === "task.updated" ||
       ["run.started", "run.completed", "run.failed", "run.cancelled", "approval.resolved"].includes(event.type))
   ) {
-    keys.push(queryKeys.tasks(event.project_id));
+    keys.push(queryKeys.tasks(event.project_id), queryKeys.delegationTrees(event.project_id));
   }
   // inbox activity (approvals, blocked/awaiting) refreshes the pending list + badge.
   if (topic.startsWith("inbox:") || event.type.startsWith("approval.")) {

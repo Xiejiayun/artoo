@@ -1,5 +1,10 @@
 import { isRemovedMessage, removedMessage } from "./messageModeration.js";
-import { MessageReconciliationV1Schema, type MessageReconciliationV1 } from "@artoo/domain";
+import {
+  MessageReconciliationV1Schema,
+  TaskDelegationTreeV1Schema,
+  type MessageReconciliationV1,
+  type TaskDelegationTreeV1,
+} from "@artoo/domain";
 import type { ContentReport, ContentRules, ModerationMember } from "./contentModeration.js";
 /**
  * Typed REST client for the artoo v0.1-core API (design.md §10.6; codex Round
@@ -562,6 +567,12 @@ export class ApiClient {
 
   getTask(taskId: string): Promise<TaskSnapshot> {
     return this.request<TaskSnapshot>("GET", `/tasks/${encodeURIComponent(taskId)}`);
+  }
+
+  async getTaskDelegationTree(taskId: string): Promise<TaskDelegationTreeV1> {
+    return TaskDelegationTreeV1Schema.parse(
+      await this.request<unknown>("GET", `/tasks/${encodeURIComponent(taskId)}/delegation-tree`),
+    );
   }
 
   createTask(body: CreateTaskRequest, idempotencyKey: string): Promise<CreateTaskResponse> {
