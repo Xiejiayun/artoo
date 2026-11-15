@@ -49,6 +49,8 @@ export interface SchedulerOutcome {
 export interface ScheduleOptions {
   /** Server-local observation at the original eligibility/decision boundary. */
   captureShadow?: boolean;
+  /** Required identity when capturing persisted per-Task queue preferences. */
+  shadowTaskId?: string;
   /** Internal H4 revalidation of its reserved author/reviewer only. */
   importedDesignReviewId?: string;
   /** Internal H3 revalidation of its own exact reservation; never populated from assignment requests. */
@@ -516,13 +518,16 @@ export async function scheduleTask(
     );
   }
 
-  const shadowCapture = opts.captureShadow
-    ? await collectSchedulerRankingSnapshot(ctx, tx, {
-        projectId: opts.projectId,
-        candidates,
-        manualAgentInstanceId: opts.mode === "manual" ? (opts.agentInstanceId ?? null) : null,
-      })
-    : undefined;
+  if (opts.captureShadow && !opts.shadowTaskId) throw AppError.validation("Shadow capture requires its Task identity");
+  const shadowCapture =
+    opts.captureShadow && opts.shadowTaskId
+      ? await collectSchedulerRankingSnapshot(ctx, tx, {
+          projectId: opts.projectId,
+          taskId: opts.shadowTaskId,
+          candidates,
+          manualAgentInstanceId: opts.mode === "manual" ? (opts.agentInstanceId ?? null) : null,
+        })
+      : undefined;
   return {
     ...(shadowCapture ? { shadowCapture } : {}),
     selected,

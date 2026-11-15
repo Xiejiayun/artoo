@@ -8,11 +8,28 @@ import { getSchedulerPolicy, putSchedulerPolicy } from "./services/scheduler-pol
 import { listSchedulerReconciliations, reconcileSchedulerProject } from "./services/scheduler-projection-service.js";
 import { listSchedulerShadowObservations } from "./services/scheduler-shadow-observation-service.js";
 import { importSchedulerAgentPins } from "./services/scheduler-pin-import-service.js";
+import { getSchedulerQueueMetadata, putSchedulerQueueMetadata } from "./services/scheduler-queue-metadata-service.js";
 
 const reconcileInput = z.object({ repair: z.boolean() }).strict();
 const pinImportInput = z.object({ apply: z.boolean() }).strict();
 
 export function registerSchedulerModelRoutes(app: FastifyInstance, ctx: ServerContext) {
+  app.get("/api/v1/tasks/:id/scheduler-queue-metadata", async (request) => {
+    const c = requestContext(ctx, request);
+    return {
+      queue_metadata: await getSchedulerQueueMetadata(c, (request.params as { id: string }).id),
+      active: false,
+      execution_authorized: false,
+    };
+  });
+  app.put("/api/v1/tasks/:id/scheduler-queue-metadata", async (request) => {
+    const c = requestContext(ctx, request);
+    return {
+      queue_metadata: await putSchedulerQueueMetadata(c, (request.params as { id: string }).id, request.body),
+      active: false,
+      execution_authorized: false,
+    };
+  });
   app.post("/api/v1/scheduler/agent-pin-import", async (request) => {
     const c = requestContext(ctx, request),
       input = pinImportInput.safeParse(request.body);

@@ -84,7 +84,12 @@ function deferred() {
 }
 
 type ShadowBinding = Record<string, unknown> & { epoch: number; task_id: string; attempt_id: string };
-type ShadowResult = { kind: string; binding?: ShadowBinding; ranking?: { decisions: { reasons: string[] }[] } };
+type ShadowResult = {
+  kind: string;
+  binding?: ShadowBinding;
+  snapshot?: object;
+  ranking?: { decisions: { reasons: string[] }[] };
+};
 type ShadowService = {
   claimSchedulerShadow(ctx: object, input: object): Promise<ShadowResult>;
   startSchedulerShadow(ctx: object, binding: object): Promise<ShadowResult>;
@@ -232,6 +237,31 @@ afterAll(async () => {
 });
 
 describe("PostgresDbClient with a real PostgreSQL server", () => {
+  it("reads persisted versioned queue timing from the shadow claim transaction on actual PostgreSQL", async () => {
+    const f = await shadowFixture();
+    const now = Date.parse("2026-06-13T00:00:00Z");
+    await observer!.query(
+      `INSERT INTO scheduler_task_queue_metadata
+      (task_id,organization_id,project_id,version,revision,not_before_ms,preferred_computer_id,prefer_until_ms,updated_by_user_id,updated_at)
+      VALUES ('task_pg_a','org_default','proj_artoo',1,1,$1,'computer_local_mock',$2,'user_owner',$3)`,
+      [now + 1, now + 2000, "2026-06-13T00:00:00Z"],
+    );
+    const early = await f.claim(f.second, "task_pg_a");
+    expect(early.kind).toBe("ineligible");
+    expect(early.ranking?.decisions[0]?.reasons).toContain("not_before");
+    expect(early.snapshot).toMatchObject({
+      not_before_ms: now + 1,
+      preferred_computer_id: "computer_local_mock",
+      prefer_until_ms: now + 2000,
+      queue_metadata: { version: 1, task_id: "task_pg_a", source: "persisted", revision: 1 },
+    });
+    f.setTime("2026-06-13T00:00:00.001Z");
+    expect((await f.claim(f.first, "task_pg_a")).kind).toBe("claimed");
+    expect((await observer!.query("SELECT * FROM runs")).rows).toEqual([]);
+    expect((await observer!.query("SELECT revision::int FROM scheduler_task_queue_metadata")).rows).toEqual([
+      { revision: 1 },
+    ]);
+  });
   it("serializes shadow-only claims across independent connections and enforces each capacity level", async () => {
     const f = await shadowFixture();
     const pidA = (await f.first.db.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid;
