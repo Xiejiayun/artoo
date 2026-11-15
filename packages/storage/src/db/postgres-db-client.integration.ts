@@ -446,6 +446,15 @@ afterEach(async () => {
   if (ownership.rows[0]?.marker !== marker || !/^artoo_adapter_\d+_[a-f0-9]{32}$/.test(databaseName)) {
     throw new Error("Test database ownership changed; retaining it instead of deleting it");
   }
+  // pg.Pool.end() can resolve after removing idle clients from its registry but
+  // before their PostgreSQL backends exit. FORCE must not race that normal
+  // shutdown and turn it into an unhandled 57P01 on a still-closing client.
+  // Verify physical disconnects; retain the owned database if any remain.
+  await expect
+    .poll(async () => (await admin.query("SELECT pid FROM pg_stat_activity WHERE datname = $1", [databaseName])).rows, {
+      timeout: 3000,
+    })
+    .toEqual([]);
   await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
   const failures = closed.filter((result): result is PromiseRejectedResult => result.status === "rejected");
   if (failures.length)
