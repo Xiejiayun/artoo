@@ -9,6 +9,7 @@ import type { ServerContext } from "../context.js";
 import { AppError } from "../errors.js";
 import { scheduleTask, type ScheduleOptions } from "./scheduler.js";
 import { collectSchedulerRankingSnapshot, schedulerOccupancy } from "./scheduler-shadow-snapshot.js";
+import { validateSchedulerIntentForShadow } from "./scheduler-intent-service.js";
 
 const id = z.string().min(1).max(128);
 export const ShadowLeaseBindingV1Schema = z
@@ -26,6 +27,13 @@ export const ShadowLeaseBindingV1Schema = z
   .strict();
 export type ShadowLeaseBindingV1 = z.infer<typeof ShadowLeaseBindingV1Schema>;
 const leaseDuration = z.number().int().min(1_000).max(300_000);
+const intentOptions = z
+  .object({
+    mode: z.literal("auto"),
+    branchBacked: z.literal(true),
+    agentInstanceId: z.null().optional(),
+  })
+  .strict();
 
 const result = <T extends string>(kind: T) => ({ kind, execution_authorized: false as const });
 
@@ -55,6 +63,8 @@ export async function claimSchedulerShadow(
   input: {
     projectId: string;
     taskId: string;
+    /** Optional original-user staging; still cannot authorize execution. */
+    intentId?: string;
     options: Omit<ScheduleOptions, "projectId">;
     leaseMs?: number;
   },
@@ -82,6 +92,9 @@ export async function claimSchedulerShadow(
       )
       .for("update", { skipLocked: true });
     if (!task) return result("task_unavailable");
+    const intent = input.intentId ? await validateSchedulerIntentForShadow(ctx, tx, task, input.intentId) : undefined;
+    if (intent && !intentOptions.safeParse(input.options).success)
+      throw AppError.conflict("Shadow options must retain the original pooled scheduling request");
     const [existingHead] = await tx
       .select()
       .from(schedulerShadowTaskHeads)
@@ -139,7 +152,9 @@ export async function claimSchedulerShadow(
     const captured = await collectSchedulerRankingSnapshot(ctx, tx, {
       projectId: input.projectId,
       taskId: task.id,
-      candidates: outcome.candidates,
+      candidates: intent
+        ? outcome.candidates.filter((candidate) => candidate.agent_id === intent.row.agentId)
+        : outcome.candidates,
       manualAgentInstanceId: input.options.mode === "manual" ? (input.options.agentInstanceId ?? null) : null,
     });
     // These are point-in-time samples, not an alternate historical schedule.
@@ -157,6 +172,19 @@ export async function claimSchedulerShadow(
       }));
     const snapshot = {
       ...captured.snapshot,
+      ...(intent
+        ? {
+            intent_provenance: {
+              version: 1 as const,
+              intent_id: intent.row.id,
+              task_id: task.id,
+              agent_id: intent.row.agentId,
+              actor_user_id: intent.row.actorUserId,
+              snapshot_digest: intent.row.snapshotDigest,
+              execution_authorized: false as const,
+            },
+          }
+        : {}),
       occupancy: schedulerOccupancy(input.projectId, [...captured.occupants, ...pending]),
     };
     const ranking = rankSchedulerCandidates(snapshot);

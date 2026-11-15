@@ -9,11 +9,37 @@ import { listSchedulerReconciliations, reconcileSchedulerProject } from "./servi
 import { listSchedulerShadowObservations } from "./services/scheduler-shadow-observation-service.js";
 import { importSchedulerAgentPins } from "./services/scheduler-pin-import-service.js";
 import { getSchedulerQueueMetadata, putSchedulerQueueMetadata } from "./services/scheduler-queue-metadata-service.js";
+import {
+  cancelSchedulerIntent,
+  createSchedulerIntent,
+  listSchedulerIntents,
+} from "./services/scheduler-intent-service.js";
 
 const reconcileInput = z.object({ repair: z.boolean() }).strict();
 const pinImportInput = z.object({ apply: z.boolean() }).strict();
+const cancelIntentInput = z.object({ version: z.literal(1) }).strict();
 
 export function registerSchedulerModelRoutes(app: FastifyInstance, ctx: ServerContext) {
+  app.get("/api/v1/tasks/:id/scheduler-intents", async (request) => {
+    const c = requestContext(ctx, request);
+    return {
+      intents: await listSchedulerIntents(c, (request.params as { id: string }).id),
+      active: false,
+      execution_authorized: false,
+    };
+  });
+  app.post("/api/v1/tasks/:id/scheduler-intents", async (request, reply) => {
+    const c = requestContext(ctx, request);
+    const intent = await createSchedulerIntent(c, (request.params as { id: string }).id, request.body);
+    return reply.status(201).send({ intent, active: false, execution_authorized: false });
+  });
+  app.post("/api/v1/tasks/:id/scheduler-intents/:intentId/cancel", async (request) => {
+    const input = cancelIntentInput.safeParse(request.body);
+    if (!input.success) throw AppError.validation("Explicit version 1 cancellation is required");
+    const c = requestContext(ctx, request),
+      { id, intentId } = request.params as { id: string; intentId: string };
+    return { intent: await cancelSchedulerIntent(c, id, intentId), active: false, execution_authorized: false };
+  });
   app.get("/api/v1/tasks/:id/scheduler-queue-metadata", async (request) => {
     const c = requestContext(ctx, request);
     return {

@@ -339,6 +339,62 @@ even when its values or timestamp match again. They are not an execution grant;
 original-user intent, exact consent/profile bindings and shared real capacity
 admission still require their own integration.
 
+### Original-user intent staging
+
+Migration `0068_scheduler_intents.sql` adds immutable version 1 shadow request
+snapshots, a unique request key per Task, one pending request per Task and durable
+cancellation history. It imports no historical authorizations. These requests
+are explicitly inactive and have `execution_authorized:false`; they cannot
+create a Run, dispatch work, reserve a real execution slot or authorize review.
+
+With `claim_shadow` enabled, POST `/api/v1/tasks/:id/scheduler-intents` accepts
+only `version:1`, `request_key`, the exact current Task `base_version`, a logical
+`agent_id`, `branch_backed:true` and explicit `write_paths`. It does not accept a
+computer/instance, actor, consent, profile, command or policy revision from the
+caller. The current authenticated user must have active membership and current
+AI-sharing authorization. Version 1 supports only ordinary ready Tasks; Goal,
+plan, discussion, assistant and other dedicated owners retain their existing
+paths. A current execution approval, if requested, must already be approved.
+
+One repeatable-read transaction captures the original user, exact AI consent
+ID/disclosure version, Task/source-comment/approval digest and durable input
+event version, queue revision and explicit project/Agent/candidate-computer
+policy revisions. It also hashes the configured Agent instance pool, project
+workspace, computer capabilities, model/effort catalog and project/organization
+skill configuration. Configuration contents are never stored in the request or
+its audit payload. Status/heartbeat changes do not change this configuration
+digest; changed configuration, including additions to the captured pool or
+catalog, requires a new request. No node-local verifier authority is captured.
+
+The Task input version excludes only the two new intent metadata audit types;
+other Task events, source input changes and approval replacement invalidate the
+request. Every accepted policy edit invalidates through its revision, including
+equal values and changes back to an old value. An exact request-key replay returns
+the original record and cannot revive cancellation. Another pending request must
+be explicitly cancelled first. Creation and cancellation audit writes commit
+with their records.
+
+GET on the same collection retains the latest 50 scoped records even after the
+rollout switch is off. POST
+`/api/v1/tasks/:id/scheduler-intents/:intentId/cancel` requires `{"version":1}`
+and the original active user or a current administrator. Cancellation remains
+available after consent withdrawal and when staging is off; it never rewrites
+the original snapshot or historical shadow attempts.
+
+Internal shadow claim optionally takes an `intentId`. Under the Task lock it
+rechecks the original user's membership and exact consent, rebuilds every
+captured binding and limits candidates to that original logical Agent. The
+sampling context's default actor cannot replace the original user. New shadow
+snapshots add optional version 1 `intent_provenance`; old snapshots retain their
+shape. Cancellation or changed/revoked bindings reject another shadow claim.
+An existing hypothetical attempt does not acquire real execution authority.
+
+These are bounded configuration reads and shadow comparisons. Shared real
+capacity admission, complete executing-claim authorization, node protocol,
+attempt credentials and real failover remain separate work. Actual scheduling
+activation must not reinterpret this staged metadata as an execution grant.
+The exact-cost requirement remains unchanged and cost budgets remain disabled.
+
 ## Migration and acceptance gates
 
 | Step | Implementation / activation gate |
