@@ -193,6 +193,14 @@ ContextPack has the current digest. Late inputs therefore require the existing
 human `changes_requested -> ready -> run -> review` loop. Turning the rollout
 flag off does not bypass the acceptance check for already persisted comments.
 
+Source-context reads filter moderated comments in SQL and return at most 101
+visible entries, using the extra entry to reject overflow. They select only the
+context fields; a separate one-row scoped existence check distinguishes no source
+input from entirely moderated history, which retains its empty input digest.
+Visible ordering, digest bytes and the 200,000 JavaScript-character limit stay
+unchanged. This bounds rows materialized by the server, not the database work
+needed to scan historical comments, and does not add a new execution fence.
+
 Focused integration covers active dedupe, exact replay, terminal new triggers,
 intent conflicts, scope isolation, transaction rollback, moderation and the late
 input review loop. The opted-in browser suite also exercises visible comments and
