@@ -39,6 +39,18 @@ export const SchedulerRankingSnapshotV1Schema = z
       })
       .strict()
       .optional(),
+    intent_provenance: z
+      .object({
+        version: z.literal(1),
+        intent_id: id,
+        task_id: id,
+        agent_id: id,
+        actor_user_id: id,
+        snapshot_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        execution_authorized: z.literal(false),
+      })
+      .strict()
+      .optional(),
     observed_at_ms: time,
     not_before_ms: time,
     preferred_computer_id: id.nullable(),
@@ -69,6 +81,11 @@ export const SchedulerRankingSnapshotV1Schema = z
       ctx.addIssue({ code: "custom", message: "Soft affinity requires both computer and deadline" });
     if (new Set(value.candidates.map((candidate) => candidate.agent_instance_id)).size !== value.candidates.length)
       ctx.addIssue({ code: "custom", message: "Candidate instance identities must be unique" });
+    if (
+      value.intent_provenance &&
+      value.candidates.some((candidate) => candidate.agent_id !== value.intent_provenance!.agent_id)
+    )
+      ctx.addIssue({ code: "custom", message: "Intent candidates must retain the original logical Agent" });
     if (value.policy_revisions) {
       const revisions = value.policy_revisions;
       const sameKeys = (a: object, b: object) =>

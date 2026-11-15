@@ -237,6 +237,146 @@ afterAll(async () => {
 });
 
 describe("PostgresDbClient with a real PostgreSQL server", () => {
+  it("keeps one inactive original-user intent across independent concurrent staging, replay and cancellation", async () => {
+    const f = await shadowFixture();
+    type Intent = { id: string; state: string; requestKey: string; snapshot: object; executionAuthorized: boolean };
+    const service = (await import(
+      new URL("../../../../apps/server/dist/services/scheduler-intent-service.js", import.meta.url).href
+    )) as {
+      createSchedulerIntent(ctx: object, taskId: string, input: object): Promise<Intent>;
+      cancelSchedulerIntent(ctx: object, taskId: string, intentId: string): Promise<Intent>;
+    };
+    const sharing = (await import(
+      new URL("../../../../apps/server/dist/config/ai-data-sharing.js", import.meta.url).href
+    )) as { buildAiDataSharingPolicy(input: object): object };
+    const events = (await import(new URL("../../../../apps/server/dist/events.js", import.meta.url).href)) as {
+      buildEvent(ctx: object, input: object): object;
+    };
+    const schema = (await import(new URL("../../../db/dist/index.js", import.meta.url).href)) as {
+      appendEvent(tx: DrizzleDb, input: object): Promise<unknown>;
+    };
+    const ports = [f.first, f.second, await openIndependentTestPort()];
+    const contexts = ports.map((db) => ({
+      ...f.context(db),
+      authConfig: {},
+      aiDataSharingPolicy: sharing.buildAiDataSharingPolicy({ mode: "local", providers: [] }),
+      idGen: { generate: (prefix: string) => `${prefix}_${randomUUID()}` },
+    }));
+    const backends = await Promise.all(
+      ports.map(async (db) => (await db.db.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid),
+    );
+    expect(new Set(backends).size).toBe(3);
+    await f.first.transaction(async (tx) => {
+      await schema.appendEvent(
+        tx,
+        events.buildEvent(contexts[0]!, {
+          type: "task.updated",
+          actorType: "user",
+          actorId: "user_owner",
+          taskId: "task_pg_a",
+          projectId: "proj_artoo",
+          correlationId: "task_pg_a",
+          payload: { status: "ready" },
+        }),
+      );
+    });
+    const version = (
+      await observer!.query("SELECT max(position)::int AS version FROM event_log WHERE task_id='task_pg_a'")
+    ).rows[0]!.version;
+    const requests = contexts.map((_, index) => ({
+      version: 1,
+      request_key: `concurrent-${index}`,
+      base_version: version,
+      agent_id: "agent_mock_coder",
+      branch_backed: true,
+      write_paths: ["src/main.ts"],
+    }));
+    const results = await Promise.allSettled(
+      contexts.map((ctx, index) => service.createSchedulerIntent(ctx, "task_pg_a", requests[index]!)),
+    );
+    const accepted = results.filter(
+      (result): result is PromiseFulfilledResult<Intent> => result.status === "fulfilled",
+    );
+    expect(accepted).toHaveLength(1);
+    for (const result of results)
+      if (result.status === "rejected") {
+        // A stale repeatable-read snapshot may lose at the unique index instead
+        // of the service guard. Both must be explicit HTTP conflicts, without an audit.
+        expect(result.reason).toMatchObject({ code: "conflict", httpStatus: 409 });
+      }
+    const winner = accepted[0]!.value;
+    const request = requests.find((entry) => entry.request_key === winner.requestKey)!;
+    expect(winner).toMatchObject({ state: "pending", executionAuthorized: false });
+    expect(winner.snapshot).toMatchObject({ actor_user_id: "user_owner", execution_authorized: false });
+    const replay = await Promise.all(contexts.map((ctx) => service.createSchedulerIntent(ctx, "task_pg_a", request)));
+    expect(replay.every((entry) => entry.id === winner.id && entry.state === "pending")).toBe(true);
+    expect((await observer!.query("SELECT count(*)::int AS n FROM scheduler_intents")).rows).toEqual([{ n: 1 }]);
+    expect(
+      (await observer!.query("SELECT type,actor_id FROM event_log WHERE type LIKE 'scheduler.intent.%'")).rows,
+    ).toEqual([{ type: "scheduler.intent.created", actor_id: "user_owner" }]);
+    const cancellations = await Promise.all(
+      contexts.map((ctx) => service.cancelSchedulerIntent(ctx, "task_pg_a", winner.id)),
+    );
+    expect(cancellations.every((entry) => entry.id === winner.id && entry.state === "cancelled")).toBe(true);
+    expect((await service.createSchedulerIntent(contexts[1]!, "task_pg_a", request)).state).toBe("cancelled");
+    const changedInputRequest = {
+      ...request,
+      request_key: "changed-input-race",
+      base_version: (
+        await observer!.query("SELECT max(position)::int AS version FROM event_log WHERE task_id='task_pg_a'")
+      ).rows[0]!.version,
+    };
+    await observer!.query("BEGIN");
+    let observerTransaction = true;
+    let changedInput: Promise<unknown> | undefined;
+    try {
+      await observer!.query("UPDATE tasks SET title='Concurrent input change' WHERE id='task_pg_a'");
+      changedInput = service.createSchedulerIntent(contexts[0]!, "task_pg_a", changedInputRequest).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      const deadline = Date.now() + 3000;
+      let blocked = false;
+      while (!blocked && Date.now() < deadline) {
+        const activity = (
+          await admin.query("SELECT wait_event_type,query FROM pg_stat_activity WHERE pid=$1 AND datname=$2", [
+            backends[0],
+            databaseName,
+          ])
+        ).rows[0];
+        blocked =
+          activity?.wait_event_type === "Lock" &&
+          activity.query.toLowerCase().includes('"tasks"') &&
+          activity.query.toLowerCase().includes("for update");
+        if (!blocked) await delay(25);
+      }
+      // Establish actual lock contention before committing the changed input.
+      // The old repeatable-read snapshot must become a 409, never a new intent.
+      expect(blocked).toBe(true);
+      await observer!.query("COMMIT");
+      observerTransaction = false;
+      expect(await changedInput).toMatchObject({ code: "conflict", httpStatus: 409 });
+    } finally {
+      if (observerTransaction) await observer!.query("ROLLBACK");
+      await changedInput;
+    }
+    expect((await observer!.query("SELECT snapshot,state,execution_authorized FROM scheduler_intents")).rows).toEqual([
+      { snapshot: winner.snapshot, state: "cancelled", execution_authorized: false },
+    ]);
+    expect(
+      (
+        await observer!.query(
+          "SELECT type,count(*)::int AS n FROM event_log WHERE type LIKE 'scheduler.intent.%' GROUP BY type ORDER BY type",
+        )
+      ).rows,
+    ).toEqual([
+      { type: "scheduler.intent.cancelled", n: 1 },
+      { type: "scheduler.intent.created", n: 1 },
+    ]);
+    for (const table of ["runs", "file_leases", "scheduler_shadow_attempts"])
+      expect((await observer!.query(`SELECT * FROM ${table}`)).rows).toEqual([]);
+    expect((await observer!.query("SELECT DISTINCT status FROM tasks")).rows).toEqual([{ status: "ready" }]);
+  });
   it("increments each policy revision atomically across independent production service transactions", async () => {
     const f = await shadowFixture();
     const service = (await import(

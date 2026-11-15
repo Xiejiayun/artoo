@@ -47,6 +47,29 @@ function snapshot(): SchedulerRankingSnapshotV1 {
 }
 
 describe("point-in-time shadow scheduler ranking", () => {
+  it("keeps optional original-user provenance non-authorizing and bound to its logical Agent", () => {
+    const old = snapshot();
+    expect(SchedulerRankingSnapshotV1Schema.parse(old)).not.toHaveProperty("intent_provenance");
+    const provenance = {
+      version: 1 as const,
+      intent_id: "intent",
+      task_id: "task",
+      agent_id: "agent",
+      actor_user_id: "user",
+      snapshot_digest: `sha256:${"a".repeat(64)}`,
+      execution_authorized: false as const,
+    };
+    const current = { ...old, intent_provenance: provenance };
+    expect(SchedulerRankingSnapshotV1Schema.parse(current)).toEqual(current);
+    expect(rankSchedulerCandidates(current)).toEqual(rankSchedulerCandidates(old));
+    for (const extra of [{ version: 2 }, { agent_id: "other" }, { execution_authorized: true }, { command: "forged" }])
+      expect(
+        SchedulerRankingSnapshotV1Schema.safeParse({
+          ...current,
+          intent_provenance: { ...provenance, ...extra },
+        }).success,
+      ).toBe(false);
+  });
   it("preserves historical shapes and checks optional exact policy revision provenance", () => {
     const old = snapshot();
     expect(SchedulerRankingSnapshotV1Schema.parse(old)).toEqual(old);
