@@ -5,6 +5,7 @@ export const SCHEDULER_ROLLOUT_FLAGS = [
   "unified_enqueue",
   "claim_shadow",
   "capacity_admission",
+  "execution_requests",
   "daemon_claim",
   "lease_failover",
   "isolated_workspaces",

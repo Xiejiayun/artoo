@@ -51,7 +51,7 @@ project override cannot cross a tenant boundary.
 }
 ```
 
-Reserved switches: `task_mirror`, `unified_enqueue`, `claim_shadow`, `capacity_admission`, `daemon_claim`,
+Reserved switches: `task_mirror`, `unified_enqueue`, `claim_shadow`, `capacity_admission`, `execution_requests`, `daemon_claim`,
 `lease_failover`, `isolated_workspaces`, `delegation_limits`, `attempt_credentials`.
 Only implemented consumers can change behavior; defining a reserved flag is not
 evidence that its phase is implemented or accepted. No real claim, reaper or new
@@ -367,7 +367,7 @@ its audit payload. Status/heartbeat changes do not change this configuration
 digest; changed configuration, including additions to the captured pool or
 catalog, requires a new request. No node-local verifier authority is captured.
 
-The Task input version excludes only the two new intent metadata audit types;
+The Task input version excludes only the explicitly named shadow and execution-request metadata audit types;
 other Task events, source input changes and approval replacement invalidate the
 request. Every accepted policy edit invalidates through its revision, including
 equal values and changes back to an old value. An exact request-key replay returns
@@ -461,6 +461,61 @@ isolated browser suite with explicit policies and controlled mock execution. It
 checks a visible capacity conflict, no leaked Run, reload, capacity recovery and
 human acceptance. These test scopes do not establish a live Provider run or an
 installation's observation/rollout gates.
+
+### Explicit conditional execution requests (implementation in progress)
+
+Version 1 shadow intents retain their false-authority constraint and original
+request/snapshot contracts. They cannot become execution requests. Additive
+migration `0069_scheduler_execution_requests.sql` creates a separate version 2
+history with one pending request per Task and a unique request key per Task.
+It imports no prior records or authorizations. SQL protects immutable identity,
+snapshot, digest and creation time, rejects deletion and prevents cancellation
+from being reversed or rewritten.
+
+The independent startup switch `execution_requests` defaults off and enables
+request **storage only**. POST `/api/v1/tasks/:id/scheduler-execution-requests`
+requires `version:2`, explicit `permission:"execute_once"`, `request_key`, the
+exact current Task `base_version`, one logical `agent_id`, `branch_backed:true`
+and explicit `write_paths`. A caller cannot provide an actor, consent, computer,
+instance, policy revision, profile, command or node authority. Only ordinary ready
+Tasks are supported; all dedicated execution owners retain their paths.
+
+The authenticated active user supplies fresh conditional permission. In one
+repeatable-read transaction the server captures that user, exact AI consent and
+disclosure, approved execution gate, current Task/source inputs, queue and policy
+revisions, and configuration digests through the same bounded binding collector
+used by shadow intents. Configuration contents and secrets are never copied.
+Only the four named shadow/execution-request creation/cancellation audit types
+are metadata; other Task events remain inputs. Equal accepted policy edits still
+invalidate through revisions. Changed consent cannot be replaced by re-consent.
+
+An exact key replay returns the original historical record, including after
+cancellation. It does not refresh permission, its bindings, or its validity.
+Another pending request must first be explicitly cancelled. GET returns the
+latest 50 scoped records; POST on `/:requestId/cancel` requires `{"version":2}`
+and the original active user or a current administrator. Listing and cancellation
+remain available with the switch off, and cancellation needs no active AI consent.
+Request and audit writes commit or roll back together. Concurrent serialization
+or request-key/pending-Task unique conflicts return 409 without a hidden retry.
+
+Every response says `consumer_available:false` and `execution_authorized:false`.
+Storing permission creates no Run, shadow attempt, capacity/file reservation or
+dispatch. The internal snapshot checker reconstructs the original user and rejects
+changed/revoked bindings, but supplies no executing admission guarantee: current
+configuration writers are not all serialized by these bounded reads. A later
+consumer must fence the configuration it uses, rerun every legacy gate and shared
+capacity admission, consume once into an exact durable attempt, and perform trusted
+node pre-spawn revalidation. `branch_backed:true` alone does not establish an
+isolated per-attempt directory. No real claim, node protocol, lease/failover,
+attempt credential, publication or cost budget is enabled by request storage.
+
+The request, migration and compatibility suites cover strict permission/version
+boundaries, original-user authentication and revocation, exact consent, approval,
+input/policy/configuration drift, replay/cancellation and audit rollback. The
+separate PostgreSQL test exercises independent backend transactions, concurrent
+staging/replay/cancellation and a Task-lock input-change race. Implementation and
+executed validation are tracked separately in the PR; these cases do not establish
+an available claim consumer or satisfy elapsed installation rollout gates.
 
 ## Migration and acceptance gates
 
