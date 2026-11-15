@@ -206,6 +206,24 @@ revision suites with both enqueue and mirror enabled. Its test-only environment
 sets fixture configuration; it does not mock product services or weaken their
 original assertions. The normal suite keeps deterministic default-off fixtures.
 
+## Step 3 preparation: counterfactual ranking
+
+`packages/domain/src/scheduler-ranking.ts` defines a versioned, non-executing
+comparison over the existing scheduler's qualified candidates. It preserves
+legacy score ordering and explicit manual choice, then explains exclusions for
+new policy, capacity, queue timing, pinning and soft affinity. Missing policies
+remain explicit. The old manual runtime-inventory fallback can appear in the
+snapshot, but an unconfirmed runtime is not evidence for new-path eligibility.
+Every result carries `execution_authorized:false`.
+
+This module evaluates supplied occupancy; it does not collect it, reserve
+capacity, claim a Task or dispatch a Run. Integration must capture the original
+decision inputs, include dedicated reservations and uncertain process closure,
+and avoid counting a real execution again as hypothetical occupancy. Its unit
+tests are not PostgreSQL mutual-exclusion or live capacity evidence. The lease
+kernel, epoch-bound updates, decision-boundary recording and initial pin import
+remain work in progress; no one-week shadow observation is claimed.
+
 ## Migration and acceptance gates
 
 | Step | Implementation / activation gate |
