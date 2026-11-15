@@ -623,6 +623,18 @@ lock wait followed by disabled eligibility. These are controlled database and
 transport tests, not live Provider or elapsed rollout acceptance. Executed results
 are recorded with the implementation PR.
 
+Credential row locks prevent concurrent edits but cannot prevent wall-clock
+expiry. The internal claim therefore retains only the locked token's expiry
+and rechecks it with the original paired session after resource-lock waits,
+before returning a replay, and after all new claim/prepared-start writes.
+Reaching the exact expiry boundary rejects and rolls back permission consumption,
+Run, context, reservations and audit together. No new awaited work follows the
+last check. Node physical admission still needs its own current-credential
+check; a committed database preparation cannot extend a token's lifetime.
+Regression coverage advances a controlled clock during preparation and during
+an independently observed PostgreSQL instance-lock wait, without modifying the
+locked credential or weakening rollback assertions.
+
 ### Immutable prepared-start bindings (Step 3 to Step 4 boundary)
 
 Assignment legitimately changes the Task's state, assignee, timestamp and approval

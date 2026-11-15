@@ -47,6 +47,21 @@ function assertSchedulerClaimSession(ctx: ServerContext, session: Session) {
     throw AppError.conflict("Scheduling claim lost its original paired allocation session");
 }
 
+/** Row locks stop credential edits, but cannot stop wall-clock expiry during awaited admission work. */
+function assertSchedulerClaimCurrent(
+  ctx: ServerContext,
+  session: Session,
+  credential: { readonly expiresAt: string | null },
+) {
+  assertSchedulerClaimSession(ctx, session);
+  if (credential.expiresAt !== null) {
+    const expires = Date.parse(credential.expiresAt),
+      now = Date.parse(ctx.clock.nowIso());
+    if (!Number.isFinite(expires) || !Number.isFinite(now) || expires <= now)
+      throw AppError.permissionDenied("Scheduling claim paired credential is no longer current");
+  }
+}
+
 async function lockCredential(ctx: ServerContext, tx: DrizzleDb, session: Session) {
   const [observed] = await tx
     .select()
@@ -80,11 +95,12 @@ async function lockCredential(ctx: ServerContext, tx: DrizzleDb, session: Sessio
     device.revokedAt !== null ||
     device.computerId !== session.computerId ||
     device.enrolledByUserId !== observed.enrolledByUserId ||
-    !token ||
-    (token.expiresAt !== null && Date.parse(token.expiresAt) <= Date.parse(ctx.clock.nowIso()))
+    !token
   )
     throw AppError.permissionDenied("Scheduling claim paired credential is no longer current");
-  assertSchedulerClaimSession(ctx, session);
+  const credential = Object.freeze({ expiresAt: token.expiresAt });
+  assertSchedulerClaimCurrent(ctx, session, credential);
+  return credential;
 }
 
 /** Internal database kernel only. No HTTP/WS handler calls this until the node attempt protocol exists. */
@@ -131,7 +147,7 @@ export async function prepareSchedulerExecutionClaim(
   )
     throw AppError.permissionDenied("Scheduling claims require their current paired node session");
   const session = structuredClone(observedSession);
-  await lockCredential(original, tx, session);
+  const credential = await lockCredential(original, tx, session);
   if (row.state === "consumed") {
     const [run] = await tx
       .select()
@@ -153,7 +169,7 @@ export async function prepareSchedulerExecutionClaim(
       .where(eq(schedulerDecisions.id, run.schedulerDecisionId!));
     if (!decision || decision.organizationId !== ctx.organizationId || decision.taskId !== task.id)
       throw AppError.conflict("Consumed scheduling decision is missing");
-    assertSchedulerClaimSession(ctx, session);
+    assertSchedulerClaimCurrent(ctx, session, credential);
     return {
       kind: "replay" as const,
       result: {
@@ -201,8 +217,16 @@ export async function prepareSchedulerExecutionClaim(
   const fresh = await rank();
   if (!isDeepStrictEqual(fresh.selected, first.selected))
     throw AppError.conflict("Scheduling candidate changed while awaiting its resource locks");
-  assertSchedulerClaimSession(ctx, session);
-  return { kind: "new" as const, original, row: validated.row, snapshot: validated.snapshot, session, ...fresh };
+  assertSchedulerClaimCurrent(ctx, session, credential);
+  return {
+    kind: "new" as const,
+    original,
+    row: validated.row,
+    snapshot: validated.snapshot,
+    session,
+    credential,
+    ...fresh,
+  };
 }
 
 type NewClaim = Extract<Awaited<ReturnType<typeof prepareSchedulerExecutionClaim>>, { kind: "new" }>;
@@ -269,6 +293,6 @@ export async function consumeSchedulerExecutionClaim(
   );
   await recordSchedulerPreparedStart(ctx, tx, claim.row.id);
   // No await after this comparison: a registry replacement during admission rolls everything back.
-  assertSchedulerClaimSession(ctx, claim.session);
+  assertSchedulerClaimCurrent(ctx, claim.session, claim.credential);
   return { ...result, scheduler_decision: { ...result.scheduler_decision, reason: "scheduler_execution_request" } };
 }
