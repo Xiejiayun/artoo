@@ -1,4 +1,5 @@
 import type { PreparedGoalEntryConfigV1 } from "./config/goal-entry.js";
+import type { SchedulerRolloutConfig } from "./config/scheduler-rollout.js";
 import type { AuditSignerV1 } from "./audit-signature.js";
 import type { AiDataSharingPolicy } from "./config/ai-data-sharing.js";
 import type { SourceLifecycleRegistry } from "./services/source-clean-lifecycle-service.js";
@@ -33,6 +34,8 @@ export type ImportedSourceReceiptFamily =
  * Clock and IdGen are injected (Gate 0) so flows are deterministic under test.
  */
 export interface ServerContext {
+  /** Local phased scheduler migration configuration; absent means all off. */
+  schedulerRollout?: SchedulerRolloutConfig;
   /** Startup-only signing capability; no private key or request-selected identity. */
   auditSigner?: AuditSignerV1;
   /** Process-local original-parent observers; never reconstructed from DB JSON. */

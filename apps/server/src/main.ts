@@ -11,6 +11,7 @@ import { createFetchOidcHttp } from "./auth/oidc-client.js";
 import { loadDeviceAuthConfig } from "./config/device-auth.js";
 import { loadAiDataSharingPolicy } from "./config/ai-data-sharing.js";
 import { closePreparedGoalSubmission, loadGoalEntryConfig } from "./config/goal-entry.js";
+import { loadSchedulerRollout } from "./config/scheduler-rollout.js";
 import { loadTrustedProxies } from "./config/trusted-proxies.js";
 import { loadStorageConfig } from "./config/storage.js";
 import { loadAuditSignerV1 } from "./config/audit-signing.js";
@@ -54,6 +55,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env, options:
   const trustedProxies = loadTrustedProxies(env);
   const aiDataSharingPolicy = loadAiDataSharingPolicy(env);
   const goalEntry = loadGoalEntryConfig(env);
+  const schedulerRollout = loadSchedulerRollout(env);
   const storage = loadStorageConfig(env);
   const auditSigner = await loadAuditSignerV1(env);
   const dataRoot = resolve(env.ARTOO_DATA_DIR?.trim() || ".artoo");
@@ -96,6 +98,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env, options:
       authConfig,
       aiDataSharingPolicy,
       goalEntry,
+      schedulerRollout,
       auditSigner,
       oidcHttp: createFetchOidcHttp(),
     };
