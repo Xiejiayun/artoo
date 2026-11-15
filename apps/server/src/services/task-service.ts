@@ -239,6 +239,8 @@ export async function listTasks(
  * without a room (review gate); a rollback leaves neither row nor event.
  */
 export async function createTask(ctx: ServerContext, req: CreateTaskRequest): Promise<{ task: Task; room: Room }> {
+  if (req.delegation && req.parent_task_id != null && req.parent_task_id !== req.delegation.parent_task_id)
+    throw AppError.validation("Delegation parent differs from parent_task_id");
   const now = ctx.clock.nowIso();
   const taskId = ctx.idGen.generate(ID_PREFIXES.task);
   const roomId = ctx.idGen.generate(ID_PREFIXES.room);
@@ -260,7 +262,7 @@ export async function createTask(ctx: ServerContext, req: CreateTaskRequest): Pr
         id: taskId,
         organizationId: ctx.organizationId,
         projectId: req.project_id,
-        parentTaskId: req.parent_task_id ?? null,
+        parentTaskId: req.delegation?.parent_task_id ?? req.parent_task_id ?? null,
         roomId,
         title: req.title,
         description: req.description,
@@ -275,16 +277,19 @@ export async function createTask(ctx: ServerContext, req: CreateTaskRequest): Pr
         createdAt: now,
         updatedAt: now,
       },
-      req.enqueue_source
-        ? {
-            kind: req.enqueue_source.kind === "issue" ? "external-issue" : "external-manual",
-            key: req.enqueue_source.key,
-            eventId: req.enqueue_source.event_id,
-            targetKey: req.enqueue_source.target_key,
-            comment: req.enqueue_source.comment,
-            deduplicate: true,
-          }
-        : { kind: "manual", key: taskId, eventId: taskId },
+      {
+        ...(req.enqueue_source
+          ? {
+              kind: req.enqueue_source.kind === "issue" ? "external-issue" : "external-manual",
+              key: req.enqueue_source.key,
+              eventId: req.enqueue_source.event_id,
+              targetKey: req.enqueue_source.target_key,
+              comment: req.enqueue_source.comment,
+              deduplicate: true,
+            }
+          : { kind: "manual" as const, key: taskId, eventId: taskId }),
+        ...(req.delegation ? { delegation: req.delegation } : {}),
+      },
       async () => {
         await tx.insert(rooms).values({
           id: roomId,
@@ -306,7 +311,7 @@ export async function createTask(ctx: ServerContext, req: CreateTaskRequest): Pr
             projectId: req.project_id,
             taskId,
             roomId,
-            payload: { title: req.title },
+            payload: { title: req.title, ...(req.delegation ? { delegation: req.delegation } : {}) },
           }),
         );
         await appendEvent(

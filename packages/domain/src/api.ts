@@ -7,6 +7,7 @@
  */
 import { z } from "zod";
 import { EnqueueSourceV1Schema } from "./enqueue-source.js";
+import { TaskDelegationRequestV1Schema } from "./task-delegation.js";
 
 import { CapabilitySchema } from "./capabilities.js";
 import {
@@ -63,6 +64,7 @@ export function apiError(code: ApiErrorCode, message: string, details: Record<st
 
 export const CreateTaskRequestSchema = z.object({
   enqueue_source: EnqueueSourceV1Schema.optional(),
+  delegation: TaskDelegationRequestV1Schema.optional(),
   project_id: z.string(),
   title: z.string().min(1),
   description: z.string().default(""),

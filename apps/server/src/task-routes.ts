@@ -18,6 +18,7 @@ import * as lifecycle from "./services/lifecycle-service.js";
 import { AssignOwnedResultRequestSchema } from "./services/owned-result-service.js";
 import * as taskService from "./services/task-service.js";
 import { getSchedulerObservations } from "./services/scheduler-observation-service.js";
+import { getTaskDelegationTree } from "./services/task-delegation-service.js";
 
 /** Register task lifecycle, DAG and audit reads in the existing app scope. */
 export function registerTaskRoutes(app: FastifyInstance, ctx: ServerContext): void {
@@ -85,6 +86,11 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: ServerContext): vo
   app.get("/api/v1/tasks/:id/dag", async (req) => {
     const { id } = req.params as { id: string };
     return { dag: await dagService.getDag(rc(req), id) };
+  });
+
+  app.get("/api/v1/tasks/:id/delegation-tree", async (req) => {
+    const { id } = req.params as { id: string };
+    return getTaskDelegationTree(rc(req), id);
   });
 
   app.post("/api/v1/tasks/:id/ready", async (req) => {
