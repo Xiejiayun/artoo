@@ -105,3 +105,4 @@ export type { SchedulerObservationsV1 } from "./scheduler-observations.js";
 export * from "./scheduler-policy.js";
 export * from "./enqueue-source.js";
 export * from "./scheduler-ranking.js";
+export * from "./scheduler-queue-metadata.js";

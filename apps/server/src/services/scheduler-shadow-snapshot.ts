@@ -18,6 +18,7 @@ import { AppError } from "../errors.js";
 import { RUNTIME_STALE_AFTER_MS } from "../config/runtime-staleness.js";
 import { unconfirmedDisconnectRunIds, unsettledStandaloneExecutions } from "./execution-state.js";
 import type { SchedulerCandidate } from "./scheduler.js";
+import { readSchedulerQueueMetadata } from "./scheduler-queue-metadata-service.js";
 
 export interface SchedulerOccupant {
   /** Includes its namespace: dedicated operation ids are never Run ids. */
@@ -125,6 +126,7 @@ export async function collectSchedulerRankingSnapshot(
   tx: DrizzleDb,
   input: {
     projectId: string;
+    taskId: string;
     candidates: readonly SchedulerCandidate[];
     manualAgentInstanceId: string | null;
   },
@@ -135,6 +137,18 @@ export async function collectSchedulerRankingSnapshot(
   collectionFinishedAt: string;
 }> {
   const now = ctx.clock.nowIso();
+  const [task] = await tx
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.id, input.taskId),
+        eq(tasks.projectId, input.projectId),
+        eq(tasks.organizationId, ctx.organizationId),
+      ),
+    );
+  if (!task) throw AppError.notFound("Shadow snapshot task not found in project");
+  const queue = await readSchedulerQueueMetadata(ctx, tx, task.id, input.projectId);
   const projectRows = await tx
     .select()
     .from(schedulerProjectPolicies)
@@ -156,10 +170,13 @@ export async function collectSchedulerRankingSnapshot(
   const occupants = await collectSchedulerOccupants(ctx, tx);
   const snapshot = SchedulerRankingSnapshotV1Schema.parse({
     version: 1,
+    queue_metadata: queue
+      ? { version: 1, task_id: task.id, source: "persisted", revision: queue.revision }
+      : { version: 1, task_id: task.id, source: "legacy_default", revision: null },
     observed_at_ms: Date.parse(now),
-    not_before_ms: 0,
-    preferred_computer_id: null,
-    prefer_until_ms: null,
+    not_before_ms: queue?.metadata.not_before_ms ?? 0,
+    preferred_computer_id: queue?.metadata.preferred_computer_id ?? null,
+    prefer_until_ms: queue?.metadata.prefer_until_ms ?? null,
     manual_agent_instance_id: input.manualAgentInstanceId,
     project_policy: projectRows[0]?.policy ?? null,
     agent_policies: Object.fromEntries(agentRows.map((row) => [row.agentId, row.policy])),

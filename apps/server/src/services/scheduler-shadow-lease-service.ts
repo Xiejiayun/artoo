@@ -138,6 +138,7 @@ export async function claimSchedulerShadow(
     });
     const captured = await collectSchedulerRankingSnapshot(ctx, tx, {
       projectId: input.projectId,
+      taskId: task.id,
       candidates: outcome.candidates,
       manualAgentInstanceId: input.options.mode === "manual" ? (input.options.agentInstanceId ?? null) : null,
     });

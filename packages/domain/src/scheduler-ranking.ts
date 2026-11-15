@@ -18,6 +18,17 @@ const time = count.max(8_640_000_000_000_000);
 export const SchedulerRankingSnapshotV1Schema = z
   .object({
     version: z.literal(1),
+    // Optional additive provenance: older v1 snapshots retain their original shape.
+    queue_metadata: z
+      .discriminatedUnion("source", [
+        z
+          .object({ version: z.literal(1), task_id: id, source: z.literal("legacy_default"), revision: z.null() })
+          .strict(),
+        z
+          .object({ version: z.literal(1), task_id: id, source: z.literal("persisted"), revision: count.min(1) })
+          .strict(),
+      ])
+      .optional(),
     observed_at_ms: time,
     not_before_ms: time,
     preferred_computer_id: id.nullable(),

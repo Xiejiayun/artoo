@@ -265,10 +265,39 @@ instances or activate execution. Configuration changes after the snapshot need
 separate review before activating a new path.
 
 New automated regression sources cover these boundaries; their results are
-tracked separately from elapsed installation observation. Versioned persisted
-queue timing/soft-affinity and durable original-user scheduling intent still need
-integration before a real claim protocol. No real one-week shadow observation,
+tracked separately from elapsed installation observation. Durable original-user
+scheduling intent still needs integration before a real claim protocol. No real one-week shadow observation,
 global real-capacity guarantee or two-machine fault drill is claimed here.
+
+### Persisted queue timing and soft affinity
+
+Additive migration `0066_scheduler_queue_metadata.sql` stores optional per-Task
+version 1 metadata and a monotonically increasing safe-integer revision. GET/PUT
+`/api/v1/tasks/:id/scheduler-queue-metadata` explicitly returns `active:false` and
+`execution_authorized:false`. PUT requires the current administrator, holds the
+Task lock, and accepts only `backlog`/`ready` Tasks. It checks the preferred
+computer's tenant and non-deleted identity. The strict input requires
+`version:1`, nonnegative integer `not_before_ms`, and both
+`preferred_computer_id`/`prefer_until_ms` (or both null). Milliseconds are bounded
+by JavaScript's valid Date range. Explicit nulls clear affinity. The same
+transaction stores the revision and actor-attributed audit event; it does not
+modify Task/Run state or grant execution. Revision exhaustion rejects.
+
+Original assignment capture and internal shadow claims read this exact scoped
+row. New snapshots include optional version 1 `queue_metadata` provenance with
+Task identity, source (`persisted`/`legacy_default`) and revision. Historical v1
+snapshots retain their original shape. Missing historical configuration is
+explicitly zero/null with a legacy-default origin; it is not backfilled or
+inferred from a prior machine. Existing saved comparisons are never rewritten.
+Shadow ranking explains a not-before exclusion and releases affinity at the
+exact server deadline; explicit manual selection retains its existing affinity
+override. The existing real assignment path remains unchanged while this
+metadata is staged for comparison.
+
+This item does not introduce automatic retries, change enqueue replay identities,
+or create a durable execution authorization. The future original-user scheduling
+intent must bind the metadata revision, exact consent/policy/profile and current
+approval, then reject changed or revoked authority before real admission.
 
 ## Migration and acceptance gates
 

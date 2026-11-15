@@ -551,6 +551,7 @@ export async function assignTask(
       (assistantTurnId || row.executionPolicyTaskId ? await inheritedWritePaths(ctx, tx, row, policyTask) : []);
 
     const scheduleOptions = {
+      shadowTaskId: row.id,
       captureShadow: schedulerRolloutEnabled(ctx.schedulerRollout, "claim_shadow", {
         organizationId: ctx.organizationId,
         projectId: row.projectId,

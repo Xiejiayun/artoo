@@ -84,6 +84,19 @@ test("enabled mirror preserves browser submission and human review through reloa
     const policy = await request.put("/api/v1/projects/proj_artoo/scheduling-policy", { data: policyInput });
     expect(policy.ok(), await policy.text()).toBe(true);
     expect((await policy.json()).active).toBe(false);
+    const queueMetadata = {
+      version: 1,
+      not_before_ms: Date.now() + 86400000,
+      preferred_computer_id: "computer_local_mock",
+      prefer_until_ms: Date.now() + 86400000,
+    };
+    const queue = await request.put(`/api/v1/tasks/${task.id}/scheduler-queue-metadata`, { data: queueMetadata });
+    expect(queue.ok(), await queue.text()).toBe(true);
+    expect(await queue.json()).toMatchObject({
+      active: false,
+      execution_authorized: false,
+      queue_metadata: { revision: 1, metadata: queueMetadata },
+    });
     const pins = await request.post("/api/v1/scheduler/agent-pin-import", { data: { apply: true } });
     expect(pins.ok(), await pins.text()).toBe(true);
     expect((await pins.json()).import).toMatchObject({ execution_authorized: false });
@@ -98,7 +111,13 @@ test("enabled mirror preserves browser submission and human review through reloa
     expect(comparison).toMatchObject({
       execution_authorized: false,
       actual_agent_instance_id: "instance_mock_coder",
-      snapshot: { project_policy: policyInput },
+      snapshot: {
+        project_policy: policyInput,
+        not_before_ms: queueMetadata.not_before_ms,
+        preferred_computer_id: queueMetadata.preferred_computer_id,
+        prefer_until_ms: queueMetadata.prefer_until_ms,
+        queue_metadata: { version: 1, task_id: task.id, source: "persisted", revision: 1 },
+      },
       ranking: { version: 1, execution_authorized: false },
     });
     const execution = await request.post(`/api/v1/dev/runs/${runId}/mock-execute`);
