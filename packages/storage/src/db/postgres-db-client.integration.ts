@@ -237,7 +237,11 @@ afterAll(async () => {
 });
 
 describe("PostgresDbClient with a real PostgreSQL server", () => {
-  it("serializes real Run reservations across independent PostgreSQL backends at all three quotas", async () => {
+  // Includes a cold import of the complete production service graph, all
+  // migrations and three quota races. Individual SQL deadlines stay unchanged.
+  it("serializes real Run reservations across independent PostgreSQL backends at all three quotas", {
+    timeout: 30_000,
+  }, async () => {
     const f = await shadowFixture();
     const service = (await import(
       new URL("../../../../apps/server/dist/services/scheduler-capacity-service.js", import.meta.url).href
@@ -296,7 +300,9 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     ]);
   });
 
-  it("serializes policy lowering with real admission and rejects a repeatable-read capacity snapshot", async () => {
+  it("serializes policy lowering with real admission and rejects a repeatable-read capacity snapshot", {
+    timeout: 30_000,
+  }, async () => {
     const f = await shadowFixture();
     const capacity = (await import(
       new URL("../../../../apps/server/dist/services/scheduler-capacity-service.js", import.meta.url).href
@@ -311,6 +317,7 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
     const context = (db: TestDbPort) => ({
       ...f.context(db),
       authConfig: {},
+      idGen: { generate: (prefix: string) => `${prefix}_${randomUUID()}` },
       schedulerRollout: { version: 1, workspaces: { org_default: { flags: { capacity_admission: true } } } },
     });
     const values = (id: string) => ({
