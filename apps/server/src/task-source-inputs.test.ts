@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { messages, organizations, taskEnqueueEvents, taskEnqueueSources } from "@artoo/db";
+import { messages, organizations, taskEnqueueEvents, taskEnqueueSources, tasks } from "@artoo/db";
 import { CreateTaskRequestSchema } from "@artoo/domain";
 import type { DrizzleDb } from "@artoo/storage";
 import type { PGlite } from "@electric-sql/pglite";
@@ -7,7 +7,7 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadSchedulerRollout } from "./config/scheduler-rollout.js";
-import { readTaskSourceInputs } from "./services/task-source-input-service.js";
+import { freezeTaskSourceInputs, readTaskSourceInputs } from "./services/task-source-input-service.js";
 import { createTask } from "./services/task-service.js";
 import { buildTestServer, type TestServer } from "./test-support.js";
 
@@ -70,6 +70,46 @@ describe("bounded persisted source inputs", () => {
   function read(taskId: string) {
     return server.db.transaction((tx) => readTaskSourceInputs(server.ctx, tx, taskId));
   }
+
+  it("requires a transaction for freezing while preserving plain snapshot reads", async () => {
+    const fixture = await setup();
+    await expect(freezeTaskSourceInputs(server.ctx, server.db.db, fixture.task.id)).rejects.toMatchObject({
+      code: "conflict",
+      message: "Freezing source inputs requires a database transaction",
+    });
+    expect(await readTaskSourceInputs(server.ctx, server.db.db, fixture.task.id)).toBeUndefined();
+  });
+
+  it("freezes the same bounded digest and preserves explicit overflow and moderated-empty semantics", async () => {
+    const fixture = await setup();
+    const rows = await addInputs(
+      fixture,
+      Array.from({ length: 1300 }, (_, index) => ({
+        body: `Comment ${index}`,
+        moderated: index % 13 !== 12,
+      })),
+    );
+    const freeze = () =>
+      server.db.transaction(async (tx) => {
+        await tx.select({ id: tasks.id }).from(tasks).where(eq(tasks.id, fixture.task.id)).for("update");
+        return freezeTaskSourceInputs(server.ctx, tx, fixture.task.id);
+      });
+    expect(await freeze()).toEqual(await read(fixture.task.id));
+    // Making one existing fixture row visible proves the locking path still rejects 101.
+    await server.db.db
+      .update(messages)
+      .set({ moderatedAt: null, moderatedByUserId: null })
+      .where(eq(messages.id, rows[0]!.id));
+    await expect(freeze()).rejects.toMatchObject({
+      code: "conflict",
+      message: "Persisted source inputs exceed the execution context limit",
+    });
+    await server.db.db
+      .update(messages)
+      .set({ moderatedAt: server.ctx.clock.nowIso(), moderatedByUserId: "user_owner" });
+    expect(await freeze()).toEqual(await read(fixture.task.id));
+    expect((await freeze())?.entries).toEqual([]);
+  });
 
   it("bounds materialized rows after long moderated history without changing visible order or digest", async () => {
     const fixture = await setup();

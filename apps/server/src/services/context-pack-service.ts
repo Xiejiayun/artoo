@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { readTaskSourceInputs } from "./task-source-input-service.js";
+import { freezeTaskSourceInputs } from "./task-source-input-service.js";
 
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 
@@ -717,7 +717,7 @@ export async function buildRunContextPack(
     productDevelopment.instructions.push(
       "This is an additive design revision. Follow product_design_revision.request and compare against the exact retained baseline.design.text. Preserve all old validation cases in order and every non-case field, append only requested workspace criterion cases, and preserve the accepted research. The node measures every old and new workspace case; independent review must assess whether the reported defect is covered. Publication remains pending.",
     );
-  const sourceInputs = projectContext?.hasSourceInputs ? await readTaskSourceInputs(ctx, tx, task.id) : undefined;
+  const sourceInputs = projectContext?.hasSourceInputs ? await freezeTaskSourceInputs(ctx, tx, task.id) : undefined;
   // The optional cursor is new, but old nodes already consume task.description.
   // Include every accepted visible source comment there as well so mixed-version
   // execution cannot silently drop inputs while the server records them as read.
