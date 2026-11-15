@@ -267,7 +267,7 @@ describe("unified transactional task enqueue", () => {
     expect(await server.db.db.select().from(rooms).where(eq(rooms.id, "rollback_room"))).toHaveLength(0);
     expect(await server.db.db.select().from(eventLog)).toEqual(before);
   });
-  it("never reinjects a moderated comment into the next frozen context", async () => {
+  it("retains persisted source inputs after rollback without reinjecting a moderated comment", async () => {
     await setup();
     const first = await createTask(server.ctx, request());
     await createTask(server.ctx, request("event-2", "Still visible"));
@@ -280,6 +280,7 @@ describe("unified transactional task enqueue", () => {
       .update(messages)
       .set({ body: "Message removed", moderatedAt: server.ctx.clock.nowIso(), moderatedByUserId: "user_owner" })
       .where(eq(messages.id, removed!.id));
+    server.ctx.schedulerRollout = undefined;
     await command(first.task.id, "ready");
     const run = (await command(first.task.id, "assign", { mode: "auto" })).run;
     const pack = await context(run.context_pack_id);
