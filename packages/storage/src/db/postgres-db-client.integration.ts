@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 import pg from "pg";
 import { getTableName, is, sql } from "drizzle-orm";
@@ -11,6 +12,7 @@ import type { DbClient, DrizzleDb } from "./db-client.js";
 import { PostgresDbClient, type PostgresDbClientOptions } from "./postgres-db-client.js";
 
 const configuredUrl = process.env.ARTOO_POSTGRES_TEST_ADMIN_URL;
+const requireBuilt = createRequire(import.meta.url);
 if (configuredUrl === undefined || process.env.ARTOO_POSTGRES_TEST_ISOLATED !== "1") {
   throw new Error(
     "This integration suite requires ARTOO_POSTGRES_TEST_ADMIN_URL and ARTOO_POSTGRES_TEST_ISOLATED=1 for a private local PostgreSQL cluster",
@@ -237,6 +239,163 @@ afterAll(async () => {
 });
 
 describe("PostgresDbClient with a real PostgreSQL server", () => {
+  it.each([
+    {
+      name: "missing runtime",
+      change: "UPDATE agent_runtimes SET status='missing' WHERE id='runtime_mock'",
+      code: "runtime_unavailable",
+      shadow: false,
+    },
+    {
+      name: "disabled runtime",
+      change: "UPDATE agent_runtimes SET status='disabled' WHERE id='runtime_mock'",
+      code: "runtime_unavailable",
+      shadow: false,
+    },
+    {
+      name: "stale runtime",
+      change: "UPDATE agent_runtimes SET last_seen_at='2020-01-01' WHERE id='runtime_mock'",
+      code: "runtime_unavailable",
+      shadow: false,
+    },
+    {
+      name: "removed runtime capability",
+      change: "UPDATE agent_runtimes SET capabilities='[]'::jsonb WHERE id='runtime_mock'",
+      code: "runtime_unavailable",
+      shadow: false,
+    },
+    {
+      name: "offline computer",
+      change: "UPDATE computers SET status='offline' WHERE id='computer_local_mock'",
+      code: "computer_offline",
+      shadow: false,
+    },
+    { name: "unchanged runtime", change: "SELECT 1", code: null, shadow: false },
+    { name: "unchanged runtime with shadow capture", change: "SELECT 1", code: null, shadow: true },
+  ])("revalidates assignment after the actual computer lock wait: $name", { timeout: 30_000 }, async (scenario) => {
+    // Exercise compiled production modules through Node's native loader. The
+    // SQL race must not spend its body deadline re-transforming the server graph.
+    const schema = requireBuilt("../../../db/dist/index.js") as {
+      loadMigrationStatements(): Promise<string[]>;
+      seed(db: PostgresDbClient, now: string): Promise<unknown>;
+    };
+    const service = requireBuilt("../../../../apps/server/dist/services/lifecycle-service.js") as {
+      assignTask(ctx: object, taskId: string, input: object): Promise<{ run: { id: string } }>;
+    };
+    const sharing = requireBuilt("../../../../apps/server/dist/config/ai-data-sharing.js") as {
+      buildAiDataSharingPolicy(input: object): object;
+    };
+    const first = await open({ queryTimeoutMillis: 10000 });
+    await first.migrate(await schema.loadMigrationStatements());
+    const f = { second: await openIndependentTestPort() };
+    const now = "2026-06-13T00:00:00.000Z";
+    await schema.seed(first, now);
+    await observer!.query(
+      "INSERT INTO tasks (id,organization_id,project_id,title,status,created_by_type,created_by_id,created_at,updated_at) VALUES ('task_pg_a','org_default','proj_artoo','Computer fence','ready','user','user_owner',$1,$1)",
+      [now],
+    );
+    await observer!.query("UPDATE tasks SET required_capabilities='[\"probe.execute\"]'::jsonb WHERE id='task_pg_a'");
+    await observer!.query(
+      "UPDATE agent_runtimes SET capabilities='[\"probe.execute\"]'::jsonb WHERE id='runtime_mock'",
+    );
+    const originalTask = (await observer!.query("SELECT * FROM tasks WHERE id='task_pg_a'")).rows;
+    const originalEvents = (
+      await observer!.query("SELECT * FROM event_log WHERE task_id='task_pg_a' ORDER BY position")
+    ).rows;
+    const dispatch = vi.fn(async (runId: string) => {
+      // This separate statement uses the same one-connection port: it can only
+      // finish after the production assignment transaction has committed.
+      expect((await f.second.db.execute(sql`SELECT status FROM runs WHERE id=${runId}`)).rows).toEqual([
+        { status: "queued" },
+      ]);
+    });
+    const ctx = {
+      db: f.second,
+      organizationId: "org_default",
+      actorUserId: "user_owner",
+      clock: { now: () => new Date(now), nowIso: () => now },
+      authConfig: {},
+      schedulerRollout: { version: 1, workspaces: { org_default: { flags: { claim_shadow: scenario.shadow } } } },
+      aiDataSharingPolicy: sharing.buildAiDataSharingPolicy({ mode: "local", providers: [] }),
+      idGen: { generate: (prefix: string) => `${prefix}_${randomUUID()}` },
+      onRunQueued: dispatch,
+    };
+    const assignmentPid = (await f.second.db.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!.pid;
+    expect(assignmentPid).not.toBe((await observer!.query("SELECT pg_backend_pid() AS pid")).rows[0]!.pid);
+    await observer!.query("BEGIN");
+    let holdingComputer = true;
+    let assignment: Promise<unknown> | undefined;
+    try {
+      await observer!.query("SELECT id FROM computers WHERE id='computer_local_mock' FOR UPDATE");
+      assignment = service
+        .assignTask(ctx, "task_pg_a", {
+          mode: "manual",
+          agent_instance_id: "instance_mock_coder",
+          write_paths: ["src/fenced"],
+        })
+        .then(
+          (result) => result,
+          (error: unknown) => error,
+        );
+      let blocked = false;
+      const deadline = Date.now() + 3000;
+      while (!blocked && Date.now() < deadline) {
+        const activity = (
+          await admin.query("SELECT wait_event_type,query FROM pg_stat_activity WHERE pid=$1 AND datname=$2", [
+            assignmentPid,
+            databaseName,
+          ])
+        ).rows[0];
+        blocked =
+          activity?.wait_event_type === "Lock" &&
+          activity.query.toLowerCase().includes('"computers"') &&
+          activity.query.toLowerCase().includes("for update");
+        if (!blocked) await delay(25);
+      }
+      // Initial eligibility has already read the available runtime. Only change
+      // it after observing the real computer-row wait, never after a timer guess.
+      expect(blocked).toBe(true);
+      await observer!.query(scenario.change);
+      await observer!.query("COMMIT");
+      holdingComputer = false;
+      const result = await assignment;
+      if (scenario.code) {
+        expect(result).toMatchObject({ code: scenario.code, httpStatus: 409 });
+        expect(dispatch).not.toHaveBeenCalled();
+        expect((await observer!.query("SELECT * FROM tasks WHERE id='task_pg_a'")).rows).toEqual(originalTask);
+        expect(
+          (await observer!.query("SELECT * FROM event_log WHERE task_id='task_pg_a' ORDER BY position")).rows,
+        ).toEqual(originalEvents);
+        for (const table of [
+          "runs",
+          "context_packs",
+          "scheduler_decisions",
+          "file_leases",
+          "scheduler_shadow_observations",
+        ])
+          expect((await observer!.query(`SELECT * FROM ${table}`)).rows).toEqual([]);
+      } else {
+        expect(result).toMatchObject({ run: { status: "queued" } });
+        const runId = (result as { run: { id: string } }).run.id;
+        expect((await observer!.query("SELECT requested_by_user_id FROM runs WHERE id=$1", [runId])).rows).toEqual([
+          { requested_by_user_id: "user_owner" },
+        ]);
+        expect(dispatch).toHaveBeenCalledExactlyOnceWith(runId);
+        expect((await observer!.query("SELECT status FROM tasks WHERE id='task_pg_a'")).rows).toEqual([
+          { status: "assigned" },
+        ]);
+        for (const table of ["runs", "context_packs", "scheduler_decisions", "file_leases"])
+          expect((await observer!.query(`SELECT * FROM ${table}`)).rows).toHaveLength(1);
+        expect((await observer!.query("SELECT * FROM scheduler_shadow_observations")).rows).toHaveLength(
+          scenario.shadow ? 1 : 0,
+        );
+      }
+    } finally {
+      if (holdingComputer) await observer!.query("ROLLBACK");
+      await assignment;
+    }
+  });
+
   // Includes a cold import of the complete production service graph, all
   // migrations and three quota races. Individual SQL deadlines stay unchanged.
   it("serializes real Run reservations across independent PostgreSQL backends at all three quotas", {

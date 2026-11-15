@@ -462,6 +462,15 @@ checks a visible capacity conflict, no leaked Run, reload, capacity recovery and
 human acceptance. These test scopes do not establish a live Provider run or an
 installation's observation/rollout gates.
 
+Ordinary assignment keeps its instance-then-computer lock order and refreshes
+the selected candidate's eligibility only after acquiring both locks. Runtime
+heartbeats share the computer lock; a changed runtime status, capability or
+freshness, or a computer becoming offline during that wait therefore cannot
+leave an already-stale eligibility result in use. Real PostgreSQL regression
+cases observe the actual lock wait and check rollback without dispatch, plus
+successful ordinary and shadow-enabled assignment when eligibility remains valid.
+This fence does not by itself implement the later executing claim transaction.
+
 ### Explicit conditional execution requests (implementation in progress)
 
 Version 1 shadow intents retain their false-authority constraint and original
