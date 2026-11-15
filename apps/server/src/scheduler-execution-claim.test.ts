@@ -435,6 +435,25 @@ describe("internal scheduling consumption kernel (real DB, no Provider or node e
     expect((await server.db.db.select().from(runs))[0]!.id).toBe(result.run.id);
   });
 
+  it("rejects a credential that reaches its expiry while the claim is preparing, without consuming permission or resources", async () => {
+    await setup();
+    const input = await stage();
+    let time = Date.parse(server.ctx.clock.nowIso());
+    const expires = time + 1000;
+    server.ctx.clock = { now: () => new Date(time), nowIso: () => new Date(time).toISOString() };
+    await server.db.db.update(deviceTokens).set({ expiresAt: new Date(expires).toISOString() });
+    const generate = server.ctx.idGen.generate.bind(server.ctx.idGen);
+    server.ctx.idGen.generate = (prefix) => {
+      if (prefix === "run") time = expires;
+      return generate(prefix);
+    };
+    await unchanged(input, "credential");
+    expect(await server.db.db.select().from(schedulerPreparedStarts)).toHaveLength(0);
+    server.ctx.idGen.generate = generate;
+    await server.db.db.update(deviceTokens).set({ expiresAt: new Date(expires + 1000).toISOString() });
+    expect((await claim(input)).run.status).toBe("queued");
+  });
+
   it("retains exact consent, original-user access, cancellation and instance capacity gates", async () => {
     await setup();
     server.ctx.aiDataSharingPolicy = buildAiDataSharingPolicy({

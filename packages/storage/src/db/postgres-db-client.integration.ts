@@ -1290,7 +1290,7 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
       expect((await observer!.query(`SELECT * FROM ${table}`)).rows).toEqual([]);
     expect((await observer!.query("SELECT DISTINCT status FROM tasks")).rows).toEqual([{ status: "ready" }]);
   });
-  it("consumes explicit execution once across independent backends and refreshes eligibility after an instance lock wait", async () => {
+  it("consumes explicit execution once across independent backends and refreshes eligibility and credential expiry after instance lock waits", async () => {
     const f = await shadowFixture();
     const requests = requireBuilt("../../../../apps/server/dist/services/scheduler-execution-request-service.js") as {
       createSchedulerExecutionRequest(ctx: object, task: string, input: object): Promise<{ id: string }>;
@@ -1432,6 +1432,41 @@ describe("PostgresDbClient with a real PostgreSQL server", () => {
       ).rows,
     ).toEqual([{ state: "pending", consumed_run_id: null }]);
     expect((await observer!.query("SELECT count(*)::int AS n FROM runs")).rows).toEqual([{ n: 1 }]);
+    // The exact credential is row-locked already, but its expiry can advance
+    // while waiting for an unrelated resource lock without any credential write.
+    await observer!.query("UPDATE agent_instances SET status='idle' WHERE id='ai_claim'");
+    let credentialNow = Date.parse(now);
+    contexts[0]!.clock = { now: () => new Date(credentialNow), nowIso: () => new Date(credentialNow).toISOString() };
+    await observer!.query("UPDATE device_tokens SET expires_at=$1 WHERE id='claim-token'", [
+      new Date(credentialNow + 1000).toISOString(),
+    ]);
+    await observer!.query("BEGIN");
+    waiting = undefined;
+    try {
+      await observer!.query("SELECT id FROM agent_instances WHERE id='ai_claim' FOR UPDATE");
+      waiting = lifecycle.claimSchedulerExecutionRequest(contexts[0]!, second).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await observeDelegationBlock(Number(backendIds[0]), observerId, "agent_instances", "scheduling_claim_expiry");
+      credentialNow += 1000;
+      await observer!.query("COMMIT");
+      expect(await waiting).toMatchObject({ message: expect.stringContaining("credential") });
+    } finally {
+      await observer!.query("ROLLBACK");
+      if (waiting) await waiting;
+    }
+    expect(
+      (
+        await observer!.query("SELECT state,consumed_run_id FROM scheduler_execution_requests WHERE id=$1", [
+          second.requestId,
+        ])
+      ).rows,
+    ).toEqual([{ state: "pending", consumed_run_id: null }]);
+    expect((await observer!.query("SELECT count(*)::int AS n FROM runs")).rows).toEqual([{ n: 1 }]);
+    expect((await observer!.query("SELECT count(*)::int AS n FROM scheduler_prepared_starts")).rows).toEqual([
+      { n: 1 },
+    ]);
   });
 
   it("keeps one explicit execution request across independent concurrent staging, replay and cancellation", async () => {
