@@ -6,10 +6,26 @@ import type { ServerContext } from "./context.js";
 import { AppError } from "./errors.js";
 import { getSchedulerPolicy, putSchedulerPolicy } from "./services/scheduler-policy-service.js";
 import { listSchedulerReconciliations, reconcileSchedulerProject } from "./services/scheduler-projection-service.js";
+import { listSchedulerShadowObservations } from "./services/scheduler-shadow-observation-service.js";
+import { importSchedulerAgentPins } from "./services/scheduler-pin-import-service.js";
 
 const reconcileInput = z.object({ repair: z.boolean() }).strict();
+const pinImportInput = z.object({ apply: z.boolean() }).strict();
 
 export function registerSchedulerModelRoutes(app: FastifyInstance, ctx: ServerContext) {
+  app.post("/api/v1/scheduler/agent-pin-import", async (request) => {
+    const c = requestContext(ctx, request),
+      input = pinImportInput.safeParse(request.body);
+    if (!input.success) throw AppError.validation("apply must be an explicit boolean");
+    return { import: await importSchedulerAgentPins(c, input.data.apply), active: false };
+  });
+  app.get("/api/v1/projects/:id/scheduler-shadow-observations", async (request) => {
+    const c = requestContext(ctx, request);
+    return {
+      observations: await listSchedulerShadowObservations(c, (request.params as { id: string }).id),
+      execution_authorized: false,
+    };
+  });
   for (const [resource, kind] of [
     ["projects", "project"],
     ["agents", "agent"],

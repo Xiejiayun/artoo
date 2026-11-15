@@ -2,6 +2,7 @@ export const ARTOO_DB_PACKAGE = "@artoo/db";
 
 export * from "./schema.js";
 export * from "./scheduler-schema.js";
+export * from "./scheduler-shadow-schema.js";
 export * from "./enqueue-schema.js";
 export * from "./source-clean-restart-schema.js";
 export * from "./source-clean-settlement-schema.js";

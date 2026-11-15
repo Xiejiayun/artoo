@@ -84,9 +84,23 @@ test("enabled mirror preserves browser submission and human review through reloa
     const policy = await request.put("/api/v1/projects/proj_artoo/scheduling-policy", { data: policyInput });
     expect(policy.ok(), await policy.text()).toBe(true);
     expect((await policy.json()).active).toBe(false);
+    const pins = await request.post("/api/v1/scheduler/agent-pin-import", { data: { apply: true } });
+    expect(pins.ok(), await pins.text()).toBe(true);
+    expect((await pins.json()).import).toMatchObject({ execution_authorized: false });
     const assigned = await request.post(`/api/v1/tasks/${task.id}/assign`, { data: { mode: "auto" } });
     expect(assigned.ok(), await assigned.text()).toBe(true);
     const runId = (await assigned.json()).run.id;
+    const comparisons = await request.get("/api/v1/projects/proj_artoo/scheduler-shadow-observations");
+    expect(comparisons.ok(), await comparisons.text()).toBe(true);
+    const comparison = (await comparisons.json()).observations.find(
+      (row: { taskId: string }) => row.taskId === task.id,
+    );
+    expect(comparison).toMatchObject({
+      execution_authorized: false,
+      actual_agent_instance_id: "instance_mock_coder",
+      snapshot: { project_policy: policyInput },
+      ranking: { version: 1, execution_authorized: false },
+    });
     const execution = await request.post(`/api/v1/dev/runs/${runId}/mock-execute`);
     expect(execution.ok(), await execution.text()).toBe(true);
     await page.reload();
@@ -119,6 +133,10 @@ test("enabled mirror preserves browser submission and human review through reloa
     });
     const history = await (await request.get("/api/v1/projects/proj_artoo/scheduler-reconciliations")).json();
     expect(history.reconciliations[0].mismatchesBefore).toBe(0);
+    const savedComparisons = await (
+      await request.get("/api/v1/projects/proj_artoo/scheduler-shadow-observations")
+    ).json();
+    expect(savedComparisons.observations.find((row: { taskId: string }) => row.taskId === task.id)).toEqual(comparison);
     await page.screenshot({ path: testInfo.outputPath("scheduler-mirror-human-review.png"), fullPage: true });
   } finally {
     node.close();

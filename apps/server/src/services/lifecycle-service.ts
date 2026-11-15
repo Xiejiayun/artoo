@@ -58,6 +58,8 @@ import * as contextPackService from "./context-pack-service.js";
 import * as leaseService from "./lease-service.js";
 import { unconfirmedDisconnectRunIds } from "./execution-state.js";
 import { scheduleTask } from "./scheduler.js";
+import { schedulerRolloutEnabled } from "../config/scheduler-rollout.js";
+import { recordSchedulerShadowObservation } from "./scheduler-shadow-observation-service.js";
 import { assertFreshTaskBaseVersion } from "./sync-service.js";
 import { transitionTask } from "./transition-service.js";
 import { supportedGoalPolicy } from "./budget-policy.js";
@@ -549,6 +551,10 @@ export async function assignTask(
       (assistantTurnId || row.executionPolicyTaskId ? await inheritedWritePaths(ctx, tx, row, policyTask) : []);
 
     const scheduleOptions = {
+      captureShadow: schedulerRolloutEnabled(ctx.schedulerRollout, "claim_shadow", {
+        organizationId: ctx.organizationId,
+        projectId: row.projectId,
+      }),
       mode: req.mode,
       projectId: row.projectId,
       agentInstanceId: req.agent_instance_id ?? null,
@@ -572,9 +578,11 @@ export async function assignTask(
     if (!instance) throw AppError.conflict("Selected agent instance is no longer available");
     const rechecked = await scheduleTask(tx, ctx, row.requiredCapabilities as Capability[], {
       ...scheduleOptions,
+      captureShadow: false,
       mode: "manual",
       agentInstanceId: instance.id,
     });
+    const recheckedAt = ctx.clock.nowIso();
     if (!isDeepStrictEqual(rechecked.selected, outcome.selected)) {
       throw AppError.conflict("Selected agent instance changed before assignment; retry the request");
     }
@@ -706,6 +714,13 @@ export async function assignTask(
       reason: outcome.reason,
       candidates: outcome.candidates,
       createdAt: now,
+    });
+    await recordSchedulerShadowObservation(ctx, tx, {
+      projectId: row.projectId,
+      taskId,
+      decisionId,
+      outcome,
+      revalidation: { selected_agent_instance_id: rechecked.selected.agent_instance_id, observed_at: recheckedAt },
     });
 
     // Branch-backed worktree opt-in (#23): an explicit branch is used verbatim; a
