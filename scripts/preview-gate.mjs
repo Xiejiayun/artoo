@@ -73,6 +73,7 @@ const suites = {
     runNode("native static API contracts", "apps/ios/scripts/verify-contracts.mjs"),
     runNpm("browser workflows", "run", "test:e2e", "--workspace", "@artoo/web"),
     runNpm("enabled scheduler mirror workflows", "run", "test:e2e:scheduler", "--workspace", "@artoo/web"),
+    runNpm("enabled execution capacity workflows", "run", "test:e2e:capacity", "--workspace", "@artoo/web"),
     runNpm(
       "enabled enqueue business workflows",
       "test",
