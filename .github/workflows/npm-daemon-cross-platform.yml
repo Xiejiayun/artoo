@@ -33,6 +33,11 @@ on:
         required: true
         default: 0.1.0-rc.6
         type: string
+      mac_platforms:
+        description: Run optional Mac package checks (does not qualify Mac for release)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -283,6 +288,7 @@ jobs:
 
   mac-platforms:
     name: Optional Mac package (${{ matrix.platform }})
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mac_platforms }}
     needs: build
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
