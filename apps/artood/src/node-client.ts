@@ -141,7 +141,7 @@ export interface NodeClientOptions {
   /** Trusted local managed delivery. It never falls back to transport replay. */
   managedJournal?: ManagedJournalOptions;
   /** Trusted local scheduler opt-in. A run.start command cannot install it. */
-  scheduler?: { open(): SchedulerOwnerChannels };
+  scheduler?: { open(): SchedulerOwnerChannels; prepareInputs?: (payload: RunStartPayload, session: ManagedSession, signal: AbortSignal) => Promise<void> };
   /** Administrator-owned ordinary-workspace verifiers; never read from task content. */
   verificationProfiles?: readonly VerificationProfile[];
   releaseProfiles?: readonly ReleaseProfile[];
@@ -842,7 +842,8 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
       // exchange only; physical startups, streams and renewal stay concurrent.
       const prepared = schedulerAdmissionLane.then(async () => {
         controller.signal.throwIfAborted();
-        return prepareSchedulerPhysicalOwner({ journal: options.managedJournal!.journal, channels, taskId, requestId, runId, signal: controller.signal });
+        return prepareSchedulerPhysicalOwner({ journal: options.managedJournal!.journal, channels, taskId, requestId, runId, signal: controller.signal,
+          prepareInputs: options.scheduler!.prepareInputs ? (payload, signal) => options.scheduler!.prepareInputs!(payload, session, signal) : undefined });
       });
       schedulerAdmissionLane = prepared.catch(() => {});
       const work = prepared.then(async (admission) => {
@@ -870,7 +871,7 @@ export function createNodeClient(options: NodeClientOptions): NodeClient {
           if (!physicalStarts.has(runId)) admission.owner.forget();
           throw error;
         }
-      });
+      }).catch((error: unknown) => { controller.abort(error); throw error; });
       schedulerStarts.set(runId, { taskId, requestId, controller, session, work });
       starting.set(runId, work);
       void work.finally(() => { if (starting.get(runId) === work) starting.delete(runId); }).catch(() => {});
