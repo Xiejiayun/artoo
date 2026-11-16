@@ -6,6 +6,16 @@ This slice composes the existing original physical owner with a prepared local W
 
 `RuntimePresetOptions.windowsProcessBackend` is forwarded by the Codex and Claude presets to `ProcessAdapterOptions.windowsProcessBackend`. `NodeClientOptions.ownedGit` must contain that same prepared backend plus an absolute, operator-selected `git.exe` path. Missing or older backend capabilities fail closed. No payload, ContextPack or model output may choose these values.
 
+For the env-driven daemon, `ARTOO_WINDOWS_GIT_EXECUTABLE` selects the canonical
+absolute physical local `git.exe` path. It requires the complete saved journal
+binding and the existing `ARTOO_WINDOWS_PROCESS_BUNDLE` /
+`ARTOO_WINDOWS_PROCESS_MANIFEST_SHA256` pair. Relative, UNC, normalized aliases
+and linked paths are rejected; there is no PATH lookup. The bootstrap passes the
+same prepared backend to runtime presets and `ownedGit`. Selecting these settings
+does not bypass journal qualification or enable scheduler claims: the existing
+explicit `ARTOO_MANAGED_EXECUTION=1` and `ARTOO_SCHEDULER_ENABLED=1` requirements
+still apply, and a refused physical check keeps the candidate unavailable.
+
 `assertWindowsSchedulerStartBackend` additionally requires both `artoo.windows-launch-window.v1` and `artoo.windows-job-member-observation.v1` in the pinned manifest. The bridge checks live ready capabilities and QPC alignment too. The native program must be rebuilt, receive a new manifest digest, and pass native qualification before this capability is enabled.
 
 The original consumed journal ready window becomes a private optional `{version:1,clock:"windows-qpc-ms.v1",deadline_ms}`. Every preparation Git helper and the target receive that absolute deadline. Native code checks it immediately before `CreateProcessW` and `ResumeThread`; asynchronous helper setup cannot renew it. Signal and private admission checks also run again before target dispatch. Ordinary native calls without the optional deadline retain their existing wire behavior.
