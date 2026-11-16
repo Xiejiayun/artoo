@@ -24,6 +24,7 @@ import type { MaterializedWorktree } from "../owned/worktree-reservation.js";
 import { nonempty } from "./journal-boundary.js";
 import { snapshotSchedulerProposal, snapshotSchedulerStartGrant } from "./scheduler-preparation.js";
 import { createSchedulerStartWindows } from "./scheduler-start-window.js";
+import type { WindowsLaunchWindowV1 } from "../owned/windows-launch-window.js";
 import type {
   AdmissionResult,
   LiveDeliveryClaim,
@@ -338,6 +339,7 @@ interface PermitState {
   readonly identity?: OwnedAdmissionIdentity;
   readonly assertLaunchCurrent?: () => void;
   readonly schedulerGrant?: SchedulerStartGrantRecord;
+  readonly schedulerLaunchWindow?: WindowsLaunchWindowV1;
   payload: RunStartPayload | undefined;
   ownedResultRequest?: OwnedResultRunAdmissionV1;
   ownedResultDigest?: string;
@@ -488,6 +490,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     payload: RunStartPayload,
     ownedResult?: ReturnType<typeof snapshotOwnedResultRunAdmission>,
     assertLaunchCurrent?: () => void,
+    deadlineTickMs?: number,
   ): Extract<AdmissionResult, { kind: "fresh" }> {
     const binding = allocationStartBinding(payload, process.platform, true),
       key = binding?.key ?? createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
@@ -504,6 +507,8 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
     )
       throw new Error("Fresh journal admission differs from its original launch");
     const permit = Object.freeze({}) as FreshLaunchPermit;
+    const schedulerLaunchWindow = process.platform === "win32" && deadlineTickMs !== undefined
+      ? Object.freeze({ version: 1 as const, clock: "windows-qpc-ms.v1" as const, deadline_ms: deadlineTickMs }) : undefined;
     const identity = binding
       ? Object.freeze({
           launchKey: key,
@@ -525,6 +530,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       ...(ownedResult ? { ownedResultRequest: ownedResult.request, ownedResultDigest: ownedResult.digest } : {}),
       ...(assertLaunchCurrent ? { assertLaunchCurrent } : {}),
       ...(run.schedulerStartGrant ? { schedulerGrant: run.schedulerStartGrant } : {}),
+      ...(schedulerLaunchWindow ? { schedulerLaunchWindow } : {}),
       revision: run.revision,
       phase: run.phase,
       tail: Promise.resolve(),
@@ -532,7 +538,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       recordedClosed: false,
       startClaimed: false,
     });
-    return Object.freeze({ kind: "fresh", permit, run, payload });
+    return Object.freeze({ kind: "fresh", permit, run, payload, ...(schedulerLaunchWindow ? { schedulerLaunchWindow } : {}) });
   }
   async function admitStart(
     request: { expectedNamespace: string; runId: string; idempotencyKey: string; payload: RunStartPayload },
@@ -649,7 +655,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
       if (result.run.schedulerStartGrant?.grantDigest !== grant.digest)
         throw new Error("Scheduler admission reply changed its original grant");
       freeze(result.run);
-      return freshAdmission(result.run, nonce, snapshot.launch.payload, undefined, current.assertCurrent);
+      return freshAdmission(result.run, nonce, snapshot.launch.payload, undefined, current.assertCurrent, current.deadlineTickMs);
     },
     admitStart(request) {
       return admitStart(request);
@@ -724,7 +730,7 @@ export async function openLocalJournal(options: JournalOptions): Promise<Journal
         state.bridgeAdapter = adapter;
         state.bridgeWorktree = new WeakRef(worktree);
         state.inspect = inspect;
-        state.admission = createOwnedRunAdmission(state.identity, state.assertLaunchCurrent);
+        state.admission = createOwnedRunAdmission(state.identity, state.assertLaunchCurrent, state.schedulerLaunchWindow);
         const current = await worker.call<JournalRun | null>("lookup", { runId: state.runId });
         if (!current || current.stopRequested || current.phase !== "launch_intent")
           throw new Error("Journal startup was stopped before the trusted producer invocation");

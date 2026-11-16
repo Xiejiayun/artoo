@@ -28,6 +28,11 @@ export interface OwnedPhysicalFacts {
   readonly guardianExitObserved: boolean;
   readonly guardianStdioClosed: boolean;
   readonly guardianGroupAbsent: boolean;
+  /** Genuine original Job observations; POSIX group absence is never synthesized on Windows. */
+  readonly windowsJob?: Readonly<{ readonly version: 1; readonly rootCreationTime: string | null;
+    readonly atomicJobMember: boolean; readonly jobEmptyObserved: boolean;
+    readonly helperExitObserved: boolean; readonly helperCloseObserved: boolean;
+    readonly nativeClosureConfirmed: boolean }>;
 }
 
 export interface OwnedStartupReceipt {

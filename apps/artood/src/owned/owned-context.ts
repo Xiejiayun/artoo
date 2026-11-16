@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { isAbsolute, sep } from "node:path";
-import { assertOwnedMaterializedWorktree, assertOwnedWorktreeLocalBoundary, WorktreeReservationError, type MaterializedWorktree } from "./worktree-reservation.js";
+import { assertOwnedMaterializedWorktree, assertOwnedWorktreeLocalBoundary, assertOwnedWindowsWorktreeBoundary, readOwnedWorktreeWindowsBackend, WorktreeReservationError, type MaterializedWorktree } from "./worktree-reservation.js";
+import { assertWindowsOwnedWorkspacePaths } from "./windows-workspace-boundary.js";
 
 export interface OwnedContextFile {
   readonly path: string;
@@ -32,10 +33,13 @@ export function contextFilenameParts(filename: string): string[] {
     || isAbsolute(filename) || /[\x00-\x1f\x7f]/u.test(filename)) {
     throw new Error("Context filename must be a well-formed relative path without control characters");
   }
-  const parts = filename.split(sep);
+  const parts = process.platform === "win32" ? filename.split(/[\\/]/u) : filename.split(sep);
   if (parts.some((part) => !part || part === "." || part === "..")) {
     throw new Error("Context filename cannot contain empty or dot segments");
   }
+  if (process.platform === "win32" && parts.some(part => /[<>:"|?*]/u.test(part) || /[ .]$/u.test(part)
+    || /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/iu.test(part)))
+    throw new Error("Context filename contains an unsupported Windows component");
   return parts;
 }
 
@@ -61,7 +65,8 @@ async function assertParents(state: ContextState): Promise<void> {
 }
 
 function assertFile(file: OwnedContextFile, state: ContextState): void {
-  const fd = openSync(file.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  if (process.platform === "win32") assertWindowsOwnedWorkspacePaths([{ path: file.path, directory: false }]);
+  const fd = openSync(file.path, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK));
   try {
     const stat = fstatSync(fd, { bigint: true });
     if (!stat.isFile() || stat.nlink !== 1n || stat.size !== BigInt(file.bytes) || identity(stat) !== state.fileIdentity
@@ -78,7 +83,10 @@ function assertFile(file: OwnedContextFile, state: ContextState): void {
 
 /** Creates one new context file; existing source/worktree content is never overwritten. */
 export async function writeOwnedContextFile(worktree: MaterializedWorktree, filename: string, text: string): Promise<OwnedContextFile> {
-  if (process.platform !== "darwin" && process.platform !== "linux") throw new Error("Owned context boundary requires qualified POSIX semantics");
+  if (process.platform === "win32") {
+    if (!readOwnedWorktreeWindowsBackend(worktree)) throw new Error("Owned Windows context requires its genuine native worktree backend");
+    assertOwnedWindowsWorktreeBoundary(worktree);
+  } else if (process.platform !== "darwin" && process.platform !== "linux") throw new Error("Owned context boundary requires a qualified platform");
   const parts = contextFilenameParts(filename);
   if (attempted.has(worktree)) failure(worktree, "A context creation was already attempted for this worktree");
   attempted.add(worktree); // Claimed before the first async ownership check.
@@ -100,7 +108,7 @@ export async function writeOwnedContextFile(worktree: MaterializedWorktree, file
   assertParentIdentities(state);
   let fd: number | undefined;
   try {
-    fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW), 0o600);
     const stat = fstatSync(fd, { bigint: true });
     if (!stat.isFile() || stat.nlink !== 1n) failure(worktree, "New context file is not an exclusively created regular file");
     state.fileIdentity = identity(stat);

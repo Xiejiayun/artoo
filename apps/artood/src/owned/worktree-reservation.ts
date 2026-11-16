@@ -8,6 +8,8 @@ import {
   type FreshWorktreeValidation,
   type GitReadOptions,
 } from "./worktree-preflight.js";
+import { assertWindowsOwnedWorkspacePaths } from "./windows-workspace-boundary.js";
+import type { PreparedWindowsProcessBackend } from "./windows-owned-process.js";
 
 export class WorktreeReservationError extends Error {
   readonly code: string;
@@ -45,6 +47,7 @@ interface State {
   readonly allowedPaths: readonly string[];
   readonly assertStartCurrent?: () => void;
   phase: "prepared" | "reserving" | "reserved" | "materializing" | "materialized" | "failed";
+  startupComplete?: boolean;
   target?: DirectoryIdentity;
 }
 // Only handles created by this module authorize a reservation or materialization.
@@ -75,7 +78,7 @@ async function git(
   const result = await gitOperation(
     cwd,
     state.input.sourceCommit === undefined ? args : ["--no-replace-objects", ...args],
-    state.options,
+    state.startupComplete ? { ...state.options, windowsLaunchWindow: undefined } : state.options,
     kind,
     kind === "materialize" ? state.assertStartCurrent : undefined,
   );
@@ -432,4 +435,27 @@ export function assertOwnedWorktreeLocalBoundary(worktree: MaterializedWorktree)
   } catch (error) {
     return retainFailure(state!, error);
   }
+}
+
+/** Same genuine handle and trusted options, never reconstructed from wire data. */
+export function readOwnedWorktreeWindowsBackend(worktree: MaterializedWorktree): PreparedWindowsProcessBackend | undefined {
+  const state = materializedStates.get(worktree);
+  if (!state || state.phase !== "materialized") fail("invalid_handle", "A current materialized worktree is required");
+  return state!.options.windowsProcessBackend;
+}
+
+/** Called by the original process owner on its actual spawn event. This grants
+ * no execution or cleanup authority; subsequent read-only Git observations
+ * must not try to reuse an already consumed startup deadline. */
+export function completeOwnedWorktreeStartup(worktree: MaterializedWorktree): void {
+  const state = materializedStates.get(worktree);
+  if (!state || state.phase !== "materialized") fail("invalid_handle", "A current materialized worktree is required");
+  state!.startupComplete = true;
+}
+
+export function assertOwnedWindowsWorktreeBoundary(worktree: MaterializedWorktree): void {
+  const state = materializedStates.get(worktree);
+  if (!state || state.phase !== "materialized" || !state.options.windowsProcessBackend) fail("invalid_handle", "An original native owned worktree is required");
+  assertWindowsOwnedWorkspacePaths([{ path: worktree.root, directory: true },
+    { path: worktree.commonDirectory, directory: true }, ...state!.boundaries.map(item => ({ path: item.path, directory: true }))]);
 }

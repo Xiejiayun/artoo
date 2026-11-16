@@ -3,6 +3,7 @@ import type { AgentInstanceHandle, NodeRunEvent, RuntimeAdapter } from "@artoo/p
 import type { OwnedRunAdmission } from "../process-adapter.js";
 import type { MaterializedWorktree } from "../owned/worktree-reservation.js";
 import type { PreparedOwnedResultRun, OwnedResultFinalizationV1 } from "../owned-worktree-verification.js";
+import type { WindowsLaunchWindowV1 } from "../owned/windows-launch-window.js";
 
 declare const permitBrand: unique symbol;
 /** Same-process authority only; copying, serializing or casting does not grant it. */
@@ -140,6 +141,8 @@ export type AdmissionResult =
       readonly permit: FreshLaunchPermit;
       readonly run: JournalRun;
       readonly payload: RunStartPayload;
+      /** Local non-secret metadata from the same consumed window, never a new grant. */
+      readonly schedulerLaunchWindow?: WindowsLaunchWindowV1;
     }
   | { readonly kind: "pending" | "replay" | "conflict" | "fenced" | "unknown"; readonly run: JournalRun };
 export interface StoredEvent {
