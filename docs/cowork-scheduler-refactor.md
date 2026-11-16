@@ -902,6 +902,43 @@ The existing controlled author/verifier/server-ACK fixture also runs on v6.
 Executed results are recorded in the implementation PR; none is live Provider
 or production rollout acceptance.
 
+### Private materialization startup guards (Step 4 foundation)
+
+Namespace provisioning captures the same optional private synchronous guard before
+any awaited preflight. It rechecks after each asynchronous namespace check and
+immediately before each parent-container mkdir. Expiry retains any containers
+already created and never adopts or creates the final Run target. The returned
+namespace metadata carries no guard or launch authority.
+
+Owned worktree preparation can capture an optional private synchronous startup
+guard. It stays in the module's WeakMaps, outside transport/context/model data.
+Read-only preparation checks it after asynchronous preflight. Reservation checks
+again after its complete preflight, immediately before nonrecursive `mkdir`.
+Materialization retains the guard through asynchronous repository checks, and
+the owned Git executor checks it adjacent to the direct native spawn. Copied
+handles cannot recreate authority; a failed reservation/materialization cannot
+retry or adopt the retained directory. No directory or branch is cleaned up by
+an expired guard.
+
+This check applies only to startup. Successful materialization remains available
+for later trusted reads even after the startup deadline; an already started Git
+operation retains its ordinary physical closure and stop requirements. The guard
+does not expire or release a running author, reservation or server capacity.
+Ordinary callers omit it. Guardian IPC startup cannot currently enforce the same
+final check in its later child launch, so combining it with the new guard fails
+closed before any helper starts. Existing guardian operations without a startup
+guard retain their behavior. The journal's scheduler grant still has no launch
+consumer; a later consumer must pass its genuine private window to these checks
+and the existing final author-spawn guard together.
+
+The POSIX fixture pauses actual read-only Git subprocesses during initial
+namespace preflight, each parent-container check, reservation and materialization, expires the original
+guard while they are pending, and verifies no directory/branch was created at
+the following write boundary. It also checks one-shot failure, actual no-spawn
+receipts, successful materialization and post-startup observations. It uses real
+Git and closure handling with a controlled read-pause wrapper; no Provider is
+called and no lifecycle or process receipt is fabricated.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research
