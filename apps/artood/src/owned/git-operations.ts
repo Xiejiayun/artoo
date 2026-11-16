@@ -1,7 +1,11 @@
 import { runOwnedGit } from "./owned-git.js";
+import type { PreparedWindowsProcessBackend } from "./windows-owned-process.js";
+import type { WindowsLaunchWindowV1 } from "./windows-launch-window.js";
 
 /** Trusted local configuration; none of these options are accepted from a run payload. */
 export interface GitReadOptions {
+  readonly windowsProcessBackend?: PreparedWindowsProcessBackend;
+  readonly windowsLaunchWindow?: WindowsLaunchWindowV1;
   readonly gitExecutable?: string;
   readonly readTimeoutMs?: number;
   readonly materializeTimeoutMs?: number;
@@ -15,7 +19,9 @@ export interface GitReadOptions {
 }
 
 export function snapshotGitOptions(options: GitReadOptions): Readonly<GitReadOptions> {
-  return Object.freeze({ ...options, environment: Object.freeze({ ...(options.environment ?? process.env) }) });
+  return Object.freeze({ ...options,
+    ...(options.windowsLaunchWindow ? { windowsLaunchWindow: Object.freeze({ ...options.windowsLaunchWindow }) } : {}),
+    environment: Object.freeze({ ...(options.environment ?? process.env) }) });
 }
 
 export function assertNotAborted(options: GitReadOptions): void {
@@ -41,6 +47,8 @@ export async function gitOperation(
       environment: options.environment,
       indexFile: options.indexFile,
       guardParent: options.guardParent,
+      windowsProcessBackend: options.windowsProcessBackend,
+      windowsLaunchWindow: options.windowsLaunchWindow,
       ...(assertStartCurrent === undefined ? {} : { assertStartCurrent }),
     },
   );

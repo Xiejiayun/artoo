@@ -12,6 +12,7 @@ import { markWindowsNativeFailure, windowsNativeFailureDetail, windowsProcessDia
   type WindowsProcessDiagnosticV1 } from "./windows-process-diagnostic.js";
 import { consumeWindowsGuardianSlot, type PreparedWindowsGuardianSlot } from "./windows-runtime-guardian.js";
 import { recordSourceObserverTiming } from "../source-command-diagnostics.js";
+import { snapshotWindowsLaunchWindow, windowsQpcMs, type WindowsLaunchWindowV1 } from "./windows-launch-window.js";
 
 declare const backendBrand: unique symbol;
 export interface PreparedWindowsProcessBackend { readonly [backendBrand]: true }
@@ -30,6 +31,7 @@ interface BackendState extends WindowsProcessBundleBinding {
   readonly memberObservation: boolean;
   readonly targetInput: boolean;
   readonly targetControl: boolean;
+  readonly launchWindow: boolean;
 }
 const backends = new WeakMap<object, BackendState>();
 const receipts = new WeakSet<object>();
@@ -125,7 +127,8 @@ export function prepareWindowsProcessBackend(binding: WindowsProcessBundleBindin
     supervisor: Array.isArray(manifest.capabilities) && manifest.capabilities.includes("artoo.windows-daemon-supervisor.v1"),
     memberObservation: Array.isArray(manifest.capabilities) && manifest.capabilities.includes("artoo.windows-job-member-observation.v1"),
     targetInput: Array.isArray(manifest.capabilities) && manifest.capabilities.includes(targetInputCapability),
-    targetControl: Array.isArray(manifest.capabilities) && manifest.capabilities.includes(targetControlCapability) });
+    targetControl: Array.isArray(manifest.capabilities) && manifest.capabilities.includes(targetControlCapability),
+    launchWindow: Array.isArray(manifest.capabilities) && manifest.capabilities.includes("artoo.windows-launch-window.v1") });
   validateBundle(state);
   const backend = Object.freeze({}) as PreparedWindowsProcessBackend; backends.set(backend, state); return backend;
 }
@@ -133,6 +136,11 @@ export function assertWindowsProcessBackend(backend: PreparedWindowsProcessBacke
   const state = backends.get(backend);
   if (!state) throw new Error("Windows process backend was not locally prepared");
   validateBundle(state);
+}
+export function assertWindowsSchedulerStartBackend(backend: PreparedWindowsProcessBackend): void {
+  assertWindowsProcessBackend(backend);
+  const state = backends.get(backend)!;
+  if (!state.launchWindow || !state.memberObservation) throw new Error("Windows scheduler requires native QPC launch-window and Job member observation capabilities");
 }
 /** Local capability admission only. The caller must also audit the installation;
  * serialized claims cannot replace this original pinned manifest state. */
@@ -164,6 +172,9 @@ export interface WindowsOwnedStart {
   readonly targetInput?: { readonly version: 1; readonly mode: "single-message-eof"; readonly maximumBytes: 4096 };
   /** Separate bounded ordered channel. Mutually exclusive with legacy targetInput. */
   readonly targetControl?: { readonly version: 1 };
+  readonly launchWindow?: WindowsLaunchWindowV1;
+  /** Private synchronous guard, rechecked immediately before native dispatch. */
+  readonly assertStartCurrent?: () => void;
 }
 interface TargetControlAcknowledgement {
   readonly requestId: string; readonly sequence: number; readonly bytesWritten: number; readonly sha256: string;
@@ -318,6 +329,15 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
   input.signal?.throwIfAborted();
   const args = [...input.args], env = normalizeEnvironment(input.env), signal = input.signal;
   const { executable, cwd, timeoutMs, maxOutputBytes, cleanupTimeoutMs, normalExitPolicy, normalExitGraceMs } = input;
+  const launchWindow = snapshotWindowsLaunchWindow(input.launchWindow), assertStartCurrent = input.assertStartCurrent;
+  if (assertStartCurrent !== undefined && typeof assertStartCurrent !== "function") throw new Error("Native startup guard must be synchronous");
+  if (launchWindow && !state.launchWindow) throw new Error("Installed native backend lacks QPC launch-window enforcement");
+  const helperLaunchTick = windowsQpcMs();
+  const assertLaunch = () => {
+    signal?.throwIfAborted();
+    if (launchWindow && windowsQpcMs() >= launchWindow.deadline_ms) throw new Error("Original native launch window expired");
+    if (assertStartCurrent && assertStartCurrent() !== undefined) throw new Error("Native startup guard must complete synchronously");
+  };
   const selectedInput = input.targetInput;
   if (selectedInput !== undefined && (!selectedInput || typeof selectedInput !== "object" || Array.isArray(selectedInput)
     || Object.keys(selectedInput).length !== 3 || selectedInput.version !== 1 || selectedInput.mode !== "single-message-eof"
@@ -346,7 +366,7 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
   const token = randomUUID(), stdout = new PassThrough(), stderr = new PassThrough(), emitter = new EventEmitter();
   if (Buffer.byteLength(JSON.stringify({ version: 1, kind: "launch", token, executable, args, cwd, env,
     timeoutMs, maxOutputBytes, cleanupTimeoutMs, normalExitPolicy, normalExitGraceMs,
-    ...(targetInput ? { targetInput } : {}), ...(targetControl ? { targetControl } : {}) })) >= 1024 * 1024) throw new Error("Windows process launch frame exceeds its fixed bound");
+    ...(targetInput ? { targetInput } : {}), ...(targetControl ? { targetControl } : {}), ...(launchWindow ? { launchWindow } : {}) })) >= 1024 * 1024) throw new Error("Windows process launch frame exceeds its fixed bound");
   let resolveStarted!: (value: { pid: number; creationTime?: string }) => void, rejectStarted!: (error: Error) => void;
   let resolveClosed!: (value: WindowsOwnedClosureReceipt) => void, rejectClosed!: (error: Error) => void;
   const started = new Promise<{ pid: number; creationTime?: string }>((resolve, reject) => { resolveStarted = resolve; rejectStarted = reject; });
@@ -390,6 +410,7 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
   // No DOTNET_STARTUP_HOOKS, profiler, provider or arbitrary target environment enters the helper.
   // Only an original consumed Guardian slot may outlive this daemon's private libuv Job.
   // Detached does not request breakaway from the enclosing native Supervisor/owner Job.
+  assertLaunch();
   child = spawn(state.executable, ["--stdio-v1"], { cwd: state.directory, shell: false, windowsHide: true,
     detached: guardian !== undefined, stdio: ["pipe", "pipe", "pipe"], env: { SystemRoot: root, WINDIR: root, PATH: join(root, "System32") } });
   function receipt(): WindowsOwnedClosureReceipt {
@@ -464,10 +485,20 @@ export function startWindowsOwnedProcess(backend: PreparedWindowsProcessBackend,
       if (!admittedToCaller) { stop("launch_abandoned"); return; }
       if (requestedStop) { child.stdin.end(); return; }
       if (performance.now() >= deadline) { stop("timeout"); return; }
+      if (launchWindow) {
+        const clock = payload.launchClock as { version?: unknown; clock?: unknown; tick_ms?: unknown } | undefined;
+        const now = windowsQpcMs();
+        if (!memberCapability || !Array.isArray(payload.capabilities) || !payload.capabilities.includes("artoo.windows-launch-window.v1")
+          || clock?.version !== 1 || clock.clock !== "windows-qpc-ms.v1" || !Number.isSafeInteger(clock.tick_ms)
+          || (clock.tick_ms as number) < helperLaunchTick - 1 || (clock.tick_ms as number) > now + 1)
+          throw new Error("Native helper QPC clock differs from the original scheduler clock");
+      }
+      try { assertLaunch(); } catch { stop("launch_abandoned"); return; }
       dispatched = true;
       child.stdin.write(`${JSON.stringify({ version: 1, kind: "launch", token, executable, args, cwd, env,
         timeoutMs: Math.max(1, Math.floor(deadline - performance.now())), cleanupTimeoutMs, maxOutputBytes, normalExitPolicy, normalExitGraceMs,
-        ...(guardian ? { guardian } : {}), ...(targetInput ? { targetInput } : {}), ...(targetControl ? { targetControl } : {}) })}\n`,
+        ...(guardian ? { guardian } : {}), ...(targetInput ? { targetInput } : {}), ...(targetControl ? { targetControl } : {}),
+        ...(launchWindow ? { launchWindow } : {}) })}\n`,
         error => { if (error) stop("control_write", true); });
       return;
     }

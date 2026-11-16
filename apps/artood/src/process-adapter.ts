@@ -62,6 +62,8 @@ import {
 } from "./verification.js";
 import {
   startWindowsOwnedProcess,
+  assertWindowsProcessBackend,
+  assertWindowsSchedulerStartBackend,
   isWindowsOwnedClosureReceipt,
   type PreparedWindowsProcessBackend,
   type WindowsOwnedProcess,
@@ -76,9 +78,13 @@ import {
 import {
   assertOwnedMaterializedWorktree,
   assertOwnedWorktreeLocalBoundary,
+  readOwnedWorktreeWindowsBackend,
+  assertOwnedWindowsWorktreeBoundary,
+  completeOwnedWorktreeStartup,
   WorktreeReservationError,
   type MaterializedWorktree,
 } from "./owned/worktree-reservation.js";
+import { snapshotWindowsLaunchWindow, type WindowsLaunchWindowV1 } from "./owned/windows-launch-window.js";
 import { OwnedGitError } from "./owned/owned-git.js";
 import { allocationStartBinding } from "./node-allocation-identity.js";
 import { ownedVerificationDigest } from "./owned/worktree-verification-contract.js";
@@ -105,6 +111,7 @@ interface AdmissionState {
   identity: Readonly<OwnedAdmissionIdentity>;
   claimed: boolean;
   assertLaunchCurrent?: () => void;
+  windowsLaunchWindow?: WindowsLaunchWindowV1;
 }
 interface ReceiptScope {
   admission: WeakRef<OwnedRunAdmission>;
@@ -179,7 +186,13 @@ interface WindowsPlanningExecution extends WindowsVerifiedExecution {
   /** True only before resource acquisition or after the actual startup cleanup completed. */
   startupClosed: boolean;
 }
-type WindowsNativeExecution = WindowsVerifiedExecution | WindowsPlanningExecution;
+interface WindowsOwnedExecution extends Omit<WindowsVerifiedExecution, "profile"> {
+  readonly admission: OwnedRunAdmission;
+  readonly worktree: MaterializedWorktree;
+  readonly launchWindow?: WindowsLaunchWindowV1;
+}
+type WindowsNativeExecution = WindowsVerifiedExecution | WindowsPlanningExecution | WindowsOwnedExecution;
+const windowsOwnedExecutions = new WeakSet<WindowsNativeExecution>();
 const windowsPlanningExecutions = new WeakSet<WindowsNativeExecution>();
 const windowsPlanningConfigs = new WeakMap<AgentInstanceConfig, WindowsPlanningExecution>();
 const windowsPlanningAdmissions = new WeakMap<WindowsPlanningExecutionAdmission, WindowsPlanningExecution>();
@@ -376,8 +389,26 @@ function isWindowsPlanningExecution(state: WindowsNativeExecution): state is Win
   return windowsPlanningExecutions.has(state);
 }
 function assertWindowsNativeExecutionIdentity(state: WindowsNativeExecution, config: AgentInstanceConfig): void {
-  if (isWindowsPlanningExecution(state)) assertWindowsPlanningIdentity(state, config);
+  if (isWindowsOwnedExecution(state)) {
+    state.signal.throwIfAborted();
+    if (state.assertCurrent() !== undefined) throw new Error("Windows owned admission must be checked synchronously");
+    const admitted = ownedAdmissions.get(state.admission), identity = admitted?.identity;
+    if (!admitted?.claimed || state.config !== config || state.payload !== config.runStart || !isOwnedRunAdapter(state.adapter)
+      || !identity || identity.runId !== config.runId || identity.taskId !== config.taskId || identity.agentInstanceId !== config.agentInstanceId
+      || identity.runtime !== config.runtime || config.runtime !== state.adapter.runtimeId || identity.workspaceRoot !== config.workspaceRoot
+      || identity.workspaceBranch !== state.payload.workspace.branch || state.worktree.root !== identity.workspaceRoot
+      || state.worktree.branch !== identity.workspaceBranch || readOwnedWorktreeWindowsBackend(state.worktree) !== state.backend
+      || admitted.windowsLaunchWindow !== state.launchWindow)
+      throw new Error("Windows owned admission identity changed");
+    assertOwnedWorktreeLocalBoundary(state.worktree);
+    assertWindowsProcessBackend(state.backend);
+    if (state.launchWindow) assertWindowsSchedulerStartBackend(state.backend);
+    readWindowsGuardianOperation(state.backend);
+  } else if (isWindowsPlanningExecution(state)) assertWindowsPlanningIdentity(state, config);
   else assertWindowsExecutionIdentity(state, config);
+}
+function isWindowsOwnedExecution(state: WindowsNativeExecution): state is WindowsOwnedExecution {
+  return windowsOwnedExecutions.has(state);
 }
 function takeWindowsPlanningExecution(
   adapter: RuntimeAdapter,
@@ -452,6 +483,7 @@ export function assertWindowsVerifiedExecutionExportBinding(
 export function createOwnedRunAdmission(
   identity: OwnedAdmissionIdentity,
   assertLaunchCurrent?: () => void,
+  windowsLaunchWindow?: WindowsLaunchWindowV1,
 ): OwnedRunAdmission {
   const value = Object.freeze({
     launchKey: identity.launchKey,
@@ -473,7 +505,9 @@ export function createOwnedRunAdmission(
       if (assertLaunchCurrent() !== undefined)
         throw new Error("Owned launch guard must complete synchronously without a value");
     });
-  ownedAdmissions.set(admission, { identity: value, claimed: false, ...(guard ? { assertLaunchCurrent: guard } : {}) });
+  const launchWindow = snapshotWindowsLaunchWindow(windowsLaunchWindow);
+  ownedAdmissions.set(admission, { identity: value, claimed: false, ...(guard ? { assertLaunchCurrent: guard } : {}),
+    ...(launchWindow ? { windowsLaunchWindow: launchWindow } : {}) });
   return admission;
 }
 
@@ -710,6 +744,8 @@ export interface ProcessAdapterOptions {
   initializeRepository?: boolean;
   /** Prepared node-local executable choice; never populated by run.start. */
   productBootstrapGit?: PreparedProductBootstrapGit;
+  /** Prepared operator-local native owner. Never populated from run.start. */
+  windowsProcessBackend?: PreparedWindowsProcessBackend;
 }
 
 interface RunState {
@@ -919,6 +955,7 @@ export function createProcessAdapter(
   const researchOptions = options.research ? prepareResearchOptions(options.research, options.allowedRoots) : undefined;
   const completedArtifacts = new Map<string, ArtifactDescriptor[]>();
   const ownedOwner = Object.freeze({});
+  const windowsProcessBackend = options.windowsProcessBackend;
 
   function workspacePath(workspaceRoot: string, relativePath: string): string {
     // Resolve the existing root before joining: its raw symlink/.. spelling
@@ -1130,6 +1167,7 @@ export function createProcessAdapter(
     const [, ...args] = argv;
     let child: ChildProcess | WindowsOwnedProcess;
     let nativeProcess: WindowsOwnedProcess | undefined;
+    let nativeRootIdentity: Readonly<{ pid: number; creationTime: string }> | undefined;
     try {
       if (ownedContext) {
         await ownedPreparation(invocation, startupSignal, () => assertOwnedContextForLaunch(ownedContext));
@@ -1174,6 +1212,9 @@ export function createProcessAdapter(
             normalExitPolicy: "terminate-descendants",
             normalExitGraceMs: 250,
             signal: windowsExecution.signal,
+            ...(isWindowsOwnedExecution(windowsExecution) && windowsExecution.launchWindow
+              ? { launchWindow: windowsExecution.launchWindow } : {}),
+            assertStartCurrent: () => { assertWindowsNativeExecutionIdentity(windowsExecution!, config); dependencyInputs?.assertCurrent(); },
           },
           isWindowsPlanningExecution(windowsExecution) ? "tool" : "author",
         );
@@ -1368,7 +1409,7 @@ export function createProcessAdapter(
         } else termination = child.pid === undefined ? Promise.resolve() : stopProcessTree(child.pid);
         void termination.then(
           () => {
-            groupAbsent = true;
+            if (!nativeProcess) groupAbsent = true;
           },
           () => {},
         );
@@ -1389,6 +1430,7 @@ export function createProcessAdapter(
       const guardianNeverSpawned =
         !guardianAttempted ||
         (guardianSpawnFailed && !guardianSpawned && guardian?.pid === undefined && guardianCloseObserved);
+      const nativeReceipt = windowsExecution?.receipt;
       return Object.freeze({
         childPid: child.pid ?? null,
         childSpawned: spawned,
@@ -1401,9 +1443,26 @@ export function createProcessAdapter(
         guardianExitObserved,
         guardianStdioClosed: guardianCloseObserved || !guardianAttempted,
         guardianGroupAbsent: guardianGroupAbsent || guardianNeverSpawned,
+        ...(nativeProcess ? { windowsJob: Object.freeze({ version: 1 as const,
+          rootCreationTime: nativeReceipt?.rootCreationTime ?? nativeRootIdentity?.creationTime ?? null,
+          atomicJobMember: nativeReceipt?.atomicJobMember ?? false,
+          jobEmptyObserved: nativeReceipt?.jobEmptyObserved ?? false,
+          helperExitObserved: nativeReceipt?.helperExitObserved ?? false,
+          helperCloseObserved: nativeReceipt?.helperCloseObserved ?? false,
+          nativeClosureConfirmed: nativeReceipt !== undefined && isWindowsOwnedClosureReceipt(nativeReceipt) && nativeReceipt.cleanupConfirmed,
+        }) } : {}),
       });
     }
     function observeFullClosure(): OwnedPhysicalFacts | undefined {
+      if (nativeProcess) {
+        const receipt = windowsExecution?.receipt;
+        if (!receipt || !isWindowsOwnedClosureReceipt(receipt) || !receipt.cleanupConfirmed
+          || !windowsExecution!.resourcesClosed || !invocation?.resultResourcesClosed) return;
+        const facts = physicalFacts();
+        invocation.closedFacts = facts;
+        invocation.control = undefined;
+        return facts;
+      }
       const childNeverSpawned = childSpawnFailed && !spawned && child.pid === undefined && childStdioClosed;
       if (!(childNeverSpawned || (childExitObserved && childStdioClosed && groupAbsent))) return;
       if (guardianAttempted) {
@@ -1455,6 +1514,15 @@ export function createProcessAdapter(
         zeroProbe(-child.pid) === "present"
       );
     }
+    async function nativeObservedRunning(): Promise<boolean> {
+      if (!nativeProcess?.observeMembers || !nativeRootIdentity || childExitObserved || childStdioClosed
+        || nativeProcess.exitCode !== null || windowsExecution?.receipt) return false;
+      const result = await nativeProcess.observeMembers([nativeRootIdentity], 1000);
+      const member = result.members[0];
+      return result.version === 1 && result.members.length === 1 && member?.status === "observed" && member.jobMember
+        && member.pid === nativeRootIdentity.pid && member.creationTime === nativeRootIdentity.creationTime
+        && !childExitObserved && !childStdioClosed && !windowsExecution?.receipt;
+    }
     if (invocation) {
       invocation.queue = queue;
       invocation.workspaceRoot = workspaceRoot;
@@ -1465,6 +1533,11 @@ export function createProcessAdapter(
         stop: async (reason) => {
           const existing = invocation.closedFacts ?? observeFullClosure();
           if (existing) return existing;
+          if (nativeProcess) {
+            if (!childExitObserved && !childStdioClosed) state.stopReason = reason;
+            await boundedOwnedWait(state.kill(), performance.now() + 5000);
+            return confirmOwnedClosure();
+          }
           // Natural exit already has a real terminal outcome. Confirm its
           // closure without turning a buffered completion into cancellation.
           if (!childExitObserved && !childStdioClosed && child.exitCode === null && child.signalCode === null) {
@@ -1476,6 +1549,10 @@ export function createProcessAdapter(
         },
         inspect: async () => {
           if (invocation.closedFacts ?? observeFullClosure()) return "confirmed_closed";
+          if (nativeProcess) {
+            if (await nativeObservedRunning()) return "running";
+            try { await confirmOwnedClosure(); return "confirmed_closed"; } catch { return "uncertain"; }
+          }
           if (childExitObserved || childStdioClosed || child.exitCode !== null || child.signalCode !== null) {
             try {
               await confirmOwnedClosure();
@@ -1552,6 +1629,7 @@ export function createProcessAdapter(
     if (nativeProcess) {
       nativeProcess.once("spawn", () => {
         spawned = true;
+        if (worktree) completeOwnedWorktreeStartup(worktree);
         queue.push({ type: "run.lifecycle", payload: { phase: "started" } });
       });
       void nativeProcess.closed.then(acceptNativeClosure).catch(retainWindowsUncertainty);
@@ -1772,7 +1850,8 @@ export function createProcessAdapter(
       if (startupSignal?.aborted) onStartupAbort();
       if (nativeProcess) {
         try {
-          await nativeProcess.started;
+          const started = await nativeProcess.started;
+          if (started.creationTime) nativeRootIdentity = Object.freeze({ pid: started.pid, creationTime: started.creationTime });
         } catch (error) {
           try {
             await nativeProcess.closed;
@@ -1790,6 +1869,7 @@ export function createProcessAdapter(
         await new Promise<void>((resolveSpawn, rejectSpawn) => {
           child.once("spawn", () => {
             spawned = true;
+            if (worktree) completeOwnedWorktreeStartup(worktree);
             queue.push({ type: "run.lifecycle", payload: { phase: "started" } });
             resolveSpawn();
           });
@@ -2015,7 +2095,21 @@ export function createProcessAdapter(
         invocation.assertLaunchCurrent?.();
         await ownedPreparation(invocation, signal, () => assertOwnedMaterializedWorktree(worktree));
         signal.throwIfAborted();
-        return await startProcess(snapshot, worktree, signal, invocation);
+        let windowsExecution: WindowsOwnedExecution | undefined;
+        if (process.platform === "win32") {
+          const backend = windowsProcessBackend;
+          if (!backend || readOwnedWorktreeWindowsBackend(worktree) !== backend)
+            throw new Error("Windows owned execution requires the worktree's original local backend");
+          await ownedPreparation(invocation, signal, () => assertOwnedWindowsWorktreeBoundary(worktree));
+          freezeOwnedStart(snapshot);
+          windowsExecution = { adapter, config: snapshot, payload: snapshot.runStart, backend, signal,
+            admission, worktree, launchWindow: admitted.windowsLaunchWindow,
+            assertCurrent: () => { signal.throwIfAborted(); invocation.assertLaunchCurrent?.(); },
+            claimed: true, resourcesClosed: false };
+          windowsOwnedExecutions.add(windowsExecution);
+          assertWindowsNativeExecutionIdentity(windowsExecution, snapshot);
+        }
+        return await startProcess(snapshot, worktree, signal, invocation, undefined, windowsExecution);
       } catch (cause) {
         let failureCause = cause;
         if (invocation.dependencyInputs && !invocation.spawnAttempted && !invocation.helperUncertain) {

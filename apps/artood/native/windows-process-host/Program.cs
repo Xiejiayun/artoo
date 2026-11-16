@@ -25,6 +25,8 @@ internal static class Program
     private const string MemberCapability = "artoo.windows-job-member-observation.v1";
     private const string TargetInputCapability = "artoo.windows-target-input.v1";
     private const string TargetControlCapability = "artoo.windows-target-control.v1";
+    private const string LaunchWindowCapability = "artoo.windows-launch-window.v1";
+    private static long QpcMilliseconds() => checked((long)((decimal)Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency));
     private static TargetInputPump? targetStdin;
     private static TargetControlPump? targetControl;
     private static readonly BlockingCollection<MemberObservation> observations = new(16);
@@ -45,7 +47,8 @@ internal static class Program
         if (!Native.GetProcessTimes(new IntPtr(-1), out long hostCreation, out _, out _, out _)) return 2;
         if (!wire.Send("ready", new { protocol = "artoo.windows-job-process.v1", atomicJobList = true,
             hostIdentity = new { pid = (uint)Environment.ProcessId, creationTime = hostCreation.ToString(CultureInfo.InvariantCulture) },
-            capabilities = synchronous ? new[] { GuardianWire.Capability } : new[] { GuardianWire.Capability, MemberCapability, TargetInputCapability, TargetControlCapability } })) return 2;
+            launchClock = new { version = 1, clock = "windows-qpc-ms.v1", tick_ms = QpcMilliseconds() },
+            capabilities = synchronous ? new[] { GuardianWire.Capability } : new[] { GuardianWire.Capability, MemberCapability, TargetInputCapability, TargetControlCapability, LaunchWindowCapability } })) return 2;
         Launch? request = null;
         string? failureCode = null;
         int? nativeError = null;
@@ -81,6 +84,7 @@ internal static class Program
                 }
             }
             Validate(request); cleanupMs = request.CleanupTimeoutMs;
+            AssertLaunchWindow(request);
             // Synchronous collectors receive one fixed bounded input. Their original
             // guardian observes daemon death; ordinary stdio retains parent-EOF cancellation.
             if (synchronous != (request.InputBase64 is not null) || (synchronous && (request.Guardian is null || request.TargetInput is not null || request.TargetControl is not null)))
@@ -153,6 +157,7 @@ internal static class Program
             stderr = new PipePump(stderrRead, "stderr", request.MaxOutputBytes); stderr.Start();
             if (Volatile.Read(ref stopReason) is not null) throw new HostFailure("cancelled_before_create");
             if (elapsed.ElapsedMilliseconds >= request.TimeoutMs) { Stop("timeout"); throw new HostFailure("deadline_before_create"); }
+            AssertLaunchWindow(request);
             attemptedCreate = true;
             created = Native.CreateProcessW(request.Executable, commandLine, IntPtr.Zero, IntPtr.Zero, true,
                 0x00000004 | 0x00000400 | 0x00080000 | 0x08000000, environment, request.Cwd, ref startup, out process);
@@ -171,6 +176,7 @@ internal static class Program
             // Exact root HANDLE and pipe readers already exist. Wait state cannot be lost to a quick exit.
             if (Volatile.Read(ref stopReason) is not null) throw new HostFailure("cancelled_before_resume");
             if (elapsed.ElapsedMilliseconds >= request.TimeoutMs) { Stop("timeout"); throw new HostFailure("deadline_before_resume"); }
+            AssertLaunchWindow(request);
             uint previousSuspendCount = Native.ResumeThread(process.hThread);
             if (previousSuspendCount != 1) throw new HostFailure(previousSuspendCount == uint.MaxValue ? "resume_failed" : "resume_state",
                 previousSuspendCount == uint.MaxValue ? Marshal.GetLastWin32Error() : null);
@@ -422,7 +428,14 @@ internal static class Program
             || request.TargetInput.Mode != "single-message-eof" || request.TargetInput.MaximumBytes != 4096)) throw new HostFailure("invalid_target_input");
         if (request.TargetControl is not null && (request.TargetControl.Version != 1 || request.TargetInput is not null))
             throw new HostFailure("invalid_target_control");
+        if (request.LaunchWindow is { } window && (window.Version != 1 || window.Clock != "windows-qpc-ms.v1"
+            || window.DeadlineMs < 1 || window.DeadlineMs - QpcMilliseconds() > 5000)) throw new HostFailure("invalid_launch_window");
         _ = EnvironmentBlock(request.Env);
+    }
+    private static void AssertLaunchWindow(Launch request) {
+        if (request.LaunchWindow is { } window && QpcMilliseconds() >= window.DeadlineMs) {
+            Stop("timeout"); throw new HostFailure("launch_window_expired");
+        }
     }
     private static void ExactKeys(JsonElement value, params string[] names) {
         if (value.ValueKind != JsonValueKind.Object) throw new HostFailure("control_protocol");
@@ -469,7 +482,9 @@ internal static class Program
         public string? InputBase64 { get; init; }
         public TargetInputSelection? TargetInput { get; init; }
         public TargetControlSelection? TargetControl { get; init; }
+        public LaunchWindowSelection? LaunchWindow { get; init; }
     }
+    private sealed record LaunchWindowSelection(int Version, string Clock, [property: JsonPropertyName("deadline_ms")] long DeadlineMs);
     private sealed class Cancel { public int Version { get; init; } public string Kind { get; init; } = ""; public string Token { get; init; } = ""; }
     private sealed record MemberIdentity(uint Pid, string CreationTime);
     private sealed record MemberObservation(int Version, string Kind, string Token, string RequestId, MemberIdentity[] Members);

@@ -4,6 +4,7 @@ import type { ProcessOutputFormat } from "./structured-output.js";
 import { fileURLToPath } from "node:url";
 import type { ResearchOptions } from "./research.js";
 import type { PreparedProductBootstrapGit } from "./product-bootstrap-git.js";
+import type { PreparedWindowsProcessBackend } from "./owned/windows-owned-process.js";
 import { PRODUCT_VERIFICATION_LIFECYCLE_GUIDANCE } from "@artoo/domain";
 
 /**
@@ -33,6 +34,7 @@ export interface RuntimePresetOptions {
   research?: ResearchOptions;
   initializeRepository?: boolean;
   productBootstrapGit?: PreparedProductBootstrapGit;
+  windowsProcessBackend?: PreparedWindowsProcessBackend;
 }
 
 export interface CodexSettings {
@@ -168,6 +170,7 @@ export function codexRuntime(options: RuntimePresetOptions): RuntimeRegistration
       research: options.research,
       initializeRepository: options.initializeRepository,
       productBootstrapGit: options.productBootstrapGit,
+      windowsProcessBackend: options.windowsProcessBackend,
     }),
   };
 }
@@ -225,6 +228,7 @@ export function claudeCodeRuntime(options: RuntimePresetOptions): RuntimeRegistr
       research: options.research,
       initializeRepository: options.initializeRepository,
       productBootstrapGit: options.productBootstrapGit,
+      windowsProcessBackend: options.windowsProcessBackend,
     }),
   };
 }
