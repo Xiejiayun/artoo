@@ -2,6 +2,7 @@ import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { Activity, Bot, Brain, ChevronDown, Hash, LayoutDashboard, Monitor, Plus, Puzzle, Settings2, Terminal } from "lucide-react";
 import { useProject } from "../app/useProject.js";
 import { useDaemons } from "../app/useDaemons.js";
+import { useProjectSquad } from "../app/useProjectSquad.js";
 import { LogoutButton } from "./LogoutButton.js";
 
 const RESOURCES = [
@@ -19,7 +20,8 @@ export function Nav({ onNavigate }: { onNavigate?: () => void } = {}): React.Rea
   const data = bootstrap.data;
   const presence = useDaemons({ enabled: !!data });
   const user = data?.user;
-  const instances = data?.agent_instances.filter((instance) => projectId !== undefined && instance.project_id === projectId) ?? [];
+  const squad = useProjectSquad(projectId, data);
+  const instances = squad.instances;
   const computers = data?.computers ?? [];
   function selectProject(id: string): void {
     setSelectedProjectId(id);
@@ -51,7 +53,7 @@ export function Nav({ onNavigate }: { onNavigate?: () => void } = {}): React.Rea
         {data && data.projects.length === 0 && <Link className="os-nav-empty" to="/settings" onClick={onNavigate}>Create your first project</Link>}
       </section>
       <section className="os-resources" aria-label="Workspace resources"><div className="os-section-label"><span>Workspace tools</span></div><ul className="app-nav__links">{RESOURCES.map(({ to, label, icon: ResourceIcon }) => <li key={to}><NavLink to={to} onClick={onNavigate} className={({ isActive }) => `os-nav-link${isActive ? " is-active" : ""}`}><ResourceIcon size={16} aria-hidden="true" /><span>{label}</span></NavLink></li>)}</ul></section>
-      <section className="os-squad" aria-label="Agent Squad"><div className="os-section-label"><span>Agent Squad</span><span>{instances.length}</span>{projectId && <Link to={`/agents?project=${encodeURIComponent(projectId)}`} className="os-icon-button" aria-label="Manage project squad" onClick={onNavigate}><Settings2 size={14} aria-hidden="true" /></Link>}</div>
+      <section className="os-squad" aria-label="Agent Squad"><div className="os-section-label"><span>Agent Squad</span><span>{squad.squad?.agent_ids.length ?? "—"}</span>{projectId && <Link to={`/agents?project=${encodeURIComponent(projectId)}`} className="os-icon-button" aria-label="Manage project squad" onClick={onNavigate}><Settings2 size={14} aria-hidden="true" /></Link>}</div>
         <p className="os-squad-description">{project ? `Agents assigned to ${project.name}` : "Select a project to see its squad"}</p>
         {computers.filter((computer) => instances.some((instance) => instance.computer_id === computer.id)).map((computer) => {
           const members = instances.filter((instance) => instance.computer_id === computer.id);
@@ -62,7 +64,9 @@ export function Nav({ onNavigate }: { onNavigate?: () => void } = {}): React.Rea
             })}
           </div>;
         })}
-        {data && projectId && instances.length === 0 && <Link to={`/agents?project=${encodeURIComponent(projectId)}`} className="os-nav-empty" onClick={onNavigate}>No agents assigned. Set up this project's squad.</Link>}
+        {squad.agents.filter((agent) => !instances.some((instance) => instance.agent_id === agent.id)).map((agent) => <Link key={agent.id} to={`/agents?project=${encodeURIComponent(projectId!)}`} className="os-squad-agent" onClick={onNavigate}><Bot size={13} aria-hidden="true" /><span><strong>{agent.display_name}</strong><small>No scoped execution instance</small></span></Link>)}
+        {squad.isError && <p className="os-nav-empty">Squad observation unavailable.</p>}
+        {data && projectId && squad.squad?.agent_ids.length === 0 && <Link to={`/agents?project=${encodeURIComponent(projectId)}`} className="os-nav-empty" onClick={onNavigate}>No agents assigned. Set up this project's squad.</Link>}
       </section>
     </div>
     <div className="os-nav-footer">

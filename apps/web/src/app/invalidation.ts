@@ -19,6 +19,10 @@ export function invalidationsForEvent(topic: string, event: EventEnvelope): Quer
   // Output chunks stream directly into the run timeline. They do not alter
   // task state, chat messages, or collaboration records.
   if (event.type === "run.output") return keys;
+  if (event.type === "project.squad.updated") keys.push(queryKeys.projectSquad(event.project_id ?? undefined), queryKeys.projectControlView(event.project_id ?? undefined));
+  if (event.type.startsWith("agent.")) keys.push(["agent-configuration"], queryKeys.projectSquad());
+  if (event.type === "computer.admission.updated") keys.push(["computer-admission"]);
+  if (event.type.startsWith("scheduler.") && event.type.includes("policy")) keys.push(["scheduling-policy"]);
 
   // The control snapshot joins Task, Run, lease and policy observations. Use a
   // project prefix so all independently paged views refresh together. Shared

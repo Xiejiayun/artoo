@@ -14,7 +14,7 @@ export function AgentProjectControl({ instance, projects, role }: {
   const api = useApi(), query = useQueryClient();
   const [projectId, setProjectId] = useState(instance.project_id ?? "");
   const mutation = useMutation({ mutationFn: () => api.setAgentProject(instance.id, projectId || null, newIdempotencyKey()),
-    onSuccess: async () => { await query.invalidateQueries({ queryKey: queryKeys.bootstrap }); } });
+    onSuccess: async () => { await Promise.all([query.invalidateQueries({ queryKey: queryKeys.bootstrap }), query.invalidateQueries({ queryKey: queryKeys.projectSquad() })]); } });
   const name = projects.find((project) => project.id === instance.project_id)?.name ?? "Unassigned";
   if (!["owner", "admin"].includes(role)) return <p>Project squad: {name}</p>;
   return <div className="resource-form u-stack-sm">

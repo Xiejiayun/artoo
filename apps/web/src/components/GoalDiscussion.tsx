@@ -5,6 +5,7 @@ import { Users, Sparkles } from "lucide-react";
 import { canProposePlan, type Goal, type StartDiscussionRequest } from "@artoo/domain";
 import { useApi } from "../app/ApiContext.js";
 import { queryKeys } from "../app/queryKeys.js";
+import { useProjectSquad } from "../app/useProjectSquad.js";
 import { useSubscription } from "../app/RealtimeContext.js";
 import { newIdempotencyKey } from "../api/idempotency.js";
 import { Badge, Button, Input, Select } from "../ui/index.js";
@@ -20,6 +21,7 @@ export function GoalDiscussion({ goal }: { goal: Goal }): React.ReactNode {
   const [roomId, setRoomId] = useState("");
   const [openThread, setOpenThread] = useState<string | null>(null);
   const bootstrap = useQuery({ queryKey: queryKeys.bootstrap, queryFn: () => api.bootstrap() });
+  const squad = useProjectSquad(goal.project_id, bootstrap.data);
   const channels = useQuery({ queryKey: queryKeys.channels(goal.project_id), queryFn: () => api.listChannels(goal.project_id) });
   const sessions = useQuery({ queryKey: queryKeys.discussions(goal.id), queryFn: () => api.listDiscussions(goal.id), refetchInterval: usePollMs(5000) });
   useSubscription(goal.room_id ? [`room:${goal.room_id}`] : []);
@@ -31,14 +33,14 @@ export function GoalDiscussion({ goal }: { goal: Goal }): React.ReactNode {
   const action = useMutation({ mutationFn: ({ id, name }: { id: string; name: "cancel" | "propose" }) => name === "cancel"
     ? api.cancelDiscussion(id, newIdempotencyKey()) : api.proposeDiscussionPlan(id, newIdempotencyKey()), onSuccess: refresh, onError: refresh });
   const active = sessions.data?.discussions.some((discussion) => ["running", "stopping"].includes(discussion.status));
-  const instances = bootstrap.data?.agent_instances.filter((instance) => instance.project_id === goal.project_id) ?? [];
+  const instances = squad.instances;
   const members = Object.entries(selected).map(([agent_instance_id, role]) => ({ agent_instance_id, role: role.trim() }));
   const unavailable = members.some((member) => !instances.some((instance) => instance.id === member.agent_instance_id && instance.status !== "disabled" && instance.config.enabled !== false));
   const invalidBounds = !Number.isInteger(rounds) || rounds < 1 || rounds > 3 || !Number.isInteger(minutes) || minutes < 2 || minutes > 60;
   return <section className="insights-agent-planning u-stack" aria-label="Agent planning">
     <div className="insights-section-heading"><Users size={17} aria-hidden="true" /><h3>Agent planning</h3></div>
     <p className="insights-help">Build a plan together. Choose agents to propose and challenge the approach, then review their plan before creating tasks.</p>
-    <ActionError error={bootstrap.error ?? sessions.error ?? channels.error ?? start.error ?? action.error} />
+    <ActionError error={bootstrap.error ?? squad.error ?? sessions.error ?? channels.error ?? start.error ?? action.error} />
     {canProposePlan(goal.status, !!goal.current_plan_id) && <details className="insights-planning-setup"><summary>Choose planning agents</summary><form className="u-stack-sm insights-discussion-form" onSubmit={(event) => {
       event.preventDefault(); if (active || start.isPending || unavailable || invalidBounds || members.length < 2 || members.some((member) => !member.role)) return;
       start.mutate({ participants: members, rounds, max_minutes: minutes, ...(roomId ? { room_id: roomId } : {}) });

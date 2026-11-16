@@ -2,6 +2,14 @@ import { isRemovedMessage, removedMessage } from "./messageModeration.js";
 import {
   MessageReconciliationV1Schema,
   ProjectControlViewV1Schema,
+  LogicalAgentConfigurationRecordV1Schema,
+  ProjectSquadV1Schema,
+  ComputerAdmissionV1Schema,
+  type Agent,
+  type LogicalAgentConfigurationV1,
+  type LogicalAgentConfigurationRecordV1,
+  type ProjectSquadV1,
+  type ComputerAdmissionV1,
   TaskDelegationTreeV1Schema,
   type MessageReconciliationV1,
   type ProjectControlViewOptions,
@@ -9,6 +17,7 @@ import {
   type TaskDelegationTreeV1,
 } from "@artoo/domain";
 import type { ContentReport, ContentRules, ModerationMember } from "./contentModeration.js";
+import type { SchedulingPolicyByKind, SchedulingPolicyKind, SchedulingPolicyResponse } from "./teamResources.js";
 /**
  * Typed REST client for the artoo v0.1-core API (design.md §10.6; codex Round
  * 12/15). Request/response types come from `@artoo/domain`; mutating calls take
@@ -477,6 +486,41 @@ export class ApiClient {
   }
   listDevices(): Promise<{ devices: Device[] }> {
     return this.request("GET", "/devices");
+  }
+  createLogicalAgent(configuration: LogicalAgentConfigurationV1, requestKey: string): Promise<{ agent: Agent; configuration: LogicalAgentConfigurationRecordV1 }> {
+    return this.request("POST", "/agents", { body: { version: 1, request_key: requestKey, configuration }, idempotencyKey: requestKey });
+  }
+  async getAgentConfiguration(agentId: string): Promise<{ configuration: LogicalAgentConfigurationRecordV1 }> {
+    const result = await this.request<{ configuration: unknown }>("GET", `/agents/${encodeURIComponent(agentId)}/configuration`);
+    return { configuration: LogicalAgentConfigurationRecordV1Schema.parse(result.configuration) };
+  }
+  async putAgentConfiguration(agentId: string, expectedRevision: number, configuration: LogicalAgentConfigurationV1): Promise<{ configuration: LogicalAgentConfigurationRecordV1 }> {
+    const result = await this.request<{ configuration: unknown }>("PUT", `/agents/${encodeURIComponent(agentId)}/configuration`, { body: { version: 1, expected_revision: expectedRevision, configuration } });
+    return { configuration: LogicalAgentConfigurationRecordV1Schema.parse(result.configuration) };
+  }
+  async getProjectSquad(projectId: string): Promise<{ squad: ProjectSquadV1 }> {
+    const result = await this.request<{ squad: unknown }>("GET", `/projects/${encodeURIComponent(projectId)}/squad`);
+    return { squad: ProjectSquadV1Schema.parse(result.squad) };
+  }
+  async putProjectSquad(projectId: string, expectedRevision: number, agentIds: string[]): Promise<{ squad: ProjectSquadV1 }> {
+    const result = await this.request<{ squad: unknown }>("PUT", `/projects/${encodeURIComponent(projectId)}/squad`, { body: { version: 1, expected_revision: expectedRevision, agent_ids: agentIds } });
+    return { squad: ProjectSquadV1Schema.parse(result.squad) };
+  }
+  async getComputerAdmission(computerId: string): Promise<{ admission: ComputerAdmissionV1 }> {
+    const result = await this.request<{ admission: unknown }>("GET", `/computers/${encodeURIComponent(computerId)}/admission`);
+    return { admission: ComputerAdmissionV1Schema.parse(result.admission) };
+  }
+  async putComputerAdmission(computerId: string, expectedRevision: number, state: ComputerAdmissionV1["state"]): Promise<{ admission: ComputerAdmissionV1 }> {
+    const result = await this.request<{ admission: unknown }>("PUT", `/computers/${encodeURIComponent(computerId)}/admission`, { body: { version: 1, expected_revision: expectedRevision, state } });
+    return { admission: ComputerAdmissionV1Schema.parse(result.admission) };
+  }
+  getSchedulingPolicy<K extends SchedulingPolicyKind>(kind: K, id: string): Promise<SchedulingPolicyResponse<K>> {
+    const resource = { project: "projects", agent: "agents", computer: "computers" }[kind];
+    return this.request("GET", `/${resource}/${encodeURIComponent(id)}/scheduling-policy`);
+  }
+  putSchedulingPolicy<K extends SchedulingPolicyKind>(kind: K, id: string, expectedRevision: number, policy: SchedulingPolicyByKind[K]): Promise<SchedulingPolicyResponse<K>> {
+    const resource = { project: "projects", agent: "agents", computer: "computers" }[kind];
+    return this.request("PUT", `/${resource}/${encodeURIComponent(id)}/scheduling-policy`, { body: { version: 1, expected_revision: expectedRevision, policy } });
   }
   registerAgent(
     computerId: string,
