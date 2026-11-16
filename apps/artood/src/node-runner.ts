@@ -6,6 +6,7 @@ import type { AdapterRegistry } from "./adapter-registry.js";
 import type { ArtifactUploader } from "./artifact-upload.js";
 import { createRegistryHeartbeat } from "./heartbeat.js";
 import { createNodeClient } from "./node-client.js";
+import { createDependencyArtifactInputLoader, hasTransferableDependencyInputs } from "./dependency-artifact-inputs.js";
 import { createWebSocketTransport } from "./ws-transport.js";
 import type { GitExecutor, WorkspaceConfig } from "./workspace-binding.js";
 import { VERIFICATION_FEATURE, PRODUCT_STAGE_VERIFICATION_FEATURE, VERIFICATION_CAPABILITIES_FEATURE, MEASUREMENT_PLAN_FEATURE, MEASUREMENT_PLAN_V2_FEATURE,
@@ -108,6 +109,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
     return prepareApplicationPublicationProfile(selected.selection, { nodeId: options.hello.node_id, verifier, backend: windowsBackend });
   });
   const hello: NodeHello = structuredClone(options.hello);
+  hello.dependency_inputs = Object.freeze({ version: 1 });
   // Discovery is derived only from this worker's validated local configuration.
   // Inherited caller advertisements must not invent a capability or scope.
   delete hello.verification_profiles;
@@ -163,6 +165,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
   if (hello.managed_receipts) Object.freeze(hello.managed_receipts);
   Object.freeze(hello);
   let transport: ReturnType<typeof createWebSocketTransport> | null = null;
+  let dependencyInputs: ReturnType<typeof createDependencyArtifactInputLoader> | undefined;
   let client: ReturnType<typeof createNodeClient> | null = null;
   let source: ReturnType<typeof prepareProductSourceNode> | undefined;
   let cleanLifecycle: PreparedCleanDaemonConfiguration | undefined;
@@ -189,6 +192,7 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
       const deadline = setTimeout(() => { void activeTransport?.close(); }, 8000);
       try {
         await client?.stop(true);
+        dependencyInputs?.close(); dependencyInputs = undefined;
         // Failure or uncertain closure keeps the runtime owner and workspace claims.
         recordWindowsStopDiagnostic("source_close", "entered");
         try { source?.close(); recordWindowsStopDiagnostic("source_close", "completed"); }
@@ -285,6 +289,15 @@ export function createArtoodNode(options: ArtoodNodeOptions): ArtoodNode {
           workspace: options.workspace,
           git: options.git,
           uploadArtifact: options.uploadArtifact,
+          prepareDependencyInputs: async (payload, signal) => {
+            if (!hasTransferableDependencyInputs(payload)) return;
+            const original = transport?.currentDependencyInputSession();
+            if (!original || sessionInvalidated) throw new Error("Dependency inputs require the current announced paired connection");
+            dependencyInputs ??= createDependencyArtifactInputLoader(options.url, hello.node_id);
+            await dependencyInputs(payload, { nodeId: hello.node_id, sessionId: original.id }, AbortSignal.any([signal, original.signal]));
+            if (sessionInvalidated || transport?.currentDependencyInputSession() !== original)
+              throw new Error("Dependency input preparation lost its original paired connection");
+          },
           verificationProfiles, releaseProfiles,
           ...(applicationPublicationProfiles.length ? { applicationPublication: { profiles: applicationPublicationProfiles,
             getSession: () => sessionInvalidated ? undefined : transport?.currentPublicationSession() } } : {}),

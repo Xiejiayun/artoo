@@ -3,13 +3,14 @@ import { chmodSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathS
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { RunStartPayloadSchema, type RunStartPayload } from "@artoo/domain";
-import type { ManagedSession } from "./managed/managed-delivery.js";
+import { assertPrivateWindowsDependencyInputs } from "./dependency-input-windows-boundary.js";
 
 const MAX_BYTES = 10 * 1024 * 1024, MAX_INPUTS = 100;
 const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const launchKey = (payload: RunStartPayload) => digest(Buffer.from(JSON.stringify(RunStartPayloadSchema.parse(payload))));
 const fileIdentity = (path: string) => { const stat = lstatSync(path, { bigint: true }); return `${stat.dev}:${stat.ino}`; };
 interface Reference { id: string; type: string; run_id: string; checksum: string }
+export interface DependencyInputSession { readonly nodeId: string; readonly sessionId: string }
 interface Input extends Reference { path: string; bytes: number; identity: string; encoding: "utf-8" | "binary" }
 export interface DependencyArtifactInputs {
   readonly contextText: string;
@@ -23,8 +24,11 @@ const prepared = new Map<string, Binding>();
 function references(payload: RunStartPayload): Reference[] {
   const found = new Map<string, Reference>();
   for (const entry of payload.context_pack.payload?.dependency_context?.entries ?? []) {
+    // Historical manually completed tasks may have no source Run. Keep their
+    // descriptive references; never invent provenance or automatic read access.
+    if (!entry.run_id) continue;
     for (const artifact of entry.artifacts) {
-      if (!entry.run_id || artifact.run_id !== entry.run_id || !artifact.checksum || !/^sha256:[a-f0-9]{64}$/.test(artifact.checksum))
+      if (artifact.run_id !== entry.run_id || !artifact.checksum || !/^sha256:[a-f0-9]{64}$/.test(artifact.checksum))
         throw new Error("Dependency inputs require an exact frozen source Run and SHA-256 checksum");
       const item = { id: artifact.id, type: artifact.type, run_id: artifact.run_id, checksum: artifact.checksum };
       const previous = found.get(item.id);
@@ -47,6 +51,7 @@ function snapshot(payload: RunStartPayload, items: Array<{ reference: Reference;
     if (closed || realpathSync.native(root) !== root || fileIdentity(root) !== identity) throw new Error("Dependency input snapshot directory identity changed");
     const names = readdirSync(root).sort(), expected = files.map(item => item.path.slice(root.length + 1)).sort();
     if (JSON.stringify(names) !== JSON.stringify(expected)) throw new Error("Dependency input snapshot inventory changed; snapshot retained");
+    assertPrivateWindowsDependencyInputs(root, files.map(file => file.path));
     for (const file of files) {
       const stat = lstatSync(file.path, { bigint: true });
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || stat.size !== BigInt(file.bytes)
@@ -62,6 +67,7 @@ function snapshot(payload: RunStartPayload, items: Array<{ reference: Reference;
   };
   try {
     chmodSync(root, 0o700);
+    assertPrivateWindowsDependencyInputs(root, []);
     for (const [index, item] of items.entries()) {
       let encoding: Input["encoding"] = "binary";
       try { if (!new TextDecoder("utf-8", { fatal: true }).decode(item.bytes).includes("\0")) encoding = "utf-8"; } catch { /* Preserve original binary bytes. */ }
@@ -95,7 +101,7 @@ export function createDependencyArtifactInputLoader(nodeUrl: string, nodeId: str
   configured.search = ""; configured.hash = "";
   const origin = configured.origin;
   const owned = new Set<string>(), retained = new Map<string, Error>();
-  const load = async (payload: RunStartPayload, session: ManagedSession, signal: AbortSignal): Promise<void> => {
+  const load = async (payload: RunStartPayload, session: DependencyInputSession, signal: AbortSignal): Promise<void> => {
     const input = RunStartPayloadSchema.parse(payload), refs = references(input);
     if (!refs.length) return;
     signal.throwIfAborted();
@@ -174,5 +180,13 @@ export function takeDependencyArtifactInputs(payload: RunStartPayload): Dependen
   if (binding.key !== launchKey(payload)) throw new Error("Dependency inputs differ from the original immutable Run payload");
   binding.inputs.assertCurrent();
   prepared.delete(payload.run_id); binding.signal.removeEventListener("abort", binding.abort);
-  return binding.inputs;
+  // The physical owner keeps cleanup after taking the resource. Session/Stop
+  // cancellation still fences the final spawn without deleting a live input.
+  return Object.freeze({ contextText: binding.inputs.contextText,
+    assertCurrent() { binding.signal.throwIfAborted(); binding.inputs.assertCurrent(); },
+    close() { binding.inputs.close(); } });
+}
+
+export function hasTransferableDependencyInputs(payload: RunStartPayload): boolean {
+  return references(payload).length > 0;
 }
