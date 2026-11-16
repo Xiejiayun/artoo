@@ -30,6 +30,7 @@ import type { NodeRegistry } from "./node-registry.js";
 import type { DeviceConnectionRegistry } from "./device-connections.js";
 import { createServerNodeTransport, type RawServerSocket } from "./ws-node-transport.js";
 import { createSchedulerStartServerChannel } from "./scheduler-start-channel.js";
+import { createSchedulerLeaseServerChannel } from "./scheduler-lease-channel.js";
 
 /** Authenticated identity of a `/api/v1/node` connection (#28 slice 3a). */
 type NodeAuth = { mode: "dev" } | { mode: "device"; deviceId: string; computerId: string; tokenLookup: string };
@@ -109,6 +110,7 @@ export function registerNodeWsRoute(
     let initializationDeadline: number | undefined;
     let managed: { id: string; nonce: string; active: boolean; firstPongPending: boolean } | undefined;
     let schedulerStart: ReturnType<typeof createSchedulerStartServerChannel> | undefined;
+    let schedulerLease: ReturnType<typeof createSchedulerLeaseServerChannel> | undefined;
     const earlyQueue: NodeToServerMessage[] = [];
     let checkingComputer = false;
     const computerQueue: NodeToServerMessage[] = [];
@@ -242,6 +244,10 @@ export function registerNodeWsRoute(
         close(1008, "unsupported managed receipt request");
         return;
       }
+      if (message.scheduler_lease && (message.scheduler_lease.version !== 1 || !message.scheduler_start)) {
+        close(1008, "scheduler lease requires supported scheduler start negotiation");
+        return;
+      }
       if (
         message.scheduler_start &&
         (message.scheduler_start.version !== 1 ||
@@ -286,6 +292,23 @@ export function registerNodeWsRoute(
             onRejected: (error, operation) =>
               app.log.debug({ err: error, operation }, "Scheduler start exchange rejected"),
           });
+          if (message.scheduler_lease)
+            schedulerLease = createSchedulerLeaseServerChannel(ctx, {
+              computerId,
+              sessionId,
+              namespace: message.scheduler_start.journal_namespace,
+              isCurrent: () =>
+                raw.readyState === 1 &&
+                !terminated &&
+                registered &&
+                managed?.active === true &&
+                managed.id === sessionId &&
+                registry.get(computerId) === binding &&
+                binding?.getPairedNodeSession?.()?.sessionId === sessionId,
+              send: (reply) => transport.send(reply),
+              close: (reason) => close(1008, reason),
+              onRejected: (operation) => app.log.debug({ operation }, "Scheduler lease exchange rejected"),
+            });
         }
         await transport.send({
           kind: "command",
@@ -300,6 +323,7 @@ export function registerNodeWsRoute(
             receipt_contract: QUALIFIED_RECEIPT_PROFILE,
             sequence_max: 2147483647,
             ...(message.scheduler_start ? { scheduler_start: message.scheduler_start } : {}),
+            ...(message.scheduler_lease ? { scheduler_lease: message.scheduler_lease } : {}),
             liveness: { probe_interval_ms: 10000, probe_timeout_ms: 10000 },
           },
         });
@@ -350,7 +374,7 @@ export function registerNodeWsRoute(
         }
         nodeId = computerId;
         managedRequested = message.managed_receipts !== undefined;
-        if (message.scheduler_start && !managedRequested) {
+        if ((message.scheduler_start || message.scheduler_lease) && !managedRequested) {
           close(1008, "scheduler start requires managed receipts");
           return;
         }
@@ -441,6 +465,14 @@ export function registerNodeWsRoute(
       }
       if (managedRequested && (!managed?.active || !registered || registry.get(nodeId!) !== binding)) {
         close(1008, "managed application frame before current session activation");
+        return;
+      }
+      if (message.kind === "scheduler.lease.acquire.v1" || message.kind === "scheduler.lease.renew.v1") {
+        if (!schedulerLease || message.node_id !== nodeId || message.session_id !== managed?.id) {
+          close(1008, "scheduler lease session was not negotiated or no longer matches");
+          return;
+        }
+        void schedulerLease(message);
         return;
       }
       if (message.kind === "scheduler.start.propose.v1" || message.kind === "scheduler.start.ready.v1") {

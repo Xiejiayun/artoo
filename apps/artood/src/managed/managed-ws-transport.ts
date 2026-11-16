@@ -23,6 +23,8 @@ import {
 } from "./managed-delivery.js";
 import { schedulerStartRegistrationSchema } from "@artoo/protocol";
 import { createSchedulerStartClientChannel, type SchedulerStartSession } from "./scheduler-start-channel.js";
+import { schedulerLeaseRegistrationSchema } from "@artoo/protocol";
+import { createSchedulerLeaseClientChannel, type SchedulerLeaseSession } from "./scheduler-lease-channel.js";
 
 const HANDSHAKE_MS = 10000,
   PROBE_INTERVAL_MS = 10000,
@@ -50,6 +52,7 @@ interface Generation {
   heartbeatTimer?: ReturnType<typeof setInterval>;
   probe?: { id: string; deadline: number; timer: Timer };
   scheduler?: ReturnType<typeof createSchedulerStartClientChannel>;
+  schedulerLease?: ReturnType<typeof createSchedulerLeaseClientChannel>;
   commands: Array<{ message: ServerToNodeMessage; bytes: number }>;
   commandBytes: number;
 }
@@ -88,6 +91,8 @@ export interface ManagedWebSocketOptions {
   allowLegacyRuns?: boolean;
   /** Explicit local transport opt-in; a supplied hello cannot enable it. */
   schedulerStart?: true;
+  /** Independent trusted opt-in; requires schedulerStart on the same session. */
+  schedulerLease?: true;
 }
 export interface ManagedWebSocketTransport {
   readonly transport: NodeSideTransport;
@@ -106,6 +111,7 @@ export interface ManagedWebSocketTransport {
   bindRun(runId: string, mode: RunDeliveryMode): void;
   /** Only a negotiated current generation can create an exchange lane. */
   openSchedulerStartSession(): SchedulerStartSession;
+  openSchedulerLeaseSession(): SchedulerLeaseSession;
   start(): void;
   close(): Promise<void>;
 }
@@ -117,12 +123,21 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
   if (url.protocol !== "wss:" && !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))
     throw new Error("Managed remote transport requires TLS");
   if (!options.namespace) throw new Error("Managed transport requires its configured journal namespace");
-  const { scheduler_start: _untrustedScheduler, ...ordinaryHello } = options.hello;
+  const { scheduler_start: _untrustedScheduler, scheduler_lease: _untrustedLease, ...ordinaryHello } = options.hello;
+  if (options.schedulerLease && !options.schedulerStart)
+    throw new Error("Scheduler lease requires scheduler start opt-in");
+  const schedulerLease = options.schedulerLease ? schedulerLeaseRegistrationSchema.parse({ version: 1 }) : undefined;
   const scheduler = options.schedulerStart
     ? schedulerStartRegistrationSchema.parse({ version: 1, journal_namespace: options.namespace })
     : undefined;
   const hello = nodeHelloSchema.parse(
-    JSON.parse(JSON.stringify({ ...ordinaryHello, ...(scheduler ? { scheduler_start: scheduler } : {}) })),
+    JSON.parse(
+      JSON.stringify({
+        ...ordinaryHello,
+        ...(scheduler ? { scheduler_start: scheduler } : {}),
+        ...(schedulerLease ? { scheduler_lease: schedulerLease } : {}),
+      }),
+    ),
   );
   const WS = options.WebSocketImpl ?? WebSocket;
   const handlers = new Set<(message: ServerToNodeMessage) => void>();
@@ -286,6 +301,7 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
     g.dead = true;
     g.usable = false;
     g.scheduler?.close(error);
+    g.schedulerLease?.close(error);
     clearTimeout(g.handshakeTimer);
     clearTimeout(g.probeTimer);
     clearTimeout(g.probe?.timer);
@@ -416,7 +432,8 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
         p.sequence_max !== 2147483647 ||
         p.liveness.probe_interval_ms !== PROBE_INTERVAL_MS ||
         p.liveness.probe_timeout_ms !== PROBE_TIMEOUT_MS ||
-        JSON.stringify(p.scheduler_start) !== JSON.stringify(scheduler)
+        JSON.stringify(p.scheduler_start) !== JSON.stringify(scheduler) ||
+        JSON.stringify(p.scheduler_lease) !== JSON.stringify(schedulerLease)
       ) {
         lose(g, new DeliveryStopped("Managed receiver session/profile is incompatible"), true);
         return;
@@ -451,6 +468,21 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
             } catch (cause) {
               lose(g, new DeliveryStopped("Scheduler start write failed"));
               throw cause;
+            }
+          },
+        });
+      if (schedulerLease)
+        g.schedulerLease = createSchedulerLeaseClientChannel({
+          session: g.session,
+          assertCurrent: () => {
+            assertSession(g.session);
+          },
+          send: (request) => {
+            try {
+              raw(g, request);
+            } catch {
+              lose(g, new DeliveryStopped("Scheduler lease write failed"));
+              throw new DeliveryStopped("Scheduler lease write failed");
             }
           },
         });
@@ -542,6 +574,10 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
     if (message.type === "scheduler.start.response.v1") {
       if (g.usable) g.scheduler?.receive(message);
       return; // Never dispatch an exchange reply as an executable command.
+    }
+    if (message.type === "scheduler.lease.response.v1") {
+      if (g.usable) g.schedulerLease?.receive(message);
+      return; // Private credential frames never reach command subscribers/buffers.
     }
     if (g.usable) {
       deliver(g, message);
@@ -747,6 +783,8 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
         throw new Error("Managed hello/probe is transport-owned");
       if (message.kind === "scheduler.start.propose.v1" || message.kind === "scheduler.start.ready.v1")
         throw new Error("Scheduler start frames require their generation-bound exchange lane");
+      if (message.kind === "scheduler.lease.acquire.v1" || message.kind === "scheduler.lease.renew.v1")
+        throw new Error("Scheduler lease frames require their generation-bound exchange lane");
       assertSession();
       const g = current!;
       try {
@@ -784,6 +822,11 @@ export function createManagedWebSocketTransport(options: ManagedWebSocketOptions
       assertSession();
       if (!current?.scheduler) throw new Error("Scheduler start was not negotiated for this session");
       return current.scheduler.open();
+    },
+    openSchedulerLeaseSession() {
+      assertSession();
+      if (!current?.schedulerLease) throw new Error("Scheduler lease was not negotiated for this session");
+      return current.schedulerLease.open();
     },
     get connected() {
       return Boolean(current && isCurrent(current) && current.usable);

@@ -1169,6 +1169,46 @@ events do not change Task scheduling input digests. This slice is an internal
 kernel; negotiated secret transport, generation-bound node memory, live renewal,
 fresh-session continuation and scoped Run/Stop integration remain separate work.
 
+### Negotiated private attempt renewal (Steps 4 and 8 in progress)
+
+Managed transport may additionally opt into `schedulerLease:true` alongside
+`schedulerStart:true`. Caller-supplied hello fields cannot enable either feature.
+The optional `scheduler_lease:{version:1}` registration requires the original
+paired managed allocation/start session; unsupported versions, missing start
+negotiation and an omitted/changed negotiation echo fail closed. Old sessions
+omit the extension and preserve their existing contract. The normal runner still
+does not opt into scheduler execution automatically.
+
+The private lane carries strict acquire/renew envelopes bound to the exact
+node, session and exchange identity. Acquisition uses the full original grant;
+renewal uses the complete immutable lease binding plus the independent secret.
+The server calls the existing fenced kernel, including the default-off
+`attempt_credentials` scope, original-user consent and paired credential checks.
+Namespace and current registry identity are checked again by the channel. A
+replaced connection receives no awaited response. Each direction permits one
+pending exchange; the node's original ten-second monotonic window is never
+refreshed. Server busy ownership includes bounded local response-write completion.
+Heartbeat/probe work proceeds independently of this database lane.
+
+The node consumes all private response frames before command delivery or
+pre-ready buffering. Ordinary `transport.send` cannot send private request
+frames. Acquisition returns a renewal closure and immutable non-secret lease
+metadata; the raw credential stays inside the original generation's memory.
+At most 64 such closures are retained. `forget()` drops that closure's local
+secret and frees its memory slot. Generation loss drops all retained secrets,
+aborts pending work and forbids old-handle use or automatic reconnect replay.
+Neither forgetting nor a lost response revokes server ownership or releases a
+physical reservation. A subsequent `retained` result cannot recover plaintext.
+
+Lease timestamps are server observations. A closure's abort signal reports its
+local generation/forgetting lifetime, not continuing server ownership or a
+monotonic physical-start permit. No automatic renewal loop, reconnect continuation,
+Run/Stop/event authority, reaper or failover is installed here. Those must be
+composed with the existing single physical Run owner and its closure rules.
+Rejection logging records only the operation, never raw errors, credentials or
+query values. Controlled state tests and real paired WebSocket/database cases
+cover these boundaries; they are separate from live Provider acceptance.
+
 ## Explicit delegation (independent Step 7)
 
 Existing `parent_task_id` also records conversation continuations and research

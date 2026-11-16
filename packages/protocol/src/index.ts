@@ -8,6 +8,7 @@ export * from "./workspace-allocation.js";
 export * from "./ingest.js";
 export * from "./transport.js";
 export * from "./scheduler-start.js";
+export * from "./scheduler-lease.js";
 export * from "./adapter.js";
 export * from "./product-source-transfer.js";
 

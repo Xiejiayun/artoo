@@ -310,7 +310,8 @@ export type NodeToServerMessage =
   | ExistingNodeToServerMessage
   | ApplicationPublicationReceiptMessage
   | ApplicationPublicationObservationMessage
-  | import("./scheduler-start.js").SchedulerStartRequestMessage;
+  | import("./scheduler-start.js").SchedulerStartRequestMessage
+  | import("./scheduler-lease.js").SchedulerLeaseRequestMessage;
 export type ServerToNodeMessage =
   | ExistingServerToNodeMessage
   | ApplicationPublicationStartCommand
@@ -319,4 +320,5 @@ export type ServerToNodeMessage =
   | ApplicationPublicationSessionCommand
   | ApplicationPublicationReceiptAckCommand
   | ApplicationPublicationObservationAckCommand
-  | import("./scheduler-start.js").SchedulerStartResponseCommand;
+  | import("./scheduler-start.js").SchedulerStartResponseCommand
+  | import("./scheduler-lease.js").SchedulerLeaseResponseCommand;
